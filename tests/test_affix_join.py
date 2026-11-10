@@ -147,6 +147,35 @@ def test_each_guard_holds_even_where_the_dictionary_would_allow_the_join(text, a
     assert [w.surface for w in analyzer.join_affixes(tagger(text), table)][:len(expected)] == expected
 
 
+@pytest.mark.parametrize("sentence, key", [
+    ("その言い方はやめてほしい。", ("言い方", "イイカタ")),       # 言う's stem + the suffix 方: 'way of saying'
+    ("この機械の使い方を教えてください。", ("使い方", "ツカイカタ")),
+    ("ものの見方が変わった。", ("見方", "ミカタ")),             # a one-kana stem too
+])
+def test_a_verbs_stem_with_a_suffix_that_makes_a_noun_is_one_word(tokenizer, sanitized, sentence, key):
+    assert key in _keys(tokenizer, sentence)
+
+
+def test_a_verbs_stem_never_takes_a_suffix_that_makes_an_adjective_or_a_verb():
+    # 読みやすい 'easy to read' is the verb with its grammar, as 食べ始める is: even a table offering it leaves the
+    # pieces, while the same table joins a stem + a noun-making suffix — and する's stem is no stem (勉強し + 方).
+    tagger = analyzer.JapaneseTokenizer().tagger
+    table = {"読みやすい": ["読みやすい", "ヨミヤスイ"], "言い方": ["言い方", "イイカタ"], "し方": ["し方", "シカタ"]}
+    assert [w.surface for w in analyzer.join_affixes(tagger("この本は読みやすい"), table)][-2:] == ["読み", "やすい"]
+    assert [w.surface for w in analyzer.join_affixes(tagger("言い方"), table)] == ["言い方"]
+    assert "し方" not in [w.surface for w in analyzer.join_affixes(tagger("勉強し方"), table)]
+    joined = analyzer.join_affixes(tagger("言い方"), table)[0]
+    assert (joined.feature.pos1, joined.feature.lemma) == ("名詞", "言い方")    # a noun, the headword its lemma
+
+
+def test_a_stems_noun_is_read_through_its_verb():
+    # As 利用者 is read through 利用 (U9), 言い方 is read through 言う: a learner who knows 言う meets 言い方 lower on the
+    # list and never as an unknown when sentences are chosen.
+    tagger = analyzer.JapaneseTokenizer().tagger
+    table = {"言い方": ["言い方", "イイカタ"]}
+    assert analyzer.see_through_base("言い方", "イイカタ", tagger, table) == ("言う", "イウ")
+
+
 def test_a_joined_word_reads_as_the_dictionary_reads_it(tokenizer, sanitized):
     # unidic-lite reads the suffix 人 as ニン everywhere (日本人 would be ニッポンニン), 中 as チュウ and 上 as
     # ウエ-less ジョウ — the reading comes from the dictionary list instead.

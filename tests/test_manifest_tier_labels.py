@@ -113,7 +113,11 @@ def test_content_manager_entries_are_no_longer_dumped_into_goal(env):
 
 def test_a_missing_origin_source_is_harmless(env):
     """Older manifests may have no origin_source at all; the schedule still decides."""
-    schedule = {"PHASE_1_NOW": [{"physical_path": "GoalContent/now.txt", "title": "now.txt"}]}
+    # Every file listed: an unlisted one in HighPriority joins NOW at its top, and 3.0's Soon line (a count, G2.2-1)
+    # would push the NOW row below it — the line's rule, not this test's.
+    schedule = {"PHASE_1_NOW": [{"physical_path": "GoalContent/now.txt", "title": "now.txt"}],
+                "PHASE_2_SOON": [{"physical_path": "HighPriority/soon.txt", "title": "soon.txt"}],
+                "PHASE_3_LATER": [{"physical_path": "LowPriority/later.txt", "title": "later.txt"}]}
     (env["uf"] / "master_manifest.json").write_text(
         json.dumps({"schedule": schedule}, ensure_ascii=False), encoding="utf-8")
     df = _run(env)
@@ -141,8 +145,9 @@ def test_priority_markers_can_now_fire_for_a_hand_built_library(env):
 
 def test_weight_and_label_stay_consistent(env):
     """Score and the tier tally are two views of the same decision; they must not diverge again."""
-    _write_manifest(env, {
+    _write_manifest(env, {                     # every file listed (see test_a_missing_origin_source_is_harmless)
         "PHASE_1_NOW":  [("GoalContent/now.txt", "03_LATER")],
+        "PHASE_2_SOON": [("HighPriority/soon.txt", "02_SOON")],
         "PHASE_3_LATER": [("LowPriority/later.txt", "01_NOW")],
     })
     df = _run(env)

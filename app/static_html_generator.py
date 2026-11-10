@@ -2,18 +2,18 @@ import os
 import re
 import sys
 import json
-import bisect
 import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text, report_name
 from app import settings_manager
 
 # Configuration
 RESULTS_DIR = get_user_file("results")
 PROGRESSIVE_CSV = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 PRIORITY_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
-OUTPUT_FILE = os.path.join(RESULTS_DIR, "reading_list_static.html")
+REPORT_NAME = "reading_list_static.html"
+OUTPUT_FILE = os.path.join(RESULTS_DIR, REPORT_NAME)
 # Resources (Templates)
 WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
 
@@ -45,16 +45,51 @@ def open_as_app(file_path):
     webbrowser.open(url)
 
 
-def open_report(app_mode=False):
+OPEN_ON_NAME = "journey_open.html"     # the small page that opens the report on one file (`open_report(file=)`)
+
+
+def report_holds(file):
+    """Whether the report on disk lists `file` (a name as the report names it, `path_utils.report_name`) — a counted,
+    set-aside or Target-met file alike: each is an entry with that `"filename"` in its data, written as
+    `generate_static_html` writes it (`json.dumps`). False with no report."""
+    try:
+        text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
+    except OSError:
+        return False
+    return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
+
+
+def open_report(app_mode=False, file=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
-    no report on disk yet (caller should render instead)."""
-    if not os.path.exists(OUTPUT_FILE):
+    no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
+    window's journey check looks — never by the path fixed when this module was first imported (AD-4: a test's
+    earlier root, whose report then opened a browser in the next test).
+
+    `file` (a file's name as the report names it, its basename; Sonic 2026-10-24): open the report ON that file, its
+    tab clicked (`#file=<name>`, read as the report loads). Windows drops a file URL's fragment on its way to the
+    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
+    at that fragment. Written at each such open (~200 bytes; cheaper than checking whether it already holds the name),
+    and left beside the report. A name the report doesn't hold opens where it opens by itself; a page that can't be
+    written (results read-only, a lock) opens the report itself."""
+    path = os.path.join(get_user_file("results"), REPORT_NAME)
+    if not os.path.exists(path):
         return False
+    if file:
+        from urllib.parse import quote
+        target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
+        page = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
+        try:
+            with open(page, "w", encoding="utf-8") as f:
+                f.write(f'<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title>'
+                        f'<body style="background:#1e1e1e"><script>location.replace({target});</script>\n')
+            path = page
+        except OSError as e:
+            print(f"Warning: the journey's page couldn't be written ({e!r}); opening the report itself")
     if app_mode:
-        open_as_app(OUTPUT_FILE)
+        open_as_app(path)
     else:
-        webbrowser.open(f"file://{os.path.abspath(OUTPUT_FILE)}")
+        webbrowser.open(f"file://{os.path.abspath(path)}")
     return True
 
 
@@ -142,11 +177,10 @@ class AnchorFinder:
     MIN_LEN = 5          # shorter than this is too generic to point at anything
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
-
-    # Subtitle cue headers. SRT: '00:01:31,083 --> 00:01:33,118'.
-    # ASS/SSA: 'Dialogue: 0,0:01:31.08,0:01:33.11,Default,,...'.
-    _SRT_TIME = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->")
-    _ASS_TIME = re.compile(r"^Dialogue:[^,]*,\s*(\d{1,2}):(\d{2}):(\d{2})[.:](\d{1,2})", re.M)
+    # The memo's answers: [anchor, start, end]. A memo written before the times came from Connect's line reader
+    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ. The
+    # signature also names the engine: the reader cleans lines as a Generate does, and that changes only with it.
+    LINES = "cues-1"
 
     def __init__(self, cache_path=None, script="asis", language=None):
         # The Chinese script the report's sentences were converted to (`zh_script`, already
@@ -159,11 +193,9 @@ class AnchorFinder:
         self._language = language
         self._converted = {}
         self._cache = {}
-        self._cues = {}
+        self._timelines = {}
         self._sidecars = {}
-        # Where each anchor was found. anchor() already located it; cue_time() used to scan the
-        # whole file again to rediscover the same offset, which was the single biggest cost in the
-        # pass (0.82s of 1.66s on a 1,500-file library).
+        # Where each anchor was found, so _original() hands back the file's own wording at that place.
         self._pos = {}
         # Optional on-disk memo so a RE-render (theme change, Words Per Day) doesn't redo the work.
         self._cache_path = cache_path
@@ -193,7 +225,7 @@ class AnchorFinder:
     def _original(self, path, needle, pos=None):
         """The file's own wording for `needle`, found at `pos` in the searched text (default: where
         _unique recorded it). As-is that IS `needle`. Remembers the position under the original
-        wording too, so cue_time() doesn't have to search for it again."""
+        wording too."""
         if self._script == "asis":
             return needle
         if pos is None:
@@ -314,14 +346,20 @@ class AnchorFinder:
                 self._sigs[path] = [st.st_mtime, st.st_size]
                 if self._script != "asis":
                     # Answers found through a conversion are re-verified after a script switch.
-                    # As-is keeps the old signature, so nobody's memo is thrown away on upgrade.
                     self._sigs[path].append(self._script)
+                self._sigs[path].append(self._lines())
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
 
+    def _lines(self):
+        """The memo signature's last part: the line reader's version and the engine's (`LINES`)."""
+        from app.analyzer import ENGINE_REVISION
+        return f"{self.LINES}/{ENGINE_REVISION}"
+
     def resolve(self, abs_path, sentence):
-        """(anchor, cue_seconds) for a sentence, memoised across renders.
+        """(anchor, start, end) for a sentence, memoised across renders: the scroll-to-text anchor, and the
+        seconds (millisecond precision) its lines start and end at — None for a file with no timed lines.
 
         A file's entries are dropped whenever its (mtime, size) changes, so an edited source can
         never serve a stale anchor."""
@@ -335,14 +373,14 @@ class AnchorFinder:
             self._entries[abs_path] = entry
 
         hit = entry["a"].get(sentence)
-        if hit is not None:
-            return hit[0], hit[1]
+        if hit is not None and len(hit) == 3:       # (a gone file's old entry: its signature is None either way)
+            return hit[0], hit[1], hit[2]
 
         anchor = self.anchor(abs_path, sentence)
-        at = self.cue_time(abs_path, anchor) if anchor else None
-        entry["a"][sentence] = [anchor, at]
+        start, end = self.line(abs_path, sentence)
+        entry["a"][sentence] = [anchor, start, end]
         self._memo_dirty = True
-        return anchor, at
+        return anchor, start, end
 
     def save_memo(self):
         """Persist the memo, keeping ONLY the files this render actually used.
@@ -382,58 +420,28 @@ class AnchorFinder:
             self._sidecars[path] = data
         return self._sidecars[path]
 
-    def _cue_index(self, path):
-        """(offsets, seconds) for every cue in a timed file — parallel ascending lists.
+    def line(self, abs_path, sentence):
+        """(start, end) in seconds, millisecond precision, of the lines `sentence` is said in, or (None, None).
 
-        Subtitles carry their timings inline; a YouTube transcript is plain prose whose timings live
-        in its sidecar, so the cue texts are located in the file to give them offsets. Anything with
-        neither returns empty, which is how prose opts out of timestamps."""
-        if path not in self._cues:
-            offsets, seconds = [], []
-            low = path.lower()
-            if low.endswith(('.srt', '.ass', '.ssa')):
-                raw = self._raw(path)
-                pattern = self._ASS_TIME if low.endswith(('.ass', '.ssa')) else self._SRT_TIME
-                for match in pattern.finditer(raw):
-                    hh, mm, ss, _frac = match.groups()
-                    offsets.append(match.end())
-                    seconds.append(int(hh) * 3600 + int(mm) * 60 + int(ss))
-            else:
-                cues = self.sidecar(path).get('cues') or []
-                if cues:
-                    raw, pos = self._raw(path), 0
-                    for entry in cues:
-                        try:
-                            text, sec = entry[0], int(entry[1])
-                        except (TypeError, ValueError, IndexError, KeyError):
-                            continue
-                        if not isinstance(text, str) or not text:
-                            continue      # a hand-edited or truncated sidecar must not crash a render
-                        at = raw.find(text, pos)
-                        if at == -1:
-                            continue      # cue text was cleaned differently — skip, don't guess
-                        offsets.append(at)
-                        seconds.append(sec)
-                        pos = at + len(text)
-            self._cues[path] = (offsets, seconds)
-        return self._cues[path]
-
-    def cue_time(self, abs_path, anchor):
-        """Start time in whole seconds of the subtitle cue containing `anchor`, or None.
-
-        The anchor is verbatim file text, so its offset places it inside exactly one cue — no
-        guesswork, and no change to how the file was tokenized."""
-        offsets, seconds = self._cue_index(abs_path)
-        if not offsets or not anchor:
-            return None
-        # anchor() already located this; only fall back to scanning when called standalone.
-        pos = self._pos.get((abs_path, anchor))
-        if pos is None:
-            pos = self._raw(abs_path).find(anchor)
-        if pos == -1:
-            return None
-        i = bisect.bisect_right(offsets, pos) - 1
-        return seconds[i] if i >= 0 else None
+        The times are Connect's line reader's (`cues.timeline`, E5.1): the cues a card is cut from, read once per
+        file, so the journey, a card and a clip name one line. A sentence said across several lines runs from the
+        first one's start to the last one's end; one said more than once is its first time."""
+        timeline = self._timelines.get(abs_path)
+        if timeline is None:
+            from app import cues
+            try:
+                timeline = cues.timeline(abs_path, self._language or "ja", self._script)
+            except OSError:             # gone since the run: no times, as it has no anchor
+                timeline = cues.Timeline()
+            except Exception as e:      # an unreadable file: no times, never a failed report
+                print(f"Warning: could not read the lines of {abs_path}: {e}")
+                timeline = cues.Timeline()
+            self._timelines[abs_path] = timeline
+        found = timeline.line(sentence)
+        if found is None:
+            return None, None
+        from app.cues import seconds
+        return seconds(found[0]), seconds(found[1])
 
     def anchor(self, abs_path, sentence):
         """A snippet of `sentence` that occurs exactly once in the file, or "" if there is none."""
@@ -472,8 +480,9 @@ class AnchorFinder:
         return ""
 
 
-# Tier folders are plumbing, not something the learner thinks in — they think in books and series.
-_TIER_BUCKETS = ("HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed")
+# Tier folders are plumbing, not something the learner thinks in — they think in books and series. So is the
+# content folder every new copy goes into whatever its place (`Library/<show>/…`, 3.0's Sources).
+_TIER_BUCKETS = ("HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed", "Library")
 
 
 # The 11-char video id ends the filename, allowing for the `_<timestamp>` suffixes Graduate/Demote
@@ -531,8 +540,9 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
     made before sources.json carried absolute paths fall back to the relative one.
 
     With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
-    in the source file, which the report turns into a scroll-to-text link. Deliberately NOT named
-    "Context …": both templates collect example sentences with startsWith('Context ')."""
+    in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
+    `At N` / `End N` — the seconds its lines start and end at, as Connect's line reader reads them (E5.1).
+    Deliberately NOT named "Context …": both templates collect example sentences with startsWith('Context ')."""
     for rec in records:
         for key in [k for k in rec if k.startswith("Src ")]:
             val = rec.get(key)
@@ -565,12 +575,14 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
 
             if finder is not None:
                 if isinstance(sentence, str) and sentence:
-                    frag, at = finder.resolve(table[idx][2], sentence)
+                    frag, at, end = finder.resolve(table[idx][2], sentence)
                     if frag:
                         rec[f"Frag {n}"] = frag
-                        # Subtitles/transcripts: the cue this sentence sits in, shown on hover.
-                        if at is not None:
-                            rec[f"At {n}"] = at
+                    # Subtitles/transcripts: when the sentence's lines start and end (Connect's line reader), shown
+                    # on hover and opened by a video's link — found with or without an anchor.
+                    if at is not None:
+                        rec[f"At {n}"] = at
+                        rec[f"End {n}"] = end
 
             # Optional speech module: mark sentences whose audio is already on disk, so the badge
             # can show that clicking will play instantly instead of pausing to generate. Named
@@ -620,11 +632,16 @@ def anki_backlog_keys(language, settings, list_path=None):
             answers = _pair_answers(language)
             index = anki_match.build_index(list_path, language="ja") if list_path else None
             listed = index.rank_of if index else {}
+            made = _connect_rows(language, backlog, index, answers)
+            if made:        # alpha 4 M3: labelled on the row Connect made it for, only there (as Junban places it)
+                backlog = dict(backlog, notes={n: e for n, e in (backlog.get("notes") or {}).items()
+                                               if n not in made})
             names = _name_cards(backlog, index, answers) if listed else {}
             keys = _own_keys(backlog, listed, names, index) if listed else keys
             phrases = bool(((settings or {}).get("logic") or {}).get("phrase_rows", True))
             keys |= _dictionary_keys(backlog, answers, listed, names, index, phrases)
             keys |= _confirmed_keys(backlog, answers, listed, names)
+            keys |= set(made.values())
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
@@ -635,6 +652,42 @@ def anki_backlog_keys(language, settings, list_path=None):
 # read alone only when it ends in one of these, or starts or ends in the word's own grammar or an inflected
 # する / copula (`anki_match.AFFIX_SPELLINGS`: おへや, おれたち, べんきょうした), so a bare kana word never is.
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
+
+
+def _connect_rows(language, backlog, index, answers=None):
+    """{backlog note id (as the file keys it): the listed word Connect made its card for} — alpha 4 M3, as Junban
+    places it (`anki_match.connect_row` after `card_key`, with Connect's record `connect.library.made_notes_of`):
+    ヒトリ's card, mined as ひとり, is labelled on ヒトリ; never over the card's exact row, a "yes" or a "no". The
+    tokenizer is built only for a card the record names. {} without a list or Connect's record."""
+    if index is None or not index.rank_of:
+        return {}
+    from app import anki_match
+    from app.connect import library
+    made = library.made_notes_of(language)
+    if not made:
+        return {}
+    tokenizers = []
+
+    def tokenize(text):
+        if not tokenizers:
+            from app import analyzer
+            analyzer.SANITIZE_JA = True         # as every Japanese run sets it (see _dictionary_keys)
+            tokenizers.append(analyzer.JapaneseTokenizer().tokenize)
+        return tokenizers[0](text)
+    out = {}
+    for note, entry in (backlog.get("notes") or {}).items():
+        try:
+            row = made.get(int(note))
+        except (TypeError, ValueError):
+            continue
+        word = entry.get("word") if isinstance(entry, dict) else None
+        if row is None or not isinstance(word, str):
+            continue
+        key, via = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words, index.orths)
+        key, via = anki_match.connect_row(row, key, via, word, index.rank_of, answers, index.words)
+        if via == "connect":
+            out[note] = key
+    return out
 
 
 def _name_cards(backlog, index, answers=None):
@@ -839,7 +892,127 @@ def _confirmed_keys(backlog, answers, listed=None, names=None):
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):
+def _journey_stones(data, file_order, stats_map, language, marks=None):
+    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`marks`, the run's; None: read now,
+    `analyzer.journey_marks`, one read) on the per-file report, matched by basename as the rest of it is. A counted
+    file that is watched (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted
+    file of that name watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the
+    library's order, no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
+    "unlisted": []}`, and its name in `file_order` at the same place (the inline Target Met order) — never one whose
+    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes.
+    Returns the marks it drew from (`library_store.UNREAD` when they couldn't be read now): the run signs the report
+    with them (`analyzer.signed_render`)."""
+    if marks is None:
+        from app import analyzer
+        marks = analyzer.journey_marks(language)
+    if isinstance(marks, str):                  # library_store.UNREAD
+        print("Warning: the watched marks couldn't be read now; the journey is drawn without its stones")
+        return marks
+    if not marks:
+        return marks
+    place, watched_name = {}, {}
+    for n, (rel, _tier, watched, counted, *_show) in enumerate(marks):
+        if counted:
+            name = report_name(rel)
+            place.setdefault(name, n)
+            watched_name[name] = watched_name.get(name, True) and bool(watched)
+    for entry in data["progressive"] + data["completed_files"]:
+        if watched_name.get(entry["filename"]):
+            entry["watched"] = True
+    shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
+    aside = []
+    for n, (rel, tier, watched, counted, *_show) in enumerate(marks):
+        name = report_name(rel)
+        if watched and not counted and name not in shown:
+            shown.add(name)
+            aside.append((n, name, tier == "goal"))
+    if not aside:
+        return marks
+
+    def in_place(items, name_of, make):
+        # each set-aside file before the first item the library orders after it, the rest at the end
+        out, k = [], 0
+        for item in items:
+            n = place.get(name_of(item))
+            while n is not None and k < len(aside) and aside[k][0] < n:
+                out.append(make(*aside[k][1:]))
+                k += 1
+            out.append(item)
+        out.extend(make(*a[1:]) for a in aside[k:])
+        return out
+
+    data["progressive"] = in_place(data["progressive"], lambda entry: entry["filename"], lambda name, goal: {
+        "filename": name, "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content": goal,
+        "unlisted": []})
+    if file_order:
+        file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
+    return marks
+
+
+def _journey_folds(data, file_order, marks, inline=False):
+    """A run of watched parts folded into one row (Sonic 2026-10-29, "fold run of watched into one row"; his rule of
+    2026-10-23 kept: each watched part stays in its place, with its stone). Two or more parts next to each other in the
+    library's order (`marks`, `_journey_stones`'), each watched, of one show or book (`show`: its work, else its folder)
+    and one tier, are one run; where two or more of one run sit next to each other in the journey's sidebar (the
+    template's order: `file_order` with *Show 'Target Met' inline* on, else the counted list), they are one fold: each
+    of their entries gets `"fold": k`, and `data["folds"][k]` its row's words — `{"label": "Ep 1–14 watched", "n": 14}`,
+    the range as the window's rows say it (`view_rows.range_text`: episodes, parts, videos). Rendering only: no word,
+    count or order changes, and an entry of one part alone stays as it is. A name two marks share (`01.srt` in two
+    shows: the report keys a file by its name) is never folded — its entry may be the other, unwatched one. Marks
+    without a show (an older reader) or none: no fold, the report as it was."""
+    if not marks or isinstance(marks, str):
+        return
+    from collections import Counter
+    from app.path_utils import infer_source_type
+    from app.services import view_rows
+    shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
+    runs, run_of = [], {}                            # a8: the window's opened rows fold by the same rule (`watched_runs`)
+    for a, b in view_rows.watched_runs([(tier, tuple(show)) if watched and show else None
+                                        for _rel, tier, watched, _counted, *show in marks]):
+        show = marks[a][4:]
+        for rel in (mark[0] for mark in marks[a:b + 1]):
+            if report_name(rel) not in shared:
+                run_of[report_name(rel)] = (len(runs), rel)
+        runs.append(show[1] if len(show) > 1 else None)
+    if not runs:
+        return
+    entries = {entry["filename"]: entry for entry in data["progressive"]}
+    if inline and file_order:
+        done = {entry["filename"]: entry for entry in data.get("completed_files", ())}
+        sidebar = [entries.get(name) or done[name] for name in file_order if name in entries or name in done]
+    else:
+        sidebar = data["progressive"]
+    folds, group = [], []
+
+    def close():
+        if len(group) > 1:
+            rels = [run_of[entry["filename"]][1] for entry in group]
+            media = runs[run_of[group[0]["filename"]][0]] or view_rows.media_type_guess(
+                dict(Counter(infer_source_type(rel) for rel in rels)))
+            numbers = [n for n in (view_rows.episode_number(report_name(rel)) for rel in rels) if n is not None]
+            for entry in group:
+                entry["fold"] = len(folds)
+            folds.append({"label": view_rows.fold_label(media, numbers, len(group)), "n": len(group)})
+        group.clear()
+
+    for entry in sidebar:
+        run = run_of.get(entry["filename"])
+        if group and (run is None or run[0] != run_of[group[0]["filename"]][0]):
+            close()
+        if run is not None:
+            group.append(entry)
+    close()
+    if folds:
+        data["folds"] = folds
+
+
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
+                         found=None):
+    """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
+    settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
+    drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
+    run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
+    one (F7's redraw: every library file stat'd once a run)."""
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -906,7 +1079,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     try:
         from app import analyzer as _analyzer
         goal_files = {os.path.basename(path) for path, label, _weight, _type
-                      in _analyzer.resolve_found_files(target_lang, verbose=False)
+                      in (found if found is not None else _analyzer.resolve_found_files(target_lang, verbose=False))
                       if label == "GoalContent"}
     except Exception as e:
         print(f"Warning: could not read the library tiers for the report: {e}")
@@ -957,6 +1130,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 "filename": fname,
                 "stats": fstat
             })
+
+    # The journey's stones (Zen shows no journey: its report is what it was), the run's language's
+    drawn = None
+    if theme not in ("Zen Mode", "zen-focus"):
+        drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
+        _logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
+        _journey_folds(data, all_files_order, drawn, bool(_logic.get("inline_completed_files", False)))
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):
@@ -1043,7 +1223,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     try:
         settings = settings_manager.load_settings()
-        logic_settings = settings.get("logic", {})
+        # D29's switch (3.0, `logic.automation`) is no template's: kept out, so the report is what it was without it
+        # (placed "neither": in no render signature).
+        logic_settings = {k: v for k, v in settings.get("logic", {}).items() if k != "automation"}
         target_lang = settings.get("target_language", "ja")
         
         # If theme is 'default', try to load from settings and MAP it
@@ -1086,13 +1268,17 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     except Exception:
         koe_config = None
     koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
+    # A set-aside watched file's panel: the window's own sentence for the rule (one place: `view_rows.STRINGS`)
+    from app.services.view_rows import STRINGS as rows_strings
+    watched_leaves_str = json.dumps(rows_strings["watched_leaves"], ensure_ascii=False).replace("</", "<\\/")
+    fold_tip_str = json.dumps(rows_strings["fold_tip"], ensure_ascii=False).replace("</", "<\\/")
     anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
                                                  PRIORITY_CSV),
                                ensure_ascii=False).replace("</", "<\\/")
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo
@@ -1120,12 +1306,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
     if not open_browser:
-        return                      # the dashboard's automatic Generate: written, not opened
+        return drawn                # the dashboard's automatic Generate: written, not opened
     if app_mode:
         open_as_app(OUTPUT_FILE)
     else:
         url = f"file://{os.path.abspath(OUTPUT_FILE)}"
         webbrowser.open(url)
+    return drawn
 
 def main():
     import argparse

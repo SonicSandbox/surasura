@@ -1,0 +1,215 @@
+"""LF-mining row 25, fix 1: one set of Anki Miner look-ups per Connect run, not ten starts an episode.
+
+Before, every episode started Anki Miner for `version`, `profiles` and `settings-export` in its pick, again in its
+mine step, and `version` + `profiles` once more in `preflight` — nine look-ups, ~1.5 s each, before `check` and
+`mine`. Now `runner.Steps` keeps, per language, the set its first look-up read (the version answer, the profile's id,
+the field mapping and the export) and hands it to `verbs.pick` and to the mine step; `preflight` calls only `check`
+(every batch: E9's readiness, Anki reachable). The set is read again after any failure and once it is 15 minutes old
+(`verbs.SETUP_FOR_S`: an Anki Miner updated or reconfigured mid-run is read again at the latest then). The command
+line's own `pick`, holding no set, reads as it always did.
+
+What a wrong answer would cost: ~11.6 s an episode here (~23 s on the laptop) spent starting Anki Miner; or, kept too
+long, a run mining with a profile or a field mapping Anki Miner no longer has. Against the fake Anki Miner and a real
+Generate's list; Anki is closed (a closed loopback port), never a live Anki.
+"""
+import json
+import os
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from app.cli import verbs
+from app.connect import anki_miner, runner
+from tests import cli_helpers as h
+from tests import connect_helpers as c
+from tests.connect.fake_anki_miner import FEATURES_37, LAPIS_EXPORT
+from tests.connect.test_pick_cli import library  # noqa: F401  (fixture: a generated Japanese library)
+from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
+
+LOOK_UPS = ["version", "profiles", "settings-export"]
+
+
+class _Clock:
+    """`time` as verbs sees it, its monotonic clock moved by hand; everything else is the real module."""
+
+    def __init__(self):
+        self.now = 5000.0
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def _steps(fake_miner):
+    h.write_settings(connect_anki_miner_path=fake_miner.path)
+    return runner.Steps(verbs.settings())
+
+
+def _pick(steps, job, subtitle, video):
+    """`Steps.pick`'s call of `verbs.pick` (its library reads left out): the language's set handed in."""
+    ns = SimpleNamespace(lang="ja", file=subtitle, video=video, words=None, job=str(job["id"]), wait=5.0, made=None,
+                         listed=None, held=steps._anki_miner_held("ja"))
+    out = verbs.pick(ns)
+    assert out["words"], "the episode has words to mine, or the mine step proves nothing"
+    return {"video": video, "subtitle": out["subtitle"], "profile": out["anki_miner"]["profile"]}, out["words"][:3]
+
+
+def _episode(steps, job, subtitle, video):
+    picked, words = _pick(steps, job, subtitle, video)
+    return steps.mine("ja", job, picked, words, 1)
+
+
+def test_two_jobs_in_one_run_read_anki_miner_once_then_check_and_mine_each(library, fake_miner):  # noqa: F811
+    # why: the nine look-ups an episode were ~36 % of its time; one set a run leaves `check` + `mine` per job
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    first = _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    second = _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert [o["outcome"] for o in first["outcomes"]] == ["made"] * 3
+    assert [o["outcome"] for o in second["outcomes"]] == ["made"] * 3
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine", "check", "mine"]
+
+
+def test_the_kept_export_is_written_into_the_second_jobs_run_folder(library, fake_miner):  # noqa: F811
+    # why: a run after a kill reads the job's field mapping from its own folder's export (by_tag, the media names):
+    # a job whose set was kept must still have the file there
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    export = os.path.join(steps.run_dir({"id": 2}), "settings-export.json")
+    with open(export, encoding="utf-8") as f:
+        assert json.load(f) == LAPIS_EXPORT
+    assert steps._export_fields("ja", {"id": 2})["audio"] == "SentenceAudio"
+
+
+def test_a_failed_mine_call_reads_the_set_again_for_the_next_job(library, fake_miner):  # noqa: F811
+    # why: Anki Miner refusing (its window open: BUSY) may mean it changed; the next job never trusts the old set
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    fake_miner.plan(mine="busy")
+    with pytest.raises(runner.Wait):
+        _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    assert steps._anki_miner_held("ja") == {}, "the failure emptied the set"
+    fake_miner.plan()
+    _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check", "mine"]
+
+
+def test_a_set_older_than_fifteen_minutes_is_read_again(library, fake_miner, monkeypatch):  # noqa: F811
+    # why: an Anki Miner that updated itself mid-run (E10) is read again at the latest 15 minutes on
+    subtitle, video = library
+    clock = _Clock()
+    monkeypatch.setattr(verbs, "time", clock)
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    clock.now += verbs.SETUP_FOR_S - 1
+    _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 2, "still fresh: kept"
+    clock.now += 2
+    _episode(steps, {"id": 3, "item_id": 3}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 2 + LOOK_UPS + ["check", "mine"]
+
+
+def _home(active, profiles=("anime", "drama")):
+    """Anki Miner's home as 3.9 keeps it (`config/paths.py`, `profile_store.py`): gui_config.json naming the active
+    profile beside the mapping, one `profiles/<id>.json` a named profile — the test's own home (conftest)."""
+    home = os.environ["ANKI_MINER_HOME"]
+    os.makedirs(os.path.join(home, "profiles"), exist_ok=True)
+    with open(os.path.join(home, "gui_config.json"), "w", encoding="utf-8") as f:
+        json.dump({"active_profile_id": active, "anki_note_type": "Lapis", "audio_field": "SentenceAudio"}, f)
+    for name in profiles:
+        with open(os.path.join(home, "profiles", f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": name.title()}, f)
+
+
+def _own_miner(fake_miner, tmp_path):
+    """The fake Anki Miner as a program file of the test's own (so the test can replace it)."""
+    import shutil
+    path = str(tmp_path / "AnkiMiner.py")
+    shutil.copy(fake_miner.path, path)
+    fake_miner.path = path
+    return path
+
+
+def test_your_active_profile_switched_mid_run_is_seen_before_the_next_batch(library, fake_miner):  # noqa: F811
+    # why (IK-r2-3): with no "Surasura" profile Connect mines with Anki Miner's active one; a kept set never looked
+    # again, so a switch in Anki Miner went unseen for up to 15 min (cards to the old deck and note type). Anki Miner
+    # saves the switch to gui_config.json: that file's stamp moved, so the set is read again and the pick-to-mine
+    # guard fires
+    anime, drama = {"id": "anime", "name": "Anime"}, {"id": "drama", "name": "Drama"}
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[anime, dict(drama, active=True)])
+    _home("drama")
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    picked, words = _pick(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert picked["profile"] == "drama"
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"], "nothing changed: kept, two starts an episode"
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[dict(anime, active=True), drama])
+    _home("anime-switched")
+    with pytest.raises(runner.Repick):
+        steps.mine("ja", {"id": 2, "item_id": 2}, picked, words, 1)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check"], "read again; none mined"
+
+
+def test_an_unchanged_anki_miner_keeps_its_set_with_its_files_there(library, fake_miner, tmp_path):  # noqa: F811
+    # why (S19, update only what changed): gui_config.json and the profiles folder untouched → no second profiles
+    # or settings-export, whether the profile is named or the active one
+    _home("p-surasura", profiles=("default", "p-surasura"))
+    _own_miner(fake_miner, tmp_path)
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    for job in (1, 2, 3):
+        _episode(steps, {"id": job, "item_id": job}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 3
+
+
+def test_an_anki_miner_replaced_mid_run_is_read_again(library, fake_miner, tmp_path):  # noqa: F811
+    # why (R2-7, E10): Anki Miner updated itself — its program file moved — and may name its features or fields
+    # otherwise: the next look-up reads it all again
+    _home("p-surasura", profiles=("default", "p-surasura"))
+    path = _own_miner(fake_miner, tmp_path)
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n# 3.9.1\n")
+    _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check", "mine"]
+
+
+def test_the_command_lines_pick_holds_no_set_and_reads_anki_miner_each_time(library, fake_miner):  # noqa: F811
+    # why: `surasura-cli pick` is one call; it never keeps (nor finds) a set
+    subtitle, video = library
+    h.write_settings(connect_anki_miner_path=fake_miner.path)
+    for job in ("job-41", "job-42"):
+        code, lines = h.run_cli("pick", "--file", subtitle, "--video", video, "--job", job)
+        assert code == 0 and h.answer(lines)["run_file"], lines
+    assert fake_miner.commands() == LOOK_UPS * 2
+
+
+def test_steps_pick_and_mine_hand_on_one_set_a_language(monkeypatch):
+    # why: the set pick reads is the one the mine step reuses; another language keeps its own (its own export)
+    c.library()
+    with c.store() as s:
+        item = s.ids("now")[0]
+    steps = runner.Steps({"connect_enabled": True, "anki_connect_url": h.CLOSED_PORT})
+    seen = []
+    monkeypatch.setattr(verbs, "pick", lambda ns: seen.append(ns.held) or {"words": [], "subtitle": None})
+    steps.pick("ja", {"id": 8, "item_id": item}, "episode.mkv")
+    steps.pick("ja", {"id": 9, "item_id": item}, "episode.mkv")
+    assert seen[0] is seen[1] is steps._anki_miner_held("ja")
+    assert steps._anki_miner_held("zh") is not seen[0]
+
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "AnkiMiner.exe")
+    monkeypatch.setattr(verbs, "_anki_miner_setup",
+                        lambda loaded, lang, run_dir, held=None: seen.append(held) or ({}, "p1", SimpleNamespace()))
+    known = []
+    monkeypatch.setattr(anki_miner, "mine_batch", lambda *a, **k: known.append(k.get("known")) or {"outcomes": []})
+    steps.mine("ja", {"id": 8, "item_id": item}, {"video": "v", "subtitle": "s", "profile": "p1"}, [], 1)
+    assert seen[2] is seen[0], "the mine step's look-up is handed the same set"
+    assert known == [({}, "p1")], "preflight is told the version answer and profile already read"

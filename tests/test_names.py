@@ -156,7 +156,7 @@ def test_the_switch_is_in_the_store_build_signature_only_when_off(monkeypatch, t
     """Flipping it re-reads every file (the cached tokens hold the joins); on, the default, adds nothing — a store
     built as shipped keeps its signature."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     assert settings_manager.DEFAULT_SETTINGS["logic"]["names_katakana"] is True
     assert ti.build_signature("ja") == "ja|reinforce=False"
     settings.write_text('{"logic": {"names_katakana": false}}', encoding="utf-8")
@@ -305,7 +305,7 @@ def test_the_known_words_cache_follows_the_tables_and_the_switches(tmp_path, mon
     """A known name is one word only with the tables: a new table, or a switch flipped in settings.json, reads the
     known words again (the switches read fresh, as the dashboard's check and the indexer it launches both see them)."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     store, _paths = _library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK})
     try:
         sig = ti.known_signature(str(tmp_path / "KnownWord.json"))
@@ -547,9 +547,9 @@ def test_a_work_term_is_never_a_dictionary_word(tmp_path, monkeypatch):
         store.close()
     library = [_record([(s, "焔魄陣", "ccc") for s in range(5)], {"焔": 5, "魄": 5, "陣": 5})]
     assert "焔魄陣" in names.compute_tables(library)["w"]
-    monkeypatch.setattr(analyzer, "compound_joins", lambda: {"焔魄陣": ("焔魄陣", "エンハクジン", "N", 1)})
-    assert "焔魄陣" not in names.compute_tables(library)["w"], "the compound table's word"
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(analyzer, "compound_joins", lambda: {"焔魄陣": ("焔魄陣", "エンハクジン", "N", 1)})
+        assert "焔魄陣" not in names.compute_tables(library)["w"], "the compound table's word"
     monkeypatch.setattr(names, "_jmdict_kanji", [None])
     assert names.compute_tables(library)["w"] == {}, "no JMdict list: no term"
 
@@ -800,7 +800,7 @@ def test_the_work_terms_switch_off(tmp_path, tokenizer, monkeypatch):
     pieces — and needs no re-reading of any file (not in the cache's signature); the known words are read again. Before
     the first index there is no table: nothing joins."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     store, paths = _library(tmp_path / "lib", {"a.txt": HOMURA, "b.txt": JIN})
     try:
         assert "焔魄陣" in _cached_surfaces(store, paths[0])
@@ -1063,7 +1063,8 @@ def test_the_four_switches_in_settings_save_load_and_show_for_japanese_only(monk
         assert token_index.build_signature("ja") == built, "the library's tables: no file is read again"
         boxes[0].invoke()
         logic = saved()
-        assert logic["names_katakana"] is False and logic["sentence_boundaries"], "the rest of the logic block is kept"
+        assert logic["names_katakana"] is False and settings_manager.load_settings()["logic"]["sentence_boundaries"], \
+            "the rest of the logic block is kept (the dashboard writes only its own keys, W1.3: the rest read back as every run reads it)"
         assert token_index.build_signature("ja") != built and launches(), "every file reads differently: re-index"
 
         with open(settings_file, "w", encoding="utf-8") as handle:

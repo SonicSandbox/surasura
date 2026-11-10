@@ -605,6 +605,7 @@ def test_the_return_from_2_4_0s_content_manager(language):
     cm._store_mode, cm._store = (lambda: "json"), (lambda: None)   # 2.4.0's code: 2.5's JSON mode
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
+    time.sleep(0.02)        # a tick after the export (GitHub's clock: 15.6 ms): same size + one mtime would read as ours
     cm.save_manifest(manifest)
     assert "surasura_library" in read_doc(user_files_dir)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
@@ -885,25 +886,34 @@ def test_ids_and_log_ids_are_never_reused(language, how):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_soon_line_is_re_derived_from_the_tiers(language):
+def test_the_soon_line_is_canonical_and_a_rebuild_keeps_or_re_derives_it(language):
+    """Schema 2 (L2.2 05 §5.1): the line is stored and the tiers follow it. A migration from a 2.x list puts it at
+    NOW's count (Q2-4: nobody's list changes); an open never re-counts it; a rebuild from the store's own 3.0 copy keeps
+    it, the fewer-rows case included (06 §6.4); a copy an older Surasura edited re-derives it from its tiers (06 §6.1)."""
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
-    now = len(store.ids("now"))
-    with store._writing():
-        store._set_meta({"soon_line": now + 7})               # disagrees with the tiers
+    now, current = len(store.ids("now")), len(store.ids("now")) + len(store.ids("soon"))
+    assert store.meta()["soon_line"] == now, "a migration: NOW's count"
+    store.set_soon_line(current + 7)                          # below every row: all of Current is NOW
+    assert len(store.ids("soon")) == 0 and len(store.ids("now")) == current
     store.close()
     store = ls.open_store(language, data_dir, user_files_dir)
-    assert store.meta()["soon_line"] == now, "at open"
-    with store._writing():
-        store._set_meta({"soon_line": 2})
+    assert store.meta()["soon_line"] == current + 7, "an open doesn't re-count it"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    doc = read_doc(user_files_dir)
-    doc["surasura_library"]["meta"]["soon_line"] = 3
-    write_manifest(user_files_dir, doc)
     _new_pc(store)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
-    assert store.meta()["soon_line"] == now, "and after the rebuild"
+    assert store.meta()["soon_line"] == current + 7, "a rebuild from its own copy keeps it"
+    store.close()
+    doc = read_doc(user_files_dir)                            # an older Surasura moves two rows down a tier
+    moved = doc["schedule"]["PHASE_1_NOW"][:2]
+    doc["schedule"]["PHASE_1_NOW"] = doc["schedule"]["PHASE_1_NOW"][2:]
+    doc["schedule"]["PHASE_2_SOON"] = moved + doc["schedule"]["PHASE_2_SOON"]
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.meta()["soon_line"] == current - 2, "its tiers win: the line follows them"
+    assert [e["physical_path"] for _i, e, _a in store.ordered("soon")] == [e["physical_path"] for e in moved]
     store.close()
 
 
@@ -922,3 +932,11 @@ def test_a_big_edit_found_by_a_rebuild_asks_first(language):
     assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True)
     assert store.ids("goal") == order["goal"][::-1]
     store.close()
+
+
+def test_the_size_guard_trips_at_ten_items_and_over_five_percent():
+    # Q4-8: ten moved items is the floor (nine is not enough), and ten of two
+    # hundred analysed items is exactly 5 %, which is not more than 5 %.
+    assert ls._guard_trips(10, 100) is True
+    assert ls._guard_trips(9, 100) is False
+    assert ls._guard_trips(10, 200) is False

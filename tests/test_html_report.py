@@ -60,7 +60,7 @@ def test_html_generation(tmp_path):
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
 
          # Run generator
-         generate_static_html(theme="default")
+         generate_static_html(theme="default", open_browser=False)
          
          assert output_html.exists()
          
@@ -75,13 +75,34 @@ def test_html_generation(tmp_path):
          # That's fine, we just want to ensure it runs without crashing.
 
 
+def test_the_report_never_embeds_d29s_automation_switch(tmp_path):
+    """`logic.automation` (D29, 3.0) is read by no template and placed "neither": kept out of the logic block the
+    report embeds, so the report is byte for byte what it was without the key (tests/test_replan_off.py's 2.x base)
+    and flipping it never needs a re-render (it is in no render signature)."""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    output_html = results_dir / "reading_list_static.html"
+    template_path = tmp_path / "web_app.html"
+    with open(template_path, "w", encoding="utf-8") as f:
+        f.write("<html><head></head><body><h1>Surasura List</h1><script>let globalData = null;</script></body></html>")
+    priority_csv, progressive_csv = _fixture_csvs(tmp_path)
+    for automation in (True, False):
+        mock_settings = {"theme": "Default (Dark)", "target_language": "ja",
+                         "logic": {"test": "data", "automation": automation}}
+        with patch("app.static_html_generator.RESULTS_DIR", str(results_dir)),              patch("app.static_html_generator.OUTPUT_FILE", str(output_html)),              patch("app.static_html_generator.WEB_APP_FILE", str(template_path)),              patch("app.static_html_generator.PRIORITY_CSV", str(priority_csv)),              patch("app.static_html_generator.PROGRESSIVE_CSV", str(progressive_csv)),              patch("app.static_html_generator.settings_manager.load_settings", return_value=mock_settings),              patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
+            generate_static_html(theme="default", open_browser=False)
+        content = output_html.read_text(encoding="utf-8")
+        assert "let globalLogic = {\"test\": \"data\"};" in content, automation
+    assert mock_settings["logic"]["automation"] is False, "the loaded settings are never changed in place"
+
+
 def test_report_is_still_opened_after_generation(tmp_path):
     """Opening the report is INTENDED behaviour, not an accident of the tests.
 
-    The suite-wide `no_browser_launch` fixture suppresses the real launch (several tests call
-    generate_static_html purely to inspect the HTML, and a run used to spawn a browser tab each
-    time). This test asserts the behaviour it suppresses still happens — and picks the right one
-    for the window mode — so the fixture can never quietly turn the feature off.
+    The other tests pass open_browser=False (they only inspect the HTML), and the harness fails any
+    test that opens a real browser (tests/harness_guards.py). This test patches the openers itself and
+    asserts the opening still happens — and picks the right one for the window mode — so turning it
+    off in the tests can never quietly turn the feature off.
     """
     results_dir = tmp_path / "results"
     results_dir.mkdir()
@@ -147,7 +168,7 @@ def test_injected_data_escapes_script_close(tmp_path):
          patch("app.static_html_generator.PROGRESSIVE_CSV", str(tmp_path / "progressive_learning_list.csv")), \
          patch("app.static_html_generator.settings_manager.load_settings", return_value=mock_settings), \
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
-        generate_static_html(theme="default")
+        generate_static_html(theme="default", open_browser=False)
 
     content = output_html.read_text(encoding="utf-8")
     # The data still carries the text, but its closing tag is neutralised to <\/script>.
@@ -222,7 +243,7 @@ def _render(tmp_path, priority_csv):
          patch("app.static_html_generator.PROGRESSIVE_CSV", str(tmp_path / "missing_progressive.csv")), \
          patch("app.static_html_generator.settings_manager.load_settings",
                return_value={"target_language": "ja", "logic": {}}):
-        generate_static_html(theme="default")
+        generate_static_html(theme="default", open_browser=False)
 
     html = output_html.read_text(encoding="utf-8")
     match = re.search(r"let globalData = (\{.*?\});\n", html, re.S)

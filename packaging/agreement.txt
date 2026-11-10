@@ -1,0 +1,22 @@
+SURASURA: TERMS OF USE
+
+Please read these terms. To install Surasura, choose "I accept the agreement".
+
+1. YOUR CONTENT
+
+Surasura provides no content. It works only with what you give it: your own subtitles, videos, books, audiobooks, texts, word lists and Anki decks, and anything you get with the tools and sites it can open or call (YouTube and bilibili through yt-dlp, jimaku, Anki Miner).
+
+You are responsible for the content you use with Surasura. Use only content you own or have the right to use, and follow the law and the terms of the sites and services you get it from. Surasura does not host or share your content: it stays on your computer, except what you choose to send: to a service you connect, or in a problem report you send.
+
+2. NO WARRANTY
+
+Surasura is free software, provided "as is", without warranty of any kind. You use it at your own risk. Keep backups of your library and your Anki collection.
+
+3. LIMITATION OF LIABILITY
+
+To the fullest extent the law allows, the authors and copyright holders of Surasura are not liable for any claim, damage or loss arising from your use of Surasura, from the content you use with it, or from any change it makes to your files or your Anki cards.
+
+4. THE LICENCE
+
+Surasura is free software, shared under the GNU General Public License, version 3 or (at your option) any later version, with the additional permission in LICENSE-EXCEPTION.md in the program's folder; the licence's text is below. Its source code: https://github.com/SonicSandbox/surasura. Nothing in these terms takes away any right that licence gives you to run, copy, change or share Surasura.
+

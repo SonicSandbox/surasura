@@ -24,7 +24,7 @@ TOOLTIP = ("Adds dictionary phrases your library uses often — 気がする, �
 @pytest.fixture
 def settings(tmp_path, monkeypatch):
     path = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(path))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(path))
     return path
 
 

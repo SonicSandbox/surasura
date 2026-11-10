@@ -41,6 +41,17 @@ The rule, in order (each step's count and examples go to debug/phrase_data.md, f
   R8 bound      a real word lives only inside its phrase when JPDB 2024 lists the phrase and ranks the word alone
                 rarer, or doesn't list it (腑 in 腑に落ちる, 眉根 in 眉根を寄せる): learned with the phrase, and its
                 uses inside the phrase are the phrase's. No JPDB entry for the phrase: nothing bound.
+  RG grammar    a grammar expression is a row of its own too, learned as one unit and marked as grammar (the data's
+                seventh field; Connect sends it as it sends grammar words): a spelling R3 turns away only for starting
+                with grammar (a particle, an ending, a grammar stem) whose entry JMdict files as an expression (exp)
+                with a priority tag of a curated list, holding at least one word that isn't grammar — かもしれない,
+                として, について, なければならない, ようにする. Every such word is the expression's there (知れる in
+                かもしれない; never 気心が知れる): R5's shape test and R8 don't apply. One whose words from its first
+                real word on are a phrase built like one (ような気がする: 気がする) is that phrase's, never a row.
+                One ending in a verb where JMdict gives it no conjugation class of its own (という,
+                に対する: exp alone) is the expression only uninflected, before a word of its own (という人; と言った and
+                the hearsay 〜という。 are 言う): the data's seventh field 2. One JMdict conjugates (ようにする vs-i,
+                となる v5r) is the expression in any form (ようにしている). R6 and R7 as for any.
 
 Run it after scripts/build_reference_data.py: it reads the tables that build installed, so no phrase is made of what
 the tokenizer already joins. Every parsing switch is read at its default, whatever settings.json says. Rebuilding
@@ -157,6 +168,23 @@ def pre_noun_mark(c):
     if not c["prenoun"]:
         return 0
     return 2 if c["kana"] and any(not _KANJI.search(s) for s in c["spellings"]) else 1
+
+
+def grammar_expression(tokens, entries):
+    """Is a spelling read as `tokens`, that R3 turns away for starting with grammar, a grammar expression (RG): its
+    first word a particle, an ending or a grammar stem — never a conjunction or a suffix — at least one word that isn't
+    grammar, and JMdict files one of `entries` (the entries spelled so) as an expression with a curated priority tag?"""
+    first = tokens[0]
+    if not (first[4] in ("助詞", "助動詞") or (first[4] == "形状詞" and first[5] == "助動詞語幹")):
+        return False
+    if all(r == "g" for r in roles(tokens)):
+        return False
+    return any(f["exp"] and f["common"] for f in map(entry_flags, entries))
+
+
+def conjugates(entry):
+    """Does JMdict give the entry a conjugation class — a verb's or an い-adjective's (ようにする vs-i, となる v5r)?"""
+    return any(p.startswith("v") or p == "adj-i" for sense in entry["senses"] for p in sense["pos"])
 
 
 def entry_flags(entry):
@@ -350,14 +378,19 @@ def candidates(entries, compounds, log):
             out("R2 one word", spelling)
             continue
         why = shape(tokens, spelling, compounds)
-        if why:
+        grammar = why == "starts with grammar or a conjunction" and grammar_expression(
+            tokens, [entries[i] for i, _readings in found])
+        if why and not grammar:
             out("R3 " + why, spelling)
             continue
         role = roles(tokens)
-        why = structure(tokens, role)
-        if why:
-            out("R5 " + why, spelling)
-            continue
+        if grammar:
+            role = "".join(r if r == "g" else "b" for r in role)    # RG: every word in it is the expression's there
+        else:
+            why = structure(tokens, role)
+            if why:
+                out("R5 " + why, spelling)
+                continue
         if _KANJI.search(spelling) and not read_as_jmdict(tagger, joins, spelling, tokens, readings_of):
             out("R6 read as other words", spelling)         # 彼の方 (あのかた) read 彼 'he' + の + 方: 'his side'
             continue
@@ -368,7 +401,8 @@ def candidates(entries, compounds, log):
             item = by_key[key] = {"key": key, "readings": tuple(t[1] for t in tokens), "roles": role,
                                   "spellings": [], "readings_jm": [], "orths": [set() for _ in tokens],
                                   "spelled": {}, "flags": Counter(), "seqs": set(), "prenoun": True,
-                                  "kana": True}
+                                  "kana": True, "grammar": (2 if tokens[-1][4] == "動詞" else 1)
+                                  if grammar else 0}
         item["spellings"].append(spelling)
         for k, t in enumerate(tokens):
             item["orths"][k].add(t[3])
@@ -376,6 +410,8 @@ def candidates(entries, compounds, log):
             item["seqs"].add(entries[i]["seq"])
             item["prenoun"] = item["prenoun"] and pre_noun(entries[i], idx)     # every entry behind it, or none
             item["kana"] = item["kana"] and usually_kana(entries[i])
+            if item["grammar"] == 2 and conjugates(entries[i]):
+                item["grammar"] = 1             # RG: JMdict conjugates it as a verb (ようにする vs-i): any form
             item["flags"].update(k for k, v in entry_flags(entries[i]).items() if v)
             for reading in readings:
                 kana = _katakana(reading)
@@ -384,8 +420,16 @@ def candidates(entries, compounds, log):
                 item["spelled"].setdefault(spelling, kana)      # the first reading JMdict gives this spelling
         if n % 50_000 == 0:
             log(f"    {n:,} read ({time.time() - t0:.0f} s)")
-    log(f"  R2-R6: {len(by_key):,} phrases built like one, from {steps['phrase-shaped']:,} spellings "
-        f"({time.time() - t0:.0f} s)")
+    # RG: a grammar expression whose words from its first real word on are a phrase is that phrase's (ような気がする).
+    for key, item in list(by_key.items()):
+        if item["grammar"]:
+            k = next(k for k, r in enumerate(item["roles"]) if r != "g")
+            if any(key[k:j] in by_key and not by_key[key[k:j]]["grammar"] for j in range(k + 2, len(key) + 1)):
+                del by_key[key]
+                for spelling in item["spellings"]:
+                    out("RG a phrase inside", spelling)
+    log(f"  R2-R6: {len(by_key):,} phrases built like one, from {steps['phrase-shaped']:,} spellings, "
+        f"{sum(1 for c in by_key.values() if c['grammar']):,} of them grammar expressions ({time.time() - t0:.0f} s)")
     return list(by_key.values()), steps, examples
 
 
@@ -508,8 +552,9 @@ def piece_rank(ranks, spellings, reading, phrase_readings):
 
 
 def bind(c, jpdb):
-    """`c`'s roles with each real word that lives only inside it marked "b" (R8)."""
-    if c["jpdb"] is None:
+    """`c`'s roles with each real word that lives only inside it marked "b" (R8). A grammar expression's are already
+    (RG)."""
+    if c["jpdb"] is None or c.get("grammar"):
         return c["roles"]
     out = []
     for k, role in enumerate(c["roles"]):
@@ -538,12 +583,14 @@ def display(c, jpdb, jiten):
 # --- the module --------------------------------------------------------------------------------------------------- #
 
 def rows_of(kept):
-    """[lemmas, readings, roles, spelling, its reading, pre-noun] per phrase: the row's Reading is the dictionary's
-    reading of the spelling shown (モシカシタラ for もしかしたら, not the words' own readings run together), else theirs;
-    pre-noun 1 when JMdict classes the phrase only as a pre-noun adjectival, 2 when it is usually written in kana too
-    (`pre_noun_mark`)."""
+    """[lemmas, readings, roles, spelling, its reading, pre-noun, grammar] per phrase: the row's Reading is the
+    dictionary's reading of the spelling shown (モシカシタラ for もしかしたら, not the words' own readings run together),
+    else theirs; pre-noun 1 when JMdict classes the phrase only as a pre-noun adjectival, 2 when it is usually written
+    in kana too (`pre_noun_mark`); grammar 1 for a grammar expression (RG), 2 for one ending in a verb JMdict gives no
+    conjugation class (found only before a word of its own)."""
     return sorted([["|".join(c["key"]), "|".join(c["readings"]), c["bound"], c["display"],
-                    c["spelled"].get(c["display"]) or "".join(c["readings"]), pre_noun_mark(c)] for c in kept])
+                    c["spelled"].get(c["display"]) or "".join(c["readings"]), pre_noun_mark(c), c.get("grammar", 0)]
+                   for c in kept])
 
 
 def blob(obj):
@@ -552,16 +599,18 @@ def blob(obj):
 
 
 def write_module(rows, created, path=OUTPUT):
-    for key, readings, role, shown, reading, prenoun in rows:
+    for key, readings, role, shown, reading, prenoun, grammar in rows:
         lemmas = key.split("|")
         assert 2 <= len(lemmas) <= 5 and all(lemmas) and " " not in key, key
         assert len(readings.split("|")) == len(lemmas) == len(role) and shown and reading and prenoun in (0, 1, 2), key
+        assert grammar in (0, 1, 2) and (not grammar or (role[0] == "g" and set(role) <= {"g", "b"})), key
     body = blob(rows)
     revision = f"{date.today().isoformat()}-{hashlib.sha1(body.encode('ascii')).hexdigest()[:8]}"
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(TEMPLATE.format(revision=revision, created=created or "", count=len(rows),
                                 n_bound=sum(1 for r in rows if "b" in r[2]), n_prenoun=sum(1 for r in rows if r[5]),
-                                n_kana=sum(1 for r in rows if r[5] == 2), body=body))
+                                n_kana=sum(1 for r in rows if r[5] == 2), n_grammar=sum(1 for r in rows if r[6]),
+                                body=body))
     return revision
 
 
@@ -595,8 +644,8 @@ def main(argv=None):
         # Before the corpus pass: a phrase with a form of its own (もしかしたら) is found only in that form
         # (phrases.fixed_form), so the matcher needs the spelling it shows.
         c["display"] = display(c, jpdb, jiten)
-    rows = [["|".join(c["key"]), "|".join(c["readings"]), c["roles"], c["display"], "", pre_noun_mark(c)]
-            for c in cands]
+    rows = [["|".join(c["key"]), "|".join(c["readings"]), c["roles"], c["display"], "", pre_noun_mark(c),
+             c.get("grammar", 0)] for c in cands]
     log(f"R7: the shared set's text, {args.workers} workers...")
     t1 = time.time()
     words, found, sentences, files = corpus_pass(rows, args.workers, log)
@@ -668,6 +717,9 @@ def write_report(cands, kept, dropped, folded, steps, examples, words, lines, cr
     for c in sorted(differ, key=lambda c: c["display"])[:150]:
         out.append(f"| {c['display']} | {c['spelled'].get(c['display'])} | {''.join(c['readings'])} | "
                    f"{'|'.join(c['key'])} |")
+    grammar = sorted(c["display"] for c in kept if c["grammar"])
+    out += ["", f"## RG, grammar expressions kept as rows of their own: {len(grammar):,}", "", ", ".join(grammar),
+            "", "Left out by R7: " + ", ".join(sorted(c["spellings"][0] for c in dropped if c["grammar"]))]
     out += ["", "## 50 kept phrases at random", "", ", ".join(c["display"] for c in rng.sample(kept, min(50, len(kept))))]
     with open(REPORT, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
@@ -679,12 +731,14 @@ TEMPLATE = '''"""Idioms and set phrases the list can offer — GENERATED, DO NOT
 Regenerate with:  python scripts/build_phrase_data.py   (after scripts/build_reference_data.py)
 
 Revision: {revision}
-  PHRASES  {count:,} set phrases -> [lemmas, readings, roles, spelling, reading, pre-noun]: each phrase's words
+  PHRASES  {count:,} set phrases -> [lemmas, readings, roles, spelling, reading, pre-noun, grammar]: each phrase's words
            as the tokenizer reads them (UniDic lemmas and readings, `|`-joined), each word's role — "c" a real word,
            "b" a real word that lives only inside the phrase ({n_bound:,} phrases hold one), "l" a light verb or
            adjective, "g" grammar — the dictionary's commonest spelling with its reading, and 1 when JMdict classes
            the phrase only as a pre-noun adjectival ({n_prenoun:,} phrases), 2 when it also says it is usually
-           written in kana ({n_kana:,} of them, found only so). app/phrases.py finds them in a sentence's words;
+           written in kana ({n_kana:,} of them, found only so); grammar 1 for a grammar expression ({n_grammar:,}:
+           かもしれない, として — every word in it the expression's there), 2 for one ending in a verb JMdict
+           doesn't conjugate (という, に対する: found only before a word of its own). app/phrases.py finds them in a sentence's words;
            Settings -> "Idioms and set phrases on your list" lists the ones a library meets often enough.
 
 Derived from JMdict (JMdict created {created}), a dictionary of the JMdict/EDICT project, property of the Electronic
@@ -713,7 +767,7 @@ _PHRASES_B64 = (
 
 
 def phrases():
-    """[[lemmas, readings, roles, spelling, reading, pre-noun], ...] — every phrase, decoded on each call
+    """[[lemmas, readings, roles, spelling, reading, pre-noun, grammar], ...] — every phrase, decoded on each call
     (app/phrases.py keeps one decoded set per process); [] when unreadable."""
     try:
         return json.loads(zlib.decompress(base64.b64decode(_PHRASES_B64)).decode("utf-8"))

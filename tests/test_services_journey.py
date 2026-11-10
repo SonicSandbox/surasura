@@ -1,0 +1,871 @@
+"""The journey kept current in the background (`app/services/journey.py`) — E3.2, research/17 §2.7 (the debounce).
+
+What a wrong answer would cost:
+  * a Generate per move — a burst of twenty drags twenty full runs, the laptop's fan on for minutes;
+  * a run that never comes — the report and the sentences stay behind the plan until the user presses Generate;
+  * two runs at once, or the user's own Generate cancelled by an automatic one;
+  * a run nobody needed — a burst that came back to the analysed order still costs a Generate (S19);
+  * the battery drained — on a laptop's battery the quiet time is 30 s (Sonic, E3.2-1), not 3 s;
+  * a window that waits — `changed` is called on the window's thread after every move.
+
+A scripted child (a launcher feeding the analyzer's real protocol lines) where the claim is about timing; real Generates
+of RP-2's library (Japanese and Chinese) where the claim is that the report then agrees with the plan.
+"""
+import json
+import os
+import threading
+import time
+
+import pytest
+
+from app.services import generate as G
+from app.services import journey as J
+from app.services.generate import GenerateController
+from app.services.jobs import JobRegistry
+from tests import services_helpers as h
+from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse: the child's store, in-process)
+
+FAST = {"journey_settle_s": 0.2, "journey_settle_battery_s": 0.8}
+CANCELLED = json.dumps({"type": "error", "contract": 1, "ok": False, "code": "cancelled", "message": "x"}) + "\n"
+
+
+def _line(step):
+    return json.dumps({"type": "progress", "step": step, "done": None, "total": None}) + "\n"
+
+
+class _Child:
+    returncode = None
+
+    def poll(self):
+        return self.returncode
+
+
+class _Launches:
+    """The controller's launcher: records each run (its start time) and lets the test end it."""
+
+    def __init__(self):
+        self.runs, self.times = [], []
+        self.lock = threading.Lock()
+
+    def __call__(self, run):
+        run.cancel_file = os.path.join(h.root(), f"journey-cancel-{len(self.runs)}.flag")
+        with self.lock:
+            self.runs.append(run)
+            self.times.append(time.monotonic())
+        run.started(_Child())
+
+    def count(self):
+        with self.lock:
+            return len(self.runs)
+
+
+def _keeper(settings=None, pending=lambda: True, battery=lambda: False, **kw):
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    launches = _Launches()
+    keeper = J.JourneyKeeper(controller, "ja", settings=lambda: dict(FAST, **(settings or {})), pending=pending,
+                             battery=battery, launcher=launches, plan_path=os.path.join(h.root(), "no-plan.json.gz"),
+                             **kw)
+    return keeper, controller, registry, launches
+
+
+class _Plan:
+    """A loaded plan's stand-in: what the keeper reads of one (its header)."""
+
+    def __init__(self, signature="run-1", language="ja"):
+        self.header = {"run_signature": signature, "language": language, "order_free_signature": "f"}
+
+
+def _generates(registry):
+    return [v for v in registry.snapshot() if v.kind == "generate"]
+
+
+def test_a_burst_of_twenty_moves_makes_one_run_after_the_last():
+    """Twenty moves 20 ms apart: nothing runs during the burst, one quiet run starts the quiet time after the last."""
+    keeper, controller, registry, launches = _keeper()
+    for _ in range(20):
+        keeper.changed("move")
+        time.sleep(0.02)
+    last = time.monotonic()
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert launches.times[0] - last >= FAST["journey_settle_s"] - 0.02, "it waited the quiet time after the last move"
+    time.sleep(0.5)
+    assert launches.count() == 1 and keeper.asked == 1
+    view = _generates(registry)[0]
+    assert view.automatic and view.label == "Generating (automatic)"
+    assert launches.runs[0].quiet and "--no-open" in launches.runs[0].argv
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+
+
+def test_changed_returns_at_once_and_reads_nothing():
+    """`changed` runs on the window's thread: no settings file, no battery, no journey check there."""
+    calls = []
+    keeper, _controller, _registry, _launches = _keeper(
+        pending=lambda: calls.append("pending") or True)
+    keeper._settings = lambda: calls.append("settings") or dict(FAST)
+    keeper._battery = lambda: calls.append("battery") or False
+    started = time.perf_counter()
+    for _ in range(50):
+        keeper.changed("move")
+    ms = (time.perf_counter() - started) * 1000 / 50
+    assert calls == [] and ms <= 4, (calls, ms)
+    keeper.close()
+
+
+@pytest.mark.parametrize("step", [None] + list(G.STEPS))
+def test_a_burst_during_the_run_never_cancels_it_and_costs_one_more_run_at_most(step):
+    """a7 (alpha 6's 43 Generates in 70 minutes): forty store changes while the background run is at any step — before
+    its first line, reading files, writing — never ask it to stop (no cancel file, never *Stopping*); once it has
+    finished, ONE more run comes, the quiet time after its end, never two at once and never one per change."""
+    keeper, controller, registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    first = launches.runs[0]
+    if step is not None:
+        first.feed(_line(step))
+    for _ in range(40):
+        keeper.changed("store")
+        time.sleep(0.005)
+    time.sleep(FAST["journey_settle_s"] + 0.3)        # longer than the quiet time: still nothing withdrawn, nothing new
+    assert not os.path.exists(first.cancel_file), "the run in flight was never asked to stop"
+    assert controller.state().state == G.RUNNING and launches.count() == 1
+    first.ended(0)
+    ended = time.monotonic()
+    assert h.until(lambda: launches.count() == 2, seconds=5), "the burst's one look after the run: one more run"
+    assert launches.times[1] - ended >= FAST["journey_settle_s"] - 0.05, "it waited the quiet time after the end"
+    launches.runs[1].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert launches.count() == 2 and keeper.asked == 2
+    assert [v.cancelled for v in _generates(registry)] == [False, False]
+
+
+def test_a_burst_the_run_already_read_costs_no_run_at_all():
+    """The changes came while the run was still waiting its turn (it read them as it started): the look after its end
+    finds the journey current (the run signature) and asks for nothing — N changes, one run."""
+    current = {"now": False}
+    keeper, controller, _registry, launches = _keeper(pending=lambda: not current["now"])
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    for _ in range(25):
+        keeper.changed("store")
+    assert not os.path.exists(launches.runs[0].cancel_file), "never asked to stop"
+    current["now"] = True                           # the run's own end: the journey is current
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.4)
+    assert launches.count() == 1 and keeper.asked == 1
+    assert not launches.runs[0].cancel_event.is_set()
+
+
+def test_changes_through_three_runs_in_a_row_never_stack_up():
+    """A library written all the time (a first scan of thousands of files): each run finishes; each burst during it
+    is one run after it — runs in a row, never a run withdrawn and never two queued."""
+    keeper, controller, registry, launches = _keeper()
+    keeper.changed("move")
+    for n in range(1, 4):
+        assert h.until(lambda: launches.count() == n, seconds=5)
+        for _ in range(10):
+            keeper.changed("store")
+        assert controller._pending is None, "nothing queued behind the run"
+        assert not os.path.exists(launches.runs[-1].cancel_file), "never asked to stop"
+        launches.runs[-1].ended(0)
+    assert h.until(lambda: launches.count() == 4, seconds=5)
+    launches.runs[-1].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert launches.count() == 4
+    assert not any(v.cancelled for v in _generates(registry))
+    assert not any(run.cancel_event.is_set() for run in launches.runs)
+
+
+def test_in_flight_names_the_controllers_states():
+    """The keeper reads the controller's states by name (it imports the controller only when it runs)."""
+    assert J.IN_FLIGHT == (G.QUEUED, G.RUNNING, G.CANCELLING)
+
+
+def test_a_run_past_writing_your_list_finishes_and_the_next_burst_runs_after():
+    """The second burst came once the run writes the list: it finishes (current), then the burst's own run comes."""
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Writing your list"))
+    keeper.changed("move")
+    launches.runs[0].ended(0)
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    launches.runs[1].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+
+
+def test_a_burst_back_to_the_analysed_order_asks_for_nothing():
+    """S19: the moves came back to the order the last Generate read — the journey is current, no run."""
+    keeper, _controller, registry, launches = _keeper(pending=lambda: False)
+    for _ in range(4):
+        keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.4)
+    assert launches.count() == 0 and _generates(registry) == [] and keeper.asked == 0
+
+
+def test_a_failed_check_generates_to_be_sure():
+    """The journey check raised (a store busy, a disk error): a Generate, which reads the truth itself."""
+    def broken():
+        raise OSError("the store is busy")
+    keeper, _controller, _registry, launches = _keeper(pending=broken)
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].ended(0)
+
+
+def test_the_users_generate_is_never_cancelled_and_the_automatic_one_waits_for_it():
+    """The user pressed Generate: a burst never withdraws the user's run, and the keeper asks for nothing beside it (a7:
+    nothing queued behind it either); its one look after the user's run brings the automatic run."""
+    keeper, controller, registry, launches = _keeper()
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert not os.path.exists(launches.runs[0].cancel_file), "the user's run is not the keeper's to cancel"
+    assert launches.count() == 1, "never two at once"
+    keeper.changed("move")                          # more of the burst: still nothing asked beside the user's run
+    assert controller._pending is None, "nothing queued behind the user's run"
+    user.ended(0)
+    assert h.until(lambda: launches.count() == 2, seconds=5), "the automatic run after the user's"
+    assert launches.runs[1].quiet and not launches.runs[0].quiet
+    launches.runs[1].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    assert [v.cancelled for v in _generates(registry)] == [False, False]
+
+
+def test_a_quiet_time_that_ends_during_the_users_generate_asks_nothing_beside_it():
+    """a7 (mutant M2): a move armed the quiet time, then the user pressed Generate before it ended — the timer fires
+    during the user's run and asks for nothing beside it (nothing queued behind it either); its one look after the run
+    finds the journey current (the user's run read the move) and nothing more runs."""
+    state = {"pending": True}
+    keeper, controller, _registry, launches = _keeper(pending=lambda: state["pending"])
+    keeper.changed("move")
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    time.sleep(FAST["journey_settle_s"] + 0.4)      # the quiet time ends during the user's run
+    assert launches.count() == 1 and controller._pending is None, "nothing asked beside it, nothing queued"
+    state["pending"] = False                        # the user's run read the move
+    user.ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1 and keeper.asked == 0
+
+
+def test_an_automatic_run_waiting_its_turn_gives_way_to_the_users():
+    """The automatic run is still waiting for `results` (another program's Generate): the user's press takes its place
+    — one run, the user's."""
+    h.seed_library("ja")
+    keeper, controller, registry, launches = _keeper()
+    with h.Holder("results", "Generate"):
+        keeper.changed("move")
+        assert h.until(lambda: controller.state().message == "Waiting for Generate to finish", seconds=10)
+        controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=10)
+    assert not launches.runs[0].quiet, "the user's run"
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    assert launches.count() == 1
+
+
+def test_a_level_change_runs_one_generate():
+    """The level or the band moved (the order-free signature: the plan is stale): one background run."""
+    keeper, _controller, _registry, launches = _keeper()
+    keeper.changed("level")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert keeper.asked == 1
+    launches.runs[0].ended(0)
+
+
+def test_on_the_battery_it_waits_the_battery_time():
+    """Sonic's E3.2-1: 3 s after the last move, 30 s on a laptop's battery (the settings' own values here)."""
+    keeper, _controller, _registry, launches = _keeper(battery=lambda: True)
+    keeper.changed("move")
+    last = time.monotonic()
+    time.sleep(FAST["journey_settle_s"] + 0.2)
+    assert launches.count() == 0, "not at the plugged-in time"
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert launches.times[0] - last >= FAST["journey_settle_battery_s"] - 0.03
+    launches.runs[0].ended(0)
+
+
+def test_a_longer_quiet_time_set_in_advanced_settings_is_waited():
+    keeper, _controller, _registry, launches = _keeper(settings={"journey_settle_s": 0.7})
+    keeper.changed("move")
+    last = time.monotonic()
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert launches.times[0] - last >= 0.67
+    launches.runs[0].ended(0)
+
+
+@pytest.mark.parametrize("settings, battery, expected", [
+    ({}, False, J.SETTLE_S), ({}, True, J.SETTLE_BATTERY_S),
+    ({"journey_settle_s": 5}, False, 5.0), ({"journey_settle_battery_s": 45}, True, 45.0),
+    ({"journey_settle_s": "soon"}, False, J.SETTLE_S), ({"journey_settle_s": -1}, False, J.SETTLE_S),
+    ({"journey_settle_battery_s": None}, True, J.SETTLE_BATTERY_S), (None, False, J.SETTLE_S),
+])
+def test_settle_seconds_reads_the_settings_and_falls_back(settings, battery, expected):
+    """A hand-edited settings.json with a word or a negative number: the default, never an error."""
+    assert J.settle_seconds(settings, battery) == expected
+
+
+def test_the_defaults_are_sonics():
+    from app import settings_manager
+    defaults = settings_manager.load_settings()
+    assert defaults["journey_settle_s"] == 3 and defaults["journey_settle_battery_s"] == 30
+    assert J.SETTLE_S == 3.0 and J.SETTLE_BATTERY_S == 30.0
+
+
+def test_on_battery_answers_without_raising():
+    """Whatever the machine (a desktop: plugged in, no battery), a bool, never an exception."""
+    assert J.on_battery() in (True, False)
+
+
+def test_the_window_closing_leaves_nothing():
+    """`close` while the quiet time runs: no run is ever asked for, no timer left."""
+    keeper, _controller, registry, launches = _keeper()
+    keeper.changed("move")
+    keeper.close()
+    keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert launches.count() == 0 and _generates(registry) == [] and keeper._timer is None
+
+
+def test_withdraw_drops_only_its_own_request():
+    """The controller's `withdraw(run)`: a run another request replaced, or one already over, is left alone."""
+    controller = GenerateController(JobRegistry(), settle=5)
+    launches = _Launches()
+    mine = controller.request("ja", argv=["analyzer.py", "--progress-json"], quiet=True, launcher=launches)
+    theirs = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    controller.withdraw(mine)                       # replaced while settling: nothing to take back
+    assert controller._pending is theirs
+    controller.withdraw(theirs)
+    assert controller._pending is None and controller._timer is None
+    assert controller.state().state == G.IDLE
+
+
+# --- the report then agrees with the plan (real Generates, RP-2's library) ----------------------------------------- #
+@pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
+def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes_it(case, monkeypatch):
+    """Moves in the library store → at the quiet time the journey is redrawn from the plan (F7; Sonic 2026-11-06:
+    no Generate after a plain move — the real rule on the real plan and store, `moved_state`), never a Generate: the
+    plan stays the last Generate's (no new plan handed to the window), the journey is no longer pending, the next look
+    finds it drawn and asks nothing — and both lists, the journey and every list row's numbers and sentences are what
+    a Generate of that order run now writes (the redraw changes when, never what)."""
+    import subprocess
+    import sys
+    from app import analyzer, library_store as ls, plan_engine
+    from tests import plan_file_cases as cases
+
+    root = h.root()
+    # One hash seed for every child: word_stats.json's "sources" and file_words.json list a set as Python iterates it,
+    # so two runs in two processes may order them apart whatever the order of the library — not what is compared here
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    language = cases.ALL_CASES[case][0]
+    cases.build(root, case)
+    settings = dict(FAST, target_language=language, anki_connect_url="http://127.0.0.1:9")
+    h.write_settings(settings)
+    controller = GenerateController(JobRegistry(), settle=0)
+    controller.request(language, settings=settings, quiet=True)
+    assert h.until(lambda: controller.state().state in (G.CURRENT, G.FAILED) and controller._run is None, 300)
+    assert controller.state().state == G.CURRENT
+    subprocess.run([sys.executable, os.path.join(h.PROJECT_ROOT, "app", "library_store.py"), "maintain",
+                    "--language", language], cwd=h.PROJECT_ROOT, capture_output=True)
+    plan_path = os.path.join(root, "results", analyzer.PLAN_FILE)
+    previous = plan_engine.load(plan_path)
+
+    data_dir, user_files = os.path.join(root, "data", language), os.path.join(root, "User Files", language)
+    # A move and its reverse: the journey is current again (the real check), so nothing is asked (S19).
+    store = ls.open_store(language, data_dir, user_files)
+    try:
+        soon = store.ids("soon")
+        assert store.move([soon[0]], "now") is not None
+        assert store.move([soon[0]], "soon", before_id=soon[1]) is not None
+    finally:
+        store.close()
+    back = J.JourneyKeeper(controller, language, settings=lambda: settings)
+    back.changed("move")
+    back.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 1.5)
+    assert back.asked == 0, "a burst back to the analysed order asks for nothing"
+    back.close()
+
+    store = ls.open_store(language, data_dir, user_files)
+    try:
+        soon, goal = store.ids("soon"), store.ids("goal")
+        assert soon and goal
+        assert store.move([soon[0]], "now") is not None                    # Soon -> NOW's front
+        assert store.move([goal[-1]], "soon", before_id=soon[-1]) is not None
+        assert store.journey_pending()
+    finally:
+        store.close()
+
+    landed = []
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        library_map = f.read()
+    keeper = J.JourneyKeeper(controller, language, settings=lambda: settings, on_done=landed.append)
+    assert J.moved_state(settings, language) == "owed", "the real rule: only the order moved since the plan"
+    keeper.changed("move")
+    keeper.changed("move")
+    assert h.until(lambda: keeper.asked == 1 and controller._run is None
+                   and controller.state().state in (G.CURRENT, G.FAILED), seconds=120), controller.state()
+    assert controller.state().state == G.CURRENT
+    time.sleep(0.5)
+    assert landed == [], "the plan is the last Generate's still: nothing new for the window"
+    assert plan_engine.load(plan_path).header["run_signature"] == previous.header["run_signature"]
+    assert analyzer.redrawn_for(os.path.join(root, "results")) is not None
+    assert J.moved_state(settings, language) == "drawn"
+    from app import run_args
+    args = run_args.analyzer_args(settings, language)
+    assert analyzer.journey_is_current(args, language) is True, "redrawn for this order: current (S19)"
+    assert analyzer.journey_check(args, language) is True, "and so says surasura-cli's status"
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        assert f.read() == library_map, "the library map keeps the plan's numbering (Junban reads it through the order)"
+    # A redraw stopped part-way (its marker written first, its order never): never current, redrawn at the next look
+    marker = os.path.join(root, "results", analyzer.REDRAW_FILE)
+    with open(marker, encoding="utf-8") as f:
+        kept = f.read()
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": previous.header["run_signature"], "run": None}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    assert J.moved_state(settings, language) == "owed"
+    # ... and one another plan's redraw left (this order, but not this stamp's plan): never current either
+    drawn = json.loads(kept)
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": "another plan's", "run": drawn["run"]}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(kept)
+    store = ls.open_store(language, data_dir, user_files)
+    try:
+        assert not store.journey_pending()
+    finally:
+        store.close()
+    keeper.changed("start")                                                 # a focus's look: drawn, nothing asked
+    time.sleep(FAST["journey_settle_s"] + 1.0)
+    assert keeper.asked == 1
+    keeper.close()
+
+    # Against a Generate of the same order run now (forced: the redraw marker and the old stamp are its to replace)
+    results = os.path.join(root, "results")
+    redrawn = _outputs(results)
+    assert {"priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json",
+            "reading_list_static.html", analyzer.REDRAW_FILE} <= set(redrawn)
+    os.environ["SURASURA_FORCE_RUN"] = "1"
+    try:
+        controller.request(language, settings=settings)
+        assert h.until(lambda: controller.state().state in (G.CURRENT, G.FAILED) and controller._run is None, 300)
+    finally:
+        del os.environ["SURASURA_FORCE_RUN"]
+    assert controller.state().state == G.CURRENT
+    at_once = _outputs(results)
+    assert analyzer.REDRAW_FILE not in at_once, "a Generate removes the redraw's marker"
+    moved = sorted(name for name in at_once if redrawn.get(name) != at_once[name])
+    print("moved:", moved)
+    assert set(moved) <= set(REDRAW_OWN), moved
+    for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html",
+                 "file_statistics.json", "file_statistics.txt"):
+        assert redrawn[name] == at_once[name], name
+    _same_rows(json.loads(redrawn["word_stats.json"]), json.loads(at_once["word_stats.json"]), WORD_STATS_ORDERS)
+
+
+# What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), the
+# library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
+# under the cut-off's Score), the source table's order (sources.json: by path),
+# and what word_stats.json keeps in the walk's order (a word's last-met surface, its sources as a set). Everything a
+# row shows is the Generate's.
+REDRAW_OWN = ["plan.json.gz", "run_signature.txt", "library_frequency.json", "sources.json", "word_stats.json",
+              "file_words.json"]
+# word_stats.json's fields the order moves (the rest are the whole library's, or kept in the walk's order)
+WORD_STATS_ORDERS = ("score", "high_count", "low_count", "goal_count", "min_seq", "final_context_1", "final_src_1",
+                     "final_context_2", "final_src_2", "final_context_3", "final_src_3")
+
+
+def _same_rows(a, b, fields):
+    assert a.keys() == b.keys()
+    for key in a:
+        for field in fields:
+            assert a[key].get(field) == b[key].get(field), (key, field, a[key].get(field), b[key].get(field))
+
+
+# What a run writes that holds its own time or run: never compared (a run's stamp, logs, the plan file's header time)
+_RUN_OWN = (".log", ".flag", ".lock")
+
+
+def _outputs(results):
+    """{name: bytes} of every file a Generate leaves in `results/` (its lists, word stats, the journey's HTML)."""
+    out = {}
+    for name in sorted(os.listdir(results)):
+        path = os.path.join(results, name)
+        if os.path.isfile(path) and not name.endswith(_RUN_OWN):
+            with open(path, "rb") as f:
+                out[name] = f.read()
+    return out
+
+
+def test_shadow_names_the_first_difference():
+    """Shadow mode's comparison is a referee, not a formality: a list that differs from the engine's in one value is
+    named, row and column."""
+    class _Result:
+        priority = [{"Word": "猫", "Reading": "ネコ", "Score": 2.0, "Occurrences": 3}]
+        progressive = []
+    lists = {"priority": [{"Word": "猫", "Reading": "ネコ", "Score": "2.0", "Occurrences": "4"}], "progressive": []}
+    assert "Occurrences" in J._differs(_Result, lists) and "row 1" in J._differs(_Result, lists)
+    lists["priority"][0]["Occurrences"] = "3"
+    assert J._differs(_Result, lists) == ""
+    assert J.shadow(None, object(), lists) == ""
+
+
+def test_a_timer_already_firing_when_a_move_comes_asks_for_nothing():
+    """`Timer.cancel` can't stop a timer whose `_fire` has begun: that stale fire must see a newer move armed another
+    timer and ask for nothing, so the burst still makes one run."""
+    keeper, _controller, registry, launches = _keeper()
+    keeper.changed("move")
+    stale = keeper._armed
+    keeper.changed("move")                          # the move that cancelled it
+    keeper._fire(stale)                             # ... whose fire had already begun
+    assert launches.count() == 0 and keeper.asked == 0
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    time.sleep(0.4)
+    assert launches.count() == 1 and len(_generates(registry)) == 1
+    launches.runs[0].ended(0)
+
+
+def test_an_automatic_request_never_takes_a_waiting_users_place():
+    """The user pressed Generate a moment ago (still settling): the keeper asks for nothing beside it (a7: never while a
+    Generate waits or runs) — the user's run runs, opens as the user's; the keeper looks once after its end."""
+    controller = GenerateController(JobRegistry(), settle=2.5)    # the user's request settles longer than the keeper
+    launches = _Launches()
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    keeper = J.JourneyKeeper(controller, "ja", settings=lambda: dict(FAST), pending=lambda: True,
+                             battery=lambda: False, launcher=launches,
+                             plan_path=os.path.join(h.root(), "no-plan.json.gz"))
+    keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert keeper.asked == 0 and controller._pending is user and keeper._run is None
+    keeper.changed("move")                          # a burst never withdraws the user's request
+    assert h.until(lambda: launches.count() >= 1, seconds=10)
+    assert launches.runs[0] is user and not user.quiet
+    user.ended(0)
+    assert h.until(lambda: launches.count() == 2, seconds=5), "the keeper's one look after the user's run"
+    assert launches.runs[1].quiet and keeper.asked == 1
+    launches.runs[1].ended(0)
+    keeper.close()
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), 1e9])
+def test_an_endless_quiet_time_is_held_to_an_hour_or_the_default(value):
+    """A hand-edited infinity, NaN or a huge number: a Timer can't wait for it (OverflowError on its thread)."""
+    assert J.settle_seconds({"journey_settle_s": value}, False) in (J.SETTLE_S, J.SETTLE_MAX_S)
+
+
+def test_a_shorter_quiet_time_is_honoured_on_the_first_burst():
+    """The keeper starts with 3 s in mind; a 0.1 s setting is still waited, not the 3 s."""
+    keeper, _controller, _registry, launches = _keeper(settings={"journey_settle_s": 0.1})
+    keeper.changed("move")
+    last = time.monotonic()
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert launches.times[0] - last < 1.5
+    launches.runs[0].ended(0)
+
+
+def test_a_list_that_cant_be_read_is_logged_and_the_window_still_rebaselines(monkeypatch, tmp_path):
+    """Shadow mode's read of the lists fails (a damaged CSV): one log line, and `on_done` still hands the plan over."""
+    landed, logged = [], []
+    keeper, _controller, _registry, _launches = _keeper(on_done=landed.append)
+    plan = tmp_path / "plan.json.gz"
+    plan.write_bytes(b"")
+    keeper._plan_path = str(plan)
+    monkeypatch.setattr(J, "_load_plan", lambda path: _Plan())
+    monkeypatch.setattr(J, "_lists", lambda: (_ for _ in ()).throw(UnicodeDecodeError("utf-8", b"", 0, 1, "x")))
+    monkeypatch.setattr(J, "shadow", lambda previous, plan, lists, stamp=False: lists() and "")   # the read, due
+    monkeypatch.setattr(J, "_log_shadow", logged.append)
+    keeper._landed(object())
+    assert landed == [str(plan)] and logged and "comparison failed" in logged[0]
+
+
+def test_a_generate_the_keeper_didnt_ask_for_is_still_shadowed(monkeypatch):
+    """05 §3: every full Generate is compared — the user's own too — against the plan the last Generate wrote."""
+    seen = []
+    keeper, _controller, _registry, _launches = _keeper(on_done=lambda path: None)
+    earlier, newer = _Plan("run-0"), _Plan("run-1")
+    keeper._last_plan = earlier
+    monkeypatch.setattr(J, "_load_plan", lambda path: newer)
+    monkeypatch.setattr(J, "_lists", lambda: {})
+    monkeypatch.setattr(J, "shadow", lambda previous, plan, lists, stamp=False: seen.append((previous, plan)) or "")
+    keeper._ended(object(), "current")              # the user's own run, told by the run itself
+    assert h.until(lambda: seen, seconds=5)
+    assert seen == [(earlier, newer)] and keeper._last_plan is newer
+
+
+
+# --- the second pass's findings (Opus adversary, intent keeper) ------------------------------------------------------ #
+def test_a_run_that_ends_while_another_waits_still_lands(monkeypatch):
+    """The keeper's run finishes past *Writing your list* while the next burst's run already waits: the controller's
+    state then reads `queued`, never `current` — the run's own end still hands the window the new plan."""
+    landed = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: _Plan("run-1"))
+    monkeypatch.setattr(J, "_lists", lambda: {})
+    keeper, controller, _registry, launches = _keeper(on_done=landed.append)
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Writing your list"))
+    controller.request("ja", argv=["analyzer.py", "--progress-json"], quiet=True, launcher=launches)   # waits behind
+    launches.runs[0].ended(0)
+    assert h.until(lambda: landed, seconds=5), "landed though the state read queued"
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    launches.runs[1].ended(0)
+    keeper.close()
+
+
+def test_close_withdraws_its_own_run_and_tells_the_window_nothing_more(monkeypatch):
+    """Closing (or switching language) while the keeper's run is in flight: the run is asked to stop, and a landing
+    after `close` hands nothing to the closed window; no listener is left on the controller."""
+    landed = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: _Plan("run-1"))
+    keeper, controller, _registry, launches = _keeper(on_done=landed.append)
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    keeper.close()
+    assert os.path.exists(launches.runs[0].cancel_file), "its own run was withdrawn"
+    assert keeper._ended not in controller._end_listeners
+    launches.runs[0].feed(CANCELLED)
+    launches.runs[0].ended(76)
+    keeper._ended(object(), "current")              # told late, all the same
+    time.sleep(0.2)
+    assert landed == []
+
+
+def test_another_languages_plan_is_never_handed_to_the_window(monkeypatch):
+    landed = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: _Plan("run-zh", language="zh"))
+    keeper, _controller, _registry, _launches = _keeper(on_done=landed.append)
+    keeper._landed(None)
+    assert landed == [] and keeper._last_plan is None
+
+
+def test_the_same_plan_is_handed_over_once(monkeypatch):
+    """S19: a Generate the analyzer skipped (nothing changed) writes the same plan: the window isn't re-baselined again."""
+    landed = []
+    plans = iter([_Plan("run-1"), _Plan("run-1"), _Plan("run-2")])
+    monkeypatch.setattr(J, "_load_plan", lambda path: next(plans))
+    monkeypatch.setattr(J, "_lists", lambda: {})
+    keeper, _controller, _registry, _launches = _keeper(on_done=landed.append)
+    for _ in range(3):
+        keeper._landed(None)
+    assert len(landed) == 2
+
+
+def test_the_users_press_stops_a_running_automatic_generate():
+    """The automatic run has started; the user presses Generate: the automatic one is asked to stop (before *Writing
+    your list*), and the user's runs next — one wait, not two full runs."""
+    keeper, controller, registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    automatic = launches.runs[0]
+    automatic.feed(_line("Counting words"))
+    controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert os.path.exists(automatic.cancel_file), "the automatic run was asked to stop"
+    automatic.feed(CANCELLED)
+    automatic.ended(76)
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    assert not launches.runs[1].quiet
+    launches.runs[1].ended(0)
+    assert [v.cancelled for v in _generates(registry)] == [True, False]
+
+
+def test_a_run_that_ended_as_it_was_withdrawn_never_reads_stopping():
+    """The withdraw's cancel lands just after the run ended: the controller doesn't go back to `cancelling` for good."""
+    controller = GenerateController(JobRegistry(), settle=0)
+    launches = _Launches()
+    run = controller.request("ja", argv=["analyzer.py", "--progress-json"], quiet=True, launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    run.ended(0)
+    controller._cancel_run(run)                     # the registry's cancel, arriving late
+    assert controller.state().state == G.CURRENT
+
+
+def test_the_switch_off_asks_for_nothing():
+    """D29: with the background Generate switched off, moves never start one."""
+    keeper, _controller, registry, launches = _keeper(enabled=lambda: False)
+    keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.7)
+    assert launches.count() == 0 and _generates(registry) == []
+
+
+def test_reasons_are_cleared_when_nothing_is_asked():
+    keeper, _controller, _registry, _launches = _keeper(pending=lambda: False)
+    for _ in range(3):
+        keeper.changed("pin")
+    assert h.until(lambda: keeper.reasons == [], seconds=5)
+
+
+def test_a_move_while_the_request_is_made_keeps_it_and_looks_after():
+    """A move lands between the keeper's last check and its request: the request it just made is kept (a7: never
+    withdrawn for a move) and the move starts its own quiet time; only the window's close takes it back."""
+    class _Controller:
+        def __init__(self):
+            self.withdrawn = []
+
+        def on_end(self, callback):
+            pass
+
+        def unsubscribe(self, callback):
+            pass
+
+        def request(self, *a, **k):
+            keeper.changed("move")              # the move, on the window's thread, as the request is made
+            run = type("R", (), {"quiet": True, "done": False})()
+            self.made = run
+            return run
+
+        def withdraw(self, run):
+            self.withdrawn.append(run)
+    controller = _Controller()
+    keeper = J.JourneyKeeper(controller, "ja", settings=lambda: dict(FAST), pending=lambda: True,
+                             battery=lambda: False, plan_path=os.path.join(h.root(), "no-plan.json.gz"))
+    keeper._ask(keeper._armed)
+    assert controller.withdrawn == [] and keeper._run is controller.made
+    assert keeper._timer is not None, "the move's own look is armed"
+    keeper.close()
+    assert controller.withdrawn == [controller.made], "the window's close takes its own run back"
+
+
+def test_the_comparison_skips_lists_another_run_is_writing(monkeypatch):
+    """Shadow mode compares the plan with `results/`'s lists only while the run stamp still names that plan's run."""
+    monkeypatch.setattr(J, "_stamped", lambda signature: False)
+
+    class _Engine:
+        def __init__(self, *a):
+            pass
+
+        def replan(self, order):
+            return type("R", (), {"priority": [{"Word": "x"}], "progressive": []})()
+    from app import plan_engine
+    monkeypatch.setattr(plan_engine, "Engine", _Engine)
+    monkeypatch.setattr(plan_engine, "stands_aside", lambda plan: None)
+    previous, plan = _Plan("run-0"), _Plan("run-1")
+    previous.files = plan.files = []
+    assert J.shadow(previous, plan, {"priority": [], "progressive": []}, stamp=True) == ""
+    assert J.shadow(previous, plan, {"priority": [], "progressive": []}) != "", "without the stamp check: compared"
+
+
+def test_settings_that_cant_be_read_ask_for_nothing():
+    """settings.json unreadable as the timer fires (being replaced): no Generate on guessed settings, no dead thread —
+    the next move asks again."""
+    def broken():
+        raise OSError("settings.json is being replaced")
+    keeper, _controller, registry, launches = _keeper()
+    keeper._settings = broken
+    keeper.changed("move")
+    time.sleep(FAST["journey_settle_s"] + 0.7)
+    assert launches.count() == 0 and _generates(registry) == []
+    keeper._settings = lambda: dict(FAST)
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].ended(0)
+
+
+@pytest.mark.parametrize("outcome", ["stale", "failed", "dropped"])
+def test_a_run_that_didnt_finish_hands_nothing_over(monkeypatch, outcome):
+    """Only a finished run wrote a new plan: a cancelled, failed or never-started one leaves the window's engine as it
+    is (the plan file on disk is still the last finished run's)."""
+    landed = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: _Plan("run-new"))
+    monkeypatch.setattr(J, "_lists", lambda: {})
+    keeper, _controller, _registry, _launches = _keeper(on_done=landed.append)
+    keeper._ended(object(), outcome)
+    time.sleep(0.2)
+    assert landed == []
+
+
+def test_shadow_names_a_row_count_that_differs():
+    """A list one row shorter than the engine's is a difference, said with both counts."""
+    class _Result:
+        priority = [{"Word": "猫", "Reading": "ネコ"}, {"Word": "犬", "Reading": "イヌ"}]
+        progressive = []
+    lists = {"priority": [{"Word": "猫", "Reading": "ネコ"}], "progressive": []}
+    assert J._differs(_Result, lists) == "priority: 2 rows, the Generate wrote 1"
+
+
+def test_a_run_stopped_by_hand_owes_no_look():
+    """a7's review: changes came during the run, then the user pressed Stop — the keeper doesn't start one again by
+    itself 3 s later (Stop would feel ignored); the next change asks again."""
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    for _ in range(5):
+        keeper.changed("store")
+    controller.cancel()                             # the user's Stop
+    assert os.path.exists(launches.runs[0].cancel_file)
+    launches.runs[0].feed(CANCELLED)
+    launches.runs[0].ended(76)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1, "no run by itself after a Stop"
+    keeper.changed("store")                         # the next change: asked again
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    launches.runs[1].ended(0)
+
+
+def test_the_switch_turned_off_during_a_run_asks_for_nothing_after_it():
+    """D29: a look owed by changes during a run, the background Generate switched off before it ends — nothing runs."""
+    on = {"now": True}
+    keeper, controller, _registry, launches = _keeper(enabled=lambda: on["now"])
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    keeper.changed("store")
+    on["now"] = False
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1
+
+
+def test_after_a_run_the_next_background_one_rests_as_long_as_it_took():
+    """SRC-9 (a7): a library changing all the time never has Generate running without a break — after a run of
+    about a second the next background one waits that long, though the quiet time (0.2 s) has passed."""
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    keeper.changed("store")
+    time.sleep(1.0)                                 # the run takes a second
+    launches.runs[0].ended(0)
+    ended = time.monotonic()
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    assert launches.times[1] - ended >= 0.9, launches.times[1] - ended
+    launches.runs[1].ended(0)
+
+
+def test_the_rest_is_held_to_five_minutes():
+    """A run that took an hour (a first index on a huge library) rests the keeper five minutes at most."""
+    keeper, controller, _registry, _launches = _keeper()
+    keeper._running_since = time.monotonic() - 3600
+    keeper._state_changed(G.State(G.CURRENT, None, None, None, None, None, None, 1))
+    assert keeper._rest_until - time.monotonic() <= J.REST_MAX_S + 0.1
+    keeper.close()
+
+
+def test_the_lists_are_never_read_once_a_newer_generate_dropped_the_stamp(monkeypatch):
+    """O2 (alpha 6's replan_shadow.log): a run landed, then another started at once and dropped the stamp — the keeper's
+    shadow compare reads no list at all (it read them first, then checked, and logged "the comparison failed")."""
+    reads, logged = [], []
+    keeper, _controller, _registry, _launches = _keeper(on_done=lambda path: None)
+    previous, plan = _Plan("run-1"), _Plan("run-2")
+    previous.files = plan.files = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: plan)
+    monkeypatch.setattr(J, "_lists", lambda: reads.append(1) or {})
+    monkeypatch.setattr(J, "_stamped", lambda signature: False)
+    monkeypatch.setattr(J, "_log_shadow", logged.append)
+    import app.plan_engine as plan_engine
+    monkeypatch.setattr(plan_engine, "stands_aside", lambda p: False)
+    monkeypatch.setattr(plan_engine, "Engine", type("E", (), {"__init__": lambda self, *a, **k: None,
+                                                              "replan": lambda self, files: "result"}))
+    keeper._landed(previous)
+    assert reads == [] and logged == []

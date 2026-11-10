@@ -48,9 +48,11 @@ def _run_spec_config(tmp_root):
     return namespace
 
 
-def _write_settings(tmp_root, settings):
-    with open(os.path.join(tmp_root, "settings.json"), "w", encoding="utf-8") as handle:
-        json.dump(settings, handle)
+def _write_config(tmp_root, modules):
+    """The build's one configuration (S3.1 D15): packaging/build_config.json's `modules` block, never settings.json."""
+    os.makedirs(os.path.join(tmp_root, "packaging"), exist_ok=True)
+    with open(os.path.join(tmp_root, "packaging", "build_config.json"), "w", encoding="utf-8") as handle:
+        json.dump({"modules": modules}, handle)
 
 
 class TestSpecExclusion(unittest.TestCase):
@@ -71,31 +73,31 @@ class TestSpecExclusion(unittest.TestCase):
         self.assertIn("excluded_modules", block)
 
     def test_reels_is_excluded_when_the_toggle_is_off(self):
-        _write_settings(self.root, {"enable_reels": False})
+        _write_config(self.root, {"reels": False})
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
     def test_reels_is_bundled_when_the_toggle_is_on(self):
-        _write_settings(self.root, {"enable_reels": True})
+        _write_config(self.root, {"reels": True})
         self.assertNotIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
     def test_reels_is_excluded_when_the_key_is_absent(self):
-        """Opt-in: a settings file that has never heard of Reels must not ship it."""
-        _write_settings(self.root, {"theme": "Dark Flow"})
+        """Opt-in: a build config that has never heard of Reels must not ship it."""
+        _write_config(self.root, {"koe": True})
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
-    def test_a_missing_settings_file_excludes_rather_than_crashing(self):
-        """The pre-initialised default is what stops a NameError here — the trap the spec's own
-        comment calls out for `enable_preview`."""
+    def test_a_missing_build_config_excludes_rather_than_crashing(self):
+        """No build config bundles no optional module (package_app refuses to build without one first)."""
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
-    def test_a_corrupt_settings_file_fails_closed(self):
-        with open(os.path.join(self.root, "settings.json"), "w", encoding="utf-8") as handle:
+    def test_a_corrupt_build_config_fails_closed(self):
+        os.makedirs(os.path.join(self.root, "packaging"), exist_ok=True)
+        with open(os.path.join(self.root, "packaging", "build_config.json"), "w", encoding="utf-8") as handle:
             handle.write("{ not json")
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
     def test_the_other_modules_are_unaffected_by_the_reels_toggle(self):
         """The gates are independent; turning Reels on must not drag anything else in or out."""
-        _write_settings(self.root, {"enable_reels": True})
+        _write_config(self.root, {"reels": True, "koe": True})
         excluded = _run_spec_config(self.root)["excluded_modules"]
         self.assertIn("modules.youtube_downloader", excluded)   # its own toggles are off
         self.assertNotIn("modules.koe", excluded)               # folder exists in the fixture
@@ -106,13 +108,13 @@ class TestPreBuildTestGate(unittest.TestCase):
     its tests having run is a module nobody checked."""
 
     def test_the_reels_suite_runs_when_the_module_will_be_bundled(self):
-        dirs = package_app._included_module_test_dirs({"enable_reels": True})
+        dirs = package_app._included_module_test_dirs({"reels": True})
         expected = os.path.join("modules", "reels", "tests")
         if os.path.isdir(os.path.join(_ROOT, expected)):
             self.assertIn(expected, dirs)
 
     def test_the_reels_suite_is_skipped_when_it_will_not_be_bundled(self):
-        dirs = package_app._included_module_test_dirs({"enable_reels": False})
+        dirs = package_app._included_module_test_dirs({"reels": False})
         self.assertNotIn(os.path.join("modules", "reels", "tests"), dirs)
 
     def test_an_absent_module_is_not_asked_for_its_tests(self):
@@ -124,7 +126,7 @@ class TestPreBuildTestGate(unittest.TestCase):
 
         os.path.isdir = missing_reels
         try:
-            dirs = package_app._included_module_test_dirs({"enable_reels": True})
+            dirs = package_app._included_module_test_dirs({"reels": True})
         finally:
             os.path.isdir = original
         self.assertNotIn(os.path.join("modules", "reels", "tests"), dirs)
@@ -133,10 +135,10 @@ class TestPreBuildTestGate(unittest.TestCase):
         """The two gates read the same key. If they ever disagreed, a module could ship without its
         suite having run, or a suite could run for a module that was excluded."""
         block = _conditionality_block()
-        self.assertIn('settings.get("enable_reels"', block)
+        self.assertIn('modules.get("reels") is True', block)
         import inspect
         source = inspect.getsource(package_app._included_module_test_dirs)
-        self.assertIn('settings.get("enable_reels"', source)
+        self.assertIn('modules.get("reels") is True', source)
 
 
 class TestFrozenSubsyncIsReachable(unittest.TestCase):

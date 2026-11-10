@@ -1,0 +1,3280 @@
+"""The drag in the window (W3.1a §2; the window's spec 04 §4.5, A2 #9–#21, 06 E4–E6, E21; the redesign's reference
+`list-r14m.html`, extracted in the planning folder's `tracks/window/work/w31a/ref-extract.md` §8 *drag*): one controller
+for Current's list — W3.2's tray and Goal sheet feed the same one through `begin_by_id`.
+
+- **A press, then `drag-start-px`** (the list hands it over: `rows.RowsView.mouseMoveEvent`, B1) lifts the row: its
+  cached picture becomes the **ghost** (a frameless window of its own over the list, so it moves without repainting a
+  row; its long shadow, a 1 px accent ring, turned 0.8° and grown to 1.015, baked once); its **slot** stays open as a
+  placeholder and travels to where it would land; the rows between **part** on springs (`drag-part`); near the list's
+  edges (and just above the dock) the list **scrolls by itself**; the dock's **wells** rise (Soon · Goal · Finished;
+  `frame.GoalDock`) and the toasts hide. While it runs the window's writer and the library reader are **held** (E6: an
+  outside change waits for the drop, never moves a row under the hand; the dragged item removed meanwhile lets the drag
+  go, *That item was removed*). **Esc, a pointer lost** (the button let go outside the window) **or the window losing
+  the focus** cancel it: everything back. A click right after it is swallowed.
+- **The drop** shows the new order at once — the window's own copy of the order (`reordered`; 04 §4.5's optimistic
+  move: the rows swap in place, `RowsModel`'s "moved" path, W3.1a S3) — and hands the command to the writer
+  (`app/services/moves.py`, its own thread: nothing here writes the store): in the list → `move` beside its painted
+  neighbour (`placement`); the Soon well → `move(…, "soon")` (after the Soon line); the Goal well → Goal's end
+  (`end=True`, read by the writer when it saves); the Finished well or the Finished tab → `set_tier(…, "graduated")`,
+  the toast *X finished · its cards stay put* with *Keep* / *Leave its new cards out of your order* (live: the store's
+  `finish`). A split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished
+  out. **The numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the
+  reader.
+- **Undo**: every move toast's *Undo*, and Ctrl+Z (the newest change, as the writer reaches it); *Can't undo — that
+  item changed since* (E21) comes as a toast. Round 8 row 45: the bar says *Undoing…* from the press (Ctrl+Z, a
+  toast's Undo) until the undo lands — an Undo asked before its change is saved waits so, never silently.
+- **A write's toast** (round 8 row 45; every `_give`'s, wherever it shows — Current, Goal, search, Needs you, + Add):
+  it never says done before the store does. From the press until its write lands it reads *"… · saving…"*
+  (`ToastHost.set_saving`); saved, its own words; refused (the writer's note: read-only met, a failure), the reason
+  in its place; landed as nothing, it goes. A toast shown in the turn a write was given without one stands for it
+  (Needs you's *Link these*).
+- **An expectation** keeps the drop's order on screen while the store catches up: a view from the reader with the
+  same rows in another order is shown in the drop's order (with its fresh numbers), one still holding a row the drop
+  sent to a well is shown without it; anything else waits. The expectation ends once the writer has been idle for
+  `settle-ms`, or at once when the store says it placed something elsewhere — then the reader's view stands.
+- **Moves without a drag**: ↑ ↓ (`nudge`; across the NOW / Soon edge, a `move` beside the neighbour), Alt+↑ / ↓, ⋯
+  (*Up next*, *Soon*, *Goal*, *Finished*, *See it in your journey*). **A Done** (a stone, ✓ Done): `set_watched`, its
+  toast with Undo, and after the Done that leaves no file unwatched the finish toast (*All N watched — finished with
+  it?* [Move to Finished]), skipped for a split's first part and hato's mix. W-1, while the library's *Keep studying
+  watched episodes* is off: the first plain mark of a library says its words left the list ([Keep studying them] opens
+  that setting, [OK]; once per library, `hints_seen`), and an un-mark says they are back. **Files from Explorer**
+  dropped on the list: the writer's `insert_at` beside the row under the hand.
+- **E4**: a store that can't be written refuses at the press — the bar says why, and nothing moves.
+"""
+import itertools
+import math
+import os
+import sys
+import time
+import weakref
+
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
+from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
+
+from app import settings_manager, theme
+from app.qt import bridge, motion, rows, shadow, strings, style
+from app.qt import press as qpress
+from app.services import airing
+from app.services import jobs as jobs_module
+from app.services import view_rows
+
+D = theme.DRAG
+FINISHED = "graduated"                              # the store's name for Finished
+HINT_LEFT = "keep_watched"                          # W-1: the first mark's toast (`hints_seen`, once per library)
+
+
+# --- the order the window shows, and where a drop lands (pure) ---------------------------------------------------- #
+def ids_of(row):
+    """The store items a row stands for (a piece: its files, in order)."""
+    return [e.id for e in row.episodes]
+
+
+def tail_tier(row):
+    """The tier of a row's last file: Soon for a show the Soon line runs through (`Row.soon_from`, P-LF-16: one row
+    above the line, its last files Soon), else the row's. What lands after the row lands there — after the show."""
+    return "soon" if getattr(row, "soon_from", None) is not None else row.tier
+
+
+def placement(rows_, src, slot, near_n=None):
+    """Where a row dropped in the list lands (04 §4.5): `rows_` Current's rows as painted; `src` the dragged row's place
+    (None: a drag from outside the list, or files); `slot` its place in the new order. After the row before it (its
+    last file), in that file's tier (`tail_tier`) — at the very top, before the first row, in its tier. `near`: the
+    painted neighbours, nearest first, for an anchor gone or out of the tier when the write lands (the writer's
+    fallback).
+    -> (tier, before_id, after_id, near)."""
+    near_n = D["near"] if near_n is None else near_n
+    others = [r for i, r in enumerate(rows_) if i != src]
+    prev = others[slot - 1] if 0 < slot <= len(others) else None
+    nxt = others[slot] if 0 <= slot < len(others) else None
+    if prev is not None:
+        tier, before_id, after_id = tail_tier(prev), None, prev.episodes[-1].id
+    elif nxt is not None:
+        tier, before_id, after_id = nxt.tier, nxt.episodes[0].id, None
+    else:
+        tier, before_id, after_id = "now", None, None
+    near = []
+    for k in range(near_n):
+        a, b = slot - 1 - k, slot + k
+        if 0 <= a < len(others) and tail_tier(others[a]) == tier and others[a].episodes[-1].id != after_id:
+            near.append((others[a].episodes[-1].id, "after"))
+        if 0 <= b < len(others) and others[b].tier == tier and others[b].episodes[0].id != before_id:
+            near.append((others[b].episodes[0].id, "before"))
+    return tier, before_id, after_id, near
+
+
+def order_after(keys, moved, slot):
+    """The key order with `moved` taken out and put back at `slot` (its place in the new order)."""
+    out = [k for k in keys if k != moved]
+    out.insert(max(0, min(slot, len(out))), moved)
+    return out
+
+
+def soon_slot(rows_, src):
+    """Where a row sent to Soon lands — the Soon well, ⋯ *Soon* and Goal's sheet, one rule: the top of Soon, after the
+    Soon line. -> (slot, files, after_id): its place in the order without it; the NOW files above it (what the Soon
+    line counts); and the file it is placed after — the last one of a show the Soon line runs through (`tail_tier`'s
+    rule, as a drop after that row: the show ends in Soon, so what is sent lands after it, never at Soon's very top
+    between the show's NOW and Soon files, B2-1), else None (the top of Soon)."""
+    others = [r for i, r in enumerate(rows_) if i != src]
+    slot = next((i for i, r in enumerate(others) if r.tier == "soon"), len(others))
+    files = sum(r.n_files for r in others[:slot])
+    prev = others[slot - 1] if slot else None
+    if prev is not None and tail_tier(prev) == "soon":
+        return slot, files - (prev.n_files - prev.soon_from), prev.episodes[-1].id    # its Soon files aren't NOW's
+    return slot, files, None
+
+
+def split_first(rows_, row):
+    """A split's first part (A2: the Finished well stays unlit, ⋯ leaves Finished out): another Current row of the same
+    title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)
+    A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part; nor a row
+    holding only its book's audiobook (`view_rows.heard_only`, H-6: nothing to finish or join), asked or asked about."""
+    if row.work_id is None or getattr(row, "group", False) or view_rows.heard_only(row.episodes):
+        return False
+    mine = _last_number(row)
+    for r in rows_:
+        if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False) and \
+                not view_rows.heard_only(r.episodes):
+            theirs = _first_number(r)
+            if mine is None or theirs is None or theirs > mine:
+                return True
+    return False
+
+
+def any_split_first(rows_, picked):
+    """A4: whether any row of `picked` (keys) is a split's first part (`split_first`'s rule), worked out once per title
+    — never every row against every row (2,500 picks of a 20,000-file library)."""
+    by_work = {}
+    for r in rows_:
+        if r.work_id is not None and not getattr(r, "group", False):
+            by_work.setdefault(r.work_id, []).append(r)
+    for r in rows_:
+        if r.key in picked and len(by_work.get(r.work_id, ())) > 1 and not getattr(r, "group", False) and \
+                split_first(by_work[r.work_id], r):
+            return True
+    return False
+
+
+def _first_number(row):
+    return next((e.number for e in row.episodes if e.number is not None), None)
+
+
+def _last_number(row):
+    return next((e.number for e in reversed(row.episodes) if e.number is not None), None)
+
+
+def is_mix(row):
+    """hato's mix (it never finishes: it keeps bringing new videos)."""
+    return row.source == "hato"
+
+
+def finishes(row):
+    """Whether Finished is offered for a row (the well lit, ⋯'s entry, the finish toast)."""
+    return not is_mix(row)
+
+
+def show_finished(row, ep):
+    """LM11b G5 (GW-2 ⭐ A): marking `ep` leaves no episode of its show in a group unwatched while another show of the
+    group still waits -> (the show's name, its episodes' ids in the group), else None. Never hato's mix; a run's last
+    Done is the row's own finish (a group of one show is a run: the store's rule); episodes with no show to name (a
+    first screen's cache from before) are offered nothing. Watched reads `view_rows.to_finish`'s files (L6.3, H-6): a
+    book's waiting audiobook item never holds its show back, nor stands for another show still waiting; it goes with
+    its show's ids."""
+    if not row.group or not finishes(row) or ep.work_id is None or not ep.show:
+        return None
+    text = view_rows.to_finish(row.episodes)
+    if any(not e.watched and e.id != ep.id for e in text if e.work_id == ep.work_id) or \
+            not any(not e.watched for e in text if e.work_id != ep.work_id):
+        return None
+    return ep.show, [e.id for e in row.episodes if e.work_id == ep.work_id]
+
+
+# --- L6.3 (Sonic 2026-10-28: a title finishes by itself, a split's parts join forward; Kura's scope, PROVISIONAL) --- #
+def _range(media, numbers, count):
+    return view_rows.range_text(media, [n for n in numbers if n is not None], count)
+
+
+def when_done(view, row, now=None, pending=False):
+    """What a row whose every file is watched does — ONE rule for the last file's Done and Up Next's ✓ Done (scope
+    `tracks/logic/work/L6.3/scope.md`):
+    - ("join", piece_ids, ahead, ids, line) — a split's part joins forward: R1 the title's next part in Current (this
+      part goes just before it, `ahead`); R2 its next part in Goal, whose first episode comes after this part's last
+      (it comes up after this one, into Current). One join, one Undo; never a part into Finished. A join finishes
+      nothing, so R4 / R5's checks (asked before a finish) don't hold it back.
+    - ("finish",) — R3: it finishes by itself, through the Finish path (`DragMoves.to_finished`).
+    - ("offer",) — today's *finished with it?*, for a whole title: R4 it may still be arriving (its newest file came
+      in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
+      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
+      ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
+      airing (R4), or more episodes listed than its files reach (R5), or no answer yet for a show AniList can be asked
+      about (`airing.PENDING`: it waits for the answer, alpha 9 #JNFJ8Q) — asked only after 3.0's own checks, so
+      AniList never finishes one sooner; R6 *Keep
+      studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
+      hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
+    - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
+      group (a split part never enters Finished, 70 Q11: it waits for the rest), or that can't join now (R6, pending,
+      the cache, no piece).
+    Its files are `view_rows.to_finish`'s (Hon's audiobooks, H-6 / H-7): a book's audiobook item, waiting for Anki
+    Miner, never holds it back and goes where the book's row goes (into Finished with it); a row of nothing but one —
+    an audiobook alone, or one split off by hand — is no part (never joined to, never waited on) and never finishes by
+    itself (nothing to mark Done: the offer). `view` the window's view model (None: as the cache)."""
+    if not finishes(row):
+        return None
+    if getattr(row, "group", False):
+        return ("offer",)
+    eps = view_rows.to_finish(row.episodes)
+    if not eps:
+        return ("offer",)                            # an audiobook alone (H-7): nothing to finish it by
+    rows_ = [r for r in (view.rows if view is not None else ())
+             if getattr(r, "group", False) or not view_rows.heard_only(r.episodes)]
+    first = split_first(rows_, row)
+    if view is None or view.cached or row.work_id is None:
+        return None if first else ("offer",)
+    still = view.keep_watched or pending             # R6 / a write on its way: nothing moves by itself
+    mine = pieces_of(row)
+    last = _last_number(row)
+    if first:                                        # `split_first`'s own reading of "later"
+        later = [r for r in rows_ if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False)
+                 and (last is None or _first_number(r) is None or _first_number(r) > last)]
+        target = min(later, key=lambda r: (_first_number(r) is None, _first_number(r) or 0, r.index))
+        if still or not mine or target.piece_id is None:
+            return None
+        return ("join", [target.piece_id] + mine, True, ids_of(row) + ids_of(target),
+                _range(target.media, [e.number for e in target.episodes], len(target.episodes)))
+    tiles = [w for w in (getattr(view.goal, "works", None) or ()) if w.work_id == row.work_id]
+    if any(r.key != row.key and (r.work_id == row.work_id or row.work_id in (getattr(r, "works", None) or ()))
+           for r in rows_) or any(w.group for w in tiles):
+        return None                                  # an earlier part of it waits in Current, or in a group
+    goal = [p for w in tiles for p in w.pieces if not p.heard]
+    if goal:
+        nxt = [p for p in goal if p.first is not None and last is not None and p.first > last]
+        if len(nxt) != len(goal) or any(p.piece_id is None for p in nxt) or still or not mine:
+            return None                              # an earlier or unnumbered part waits in Goal: a part, never Finished
+        up = min(nxt, key=lambda p: p.first)
+        return ("join", mine + [up.piece_id], False, ids_of(row) + list(up.item_ids), up.line)
+    if still or any(e.waiting for e in eps) or any(a.work_id == row.work_id for a in (view.arrivals or ())) \
+            or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
+            or view_rows.numbers_gap(eps) or view_rows.still_arriving(eps, now):
+        return ("offer",)
+    entry = (getattr(view, "airing", None) or {}).get(row.work_id)     # 3.0.1 item 5: AniList only holds it back
+    hold = airing.holds(entry, eps)
+    if hold:
+        return ("offer", _why(hold, entry, eps))     # AniList alone held it: the offer says why (AA-3)
+    return ("finish",)
+
+
+def _why(hold, entry, eps):
+    """AA-3 (PROVISIONAL): the few words the offer says when AniList held the show back."""
+    if hold == "airing":
+        return strings.DONE_WHY_AIRING
+    if hold == "asking":
+        return strings.DONE_WHY_ASKING
+    return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
+
+
+def offer_text(verdict, row, left=False):
+    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why. One file: *Watched
+    it*, never *All 1 watched* (Fresh-U row 5). `left`: W-1's first mark that moved the list (once per library) — the
+    words say its words left the list, so the next rows' counts rising is explained (the watched file's words now count
+    where they come next)."""
+    n = all_n(row)
+    if len(verdict) > 1:
+        text = (strings.DONE_ALL_ONE_WHY.format(why=verdict[1]) if n == 1 else
+                strings.DONE_ALL_WHY.format(n=n, why=verdict[1]))
+    else:
+        text = strings.DONE_ALL_ONE if n == 1 else strings.DONE_ALL.format(n=n)
+    if left and text.endswith(strings.DONE_ASK):
+        text = text[:-len(strings.DONE_ASK)] + strings.DONE_ASK_LEFT
+    return text
+
+
+def all_n(row):
+    """*All N watched*'s N: the files `view_rows.to_finish` counts (a book's audiobook item never one beside its
+    book); an audiobook alone, marked listened by hand, is its one file."""
+    return len(view_rows.to_finish(row.episodes)) or len(row.episodes)
+
+
+def pieces_of(row):
+    """The pieces a row stands for: its own, and the second of a show the Soon line runs through (B2-2)."""
+    out = [row.piece_id, getattr(row, "soon_piece", None) if getattr(row, "soon_from", None) is not None else None]
+    return [p for p in dict.fromkeys(out) if p is not None]
+# --- end L6.3
+
+
+def lines_for(view, rows_):
+    """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
+    after the row holding the same number of available files as before (split through it when it falls inside one),
+    the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule). W-1: a file counts toward the top
+    line by the store's one rule too (`view_rows.counts_toward_top`: a watched one only while the view's `keep_watched`
+    is on; never a video waiting for its subtitle).
+    """
+    counts = view_rows.counts_toward_top
+    keep = bool(getattr(view, "keep_watched", False))
+    out = []
+    top = next((ln for ln in view.lines if ln.kind == "top"), None)
+    n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
+    if n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
+        n = 0
+        for i, r in enumerate(view.rows[:top.after + 1]):
+            eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
+            n += sum(1 for e in eps if counts(e, r.tier, keep))
+    if n:
+        seen, at = 0, None
+        for i, r in enumerate(rows_):
+            for k, e in enumerate(r.episodes):
+                if counts(e, r.tier, keep):
+                    seen += 1
+                    if seen == n:
+                        at = (i, k + 1)
+                        break
+            if at is not None:
+                break
+        if at is not None:
+            i, k = at
+            row = rows_[i]
+            if k < len(row.episodes):
+                out.append(view_rows.Line("top", i, view_rows.STRINGS["top_tip_split"].format(
+                    n=n, title=row.title, k=k, m=len(row.episodes)), k))
+            else:
+                out.append(view_rows.Line("top", i, view_rows.STRINGS["top_tip"].format(n=n), None))
+    soon_at = view_rows.soon_line_after(rows_)
+    if soon_at is not None:
+        old = next((ln for ln in view.lines if ln.kind == "soon"), None)
+        tip = old.tip if old is not None else view_rows.STRINGS["soon_tip_nocount"]
+        out.append(view_rows.Line("soon", soon_at, tip, None))
+    return tuple(out)
+
+
+def topped(view, rows_):
+    """`rows_` (an order of `view`'s rows the window paints: a drop's, its marks) with which files are *in the top*
+    read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
+    rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
+    feed = getattr(view, "connect", None)
+    return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
+                            feed.items if feed is not None and feed.on else None)
+
+
+def mines_itself(lines, place):
+    """Whether Current's row at `place` stands above the top-20 line (it mines itself)."""
+    top = next((ln for ln in lines if ln.kind == "top"), None)
+    return top is not None and place <= top.after
+
+
+def reordered(view, keys, tiers=None):
+    """`view` with Current's rows in `keys`' order (each row's place number and, where `tiers` says, its tier), its lines
+    redrawn for that order, its counts and subline. Rows keep their objects where nothing they show changed (the
+    window repaints from their pictures)."""
+    by = {r.key: r for r in view.rows}
+    tiers = tiers or {}
+    out = []
+    for i, k in enumerate(keys):
+        r = by[k]
+        changes = {}
+        if r.index != i + 1:
+            changes["index"] = i + 1
+        tier = tiers.get(k, r.tier)
+        if tier != r.tier:
+            changes["tier"] = tier
+        if k in tiers and getattr(r, "soon_from", None) is not None:
+            changes["soon_from"] = changes["soon_piece"] = None    # moved whole into one tier: no line through it
+        out.append(r._replace(**changes) if changes else r)
+    if out and view.rows and out[0].key != view.rows[0].key:
+        out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
+    out, moved = topped(view, out)
+    files = sum(r.n_files for r in out)
+    counts = view.counts._replace(current_rows=len(out), current_files=files)
+    lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
+    subline = view_rows.STRINGS["subline"].format(lang=lang, rows=len(out), files=files) if out else view.subline
+    worst = view.worst
+    if any(i > 0 for i in moved) or [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
+            {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
+        worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
+    return view._replace(rows=tuple(out), lines=lines_for(view, out), counts=counts, subline=subline, worst=worst)
+
+
+def without(view, key, where):
+    """`view` with Current's row `key` gone to a well (`where`: "goal" or "finished"): Goal's bar or Finished's count
+    takes it at once (the reader's next view says the same)."""
+    return without_many(view, {key}, where)
+
+
+def without_many(view, keys, where):
+    """`without` for every row of `keys` at once (A4: the picks sent to Goal or Finished) — one pass, one reorder."""
+    gone = [r for r in view.rows if r.key in keys]
+    if not gone:
+        return view
+    rest = tuple(r for r in view.rows if r.key not in keys)
+    v = view._replace(rows=rest)
+    if where == "goal" and view.goal is not None:
+        g = view.goal
+        titles, files, covers = g.titles, g.files, g.covers
+        for row in gone:
+            cover = row.cover_title
+            titles += 1 if getattr(row, "group", False) or cover not in covers else 0     # LM11b G1
+            covers = covers if cover in covers or len(covers) >= 9 else covers + (cover,)
+            files += row.n_files
+        line = view_rows.STRINGS["goal_one"].format(files=view_rows.thousands(files)) if titles == 1 else \
+            view_rows.STRINGS["goal_line"].format(titles=titles, files=view_rows.thousands(files))
+        v = v._replace(goal=g._replace(titles=titles, files=files, covers=covers, line=line),
+                       counts=v.counts._replace(goal_titles=titles, goal_files=files))
+    elif where == FINISHED:
+        n = v.counts.finished + len(gone)
+        badges = dict(v.badges or {})
+        badges["finished"] = n
+        v = v._replace(counts=v.counts._replace(finished=n), badges=badges)
+    return reordered(v, [r.key for r in rest])
+
+
+# --- the ghost --------------------------------------------------------------------------------------------------- #
+def ghost_picture(pix, w, h, dpr):
+    """The ghost baked once (ref-extract §8): the row's picture `pix` (w × h logical), grown by `ghost-scale` and turned
+    `ghost-turn`°, its `drag-ghost` shadow under it and a 1 px accent ring around it. -> (picture, the unturned box's
+    top-left in it)."""
+    s, turn = D["ghost-scale"], D["ghost-turn"]
+    a = math.radians(turn)
+    bw, bh = w * s, h * s
+    rw, rh = bw * math.cos(a) + bh * math.sin(a), bw * math.sin(a) + bh * math.cos(a)
+    ml, mt, mr, mb = shadow.margins("drag-ghost")
+    width, height = math.ceil(rw + ml + mr + 4), math.ceil(rh + mt + mb + 4)
+    out = QPixmap(max(1, round(width * dpr)), max(1, round(height * dpr)))
+    out.setDevicePixelRatio(dpr)
+    out.fill(Qt.GlobalColor.transparent)
+    centre = QPointF(ml + 2 + rw / 2, mt + 2 + rh / 2)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    p.translate(centre)
+    p.rotate(turn)
+    p.scale(s, s)
+    box = QRectF(-w / 2, -h / 2, w, h)
+    shadow.paint(p, box, "drag-ghost")
+    radius = D["ghost-radius"]
+    path = QPainterPath()
+    path.addRoundedRect(box, radius, radius)
+    p.save()
+    p.setClipPath(path)
+    p.fillRect(box, rows.c("raised"))
+    if pix is not None:
+        p.drawPixmap(box.topLeft(), pix)
+    p.restore()
+    ring = D["ghost-ring"] / s
+    p.setPen(QPen(rows.c("accent"), ring))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(box.adjusted(ring / 2, ring / 2, -ring / 2, -ring / 2), radius, radius)
+    p.end()
+    return out, QPointF(centre.x() - w / 2, centre.y() - h / 2)
+
+
+def title_card(title, w, h, dpr):
+    """A drag by item id has no row on screen (W3.2's tray, the Goal sheet): its ghost is a card with its title."""
+    pix = QPixmap(max(1, round(w * dpr)), max(1, round(h * dpr)))
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(rows.c("raised"))
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    rows.TEXT.draw(p, 16, h / 2, title, "row-title", w - 32, rows.c("ink"), dpr=dpr)
+    p.end()
+    return pix
+
+
+class Ghost(QWidget):
+    """The lifted row: a frameless window of its own that never takes the mouse or the focus (the tooltip bubble's
+    kind), so moving it repaints nothing under it."""
+
+    def __init__(self, parent):
+        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setObjectName("dragghost")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.pix, self.anchor, self.alpha = None, QPointF(), D["ghost-alpha"]
+
+    def set_picture(self, pix, anchor):
+        self.pix, self.anchor = pix, anchor
+        self.resize(round(pix.width() / pix.devicePixelRatio()), round(pix.height() / pix.devicePixelRatio()))
+        self.update()
+
+    def place(self, box_top_left):
+        """The row's box (unturned) with its top-left at `box_top_left` (global)."""
+        self.move(QPoint(round(box_top_left.x() - self.anchor.x()), round(box_top_left.y() - self.anchor.y())))
+
+    def box_at(self):
+        return QPointF(self.pos()) + self.anchor
+
+    def set_alpha(self, alpha):
+        if alpha != self.alpha:
+            self.alpha = alpha
+            self.update()
+
+    def paintEvent(self, _event):
+        if self.pix is None:
+            return
+        p = QPainter(self)
+        p.setOpacity(self.alpha)
+        p.drawPixmap(0, 0, self.pix)
+        p.end()
+
+
+class _Resting(QObject):
+    """The pointer moving over the list with no button down starts `timer` again, so it fires once the pointer rests
+    there (C5); leaving the list stops it."""
+
+    def __init__(self, viewport, timer):
+        super().__init__(timer)
+        self.timer = timer
+        viewport.installEventFilter(self)
+
+    def eventFilter(self, _obj, event):
+        t = event.type()
+        if t == QEvent.Type.MouseMove and not event.buttons():
+            self.timer.start()
+        elif t == QEvent.Type.Leave:
+            self.timer.stop()
+        return False
+
+
+# --- the parting rows ------------------------------------------------------------------------------------------ #
+def part_offset(src, slot, r, h):
+    """The offset place `r` rests at while a drag from place `src` (None: from outside the list) has its slot at
+    `slot`, the slot `h` high: the rows between the dragged row's place and the slot moved by it (one rule: the parting
+    paints it, and a hold to join counts only where it is 0 — `item_menu.holds_on`)."""
+    if slot is None or r == src:
+        return 0.0
+    if src is None:
+        return float(h) if r >= slot else 0.0
+    if slot < src:
+        return float(h) if slot <= r < src else 0.0
+    if slot > src:
+        return -float(h) if src < r <= slot else 0.0
+    return 0.0
+
+
+class Parting:
+    """What the list paints while a drag runs (`rows.RowsView.parting`): each row's offset as the slot travels (the
+    rows between the dragged row's place and its slot moved by the slot's height, on `drag-part` springs while on
+    screen), the dragged row's own place left empty (`src`), and the slot painted where it would land.
+    Only what moved repaints (R3-S5, Gap 2): each frame, the band a moving row was and is painted in, and the slot's
+    old and new places — never the whole list; a frame's bands asked for once, at its end, the rows' rects worked out
+    once a frame (C6)."""
+
+    def __init__(self, lst, src, height):
+        self.lst = lst
+        self.src = src                               # the dragged row's place, or None (from outside the list)
+        self.h = height                              # the slot's height (the dragged row's, without its lines)
+        self.slot = src if src is not None else None
+        self.springs = {}                            # place -> its offset's spring (only while it moves)
+        self.slot_y = None                           # the slot's top, in the list's content (a spring)
+        self._slot_spring = None
+        self._shown = {}                             # place -> the offset its row was last asked to paint at
+        self._slot_shown = None                      # the slot's box as last asked to paint (the list's content y)
+        self._rects = None                           # C6: place -> its rect, for the clock frame running now
+        self._bands = []                             # C6: the bands this frame asked to repaint
+        self.alive = True
+
+    def target(self, r):
+        """The offset place `r` rests at for the current slot."""
+        return part_offset(self.src, self.slot, r, self.h)
+
+    def offset(self, r):
+        spring = self.springs.get(r)
+        return spring.value if spring is not None else self.target(r)
+
+    def slot_top(self):
+        """Where the slot opens (the list's content y) for the current slot."""
+        lst, model = self.lst, self.lst.model()
+        n = model.rowCount()
+        bar = lst.verticalScrollBar().value()
+        t, s = self.slot, self.src
+        if n == 0:
+            return 0.0
+        if s is not None and t > s:
+            r = lst.visualRect(model.index(min(t, n - 1), 0))
+            return float(r.bottom() + 1 - self.h + bar)
+        if t >= n:
+            r = lst.visualRect(model.index(n - 1, 0))
+            return float(r.bottom() + 1 + bar)
+        return float(lst.visualRect(model.index(t, 0)).top() + bar)
+
+    def move_to(self, slot):
+        """The slot moves to `slot`: the rows whose resting offset changes move on springs (those on screen; the rest
+        take their place at once), and the slot glides to its new place."""
+        if slot == self.slot and (self.slot_y is not None or slot is None):
+            return
+        old, self.slot = self.slot, slot
+        lst = self.lst
+        lo, hi = self._screen()
+        if old is None or slot is None:              # from outside: every row past the slot moves
+            changed = range(lo, hi + 1)
+        else:
+            changed = range(min(old, slot) - 1, max(old, slot) + 2)
+        for r in changed:
+            if r == self.src:
+                continue
+            if not lo <= r <= hi:                    # off screen: at its place at once (seen if it reaches in)
+                if r not in self.springs:
+                    self._row_moved(r, self.target(r), self._shown.get(r, self._was(r, old)))
+                continue
+            to = self.target(r)
+            spring = self.springs.get(r)
+            start = spring.value if spring is not None else self._was(r, old)
+            if spring is not None:
+                spring.retarget(to, **motion.preset("drag-part"))
+            elif start != to:
+                self._shown[r] = start
+                spring = motion.clock().spring(lambda v, r=r: self._row_moved(r, v), start, to, owner=lst.viewport(),
+                                               on_rest=lambda r=r: self._rested(r),
+                                               on_end=lambda r=r: self.springs.pop(r, None),
+                                               **motion.preset("drag-part"))
+                if spring.alive:                     # (at rest at once — reduced motion, frozen — is never kept)
+                    self.springs[r] = spring
+        if slot is None:                             # no slot: the rows close up, nothing is painted for it
+            if self._slot_spring is not None:
+                self._slot_spring.stop()
+            self._slot_spring, self.slot_y = None, None
+            self._slot_moved(None)
+            return
+        top = self.slot_top()
+        if self._slot_spring is None or self.slot_y is None:
+            if self.src is not None and self._slot_shown is None:     # the lift: the dragged row leaves its place
+                place = lst.visualRect(lst.model().index(self.src, 0))
+                self._repaint_band(place.top() - 1, place.bottom() + 1)
+            self.slot_y = top
+            self._slot_spring = motion.clock().spring(self._slot_moved, top, top, owner=lst.viewport(),
+                                                      **motion.preset("drag-part"))
+        else:
+            self._slot_spring.retarget(top, **motion.preset("drag-part"))
+
+    def _was(self, r, old_slot):
+        keep, self.slot = self.slot, old_slot
+        try:
+            return self.target(r)
+        finally:
+            self.slot = keep
+
+    def _slot_moved(self, v):
+        """The slot at `v` (None: gone): its old box and its new one repaint."""
+        self.slot_y = v
+        bar = self.lst.verticalScrollBar().value()
+        was, box = self._slot_shown, self._slot_box()
+        self._slot_shown = box.translated(0, bar) if box is not None else None
+        if not self.alive or was == self._slot_shown:
+            return
+        for b in (was, self._slot_shown):
+            if b is not None:
+                self._repaint_band(b.top() - bar - 1, b.bottom() - bar + 1)
+
+    def _row_moved(self, r, v, was=None):
+        """Place `r`'s row now paints at offset `v` (a spring's frame, or a jump from `was`): the band it was and is
+        painted in repaints, its own place too (the list paints a row only where its place is asked)."""
+        was = self._shown.get(r, v) if was is None else was
+        self._shown[r] = v
+        if not self.alive or was == v:
+            return
+        rect = self._rect(r)
+        if rect.isValid():
+            self._repaint_band(rect.top() + math.floor(min(0.0, was, v)) - 1,
+                               rect.bottom() + math.ceil(max(0.0, was, v)) + 1)
+
+    def repaint_rows(self, places):
+        """(The list's hover look in motion, during a drag: Gap 2 item 4.) Each place's row repaints where it is painted
+        now — the band from its place to its place moved by its offset — never the whole list."""
+        for r in places:
+            rect = self._rect(r)
+            if rect.isValid():
+                off = self.offset(r) if r != self.src else 0.0
+                self._repaint_band(rect.top() + math.floor(min(0.0, off)) - 1,
+                                   rect.bottom() + math.ceil(max(0.0, off)) + 1)
+
+    def _collect(self):
+        """Inside a clock frame (C6): True, and the frame's collection begun — the rows' rects kept for the frame, its
+        bands asked for at its end, in one update."""
+        if self._rects is not None:
+            return True
+        if not motion.clock().in_frame:
+            return False
+        self._rects = {}
+        motion.clock().after_frame(self._frame_done)
+        return True
+
+    def _rect(self, r):
+        """Place `r`'s rect in the viewport — worked out once a clock frame (C6)."""
+        if not self._collect():
+            return self.lst.visualRect(self.lst.model().index(r, 0))
+        got = self._rects.get(r)
+        if got is None:
+            got = self._rects[r] = self.lst.visualRect(self.lst.model().index(r, 0))
+        return got
+
+    def _repaint_band(self, top, bottom):
+        """The viewport's rows `top` … `bottom` repaint — inside a clock frame, with the frame's other bands at its end
+        (C6: one update of their union)."""
+        if self._collect():
+            self._bands.append((top, bottom))
+        else:
+            self._update_bands([(top, bottom)])
+
+    def _frame_done(self):
+        bands, self._bands = self._bands, []
+        try:
+            self._update_bands(bands)
+        finally:
+            self._rects = None
+
+    def _update_bands(self, bands):
+        """Each band repaints — widened to a parted row whose place lies outside it but whose picture reaches into it
+        (so the list paints that row too) — in one update of their union."""
+        lst = self.lst
+        vp = lst.viewport()
+        bands = [(top, bottom) for top, bottom in bands if not (bottom < 0 or top > vp.height())]
+        if not bands:
+            return
+        lo, hi = self._screen()
+        parted = []
+        for q in range(lo, hi + 1):
+            off = self.offset(q) if q != self.src else 0.0
+            if off:
+                parted.append((self._rect(q), off))
+        region = QRegion()
+        for top, bottom in bands:
+            grew = True
+            while grew:
+                grew = False
+                for rq, off in parted:
+                    if (rq.bottom() < top or rq.top() > bottom) and \
+                            rq.bottom() + math.ceil(off) + 1 >= top and rq.top() + math.floor(off) - 1 <= bottom:
+                        top, bottom, grew = min(top, rq.top()), max(bottom, rq.bottom()), True
+            region = region.united(QRect(0, top, vp.width(), bottom - top + 1))
+        vp.update(region)
+
+    def scrolled(self, dy):
+        """The list scrolled by `dy` (the scroll bar's value; Qt has moved what was painted): the strip that scrolled in
+        repaints, widened to the parted rows whose pictures reach into it from places outside it (Qt paints only the
+        rows whose places lie in the strip: a row pushed down into the bottom strip, or pulled up into the top one, was
+        left unpainted — the M4.1 adversary's S1). Never the whole list."""
+        if self._rects is not None:                  # (inside a clock frame: the frame's rects are from before it)
+            self._rects = {}
+        h = self.lst.viewport().height()
+        if dy > 0:
+            self._update_bands([(h - dy - 1, h)])
+        elif dy < 0:
+            self._update_bands([(-1, -dy)])
+
+    def _rested(self, r):
+        self.springs.pop(r, None)
+
+    def _screen(self):
+        lst = self.lst
+        n = lst.model().rowCount()
+        first = lst.indexAt(QPoint(4, 1))
+        last = lst.indexAt(QPoint(4, lst.viewport().height() - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else n - 1
+        return max(0, lo - 2), min(n - 1, hi + 2)
+
+    def stop(self):
+        self.alive = False
+        for spring in list(self.springs.values()):
+            spring.stop()
+        self.springs = {}
+        if self._slot_spring is not None:
+            self._slot_spring.stop()
+
+    def paint_over(self, lst, event):
+        """(The list's paint.) The rows just past the screen's edges that the parting moved into view, then the slot."""
+        model = lst.model()
+        n = model.rowCount()
+        if not n:
+            return
+        p = QPainter(lst.viewport())
+        p.setClipRect(event.rect())
+        first = lst.indexAt(QPoint(4, 1))
+        last = lst.indexAt(QPoint(4, lst.viewport().height() - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else n - 1
+        reach = 1 + int(self.h // max(1, rows.RowDelegate._line_h())) + 1
+        option = QStyleOptionViewItem()
+        lst.initViewItemOption(option)
+        for r in list(range(max(0, lo - reach), lo)) + list(range(hi + 1, min(n, hi + 1 + reach))):
+            if r == self.src or not self.offset(r):
+                continue
+            idx = model.index(r, 0)
+            option.rect = lst.visualRect(idx)
+            option.state = option.state & ~rows.QStyle.StateFlag.State_MouseOver
+            lst.delegate.paint(p, option, idx)
+        slot = self._slot_box()
+        if slot is not None:
+            lst.delegate.paint_slot(p, slot)
+        p.end()
+
+    def _slot_box(self):
+        """The slot's box in the viewport now, or None (no slot)."""
+        if self.slot_y is None:
+            return None
+        lst, model = self.lst, self.lst.model()
+        src = self.src
+        if src is not None and 0 <= src < model.rowCount():
+            kind, _payload, lines = model.entries[src]
+            rect = self._rect(src)
+        else:
+            kind, lines = rows.ROW, ()
+            rect = QRect(0, 0, lst.viewport().width(), self.h)
+        y = round(self.slot_y - lst.verticalScrollBar().value())
+        return lst.delegate.slot_rect(kind, QRect(rect.left(), y, rect.width(), self.h + lst.delegate._lines_h(lines)),
+                                      lines)
+
+
+# --- ⋯: one menu per list (C4) ------------------------------------------------------------------------------------ #
+class _KeptMenu(QMenu):
+    """A menu kept between opens: closed (a click outside it, `close()`) it only hides — Qt's close destroys a
+    window's native window, and a new one is most of an open's cost."""
+
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+
+
+def list_menu(lst, title):
+    """List `lst`'s one ⋯ menu, empty, named for `title`: made once and kept hidden between opens (a new menu was a new
+    native window at every open, its first show the slowest part of opening it). What an open put in it goes as it
+    hides, so a closed menu holds nothing; its actions are kept, still wired (a pick lands after the hide), and taken
+    back by the next open (`menu_action`)."""
+    m = getattr(lst, "row_menu", None)
+    if m is None:
+        m = _KeptMenu(lst)
+        m.setObjectName("rowmenu")
+        m.setToolTipsVisible(True)
+        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop runs on
+        #                                                 between the hide and the pick
+        lst.row_menu = m
+    elif m.isVisible():
+        m.hide()
+    _empty_menu(m)
+    _take_back(m)
+    m.fills = getattr(m, "fills", 0) + 1             # each open's own number: an answer asked by an earlier open (a
+    #                                                  folder to skip) never lands in this one (`item_menu.offer_skip`)
+    m.setAccessibleName(strings.MENU_NAME.format(title=title))
+    return m
+
+
+def sub_menu(menu, label, before=None):
+    """`menu.addMenu(label)` (put before the action `before`, if given). Inside a kept menu (`list_menu`) a submenu an
+    earlier open used is taken back, emptied as that open hid, so a later open makes no widget (R5: *What is it?*,
+    *Split here…*, *Change cover…* were new menus, and new native windows, at every open); under a plain menu, a new
+    one. -> the submenu (its action's tip and state set by the caller)."""
+    top = _kept_top(menu)
+    if top is None:
+        sub = QMenu(label, menu)
+    else:
+        sub = _lend(top)
+        sub.setTitle(label)
+        act = sub.menuAction()
+        act.setToolTip("")
+        act.setEnabled(True)
+    if before is not None:
+        menu.insertMenu(before, sub)
+    else:
+        menu.addMenu(sub)
+    return sub
+
+
+def _kept_top(menu):
+    """The kept menu (`list_menu`'s) `menu` is, or is a submenu of; None under a plain menu."""
+    top = menu
+    while not isinstance(top, _KeptMenu) and isinstance(top.parent(), QMenu):
+        top = top.parent()
+    return top if isinstance(top, _KeptMenu) else None
+
+
+def menu_action(menu, label, pick):
+    """A new entry for `menu`, `pick()` called when it is picked (the caller sets its tip and state, and adds it).
+    Inside a kept menu (`list_menu`): an action an earlier open used, taken back with its words set and the rest as
+    new (enabled, unchecked, no tip) — wired once, when it was made, to whatever pick it holds — so an open makes no
+    action and wires nothing, and its close deletes nothing. (Up next at 20,000 files: the ~13 actions each ⋯ made were
+    ~13 deferred deletes in the stretch after the pick, and each wire's own proxy one more when it went: 2–5 ms each
+    while the writer's and the reader's threads ran.) Under a plain menu, a new one wired to `pick`."""
+    top = _kept_top(menu)
+    if top is None:
+        act = QAction(label, menu)
+        act.triggered.connect(lambda _c=False: pick())
+        return act
+    pool = top.__dict__.get("pool")
+    if pool:
+        act = pool.pop()
+        act.setText(label)
+    else:
+        act = QAction(label, top)
+        act.triggered.connect(lambda _c=False, a=act: _picked(a))
+    act.__dict__["pick"] = pick
+    return act
+
+
+def _picked(act):
+    pick = act.__dict__.get("pick")
+    if pick is not None:
+        pick()
+
+
+def _take_back(m):
+    """The actions the last open used (kept, still holding their picks at its hide, `_empty_menu`: a pick lands after
+    the hide, and has by now), put back as new for this open's `menu_action` — as many as one open has used at most
+    (`m.most`); any past that, deleted (an action made elsewhere, `addAction(text)`, comes back here too)."""
+    used = m.__dict__.get("used")
+    if not used:
+        return
+    pool = m.__dict__.setdefault("pool", [])
+    most = m.__dict__["most"] = max(m.__dict__.get("most", 0), len(used))
+    for act in used:
+        if sip.isdeleted(act):
+            continue
+        if len(pool) >= most or "pick" not in act.__dict__:
+            act.deleteLater()                        # (not `menu_action`'s: wired by its maker, never taken back)
+            continue
+        act.__dict__["pick"] = None
+        act.setChecked(False)
+        act.setCheckable(False)
+        act.setEnabled(True)
+        act.setToolTip("")
+        pool.append(act)
+    used.clear()
+
+
+def _lend(top):
+    spare = top.__dict__.setdefault("spare", [])
+    sub = spare.pop() if spare else None
+    if sub is None:
+        sub = QMenu(top)                             # (the kept menu's child, whichever menu it shows under)
+        sub.setObjectName("rowmenu")
+        sub.setToolTipsVisible(True)
+    top.__dict__.setdefault("lent", []).append(sub)
+    return sub
+
+
+def _empty_menu(m):
+    lent = m.__dict__.get("lent") or []
+    used = m.__dict__.setdefault("used", [])
+    for menu in [m] + lent:
+        for act in menu.actions():
+            menu.removeAction(act)
+            if act.parent() is menu or act.parent() is m:
+                if act.isSeparator():
+                    act.setParent(None)              # gone now: nothing can pick it (a pick lands after the hide)
+                elif act.parent() is m:
+                    used.append(act)                 # (`menu_action`'s: taken back by the next open, `_take_back`)
+                else:
+                    act.deleteLater()
+    if lent:
+        m.spare.extend(lent)
+        lent.clear()
+    kept = set(map(id, m.__dict__.get("spare") or ()))
+    for sub in m.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        if id(sub) not in kept:
+            sub.deleteLater()
+
+
+# --- after the press's own paint ---------------------------------------------------------------------------------- #
+class _AfterPaint(QObject):
+    """Calls made once the window has painted what is waiting: each a posted event at Qt's low priority — the
+    priority Qt posts a window's update request at — so the loop delivers it after an update the press asked for
+    (posted before it), in the same pass when nothing waits to be painted."""
+    TYPE = QEvent.Type(QEvent.registerEventType())
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def post(self, fn):
+        self.calls.append(fn)
+        QApplication.postEvent(self, QEvent(self.TYPE), Qt.EventPriority.LowEventPriority.value)
+
+    def event(self, ev):
+        if ev.type() != self.TYPE:
+            return super().event(ev)
+        if self.calls:
+            fn = self.calls.pop(0)
+            try:
+                fn()
+            except Exception:
+                sys.excepthook(*sys.exc_info())
+        return True
+
+
+_after = []
+
+
+def after_paint(fn):
+    """`fn()` once the window has painted the press that asked for it (`_AfterPaint`): a press's write starts there,
+    so the writer's thread never takes Python's lock from the window's while it paints the press (`Writer.defer`)."""
+    if not _after or sip.isdeleted(_after[0]):
+        _after[:] = [_AfterPaint()]
+    _after[0].post(fn)
+
+
+# --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
+WRITER_CALLBACKS = ("on_saved", "on_undone", "on_saving", "on_reread", "on_note")     # what a controller wires
+
+
+def _no_callback(*_args):
+    pass
+
+
+class _Relay(QObject):
+    saved = pyqtSignal(object, object)
+    undone = pyqtSignal(object, object)
+    saving = pyqtSignal(bool)
+    reread = pyqtSignal()
+    note = pyqtSignal(str)
+    gone = pyqtSignal(object)
+    versions = pyqtSignal(object)                    # finish-pending: the store's versions (the reader's thread)
+    line = pyqtSignal(object)                        # ... and the re-order host's lines (its worker)
+
+
+class Ticket:
+    """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
+    if set: "saved", "refused" (nothing written), "undone" (its Undo asked, or the change undone) or "ended" (settled
+    unsaved: it landed as nothing, or was let go) — round 8 row 45: a pressed *Mine now* stops turning when its ask is
+    refused, undone or ends unsaved, and asks Connect's feed again once saved; Q7's *Skip a folder…* turns until saved.
+    `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
+    `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
+                 "marks", "rides", "why")
+
+    def __init__(self, text, keys=(), ids=()):
+        self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
+        self.change = None
+        self.undo_asked = False
+        self.toast = False
+        self.follows = None                          # the ticket this one's command follows (a Finished choice)
+        self.then = None                             # a command waiting for this one's change (a Finished choice)
+        self.told = None
+        self.anki = None
+        self.left = None
+        self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
+        self.rides = False                           # a Finished choice the setting made: undone with its drop
+        self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
+
+
+def mines_why(lines, place):
+    """*it mines itself*'s cause (help cards §5.2: the toast's *Why?*), or None when the place makes no cards."""
+    if place == 0 or not mines_itself(lines, place):
+        return None
+    from app.services import causes
+    return causes.Cause(strings.WHY_MINES, None, "cards")
+
+
+def done_why(kind):
+    """L6.3's cause (help cards §5.2): what the last Done did more than the press said — a fixed rule, no time."""
+    from app.services import causes
+    return causes.Cause(strings.WHY_DONE[kind], None, "stones")
+
+
+def _tell(ticket, event):
+    if ticket.told is not None:
+        ticket.told(event)
+
+
+def _sources_stopped(win, change, undone=False, language=None):
+    """T6: a *Stop reading it* (`Writer.stop_reading`, a gone folder's card, Settings' *Stop reading*) saved or undone
+    — the folders listed again by the looks (`SourceLooks.listing`, its worker), so the card goes, or comes back with
+    its Undo, and Settings' *Library folders* follows. K9 (alpha 4): the looks let the folder go as the stop was given
+    (`settings_sources.give_stop`); either way it lands they hold it no more (`let_go(on=False)`) — undone, it is read
+    again; saved (A4B-1), the store's row is off: no look lists it and the store refuses its take-ins, and added again
+    (its old row turned back on) it is read. `language`: the writer's (root ids repeat across stores, A4B-12)."""
+    if getattr(change, "kind", None) != "stop_source":
+        return
+    looks = getattr(win, "looks", None)
+    if looks is not None:
+        try:
+            if hasattr(looks, "let_go"):
+                for root, *_kinds in getattr(change, "roots", None) or ():
+                    looks.let_go(root, on=False, language=language)
+            looks.listing()
+        except Exception as e:                       # (the looks closing: the next look lists them)
+            print(f"Sources: the folders weren't listed after a stop: {e!r}")
+
+
+def _skips_moved(win, change, undone=False):
+    """K6 / Q7: a skip's change (the store's `folder` on it: ⋯'s, New arrivals', Settings' *Skip a folder…*) saved or
+    undone — *Library folders*' skipped lines and the Settings row's count read again where they show, and an undone
+    one's line in that window goes (`settings_sources.skips_moved`); the rows it took are the reader's, as any
+    Remove's."""
+    if getattr(change, "folder", None) is None:
+        return
+    try:
+        from app.qt import settings_sources
+        settings_sources.skips_moved(win, undone=change if undone else None)
+    except Exception as e:                           # (the lines stay as they were until the next listing)
+        print(f"Window drag: the skipped folders weren't read again: {e!r}")
+
+
+def _trash_moved(win, change):
+    """A4B-6: a change that put files in the trash or took them out (a Remove, a skip, a Put back, their Undo) saved or
+    undone — the 🗑 list and *Library folders*' *Bring back N removed* read again where they show
+    (`removed.trash_heard`): told by this controller, the one the window has now, never one a language switch let go."""
+    try:
+        from app.qt import removed
+        removed.trash_heard(win, change)
+    except Exception as e:                           # (the lists stay as they were until they are read again)
+        print(f"Window drag: the Removed list wasn't read again: {e!r}")
+
+
+_anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
+
+
+def on_bar():
+    """finish-pending: a press whose thing has left the screen marks the bar's arc (`press.bar_mark`, the default)."""
+    return None
+
+
+def _aside(settings, language):
+    """(A worker.) Why the re-order host does nothing for `language` now, as the bar and the phase strip say it
+    (`replan_preview.aside_line`, a7), or None."""
+    from app import replan_preview
+    from app.services.settings import thaw
+    return replan_preview.aside_line(thaw(settings), language)
+
+
+class _Drag:
+    """One drag in progress."""
+    __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
+                 "holding", "many", "keys", "every", "home")
+
+    def __init__(self):
+        self.src = self.key = self.row = self.title = self.source = None
+        self.ids = []
+        self.many = 0                                # A4: a drag of the picks — how many titles it carries
+        self.keys = ()                               # ... and the Current rows they are (none from Goal's sheet)
+        self.every = None                            # ... what the Finished well takes (IK2-6: Goal's, every part)
+        self.grab = QPointF()
+        self.target = None
+        self.parting = None
+        self.at = QPoint()
+        self.external = False
+        self.holding = False                         # the writer and the reader held (released once, at its end)
+        self.home = None                             # (where the hand lifted, the slot it keeps there): a9 try #4
+
+
+class DragController(QObject):
+    """Current's drags, moves, Done and Undo, on the window's thread; the writer does the writing."""
+
+    def __init__(self, win, writer, reader=None):
+        super().__init__(win)
+        self.win = win
+        self.writer = writer
+        self.reader = reader
+        self.page = win.page_widgets["current"]
+        self.lst = self.page.list
+        self.lst.drag = self
+        self.lst.setAcceptDrops(True)
+        self.running = None                          # the drag in progress (`_Drag`)
+        self.ghost = Ghost(win)                      # C5: made once, its native window too, kept hidden between drags
+        self.ghost.winId()
+        self.destroyed.connect(self.ghost.deleteLater)   # (a language switch remakes the controller)
+        self._ghost_anim = None                      # the last drop's glide or fade (stopped by the next lift)
+        # C5: the pointer resting on a row (`rows.HOVER_WARM_MS`, as the list warms its episodes) bakes its ghost ahead,
+        # kept per row key and size while the row's picture is the same: a lift right after only shows it
+        self._ghosts = {}                            # (row key, w, h, dpr) -> (row picture's cacheKey, picture, anchor)
+        self._cards = {}                             # IK2-3: (title, w, h, dpr) -> a card drag's picture, kept (few)
+        self.ghost_bakes = 0                         # ghost pictures baked (tests)
+        self._rest = QTimer(self)
+        self._rest.setSingleShot(True)
+        self._rest.setInterval(rows.HOVER_WARM_MS)
+        self._rest.timeout.connect(self._warm_ghost)
+        _Resting(self.lst.viewport(), self._rest)
+        self.expect = None                           # the key order the window shows ahead of the store
+        self.expect_tiers = {}
+        self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
+        self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        # alpha 9.1 (report 1): the reader's ask (`republish`'s number) whose answer — the store's view, read after every
+        # write landed — lets the order go (`_let_go`, `view_in`); `_unanswered` lets it go anyway if none comes
+        self._asked = None
+        self._answer_passed = False                  # ... its answer came under the hand: every view held since is newer
+        # a8: file id -> [watched, its write, views since it landed (None: waiting), the row it was painted on] —
+        # painted ahead of the store (`_marks_ahead`) until the reader's views have it (`_marks_seen`)
+        self.expect_marks = {}
+        self._mark_undos = []                        # a8: the Undos painted ahead whose word is still to come
+        self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> (its marks, its row's key) (Ctrl+Z)
+        self._rides = weakref.WeakKeyDictionary()     # a saved choice the setting made -> its drop's ticket (Ctrl+Z)
+        self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
+        self._closed = False                         # H-T1: let go by the window (its close, a language switch)
+        self.held = None                             # the reader's newest view, not shown yet
+        self.tickets = []                            # commands given, not settled yet (oldest first)
+        self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
+        self._airing_again = False                   # ... its `_again` on its way
+        self.saving_keys = frozenset()
+        self.toasted = None                          # the ticket whose toast shows
+        self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
+        self._fresh = []                             # … the ones given this turn (a toast shown in it stands for them)
+        self._showing = None                         # … or the one `_toast` names
+        self._reason = None                          # … and the writer's last word since it showed (why one was refused)
+        self._undoing = None                         # round 8 row 45: the bar's *Undoing…* (a live press), and the
+        self._undos = 0                              # undos handed to the writer it waits for
+        self._own = False
+        self._swallow_until = 0.0
+        self._filtering = False
+        self.drops = 0                               # drops handed to the writer (tests)
+        self.relay = _Relay(self)
+        self._gate = bridge.Gate(self.relay)         # the writer's and the reader's threads reach the relay through it
+        #   only: a write landing as the window is deleted (a close the quit's wait put off) is dropped, never an emit
+        #   on a deleted relay (round 8's crash)
+        q = Qt.ConnectionType.QueuedConnection
+        self.relay.saved.connect(self._saved, q)
+        self.relay.undone.connect(self._undone, q)
+        self.relay.saving.connect(self._saving, q)
+        self.relay.reread.connect(self._reread, q)
+        self.relay.note.connect(self._note, q)
+        self.relay.gone.connect(self._gone, q)
+        for name in WRITER_CALLBACKS:                # on_saved -> the relay's `saved`, …
+            setattr(writer, name, self._gate.caller(name[len("on_"):]))
+        self._gone_told = None                       # the very callback the reader holds (`unwire` lets it go)
+        subscribe = getattr(reader, "subscribe_gone", None)
+        if subscribe is not None:
+            self._gone_told = self._gate.caller("gone")
+            subscribe(self._gone_told)
+        # finish-pending: a command whose Anki half waits for its Generate keeps its press live until the host's
+        # re-order for it lands (`_give(…, anki=)`): the store's versions from the reader, the host's lines, the
+        # Generate's end
+        self._landing = {}                           # ticket -> its press, until the writer saved it (or let it go)
+        self._asking = {}                            # ... then while the host's gate is asked (a worker)
+        self._owed = []                              # (press, the change's `landed` versions, ticket) until it lands
+        self._versions = None                        # the store's versions as the reader last told them
+        self._generates = set()                      # Generate jobs seen live while a press waits
+        self._heard_line = None                      # a line that gave up while a press's gate was asked (FP-A6)
+        self._on_bar = set()                         # the presses marking the bar's arc (its hover says the wait)
+        self._anki_of = weakref.WeakKeyDictionary()  # a saved change -> its mark: Ctrl+Z's undo waits the same way
+        self.relay.versions.connect(self._versions_in, q)
+        self.relay.line.connect(self._line_in, q)
+        self._versions_told = None
+        subscribe = getattr(reader, "subscribe_versions", None)
+        if subscribe is not None:
+            self._versions_told = self._gate.caller("versions")
+            subscribe(self._versions_told)
+        self._heard = self._gate.caller("line")
+        heard = getattr(getattr(win, "services", None), "replan_heard", None)
+        if heard is not None:
+            heard.append(self._heard)
+        jobs = getattr(getattr(win, "bridge", None), "jobs_changed", None)
+        if jobs is not None:
+            jobs.connect(self._jobs_in)
+        self.page.on_done = self.done
+        self.page.on_done_many = self.done_many      # a7: ⋯'s *…and everything before it* / *Mark all watched*
+        self.page.on_nudge = self.nudge
+        self.page.on_menu = self.menu
+        self._settle = QTimer(self)
+        self._settle.setSingleShot(True)
+        self._settle.setInterval(D["settle-ms"])
+        self._settle.timeout.connect(self._settled)
+        self._unanswered = QTimer(self)
+        self._unanswered.setSingleShot(True)
+        self._unanswered.setInterval(D["answer-ms"])
+        self._unanswered.timeout.connect(self._no_answer)
+        # Auto-scroll is the hand's, not motion (M4.1, the lead's call IK-4): it runs under Reduced motion too, on a
+        # timer of its own (never the clock, whose Reduced would stop it) — the one view timer named as allowed.
+        self._scroll = QTimer(self)
+        self._scroll.setInterval(theme.MOTION["auto-scroll-tick"])
+        self._scroll.timeout.connect(self._auto_scroll)
+        # A scroll during a drag asks for the strip that scrolled in, no more (Gap 2): Qt moves what was painted and
+        # paints that strip — but only the rows whose places lie in it (and, `Parting.paint_over`, a parted row from off
+        # screen); `Parting.scrolled` widens it to the parted rows whose pictures reach in from outside it (S1).
+        bar = self.lst.verticalScrollBar()
+        self._bar_was = bar.value()
+        bar.valueChanged.connect(self._scrolled)
+        self.undo_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), win)
+        self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.undo_key.activated.connect(self.undo_last)
+        toasts = getattr(win, "toasts", None)
+        if toasts is not None:
+            toasts.on_show = self._toast_shown
+        self._replay_owed = False
+        self.joins = None                            # --- W3.2 Q8: drop-to-join (`item_menu.ItemActions`: target/show/drop)
+        self.blocked = None                          # W3.2 P0: why nothing can be moved now (a language switch), or None
+        self._started = False
+
+    # --- the writer's start ----------------------------------------------------------------------------------- #
+    def start(self, on_worker=False):
+        """The writer started, then the journal of a crash or a quit that ran out of time replayed (again once the
+        store can be written, if it can't be now). `on_worker` (W3.2 P0, the real window's): both on a worker — the
+        writer's first look at the store opens it, never on the window's thread (S6). Once: a second replay would
+        load the journal's moves twice."""
+        if self._started:
+            return
+        self._started = True
+        if not on_worker:
+            self.writer.start()
+            self._replay_owed = not self.writer.replay()
+            return
+        from app.qt import bridge
+        writer = self.writer
+        bridge.run_in_worker(lambda: (writer.start(), writer.replay())[1], then=self._writer_started,
+                             failed=lambda info: print(f"Window writer: its start failed: {info[1]}"))
+
+    def _writer_started(self, replayed):
+        self._replay_owed = not replayed
+
+    def switching(self, text):
+        """W3.2 P0 (AD0-5): `text` — every move refused with it said (a drag running let go), until `switching(None)`."""
+        self.blocked = text
+        if text and self.running is not None:
+            self.cancel(text)
+
+    # --- the reader's views (the shell's `show_library` asks first) ------------------------------------------------ #
+    def view_in(self, view):
+        """-> the view to show now, or None (held): every view while a drag runs (E6); while the window's own order is
+        ahead of the store, a view of the same rows in that order (its numbers fresh), else held until it settles."""
+        if self._airing_asking:
+            self._answered(view)                     # (a view held, shown later as the window's own: its answer too)
+        if self._own:
+            return view
+        if self._replay_owed and getattr(view, "mode", None) == "store":
+            self._replay_owed = not self.writer.replay()
+        if self.expect_marks:
+            self._marks_seen(view)
+        if self.running is not None:
+            if self._store_answers(view):
+                self._answer_passed = True           # (every view after it is the store's too)
+            self.held = view
+            return None
+        if self.expect is None:
+            self.held = None
+            return self._with_marks(view)
+        if self._answer_passed or self._store_answers(view):   # the store's own view, read after every write
+            # landed, or one after it (its answer came under a drag that ended without a view of its own): it stands
+            self._order_off()
+            self.held = None
+            return self._with_marks(view)
+        out = self._conform(view)
+        if out is None:
+            self.held = view
+            return None
+        self.held = None
+        return self._with_marks(out)
+
+    # --- a8: a stone's Done painted ahead of the store ----------------------------------------------------------- #
+    # Sonic's alpha 7 try ("it lagged by at least a second before registering", more while a Generate ran): a Done's
+    # marks are painted in the click itself, as a drop's order is (`_ahead`), whatever holds the store meanwhile — and
+    # stand on every view shown until the reader's views have them: a mark whose write landed goes at the first view
+    # that shows it so, or at the second view since, whatever that shows (the reader builds one view at a time, and its
+    # views reach this thread in order with the writer's word: the first may have begun before the write landed, never
+    # the second). A write that lands as nothing (already so, refused, failed) or an Undo the store refuses: the next
+    # view is the store's, whatever it shows (nothing was written for it to begin before). The row's own fields come
+    # from `view_rows.marked` (one rule with the reader's); the top-20 line and the one title width as `reordered`
+    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) as `topped` reads them for a
+    # drop too (3.0.1 item 12: the store's rule, at once — no longer with the store's next view).
+    def _holding(self, view):
+        """The places of `view`'s rows that hold a marked file: the rows they were painted on (by key) — every row
+        holding one only when a marked file isn't there (its row joined, split or gone): never a walk over every file
+        while the rows are where they were."""
+        marks, rows_ = self.expect_marks, view.rows
+        keys = {m[3] for m in marks.values()}
+        at = [k for k, r in enumerate(rows_) if r.key in keys]
+        if len({e.id for k in at for e in rows_[k].episodes if e.id in marks}) < len(marks):
+            at = [k for k, r in enumerate(rows_) if any(e.id in marks for e in r.episodes)]
+        return at
+
+    def _with_marks(self, view):
+        """`view` with the window's own marks on its rows — `view` itself when they change none."""
+        if not self.expect_marks or view is None or not getattr(view, "rows", None):
+            return view
+        marks = {i: m[0] for i, m in self.expect_marks.items()}
+        keep = bool(getattr(view, "keep_watched", False))
+        rows_ = list(view.rows)
+        changed = []
+        for k in self._holding(view):
+            row = view_rows.marked(rows_[k], marks, hero=not k, keep=keep)   # (Current's first row: Up Next)
+            if row is not rows_[k]:
+                rows_[k] = row
+                changed.append(k)
+        if not changed:
+            return view
+        rows_, moved = topped(view, rows_)          # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
+
+    def _marks_ahead(self, write, marks, key):
+        """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands
+        back as it lands)."""
+        for i, on in marks.items():
+            self.expect_marks[i] = [on, write, None, key]
+        view = self.page.view_model
+        if view is not None:
+            self._show(view)
+        self._settle.start()
+
+    def _awaited(self, write):
+        """Whether the writer's word for `write` is still to come (its ticket waits, or its Undo does)."""
+        return any(write is t for t in self.tickets) or any(write is u for u in self._mark_undos)
+
+    def _marks_landed(self, write=None, empty=False):
+        """`write`'s marks landed (None: every one whose word isn't awaited — the writer idle): they stand until the
+        views have them. `empty`: it landed as nothing — the next view decides. A write's word may come after the reader's
+        view of it (the store's commit wakes the reader before the writer says so): the reader is asked for a view read
+        after the word (`republish`), so a landed mark goes at the first view that shows it so — and one landed as
+        nothing at the next view — even while another write still waits and no view would come by itself
+        (flakes-2026-11-05 #4; its adversary's B1)."""
+        landed = False
+        for m in self.expect_marks.values():
+            if m[2] is None and (m[1] is write if write is not None else not self._awaited(m[1])):
+                m[2] = 1 if empty else 0
+                landed = True
+        if write is not None:
+            self._mark_undos = [u for u in self._mark_undos if u is not write]
+            ask = getattr(self.reader, "republish", None)
+            if landed and ask is not None:
+                ask()
+
+    def _marks_seen(self, view):
+        """A view from the reader: the marks whose write landed counted against it (a busy store's last view again,
+        or the first screen's cache, is no view of it)."""
+        if getattr(view, "busy", False) or getattr(view, "cached", False) or not getattr(view, "rows", None):
+            return
+        landed = [i for i, m in self.expect_marks.items() if m[2] is not None]
+        if not landed:
+            return
+        shown = {e.id: e.watched for k in self._holding(view) for e in view.rows[k].episodes
+                 if e.id in self.expect_marks}
+        for i in landed:
+            m = self.expect_marks[i]
+            if m[2] or shown.get(i, m[0]) == m[0]:
+                del self.expect_marks[i]
+            else:
+                m[2] = 1
+
+    def _conform(self, view):
+        if any(r.key in self.expect_off and not self.expect_off[r.key].isdisjoint(e.id for e in r.episodes)
+               for r in view.rows):
+            return None                              # LM11b G5: still holding a show taken off — the reader's comes next
+        keys = [r.key for r in view.rows]
+        if tuple(keys) == self.expect:
+            return view
+        rest = [k for k in keys if k not in self.expect_gone]
+        if sorted(rest) != sorted(self.expect):
+            return None
+        v = view
+        gone = {}
+        for k in keys:
+            if k in self.expect_gone:
+                gone.setdefault(self.expect_gone[k], set()).add(k)
+        for where, ks in gone.items():                   # A4: the picks sent to a well go in one pass
+            v = without_many(v, ks, where)
+        if tuple(r.key for r in v.rows) == self.expect and all(
+                r.tier == self.expect_tiers.get(r.key, r.tier) for r in v.rows):
+            return v
+        return reordered(v, list(self.expect), self.expect_tiers)
+
+    def _show(self, view):
+        """Show a view of the window's own making (the drop's order, the marks ahead), past the filter."""
+        self._own = True
+        try:
+            self.win.show_library(self._with_marks(view))
+        finally:
+            self._own = False
+
+    def _ahead(self, view, gone=None, off=None):
+        """The window shows `view` (its own order) ahead of the store until the writer settles. `off` (LM11b G5): (key,
+        ids) — a row that stays with those episodes taken off."""
+        self.expect = tuple(r.key for r in view.rows)
+        self.expect_tiers = {r.key: r.tier for r in view.rows}
+        if gone is not None:
+            self.expect_gone[gone[0]] = gone[1]
+        if off is not None:
+            self.expect_off[off[0]] = self.expect_off.get(off[0], frozenset()) | frozenset(off[1])  # two in a row: both
+        self._asked, self._answer_passed = None, False   # (an ask before this order answers nothing of its write)
+        self._unanswered.stop()
+        self._show(view)
+        self._settle.start()
+
+    def _settled(self):
+        if self._closed:                             # H-T1: the window let this controller go: nothing more of it shown
+            return
+        if self.writer.pending() and not self._writer_stopped():
+            # unbounded by design (G3): a busy store's moves are queued, never dropped, so the window keeps its own
+            # order until they land — however long another program holds the store. A writer stopped (a language
+            # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
+            self._settle.start()
+            return
+        self._marks_landed()                         # a8: the writer idle: every mark no word is awaited for
+        self._let_go(idle=True)
+        self._undo_answered(idle=True)               # (an undo that found nothing to undo answers nothing)
+        republish = getattr(self.reader, "republish", None)
+        if republish is not None and self._asked is None:   # every write landed: the store's own view once more,
+            republish()                              # changed or not — where it placed a row otherwise than drawn (AD2-4)
+
+    def _writer_stopped(self):
+        stopped = getattr(self.writer, "stopped", None)
+        return bool(stopped()) if stopped is not None else False
+
+    def _let_go(self, idle=False, now=False):
+        """The expectation ends: the store's own view stands — the first the reader read after every write landed
+        (alpha 9.1, report 1: never a view it began before, which put a dropped row back where it was until its next
+        build put it forward again — *"it will then move back, wait a second, and then visually go back to where i had
+        moved it"*). Until it comes the window's order stands; a writer still busy asks once it lands (the settle).
+        `now`: the newest view stands at once (a command refused: nothing was written to wait for). The reader's own
+        build of a show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3:
+        never while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
+        off = self._reader_off
+        if off is not None and (idle or off not in self.tickets or self._writer_stopped()):
+            self._reader_off = None
+            self._reader_expects(None)
+        if self._writer_stopped():                   # a8: nothing more lands here: the marks ahead let go too
+            self.expect_marks, self._mark_undos = {}, []
+        if self.expect is not None and not now and self._ask_store():
+            return
+        self._order_off()
+        held, self.held = self.held, None
+        if held is not None and self.running is None:
+            self._show(held)
+        elif held is not None:
+            self.held = held
+        if self.reader is not None:
+            self.reader.refresh()
+
+    def _ask_store(self):
+        """-> True while the window's order waits for the store's own view: asked of the reader now (the writer idle),
+        or by the settle once the writer is (`_settled`). False: nothing to wait for — the window closed or its writer
+        stopped, or a reader that can't answer."""
+        if self._asked is not None:
+            return True
+        if self._closed or self._writer_stopped():
+            return False
+        ask, answered = getattr(self.reader, "republish", None), getattr(self.reader, "answered", None)
+        if ask is None or answered is None:
+            return False
+        if self.writer.pending():
+            self._settle.start()
+            return True
+        n = ask()
+        if n is None:
+            return False
+        self._asked = n
+        self._unanswered.start()
+        return True
+
+    def _store_answers(self, view):
+        """Whether `view` is the reader's answer to the window's ask: read after it, so after every write it waited for."""
+        if self._asked is None or view is None:
+            return False
+        n, answer = self.reader.answered()
+        return answer is view and n >= self._asked
+
+    def _no_answer(self):
+        """A reader that never answered (a store that can't be read for this long): the order goes all the same — the
+        newest view stands, as before the ask. Under the hand it waits for the drop (E6)."""
+        if self._asked is None or self._closed:
+            return
+        if self.running is not None:
+            self._unanswered.start()
+            return
+        self._let_go(now=True)
+
+    def _order_off(self):
+        self._asked, self._answer_passed = None, False
+        self._unanswered.stop()
+        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
+
+    def base(self):
+        """The view the next move starts from: the reader's newest (held) when it has the same rows, else the page's."""
+        shown = self.page.view_model
+        held = self.held
+        if held is not None and shown is not None and {r.key for r in held.rows} >= {r.key for r in shown.rows} and \
+                self.expect is None:
+            return held
+        return shown
+
+    # --- E4: can it be written? --------------------------------------------------------------------------------- #
+    def refused(self):
+        """None when the store takes moves; else the bar's words (said now)."""
+        if self.blocked:
+            self.say(self.blocked)
+            return self.blocked
+        if self.writer.can_write():
+            return None
+        reason = self.writer.reason() or ""
+        plain = strings.store_reason(reason)
+        text = strings.DRAG_REFUSED.format(reason=plain)
+        self.say(text)
+        return text
+
+    def say(self, text):
+        say = getattr(self.win, "say", None)
+        if say is not None:
+            say(text)
+        else:
+            self.page.message.emit(text)
+
+    # --- a drag from the list ----------------------------------------------------------------------------------- #
+    def begin(self, press, global_pos):
+        """(The list.) A press on row `press[0]` has travelled `drag-start-px`: lift it — or, with a store that can't
+        be written, say why and lift nothing (E4)."""
+        if self.running is not None or self.refused() is not None:
+            return False
+        model = self.lst.model()
+        src = press[0]
+        kind, row, lines = model.entries[src]
+        rect = self.lst.visualRect(model.index(src, 0))
+        slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        grab = QPointF(press[3] - slot.topLeft())
+        home = None
+        if model.open_key == row.key:                # a9 try #4: an opened row lifts closed — its ghost and its slot
+            top = rect.top()                         # the closed row's, never a picture of every part (a 300-part
+            self.lst.toggle(model.index(src, 0))     # group's was 13,000 px tall: 2 s on the window's thread here)
+            self.lst.executeDelayedItemsLayout()
+            rect = self.lst.visualRect(model.index(src, 0))
+            slot = self.lst.delegate.slot_rect(kind, rect, lines)
+            if rect.top() != top:                    # near the list's end its scroll clamped: the row moved from
+                home = (QPoint(global_pos), src)     # under the hand — its slot stays its own till the hand travels
+        picked = self.lst.picked_rows
+        if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
+            ok = self._begin_picks(picked, global_pos, slot.size())
+            if ok and self.running is not None:
+                self.running.home = home
+            return ok
+        d = _Drag()
+        d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
+        d.source = "current"
+        d.grab = grab
+        d.home = home
+        height = rect.height() - self.lst.delegate._lines_h(lines)
+        pix = self._row_picture(kind, row, lines, rect, slot)
+        unlit = None
+        if is_mix(row):
+            unlit = strings.WELL_UNLIT_MIX
+        elif split_first(self.page.view_model.rows if self.page.view_model is not None else (), row):
+            unlit = strings.WELL_UNLIT_SPLIT
+        return self._lift_safely(d, pix, slot.size(), height, global_pos, unlit)
+
+    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None, every=None):
+        """A drag of items the list doesn't show (W3.2's tray, the Goal sheet: `source` its tier, "goal" leaves the
+        Goal well out): a card with its title as the ghost, the same drop. A4: `many` titles picked (their card says how
+        many; a drop sends them as the picks' ⋯ does, `send_picks`), `keys` the Current rows they are, `unlit` why the
+        Finished well stays dark (a split's first part among them), `every` the ids a drop on the Finished well finishes
+        (IK2-6: Goal's picks, every part of each — as their ⋯ *Finished*; None: `item_ids`)."""
+        if self.running is not None or self.refused() is not None:
+            return False
+        d = _Drag()
+        d.ids, d.title, d.source, d.external = list(item_ids), title, source, True
+        d.many, d.keys = many, tuple(keys)
+        d.every = list(every) if every is not None else None
+        w = size.width() if size is not None else self.lst.viewport().width()
+        h = size.height() if size is not None else rows.RowDelegate._line_h()
+        dpr = self.lst.viewport().devicePixelRatioF() or 1.0
+        d.grab = QPointF(min(w / 2, 40), h / 2)
+        return self._lift_safely(d, self._card(title, w, h, dpr), QRect(0, 0, w, h).size(),
+                                 h + theme.ROW_LINE["gap"], global_pos, unlit)
+
+    def _card(self, title, w, h, dpr):
+        """A card drag's picture (`title_card`), the same one while its words and size are (IK2-3: so its ghost, baked
+        as the pointer rested on a picked row, is the lift's — never baked again in the lift's turn)."""
+        k = (title, w, h, round(dpr, 3))
+        pix = self._cards.get(k)
+        if pix is None:
+            pix = self._cards[k] = title_card(title, w, h, dpr)
+            while len(self._cards) > D["ghosts-kept"]:
+                del self._cards[next(iter(self._cards))]
+        return pix
+
+    def _begin_picks(self, picked, global_pos, size):
+        """A4: a press on a picked row travelled `drag-start-px` — every picked row lifts as one card (*5 titles*), its
+        items in the list's order; the Finished well dark when a split's first part is among them."""
+        view = self.page.view_model
+        rows_ = view.rows if view is not None else ()
+        mine = [r for r in rows_ if r.key in picked]
+        if not mine:
+            return False
+        ids = [e.id for r in mine for e in r.episodes]     # (`ids_of`'s, in one pass: 10,000 files at 20,000)
+        unlit = strings.WELL_UNLIT_SPLIT if any_split_first(rows_, picked) else None
+        title = strings.PICKS_TITLES.format(n=f"{len(mine):,}")
+        return self.begin_by_id(ids, "current", title, global_pos, size, many=len(mine), keys=[r.key for r in mine],
+                                unlit=unlit)
+
+    def _row_picture(self, kind, row, lines, rect, slot):
+        """The row's cached picture (its hover look, as the hand lifts it), else the list's own pixels there."""
+        delegate = self.lst.delegate
+        dpr = self.lst.viewport().devicePixelRatioF() or 1.0
+        pix = None
+        if self.lst.model().open_key != row.key:
+            try:
+                if kind == rows.ROW:
+                    pix = delegate._closed_row(row, slot, dpr, True)
+                else:
+                    pix = delegate._closed(kind, row, lines, rect, dpr, True)[0]
+            except Exception:
+                pix = None
+        if pix is None:
+            pix = self.lst.viewport().grab(slot)
+        return pix
+
+    def _ghost_for(self, key, pix, size, dpr):
+        """Row `key`'s ghost from its picture `pix` (`size`, `dpr`): the one baked as the pointer rested on it while
+        that is the same picture at the same size, else baked now (and kept). -> (picture, anchor)."""
+        k = (key, size.width(), size.height(), round(dpr, 3))
+        hit = self._ghosts.get(k) if key is not None else None
+        if hit is not None and hit[0] == pix.cacheKey():
+            return hit[1], hit[2]
+        picture, anchor = ghost_picture(pix, size.width(), size.height(), dpr)
+        self.ghost_bakes += 1
+        if key is not None:
+            self._ghosts.pop(k, None)
+            self._ghosts[k] = (pix.cacheKey(), picture, anchor)
+            while len(self._ghosts) > D["ghosts-kept"]:
+                del self._ghosts[next(iter(self._ghosts))]
+        return picture, anchor
+
+    def _warm_ghost(self):
+        """(The pointer rests on the list.) The closed row under it gets its ghost baked now, for a lift (C5)."""
+        lst = self.lst
+        r, model = lst._hover, lst.model()
+        if self.running is not None or r is None or not lst.isVisible() or not 0 <= r < model.rowCount():
+            return
+        kind, row, lines = model.entries[r]
+        if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
+            return                                   # (an opened row lifts closed: its picture is baked at the lift)
+        rect = lst.visualRect(model.index(r, 0))
+        slot = lst.delegate.slot_rect(kind, rect, lines)
+        dpr = lst.viewport().devicePixelRatioF() or 1.0
+        picked = lst.picked_rows
+        try:
+            if row.key in picked and len(picked) > 1:     # IK2-3: a picked row lifts the picks' card (`_begin_picks`)
+                view = self.page.view_model
+                n = sum(1 for r_ in (view.rows if view is not None else ()) if r_.key in picked)
+                title = strings.PICKS_TITLES.format(n=f"{n:,}")
+                w, h = slot.width(), slot.height()
+                self._ghost_for(("picks", title), self._card(title, w, h, dpr), QRect(0, 0, w, h).size(), dpr)
+                return
+            self._ghost_for(row.key, self._row_picture(kind, row, lines, rect, slot), slot.size(), dpr)
+        except Exception as e:                       # (ahead of time only: the lift bakes its own)
+            print(f"Window drag: a ghost baked ahead failed: {e!r}")
+
+    def _lift_safely(self, *args):
+        """`_lift`, and on any error on the way the drag let go at once (the writer's and the reader's holds ended): a
+        half-made drag never leaves the window holding every view and refusing every move (round 2, R3-S2)."""
+        try:
+            self._lift(*args)
+            return True
+        except Exception as e:                       # (raised out of a Qt event handler it would end the program)
+            print(f"Window drag: the lift failed: {e!r}")
+            d = self.running
+            if d is not None:
+                try:
+                    self._end(d)
+                except Exception as e2:
+                    print(f"Window drag: letting go after a failed lift failed too: {e2!r}")
+            if self.ghost is not None:
+                self.ghost.hide()
+            return False
+
+    def _lift(self, d, pix, size, height, global_pos, unlit):
+        lst = self.lst
+        dpr = lst.viewport().devicePixelRatioF() or 1.0
+        self.running = d
+        d.at = global_pos
+        lst._hover = None
+        lst._retouch()                               # the hover look goes: nothing under the hand lifts now
+        lst.clear_picks()                            # --- LM11b G4: a drag lets the picks go
+        anim, self._ghost_anim = self._ghost_anim, None
+        if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
+            anim.stop()                              # (never hides this drag's ghost when it would have finished)
+        picture, anchor = self._ghost_for(d.key if not d.many else ("picks", d.title), pix, size, dpr)
+        self.ghost.set_picture(picture, anchor)
+        self.ghost.set_alpha(D["ghost-alpha"])
+        self.ghost.place(QPointF(global_pos) - d.grab)
+        self.ghost.show()
+        d.parting = Parting(lst, d.src, height)
+        lst.parting = d.parting
+        dock = self.win.dock
+        if dock is not None:
+            dock.begin_drag(d.source)
+            if unlit:
+                dock.set_unlit("finished", unlit)
+        self.win.toasts.set_dragging(True)
+        tips = getattr(self.win, "tooltips", None)
+        if tips is not None:
+            tips.hide()
+        d.holding = True
+        self.writer.hold()
+        if self.reader is not None and hasattr(self.reader, "hold"):
+            self.reader.hold()
+        self._filter(True)
+        self._scroll.start()
+        self._follow(global_pos)
+
+    # --- the hand ---------------------------------------------------------------------------------------------- #
+    def _filter(self, on):
+        app = QApplication.instance()
+        if on and not self._filtering:
+            app.installEventFilter(self)
+            self._filtering = True
+        elif not on and self._filtering:
+            app.removeEventFilter(self)
+            self._filtering = False
+
+    def eventFilter(self, obj, event):
+        t = event.type()
+        d = self.running
+        if d is None:
+            if t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
+                if time.monotonic() < self._swallow_until:
+                    return True                      # the click right after a drag
+            if time.monotonic() >= self._swallow_until:
+                self._filter(False)
+            return False
+        if t == QEvent.Type.MouseMove:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                self.cancel()                        # the button came up where the window couldn't hear it
+                return True
+            self._follow(event.globalPosition().toPoint())
+            return True
+        if t == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            self.drop(event.globalPosition().toPoint())
+            return True
+        if t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.ToolTip,
+                 QEvent.Type.HoverMove, QEvent.Type.HoverEnter):
+            return True
+        if t == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self.cancel()
+            return True
+        if t == QEvent.Type.WindowDeactivate and obj is self.win:
+            self.cancel()
+        elif t == QEvent.Type.ApplicationStateChange and \
+                QApplication.instance().applicationState() != Qt.ApplicationState.ApplicationActive:
+            self.cancel()
+        return False
+
+    def _follow(self, global_pos):
+        d = self.running
+        if d is None:
+            return
+        d.at = global_pos
+        self.ghost.place(QPointF(global_pos) - d.grab)
+        target = self.target_at(global_pos)
+        d.target = target
+        over_well = target[0] in ("well", "tab")
+        self.ghost.set_alpha(D["ghost-alpha-well"] if over_well else D["ghost-alpha"])
+        dock = self.win.dock
+        if dock is not None:
+            dock.hover(target[1] if target[0] == "well" else None)
+        tab = self.win.tab_buttons.get("finished")   # G3.2: the Finished tab lit as the well lights, by its rule
+        if tab is not None:
+            tab.set_drop_lit(target == ("tab", "finished") and not (dock is not None and dock.unlit_tip("finished")))
+        # over a well or the tab the slot goes back to the row's own place (from outside: none opens)
+        d.parting.move_to(target[1] if target[0] == "list" else d.src)
+        if self.joins is not None:                   # --- W3.2 Q8: the part to join outlined (the rows hold still)
+            self.joins.show(target[1] if target[0] == "join" else None)
+
+    def target_at(self, global_pos):
+        """What the hand is over: ("well", name) · ("tab", "finished") · ("list", slot)."""
+        dock = self.win.dock
+        if dock is not None:
+            well = dock.well_at(global_pos)
+            if well is not None:
+                return "well", well
+        tab = self.win.tab_buttons.get("finished")
+        if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
+            return "tab", "finished"
+        d = self.running
+        if d is not None and d.home is not None:     # a9 try #4: the opened row closed under the hand: till the hand
+            if (global_pos - d.home[0]).manhattanLength() < theme.MOTION["drag-start-px"]:     # travels, its own slot
+                return "list", d.home[1]             # (a release right there moves nothing, a rest there joins
+            d.home = None                            # nothing: no hold starts on the row the close put under it)
+        if self.joins is not None and d is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(d, global_pos)
+            if key is not None:
+                return "join", key
+        return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
+
+    def slot_at(self, y):
+        """The place in the new order for a hand at `y` (the list's viewport): before a row when over its upper half,
+        after it over its lower half, by the rows' resting places."""
+        lst, d = self.lst, self.running
+        model = lst.model()
+        n = model.rowCount()
+        if not n or model.entries[0][0] not in (rows.HERO, rows.ROW):
+            return 0
+        src = d.src if d is not None else None
+        top = lst.visualRect(model.index(0, 0)).top()
+        if y < top:
+            return 0
+        idx = lst.indexAt(QPoint(4, y))
+        if not idx.isValid():
+            return n - 1 if src is not None else n
+        j = idx.row()
+        if j == src:
+            return src
+        mid = lst.visualRect(idx).center().y()
+        jj = j if src is None or j < src else j - 1   # its place without the dragged row
+        return jj if y < mid else jj + 1
+
+    def _auto_scroll(self):
+        d = self.running
+        if d is None:
+            self._scroll.stop()
+            return
+        vp = self.lst.viewport()
+        y = vp.mapFromGlobal(d.at).y()
+        edge, step = theme.MOTION["auto-scroll-edge"], theme.MOTION["auto-scroll-px-per-frame"]
+        dy = 0
+        if y < edge:
+            dy = -max(1, round(step * min(1.0, (edge - y) / edge)))
+        else:
+            bottom = vp.height()
+            dock = self.win.dock
+            if dock is not None and dock.isVisible():   # just above the dock: the list's end comes to the hand
+                bottom = min(bottom, vp.mapFromGlobal(dock.mapToGlobal(QPoint(0, 0))).y() -
+                             theme.MOTION["auto-scroll-dock"] + edge)
+            if y > bottom - edge and y < vp.height() + theme.MOTION["auto-scroll-dock"]:
+                dy = max(1, round(step * min(1.0, (y - (bottom - edge)) / edge)))
+        if dy and d.target is not None and d.target[0] == "list":
+            bar = self.lst.verticalScrollBar()
+            before = bar.value()
+            bar.setValue(before + dy)
+            if bar.value() != before:
+                self._follow(d.at)
+
+    def _scrolled(self, value):
+        was, self._bar_was = self._bar_was, value
+        parting = self.lst.parting
+        if parting is not None and parting.alive and value != was:
+            parting.scrolled(value - was)
+
+    # --- the end of a drag ------------------------------------------------------------------------------------- #
+    def cancel(self, why=None):
+        """Esc, a pointer lost, the window let go, the item removed: everything back where it was, nothing written."""
+        d = self.running
+        if d is None:
+            return
+        self._end(d)
+        if self.ghost is not None:
+            self.ghost.hide()
+        if why:
+            self.say(why)
+        self._show_held()
+
+    def _end(self, d, repaint=True):
+        """The drag's machinery down (wells, toasts, the hold on the writer and the reader) and the rows closed up —
+        repainted whole on a cancel; a drop's own paint is its moved rows (W3.1a §3: the rows the parting moved are
+        exactly the rows the drop moved)."""
+        self.running = None
+        self._scroll.stop()
+        self._swallow_until = time.monotonic() + theme.MOTION["click-swallow-after-drag"] / 1000.0
+        QTimer.singleShot(theme.MOTION["click-swallow-after-drag"] + 1, self._unfilter)
+        if d.parting is not None:
+            d.parting.stop()
+        self.lst.parting = None
+        if repaint:
+            self.lst.viewport().update()
+        dock = self.win.dock
+        if dock is not None:
+            dock.end_drag()
+        tab = self.win.tab_buttons.get("finished")   # G3.2
+        if tab is not None:
+            tab.set_drop_lit(False)
+        if self.joins is not None:                   # --- W3.2 Q8
+            self.joins.show(None)
+            self.joins.ended()
+        self.win.toasts.set_dragging(False)
+        if d.holding:                                # (a lift that failed before its holds holds nothing)
+            d.holding = False
+            if self.reader is not None and hasattr(self.reader, "release"):
+                self.reader.release()
+            self.writer.release()
+
+    def _unfilter(self):
+        if self.running is None and time.monotonic() >= self._swallow_until:
+            self._filter(False)
+
+    def _show_held(self):
+        held, self.held = self.held, None
+        if held is not None:
+            if self.expect is None:
+                self._show(held)
+            elif self._answer_passed:                # the store's answer came under the hand: it stands
+                self._order_off()
+                self._show(held)
+            else:
+                out = self._conform(held)
+                if out is not None:
+                    self._show(out)
+                else:
+                    self.held = held
+
+    def drop(self, global_pos):
+        d = self.running
+        if d is None:
+            return
+        target = self.target_at(global_pos)
+        kind, name = target
+        if kind == "well":
+            unlit = self.win.dock.unlit_tip(name) if self.win.dock is not None else None
+            if unlit:
+                self.cancel(unlit)                   # the well never lit: it goes back, and the tip says why
+                return
+            self._to_well(d, name)
+        elif kind == "tab":                          # the Finished tab takes a drop too (A2 #21), with the well's rule
+            if not d.external and is_mix(d.row):
+                self.cancel(strings.WELL_UNLIT_MIX)
+                return
+            if not d.external and split_first(self.page.view_model.rows, d.row):
+                self.cancel(strings.WELL_UNLIT_SPLIT)
+                return
+            unlit = self.win.dock.unlit_tip("finished") if d.external and self.win.dock is not None else None
+            if unlit:                                # A4: picks holding a split's first part
+                self.cancel(unlit)
+                return
+            self._to_well(d, "finished")
+        elif kind == "join":                         # --- W3.2 Q8: dropped on another part of the same title
+            self._end(d)
+            self._glide_away()
+            self.joins.drop(d, name)
+        else:
+            vp = self.lst.viewport()
+            if not vp.rect().contains(vp.mapFromGlobal(global_pos)):
+                self.cancel()                        # let go outside the list (off the window): given up, nothing written
+                return
+            slot = name
+            if d.src is not None and slot == d.src:
+                self.cancel()                        # back where it was: nothing to write
+                return
+            self._to_place(d, slot)
+
+    def _to_place(self, d, slot):
+        view = self.page.view_model
+        rows_ = view.rows
+        if d.many:                                   # A4: the picks dropped in a gap
+            self._picks_to_place(d, rows_, slot)
+            return
+        tier, before_id, after_id, near = placement(rows_, d.src, slot)
+        if d.external:
+            self._end(d)
+            self._glide_away()
+            text = strings.DRAG_UP_NEXT.format(title=d.title) if slot == 0 else \
+                strings.DRAG_PLACED.format(title=d.title, n=slot + 1)
+            self._give(Ticket(text, ids=d.ids), lambda t: self.writer.move(d.ids, tier, before_id=before_id,
+                                                                           after_id=after_id, near=near, label=t))
+            return
+        base = self.base()
+        keys = [r.key for r in base.rows]
+        moved = order_after([r.key for r in rows_], d.key, slot)
+        new_keys = self._fit(keys, moved, d.key)
+        new = reordered(base, new_keys, {d.key: tier})
+        place = new_keys.index(d.key)
+        text = strings.DRAG_UP_NEXT.format(title=d.title) if place == 0 else \
+            (strings.DRAG_PLACED_MINES if mines_itself(new.lines, place) else strings.DRAG_PLACED).format(
+                title=d.title, n=place + 1)
+        ticket = Ticket(text, keys=(d.key,), ids=d.ids)
+        ticket.why = mines_why(new.lines, place)
+        self._end(d, repaint=False)
+        self.held = None
+        self.lst.landing = d.key
+        self._ahead(new)
+        self._give(ticket, lambda t: self.writer.move(d.ids, tier, before_id=before_id, after_id=after_id, near=near,
+                                                      label=t))
+        self._glide_home(d.key)
+
+    def _picks_to_place(self, d, rows_, slot):
+        """A4: the picks dropped in a gap — ONE `move` beside the painted neighbour that isn't picked (an anchor among
+        the picks would be no move), shown at once in their new place (Current's rows) with one toast and one Undo."""
+        picked = set(d.keys)
+        rest = [r for r in rows_ if r.key not in picked]
+        at = sum(1 for r in rows_[:slot] if r.key not in picked)
+        tier, before_id, after_id, near = placement(rest, None, at)
+        self._end(d)
+        self._glide_away()
+        base = self.base()
+        mine = [r for r in rows_ if r.key in picked]
+        if mine and base is not None and {r.key for r in base.rows} == {r.key for r in rows_}:
+            keys = [r.key for r in rest[:at]] + [r.key for r in mine] + [r.key for r in rest[at:]]
+            self.held = None
+            self._ahead(reordered(base, keys, {k: tier for k in picked}))
+        text = strings.PICKS_DONE["top"].format(title=d.title) if at == 0 else \
+            strings.DRAG_PLACED.format(title=d.title, n=at + 1)
+        ids = d.ids
+        self._give(Ticket(text, d.keys, ids), lambda t: self.writer.move(ids, tier, before_id=before_id,
+                                                                          after_id=after_id, near=near, label=t))
+
+    @staticmethod
+    def _fit(keys, moved, key):
+        """The drop's order laid onto `keys` (the reader's newest, which may hold a row the screen didn't): the moved
+        row after the row it follows on screen, else before the one it precedes."""
+        if sorted(keys) == sorted(moved):
+            return moved
+        at = moved.index(key)
+        out = [k for k in keys if k != key]
+        prev = moved[at - 1] if at > 0 else None
+        nxt = moved[at + 1] if at + 1 < len(moved) else None
+        if prev is not None and prev in out:
+            out.insert(out.index(prev) + 1, key)
+        elif nxt is not None and nxt in out:
+            out.insert(out.index(nxt), key)
+        else:
+            out.insert(min(at, len(out)), key)
+        return out
+
+    def _to_well(self, d, name):
+        if d.many:                                   # A4: the picks into a well — as the picks' ⋯ sends them
+            self._end(d)
+            self._glide_away()
+            ids = d.every if name == "finished" and d.every is not None else d.ids
+            self.send_picks(name, ids, d.many, d.keys, d.source)
+            return
+        if d.external:
+            self._end(d)
+            self._glide_away()
+            self._well_command(d, name, None)
+            return
+        base = self.base()
+        if name == "soon":
+            slot, files, after_id = soon_slot(base.rows, next((i for i, r in enumerate(base.rows) if r.key == d.key),
+                                                              None))
+            new_keys = order_after([r.key for r in base.rows], d.key, slot)
+            new = reordered(base, new_keys, {d.key: "soon"})
+            place = new_keys.index(d.key)
+            text = strings.DRAG_SOON.format(title=d.title, n=place + 1, files=files) if files else \
+                strings.DRAG_SOON_NO_COUNT.format(title=d.title, n=place + 1)
+            ticket = Ticket(text, keys=(d.key,), ids=d.ids)
+            self._end(d)
+            self.held = None
+            self._ahead(new)
+            self._give(ticket, lambda t: self.writer.move(d.ids, "soon", after_id=after_id, label=t))
+            self._glide_away()
+            return
+        where = "goal" if name == "goal" else FINISHED
+        new = without(base, d.key, where)
+        self._end(d)
+        self.held = None
+        self._ahead(new, gone=(d.key, where))
+        self._well_command(d, name, d.key)
+        self._glide_away()
+
+    def _well_command(self, d, name, key):
+        keys = (key,) if key is not None else ()
+        if name == "soon":
+            base = self.base()
+            after_id = soon_slot(base.rows, None)[2] if base is not None else None    # after a show the line cuts
+            ticket = Ticket(strings.DRAG_SOON_NO_COUNT.format(title=d.title, n=1), keys, d.ids)
+            self._give(ticket, lambda t: self.writer.move(d.ids, "soon", after_id=after_id, label=t))
+        elif name == "goal":
+            ticket = Ticket(strings.DRAG_GOAL.format(title=d.title), keys, d.ids)
+            self._give(ticket, lambda t: self.writer.move(d.ids, "goal", end=True, label=t))
+        else:
+            self._finish(d.title, d.ids, keys)
+
+    def _finish(self, title, ids, keys=(), many=False, text=None, why=None):
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
+        something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
+        itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
+        lands (Anki moves after the Generate it starts: the bar's arc — the row has left this list)."""
+        how = self.finish_how()
+        template = text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED)
+        if how == "out":
+            template = strings.FINISHED_OUT.get(template, template)
+        ticket = Ticket(template.format(title=title), keys, ids)
+        ticket.why = why
+        if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
+                      anki=on_bar) is None:
+            return None
+        for work_id in [w for w, k in self._airing_asking.items() if k in keys]:
+            del self._airing_asking[work_id]         # alpha 9 M1: sent to Finished — never again by itself (its Undo)
+        self.finish_choice(ticket, ids, title, keys, many=many, how=how)
+        return ticket
+
+    def finish_how(self):
+        """Settings' *When you finish something* now (`settings_manager.finish_cards`): "ask", "keep" or "out"."""
+        services = getattr(self.win, "services", None)
+        return settings_manager.finish_cards(services.settings.get() if services is not None else None)
+
+    def finish_choice(self, ticket, ids, title, keys=(), many=False, how=None, anki=True):
+        """The finish toast for `ticket`, the drop to Finished (D14), as *When you finish something* says (`how`, read
+        when the drop was made): "ask" — *Keep* or *Leave its new cards out of your order*, each written as
+        `set_finished` (live, never greyed); "keep" — no question; "out" — its new cards left out with the drop, linked
+        to it (`follows`: the toast's one Undo takes both back). `anki`: the choice's Anki half a press on the bar
+        (the arrivals' own finish has none)."""
+        def choose(keep, toast=None, rides=False):
+            choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
+                            ids)
+            choice.follows = ticket
+            choice.rides = rides
+            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket),
+                       toast=not keep if toast is None else toast, anki=None if keep or not anki else on_bar)
+        how = how or self.finish_how()
+        if how == "ask":
+            self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
+                                         (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
+            return
+        self._toast(ticket)                          # the drop's toast: its Undo takes the choice back too (AD-6)
+        if how == "out":                             # one finish to the learner: Ctrl+Z takes both back too (`undo`)
+            choose(False, toast=False, rides=True)
+
+    def _set_finished(self, ids, keep, label, follows):
+        """The Finished toast's choice, linked to the drop's change (`follows=`: the drop's Undo then undoes both). Chosen
+        before the drop is saved (a busy store), it waits for that change and is given as it lands — unlinked if the
+        drop lands as nothing to change; dropped if its own Undo was asked meanwhile. -> the command's number (or True
+        while it waits), None when refused."""
+        if follows.change is None and follows in self.tickets:
+            def given():
+                if label.undo_asked:                 # taken back before it was ever given
+                    self._settle_ticket(label)
+                    return
+                if self.writer.set_finished(ids, keep_cards=keep, label=label, follows=follows.change) is None:
+                    self._settle_ticket(label)
+                    self.refused()
+            follows.then = given
+            return True
+        return self.writer.set_finished(ids, keep_cards=keep, label=label, follows=follows.change)
+
+    # --- the ghost's last move ------------------------------------------------------------------------------------ #
+    def _glide_home(self, key):
+        """The ghost glides onto the row's new place (`ghost-glide`; Reduced motion: none), its slot showing there
+        meanwhile; then the row."""
+        ghost = self.ghost
+        model = self.lst.model()
+        at = next((i for i, e in enumerate(model.entries) if getattr(e[1], "key", None) == key), None)
+        if ghost is None or at is None:
+            self._landed(key)
+            return
+        kind, _row, lines = model.entries[at]
+        slot = self.lst.delegate.slot_rect(kind, self.lst.visualRect(model.index(at, 0)), lines)
+        to = QPointF(self.lst.viewport().mapToGlobal(slot.topLeft()))
+        start = ghost.box_at()
+        ghost.set_alpha(D["ghost-alpha"])
+        self.lst.update(model.index(at, 0))
+        self._ghost_anim = motion.clock().animate(
+            theme.MOTION["ghost-glide"], lambda k: ghost.place(start + (to - start) * k),
+            on_done=lambda: self._landed(key), kind="move", owner=ghost, on_end=lambda: self._landed(key))
+
+    def _landed(self, key):
+        if self.ghost is not None:
+            self.ghost.hide()
+        if self.lst.landing == key:
+            self.lst.landing = None
+            model = self.lst.model()
+            at = next((i for i, e in enumerate(model.entries) if getattr(e[1], "key", None) == key), None)
+            if at is not None:
+                self.lst.update(model.index(at, 0))
+
+    def _glide_away(self):
+        """Into a well (or from outside): the ghost fades out (`ghost-removed`; Reduced motion: a fade kept, no longer
+        than FAST)."""
+        ghost = self.ghost
+        if ghost is None:
+            return
+        start = ghost.alpha
+        self._ghost_anim = motion.clock().animate(
+            theme.MOTION["ghost-removed"], lambda k: ghost.set_alpha(start * (1 - k)),
+            on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
+
+    # --- commands, toasts, Undo ------------------------------------------------------------------------------------ #
+    def _give(self, ticket, command, toast=True, anki=None, marks=None):
+        """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo.
+        `anki` (finish-pending): the command's Anki half waits for the Generate it starts — `anki()` makes what its
+        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`). `marks` (a8): {file id: watched}
+        the command marks, painted as it is handed over (`_marks_ahead`)."""
+        if anki is not None:
+            ticket.anki = anki
+            self._anki_begin(ticket)
+        self._urgent()
+        defer = getattr(self.writer, "defer", None)
+        if defer is not None:                        # its write starts once the press is painted (`after_paint`, below)
+            defer()
+        seq = command(ticket)
+        if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
+            if defer is not None:
+                self.writer.go()                     # (nothing of this press waits)
+            _tell(ticket, "refused")
+            self._ended(ticket)
+            self._anki_landed(ticket)                # (its press ends: the bar says why, below)
+            if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
+                self.say(strings.MOVE_NOT_SAVED)
+            held = self.held
+            self._let_go(now=True)
+            view = getattr(self.reader, "view", None)
+            view = view() if held is None and view is not None else None
+            if view is not None and view is not self.page.view_model:
+                self._show(view)                     # ... and the order painted ahead of it put back as the store has it
+            return None
+        self.drops += 1
+        self.tickets.append(ticket)
+        if not self._fresh:                          # this turn's writes: a toast shown in it stands for them
+            QTimer.singleShot(0, self._fresh.clear)
+        self._fresh.append(ticket)
+        self._settle.start()
+        if marks:
+            ticket.marks = dict(marks)
+            self._marks_ahead(ticket, marks, ticket.keys[0] if ticket.keys else None)
+        if toast:
+            self._toast(ticket)
+        if defer is not None:                        # (posted after what the press painted asked for its update)
+            after_paint(self.writer.go)
+        return seq
+
+    def _toast(self, ticket, buttons=()):
+        ticket.toast = True
+        self.toasted = ticket
+        self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
+        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons, why=ticket.why)
+
+    # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
+    def _toast_shown(self):
+        """(The toast host, as any toast shows.) It stands for the writes given this turn — none for a toast of its own
+        (a note, the Anki offer); `_toast` names its ticket itself."""
+        self.toast_for = self._showing if self._showing is not None else tuple(self._fresh)
+        self._showing = None
+        self._fresh.clear()
+        self._reason = None
+        if any(t.change is None for t in self.toast_for):
+            self.win.toasts.keep_room()              # it says *· saving…* until it lands: nothing moves as that goes
+        self._paint_toast()
+
+    def _paint_toast(self):
+        toasts = getattr(self.win, "toasts", None)
+        if toasts is None:
+            return
+        waiting = not self._closed and any(t.change is None and any(t is w for w in self.tickets)
+                                           for t in self.toast_for)
+        try:
+            toasts.set_saving(waiting)
+        except RuntimeError:                         # (the window going: its toast with it)
+            pass
+
+    def _ended(self, ticket):
+        """`ticket` settled (saved, refused, landed as nothing): the toast's words — done once saved; if none of the
+        writes it stands for was saved, the store's reason in its place, or no toast."""
+        mine = self.toast_for
+        toasts = getattr(self.win, "toasts", None)
+        if not self._closed and toasts is not None and toasts.alive and any(ticket is t for t in mine) and all(
+                t.change is None and not any(t is w for w in self.tickets) for t in mine):
+            reason, self._reason = self._reason, None
+            self.toast_for = ()
+            if self.toasted is not None and any(self.toasted is t for t in mine):
+                self.toasted = None
+            if reason:
+                toasts.show(reason)                  # refused: why, where it said what it would do
+            else:
+                toasts.close()                       # nothing to change: nothing to say, nothing to undo
+            return
+        self._paint_toast()
+
+    # --- Undo ---------------------------------------------------------------------------------------------------- #
+    def _undo_pressed(self):
+        """Round 8 row 45: *Undoing…* in the bar from the press — painted before the writer is asked — until the undo
+        lands (`_undo_answered`)."""
+        if self._undoing is None:
+            self._undoing = qpress.begin(None, "undo", busy=strings.UNDOING, win=self.win)
+
+    def _urgent(self):
+        """(a4) The learner's own command on its way to the writer: its views build at once, an import's burst aside
+        (the reader's `urgent`) — every command `_give` hands over, and every Undo (fix round, A4A-6)."""
+        urgent = getattr(self.reader, "urgent", None)
+        if urgent is not None:
+            urgent()
+
+    def _undo_to_writer(self, change=None, label=None):
+        """An undo handed to the writer — watched until the writer is idle, as every command `_give` hands it is
+        (`_settled`): one that finds nothing to undo answers nothing at all, and *Undoing…* ends there. `label`
+        (finish-pending): the undo's own ticket, so a change whose Anki half waited waits the same way back. -> the
+        writer's answer (None: refused)."""
+        self._undos += 1
+        self._urgent()
+        seq = self.writer.undo(change) if label is None else self.writer.undo(change, label=label)
+        self._settle.start()
+        return seq
+
+    def _undo_answered(self, answered=True, idle=False):
+        """An undo landed (`answered`), or the writer is idle (`idle`: one that undid nothing, or failed): *Undoing…*
+        ends once none waits — none handed over unanswered, no Undo asked of a change not saved yet."""
+        if idle:
+            self._undos = 0
+        elif answered:
+            self._undos = max(0, self._undos - 1)
+        p = self._undoing
+        if p is None or self._undos or any(t.undo_asked for t in self.tickets):
+            return
+        self._undoing = None
+        qpress.end(p, self.win)
+
+    def undo(self, ticket):
+        """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands).
+        finish-pending: a change whose Anki half waits — its press lets go, and the Undo's own waits the same way back;
+        asked before the change was saved, its press stays and waits for the Undo's re-order (`_saved`)."""
+        if ticket.rides and ticket.follows is not None:
+            self.undo(ticket.follows)                # a choice the setting made: its drop's Undo takes both (AD-6)
+            return
+        _tell(ticket, "undone")
+        back = {i: not on for i, on in ticket.marks.items()} if ticket.marks else None   # a8: its stones, turned back
+        if ticket.change is not None:
+            self._anki_drop(lambda t: t is ticket or t.follows is ticket)     # (a drop's choice with it)
+            anki = self._anki_back(ticket) if ticket.anki is not None else None
+            label = anki
+            if back and anki is None:                # a8: painted now, kept for the Undo's own word
+                label = Ticket(None)
+                self._mark_undos.append(label)
+                self._marks_ahead(label, back, ticket.keys[0] if ticket.keys else None)
+            self._undo_pressed()
+            if self._undo_to_writer(ticket.change, label=label) is None:
+                if anki is not None:
+                    self._anki_landed(anki)
+                elif label is not None:
+                    self._marks_landed(label, empty=True)
+            self._let_go()
+        else:
+            if back:                                 # a8: painted now, on its own ticket (`_saved` hands them on)
+                self._marks_ahead(ticket, back, ticket.keys[0] if ticket.keys else None)
+            ticket.undo_asked = True
+            if any(ticket is t for t in self.tickets):   # (one that landed as nothing has nothing to wait for)
+                self._undo_pressed()
+            self._paint_toast()
+
+
+    def undo_last(self):
+        """Ctrl+Z: the newest change, as the writer reaches it — the newest command the window gave if it isn't saved yet
+        (a busy store, an Explorer drop still copying, a Finished choice waiting on its drop): that one, as it lands, as
+        its toast's Undo does (never the change before it; round 2, AD2-5 / AD2-6)."""
+        if self.running is not None:
+            return
+        waiting = [t for t in self.tickets if t.change is None and not t.undo_asked]
+        if waiting:
+            self.undo(waiting[-1])
+            return
+        if self.writer.can_undo() or self.writer.pending():
+            # 3.0.1 item 12: what it takes is known now when nothing queued before it can change the Undo stack (a
+            # background cover, a download's registration, Settings' lines: `Writer.newest`) — that change, painted now
+            # and named to the writer, whatever waits ahead of it; else (a move, a Done, an Undo queued) as it lands
+            newest = getattr(self.writer, "newest", None)
+            change = newest() if newest is not None else None
+            drop = self._rides.get(change) if change is not None else None
+            if drop is not None and drop.change is not None:     # the setting's choice: the drop's Undo takes both
+                self.undo(drop)
+                return
+            self._undo_pressed()
+            label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
+            if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
+                self._mark_undos.append(label)
+                self._marks_ahead(label, {i: not on for i, on in marks.items()}, key)
+            if self._undo_to_writer(change, label=label) is None and marks:
+                self._marks_landed(label, empty=True)
+            self._let_go()
+
+    def _saved(self, change, label):
+        if isinstance(label, Ticket):
+            label.change = change
+            _tell(label, "saved")
+            if label.rides and label.follows is not None:
+                self._rides[change] = label.follows
+            then, label.then = label.then, None
+            if label.anki is not None:
+                self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
+            if label.marks:                          # a8: Ctrl+Z's undo of it painted ahead too
+                self._marks_of[change] = (label.marks, label.keys[0] if label.keys else None)
+            if label.undo_asked:
+                label.undo_asked = False
+                if then is not None:                 # the drop taken back: its waiting choice with it
+                    then = None
+                    self._drop_waiting(label)
+                p = self._landing.pop(label, None)   # finish-pending: its press waits for the Undo's re-order now
+                back = self._anki_back(label, p) if p is not None else None
+                undo = back
+                if label.marks and back is None:     # a8: its stones turned back, kept for the Undo's own word now
+                    undo = Ticket(None)
+                    self._mark_undos.append(undo)
+                    for m in self.expect_marks.values():
+                        if m[1] is label:
+                            m[1] = undo
+                if self._undo_to_writer(change, label=undo) is None:
+                    if back is not None:
+                        self._anki_landed(back)
+                    elif undo is not None:
+                        self._marks_landed(undo, empty=True)
+                self._let_go()
+            if then is not None:
+                then()
+            self._marks_landed(label)
+        self._settle_ticket(label)
+        if self.reader is not None:
+            self.reader.refresh()
+        _skips_moved(self.win, change)
+        _sources_stopped(self.win, change, language=getattr(self.writer, "language", None))
+        _trash_moved(self.win, change)
+
+    def _undone(self, change, label):
+        _skips_moved(self.win, change, undone=True)
+        _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
+        _trash_moved(self.win, change)
+        mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        if change is not None:
+            self._marks_of.pop(change, None)
+        if isinstance(label, Ticket):
+            self._marks_landed(label)                # a8: its stones stand until the views have them
+            _tell(label, "undone")
+            if label not in self._landing and mark is not None and label.anki is None:
+                # finish-pending (intent finding 2): Ctrl+Z of a change whose Anki half waited — the change's press
+                # lets go, and the undo's own waits the same way back (the toast's Undo started its own at the click)
+                self._anki_drop(lambda t: t.change is change or (t.follows is not None and t.follows.change is change))
+                label.anki = mark
+                self._anki_begin(label)
+            if label in self._landing:               # finish-pending: an Undo's own press, its change landed
+                label.change = change
+                self._anki_landed(label)
+        if self.toasted is not None and self.toasted.change is change:
+            self.win.toasts.close()                  # its toast goes with it
+            self.toasted = None
+        self._let_go()
+        self._undo_answered()
+
+    def _settle_ticket(self, ticket):
+        if isinstance(ticket, Ticket) and ticket.change is None:
+            _tell(ticket, "ended")                   # (Q7: a press waiting for "saved" never turns for ever)
+        self._anki_landed(ticket)
+        try:
+            self.tickets.remove(ticket)
+        except ValueError:
+            pass
+        self._settle.start()
+        self._paint_saving()
+        self._ended(ticket)
+        self._undo_answered(answered=False)
+
+    def _saving(self, on):
+        """*saving…* on the rows whose moves wait (after 300 ms; 04 §4.5), until the store takes them."""
+        self.saving_keys = frozenset(k for t in self.tickets for k in t.keys) if on else frozenset()
+        self._paint_saving()
+        told = getattr(self.win, "moves_saving", None)       # the phase strip: 届 waits while the store holds them
+        if told is not None:
+            told(bool(on))
+
+    def _paint_saving(self):
+        keys = self.saving_keys if self.tickets else frozenset()
+        if keys == self.lst.saving:
+            return
+        changed = keys ^ self.lst.saving
+        self.lst.saving = keys
+        model = self.lst.model()
+        for i, e in enumerate(model.entries):
+            if getattr(e[1], "key", None) in changed:
+                self.lst.update(model.index(i, 0))
+
+    def _drop_waiting(self, ticket):
+        """The choices waiting for `ticket`'s change, let go (never given)."""
+        for t in list(self.tickets):
+            if t.follows is ticket and t.change is None:
+                self._settle_ticket(t)
+
+    # --- finish-pending: a command whose Anki half waits for its Generate ---------------------------------------- #
+    # Kura's W-1b (PROVISIONAL, the lead + Sonic: "Finish acts after its Generate; pending shown at once"): Finish (a
+    # drop on Finished, the toast's *Leave its new cards out of your order*), Finished's *Put back* and *Leave its new
+    # cards out* / *Put them back in the order*, and their Undo (the toast's, Ctrl+Z's, one asked before the change was
+    # saved) write the store at once while Anki moves only once the host re-orders for that write — after the Generate
+    # it starts. Sonic's doctrine, every press reacts at once: one press per command, painted before the writer has it
+    # (`_anki_begin`), live until the store records that re-order (`planned_order_version` / `planned_pins_version`
+    # reach the change's `landed` versions, told by the reader — never a store read here). One rule ends it otherwise
+    # (`_anki_end`): the line the host leaves it with — a line that gives up (`replan_preview.GivesUp`: Anki closed, a
+    # Generate to press, 順's deck to pick; said as that kind by the host, never matched by its words) ends it failed,
+    # with those words; `OFF` (automation or 順 off, 順 absent: the user's own choice — at the write, from the gate
+    # asked once, or later, from the host letting go) ends it quietly. A Generate that fails, or that the learner stops
+    # (never one the journey keeper withdrew, nor one their own Generate joined), ends it failed with Generate's words.
+    # No host, or nothing written: done as it lands. A language switch and the window's close let it go (`close`).
+    # Words: none in the bar while it waits (FP-1 lean b, PROVISIONAL): a hover on the bar's arc says what it waits
+    # for (`strings.ANKI_WAIT_TIP`); the host's line is in 順's hover and Generate's steps in its own, and the toast
+    # keeps its own words.
+    def _anki_begin(self, ticket):
+        try:
+            at = ticket.anki()
+        except Exception as e:
+            print(f"A press's mark couldn't be made: {e!r}")
+            at = None
+        p = qpress.begin(None, ("anki", next(_anki_keys)), win=self.win, at=at)
+        if p is None:
+            return
+        self._landing[ticket] = p
+        arc = getattr(self.win, "bar_arc", None)
+        if at is None and arc is not None and not sip.isdeleted(arc):
+            self._on_bar.add(p)
+            arc.setToolTip(strings.ANKI_WAIT_TIP)
+
+    def _anki_end(self, p, why=None):
+        """The one end of a press waiting for Anki: `why` words (a line that gives up, Generate's) -> failed, with
+        them; None or `OFF` -> done, quietly. Its key leaves the window's press table (FP-A7)."""
+        if p.live():
+            qpress.end(p, self.win, failed=bool(why), why=why or None)
+        self._on_bar.discard(p)
+        arc = getattr(self.win, "bar_arc", None)
+        if not self._on_bar and arc is not None and not sip.isdeleted(arc):
+            arc.setToolTip("")
+        qpress.presses_of(self.win).forget(p.key)
+
+    def _anki_end_owed(self, why):
+        """Every press owed a re-order ends with `why` (`_anki_end`), said once in the bar when it has words."""
+        owed, self._owed = self._owed, []
+        for p, _stamp, _ticket in owed:
+            self._anki_end(p, why)
+        if owed and why:
+            self.say(why)
+
+    def _anki_drop(self, mine):
+        """The presses of the tickets `mine(ticket)` picks let go (their change undone): done, quietly."""
+        for waiting in (self._landing, self._asking):
+            for t in [t for t in waiting if mine(t)]:
+                self._anki_end(waiting.pop(t))
+        for got in [w for w in self._owed if mine(w[2])]:
+            self._owed.remove(got)
+            self._anki_end(got[0])
+
+    def _anki_back(self, ticket, p=None):
+        """The ticket an Undo of `ticket`'s change is given with: its press waits the same way back — `p` taken over
+        (an Undo asked before the change was saved: the mark never stops), else a new one."""
+        back = Ticket(ticket.text, ticket.keys, ticket.ids)
+        back.anki = ticket.anki
+        if p is None:
+            self._anki_begin(back)
+        else:
+            self._landing[back] = p
+        return back
+
+    def _anki_landed(self, ticket):
+        """`ticket`'s write landed (its change, the store's versions with it), or never will: what its press waits
+        for."""
+        p = self._landing.pop(ticket, None)
+        if p is None or not p.live():
+            return
+        stamp = getattr(ticket.change, "landed", None) if ticket.change is not None else None
+        services = getattr(self.win, "services", None)
+        if stamp is None or self._closed or getattr(services, "replan", None) is None:
+            self._anki_end(p)                        # nothing written, or no host: nothing is owed to Anki
+            return
+        self._asking[ticket] = p
+        bridge.run_in_worker(_aside, services.settings.get(), getattr(self.win, "language", None) or "ja",
+                             then=lambda why: self._owing(p, stamp, ticket, why),
+                             failed=lambda _info: self._owing(p, stamp, ticket, None))
+
+    def _owing(self, p, stamp, ticket, why):
+        if sip.isdeleted(self) or self._asking.get(ticket) is not p:
+            return                                   # (its Undo asked meanwhile: let go)
+        del self._asking[ticket]
+        heard = self._heard_line
+        if not self._asking:
+            self._heard_line = None
+        if not p.live():
+            return
+        if self._closed:
+            self._anki_end(p)
+            return
+        if why is not None:
+            from app import replan_preview
+            if not isinstance(why, replan_preview.GivesUp):   # (said already: `aside_line`'s, a7)
+                why = replan_preview.ends_with(why)  # the user's own choice: OFF, quietly; the deck to pick: its words
+            self._anki_end(p, why)
+            if why:
+                self.say(why)
+            return
+        self._owed.append((p, stamp, ticket))
+        if heard is not None:
+            self._anki_end_owed(heard)               # FP-A6: a line that gave up while the gate was asked
+            return
+        self._caught_up()
+
+    def _caught_up(self):
+        """The presses whose re-order the store has recorded end (done); a library made again (another epoch) too."""
+        v = self._versions
+        for got in list(self._owed):
+            p, stamp, _ticket = got
+            if not p.live():
+                self._owed.remove(got)
+                self._anki_end(p)
+            elif v is not None and (v.get("epoch") != stamp["epoch"] or (
+                    v.get("planned_order_version", 0) >= stamp["order_version"]
+                    and v.get("planned_pins_version", 0) >= stamp["pins_version"])):
+                self._owed.remove(got)
+                self._anki_end(p)
+
+    def _versions_in(self, versions):
+        self._versions = versions
+        if self._owed:
+            self._caught_up()
+
+    def _line_in(self, line):
+        """The host's line: one that gives up (or `OFF`) ends the presses owed a re-order (`_anki_end`); heard while a
+        press's gate is still asked, it waits for that press (FP-A6) — until a line of another kind follows it."""
+        if not (self._owed or self._asking):
+            return
+        from app import replan_preview
+        if not isinstance(line, replan_preview.GivesUp):
+            if line:
+                self._heard_line = None              # the host went on: its give-up is not the last word
+            return
+        if self._asking:
+            self._heard_line = line
+        if self._owed:
+            self._anki_end_owed(line)
+
+    def _jobs_in(self, views):
+        """A Generate that ends without its list while a press waits for it — failed, or stopped by the learner
+        (FP-3; never one the journey keeper withdrew to ask again, nor one the learner's own Generate joined): the
+        press fails, with Generate's words."""
+        if not self._owed:
+            self._generates.clear()
+            return
+        running = any(v.kind == "generate" and v.state in jobs_module.LIVE for v in views)
+        for v in views:
+            if v.kind != "generate":
+                continue
+            if v.state in jobs_module.LIVE:
+                self._generates.add(v.id)
+            elif v.id in self._generates:
+                self._generates.discard(v.id)
+                if v.cancelled:
+                    withdrawn = getattr(getattr(self.win.services, "controller", None), "withdrawn", None)
+                    if not running and not (withdrawn is not None and withdrawn(v.id)):
+                        self._anki_end_owed(strings.ANKI_WAIT_GENERATE_STOPPED)
+                        return
+                elif v.state == jobs_module.FAILED:
+                    self._anki_end_owed(strings.ANKI_WAIT_GENERATE_FAILED.format(message=v.message or "—"))
+                    return
+
+    def _anki_let_go(self):
+        """A language switch, the window's close: no press of this controller's left turning."""
+        landing = list(self._landing.values()) + list(self._asking.values())
+        self._landing, self._asking = {}, {}
+        owed, self._owed = [w[0] for w in self._owed], []
+        for p in landing + owed:
+            self._anki_end(p)
+
+    def _reread(self):
+        """The store placed something elsewhere, or had nothing to change: its view stands now (a choice waiting for a
+        drop that landed as nothing is given unlinked). W3.2 (S5): while others still wait, the tickets whose own
+        command landed as nothing settle (Ctrl+Z never picks one that has nothing to undo)."""
+        landed = getattr(self.writer, "landed_empty", None)
+        empty = landed() if landed is not None else ()
+        for e in empty:                              # a8: a mark that landed as nothing: its stone as the store has it
+            self._marks_landed(e, empty=True)
+        if not self.writer.pending():
+            for t in list(self.tickets):
+                then, t.then = t.then, None
+                if then is not None and not t.undo_asked:
+                    then()
+            settled, self.tickets = self.tickets, []
+            self._paint_saving()
+            for t in settled:
+                if isinstance(t, Ticket) and t.change is None:
+                    _tell(t, "ended")
+                    self._marks_landed(t, empty=True)    # a8: nothing written: the next view decides
+                self._ended(t)
+            self._undo_answered(idle=True)
+        else:
+            for t in list(self.tickets):
+                if t.change is None and any(t is e for e in empty):
+                    then, t.then = t.then, None
+                    if then is not None and not t.undo_asked:
+                        then()
+                    self._settle_ticket(t)
+        for t in [t for t in self._landing if any(t is e for e in empty)]:
+            self._anki_landed(t)                     # finish-pending FP-A1: only a press whose own command landed as
+        self._let_go()                               # nothing (an Undo refused) — never "the queue is empty"
+
+    def _note(self, text):
+        if self.toast_for:
+            self._reason = text                      # (a write it stands for may be refused with it)
+        if text == strings.MOVE_WORDS["cant_undo"]:
+            self._undo_answered()
+            self.win.toasts.show(text)               # E21: said where the Undo was asked
+        else:
+            self.say(text)
+
+    def _gone(self, ids):
+        """(E6) Items removed while a drag held the view: the drag of one of them is let go."""
+        d = self.running
+        if d is not None and set(d.ids) & set(ids or ()):
+            self.cancel(strings.DRAG_GONE)
+
+    # --- a Done ----------------------------------------------------------------------------------------------------- #
+    def done(self, row, ep):
+        """A stone or ✓ Done (the one path, S12): watched (its toast and Undo) — a stone already watched turns back —
+        and, when no file of the row is left unwatched, L6.3's rule (`when_done`): it finishes by itself or joins its
+        next part (`_by_itself`), or the finish toast offers it (A2 #2), or nothing (a split's part, hato's mix). `ep`
+        None: Up Next's ✓ Done with every file already watched — nothing to mark, the same rule (G3.2; where nothing is
+        offered, the bar says why)."""
+        if self.refused() is not None:
+            return
+        title = row.title
+        if ep is None:
+            view = self.page.view_model
+            verdict = when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
+            elif verdict is not None:
+                self._ask_again(view, row, verdict)
+                self.win.toasts.show(offer_text(verdict, row), buttons=[
+                    (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
+            elif not finishes(row):
+                self.say(strings.WELL_UNLIT_MIX)
+            else:                                    # a split's part (L6.3: never Finished on its own)
+                self.say(strings.WELL_UNLIT_SPLIT)
+            return
+        # W-1: does this mark move what the list counts (the store's one rule; never a video waiting for its subtitle)
+        moves_list = view_rows.mark_moves_list(row.tier, ep, getattr(self.page.view_model, "keep_watched", False))
+        if ep.watched:
+            text = strings.DONE_UNDONE_BACK.format(ep=ep.label) if moves_list else \
+                strings.DONE_UNDONE.format(title=title, ep=ep.label)
+            ticket = Ticket(text, (row.key,), (ep.id,))
+            self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t), marks={ep.id: False})
+            return
+        after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
+        left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id != ep.id]   # H-6: never its audio
+        nxt = after[0] if after else (left[0] if left else None)
+        text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
+            strings.DONE_ONE.format(title=title, ep=ep.label)
+        self._marked(row, [ep], text, strings.DONE_LEFT.format(ep=ep.label))
+
+    def done_many(self, row, eps):
+        """a7 (DIAGNOSIS 11): ⋯'s *…and everything before it* / *Mark all watched* — `eps` (the row's own, in its order)
+        marked watched in ONE writer command: one ticket, one toast, one Undo for them all. Read against the row as the
+        view holds it now (a menu left open while the row changed: a file gone is left out, one come in counts as still
+        to watch). What follows is the one Done's (`done`): when no file of the row is left unwatched, L6.3's rule
+        (`when_done`) — it finishes by itself or joins its next part, or the finish toast offers it; a group's show all
+        watched offers that show's finish (`show_finished`); else W-1's first-mark hint, once per library. One file
+        left to mark is the one Done itself, its own words."""
+        if self.refused() is not None:
+            return
+        view = self.page.view_model
+        row = next((r for r in (view.rows if view is not None else ()) if r.key == row.key), row)
+        now = {e.id: e for e in row.episodes}
+        eps = [now[e.id] for e in eps if e.id in now and not now[e.id].watched]
+        if len(eps) < 2:
+            if eps:
+                self.done(row, eps[0])
+            return
+        self._marked(row, eps, strings.DONE_MANY.format(title=row.title, n=len(eps)),
+                     strings.DONE_MANY_LEFT.format(title=row.title, n=len(eps)))
+
+    def _marked(self, row, eps, text, left_text):
+        """What a mark of `eps` watched does — ONE path for the one Done and ⋯'s mark-many (a7): `eps` in ONE writer
+        command (one ticket, one Undo), then: when no file of the row is left unwatched, L6.3's rule (`when_done`) — it
+        finishes by itself or joins its next part (`_by_itself`), or the finish toast offers it (A2 #2); a group's show
+        all watched by these marks offers that show's finish (LM11b G5, `show_finished`); W-1's first mark that moves
+        the list, its hint once per library (`left_text`); else the toast `text`."""
+        ids = [e.id for e in eps]
+        marked = set(ids)
+        on = dict.fromkeys(ids, True)                # a8: painted as it is handed over
+
+        def mark(t):
+            return self.writer.set_watched(ids, True, label=t)
+        left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id not in marked]
+        view = self.page.view_model
+        verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
+        if verdict is not None and verdict[0] != "offer":
+            if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False, marks=on) is None:
+                return
+            self._by_itself(row, verdict)
+            return
+        if verdict is not None:                      # ("offer", ...): today's *finished with it?*
+            keep = getattr(view, "keep_watched", False)     # Fresh-U row 5: W-1's first mark says it here too
+            hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
+            ticket = Ticket(offer_text(verdict, row, left=hint is not None), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
+                return
+            buttons = [(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))]
+            if hint is not None:                     # (W-1's own way to keep them: the hint's button rides along)
+                self._seen(hint)
+                buttons.append((strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                lambda: self.win.open_setting("keep_watched")))
+            self._ask_again(view, row, verdict)
+            self._toast(ticket, buttons=buttons)
+            return
+        shown = None
+        if getattr(row, "group", False):             # LM11b G5: one show of a group all watched, the rest not yet —
+            for ep in reversed(eps):                 # asked as each show's last mark (the others marked before it)
+                shown = show_finished(row._replace(episodes=tuple(
+                    e._replace(watched=True) if e.id in marked and e.id != ep.id else e for e in row.episodes)), ep)
+                if shown is not None:
+                    break
+        if shown is not None:
+            show, show_ids = shown
+            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(show_ids)), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
+                return
+            self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
+                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(show_ids)),
+                                          lambda: self.finish_show(row, show, show_ids))])
+            return
+        keep = getattr(view, "keep_watched", False)  # --- W-1: the first mark, once per library
+        hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
+        if hint is not None:
+            ticket = Ticket(left_text, (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
+                return
+            self._seen(hint)
+            self._toast(ticket, buttons=[(strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                          lambda: self.win.open_setting("keep_watched")),
+                                         (strings.DONE_OK, strings.DONE_OK_TIP, lambda: None)])
+            return
+        self._give(Ticket(text, (row.key,), tuple(ids)), mark, marks=on)
+
+    # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
+    # (help cards WP6: read and written through the window's one helper, `app/qt/hints.py` — the store's id, the
+    # list's odd entries left out, a settings file that can't keep it never shows a hint every time)
+    def _hints(self):
+        hints = getattr(self.win, "hints", None)
+        if hints is None:
+            from app.qt import hints as hints_module
+            hints = self.win.__dict__.setdefault("_drag_hints", hints_module.Hints(self.win))
+        return hints
+
+    def _hint_id(self, name):
+        """`name`'s hint id for the library shown (its store id), or None before a read has found it: never keyed by
+        the language, so a hint is never shown twice in one library."""
+        store_id = None
+        try:
+            store_id = self.reader.store_id() if self.reader is not None else None
+        except Exception:
+            pass
+        return f"{name}:{store_id}" if store_id else None
+
+    def _hints_seen(self):
+        return self._hints().seen_list()
+
+    def _unseen(self, name):
+        """`name`'s hint id for this library when it hasn't been shown here yet, else None."""
+        hint = self._hint_id(name)
+        if hint is None:
+            return None
+        try:
+            seen = self._hints_seen()
+        except Exception:
+            return None                              # no settings to keep it in: never a hint shown every time
+        return None if hint in seen else hint
+
+    def _seen(self, hint):
+        """`hint` recorded as shown: its key alone written (`save_keys`' rule, the settings service's)."""
+        self._hints().mark(hint)
+        self._hints().last = self._hints().clock()   # (a hint shown: the next one waits its minute)
+    # --- end W-1
+
+    def to_finished(self, row, text=None):
+        """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast (`text`: L6.3's
+        own words for a finish by itself, a template with `{title}`)."""
+        if self.refused() is not None:
+            return
+        base = self.base()
+        if base is not None and any(r.key == row.key for r in base.rows):
+            self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
+        self._finish(row.title, ids_of(row), (row.key,), text=text,
+                     why=done_why("finish") if text == strings.DONE_FINISHED else None)
+
+    def _by_itself(self, row, verdict):
+        """L6.3: what Surasura does by itself once every file of `row` is watched (`when_done`'s "finish" or "join"),
+        through the paths a hand would take — the Finish path (D14's *Keep* / *Leave out*, its Anki half after its
+        Generate) or the store's join (one command). Its toast's Undo takes back that move; the ✓ stays."""
+        if verdict[0] == "finish":
+            self.to_finished(row, text=strings.DONE_FINISHED)        # (a template: `_finish` formats it)
+            return
+        _kind, pieces, ahead, ids, line = verdict
+        text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
+        ticket = Ticket(text, (row.key,), ids)
+        ticket.why = done_why("joined" if ahead else "came_up")
+        self._give(ticket, lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+
+    def _ask_again(self, view, row, verdict):
+        """Alpha 9 (M1): an offer made only because AniList hasn't answered yet (`airing.PENDING`, *Still asking*) is
+        asked again when the answer comes (`_answered`) — the show was handed to the asker by the mark itself (all
+        watched is near its end, `airing.near_end`)."""
+        entry = (getattr(view, "airing", None) or {}).get(row.work_id)
+        if len(verdict) > 1 and isinstance(entry, dict) and entry.get("status") == airing.PENDING:
+            self._airing_asking[row.work_id] = row.key
+
+    def _answered(self, view):
+        """Alpha 9 (M1; the window's thread, each view of the reader's): when a show offered *Still asking AniList* has
+        an answer in `view` — or none any more — L6.3's one rule is asked again just after it shows (`_again`)."""
+        answers = getattr(view, "airing", None) or {}
+        if not self._airing_again and any(not (isinstance(answers.get(w), dict) and
+                                               answers[w].get("status") == airing.PENDING) for w in self._airing_asking):
+            self._airing_again = True
+            QTimer.singleShot(0, self._again)
+
+    def _again(self):
+        """Alpha 9 (M1): each show offered *Still asking AniList*, read on the view shown — still asking: kept; its
+        answer come: `when_done` again, so it finishes by itself when nothing holds it now (an ended show marked all at
+        once, as before AniList), else its offer stands; no answer any more (the switch turned off) or the show gone
+        from Current, or a file of it unwatched again (an Undo of the mark): let go (AniList never finishes a show, only
+        its answer does, and only one still all watched). Kept for a later view, silently, while a drag runs, the store
+        can't take a move or a write is still on its way; nothing once the controller is let go (a close)."""
+        self._airing_again = False
+        if self._closed or sip.isdeleted(self):
+            return
+        view = self.page.view_model
+        if view is None or getattr(view, "cached", False):
+            return
+        answers = getattr(view, "airing", None) or {}
+        busy = self.running is not None or bool(self.blocked) or bool(self.tickets) or not self.writer.can_write()
+        for work_id, key in list(self._airing_asking.items()):
+            entry = answers.get(work_id)
+            if isinstance(entry, dict) and (entry.get("status") == airing.PENDING or busy):
+                continue                             # still asking, or asked at a later view
+            del self._airing_asking[work_id]
+            row = next((r for r in view.rows if r.key == key), None)
+            if row is None or not isinstance(entry, dict) or \
+                    any(not e.watched for e in view_rows.to_finish(row.episodes)):
+                continue
+            verdict = when_done(view, row)           # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
+
+    def finish_show(self, row, show, ids):
+        """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
+        (`_finish`: D14's Keep / Leave out kept). The store puts them in Finished under their own show and the group
+        keeps the rest; until it has, the reader builds every view with them there (`LibraryReader.expect`: each row by
+        the view's own rule, a busy store's wait included) and a view still holding them is held."""
+        if self.refused() is not None:
+            return
+        base = self.base()
+        if base is not None and any(r.key == row.key for r in base.rows):
+            self._ahead(base, off=(row.key, ids))
+        ticket = self._finish(show, ids, (row.key,))
+        if ticket is not None and self.expect_off:
+            self._reader_off = ticket
+            self._reader_expects({i: FINISHED for off in self.expect_off.values() for i in off})
+
+    def _reader_expects(self, tiers):
+        expect = getattr(self.reader, "expect", None)
+        if expect is not None:
+            expect(tiers)
+
+    # --- A4: the picks, sent ------------------------------------------------------------------------------------ #
+    def send_picks(self, where, ids, n, keys=(), src="current"):
+        """*Up next* · *Soon* · *Goal* · *Finished* for `n` picked titles at once (their ⋯, or a drag of them into a
+        well): ONE writer command — one ticket, one toast naming the count, one Undo; the store keeps the list's own
+        order. Up next: `place(…, "top")`; Soon: after the Soon line, past a show it runs through (`soon_slot`, as a
+        single row's *Soon*); Goal: Goal's end (`end=True`, as a single *Goal*); Finished: `_finish` (D14's Keep / Leave
+        out, once). `keys`: the Current rows they are — shown moved (or gone) at once, as a single row's move is.
+        `src` "finished": out of Finished their cards come back into the order — *Up next* is *Put back*'s command, and
+        each a press until Anki has them (finish-pending). -> the command's number (Finished: its ticket), or None."""
+        if not ids or self.refused() is not None:
+            return None
+        ids, keys = list(ids), tuple(keys)
+        title = strings.PICKS_TITLES.format(n=f"{n:,}")
+        base = self.base()
+        anki = on_bar if src == "finished" else None
+        picked = set(keys)
+        rows_ = base.rows if base is not None else ()
+        mine = [r for r in rows_ if r.key in picked]
+        if where in ("goal", "finished"):
+            if mine:
+                where_to = "goal" if where == "goal" else FINISHED
+                for r in mine:
+                    self.expect_gone[r.key] = where_to
+                self._ahead(without_many(base, picked, where_to))
+            if where == "finished":
+                return self._finish(title, ids, keys, many=True)
+            return self._give(Ticket(strings.PICKS_DONE["goal"].format(title=title), keys, ids),
+                              lambda t: self.writer.move(ids, "goal", end=True, label=t), anki=anki)
+        rest = [r for r in rows_ if r.key not in picked]
+        if where == "soon":
+            slot, _files, after_id = soon_slot(rest, None)
+            if mine:
+                self._ahead(reordered(base, [r.key for r in rest[:slot] + mine + rest[slot:]],
+                                      {k: "soon" for k in picked}))
+            return self._give(Ticket(strings.PICKS_DONE["soon"].format(title=title), keys, ids),
+                              lambda t: self.writer.move(ids, "soon", after_id=after_id, label=t), anki=anki)
+        if mine:
+            self._ahead(reordered(base, [r.key for r in mine + rest], {k: "now" for k in picked}))
+        if src == "finished":
+            def command(t):
+                return self.writer.put_back(ids, label=t)
+        else:
+            def command(t):
+                return self.writer.place(ids, "top", label=t)
+        return self._give(Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids), command, anki=anki)
+
+    # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
+    def nudge(self, row, step):
+        """↑ ↓ (A2 #13, Alt+↑ / ↓): one place up or down. Within its tier the store's `nudge`; across the NOW / Soon edge
+        a `move` beside the neighbour (the store's nudge stays in its tier) — and for a show the Soon line runs through,
+        or past one (P-LF-16: its files are in both tiers). The window shows the swap at once."""
+        base = self.base()
+        if base is None or self.running is not None or self.refused() is not None:
+            return
+        rows_ = base.rows
+        i = next((n for n, r in enumerate(rows_) if r.key == row.key), None)
+        if i is None:
+            return
+        j = i + step
+        if not 0 <= j < len(rows_):
+            return
+        nb = rows_[j]
+        keys = [r.key for r in rows_]
+        keys[i], keys[j] = keys[j], keys[i]
+        land = nb.tier if step < 0 else tail_tier(nb)    # before its first file, or after its last
+        new = reordered(base, keys, {row.key: land})
+        place = j
+        text = strings.DRAG_UP_NEXT.format(title=row.title) if place == 0 else \
+            (strings.DRAG_PLACED_MINES if mines_itself(new.lines, place) else strings.DRAG_PLACED).format(
+                title=row.title, n=place + 1)
+        ids = ids_of(row)
+        ticket = Ticket(text, (row.key,), ids)
+        ticket.why = mines_why(new.lines, place)
+        self._ahead(new)
+        if land == row.tier and getattr(row, "soon_from", None) is None:
+            self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))
+        elif step < 0:
+            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t))
+        else:
+            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t))
+
+    def menu_entries(self, row):
+        """⋯'s entries for a row, in order: [(name, label, tip, enabled)]. *Up next* not for Up Next itself; *Finished*
+        not for a split's first part or hato's mix; the moves disabled, with the store's reason, while it can't be
+        written (E4)."""
+        view = self.page.view_model
+        rows_ = view.rows if view is not None else ()
+        writable = self.writer.can_write()
+        reason = None
+        if not writable:
+            raw = self.writer.reason() or ""
+            reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+        out = []
+        for name in ("up-next", "soon", "goal", "finished", "journey"):
+            if name == "up-next" and rows_ and rows_[0].key == row.key:
+                continue
+            if name == "finished" and (not finishes(row) or split_first(rows_, row)):
+                continue
+            label, tip = strings.MENU_ITEMS[name]
+            ok = writable or name == "journey"
+            out.append((name, label, tip if ok else reason, ok))
+        return out
+
+    def menu(self, row, at):
+        """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
+        m = list_menu(self.lst, row.title)
+        for name, label, tip, ok in self.menu_entries(row):
+            act = menu_action(m, label, lambda n=name: self.menu_pick(row, n))
+            act.setToolTip(tip)
+            act.setEnabled(ok)
+            m.addAction(act)
+        self.last_menu = m
+        m.popup(at)
+        return m
+
+    def menu_pick(self, row, name):
+        if name == "journey":
+            from app.qt import press as qpress       # round 8 row 45: the row's ⋯ turns while it opens (IK-2)
+            ep = view_rows.journey_episode(row)                            # opened ON it (Sonic 2026-10-24)
+            self.win._open_journey(asked=True, at=qpress.row_mark(self.lst, [ep.id]) if ep else None, episode=ep)
+            return
+        if self.refused() is not None:
+            return
+        base = self.base()
+        if base is None or not any(r.key == row.key for r in base.rows):
+            return
+        if name == "finished":
+            self.to_finished(row)
+            return
+        ids = ids_of(row)
+        if name == "goal":
+            self._ahead(without(base, row.key, "goal"), gone=(row.key, "goal"))
+            self._give(Ticket(strings.DRAG_GOAL.format(title=row.title), (row.key,), ids),
+                       lambda t: self.writer.move(ids, "goal", end=True, label=t))
+            return
+        src = next(i for i, r in enumerate(base.rows) if r.key == row.key)
+        if name == "soon":
+            slot, files, after_id = soon_slot(base.rows, src)
+            keys = order_after([r.key for r in base.rows], row.key, slot)
+            self._ahead(reordered(base, keys, {row.key: "soon"}))
+            place = keys.index(row.key)
+            text = strings.DRAG_SOON.format(title=row.title, n=place + 1, files=files) if files else \
+                strings.DRAG_SOON_NO_COUNT.format(title=row.title, n=place + 1)
+            self._give(Ticket(text, (row.key,), ids),
+                       lambda t: self.writer.move(ids, "soon", after_id=after_id, label=t))
+            return
+        hero = base.rows[0]                          # *Up next*: before Up Next, in its tier
+        keys = order_after([r.key for r in base.rows], row.key, 0)
+        self._ahead(reordered(base, keys, {row.key: hero.tier}))
+        self._give(Ticket(strings.DRAG_UP_NEXT.format(title=row.title), (row.key,), ids),
+                   lambda t: self.writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t))
+
+    # --- files from Explorer ----------------------------------------------------------------------------------- #
+    @staticmethod
+    def _files(event):
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return []
+        return [os.path.normpath(u.toLocalFile()) for u in mime.urls() if u.isLocalFile() and u.toLocalFile()]
+
+    def files_wanted(self, event):
+        return bool(self._files(event)) and self.running is None
+
+    def files_dropped(self, event):
+        """Files dropped on the list from Explorer (A2's toast *Added X at #N*): copied into the tier's folder and placed
+        beside the row under the hand, by the writer (`insert_at`)."""
+        paths = self._files(event)
+        if not paths or self.running is not None or self.refused() is not None:
+            return False
+        view = self.page.view_model
+        rows_ = view.rows if view is not None else ()
+        save, self.running = self.running, None
+        y = event.position().toPoint().y()
+        slot = self._slot_outside(y)
+        self.running = save
+        tier, before_id, after_id, near = placement(rows_, None, slot)
+        if tier not in ("now", "soon"):
+            tier = "now"
+        name = os.path.basename(paths[0])
+        text = strings.DRAG_ADDED.format(name=name, n=slot + 1) if len(paths) == 1 else \
+            strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
+        self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id, after_id=after_id,
+                                                                 near=near, label=t))
+        return True
+
+    def _slot_outside(self, y):
+        """`slot_at` for something from outside the list (no row of its own)."""
+        lst = self.lst
+        model = lst.model()
+        n = model.rowCount()
+        if not n or model.entries[0][0] not in (rows.HERO, rows.ROW):
+            return 0
+        idx = lst.indexAt(QPoint(4, y))
+        if not idx.isValid():
+            return 0 if y < lst.visualRect(model.index(0, 0)).top() else n
+        return idx.row() if y < lst.visualRect(idx).center().y() else idx.row() + 1
+
+    # --- the quit ------------------------------------------------------------------------------------------------ #
+    def unwire(self):
+        """The writer's callbacks and the reader's `subscribe_gone` let go — a language switch and the window's close,
+        before any widget of this controller's can be deleted: a write landing later (the quit's last moves, on the
+        writer's thread) tells no one, and one telling right now has ended when this returns (the gate's close waits
+        for it). A window deleted without this (a close the quit's wait put off) closes the gate as its relay goes."""
+        for name in WRITER_CALLBACKS:
+            setattr(self.writer, name, _no_callback)
+        self._gate.close()
+        toasts = getattr(self.win, "toasts", None)
+        if toasts is not None and toasts.on_show == self._toast_shown:
+            toasts.on_show = None
+        unsubscribe = getattr(self.reader, "unsubscribe_gone", None)
+        if unsubscribe is not None and self._gone_told is not None:
+            unsubscribe(self._gone_told)
+        self._gone_told = None
+        unsubscribe = getattr(self.reader, "unsubscribe_versions", None)
+        if unsubscribe is not None and self._versions_told is not None:
+            unsubscribe(self._versions_told)
+        self._versions_told = None
+        heard = getattr(getattr(self.win, "services", None), "replan_heard", None)
+        if heard is not None and self._heard in heard:
+            heard.remove(self._heard)
+
+    def close(self):
+        """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
+        stops — H-T1: nothing of this controller's is shown past it (its writer's moves left stay in its journal)."""
+        if self.running is not None:
+            self.cancel()
+        self._closed = True
+        self._settle.stop()
+        self._unanswered.stop()
+        self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
+        self.expect_marks, self._mark_undos = {}, []
+        self._anki_let_go()
+        self._filter(False)
+        for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning
+            if isinstance(t, Ticket) and t.change is None:
+                _tell(t, "ended")                    # (Q7A-2: a press waiting for "saved" lets go at a switch)
+            self._ended(t)
+        p, self._undoing, self._undos = self._undoing, None, 0
+        if p is not None:
+            qpress.end(p, self.win)

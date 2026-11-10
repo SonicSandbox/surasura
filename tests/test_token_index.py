@@ -272,7 +272,7 @@ def test_a_store_written_at_the_old_compression_reads_the_same_tokens(tmp_path):
     a store written before holds level-6 blobs and must read exactly as it did — no rebuild, the same tokens."""
     import zlib
     sample = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "samples", "ja", "LowPriority", "L_priority_sample_1.txt")
+                          "samples", "ja", "LowPriority", "注文の多い料理店（宮沢賢治）.txt")
     result = ti.make_tokenizer("ja")(sample)
     counts = {k: n for k, n in result["counts"].items() if n > 0}
     old_tokens = zlib.compress(json.dumps(result["sentences"], ensure_ascii=False).encode("utf-8"), 6)
@@ -299,8 +299,8 @@ def test_a_files_counts_are_its_tokens_with_japanese_in_the_lemma_or_the_surface
     from app import analyzer
     samples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samples", "ja")
     tokenize_file = ti.make_tokenizer("ja")
-    for path in (os.path.join(samples, "LowPriority", "L_priority_sample_2.txt"),
-                 os.path.join(samples, "HighPriority", "H_priority_sample_2.srt")):
+    for path in (os.path.join(samples, "LowPriority", "ごん狐（新美南吉）.txt"),
+                 os.path.join(samples, "HighPriority", "喫茶店の朝.srt")):
         result = tokenize_file(path)
         expected = Counter(ti.make_key(lemma, reading) for _s, tokens in result["sentences"]
                            for lemma, reading, surface, _o in tokens
@@ -732,8 +732,8 @@ def test_a_store_from_before_the_dictionary_words_the_tagger_cuts_is_rebuilt(tmp
 def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tmp_path):
     """v18 -> v19: a one-kanji word right after a number's counter written in kanji is a piece of the count — the 目
     of ２時間目 'second period' — and each file records it among its pieces; a v18 store counted it as a use of 目 'eye':
-    it must be dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 19
+    it must be dropped and rebuilt. (Pinned at 19 until v20, the caption cleaner: below.)"""
+    assert ti.SCHEMA_VERSION >= 19
     db = _db(tmp_path)
     f = tmp_path / "school.txt"
     _write(f, "２時間目は数学の授業だ。\n目が疲れた。\n")
@@ -750,6 +750,28 @@ def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tm
     assert s2.total_tokens() == 0, "a v18 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.bound_counts() == pieces
+    s2.close()
+
+
+def test_a_store_from_before_the_caption_cleaner_is_rebuilt_without_the_reading_rows(tmp_path):
+    """v19 -> v20 (P1.3-1 a): an .ass file is read through the caption cleaner — a TV caption's small-type reading row
+    (もんばん over 門番) is no line and no words; a v19 store counted its kana: it must be dropped and rebuilt. At least
+    v20, never pinned exactly: every later bump would break it."""
+    assert ti.SCHEMA_VERSION >= 20
+    import shutil
+    db = _db(tmp_path)
+    f = tmp_path / "tv_captions.ass"
+    shutil.copy2(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "tv_captions.ass"), f)
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    words = {t[0] for _s, tokens in s.file_tokens(str(f)) for t in tokens}
+    s.close()
+    assert "門番" in words and not words & {"もんばん", "ちょうろう"}
+    conn = sqlite3.connect(db)      # what a v19 store is: the version it was written with
+    conn.execute("PRAGMA user_version = 19")
+    conn.commit(); conn.close()
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v19 store was reused"
     s2.close()
 
 
@@ -805,6 +827,10 @@ def test_concurrent_writers_serialize_without_double_apply(tmp_path):
 
     # Two threads, each its OWN connection to one shared DB, released together for max contention.
     db = _db(tmp_path, "shared.db")
+    # The store exists before the writers open it, as when Generate and the indexer meet on a library. Two FIRST
+    # opens of a new file at once are another race: switching a new file to WAL answers "database is locked" at
+    # once, without the busy timeout — on a loaded runner one worker failed in open_store, before the barrier.
+    ti.open_store("ja", path=db).close()
     # A timeout on the barrier, and daemon workers: if one worker fails BEFORE reaching the barrier
     # (e.g. 'database is locked' on a loaded machine), the other must not wait forever. Without
     # them it did — the join below timed out, the test failed, and then pytest itself hung at exit
@@ -1060,3 +1086,68 @@ def test_prepare_preview_decodes_ahead_and_changes_no_number(tmp_path, monkeypat
     ti.prepare_preview("zh", str(tmp_path / "missing"))
     monkeypatch.setattr(analyzer, "compound_parts", lambda: 1 / 0)
     ti.prepare_preview("ja", str(uf))
+
+
+def test_text_rebuilt_from_store_keeps_its_mtime_and_size_in_place(tmp_path):
+    """A file not read again (no source handed) has its text rebuilt from the sentences it was handed; the (text,
+    facts, mtime, size) it returns keeps the mtime and the size the store holds in their own places, never swapped
+    (`Store._text_of`)."""
+    f = tmp_path / "adv.txt"; _write(f, JA_ADVENTURE)
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        # why: the result branch, a file just tokenized hands its own result over; the row's mtime and size stay put
+        result = ti.make_tokenizer("ja")(str(f))
+        key = ti._norm(str(f))
+        row = {"mtime": 1700000000.25, "size": 4321}
+        text, facts, mtime, size = store._text_of(store.conn.cursor(), key, row, None, None, result)
+        assert text and (text, facts) == ti._rebuilt_text(result["sentences"], result.get("names")), "rebuilt from them"
+        assert mtime == 1700000000.25, "the mtime stays in the mtime place"
+        assert size == 4321, "the size stays in the size place"
+    finally:
+        store.close()
+
+
+def test_kept_file_moved_to_a_new_folder_keeps_its_row_when_nothing_else_leaves(tmp_path):
+    """A kept file moved to another folder, with no other file leaving the store, is matched to its own row: the row
+    follows the file to its new path and the file is never read again."""
+    # why: the move is matched by the row orphaned when its file is gone, not only when some other row leaves.
+    old = tmp_path / "adv.txt"; _write(old, JA_ADVENTURE)
+    (tmp_path / "moved").mkdir()
+    new = tmp_path / "moved" / "adv.txt"
+    data_dir = str(tmp_path / "data")
+    tok = _counting_tokenizer("ja")
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        store.reconcile([], tok, kept=[str(old)], data_dir=data_dir)
+        os.replace(str(old), str(new))
+        tok.calls.clear()
+        store.reconcile([], tok, kept=[str(new)], data_dir=data_dir)
+        assert tok.calls == [], "the moved file is matched to its row, not read again"
+        rows = [r[0] for r in store.conn.execute("SELECT path FROM files")]
+        assert rows == [ti._norm(str(new))], "the row follows the file to its new path"
+    finally:
+        store.close()
+
+
+def test_chinese_preview_never_applies_the_japanese_one_kanji_rule(tmp_path, monkeypatch):
+    """The one-character rule is Japanese only (analyzer.single_kind reads Japanese one-kanji words), so a
+    Chinese Rarity preview keeps every word even with Settings' one-kanji switch on; Japanese still applies it."""
+    monkeypatch.setattr(ti, "singles_rule", lambda: True)
+    uf = tmp_path / "User Files" / "zh"
+    uf.mkdir(parents=True)
+    (uf / "KnownWord.json").write_text(json.dumps({"words": []}), encoding="utf-8")
+    f = tmp_path / "adv_zh.txt"; _write(f, ZH_ADVENTURE)
+    store = ti.open_store("zh", path=_db(tmp_path))
+    try:
+        store.reconcile([str(f)], ti.make_tokenizer("zh"))
+        assert ti.preview_lists(store, "zh", str(uf))["skip_singles"] is False, "Chinese keeps every word"
+        assert ti.preview_lists(store, "ja", str(uf))["skip_singles"] is True, "Japanese applies the rule"
+    finally:
+        store.close()
+
+
+def test_each_statement_of_a_schema_script_starts_fresh_after_the_last():
+    # why: a finished statement's text must not carry into the next one; the split clears its buffer after every
+    # complete statement, so a schema script yields its statements one by one (each run by its own execute)
+    script = "CREATE TABLE words(w TEXT); CREATE INDEX idx_words ON words(w);"
+    assert ti._statements(script) == ["CREATE TABLE words(w TEXT)", "CREATE INDEX idx_words ON words(w)"]

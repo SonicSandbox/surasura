@@ -192,7 +192,7 @@ class TestAutoSyncGate(_DashboardHarness):
         """Replace rebuilds the known words from Anki alone. It is a button with a confirmation,
         never something a background task may do."""
         source = inspect.getsource(self.MasterDashboardApp._maybe_anki_sync)
-        self.assertIn("anki_sync.sync(", source)
+        self.assertIn("anki_sync.sync_all(", source)      # the one sync order (laptop round 7 #43)
         self.assertNotIn(".replace(", source)
         self.assertNotIn("restore_previous", source)
 
@@ -260,7 +260,9 @@ class TestSettingsCarryThrough(_DashboardHarness):
         self.app._iv.side_effect = lambda var, default: default
         self.app.combo_theme.get.return_value = "Dark Flow"
         saved = {}
+        # `on_disk` is the file as it is: what the dashboard's settings service (W1.3) reads it through.
         with patch.object(self.main.settings_manager, "load_settings", return_value=on_disk), \
+             patch.object(self.main.settings_service, "file_as_is", side_effect=lambda: dict(on_disk)), \
              patch.object(self.main.settings_manager, "save_settings",
                           side_effect=lambda s: saved.update(s)):
             self.MasterDashboardApp.save_settings(self.app, skip_ui=True)
@@ -668,7 +670,8 @@ class TestAutoGenerate(_DashboardHarness):
         thread = self._call_sync(self._settings())                    # a Japanese sync starts
         with patch.object(anki_connect, "probe", return_value={"ok": True}), \
              patch.object(anki_sync, "sync", return_value=self._RESULT), \
-             patch.object(anki_sync, "sync_backlog", return_value=(0, None)):
+             patch.object(anki_sync, "sync_backlog", return_value=(0, None)), \
+             patch.object(anki_sync, "sync_young", return_value=(0, None)):
             thread.call_args.kwargs["target"]()
         self.app.var_language.get.return_value = "zh"                 # a switch before it lands
         for task in queued:
@@ -733,6 +736,10 @@ class TestJunbanAutoReorder(_DashboardHarness):
         self.auto = types.ModuleType("modules.junban.auto")
         self.auto.enabled = lambda settings: settings.get("junban_auto_reorder") is True
         self.auto.run_quietly = MagicMock(return_value="")
+        # The guards live in the module (P1.2: `auto.blocked`, `auto.window_open`; their own suite proves them):
+        # the dashboard asks them, the window's lock on its worker.
+        self.auto.blocked = MagicMock(return_value=None)
+        self.auto.window_open = MagicMock(return_value=False)
 
     def _modules(self):
         parent, junban = types.ModuleType("modules"), types.ModuleType("modules.junban")
@@ -773,19 +780,33 @@ class TestJunbanAutoReorder(_DashboardHarness):
 
     def test_never_while_the_junban_window_is_open(self):
         """The user is ordering by hand there; a write underneath would leave their preview
-        describing a queue that has moved."""
-        self.app.junban_window = MagicMock()
-        self.app.junban_window.winfo_exists.return_value = True
-        self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+        describing a queue that has moved. The window holds `junban-window` (any program's 順
+        window), looked at on the worker, never on the window's thread."""
+        self.auto.window_open.return_value = True
+        thread = self._call({"junban_auto_reorder": True}, force=True)
+        self.auto.blocked.assert_called_once()
+        self.assertIs(self.auto.blocked.call_args.kwargs.get("window"), False)
+        self.auto.window_open.assert_not_called()                     # not on the window's thread
+        with patch.object(self.main, "journey_is_current", return_value=True):
+            thread.call_args.kwargs["target"]()
+        self.auto.window_open.assert_called_once_with()
+        self.auto.run_quietly.assert_not_called()
 
     def test_a_build_without_the_module_is_untouched(self):
         """The Prime Invariant: no `modules/junban`, nothing scheduled and nothing raised."""
         self._call({"junban_auto_reorder": True}, force=True,
                    modules={"modules.junban": None}).assert_not_called()
 
-    def test_the_test_guard_blocks_it(self):
-        os.environ["SURASURA_NO_ANKI_SYNC"] = "1"
+    def test_a_guard_of_the_module_blocks_it(self):
+        """The test switch, the module off, an update waiting: `auto.blocked` says why, and nothing is scheduled."""
+        self.auto.blocked.return_value = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"
         self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+
+    def test_the_switch_as_shown_is_what_the_module_reads(self):
+        """`enable_junban` from the widget: the setting may not be written yet (the settings writer)."""
+        self.app.var_enable_junban.get.return_value = False
+        self._call({"junban_auto_reorder": True, "enable_junban": True}, force=True)
+        self.assertIs(self.auto.blocked.call_args.args[0]["enable_junban"], False)
 
     def test_the_run_reads_the_dashboards_live_language(self):
         self.app.var_language.get.return_value = "zh"
@@ -840,7 +861,7 @@ class TestSyncSettingsAreNotAnalysis(unittest.TestCase):
     def test_changing_decks_does_not_force_a_reanalysis(self):
         """Spec I9: every deck click re-analysing the whole library would be absurd."""
         from app import analyzer
-        source = inspect.getsource(analyzer.compute_run_signature)
+        source = inspect.getsource(analyzer.settings_signature)      # the settings compute_run_signature hashes
         for key in ("anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
                     "anki_sync_include_suspended"):
             self.assertIn(f'"{key}"', source, f"{key} must be excluded from the run signature")

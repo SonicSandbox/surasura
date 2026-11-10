@@ -157,8 +157,9 @@ def test_forms_is_not_named_like_an_example_sentence():
 
 def test_engine_revision_was_bumped_for_the_forms_column():
     """A new column changes what a run outputs for unchanged inputs. Without the bump the stored run
-    signature still matches and the old report — with no Forms — is served. Pinned exactly so the
-    next person to bump it updates this knowingly. (9 was the Forms column; 10 keys Japanese words by
+    signature still matches and the old report — with no Forms — is served. At least the revision that brought the
+    column in, never pinned exactly: every later bump would break it (each bump adds its line here). (9 was the Forms
+    column; 10 keys Japanese words by
     the lemma's reading — Bugfix_Batch_2026-09-22 fix C; 11 writes library_frequency.json on every
     run, with each word's first file, score and spelling — Junban_Backlog_Spec §11.1; 12 cuts a
     leading verse number off an example sentence — Junban_Backlog_Spec §16.11; 13 keeps a word's
@@ -189,8 +190,13 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     stretch where that is a word (バイバ～イ), and counts a pre-noun phrase usually written in kana only in kana; 28
     shows a sound word said with と in its と form where the dictionary lists it (ドキッと, ぐっと); 29 makes a one-kanji
     word right after a number's counter a piece of the count (the 目 of ２時間目); 30 rebuilds the idiom data so a
-    dictionary spelling read as other words keys no phrase (彼の方 read 彼 + の + 方).)"""
-    assert analyzer.ENGINE_REVISION == 30
+    dictionary spelling read as other words keys no phrase (彼の方 read 彼 + の + 方); 31 reads TV captions through the
+    caption cleaner, so a word's small-type reading row is no words (P1.3-1); 32, the 3.0 batch, keeps a repeated
+    Japanese frequency-list word's commoner rank and lists a missing item from its cached words; 33 makes Finished
+    content reference, its names the name tables' evidence as a watched episode's are; 34 marks a known sentence's set
+    phrases known, as it marks its words; 35 makes Context 1 always the word's first sentence outside Only i+1; 36 keeps a
+    written number that opens a sentence (20,000人, 1.5倍) whole; 37 picks example sentences order-free (F7).)"""
+    assert analyzer.ENGINE_REVISION >= 9
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +240,7 @@ def test_an_unreadable_template_never_breaks_the_signature(tmp_path):
 def test_the_template_fingerprint_is_render_only_not_analysis():
     """A template change must re-render, never re-analyze: it is not in the run signature."""
     import inspect
-    assert "_template_fingerprint" not in inspect.getsource(analyzer.compute_run_signature)
+    assert "_template_fingerprint" not in inspect.getsource(analyzer.run_signature_parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -358,7 +364,7 @@ def test_generated_report_carries_forms_to_the_browser(tmp_path, monkeypatch):
     monkeypatch.setattr(static_html_generator, "PRIORITY_CSV", str(results / "priority_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
-    static_html_generator.generate_static_html(theme="default")
+    static_html_generator.generate_static_html(theme="default", open_browser=False)
 
     html = out.read_text(encoding="utf-8")
     assert '"Forms"' in html

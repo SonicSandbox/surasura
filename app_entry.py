@@ -9,11 +9,13 @@ if app_root not in sys.path:
     sys.path.insert(0, app_root)
 
 def log_error(msg):
-    # Ensure debug folder exists for logs
-    if not os.path.exists("debug"):
-        os.makedirs("debug", exist_ok=True)
-    with open(os.path.join("debug", "app_debug_log.txt"), "a", encoding="utf-8") as f:
-        f.write(f"{msg}\n")
+    # The app's log lives in the per-install local data folder (P0.3 02-contract §6), never in the folder Surasura was
+    # started from; each line stamped with its time and process (path_utils.write_app_log). Logging never stops the app.
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(msg)
+    except Exception:
+        pass
 
 # Windows Taskbar Icon Fix (Set AppUserModelID)
 if sys.platform == "win32":
@@ -27,6 +29,114 @@ if sys.platform == "win32":
 
 import multiprocessing
 
+
+def _error_box(title, text):
+    """The app's one error route before any window exists: a Tk message box (never on a headless call)."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, text)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _start_checks(headless):
+    """The frozen program's checks at start (S3.1 D18): hold `<data name>.Running` for the process's life (Inno
+    Setup's AppMutex), and refuse to run when this program and its `_internal` folder are different builds (their build
+    stamp): logged, shown unless headless, exit 2 (`version-skew`). -> None to go on, else the exit code."""
+    from app import build_info
+    build_info.hold_running_mutex()
+    skew = build_info.stamp_skew()
+    if not skew:
+        return None
+    log_error(f"version-skew: this program {skew['program']}, its folder {skew['folder']}")
+    if not headless:
+        _error_box("Surasura", build_info.skew_text(skew))
+    return 2
+
+
+def _qt_window():
+    """The 3.0 window's module (app/qt/shell.py), or None when PyQt6 isn't installed: then the Tk dashboard opens and
+    the log says why (a build or a checkout without the 3.0 line's dependency). Imported here, inside a function, so
+    no headless verb ever loads Qt (tests/test_import_guard.py)."""
+    try:
+        from app.qt import shell
+        return shell
+    except ImportError as e:
+        if (getattr(e, "name", None) or "").split(".")[0] == "PyQt6":
+            log_error(f"The window needs PyQt6, which isn't installed ({e}): opening the Tk dashboard")
+            return None
+        raise
+
+
+_run = {}      # the command this process runs and when it began (`run`), for its one end line (`_log_end`)
+
+
+def _log_end(code):
+    """The command's end, once: how long it ran and its exit code (a7: the log had no times, so a Generate's length,
+    or how many ran in a burst, could only be guessed). A process that ends by `os._exit` calls it first (the
+    arrivals worker); a killed one writes none."""
+    import time
+    started = _run.pop("started", None)
+    if started is not None:
+        log_error(f"Ended {_run.get('command')} after {time.monotonic() - started:.1f} s (exit {code})")
+    if _run.pop("marked", False):                    # its running mark goes with its end (an `os._exit` too)
+        from app import locks
+        locks.release_running()
+
+
+def _hold_running(command, headless):
+    """This program's running mark for its life (Fresh library, P13: what *Start over completely* waits for, on every
+    OS) -> True when held. A Start over or Put back running (the profile-move lock): waited for, then logged, said
+    (unless headless) and exit 3 — nothing of the profile is touched while it moves. A mark that can't be taken is only
+    logged: never a refusal to start."""
+    from app import locks
+    try:
+        return locks.hold_running(command)
+    except locks.MoveRunning:
+        log_error(f"{command}: a Start over or Put back is running; not started")
+        if not headless:
+            _error_box("Surasura", locks.MOVE_RUNNING)
+        sys.exit(3)
+    except Exception as e:
+        log_error(f"{command}: its running mark couldn't be taken ({e!r})")
+        return False
+
+
+def init_telemetry():
+    """Telemetry's start (either window): the Tk dashboard's here, the 3.0 window's after its start gate."""
+    try:
+        from app import telemetry
+        telemetry.init()
+    except Exception as e:
+        log_error(f"Telemetry init failed: {e}")
+
+
+def run():
+    """The program: one command (`main`, the dispatch), its end logged (`_log_end`), its running mark held throughout."""
+    import time
+    args = [arg for arg in sys.argv[1:] if arg != "--headless"]
+    command = args[0] if args else "window"
+    if command == "--multiprocessing-fork":         # a frozen run's pool worker (freeze_support): no command of its own
+        return main()
+    _run.update(command=command, started=time.monotonic())
+    code = 0
+    try:
+        _run["marked"] = _hold_running(command, "--headless" in sys.argv[1:])
+        main()
+    except SystemExit as e:
+        code = 0 if e.code is None else e.code
+        raise
+    except BaseException as e:
+        code = type(e).__name__
+        raise
+    finally:
+        _log_end(code)
+
+
 def main():
     # Force UTF-8 for stdout/stderr to avoid UnicodeEncodeError in frozen Windows builds
     if sys.platform == "win32":
@@ -38,6 +148,12 @@ def main():
             pass
 
     multiprocessing.freeze_support()
+    # --headless: another program started this subcommand (surasura-cli's generate, P0.3 02-contract §1). A crash is
+    # logged and exits 1, never a Critical Error box; an unknown or missing command exits 2, never opens the dashboard.
+    headless = "--headless" in sys.argv[1:]
+    use_tk = False
+    if headless:
+        sys.argv = [arg for arg in sys.argv if arg != "--headless"]
     try:
         log_error(f"App starting. Args: {sys.argv}")
         
@@ -47,6 +163,9 @@ def main():
             if bundle_dir not in sys.path:
                 sys.path.insert(0, bundle_dir)
             log_error(f"Frozen mode. Bundle dir: {bundle_dir}")
+            code = _start_checks(headless)
+            if code:
+                sys.exit(code)
         else:
             log_error("Source mode.")
 
@@ -70,11 +189,37 @@ def main():
                     log_error(f"library_maintain failed:\n{traceback.format_exc()}")
                 sys.exit(code)
 
+            elif command == 'apkg_known_import' or command == 'extract':
+                # The 3.0 window's tools (W3.4 row 2): the .apkg known-words import (app/anki_db_import.py) and Extract
+                # (app/extract.py), each a child of the window. Dialog-free; it ends with its exit code.
+                code = 1
+                try:
+                    if command == 'extract':
+                        from app import extract as tool
+                    else:
+                        from app import anki_db_import as tool
+                    code = tool.main(sys.argv[2:])
+                except Exception:
+                    log_error(f"{command} failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
+            elif command == 'replan_helper':
+                # The fast re-plan's helper (E3.1-B1, app/replan_preview.py): one window's re-order jobs in a process
+                # of its own, talking to that window over a local pipe. Dialog-free; it ends when its window goes.
+                code = 1
+                try:
+                    from app import replan_preview
+                    code = replan_preview.helper_main(sys.argv[2:])
+                except Exception:
+                    log_error(f"replan_helper failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
             elif command == 'analyzer':
                 from app import analyzer
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
-                analyzer.main()
-                return
+                # Its exit code: 1 when the report couldn't be written, 3 when another program held results/
+                # (P0.3 04 §1) — the caller reads it (surasura-cli's generate; the window's log).
+                sys.exit(analyzer.main() or 0)
 
             elif command == 'epub_importer':
                 from app import epub_importer
@@ -136,6 +281,20 @@ def main():
                 indexer.main()
                 return
 
+            elif command == 'arrivals-worker':
+                # The warm arrivals worker (E2.2 D10, K9): `arrivals-worker --headless --language <l> …` — JSON lines
+                # on stdin / stdout; it ends when its input closes, on "quit", or idle. Started by the window's
+                # services (app/services/arrivals.py), never by a user.
+                from app import arrivals_worker
+                sys.exit(arrivals_worker.main(sys.argv[2:], before_exit=_log_end) or 0)
+
+            elif command == 'word-lists-find':
+                # *Words to leave out*'s Paste text (W3.3 FX-wl, n16 "a worker process"): `word-lists-find --headless`,
+                # the text as JSON on stdin, its words as JSON on stdout. One per paste, started by the window's
+                # services (app/services/word_lists.py `find_words`), never by a user.
+                from app.services import word_lists
+                sys.exit(word_lists.find_main() or 0)
+
             elif command == 'sentence_corpus':
                 from app import sentence_corpus
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
@@ -152,36 +311,47 @@ def main():
                     sys.exit(1)
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 sys.exit(patterns_build.main())
+            elif command == 'youtube_preview':
+                # The YouTube preview's scoring child (W3.4 row 4): the transcript scored against the library in a
+                # process of its own, never the window's. Guarded — the module may be absent.
+                try:
+                    from modules.youtube_downloader import preview
+                except ImportError:
+                    log_error("youtube_preview: the YouTube module is not installed")
+                    sys.exit(1)
+                sys.exit(preview.child_main(sys.argv[2:]))
+            elif command == 'dashboard':
+                # The 2.x Tk dashboard, kept reachable on the 3.0 line until nothing opens a Tk window (W3.4's last row
+                # retires it; W2.1 RUNBOOK G-1, IK-14). Falls through to the default start below, in Tk.
+                use_tk = True
             else:
                 log_error(f"Unknown command: {command}")
 
-        # Default: Run Main Dashboard
-        log_error("Launching Dashboard")
-        
-        # Telemetry Initialization
-        try:
-            from app import telemetry
-            telemetry.init()
-        except Exception as e:
-            log_error(f"Telemetry init failed: {e}")
+        if headless:
+            log_error("Headless: nothing to run; the dashboard never opens headless")
+            sys.exit(2)
 
+        # Default: the window. On the 3.0 line that is the PyQt6 window (W2.1, the window's spec 01 §1.6); the Tk
+        # dashboard opens for `dashboard`, or when PyQt6 is missing. The window's telemetry starts after its start gate
+        # (`shell.main`): it reads settings.json, which a Start over moves at the gate (Fresh library, R2)
+        window = None if use_tk else _qt_window()
+        if window is not None:
+            log_error("Launching the window")
+            sys.exit(window.main(list(sys.argv), after_gate=init_telemetry) or 0)
+
+        init_telemetry()
+        log_error("Launching Dashboard")
         from app import main as dashboard
         dashboard.main()
         
     except Exception as e:
         err_msg = f"CRITICAL ERROR:\n{traceback.format_exc()}"
         log_error(err_msg)
+        if headless:
+            sys.exit(1)
         # Also try to show a message box if possible
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("Critical Error", err_msg)
-            root.destroy()
-        except:
-            pass
+        _error_box("Critical Error", err_msg)
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    run()

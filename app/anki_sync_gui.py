@@ -219,7 +219,7 @@ class AnkiSyncGui(tk.Toplevel):
     # ------------------------------------------------------------------- settings
     def _url(self):
         from app import anki_connect
-        return self._saved_settings().get("anki_connect_url") or anki_connect.DEFAULT_URL
+        return anki_connect.address(self._saved_settings())
 
     @staticmethod
     def _saved_settings():
@@ -249,28 +249,25 @@ class AnkiSyncGui(tk.Toplevel):
 
         Written onto the file AS IT IS ON DISK, not onto the merged settings: those carry every
         installed module's defaults, and saving them wrote Speech's hidden `koe_*` keys for users
-        who never revealed it (and changed the analysis fingerprint on every deck click)."""
+        who never revealed it (and changed the analysis fingerprint on every deck click). Through
+        `settings_manager.save_keys`: the per-language merge runs inside the settings lock, so a save
+        the dashboard writes meanwhile is never put back, and this window never waits on it (P1.2)."""
         try:
-            import json
             from app import settings_manager
-            from app.path_utils import get_user_file, read_text
-            try:
-                s = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
-                if not isinstance(s, dict):
-                    raise ValueError("settings.json is not an object")
-            except (OSError, ValueError):
-                s = settings_manager.load_settings()
-            decks = dict(s.get("anki_sync_decks") or {})
-            decks[self.language] = list(self.decks)
-            fields = dict(s.get("anki_sync_fields") or {})
-            fields[self.language] = self._fields()
-            s["anki_sync_decks"] = decks
-            s["anki_sync_fields"] = fields
-            s["anki_sync_include_suspended"] = bool(self.var_suspended.get())
+            language, decks_now, fields_now = self.language, list(self.decks), self._fields()
+            own = {"anki_sync_include_suspended": bool(self.var_suspended.get())}
             if self.app is None:
-                s["anki_sync_auto"] = bool(self.var_auto.get())
-                s["anki_auto_generate"] = bool(self.var_generate.get())
-            settings_manager.save_settings(s)
+                own["anki_sync_auto"] = bool(self.var_auto.get())
+                own["anki_auto_generate"] = bool(self.var_generate.get())
+
+            def merge(s):
+                decks = dict(s.get("anki_sync_decks") or {})
+                decks[language] = list(decks_now)
+                fields = dict(s.get("anki_sync_fields") or {})
+                fields[language] = list(fields_now)
+                s["anki_sync_decks"] = decks
+                s["anki_sync_fields"] = fields
+            settings_manager.save_keys(own, update=merge)
         except Exception as e:
             self._set_result(f"Could not save your choices: {e}", ERROR)
 
@@ -805,15 +802,10 @@ class AnkiSyncGui(tk.Toplevel):
     def _sync_worker(self, full, snap):
         from app import anki_sync
         with self._lock():
-            result = anki_sync.sync(self.language, snap["url"], snap["decks"], snap["fields"],
-                                    include_suspended=snap["suspended"], full=full)
-            # The same decks' new cards, as the automatic sync reads them (read-only on Anki). Only a
-            # count here, so it can never cost the sync its result.
-            if not result.error:
-                try:
-                    anki_sync.sync_backlog(self.language, snap["url"], snap["decks"], snap["fields"])
-                except Exception:
-                    pass
+            # The one sync order (`anki_sync.sync_all`): the studied words, the same decks' new cards (read-only,
+            # never costing the sync its result), then Known from Anki (laptop round 7 #43).
+            result, _signal = anki_sync.sync_all(self.language, snap["url"], snap["decks"], snap["fields"],
+                                                 self._saved_settings(), include_suspended=snap["suspended"], full=full)
         self.q.put(("__RESULT__", result, anki_sync.load_state(self.language),
                     anki_sync.count_backlog(self.language)))
 
@@ -835,6 +827,8 @@ class AnkiSyncGui(tk.Toplevel):
             self._set_result(dry.error, ERROR)
             return
         self._set_result("")
+        # Left as 2.5 had it (its numbers, no line for the Migaku-ignored words a replace drops): the Tk dashboard
+        # retires in 3.0, and the Qt window (app/qt/anki_window.py) states the true numbers (AD-2 / IK-4).
         message = (f"Your known words will go from {dry.total_known:,} to {dry.added:,} "
                    f"(from Anki only).")
         details = ("Words from Migaku, Jiten or earlier imports will be removed. Your current list "

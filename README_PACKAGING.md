@@ -4,7 +4,7 @@ This guide explains how to package Surasura into a standalone Windows app with P
 
 ## Prerequisites
 
-1.  Python 3.9+ (the shipped builds bundle Python 3.11).
+1.  Python 3.10+ (the shipped builds bundle Python 3.11).
 2.  Dependencies installed:
     ```bash
     pip install -r requirements.txt
@@ -31,7 +31,7 @@ python package_app.py --release    # ... plus updater.exe and the auto-update fi
 
 A build:
 1.  Runs the test suite first — `tests/` plus the suite of every optional module being bundled — and stops if anything fails (`--skip-tests` overrides this; not recommended).
-2.  Deletes the previous `dist/` and `build/`, then runs PyInstaller (its log goes to `debug/build_log.txt`).
+2.  Deletes the previous `dist/` and `build/`, then runs PyInstaller (its log goes to `debug/build_log.txt`) with `PATH` cut to the build Python's folders and Windows', so no DLL on the build machine's `PATH` (Git for Windows' OpenSSL, say) ships. The post-build checks refuse a DLL that is no copy of the build Python's, its packages' or the repo's, and anything `never_bundle` in `packaging/build_config.json` names (pytest and its kin, Pygments).
 3.  Lays out `dist/Surasura/`: `Surasura.exe` and `_internal/`, a clean `settings.json` built from the defaults, starter `User Files/` (lists and the bundled frequency list — never anyone's known words), empty `data/` tiers, and `results/`.
 
 **Which optional modules ship** is decided by the toggles in the repo's own `settings.json` (for example `enable_youtube_transcripts`, `enable_junban`), which `packaging/Surasura.spec` reads at build time.

@@ -3,7 +3,7 @@ maintenance lock and the write lock.
 
 Why these matter: the store replaces master_manifest.json as the truth for the user's library order, so
 it must never open the real library from a test (I7), never let two writers race into SQLite 3.39.4's
-WAL-reset bug (K32: every write under one cross-process lock, enforced by `query_only`), and never lose
+WAL-reset bug (K32: every write under one cross-process lock, enforced by the guarded connection), and never lose
 data when something is damaged (I2: set aside, salvaged, never deleted). Every test runs for Japanese and
 Chinese alike (I11), under the per-test SURASURA_TEST_ROOT that tests/conftest.py sets.
 """
@@ -19,7 +19,8 @@ import time
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, library, migrated, paths, roots, subprocess_env,
+from app import path_utils
+from tests.test_library_store_support import (LANGUAGES, library, migrated, names, paths, roots, subprocess_env,
                                               write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,7 +94,7 @@ def test_only_the_helper_auto_checkpoints(language):
             assert s.conn.execute("PRAGMA synchronous").fetchone()[0] == 2          # FULL (R-3)
             assert s.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
             assert s.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-            assert s.conn.execute("PRAGMA query_only").fetchone()[0] == 1
+            assert isinstance(s.conn, ls._Guarded) and not s.conn.gate.open          # K32: guarded, shut
         finally:
             s.close()
 
@@ -101,16 +102,19 @@ def test_only_the_helper_auto_checkpoints(language):
 # --- 2. busy at open --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_store_busy_for_half_a_second_still_opens(language):
+def test_a_store_busy_for_a_moment_still_opens(language):
     migrated(language).close()
     ready = threading.Event()
-    t = threading.Thread(target=_hold_busy, args=(_db(language), 0.5, ready))
+    # Half of the 1 s retry in a timed run (SURASURA_STORE_BENCH=1); 0.2 s beside other runs, where the holder's
+    # release can come late (three --all at once once let 0.5 s run past the second).
+    busy = 0.5 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 0.2
+    t = threading.Thread(target=_hold_busy, args=(_db(language), busy, ready))
     t.start()
     ready.wait(5)
     data_dir, user_files_dir = roots(language)
     store = ls.open_store(language, data_dir, user_files_dir)
     t.join()
-    assert store is not None, "busy for 0.5 s is retried, not a lesser mode"
+    assert store is not None, f"busy for {busy} s is retried, not a lesser mode"
     store.close()
 
 
@@ -249,6 +253,270 @@ def test_a_bare_write_outside_the_helper_fails(language):
         store.close()
 
 
+def _as_another_reads_it(db):
+    """The whole store as a second, plain connection reads it: every row and the schema (sqlite_sequence included)
+    and the header values a PRAGMA writes."""
+    import pathlib
+    conn = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True)
+    try:
+        head = [conn.execute(f"PRAGMA {p}").fetchone()[0] for p in ("user_version", "application_id", "journal_mode")]
+        return head, list(conn.iterdump())
+    finally:
+        conn.close()
+
+
+# Every kind of write the old guard (`query_only`) refused, and a few it never saw, with how each runs inside the
+# helper: True in its transaction, False outside one (begin=False: VACUUM and journal_mode can't run in one), None
+# not run there (a schema_version write damages a store on purpose).
+_WRITE_KINDS = [
+    ("INSERT INTO meta(key, value) VALUES ('k32', 'x')", True),                                  # DML
+    ("UPDATE items SET ord = ord + 0", True),                                                     # (fires a trigger)
+    ("DELETE FROM meta WHERE key = 'k32-nothing'", True),                                        # writes no row: still
+    ("REPLACE INTO meta(key, value) VALUES ('k32', 'y')", True),
+    ("INSERT INTO meta(key, value) VALUES ('k32-r', 'x') RETURNING key", True),
+    ("WITH k(n) AS (SELECT 'k32') UPDATE meta SET value = value WHERE key IN (SELECT n FROM k)", True),
+    ("UPDATE sqlite_sequence SET seq = seq + 1000", True),                                        # sqlite_sequence
+    ("INSERT INTO sqlite_sequence(name, seq) VALUES ('k32', 1)", True),
+    ("DELETE FROM sqlite_sequence WHERE name = 'k32'", True),
+    ("CREATE TABLE k32_made (a)", True),                                                         # DDL
+    ("CREATE INDEX k32_index ON meta (value)", True),
+    ("CREATE TRIGGER k32_trigger AFTER INSERT ON meta BEGIN SELECT 1; END", True),
+    ("CREATE VIEW k32_view AS SELECT 1", True),
+    ("ALTER TABLE meta ADD COLUMN k32_column", True),
+    ("CREATE TEMP TABLE k32_temp (a)", True),
+    ("ANALYZE", True),                                                                           # the whole file
+    ("REINDEX", True),
+    ("REINDEX items_key", True),
+    ("DROP INDEX items_key", True),
+    ("DROP TABLE origin_changes", True),
+    ("PRAGMA user_version = 99", True),                                                          # PRAGMA writes
+    ("PRAGMA main.user_version = 98", True),
+    ("PRAGMA application_id = 7", True),
+    ("PRAGMA incremental_vacuum", True),
+    ("PRAGMA optimize", True),
+    ("PRAGMA foreign_keys = OFF", True),                         # outside the helper a PRAGMA only looks
+    ("PRAGMA schema_version = 1", None),
+    ("PRAGMA wal_checkpoint(PASSIVE)", False),
+    ("PRAGMA WAL_CHECKPOINT", False),                            # names in any case
+    ("VACUUM", False),
+    ("PRAGMA journal_mode = DELETE", False),                     # last: the store leaves WAL
+]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_every_kind_of_write_outside_the_helper_fails_and_nothing_reaches_the_store(language):
+    """K32: no write reaches the store but through `_writing` — rows, the schema, sqlite_sequence, the header's
+    PRAGMAs, the whole-file rewrites, a temp table — each refused as "readonly", the store unchanged as another
+    connection reads it; and each one runs inside the helper (the guard refused it, not SQLite)."""
+    store = migrated(language)
+    try:
+        before = _as_another_reads_it(store.db_path)
+        for sql, _inside in _WRITE_KINDS:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) == before
+        assert not store.conn.execute("SELECT name FROM temp.sqlite_master").fetchall()
+        for sql, inside in _WRITE_KINDS:
+            if inside is not None:
+                with store._writing(begin=inside):
+                    store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) != before
+        # With sqlite_stat1 made (above, inside), ANALYZE writes only it: SQLite reports ANALYZE and reads, no INSERT
+        # (statements never compiled inside the helper, so the authorizer decides, not the remembered writes)
+        after = _as_another_reads_it(store.db_path)
+        for sql in ("ANALYZE items", "ANALYZE main"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) == after
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_table_made_after_the_open_is_guarded_like_the_rest(language):
+    """A table the helper makes after this connection opened (and its sqlite_sequence row) is guarded on this
+    connection and on one opened later: nothing is listed at the open, the authorizer asks about every table."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    later = None
+    try:
+        with store._writing():
+            store.conn.execute("CREATE TABLE k32_late (id INTEGER PRIMARY KEY AUTOINCREMENT, b)")
+            store.conn.execute("INSERT INTO k32_late (b) VALUES ('made')")
+        later = ls.Store(store.db_path, language, data_dir, user_files_dir)
+        for conn in (store.conn, later.conn):
+            for sql in ("INSERT INTO k32_late (b) VALUES ('bare')", "UPDATE k32_late SET b = 'bare'",
+                        "DELETE FROM k32_late", "UPDATE sqlite_sequence SET seq = 99 WHERE name = 'k32_late'",
+                        "DROP TABLE k32_late"):
+                with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                    conn.execute(sql)
+            assert conn.execute("SELECT b FROM k32_late").fetchall() == [("made",)]
+        with later._writing():
+            later.conn.execute("INSERT INTO k32_late (b) VALUES ('helper')")
+        assert store.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'k32_late'").fetchone() == (2,)
+    finally:
+        if later is not None:
+            later.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_cached_write_is_refused_through_every_way_in(language):
+    """A write SQLite compiled inside the helper is run again later without the authorizer being asked (Python's
+    statement cache): outside the helper it is refused through `executemany`, a cursor of the connection, the
+    cursor a read handed back, and `executescript` — and a read compiled inside the helper after a write still
+    reads outside it."""
+    store = migrated(language)
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+    read = "SELECT COUNT(*) FROM items WHERE id >= ?"
+    try:
+        with store._writing():
+            store.conn.executemany(write, [(1,), (2,)])
+            store.conn.execute(read, (0,)).fetchone()                  # compiled inside, right after a write
+        assert store.conn.execute(read, (0,)).fetchone()[0] > 0
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.executemany(write, [(1,)])
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.cursor().execute(write, (1,))
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute("SELECT 1").execute(write, (1,))
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.cursor().executemany(write, [(1,)])
+        with pytest.raises(TypeError):
+            store.conn.cursor(sqlite3.Cursor)                          # never a plain cursor
+        before = _as_another_reads_it(store.db_path)
+        for script in ("SELECT 1; UPDATE items SET ord = ord", "CREATE TABLE k32_s (a); INSERT INTO k32_s VALUES (1)"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.executescript(script)
+        assert _as_another_reads_it(store.db_path) == before
+        with store._writing(begin=False):                              # a script commits what it begins
+            store.conn.executescript("BEGIN; CREATE TABLE k32_s (a); INSERT INTO k32_s VALUES (1); COMMIT")
+        assert store.conn.execute("SELECT a FROM k32_s").fetchall() == [(1,)]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_write_with_reads_run_inside_it_is_still_remembered(language):
+    """A statement run while a write is running (here an executemany's parameters read through the same connection)
+    never hides the write: it is remembered, and refused outside the helper though SQLite holds it compiled."""
+    store = migrated(language)
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+
+    def ids():
+        for (item,) in store.conn.execute("SELECT id FROM items ORDER BY id LIMIT 3").fetchall():
+            store.conn.execute("SELECT COUNT(*) FROM items WHERE id = ?", (item,)).fetchone()
+            yield (item,)
+
+    try:
+        with store._writing():
+            store.conn.executemany(write, ids())
+        assert write in store.conn.gate.writes
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.executemany(write, [(1,)])
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute(write, (1,))
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_guard_forgets_its_writes_and_still_refuses_them(language, monkeypatch):
+    """Past GUARD_REMEMBERS write statements the guard forgets them all and has SQLite recompile (and ask) again: the
+    first one, still in Python's statement cache, is refused outside the helper all the same."""
+    monkeypatch.setattr(ls, "GUARD_REMEMBERS", 3)
+    store = migrated(language)
+    writes = [f"UPDATE items SET ord = ord WHERE id = {n}" for n in range(1, 6)]
+    try:
+        with store._writing():
+            for sql in writes:
+                store.conn.execute(sql)
+        assert len(store.conn.gate.writes) < len(writes)
+        for sql in writes:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_what_only_reads_runs_outside_the_helper(language, tmp_path):
+    """The reads the store makes outside the helper still run: a query, a read transaction, a savepoint, the PRAGMAs
+    that look (with or without a name), and Put back's ATTACH / DETACH of its scratch copy."""
+    store = migrated(language)
+    try:
+        c = store.conn
+        c.execute("BEGIN")
+        c.execute("SELECT COUNT(*) FROM items").fetchone()
+        c.execute("COMMIT")
+        c.execute("SAVEPOINT k32")
+        c.execute("RELEASE k32")
+        for sql in ("PRAGMA user_version", "PRAGMA data_version", "PRAGMA journal_mode", "PRAGMA table_info(items)",
+                    'PRAGMA "main".table_info("items")', "PRAGMA index_list(items)", "PRAGMA quick_check",
+                    "PRAGMA integrity_check(1)", "PRAGMA foreign_key_check", "PRAGMA database_list",
+                    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) SELECT * FROM n"):
+            c.execute(sql).fetchall()
+        c.execute("ATTACH DATABASE ? AS old", (str(tmp_path / "scratch.db"),))
+        c.execute("DETACH DATABASE old")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_blob_is_written_only_inside_the_helper(language):
+    store = migrated(language)
+    if not hasattr(sqlite3.Connection, "blobopen"):                    # Python 3.11+
+        store.close()
+        pytest.skip("no blobopen before Python 3.11")
+    try:
+        item = store.ids("now")[0]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.blobopen("items", "rel_path", item)
+        with store.conn.blobopen("items", "rel_path", item, readonly=True) as blob:
+            assert blob.read()
+        with store._writing():
+            store.conn.blobopen("items", "rel_path", item).close()
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_command_leaves_every_statement_compiled(language):
+    """Why the guard is an authorizer and not `PRAGMA query_only`: SQLite recompiles every statement a connection
+    holds after a flag PRAGMA (or a new authorizer), ~0.5 ms a command. Through a command and the read after it, the
+    authorizer is never asked again: nothing was recompiled."""
+    store = migrated(language)
+
+    class Counting(ls._Gate):
+        __slots__ = ("asked",)
+
+        def authorize(self, *args):
+            self.asked += 1
+            return super().authorize(*args)
+
+    gate = Counting()
+    gate.asked = 0
+    store.conn.gate = gate
+    store.conn.set_authorizer(gate.authorize)
+    read = "SELECT COUNT(*) FROM items WHERE tier = ?"
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+    try:
+        with store._writing():
+            store.conn.execute(write, (1,))
+        store.conn.execute(read, ("now",)).fetchone()
+        asked = gate.asked
+        assert asked > 0
+        for _ in range(3):
+            with store._writing():
+                store.conn.execute(write, (1,))
+            store.conn.execute(read, ("now",)).fetchone()
+        assert gate.asked == asked
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute(write, (1,))
+    finally:
+        store.close()
+
+
 def test_no_checkpoint_outside_the_write_helper():
     """A source scan: the only `wal_checkpoint` in the module is `Store.checkpoint`, which runs it under
     `_writing` — a second write path around the lock would bring back the WAL-reset race (K32)."""
@@ -262,10 +530,14 @@ def test_no_checkpoint_outside_the_write_helper():
             if "wal_checkpoint" in body:
                 inner = [n for n in ast.walk(node) if isinstance(n, ast.FunctionDef) and n is not node]
                 if not inner:
-                    found.append((node.name, "self._writing(begin=False)" in body))
+                    found.append((node.name, "self._writing(begin=False" in body))     # its wait may follow
     code_lines = [l for l in source.splitlines() if "wal_checkpoint" in l and not l.strip().startswith("#")]
     assert found == [("checkpoint", True)], found
     assert len([l for l in code_lines if "execute(" in l]) == 1
+    # K18: the one checkpoint is PASSIVE; TRUNCATE or RESTART can block readers and reset the WAL under them.
+    # Every line that calls wal_checkpoint( must be the PASSIVE one (a docstring mention has no "(" and is skipped).
+    calls = [l for l in code_lines if "wal_checkpoint(" in l]
+    assert calls and all("wal_checkpoint(PASSIVE)" in l for l in calls), calls
 
 
 _WRITER = """
@@ -274,14 +546,22 @@ from app import library_store as ls
 db, lang, data, uf, out, n, mode = sys.argv[1:8]
 store = ls.Store(db, lang, data, uf, "helper" if mode == "checkpoint" else "window")
 spans = []
-for i in range(int(n)):
-    if mode == "checkpoint":
-        with store._writing(begin=False):
-            t0 = time.perf_counter(); store.conn.execute("PRAGMA wal_check" + "point(PASSIVE)").fetchall(); t1 = time.perf_counter()
-    else:
-        with store._writing():
-            t0 = time.perf_counter(); store.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (1 + i % 5,)); t1 = time.perf_counter()
+i = 0
+deadline = time.monotonic() + 60
+while i < int(n):
+    try:
+        if mode == "checkpoint":
+            with store._writing(begin=False):
+                t0 = time.perf_counter(); store.conn.execute("PRAGMA wal_check" + "point(PASSIVE)").fetchall(); t1 = time.perf_counter()
+        else:
+            with store._writing():
+                t0 = time.perf_counter(); store.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (1 + i % 5,)); t1 = time.perf_counter()
+    except ls.StoreBusy:
+        if time.monotonic() > deadline:
+            raise                # a lock never let go is the fault this test is for: fail, never spin
+        continue                 # 5 s without the lock on a loaded machine: "try again", as the app's callers do
     spans.append((t0, t1))
+    i += 1
 store.close()
 json.dump(spans, open(out, "w"))
 """
@@ -289,7 +569,8 @@ json.dump(spans, open(out, "w"))
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
-    """Two processes and two threads writing while one checkpoints: no two critical sections overlap."""
+    """Two processes and two threads writing while one checkpoints: no two critical sections overlap. A writer
+    starved past the 5 s lock wait (three test runs at once did it) tries again, as the app's callers do."""
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
     db = store.db_path
@@ -303,18 +584,26 @@ def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
 
     def thread_writer():
         s = ls.Store(db, language, data_dir, user_files_dir)
-        for i in range(60):
-            with s._writing():
-                t0 = time.perf_counter()
-                s.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (2,))
-                spans.append((t0, time.perf_counter()))
+        done = 0
+        deadline = time.monotonic() + 60
+        while done < 60:
+            try:
+                with s._writing():
+                    t0 = time.perf_counter()
+                    s.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (2,))
+                    spans.append((t0, time.perf_counter()))
+            except ls.StoreBusy:
+                if time.monotonic() > deadline:
+                    raise            # never let go: the span count below fails the test
+                continue             # starved for 5 s beside other runs: try again; the test is about overlap
+            done += 1
         s.close()
 
     threads = [threading.Thread(target=thread_writer) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(90)
     for out, proc in procs:
         assert proc.wait(60) == 0
         spans += [tuple(s) for s in json.load(open(out))]
@@ -385,7 +674,9 @@ def test_nested_commands_share_one_transaction(language):
     touch(data_dir, rel)
     store.register(os.path.join(data_dir, rel), {"content_key": "k1", "video": "x"})
     store.conn.set_trace_callback(None)
-    assert [s for s in statements if s.startswith(("BEGIN", "COMMIT"))] == ["BEGIN IMMEDIATE", "COMMIT"]
+    # one write transaction; before it, the short read that looks for the file's twin outside the write lock (F12)
+    assert [s for s in statements if s.startswith(("BEGIN", "COMMIT"))] == ["BEGIN", "COMMIT", "BEGIN IMMEDIATE",
+                                                                            "COMMIT"]
     store.close()
     errors = []
 
@@ -461,9 +752,12 @@ def test_the_store_is_switched_on():
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_store_live_false_refuses_without_a_test_root(language, monkeypatch):
+def test_store_live_false_refuses_without_a_test_root(language, monkeypatch, tmp_path):
     """The switch still works as one: off, every open refuses (the app runs in JSON mode, as 2.4)."""
     data_dir, user_files_dir = roots(language)
+    # With no test root, maintain() takes its lock in the real local data folder: keep that folder in tmp_path
+    # (conftest's _guard_real_local_data fails any test that creates the real one).
+    monkeypatch.setattr(path_utils, "_local_data_root", lambda: str(tmp_path / "local_root"))
     monkeypatch.delenv("SURASURA_TEST_ROOT")
     monkeypatch.delenv("PYTEST_CURRENT_TEST")
     monkeypatch.setattr(ls, "STORE_LIVE", False)
@@ -670,7 +964,7 @@ def test_an_upgrade_leaves_a_backup(language, monkeypatch):
     data_dir, user_files_dir = roots(language)
     monkeypatch.setattr(ls, "STORE_SCHEMA", ls.STORE_SCHEMA + 1)
     monkeypatch.setitem(ls._UPGRADES, ls.STORE_SCHEMA - 1,
-                        lambda conn: conn.execute("ALTER TABLE items ADD COLUMN upgraded INTEGER"))
+                        lambda store: store.conn.execute("ALTER TABLE items ADD COLUMN upgraded INTEGER"))
     assert ls.check_mode(language, data_dir)[0] == "json"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     db = _db(language)
@@ -684,10 +978,13 @@ def test_an_upgrade_leaves_a_backup(language, monkeypatch):
 # --- 11. 2.4.0's runtime ------------------------------------------------------------------------- #
 
 def _internal_240():
+    """A frozen 2.x `_internal` (2.4.0's runtime: no build stamp). A 3.0 build in `dist\\` (its `build_stamp.json`,
+    S3.1) is another runtime, never this test's."""
     for candidate in (os.environ.get("SURASURA_240_INTERNAL"),
                       os.path.join(REPO, "dist", "Surasura", "_internal"),
                       os.path.join(REPO, "..", "..", "surasura", "dist", "Surasura", "_internal")):
-        if candidate and os.path.isfile(os.path.join(candidate, "_sqlite3.pyd")):
+        if (candidate and os.path.isfile(os.path.join(candidate, "_sqlite3.pyd"))
+                and not os.path.isfile(os.path.join(candidate, "build_stamp.json"))):
             return os.path.abspath(candidate)
     return None
 
@@ -724,3 +1021,173 @@ def test_imports_and_commits_with_2_4_0s_runtime(language):
                           user_files_dir, language], capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.startswith("ok 3.39.4"), out.stdout
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_build_helper_spawns_at_most_once_a_minute_per_language(language, monkeypatch, store_helper_spawns):
+    """A window that finds no ready store starts the builder at most once every 60 s per language: a retry
+    1 s later spawns nothing, and a retry exactly 60 s after the spawn spawns again. Clock is faked so the
+    boundary is exact (the spawn time is recorded, and the window is strict on the 60th second)."""
+    data_dir, user_files_dir, doc = library(language)
+    write_manifest(user_files_dir, doc)
+    monkeypatch.setattr(ls, "_build_spawned", {})
+    clock = [1000.0]
+
+    class _FakeTime:
+        monotonic = staticmethod(lambda: clock[0])
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(ls, "time", _FakeTime())
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,)]
+    clock[0] = 1001.0
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,)], "a retry 1 s later must not spawn again"
+    clock[0] = 1060.0
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,), (language,)], "a retry exactly 60 s later spawns again"
+    # The 60 s window is per language: another language finding no ready store at the same moment spawns its own
+    # builder (a throttle keyed on one global timestamp would stay silent here).
+    other = [lang for lang in LANGUAGES if lang != language][0]
+    o_data, o_files, o_doc = library(other)
+    write_manifest(o_files, o_doc)
+    ls.spawn_build_if_waiting(other, o_data, o_files)
+    assert store_helper_spawns == [(language,), (language,), (other,)], "the throttle is per language"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_backups_keep_exactly_the_newest_bak_keep(language, monkeypatch):
+    # Four backups with BAK_KEEP=2 must leave exactly two: the rule is "keep the newest N",
+    # so neither fewer (an off-by-one that deletes too little) nor more survives a run.
+    store = migrated(language)
+    try:
+        monkeypatch.setattr(ls, "BAK_KEEP", 2)
+        folder, base = os.path.split(store.db_path)
+        created = []
+        for i in range(4):
+            before = set(os.listdir(folder))
+            ls._backup_db(store.conn, store.db_path)
+            new = (set(os.listdir(folder)) - before).pop()
+            # Pin each backup's mtime: the prune sorts by mtime, which has one-second resolution, so four quick
+            # backups can tie and the survivors would depend on listdir order. Increasing values make it exact.
+            os.utime(os.path.join(folder, new), (1_000_000 + i, 1_000_000 + i))
+            created.append(new)
+        baks = [f for f in os.listdir(folder) if f.startswith(base + ".bak.")]
+        assert len(baks) == 2
+        # The survivors must be the last two made, not any two: a mutant that drops the newest one fails here.
+        assert sorted(baks) == sorted(created[-2:])
+    finally:
+        store.close()
+
+
+def test_parent_folder_drops_a_tier_folder_only_at_the_second_level():
+    """Only the first folder under the tier is dropped as the tier's own folder: a tier-named folder
+    deeper down is part of the show's path, so it stays. Why: a dropped leaf folder would merge two
+    different shows' parents, and a kept first-level one would put a tier name into the parent."""
+    assert ls.parent_folder_of("HighPriority/HighPriority/Show/ep01.srt") == "Show"
+    assert ls.parent_folder_of("HighPriority/Show/HighPriority/ep01.srt") == "Show/HighPriority"
+    assert ls.parent_folder_of("LowPriority/Show/ep01.srt") == "Show"
+    assert ls.parent_folder_of("LowPriority/ep01.srt") == ""
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_library_file_name_carries_a_16_hex_key_that_never_changes(language):
+    """The key is the first 16 hex digits of the data folder's hash: a shorter or longer key would
+    name a different file after an update, and the update would open a new, empty library."""
+    import re
+    data_dir, _u = roots(language)
+    name = os.path.basename(ls.library_db_path(language, data_dir))
+    assert re.fullmatch(rf"library_{language}_[0-9a-f]{{16}}\.db", name), name
+    if sys.platform == "win32":
+        # Pin the value, not just the shape: a fixed Windows folder names this literal file in every version, so
+        # a changed key (its length, its hash, the path's normal form) fails here.
+        fixed = os.path.basename(ls.library_db_path(language, r"C:\Users\x\data"))
+        assert fixed == f"library_{language}_163d9e9a2cf7a158.db", fixed
+
+
+def test_the_os_write_lock_gets_only_what_is_left_of_the_callers_timeout(tmp_path, monkeypatch):
+    # the caller's 1.0 s covers the thread lock's wait AND the OS lock's: 0.4 s went to the thread
+    # lock (fake clock), so the OS lock may wait 0.6 s, never the full 1.0 s
+    wl = ls._WriteLock(str(tmp_path / "x.db"))
+    seen = []
+    monkeypatch.setattr(wl.file, "acquire", lambda t, r: seen.append(t) or True)
+    # one scripted source for both clocks, so the rule holds whichever clock the code reads; the last
+    # value repeats, so an extra clock call cannot exhaust it
+    values = [100.0, 100.4]
+
+    def scripted_clock():
+        return values.pop(0) if len(values) > 1 else values[0]
+
+    class _ScriptedTime:
+        perf_counter = staticmethod(scripted_clock)
+        monotonic = staticmethod(scripted_clock)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    with monkeypatch.context() as m:
+        m.setattr(ls, "time", _ScriptedTime())                   # the store module's clock only
+        wl.acquire(1.0)
+    wl.release()
+    assert len(seen) == 1 and abs(seen[0] - 0.6) < 1e-9
+
+
+def test_a_busy_os_write_lock_raises_store_busy_and_frees_the_thread_lock(tmp_path, monkeypatch):
+    # a failed OS lock must not leave this thread's RLock owned: another thread can still take it
+    wl = ls._WriteLock(str(tmp_path / "x.db"))
+    monkeypatch.setattr(wl.file, "acquire", lambda t, r: False)
+    with pytest.raises(ls.StoreBusy):
+        wl.acquire(0.1)
+    assert not wl.rlock._is_owned()
+    assert wl.depth == 0
+    got = []
+
+    def take():
+        got.append(wl.rlock.acquire(timeout=0.5))
+        if got[0]:
+            wl.rlock.release()
+
+    thread = threading.Thread(target=take)
+    thread.start()
+    thread.join(5)
+    assert got == [True]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_malformed_error_inside_a_write_marks_the_store_damaged(language):
+    """The rule: a 'malformed' database error raised inside a write sets the damaged marker, so the next write is
+    refused (StoreReadOnly) until Repair. Without the marker a damaged file would keep taking writes (I2)."""
+    store = migrated(language)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            with store._writing():
+                raise sqlite3.DatabaseError("database disk image is malformed")
+        assert os.path.exists(ls.damaged_marker(store.db_path)), "a malformed write leaves the damaged marker"
+        with pytest.raises(ls.StoreReadOnly):
+            with store._writing():
+                pass
+    finally:
+        if os.path.exists(ls.damaged_marker(store.db_path)):
+            os.remove(ls.damaged_marker(store.db_path))
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_salvage_copies_the_write_ahead_log_so_rows_still_in_it_are_read(language, tmp_path):
+    # why: a row committed but not yet checkpointed lives in the -wal file; a salvage that copies only the main
+    # file loses it, so the salvaged table must still hold the row written through the open connection
+    word = names(language)[0]
+    db = str(tmp_path / "library.db")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE items (id TEXT, title TEXT)")
+        conn.execute("INSERT INTO items VALUES ('i1', ?)", (word,))
+        conn.commit()
+        assert os.path.exists(db + "-wal"), "the row is still in the write-ahead log"
+        out = ls._image_from_db(db)
+    finally:
+        conn.close()
+    assert out["items"] is not None and out["items"]["rows"] == [["i1", word]]

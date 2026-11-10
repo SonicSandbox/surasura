@@ -262,7 +262,7 @@
             content: attr(data-content);
         }
 
-        /* "6+" chip on a sidebar file from the 6+ months list: a faint outline in the theme's own
+        /* "Goal" chip on a sidebar file from your Goal: a faint outline in the theme's own
            secondary colours, so it sets later-goal content apart without competing with the
            filename. Its text is drawn by ::after like .hidden-content, so dictionary extensions
            never read it — but unlike .hidden-content it keeps pointer events, for its hover title. */
@@ -1160,6 +1160,67 @@
             white-space: nowrap;
         }
 
+        /* --- The journey's stone (3.0): an episode marked watched in your library ---
+           The window's watched stone drawn flat: a small cut stone, sapphire, muted, before the file's name. Never a
+           check and never green, so it never reads as the browser's own "Complete ✓" (green text, after the name). */
+        .file-tab .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 7px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
+        /* The name flows on the stone's line (a long name wraps under it, not as a block below a lone stone). */
+        .file-tab .journey-stone ~ .hidden-content {
+            display: inline;
+        }
+
+        .file-tab .aside-watched {
+            font-size: 0.9em;
+            opacity: 0.5;
+            margin-left: 8px;
+            font-style: italic;
+            white-space: nowrap;
+        }
+
+        .watched-panel {
+            margin: 20px;
+            padding: 14px 18px;
+            color: var(--text-secondary);
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-left: 3px solid #4b8ff0;
+            border-radius: 6px;
+        }
+
+        .watched-panel .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 8px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
+        /* A run of watched parts of one show folded into one row (a6, Sonic 2026-10-29): its stone, its range
+           (*Ep 1–14 watched*) and a caret; a click shows each part in its place, a second click folds them again. */
+        .journey-fold .fold-head .fold-caret {
+            margin-left: 8px;
+            opacity: 0.8;
+            font-size: 0.9em;
+        }
+
+        .journey-fold .fold-body {
+            display: none;
+            padding-left: 12px;
+        }
+
+        .journey-fold.open .fold-body {
+            display: block;
+        }
+
         /* Manually-completed files collapse into their own section at the bottom of the sidebar, so
            a long-running journey doesn't mean scrolling past every episode you've already finished.
            They stay one click away rather than being hidden outright. */
@@ -1935,6 +1996,8 @@
 
             // Remember each file's natural sidebar position so un-marking one can put it back.
             fileList.forEach((item, i) => { item._order = i; });
+            // A run of watched parts of one show: one row (the generator names them, `"fold"`; a6)
+            fileList = foldWatchedRuns(fileList);
 
             // Split off the files YOU marked complete — they render into a collapsed section at the
             // TOP instead of sitting in the middle of the list. (Distinct from the analysis-derived
@@ -1946,8 +2009,9 @@
             // after it, so paged chunks still insert below the section, in order.
             buildCompletedSection(tabsContainer, doneList);
 
+            let loadThrough = null;     // paged: renders the sidebar's chunks up to an index (the asked file's)
             if (activeList.length > 500) {
-                setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
+                loadThrough = setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
             } else {
                 activeList.forEach((item, index) => {
                     tabsContainer.appendChild(createSidebarTab(item));
@@ -1970,9 +2034,27 @@
                 // Open on the first file still to do. With the Completed section sitting at the top,
                 // a plain "first .file-tab" would open a finished file (and one inside a collapsed
                 // section at that). Falls back to the very first tab when everything is completed.
+                // `#file=<name>`: the window asked for one episode (its row's ⋯ *See it in your journey*, Up Next's ↗):
+                // its tab, whatever it is (a set-aside one opens its Watched panel); a name not here, the rule below.
+                // Any tab kind (`data-file`: a counted, set-aside or Target-met one), rendered first if paged; brought
+                // into view, a collapsed Completed section opened for it (not saved).
                 setTimeout(() => {
-                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
-                    const firstTab = tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    const asked = fileFromHash();
+                    const at = asked ? activeList.findIndex(item => itemHolds(item, asked)) : -1;
+                    if (loadThrough && at >= 0) loadThrough(at);
+                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab:not(.fold-head)'));
+                    const askedTab = asked ? tabs.find(t => t.dataset.file === asked) : null;
+                    const firstTab = askedTab || tabs.find(stillToStudy)
+                        || tabs.find(t => !t.closest('#completed-section') && !t.closest('.fold-body'))
+                        || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    if (firstTab) openFoldOf(firstTab);         // a part inside a folded run: its fold shown (not kept)
+                    if (askedTab) {
+                        if (askedTab.closest('#completed-section') && completedCollapsed) {
+                            completedCollapsed = false;
+                            applyCompletedSectionState();
+                        }
+                        askedTab.scrollIntoView({ block: 'center' });
+                    }
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -1983,7 +2065,66 @@
 
         // --- Collapsible "Completed" section ---------------------------------------------------- #
         function isItemCompleted(item) {
+            if (item && item.type === 'fold') return item.items.every(isItemCompleted);
             return !!(item && item.data && completedFiles.has(item.data.filename));
+        }
+
+        // --- A run of watched parts folded into one row (a6, Sonic 2026-10-29) -------------------------------- #
+        // The generator names each part of a fold (`"fold": k`, `_journey_folds`: two or more watched parts of one show
+        // next to each other) and its row's words (`globalData.folds[k].label`, *Ep 1–14 watched*). Each part keeps its
+        // own tab, in its place, inside the fold; the fold is one sidebar item. Rendering only.
+        function foldWatchedRuns(list) {
+            const folds = globalData.folds || [];
+            const out = [];
+            list.forEach(item => {
+                const k = item.data ? item.data.fold : undefined;
+                const last = out[out.length - 1];
+                if (k === undefined || k === null || !folds[k]) out.push(item);
+                else if (last && last.type === 'fold' && last.fold === k) last.items.push(item);
+                else out.push({ type: 'fold', fold: k, items: [item], _order: item._order });
+            });
+            // a fold of one part (never from the generator) is that part again
+            return out.map(item => (item.type === 'fold' && item.items.length < 2) ? item.items[0] : item);
+        }
+
+        function itemHolds(item, name) {
+            if (item && item.type === 'fold') return item.items.some(part => itemHolds(part, name));
+            return !!(item && item.data && item.data.filename === name);
+        }
+
+        function createFoldRow(item) {
+            const wrap = document.createElement('div');
+            wrap.className = 'journey-fold';
+            if (item._order !== undefined) wrap.dataset.order = item._order;
+            const head = document.createElement('div');
+            head.className = 'file-tab fold-head';
+            head.title = (typeof globalFoldTip !== 'undefined' && globalFoldTip) || '';
+            const label = escapeHtml(globalData.folds[item.fold].label);
+            // with Keep studying watched episodes on, the parts still count: their words, summed, where a count goes
+            const counted = item.items.filter(part => part.type === 'prog' && !part.data.aside);
+            const words = counted.reduce((n, part) => n + part.data.words.length, 0);
+            const count = counted.length ? ` <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${words})</span>` : '';
+            head.innerHTML = `${journeyStone({ watched: true })}<span class="hidden-content" data-content="${label}" migaku_ignore data-yomichan-ignore></span>${count}<span class="fold-caret">▸</span>`;
+            const body = document.createElement('div');
+            body.className = 'fold-body';
+            item.items.forEach(part => body.appendChild(createSidebarTab(part)));
+            head.onclick = () => toggleFold(wrap);
+            wrap.appendChild(head);
+            wrap.appendChild(body);
+            return wrap;
+        }
+
+        function toggleFold(wrap, open) {
+            const shown = open === undefined ? !wrap.classList.contains('open') : open;
+            wrap.classList.toggle('open', shown);
+            const caret = wrap.querySelector('.fold-caret');
+            if (caret) caret.textContent = shown ? '▾' : '▸';
+        }
+
+        // A part inside a folded run, asked for or advanced to: its fold opened so the part shows.
+        function openFoldOf(tab) {
+            const wrap = tab && tab.closest('.journey-fold');
+            if (wrap && !wrap.classList.contains('open')) toggleFold(wrap, true);
         }
 
         function buildCompletedSection(container, doneList) {
@@ -2013,7 +2154,7 @@
             const body = document.getElementById('completed-section-body');
             const header = document.getElementById('completed-section-header');
             if (!wrap || !body || !header) return;
-            const n = body.querySelectorAll('.file-tab').length;
+            const n = body.querySelectorAll('.file-tab:not(.fold-head)').length;
             wrap.style.display = n ? 'block' : 'none';
             header.textContent = `${completedCollapsed ? '▸' : '▾'} Completed (${n})`;
             body.style.display = completedCollapsed ? 'none' : 'block';
@@ -2033,6 +2174,13 @@
             const tabsContainer = document.getElementById('file-tabs');
             const body = document.getElementById('completed-section-body');
             if (!tab || !tabsContainer || !body) return;
+            // A part of a folded run stays in its fold; the fold is re-filed whole: in Completed while every part is ✓
+            const fold = tab.closest('.journey-fold');
+            if (fold) {
+                isCompleted = Array.from(fold.querySelectorAll('.fold-body .file-tab'))
+                    .every(part => completedFiles.has(part.dataset.file));
+                tab = fold;
+            }
 
             if (isCompleted) {
                 body.appendChild(tab);
@@ -2041,7 +2189,7 @@
                 // inside the Completed section; no later sibling means it belongs at the end (the
                 // section is the container's FIRST child, so appending is correct).
                 const order = parseInt(tab.dataset.order || '0', 10);
-                const siblings = Array.from(tabsContainer.querySelectorAll(':scope > .file-tab'));
+                const siblings = Array.from(tabsContainer.querySelectorAll(':scope > .file-tab, :scope > .journey-fold'));
                 const after = siblings.find(t => parseInt(t.dataset.order || '0', 10) > order);
                 tabsContainer.insertBefore(tab, after || null);
             }
@@ -2050,8 +2198,11 @@
 
 
         function createSidebarTab(item) {
+            if (item.type === 'fold') return createFoldRow(item);
             const tab = document.createElement('div');
             tab.className = `file-tab`;
+            // Every kind's file name, for `#file=` (`dataset.filename` stays the counted ones': `stillToStudy`).
+            if (item.data && item.data.filename) tab.dataset.file = item.data.filename;
             // Natural sidebar position, so un-marking a completed file restores it here.
             if (item._order !== undefined) tab.dataset.order = item._order;
 
@@ -2060,15 +2211,28 @@
 
                 let goalIndicator = "";
                 if (fileData.is_goal_content) {
-                    // A quiet chip for content from the 6+ months list (styled in .tier-chip).
-                    goalIndicator = `<span class="tier-chip" data-content="6+" title="From your 6+ months list" migaku_ignore data-yomichan-ignore></span>`;
+                    // A quiet chip for content from your Goal (styled in .tier-chip): the window's own name for it.
+                    goalIndicator = `<span class="tier-chip" data-content="Goal" title="From your Goal: someday, in no order" migaku_ignore data-yomichan-ignore></span>`;
                 }
 
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.dataset.filename = fileData.filename;
+                if (fileData.aside) {
+                    // Watched and set aside (Keep studying watched episodes off): in its place, *watched* where its
+                    // count would be; its words aren't counted, so a click says so instead of listing none.
+                    tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
+                    tab.dataset.aside = "1";    // never opened by itself (stillToStudy); a click still opens its panel
+                    applyCompletedStyle(tab, completedFiles.has(fileData.filename));
+                    tab.onclick = () => {
+                        document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                        tab.classList.add('active');
+                        renderWatchedFile(fileData);
+                    }
+                    return tab;
+                }
                 const inAnkiCount = ankiBacklogCount(fileData.words);
                 const countText = inAnkiCount ? `${fileData.words.length} · ${inAnkiCount}<span class="priority-marker marker-anki" style="font-size: 0.8em; margin-left: 2px;" title="${inAnkiCount} already in your Anki backlog"></span>` : `${fileData.words.length}`;
-                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
                 applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2080,7 +2244,7 @@
                 const fileData = item.data;
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.style.opacity = "0.7";
-                tab.innerHTML = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
                 tab.onclick = () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -2088,6 +2252,32 @@
                 }
             }
             return tab;
+        }
+
+        // The journey's stone (3.0): the file is marked watched in your library (`watched` in the report's data; an
+        // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark. Its
+        // edge is the window's light edge (theme.GEM sapphire), so it reads on the dark sidebar.
+        const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" overflow="visible" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="none" stroke="#d6e7ff" stroke-width="0.7" stroke-linejoin="round"/></svg>';
+
+        function journeyStone(fileData) {
+            if (!fileData || fileData.watched !== true) return "";
+            return `<span class="journey-stone" title="Watched (marked in your library)">${JOURNEY_STONE_SVG}</span>`;
+        }
+
+        // A watched file set aside: its words aren't counted, so its panel says so (the ✓ still marks it in the browser).
+        function renderWatchedFile(fileData) {
+            const listContainer = document.getElementById('progressive-list');
+            listContainer.innerHTML = "";
+            currentFileName = fileData.filename;
+            currentFileWordCount = 0;
+            currentCumulativeWords = 0;
+            updateMarkCompleteButton();
+            const panel = document.createElement('div');
+            panel.className = 'watched-panel';
+            // the window's own sentence for the rule (the generator injects it: one place, `view_rows.STRINGS`)
+            const said = (typeof globalWatchedLeaves !== 'undefined' && globalWatchedLeaves) || "Watched";
+            panel.innerHTML = `<span class="journey-stone">${JOURNEY_STONE_SVG}</span><span class="hidden-content" data-content="${escapeHtml(said)}" migaku_ignore data-yomichan-ignore></span>`;
+            listContainer.appendChild(panel);
         }
 
         async function renderCompletedFile(fileData) {
@@ -2199,6 +2389,8 @@
 
             // Initial load
             loadNextChunk();
+            // -> render every chunk up to item `i` (the window's `#file=`: an item past the first page)
+            return (i) => { while (index <= i && index < items.length) loadNextChunk(); };
         }
 
         async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null, unlisted = null) {
@@ -2273,7 +2465,7 @@
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${safeWord}</strong>`);
 
             const rowTip = trimmed.trimmed ? ` title="${escapeHtml(contextFull)}"` : '';
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"])}`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"], data["End 1"])}`;
             return el;
         }
 
@@ -2388,7 +2580,7 @@
         // Swap the Target Days box for the green "X words Completed" line (or back) in place.
         function updateTargetDaysForCurrent() {
             const listContainer = document.getElementById('progressive-list');
-            if (!listContainer) return;
+            if (!listContainer || listContainer.querySelector('.watched-panel')) return;    // a set-aside file: no count
             const existing = listContainer.querySelector('.target-days-box');
             const fresh = createTargetDaysBox(currentCumulativeWords || currentFileWordCount, currentFileWordCount, currentFileName);
             if (existing) {
@@ -2401,13 +2593,27 @@
             }
         }
 
-        // Advance to the next sidebar file that isn't completed yet (rendered tabs only).
+        // The file the window asked the report to open on (`#file=<name>`, `open_report(file=)`), or ''.
+        function fileFromHash() {
+            if (!location.hash.startsWith('#file=')) return '';
+            try { return decodeURIComponent(location.hash.slice(6)); } catch (e) { return ''; }
+        }
+
+        // A file still to study: its words still count (never one set aside as watched) and it isn't ✓ in the browser.
+        // The one rule for where the report opens and where a ✓ advances to (3.0).
+        function stillToStudy(tab) {
+            return !!tab.dataset.filename && !tab.dataset.aside && !completedFiles.has(tab.dataset.filename)
+                && !tab.closest('#completed-section');
+        }
+
+        // Advance to the next sidebar file still to study (rendered tabs only).
         function goToNextIncompleteFile() {
             const tabs = Array.from(document.querySelectorAll('#file-tabs .file-tab[data-filename]'));
             if (!tabs.length) return;
             const activeIdx = tabs.findIndex(t => t.classList.contains('active'));
             for (let i = activeIdx + 1; i < tabs.length; i++) {
-                if (!completedFiles.has(tabs[i].dataset.filename)) {
+                if (stillToStudy(tabs[i])) {
+                    openFoldOf(tabs[i]);
                     tabs[i].click();
                     return;
                 }
@@ -2625,6 +2831,14 @@
             return (typeof orth === 'string' && orth.trim()) ? orth : data.Word;
         }
 
+        // The reading shown beside the spelling: a set phrase's Kana is its shown spelling's own (いい感じ イイカンジ,
+        // where the row's Reading is the dictionary's ヨイカンジ); blank for every other row. Shown only: the row is
+        // still Word|Reading everywhere (the In-Anki mark, the search index, the ignore list).
+        function shownReading(data) {
+            if (typeof data.Kana === 'string' && data.Kana) return data.Kana;
+            return (typeof data.Reading === 'string') ? data.Reading : '';
+        }
+
         // --- Anki backlog label (Junban_Backlog_Spec WP-B8) ---
         // The words of the new cards already waiting in Anki ("Label backlogged Anki words"), as the
         // keys the Anki sync wrote: each card's word and its hiragana fold. Empty when the setting is
@@ -2792,7 +3006,7 @@
                 <div class="card-header">
                     <div style="display:flex; align-items:center; gap: 10px;">
                         <span class="word-main">${safeWord}</span>
-                        <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
+                        <span class="reading" data-reading="${shownReading(data)}" migaku_ignore data-yomichan-ignore></span>
                         <button class="btn-audio" style="${hideAudio ? 'display:none' : ''}" data-audio="${audioSource}" onclick="playAudio(this.dataset.audio, this)" title="Listen to Sentence (Hotkey: v)">
                             <svg viewBox="0 0 24 24">
                                 <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
@@ -2804,13 +3018,13 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
+                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now and soon, not only in the next few weeks"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>
                     </div>
                 </div>
-                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"])}</div>
+                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -2845,7 +3059,7 @@
                                 const n = k.replace('Context ', '');
                                 // Speaks the WINDOWED text, matching what's on screen (the same
                                 // rule the Listen button follows).
-                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n], t.text, data['Aud ' + n]);
+                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n], t.text, data['Aud ' + n], data['End ' + n]);
                                 innerHtmlString += `<div class="context-item"${tip}>${formatted}${badge}</div>`;
                             }
                         });
@@ -3095,7 +3309,7 @@
             return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
         }
 
-        function sourceBadge(idx, frag, at, text, hasAudio) {
+        function sourceBadge(idx, frag, at, text, hasAudio, end) {
             const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
             if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
@@ -3107,7 +3321,13 @@
             const fullPath = row[2] || name;
             // group/file, e.g. 'test_book/chapter_1.txt' — plus the cue time for subtitles.
             let hover = row[3] || name;
-            if (at !== null && at !== undefined && at !== "") hover += ' @ ' + fmtCueTime(at);
+            // When the sentence's lines start and end — Connect's line reader's times (E5.1), the line a card is cut from.
+            if (at !== null && at !== undefined && at !== "") {
+                hover += ' @ ' + fmtCueTime(at);
+                if (end !== null && end !== undefined && end !== "" && fmtCueTime(end) !== fmtCueTime(at)) {
+                    hover += '–' + fmtCueTime(end);
+                }
+            }
             let label;
             if (mode === 'icon') label = icon;
             else if (mode === 'filename') label = escapeHtml(name);
@@ -3187,7 +3407,9 @@
         }
 
         function wordSearchEnabled() {
-            return wordSearchConfig().enabled !== false;
+            // Nadeshiko holds Japanese sentences only: a Chinese report has no ⌕ (nor its \ key)
+            return wordSearchConfig().enabled !== false
+                && ((typeof globalLanguage === 'undefined') || globalLanguage !== 'zh');
         }
 
         function searchWord(word) {
@@ -3398,7 +3620,7 @@
                 if (seen.has(id)) return;
                 seen.add(id);
                 const forms = (typeof row.Forms === 'string' && row.Forms) ? row.Forms.split('|') : [];
-                const keys = new Set([row.Word, row.Orth, row.Reading, ...forms]
+                const keys = new Set([row.Word, row.Orth, row.Reading, row.Kana, ...forms]
                     .filter(k => typeof k === 'string' && k).map(rsNorm));
                 const sents = Object.keys(row)
                     .filter(k => /^Context \d+$/.test(k) && typeof row[k] === 'string' && row[k])
@@ -3427,12 +3649,12 @@
             const el = document.createElement('div');
             el.className = 'card rs-hit';
             const word = displayWord(row);
-            const reading = (typeof row.Reading === 'string') ? row.Reading : '';
+            const reading = shownReading(row);
             const cap = contextCap();
             const sents = hit.sents.map(s => {
                 const t = trimContext(s.text, s.needle, cap);
                 const title = t.trimmed ? ` title="${escapeHtml(s.text)}"` : '';
-                return `<div class="rs-sent"${title}>${rsMark(t.text, s.needle)}${sourceBadge(row['Src ' + s.n], row['Frag ' + s.n], row['At ' + s.n], t.text, row['Aud ' + s.n])}</div>`;
+                return `<div class="rs-sent"${title}>${rsMark(t.text, s.needle)}${sourceBadge(row['Src ' + s.n], row['Frag ' + s.n], row['At ' + s.n], t.text, row['Aud ' + s.n], row['End ' + s.n])}</div>`;
             }).join('');
             el.innerHTML = `
                 <div class="card-header">

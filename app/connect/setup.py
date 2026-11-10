@@ -1,0 +1,571 @@
+"""Connect's setup checks (P2.3; P1.5 04-onboarding §1, S1–S8; 06-edges E1–E5, E9–E12, E28, W1): every piece Connect
+needs, looked at in order, and for each one that's missing the plain sentence that names it and the one thing that
+fixes it. Connect has no account to sign in to: what stands in for "signed out" is a piece not set up yet, and the
+rule for it is to name it, offer its one action, and do everything else meanwhile.
+
+`checks(settings, language)` -> {"ready", "checks", "anki_profile", "anki_miner"}. Each check is
+`{"id", "state", "say", "do", "blocks"}` (+ `"update": True` where updating Anki Miner is the better fix):
+
+- `state`: `ok` · `waiting` (Connect waits by itself: Anki closed, another profile open, Anki Miner busy — the status
+  line's, never *Needs you*) · `needs-you` (only you can fix it) · `not-checked` (it can't be looked at yet: it needs
+  a piece above it) · `skipped` (a tool that isn't installed: its step is skipped, named once — E7, S8);
+- `say`: one plain sentence; `do`: the one action, or None; `blocks`: whether it stops Connect making cards (a
+  missing AnkiWeb login doesn't: the cards are made, your phone gets them once Anki is signed in).
+- `ready`: nothing blocks.
+
+The order (04 §1): Anki open with AnkiConnect (S1, E5) · Anki on the profile Connect was set up with (S2, E3) ·
+AnkiWeb (E4; Anki's own sync on close carries the order up, S2 of the sync rule) · the first known-words sync (S3,
+E28) · Anki Miner installed (S4) · its version (S5, E10, E12) · the Anki Miner profile Connect mines with (S7) · Anki
+Miner's own setup (S6, `--api check`) · Junban and Backfill (S8) · *Open Anki for me* finding Anki (when it's on).
+Anki Miner is asked `version` first, then `profiles`, then `check` (research/01: a build without `--api` opens its
+window, so one its installer says is older than 3.5.0 is never run at all).
+
+**The setup record** (02-data-model N12; what the window's setup page reads, W1.2 gap 10):
+`<local data>/connect/setup.json` — the Anki profile Connect was set up with (taken the first time Anki answers),
+where Anki Miner was found, its version and features, the profile Connect mines with, and the last checks per
+language. Written atomically, only while Connect's preview is on; never `settings.json`, never anything of Anki
+Miner's (its profiles and settings are its own: 01-scope, P1.5-10 / 14). From Anki Miner 3.7 every named word is
+whitelisted (Z-1), so IS-R3's dedicated profile is optional (Sonic, 2026-10-07: "Optional. Use the profile as you
+need."): the check names the profile Connect will mine with, and makes none.
+
+Standard library only; no Tk, Qt or pandas. Anki is asked read-only (`probe`, `getActiveProfile`); nothing here
+syncs, writes Anki or starts a program but Anki Miner's `--api` reads.
+"""
+import datetime
+import importlib.util
+import json
+import os
+import threading
+import time
+
+from app import ankiconnect_addon
+
+RECORD = "setup.json"
+RECORD_VERSION = 1
+# What Connect itself asks of AnkiConnect (the mine step's tag, the review guard, the profile guard, the sync rule's
+# sync, the note type's fields, a batch checked by its tag): a fork on port 8765 missing one is named (E5)
+ANKI_ACTIONS = ("guiReviewActive", "getActiveProfile", "findNotes", "notesInfo", "addTags", "modelFieldNames",
+                "sync")
+# Anki Miner's `check` items (3.7.0 `cli/api/commands.py`) it can't look at while Anki is closed; which items count
+# at all is `anki_miner.unfinished`
+ANKI_ITEMS = frozenset({"anki", "deck", "note_type", "fields"})
+RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
+# A4M1-2: the `do` of a setup Surasura finishes itself (`check["setup"]`: the wizard's *Finish its setup*)
+SETUP_DO = "Surasura finishes it for you: Anki Miner downloads them by itself, nothing to open"
+SETUP_DO_SOME = ("Surasura finishes what it can for you; the rest ({rest}) comes with Anki Miner's installer: update "
+                 "Anki Miner from Surasura (Settings → Anki & mining)")
+# A4M1-2b: the deck, note type and fields Surasura sets itself (Anki Miner's settings-import, `connect.miner_settings`)
+SETTINGS_SAY = "Anki Miner doesn't know where your {language} cards go yet ({named})."
+SETTINGS_DO = "Surasura sets it for you from your own decks, nothing to open"
+BOTH_SAY = "Anki Miner still needs its dictionaries, and where your {language} cards go ({named})."
+BOTH_DO = "Surasura finishes it for you: Anki Miner downloads its dictionaries by itself, nothing to open"
+# A5F2 (Sonic: "I never want to open Anki Miner. Ever."): what Surasura sets itself with Anki Miner's settings-import
+# (Z-3) — its AnkiConnect address, a profile Surasura's setting names — and what only an update brings (an Anki Miner
+# naming neither verb, its ffmpeg): Surasura's own update, never Anki Miner's window
+ADDRESS_SAY = "Anki Miner can't reach Anki, though Surasura can: its AnkiConnect address may differ from Surasura's."
+ADDRESS_DO = "Surasura sets Anki Miner to its own address for you, nothing to open"
+PROFILE_SAY = "Anki Miner has no profile called \"{name}\", the one Surasura's Anki Miner profile setting names."
+PROFILE_DO = "Surasura makes it for you, a copy of your Anki Miner settings, nothing to open"
+UPDATE_DO = ("Update Anki Miner from Surasura (Settings → Anki & mining): its installer brings what's missing, and "
+             "Surasura finishes the rest for you")
+UPDATE_PROFILE_DO = ("Choose a profile Anki Miner has in Surasura's settings (Anki & mining → Anki Miner profile), or "
+                     "update Anki Miner from Surasura so Surasura can make it")
+ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not installed", "speech_model": "not installed",
+              "ocr": "not installed", "video_ocr": "not installed"}
+UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
+LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
+
+OK, WAITING, NEEDS_YOU, NOT_CHECKED, SKIPPED = "ok", "waiting", "needs-you", "not-checked", "skipped"
+
+
+def _check(id_, state, say, do=None, blocks=None):
+    if blocks is None:
+        blocks = state not in (OK, SKIPPED)
+    return {"id": id_, "state": state, "say": say, "do": do, "blocks": bool(blocks)}
+
+
+def _now():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+# --------------------------------------------------------------------------- #
+# The record (N12)
+# --------------------------------------------------------------------------- #
+def record_path():
+    from app.connect import ledger
+    return os.path.join(ledger.folder(), RECORD)
+
+
+def read_record():
+    """The setup record as written, or {} (none yet, or unreadable). Never raises."""
+    try:
+        with open(record_path(), "r", encoding="utf-8") as f:
+            record = json.load(f)
+        return record if isinstance(record, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def note_anki_miner(info):
+    """Z-9 review R1-1: the Anki Miner a run just found (its `version` answer) onto the record as it is now, so
+    `anki_miner.mines_now` reads what is installed — a book job refused for `reading` stays aside rather than being
+    queued again at every look. Only a record that already exists is written. -> written or not; never raises."""
+    record = read_record()
+    if not record or not isinstance(info, dict):
+        return False
+    record["anki_miner"] = info
+    return write_record(record)
+
+
+# Michi-U (alpha 9.1 try, Sonic: "i updated anki miner, but there was no update in surasura for the books ... after i
+# stepped away it began working"): an Anki Miner updated is followed at once (`follow_install`)
+FOLLOW_RETRY_S = 120            # a look that didn't find the new version is tried again after this,
+FOLLOW_TRIES = 3                # this many looks at most a version (Connect pointed at another Anki Miner: no loop)
+_FOLLOWED = {}                  # the installer's version this process last followed: {"version", "at", "ok", "tries"}
+_FOLLOWING = threading.Lock()   # one follow at a time
+
+
+def _record_app():
+    return str(((read_record().get("anki_miner") or {}).get("app")) or "")
+
+
+def to_follow(installed):
+    """Is `installed` (the installer's version, `anki_miner.installed_version` — `status.stamp`'s last part) an Anki
+    Miner this process should look at again: one with digits, not the one it last followed (or that one, its look
+    not taken, FOLLOW_RETRY_S on), and newer than the one the setup record holds (or the record holds none) — an
+    update, never a downgrade or a Connect pointed at another Anki Miner (review r1 #4)? In memory first; the record
+    read only for a version not followed yet. Never raises."""
+    try:
+        from app.connect import am_release
+        if not am_release.known(installed):
+            return False
+        last = _FOLLOWED
+        if last.get("version") == installed and (last.get("ok") or last.get("tries", 0) >= FOLLOW_TRIES
+                                                 or time.monotonic() - last["at"] < FOLLOW_RETRY_S):
+            return False
+        app = _record_app()
+        if am_release.known(app) and am_release._key(app) >= am_release._key(installed):
+            _FOLLOWED.update(version=installed, at=time.monotonic(), ok=True, tries=0)
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def follow_install(settings, language, installed=None, force=False, kick=True):
+    """An Anki Miner updated — by hand (its own installer) or by *Update* in *Needs you* — followed at once (Michi-U):
+    when the installer's version (`installed`, else read now) is `to_follow`, or `force` (the *Update*'s end), the
+    checks run again with the record kept as `checks` keeps it (Connect set up: `anki_miner.mines_now` then reads the
+    new Anki Miner, so the rows' *Waits for Anki Miner* and *Needs you*'s line go), and Connect is kicked (`kick`:
+    started, or woken — its next look queues the titles set aside for that Anki Miner again, `runner._books_aside`).
+    Once per version a process, again after FOLLOW_RETRY_S while the look didn't find it (Anki Miner busy; FOLLOW_TRIES
+    at most). Blocking:
+    a worker's or `follow_in_background`'s thread. One at a time (another meanwhile: False). -> True when the checks
+    ran. Never raises."""
+    if not _FOLLOWING.acquire(blocking=False):
+        return False
+    try:
+        from app.connect import am_release, anki_miner
+        installed = anki_miner.installed_version() if installed is None else installed
+        if not (force or to_follow(installed)):
+            return False
+        tries = _FOLLOWED.get("tries", 0) + 1 if _FOLLOWED.get("version") == installed else 1
+        _FOLLOWED.update(version=installed, at=time.monotonic(), ok=False, tries=tries)
+        result = checks(settings, language)
+        app = str((result.get("anki_miner") or {}).get("app") or "")
+        _FOLLOWED["ok"] = bool(am_release.known(app) and am_release.known(installed)
+                               and am_release._key(app) >= am_release._key(installed))
+        if kick:
+            from app.connect import kick as kicking
+            kicking.kick(settings)
+        return True
+    except Exception:
+        return False
+    finally:
+        _FOLLOWING.release()
+
+
+def follow_in_background(settings, language, installed):
+    """`follow_install` on a daemon thread when `installed` is `to_follow` (in memory, a small read) -> the thread, or
+    None. The window's Connect feed calls it at each look (`feed.Provider`): a hand update is followed within seconds,
+    with no Settings visit."""
+    if _FOLLOWING.locked() or not to_follow(installed):
+        return None
+    t = threading.Thread(target=follow_install, args=(settings, language, installed), daemon=True,
+                         name="anki-miner-follow")
+    t.start()
+    return t
+
+
+def write_record(record):
+    """Atomically (temp + replace) -> written or not. A failure costs only a check asked again. Never raises."""
+    path = record_path()
+    temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(dict(record, version=RECORD_VERSION), f, ensure_ascii=False, indent=1)
+        os.replace(temp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        return False
+
+
+def anki_profile():
+    """The Anki profile Connect was set up with, or None (not set up yet)."""
+    name = read_record().get("anki_profile")
+    return name if isinstance(name, str) and name else None
+
+
+def keep_profile(open_now):
+    """The first profile Anki shows while Connect is on is Connect's (S2, as `_anki_profile` takes it while Connect's
+    preview is on; laptop round 5 #22: the session's look takes it too, so setup's page never has to): `open_now`
+    recorded when the record holds none, onto the record as it is -> the profile the record holds after (another
+    program's, recorded a moment before, wins), or None when it couldn't be written."""
+    record = read_record()
+    mine = record.get("anki_profile")
+    if isinstance(mine, str) and mine:
+        return mine
+    record["anki_profile"], record["anki_profile_at"] = open_now, _now()
+    return open_now if write_record(record) else None
+
+
+# --------------------------------------------------------------------------- #
+# Anki (S1, S2, E3–E5)
+# --------------------------------------------------------------------------- #
+def _anki_off():
+    return bool(os.environ.get("SURASURA_NO_ANKI_SYNC"))       # the test suites, a developer's run
+
+
+def _anki(url, open_anki_on):
+    """S1, E5 -> (check, Anki answered)."""
+    from app import anki_connect
+    if _anki_off():
+        return _check("anki", NOT_CHECKED, "Anki isn't asked in this run (SURASURA_NO_ANKI_SYNC)."), False
+    report = anki_connect.probe(url, required=ANKI_ACTIONS, timeout=3)
+    if report.get("ok"):
+        return _check("anki", OK, "Anki is open, with AnkiConnect."), True
+    if report.get("missing"):         # it answered (`probe` says not ok whenever an action is missing)
+        missing = ", ".join(f'"{name}"' for name in report["missing"])
+        return _check("anki", NEEDS_YOU,
+                      f"The Anki add-on that answers Surasura (AnkiConnect) can't do {missing}, which Connect needs.",
+                      ankiconnect_addon.steps_line(code=True)), True
+    if report.get("timed_out"):
+        return _check("anki", WAITING, "Anki is open but busy: it didn't answer in time. Connect tries again."), False
+    when = ("Surasura opens it when you open Surasura (Open Anki for me)." if open_anki_on
+            else "Connect waits until you open it; your cards are made then.")
+    return _check("anki", WAITING, f"Anki isn't open (or AnkiConnect isn't installed in it). {when} "
+                                   f"No AnkiConnect? {ankiconnect_addon.steps_line(code=True)}.",
+                  "Open Anki"), False
+
+
+def _anki_profile(url, answered, record, keep, use_open):
+    """S2, E3 -> (check, Anki's open profile or None). `keep`: record the first profile seen (Connect's preview on);
+    `use_open`: Connect works in the open profile from now on (`--use-anki-profile`). Sets `record["anki_profile"]`
+    when it decides one (`checks` writes only what changed, onto the record as it is then)."""
+    from app import anki_connect
+    if not answered:
+        return _check("anki_profile", NOT_CHECKED, "Checked once Anki is open."), None
+    try:
+        open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
+    except anki_connect.AnkiError:
+        open_now = None
+    if not isinstance(open_now, str) or not open_now:
+        return _check("anki_profile", WAITING, "Anki didn't say which profile is open. Connect asks again."), None
+    mine = record.get("anki_profile")
+    if (not mine or use_open) and keep:
+        record["anki_profile"], record["anki_profile_at"] = open_now, _now()
+        mine = open_now
+    if not mine or mine == open_now:
+        return _check("anki_profile", OK, f'Connect makes your cards in Anki\'s profile "{open_now}".'), open_now
+    return _check("anki_profile", WAITING,
+                  f'Anki is open on the profile "{open_now}", but Connect was set up with "{mine}". Connect waits '
+                  f'until "{mine}" is open, so no cards land in the wrong profile.',
+                  f'Switch Anki to "{mine}", or have Connect use "{open_now}" from now on'), open_now
+
+
+def _ankiweb(record=None):
+    """E4: what Surasura's own syncs found (the sync rule's state), and the note on Anki's own sync on close; E6:
+    Connect's sync failed three sync points in a row (`anki_session.failing`, counted in the setup record)."""
+    note = ("Anki sends Surasura's new order to AnkiWeb when it closes if its Preferences → Syncing → \"Synchronize "
+            "automatically on profile open/close\" is on (Surasura can't see that setting).")
+    try:
+        from app import anki_sync_rule
+        state = anki_sync_rule.read_state()
+    except Exception:                       # the rule isn't here (an older build): nothing to say yet
+        state = {}
+    answer = state.get("sync")
+    if answer == "not-signed-in":
+        return _check("ankiweb", NEEDS_YOU, "Anki isn't signed in to AnkiWeb, so your phone won't get the cards and "
+                      "the order Surasura makes until it is.", "In Anki: click Sync and sign in", blocks=False)
+    if answer == "full-sync":
+        return _check("ankiweb", NEEDS_YOU, "AnkiWeb wants a full sync, which only you can choose.",
+                      "In Anki: click Sync and choose", blocks=False)
+    from app.connect import anki_session
+    if anki_session.failing(record, state):
+        return _check("ankiweb", NEEDS_YOU, "Anki couldn't sync with AnkiWeb the last three times Surasura asked, so "
+                      "your phone may be missing Surasura's cards and order.",
+                      "In Anki: click Sync and see what it says", blocks=False)
+    if answer == "failed":
+        return _check("ankiweb", OK, "The last sync with AnkiWeb failed; Surasura tries again when the next one is "
+                      "due. " + note, blocks=False)
+    if state.get("synced_at"):
+        at = datetime.datetime.fromtimestamp(float(state["synced_at"])).strftime("%H:%M")
+        return _check("ankiweb", OK, f"Anki last synced with AnkiWeb for Surasura at {at}. " + note)
+    return _check("ankiweb", OK, "Anki syncs with AnkiWeb when a session starts. " + note)
+
+
+def _first_known_sync(settings, language):
+    """S3, E28: a list made without your known words would make cards you know."""
+    from app import anki_sync
+    if not list(((settings or {}).get("anki_sync_decks") or {}).get(language) or []):
+        return _check("first_known_sync", NEEDS_YOU, "Surasura doesn't know which Anki decks hold the words you "
+                      "know yet, so Connect could make cards for words you know.",
+                      "Open Surasura's Anki window, choose your decks and press Sync now")
+    last = anki_sync.load_state(language).get("last_sync")
+    if not last:
+        return _check("first_known_sync", NEEDS_YOU, "Surasura hasn't read the words you know from Anki yet, so "
+                      "Connect could make cards for words you know.", "Sync once from Surasura's Anki window first")
+    return _check("first_known_sync", OK, f"Your known words were last read from Anki on {str(last)[:16]}.")
+
+
+# --------------------------------------------------------------------------- #
+# Anki Miner (S4–S7, E7–E12, W1)
+# --------------------------------------------------------------------------- #
+def version_tuple(text):
+    from app.connect import anki_miner
+    return anki_miner.version_tuple(text)
+
+
+def _too_old(app):
+    from app.connect import anki_miner
+    return anki_miner.too_old(app)
+
+
+def _miner_error(id_, e):
+    """An AnkiMinerError as a check: busy waits, the rest only you can fix."""
+    if e.kind in ("busy", "writer-busy"):
+        return _check(id_, WAITING, "Anki Miner is busy (its window is mining, or its Word Curator is open). "
+                      "Connect waits until it's free.")
+    if e.kind == "anki-closed":
+        return _check(id_, WAITING, "Anki Miner can't reach Anki: Connect waits until Anki is open.", "Open Anki")
+    if e.kind == "quarantined":
+        return _check(id_, NEEDS_YOU, e.message, "Windows Security → Protection history")
+    if e.kind == "unknown-version":
+        return _check(id_, NEEDS_YOU, e.message, "Update Surasura")
+    if e.kind == "too-old":
+        return _check(id_, NEEDS_YOU, e.message, f"Update Anki Miner ({RELEASES})")
+    if e.kind == "needs-you":
+        return _check(id_, NEEDS_YOU, e.message, UPDATE_PROFILE_DO)
+    return _check(id_, NEEDS_YOU, f"Anki Miner didn't answer Surasura's question: {e.message}", "Check again in a "
+                  "moment; if it still doesn't answer, update Anki Miner from Surasura (Settings → Anki & mining)")
+
+
+def _named(items):
+    """`check` items as the line names them: Anki Miner's own words, but Surasura's where its words send you to its
+    window (A5F2: its ffmpeg message says "set its location in Anki Miner's settings")."""
+    return "; ".join(f"{name}: {ITEM_WORDS.get(name) or item.get('message') or 'not ready'}"
+                     for name, item in items.items())
+
+
+def _anki_miner(settings, language, answered):
+    """S4–S7 -> [checks], and what the record keeps about Anki Miner."""
+    from app.connect import anki_miner
+    ids = ("anki_miner", "anki_miner_version", "anki_miner_profile", "anki_miner_setup")
+
+    def rest(after, why):
+        return [_check(i, NOT_CHECKED, why) for i in ids[ids.index(after) + 1:]]
+
+    chosen = str((settings or {}).get("connect_anki_miner_path") or "").strip()
+    path = anki_miner.find(settings)
+    if path is None:
+        if chosen:
+            say = f"Anki Miner isn't where Surasura's Anki Miner setting says: {chosen}."
+            do = "Choose Anki Miner's program again, or clear the setting so Surasura finds it"
+        else:
+            say = "Anki Miner isn't installed. Connect uses it to make your cards from your videos (free, made by Zero)."
+            do = f"Install Anki Miner ({RELEASES})"
+        return [_check("anki_miner", NEEDS_YOU, say, do)] + rest("anki_miner", "Checked once Anki Miner is installed."), {}
+    found = {"path": path}
+    out = [_check("anki_miner", OK, "Anki Miner is installed.")]
+    try:
+        info = anki_miner.version(path)     # never runs a build its installer says is older than 3.5.0
+    except anki_miner.AnkiMinerError as e:
+        return out + [_miner_error("anki_miner_version", e)] + rest("anki_miner_version",
+                                                                    "Checked once Anki Miner answers."), found
+    app, features = info.get("app"), list(info.get("features") or [])
+    found.update(app=app, features=features)
+    if _too_old(app):
+        return out + [_check("anki_miner_version", NEEDS_YOU, f"Anki Miner {app} is too old for Surasura: Connect "
+                             "needs 3.5.0 or later.", f"Update Anki Miner ({RELEASES})")] + \
+            rest("anki_miner_version", "Checked once Anki Miner is updated."), found
+    out.append(_check("anki_miner_version", OK, f"Anki Miner {app} answers Surasura."))
+
+    name = (settings or {}).get("connect_anki_miner_profile") or anki_miner.DEFAULT_PROFILE
+    try:
+        listed = anki_miner.profiles(path)
+        profile = anki_miner.choose_profile(info, listed, name)
+    except anki_miner.AnkiMinerError as e:
+        check = _miner_error("anki_miner_profile", e)
+        if e.kind == "needs-you" and name != anki_miner.DEFAULT_PROFILE:
+            # A5F2: the profile your setting names, made by Surasura (a copy of the window's, as Anki Miner's own
+            # settings-import makes one) — *Finish its setup* (`services.anki_miner_setup.finish_setup`); an Anki
+            # Miner without settings-import: another profile in Surasura's settings, or Surasura's update
+            if "Z-3" in anki_miner.features(info):
+                check = _check("anki_miner_profile", NEEDS_YOU, PROFILE_SAY.format(name=name), PROFILE_DO)
+                check.update(setup=True, make=name)
+            else:
+                check = _check("anki_miner_profile", NEEDS_YOU, PROFILE_SAY.format(name=name), UPDATE_PROFILE_DO)
+                check["update"] = True      # review: its Update button shown (wizard, Settings), never a dead pointer
+        elif e.kind == "needs-you" and name == anki_miner.DEFAULT_PROFILE:
+            check["do"] = ("In Anki Miner: Manage profiles… → New, name it Surasura; then in its Settings, Whitelist → "
+                           f"choose file: {anki_miner.whitelist_path(language)}")
+            # only before 3.7 (from 3.7 the usual profile is used, `choose_profile`): updating is the better fix — the
+            # wizard leads with it and its Update button (Michi's AM-profile-copy scope, option A)
+            check["update"] = True
+        return out + [check] + rest("anki_miner_profile", "Checked once Connect has an Anki Miner profile."), found
+    called = next((entry.get("name") for entry in listed if entry.get("id") == profile), None) or profile
+    found.update(profile=profile, profile_name=called)
+    if profile is None:
+        out.append(_check("anki_miner_profile", OK, "Connect makes cards with Anki Miner's current settings."))
+    else:
+        out.append(_check("anki_miner_profile", OK, f'Connect makes cards with Anki Miner\'s profile "{called}".'))
+
+    try:
+        ready = anki_miner.check(path, language, profile)
+    except anki_miner.AnkiMinerError as e:
+        return out + [_miner_error("anki_miner_setup", e)], found
+    items = {item.get("name"): item for item in ready.get("items") or () if isinstance(item, dict)}
+    failed = anki_miner.unfinished(items, ready.get("ready"))
+    anki_down = "anki" in failed
+    own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
+    # A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura sets its address (Z-3), with the rest it sets
+    address = anki_down and answered and "Z-3" in anki_miner.features(info)
+    if ready.get("ready") is True:          # its own verdict; what a mine doesn't need never counts
+        out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
+    elif own and anki_miner.can_set_up(info, own):
+        # A4M1-2 / A4M1-2b (leans taken, PROVISIONAL): what Anki Miner's own `setup` installs and what its
+        # `settings-import` sets (the deck, note type and fields), Surasura does for you
+        # (`services.anki_miner_setup.finish_setup`) — never "open Anki Miner"
+        named = _named(own)
+        ours = anki_miner.ours(info)
+        rest = [name_ for name_ in own if name_ not in ours]
+        where = set(own) & ours & anki_miner.SETTINGS_ITEMS
+        language_name = LANGUAGE_NAMES.get(language, language)
+        if rest:
+            say, do = f"Anki Miner's own setup isn't finished ({named}).", SETUP_DO_SOME.format(rest=", ".join(rest))
+        elif where and set(own) & ours & anki_miner.SETUP_ITEMS:
+            say, do = BOTH_SAY.format(language=language_name, named=named), BOTH_DO
+        elif where:
+            say, do = SETTINGS_SAY.format(language=language_name, named=named), SETTINGS_DO
+        else:
+            say, do = f"Anki Miner still needs its dictionaries ({named}).", SETUP_DO
+        check = _check("anki_miner_setup", NEEDS_YOU, say, do)
+        check["setup"] = True
+        # what `finish_setup` sets: its setup's, its settings-import's (the address too, A5F2)
+        check["items"] = sorted(set(own) | ({"anki"} if address else set()))
+        out.append(check)
+    elif own:
+        # A5F2: what neither verb of this Anki Miner sets (it names neither, or its ffmpeg is missing) comes with its
+        # installer: Surasura's own update, never Anki Miner's window
+        named = _named(own)
+        check = _check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).", UPDATE_DO)
+        check["update"] = True
+        out.append(check)
+    elif anki_down and not answered:
+        out.append(_check("anki_miner_setup", WAITING, "Anki Miner can't reach Anki: Connect waits until Anki is "
+                          "open, then checks the rest of its setup.", "Open Anki"))
+    elif address:
+        check = _check("anki_miner_setup", NEEDS_YOU, ADDRESS_SAY, ADDRESS_DO)
+        check.update(setup=True, items=["anki"])
+        out.append(check)
+    elif anki_down:
+        check = _check("anki_miner_setup", NEEDS_YOU, ADDRESS_SAY, UPDATE_DO)
+        check["update"] = True
+        out.append(check)
+    else:
+        check = _check("anki_miner_setup", NEEDS_YOU, UNSAID_SAY, UPDATE_DO)
+        check["update"] = True
+        out.append(check)
+    return out, found
+
+
+# --------------------------------------------------------------------------- #
+# Junban, Backfill (S8), Open Anki for me
+# --------------------------------------------------------------------------- #
+def _present(module):
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _modules():
+    out = []
+    if _present("modules.junban.reposition"):
+        out.append(_check("junban", OK, "Junban puts your new cards in Surasura's order."))
+    else:
+        out.append(_check("junban", SKIPPED, "Junban isn't installed, so Connect leaves your new cards in the order "
+                          "Anki Miner adds them."))
+    if _present("modules.junban.backfill"):
+        out.append(_check("backfill", OK, "Backfill fills your new cards' パターン and 例文 fields."))
+    else:
+        out.append(_check("backfill", SKIPPED, "Backfill isn't installed, so Connect leaves your new cards' fields as "
+                          "Anki Miner fills them."))
+    return out
+
+
+def _open_anki(settings):
+    # P4.1 row 4.1.1: *Open Anki for me* opens Anki only while Connect is on (`connect_on`: its switch and D29's
+    # automation, `anki_session.at_window`), so the check names it only then
+    from app import settings_manager
+    if not (settings_manager.connect_on(settings) and settings.get("connect_open_anki")):
+        return []
+    from app.connect import open_anki
+    command = open_anki.find()
+    if command is None:
+        return [_check("open_anki", NEEDS_YOU, "Open Anki for me is on, but Surasura can't find Anki where its "
+                       "installer puts it, so it can't open it for you.", "Open Anki yourself, or reinstall it in "
+                       "its usual place", blocks=False)]
+    return [_check("open_anki", OK, "Open Anki for me: Surasura opens Anki when you open Surasura.")]
+
+
+# --------------------------------------------------------------------------- #
+# All of them
+# --------------------------------------------------------------------------- #
+def checks(settings, language, keep=None, use_open_profile=False):
+    """Every check, in order -> {"ready", "checks", "anki_profile", "anki_miner", "recorded"}. `keep` (default:
+    Connect's preview is on): write the setup record; off, nothing is written. `use_open_profile`: Connect works in
+    the Anki profile open now (`surasura-cli setup --use-anki-profile`). Never raises for a missing piece."""
+    from app import anki_connect, settings_manager
+    settings = settings or {}
+    # `connect_enabled` alone, never `connect_on` (P4.1 row 4.1.1): the record describes your set-up, kept with the
+    # automation off too
+    keep = bool(settings.get("connect_enabled")) if keep is None else bool(keep)
+    record = read_record()
+    before = record.get("anki_profile")
+    url = anki_connect.address(settings)
+    anki, answered = _anki(url, bool(settings_manager.connect_on(settings) and settings.get("connect_open_anki")))
+    profile, open_now = _anki_profile(url, answered, record, keep, use_open_profile)
+    out = [anki, profile, _ankiweb(record), _first_known_sync(settings, language)]
+    miner, found = _anki_miner(settings, language, answered)
+    out += miner + _modules() + _open_anki(settings)
+    written = False
+    if keep:
+        # Onto the record as it is now (another program may have written it while Anki Miner answered): only what
+        # this look decided
+        fresh = read_record()
+        if record.get("anki_profile") != before:
+            fresh["anki_profile"], fresh["anki_profile_at"] = record["anki_profile"], record.get("anki_profile_at")
+        fresh["anki_miner"] = found or None
+        fresh["checked_at"] = _now()
+        fresh.setdefault("checks", {})[language] = [{"id": c["id"], "state": c["state"]} for c in out]
+        written = write_record(fresh)
+        record = fresh
+    return {"ready": not any(c["blocks"] for c in out), "checks": out,
+            "anki_profile": record.get("anki_profile") if keep else (record.get("anki_profile") or open_now),
+            "anki_miner": found or None, "recorded": written}

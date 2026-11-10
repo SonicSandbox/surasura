@@ -283,7 +283,8 @@ def test_the_checkbox_saves_loads_shows_for_japanese_only_and_refreshes_the_slid
         with open(settings_file, encoding="utf-8") as handle:
             logic = json.load(handle)["logic"]
         assert logic["ignore_names"] is True
-        assert logic["names_katakana"] is True and logic["sentence_boundaries"], "the rest of the logic block is kept"
+        assert logic["names_katakana"] is True and settings_manager.load_settings()["logic"]["sentence_boundaries"], \
+            "the rest of the logic block is kept (the dashboard writes only its own keys, W1.3: the rest read back as every run reads it)"
         assert refresh.called, "the slider's numbers follow at once"
         assert app._preview_signature("ja", sel) != before, "its cached numbers no longer stand"
         assert ti.build_signature("ja") == built, "no file reads differently: no re-index"

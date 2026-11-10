@@ -43,6 +43,7 @@ from array import array
 from bisect import bisect_left
 from collections import namedtuple
 
+from app.path_utils import list_reader
 from app.unicode_ranges import HAN, KANA
 
 # --- normalisation ---------------------------------------------------------------------------- #
@@ -153,6 +154,50 @@ def card_word(raw, language=None):
         if word:
             return word
     return ""
+
+
+# --- a word field that holds a sentence ----------------------------------------------------------- #
+# Some decks keep a sentence where the word goes (Sonic, alpha 9: his Word field is the card's Sentence). A sentence is
+# no card's one word: the known-words sync reads it as it reads an "Also read" line — every word in it known — and the
+# Anki window says so. What makes one is Japanese's own marks, never a deck's: two clauses or more with a sentence end
+# (。！？: 今、何時？), or one clause with a stop or clauses parted by a comma (、，) or a space, unless every part is a
+# word of its own — a word with its reading (撒く まく, 撒く、まく。) or JMdict's kanji spellings (上層部、首脳部, 撒く。).
+# A list mark (・ ／ ；) parts words, never clauses. A field of one clause and no stop is read whole by `card_word`
+# already (そんな気がする, 気がする): no sentence. Chinese: the same marks but never a space (学习 xuéxí is a word and its
+# pinyin), no dictionary. The line is read in NFKC first, so ．！？ are . ! ? there — and . is no stop (1.5倍).
+_SENTENCE_END_RE = re.compile(r'[。!?‼⁇⁈⁉]')
+_CLAUSE_RE = re.compile(r'[、，,。!?‼⁇⁈⁉\s]')
+_ZH_CLAUSE_RE = re.compile(r'[、，,。!?‼⁇⁈⁉]')
+
+
+def holds_sentence(raw, language=None):
+    """Does a card's word field hold a sentence rather than a word? Its first line is read as `card_word` reads it (in
+    NFKC, its notes in brackets dropped), then parted into clauses (`_CLAUSE_RE`). Japanese: a sentence when it holds a
+    sentence end or two clauses or more: always for two clauses with a stop (今、何時？), else unless its clauses are a
+    word and its readings in kana (撒く まく, with no stop inside) or each a JMdict kanji spelling (上層部、首脳部,
+    撒く。); with the dictionary unread, every clause counts as no word. Chinese: a sentence end or two clauses holding a
+    Chinese character (`_ZH_CLAUSE_RE`). Any other language: never."""
+    if language not in ("ja", "zh") or not isinstance(raw, str):
+        return False
+    line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
+    line = unicodedata.normalize("NFKC", line)
+    line = _NOTE_RE.sub("", line) or line
+    script = re.compile(f'[{HAN}]' if language == "zh" else f'[{KANA}{HAN}]')
+    clauses = [c for c in (_bare(p) for p in (_ZH_CLAUSE_RE if language == "zh" else _CLAUSE_RE).split(line))
+               if script.search(c)]
+    stop = bool(_SENTENCE_END_RE.search(line))
+    if not clauses or (len(clauses) < 2 and not stop):
+        return False
+    if language == "zh":
+        return True
+    han = re.compile(f'[{HAN}]')
+    if (len(clauses) > 1 and not _SENTENCE_END_RE.search(_bare(line)) and han.search(clauses[0])
+            and all(_KANA_ONLY_RE.match(c) for c in clauses[1:])):
+        return False                                    # a word and its readings: 撒く まく (本当？うん、そう is none)
+    if stop and len(clauses) > 1:
+        return True                                     # 今、何時？ — dictionary words, and a sentence
+    entries = _dictionary_entries()
+    return entries is None or not all(entries[0].get(c) for c in clauses)
 
 
 def fold_kana(text):
@@ -314,8 +359,12 @@ def load_index(csv_path, want_contexts=False):
     return tuple(build_index(csv_path, want_contexts=want_contexts))[:2]
 
 
-def build_index(csv_path, want_contexts=False, thresholds=None, only=None, language=None):
+def build_index(csv_path=None, want_contexts=False, thresholds=None, only=None, language=None, rows=None):
     """`Index(rank_of, contexts_of, marks_of, journey_of)` from an ordered Surasura list.
+
+    **From the CSV or from rows** (E1.1 02 §4): `rows`, when given, are the list's rows in order as dicts named like
+    the CSV's columns — the fast re-plan's (`plan_engine.Result.rows`) — and are read by the very same code below, so
+    the index from the engine's rows is the index from the CSV a Generate of that order writes.
 
     **Either list** (WP-M): `results/priority_learning_list.csv`, whose row order is raw leverage,
     or `results/progressive_learning_list.csv`, whose row order is file order then within-file score
@@ -380,7 +429,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
     words = []                  # each row's own word, by rank
     orths = []                  # each row's own spelling, by rank
     empty = Index(index, contexts, marks_of, journey_of, words, orths)
-    if not csv_path or not os.path.isfile(csv_path):
+    if rows is None and (not csv_path or not os.path.isfile(csv_path)):
         return empty
 
     wanted_marks = set(normalize_markers(only))
@@ -396,33 +445,38 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
             if want_contexts and row_contexts:
                 contexts[key] = row_contexts
 
+    def _read(source):
+        for rank, row in enumerate(source):
+            row_contexts = None
+            if want_contexts:
+                # Read by NAME and in order, best first. A blank cell is skipped rather than
+                # offered as an empty sentence.
+                row_contexts = [str(row.get(column) or "").strip()
+                                for column in CONTEXT_COLUMNS]
+                row_contexts = [text for text in row_contexts if text]
+            marks = row_markers(row, limits)
+            ranked = not wanted_marks or bool(marks & wanted_marks)
+            # The journey's own sort key for this row: its file (`Sequence`, the progressive
+            # list only — 0 on the priority list), its `Score`, its total occurrences.
+            numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
+            lemma = normalize_word(row.get("Word"))
+            words.append(lemma)
+            orths.append(normalize_word(row.get("Orth")))
+            for column in ("Orth", "Word"):
+                key = normalize_word(row.get(column))
+                if not key or (japanese and len(key) == 1 and key != lemma):
+                    continue
+                _add(key, rank, row_contexts, marks, ranked, numbers)
+            forms = [normalize_word(form) for form in str(row.get("Forms") or "").split("|")]
+            forms = [form for form in forms if form and not (japanese and len(form) == 1)]
+            if forms:
+                later.append((rank, forms, row_contexts, marks, ranked, numbers))
     try:
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
-            for rank, row in enumerate(csv.DictReader(handle)):
-                row_contexts = None
-                if want_contexts:
-                    # Read by NAME and in order, best first. A blank cell is skipped rather than
-                    # offered as an empty sentence.
-                    row_contexts = [str(row.get(column) or "").strip()
-                                    for column in CONTEXT_COLUMNS]
-                    row_contexts = [text for text in row_contexts if text]
-                marks = row_markers(row, limits)
-                ranked = not wanted_marks or bool(marks & wanted_marks)
-                # The journey's own sort key for this row: its file (`Sequence`, the progressive
-                # list only — 0 on the priority list), its `Score`, its total occurrences.
-                numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
-                lemma = normalize_word(row.get("Word"))
-                words.append(lemma)
-                orths.append(normalize_word(row.get("Orth")))
-                for column in ("Orth", "Word"):
-                    key = normalize_word(row.get(column))
-                    if not key or (japanese and len(key) == 1 and key != lemma):
-                        continue
-                    _add(key, rank, row_contexts, marks, ranked, numbers)
-                forms = [normalize_word(form) for form in str(row.get("Forms") or "").split("|")]
-                forms = [form for form in forms if form and not (japanese and len(form) == 1)]
-                if forms:
-                    later.append((rank, forms, row_contexts, marks, ranked, numbers))
+        if rows is not None:
+            _read(rows)
+        else:
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+                _read(list_reader(handle))
     except (OSError, UnicodeError, csv.Error):
         # A truncated or unreadable list means "no matches", which the planner already handles by
         # leaving every card where it is. It must never mean "crash on the way to a write".
@@ -1006,6 +1060,28 @@ def not_the_name(word, key, rank_of, words, tokenize):
         return None
     other = lookup(tokens[0][0], rank_of, "ja")
     return other if other and rank_of[other] != rank else ""
+
+
+def connect_row(row, key, via, word, rank_of, answers=None, words=None):
+    """Alpha 4 M3: where a card Connect made goes — `row`, the list's word Connect's record says it was made for
+    (`connect.library.made_notes_of`), when that row is on the list: never over a card whose own word IS another
+    row's word (`words`, each row's own word by rank: one you corrected to a listed word), your "yes" (`via` "yes"),
+    or your "no" to that row (`answers`).
+    Any other reading of the card gives way (round 2 R2-4: ひとり may be one of 一人's spellings — Connect mined it
+    for ヒトリ). ヒトリ's card, mined as ひとり, is ヒトリ's. -> (key, via), via "connect" when the record placed it. One
+    rule for Junban's placement and the report's "In Anki" label."""
+    rank_of = rank_of or {}
+    if row is None or row not in rank_of or via == "yes":
+        return key, via
+    at = rank_of.get(word)
+    if words and at is not None and at != rank_of[row] and 0 <= at < len(words):
+        own = words[at]
+        if (own[0] if isinstance(own, (tuple, list)) else own) == word:
+            return key, via
+    said = (answers or {}).get(word)
+    if isinstance(said, dict) and said.get("answer") == "no" and said.get("target") == row:
+        return key, via
+    return row, "connect"
 
 
 def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False,

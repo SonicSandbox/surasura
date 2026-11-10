@@ -186,6 +186,54 @@ def test_never_across_a_space(tokenizer):
     assert _surfaces(tokenizer, "上層部の決定。", table)[0] == "上層部"
 
 
+def test_a_pronoun_is_a_part_where_the_run_spells_a_headword(tokenizer):
+    # 私生活 'private life' is 私 + 生活 to UniDic, 私 a pronoun (read ワタクシ): the lists carry 私生活 (シセイカツ),
+    # so it is one word with the list's reading. A pronoun stays a word of its own wherever no headword is spelled.
+    table = {"私生活": _entry("私生活", "シセイカツ"), "私自身": _entry("私自身", "ワタシジシン")}
+    assert _surfaces(tokenizer, "休みの日は私生活を大事にしたい。", table)[4] == "私生活"
+    assert _word(tokenizer, "私生活を守る。", "私生活", table).feature.lForm == "シセイカツ"
+    assert _surfaces(tokenizer, "私自身もそう思う。", table)[0] == "私自身"
+    assert _surfaces(tokenizer, "私の生活は静かだ。", table)[:3] == ["私", "の", "生活"]
+    assert _surfaces(tokenizer, "私生活", {})[:2] == ["私", "生活"]          # no table word: the pieces
+
+
+@pytest.mark.parametrize("text, entry, pieces", [
+    ("この前だれに会ったの？", "前だれ", ["前", "だれ"]),        # 誰 after 前 — never 前垂れ 'apron'
+    ("このはしわたしのです。", "はしわたし", ["はし", "わたし"]),  # 'this chopstick is mine'
+    ("ぼくのほんそれだよ", "ほんそれ", ["ほん", "それ"]),
+    ("何年ぶりだろう。", "何年", ["何", "年"]),                  # 何 + a counter asks for a number: no word
+])
+def test_a_pronoun_only_leads_a_compound_in_kana_before_a_kanji_and_never_before_a_counter(tokenizer, text, entry,
+                                                                                          pieces):
+    # The tagger reads kana pieces as pronouns (だれ, わたし, ほん): even a table offering the run leaves it in pieces.
+    # A pronoun only starts a compound, one in kana alone only before a part holding a kanji (これ + 以上).
+    table = {entry: _entry(entry, "")}
+    out = _surfaces(tokenizer, text, table)
+    assert entry not in out
+    assert any(out[k:k + len(pieces)] == pieces for k in range(len(out)))
+
+
+def test_the_pronoun_switch_is_about_suffixes_never_a_pronouns_compound(tokenizer, monkeypatch):
+    # "Pronouns with a suffix as one word" off: 何様 is 何 + 様 again, while 私生活 stays one word.
+    monkeypatch.setitem(analyzer.LOGIC, "pronoun_bases", False)
+    joins = {"何様": ["何様", "ナニサマ"]}
+    assert _surfaces(tokenizer, "何様のつもりだ。", {}, joins)[:2] == ["何", "様"]
+    assert _surfaces(tokenizer, "私生活を守る。", {"私生活": _entry("私生活", "シセイカツ")}, joins)[0] == "私生活"
+
+
+@pytest.mark.parametrize("text", ["私自身", "私自身\r\n", "そう、私自身。", "ABC私自身xyz"])
+def test_a_pronouns_compound_at_the_end_of_a_line_and_among_other_scripts(tokenizer, text):
+    table = {"私自身": _entry("私自身", "ワタシジシン")}
+    assert "私自身" in _surfaces(tokenizer, text, table)
+
+
+def test_the_shipped_table_joins_a_pronouns_compound(tokenizer, sanitized):
+    assert ("私生活", "シセイカツ") in _keys(tokenizer, "休みの日は私生活を大事にしたい。")
+    assert ("私自身", "ワタシジシン") in _keys(tokenizer, "私自身もそう思っている。")
+    assert ("これ以上", "コレイジョウ") in _keys(tokenizer, "これ以上は待てない。")
+    assert "前だれ" not in [w for w, _r in _keys(tokenizer, "それでこの前だれに会ったの？")]
+
+
 def test_a_grammar_stem_is_no_part(tokenizer):
     # みたい is UniDic's 形状詞・助動詞語幹 — grammar ('like'), not a な-word: バカみたい is バカ + みたい.
     table = {"バカみたい": _entry("バカみたい", "バカミタイ")}
@@ -261,9 +309,9 @@ def test_a_stem_run_keeps_the_guards_of_any_compound(tokenizer, monkeypatch):
     # The phrases-and-titles switch: a marked phrase (flags 1 | 8) stays apart with the switch off, whichever path.
     table = {"待ち時間": _entry("待ち時間", "マチジカン", flags=9)}
     assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3] == "待ち時間"
-    monkeypatch.setitem(analyzer.LOGIC, "phrases_and_titles", False)
-    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3:5] == ["待ち", "時間"]
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setitem(analyzer.LOGIC, "phrases_and_titles", False)
+        assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3:5] == ["待ち", "時間"]
     # Right after a number that counts its first part, never (10 + 円玉); a plural, never. The run below is 時間 + a
     # verb's stem, so only the stem path could join it.
     three, hours = tokenizer.tagger("三時間")
@@ -475,24 +523,24 @@ def test_the_dictionaries_marks_and_polite_words_are_merged_in(monkeypatch):
     # app/dictionary_data.py (the dictionaries' own part, CC BY-SA) adds flags to the compound table and お/ご words
     # to the affix table; without it both tables are reference_data's as they are. The real module is set aside
     # first — it lists お守り itself — so the base tables are reference_data's alone.
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [None])
-    base = analyzer.compound_joins()
-    assert base and "お守り" not in analyzer.affix_joins()
-    entry = base["上層部"]
-    flags, polite = {"上層部": 1}, {"お守り": ["お守り", "オマモリ"]}
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(analyzer, "_DICTIONARY", [None])
+        base = analyzer.compound_joins()
+        assert base and "お守り" not in analyzer.affix_joins()
+        entry = base["上層部"]
+        flags, polite = {"上層部": 1}, {"お守り": ["お守り", "オマモリ"]}
 
-    class Dictionaries:             # its accessors decode once and hand out the same table, as reference_data's do
-        compound_flags = staticmethod(lambda: flags)
-        ogo_joins = staticmethod(lambda: polite)
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [Dictionaries])
-    # The marks go into the one table, in place (no copy of it): a marked word gets a new entry.
-    assert analyzer.compound_joins() is base and base["上層部"][3] & 1 and entry[3] == 0
-    assert analyzer.affix_joins()["お守り"] == ["お守り", "オマモリ"]
-    assert analyzer.compound_joins() is analyzer.compound_joins()        # merged once
-    # Without the marks again, the table is as reference_data decoded it; with the real module, its marks.
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [None])
-    assert analyzer.compound_joins()["上層部"] is entry
-    monkeypatch.undo()
+        class Dictionaries:         # its accessors decode once and hand out the same table, as reference_data's do
+            compound_flags = staticmethod(lambda: flags)
+            ogo_joins = staticmethod(lambda: polite)
+        patched.setattr(analyzer, "_DICTIONARY", [Dictionaries])
+        # The marks go into the one table, in place (no copy of it): a marked word gets a new entry.
+        assert analyzer.compound_joins() is base and base["上層部"][3] & 1 and entry[3] == 0
+        assert analyzer.affix_joins()["お守り"] == ["お守り", "オマモリ"]
+        assert analyzer.compound_joins() is analyzer.compound_joins()    # merged once
+        # Without the marks again, the table is as reference_data decoded it; with the real module, its marks.
+        patched.setattr(analyzer, "_DICTIONARY", [None])
+        assert analyzer.compound_joins()["上層部"] is entry
     assert analyzer.compound_joins()["上層部"] is entry and analyzer.compound_joins()["もののけ姫"][3] == 3
 
 

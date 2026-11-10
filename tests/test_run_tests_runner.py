@@ -6,6 +6,7 @@ suite and every module suite as separate processes at once and reports them toge
 (docs/agent instructions/Parallel_Test_Runner_Spec.md). No real pytest is started here: the suite
 runs are faked, so this file costs milliseconds.
 """
+import json
 import os
 import sys
 import locale
@@ -57,7 +58,7 @@ def test_a_checkout_without_modules_runs_the_core_suite_only(tmp_path):
 
 
 def test_each_suite_is_its_own_pytest_process_from_the_project_root(tmp_path, monkeypatch):
-    """The documented module command, from the root (the satoru suite has no conftest), with the
+    """The documented module command, from the root (each module conftest imports tests.harness_guards), with the
     shared pytest cache off and the environment passed through unchanged."""
     seen = {}
 
@@ -138,3 +139,278 @@ def test_output_is_decoded_the_way_the_child_wrote_it(monkeypatch):
     text = "1227 passed — 2 skipped"
     raw = text.encode(locale.getpreferredencoding(False), errors="replace")
     assert run_tests._decode(raw) == raw.decode(locale.getpreferredencoding(False))
+
+
+
+# --- The core suite in shards (--all) ------------------------------------------------------------
+def _core(root, sizes):
+    """tests/ holding test files of the given sizes (bytes), plus a helper that is no test file."""
+    for rel, size in sizes.items():
+        path = os.path.join(root, "tests", *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#" * size)
+    with open(os.path.join(root, "tests", "conftest.py"), "w", encoding="utf-8") as f:
+        f.write("")
+
+
+def test_core_files_are_every_test_file_under_tests_in_path_order(tmp_path):
+    _core(str(tmp_path), {"test_b.py": 10, "test_a.py": 10, "connect/test_inbox.py": 10, "helpers.py": 10})
+    assert run_tests._core_files(str(tmp_path)) == ["tests/connect/test_inbox.py", "tests/test_a.py",
+                                                    "tests/test_b.py"]
+
+
+@pytest.mark.parametrize("free_mb, cpus, shards", [
+    (24000, 24, 8),     # a quiet machine: as many as SHARD_MAX
+    (24000, 4, 4),      # never more than the CPUs
+    (12000, 24, 8),     # 4.8 GB + 8 × 0.5 GB fits in 12 GB less the reserve
+    (10000, 24, 5),     # two other runs going: fewer (4.8 GB + 4 × 0.5 GB fits in 7 GB)
+    (6000, 24, 1),      # no room: one shard (the suite unsplit)
+    (None, 24, 4),      # memory unreadable: half the CPUs, at most 4
+])
+def test_the_shard_count_follows_the_free_memory(monkeypatch, free_mb, cpus, shards):
+    monkeypatch.delenv("SURASURA_TEST_SHARDS", raising=False)
+    assert run_tests._shard_count(free_mb, cpus) == shards
+
+
+@pytest.mark.parametrize("idle, shards", [
+    (23.5, 8),          # a quiet machine: memory decides
+    (11.0, 5),          # another run going: half the idle CPUs
+    (1.2, 1),           # two other runs filling the machine: unsplit
+    (None, 8),          # idle time unreadable: memory decides
+])
+def test_the_shard_count_follows_the_idle_cpus(monkeypatch, idle, shards):
+    """Three runs started together all see the memory free; the CPUs busy with runs already going are what the later
+    one sees first (three runs of 8 shards each were ~39 processes on 24 CPUs)."""
+    monkeypatch.delenv("SURASURA_TEST_SHARDS", raising=False)
+    assert run_tests._shard_count(24000, 24, idle) == shards
+
+
+def test_the_idle_cpus_are_read_from_this_machine():
+    """A real reading: some share of the CPUs, never more than there are."""
+    idle = run_tests._idle_cpus(4, seconds=0.05)
+    assert idle is None or 0 <= idle <= 4
+
+
+def test_the_shard_count_can_be_chosen(monkeypatch):
+    """SURASURA_TEST_SHARDS=1 runs the core suite unsplit, as before (the split's proof compares the two)."""
+    monkeypatch.setenv("SURASURA_TEST_SHARDS", "1")
+    assert run_tests._shard_count(24000, 24) == 1
+    monkeypatch.setenv("SURASURA_TEST_SHARDS", "3")
+    assert run_tests._shard_count(1000, 2, 0.5) == 3
+
+
+def test_shards_are_packed_by_the_recorded_times_each_file_once(tmp_path):
+    """Longest first into the lightest shard: 60 s | 50 s | 10 s, and a file with no record weighs its size (50 KB ~
+    5 s), so a new file joins the lightest shard."""
+    _core(str(tmp_path), {"test_store.py": 10, "test_plan.py": 10, "test_kana.py": 10, "test_new.py": 50000})
+    os.makedirs(os.path.join(str(tmp_path), "debug"))
+    with open(os.path.join(str(tmp_path), "debug", "test_times.json"), "w", encoding="utf-8") as f:
+        json.dump({"tests/test_store.py": 60, "tests/test_plan.py": 50, "tests/test_kana.py": 10}, f)
+    files = run_tests._core_files(str(tmp_path))
+    shards = run_tests._shards(str(tmp_path), files, 3)
+    assert sorted(sum(shards, [])) == sorted(files), "every file in exactly one shard"
+    assert ["tests/test_store.py"] in shards and ["tests/test_plan.py"] in shards
+    assert ["tests/test_kana.py", "tests/test_new.py"] in shards, "the new file joins the lightest, in path order"
+
+
+def test_shard_times_are_merged_into_the_record(tmp_path):
+    root = str(tmp_path)
+    for i, part in enumerate([{"tests/test_a.py": 1.5}, {"tests/test_b.py": 2.25}]):
+        with open(os.path.join(root, f"{i}.json"), "w", encoding="utf-8") as f:
+            json.dump(part, f)
+    run_tests._save_times(root, [os.path.join(root, "0.json"), os.path.join(root, "1.json"),
+                                 os.path.join(root, "missing.json")])
+    assert run_tests._read_times(root) == {"tests/test_a.py": 1.5, "tests/test_b.py": 2.25}
+
+
+def test_the_core_suite_runs_in_shards_beside_the_module_suites(tmp_path, monkeypatch, capsys):
+    """Every shard and every module suite run at the same time; the summary still counts suites (core + modules), so
+    'ALL 2 SUITES PASSED' reads as it always has."""
+    root = str(tmp_path)
+    _layout(root, {"junban": True})
+    _core(root, {"test_a.py": 10, "test_b.py": 10, "test_c.py": 10})
+    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus, idle: 3)
+    monkeypatch.setattr(run_tests, "_idle_cpus", lambda cpus: None)
+    barrier = threading.Barrier(4, timeout=10)
+    seen = []
+
+    def fake_shard(project_root, label, files, times_path):
+        barrier.wait()
+        seen.append(files)
+        return label, 0, f"= {len(files)} passed in 0.1s =\n", 0.1
+
+    def fake_suite(project_root, suite):
+        barrier.wait()
+        return suite, 0, "= 3 passed in 0.1s =\n", 0.1
+
+    monkeypatch.setattr(run_tests, "_run_shard", fake_shard)
+    monkeypatch.setattr(run_tests, "_run_suite", fake_suite)
+
+    assert run_tests.run_all(root) == 0
+    out = capsys.readouterr().out
+    assert sorted(sum(seen, [])) == ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]
+    assert "the core suite in 3 shards" in out and "PASS  tests [2/3]" in out
+    assert "[PASS]  ALL 2 SUITES PASSED" in out
+
+
+def test_a_failing_shard_fails_the_core_suite_and_prints_its_output(tmp_path, monkeypatch, capsys):
+    root = str(tmp_path)
+    _core(root, {"test_a.py": 10, "test_b.py": 10})
+    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus, idle: 2)
+    monkeypatch.setattr(run_tests, "_idle_cpus", lambda cpus: None)
+
+    def fake_shard(project_root, label, files, times_path):
+        if files == ["tests/test_b.py"]:
+            return label, 1, "F\nE   AssertionError: 上層部 was read as 上層 + 部\n= 1 failed in 0.1s =\n", 0.1
+        return label, 0, "= 1 passed in 0.1s =\n", 0.1
+
+    monkeypatch.setattr(run_tests, "_run_shard", fake_shard)
+    monkeypatch.setattr(run_tests, "_shards", lambda project_root, files, count: [["tests/test_a.py"],
+                                                                                  ["tests/test_b.py"]])
+    assert run_tests.run_all(root) == 1
+    out = capsys.readouterr().out
+    assert "FAILED: tests [2/2]" in out and "上層部 was read as 上層 + 部" in out
+    assert "[FAIL]  1 OF 1 SUITES FAILED: tests" in out
+
+
+def test_a_shard_records_its_file_times_through_the_conftest(tmp_path):
+    """The real hook, in a real pytest run: SURASURA_TEST_TIMES gets each file's time, keyed as pytest names it."""
+    times = tmp_path / "times.json"
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    env = dict(os.environ, SURASURA_TEST_TIMES=str(times))
+    result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_run_tests_runner.py", "-q",
+                             "-p", "no:cacheprovider", "-k", "core_files_are_every_test_file"],
+                            cwd=root, env=env, capture_output=True)
+    assert result.returncode == 0, result.stdout.decode("utf-8", "replace")
+    recorded = json.loads(times.read_text(encoding="utf-8"))
+    assert list(recorded) == ["tests/test_run_tests_runner.py"] and recorded["tests/test_run_tests_runner.py"] > 0
+
+
+@pytest.mark.parametrize("pytest_code, code", [(5, 0), (1, 1), (0, 0)])
+def test_a_shard_of_files_without_tests_passes(tmp_path, monkeypatch, pytest_code, code):
+    """A helper named test_*.py holds no tests: alone in a shard, pytest says 5 ("no tests collected"), not a failure."""
+    monkeypatch.setattr(run_tests.subprocess, "run",
+                        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, pytest_code, stdout=b"= no tests ran =\n"))
+    assert run_tests._run_shard(str(tmp_path), "tests [1/2]", ["tests/test_support.py"], "t.json")[1] == code
+
+
+# --- One shard of the core suite (--shard I/N, GitHub's PR tests) ----------------------------------
+# pr.yml runs the core suite as N jobs side by side, each under the runner's 30-minute cap (3.0-dev's single run had
+# reached 25-28 min); the merge gate reads one "tests" job that passes only if every shard did. So the split must hold
+# every core file exactly once, the same on every job, and a shard's result must be pytest's.
+def test_the_shards_of_a_split_hold_every_core_file_exactly_once(tmp_path):
+    """No times recorded (a fresh GitHub checkout): packed by size, nested folders included, and the same split twice."""
+    root = str(tmp_path)
+    _core(root, {"test_store.py": 9000, "test_plan.py": 4000, "connect/test_inbox.py": 3000, "qt/test_window.py": 500,
+                 "test_kana.py": 200, "helpers.py": 50000})
+    shards = [run_tests._shard_of(root, f"{i}/3") for i in (1, 2, 3)]
+    assert sorted(sum(shards, [])) == run_tests._core_files(root), "every core file in exactly one shard"
+    assert all(shards) and all(shard == sorted(shard) for shard in shards)
+    assert shards == [run_tests._shard_of(root, f"{i}/3") for i in (1, 2, 3)], "every job packs it the same way"
+
+
+def test_this_checkout_splits_into_four_shards_holding_every_test_file():
+    """The real tests/ folder, as pr.yml splits it. pytest also collects *_test.py by default: none may exist here,
+    or the shards (test_*.py only) would skip it where `pytest tests` ran it."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    files = run_tests._core_files(root)
+    shards = [run_tests._shard_of(root, f"{i}/4") for i in (1, 2, 3, 4)]
+    assert sorted(sum(shards, [])) == files and all(shards)
+    stray = [os.path.join(d, n) for d, _, names in os.walk(os.path.join(root, "tests"))
+             for n in names if n.endswith("_test.py") and "__pycache__" not in d]
+    assert stray == []
+
+
+def test_more_shards_than_files_leaves_the_extra_shards_empty(tmp_path):
+    _core(str(tmp_path), {"test_a.py": 10, "test_b.py": 10})
+    assert [run_tests._shard_of(str(tmp_path), f"{i}/3") for i in (1, 2, 3)] == [
+        ["tests/test_a.py"], ["tests/test_b.py"], []]
+
+
+def test_an_empty_shard_passes_without_starting_pytest(tmp_path, monkeypatch):
+    """A job whose shard holds no files has nothing to fail: it passes, and starts no pytest (given no files, pytest
+    would collect the whole folder it starts in)."""
+    _core(str(tmp_path), {"test_a.py": 10})
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("no pytest for an empty shard"))
+    assert run_tests.run_shard(str(tmp_path), "2/2") == 0
+
+
+@pytest.mark.parametrize("pytest_code, code", [(0, 0), (1, 1), (5, 5)])
+@pytest.mark.parametrize("flag", [["--shard", "2/4"], ["--shard=2/4"]])
+def test_main_with_shard_runs_that_shards_files_verbose_from_the_root(monkeypatch, pytest_code, code, flag):
+    """`--shard 2/4`: one pytest process over shard 2's files, from the project root (the paths are relative to it),
+    verbose like the default run, its exit code passed on — 5 (nothing collected) fails, as `pytest tests` did."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["kwargs"] = cmd, kwargs
+        return subprocess.CompletedProcess(cmd, pytest_code)
+
+    monkeypatch.setattr(run_tests.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *flag])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert seen["cmd"] == [sys.executable, "-m", "pytest", *run_tests._shard_of(root, "2/4"), "-v", "-ra"]
+    assert seen["kwargs"]["cwd"] == root
+    assert exit_info.value.code == code
+
+
+@pytest.mark.parametrize("argv", [["--shard", "0/4"], ["--shard", "5/4"], ["--shard", "a/4"], ["--shard", "4"],
+                                  ["--shard", "1/2/3"], ["--shard"]])
+def test_a_bad_shard_runs_nothing_and_fails(monkeypatch, capsys, argv):
+    """A typo in the workflow must fail its job, never pass it by running no tests."""
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("no pytest for a bad shard"))
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert exit_info.value.code == 2
+    assert "--shard takes I/N" in capsys.readouterr().out
+
+
+def test_a_checkout_with_no_core_test_files_fails_every_shard(tmp_path, monkeypatch, capsys):
+    """A wrong root or an empty checkout must not pass four green shards: `pytest tests` failed there too."""
+    os.makedirs(os.path.join(str(tmp_path), "tests"))
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("nothing to run"))
+    assert run_tests.run_shard(str(tmp_path), "1/4") == 2
+    assert "No core test files" in capsys.readouterr().out
+
+
+def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
+    """pr.yml's matrix is one list, 1..N in order, and each job passes `<its shard>/<the job count>`: a repeated or
+    missing number, or a second matrix dimension (job-total would double), would drop files and still pass. The
+    `tests` job (the branch's required check, the job pr-merge.yml reads) runs after the shards even when the run is
+    cancelled (always()), so a cancelled run is never a skipped, green `tests`. Read as text: no YAML parser here."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
+        text = f.read()
+    shards = text.split("\n  shards:\n", 1)[1].split("\n  tests:\n", 1)[0]
+    matrix = shards.split("matrix:\n", 1)[1].split("\n    steps:", 1)[0]
+    lines = [line.strip() for line in matrix.splitlines() if line.strip() and not line.strip().startswith("#")]
+    assert len(lines) == 1 and lines[0].startswith("shard: ["), "one matrix dimension: the shard"
+    numbers = [int(n) for n in lines[0].split("[", 1)[1].split("]", 1)[0].split(",")]
+    assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) >= 2
+    assert "run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}" in shards
+    assert "fail-fast: false" in shards
+    tests = text.split("\n  tests:\n", 1)[1].split("\n  unreview:\n", 1)[0]
+    assert "needs: [changes, shards]" in tests
+    assert "if: ${{ always() && needs.changes.outputs.code != 'false' }}" in tests
+    assert 'test "$SHARDS" = success' in tests and "SHARDS: ${{ needs.shards.result }}" in tests
+
+
+@pytest.mark.parametrize("code, words", [(3221225477, "exit 0xC0000005, an access violation"),
+                                         (3221226505, "exit 0xC0000409, a fail-fast"), (3221225786, "exit 0xC000013A"),
+                                         (3, "exit 3: abort()")])
+def test_a_shard_whose_pytest_died_says_so_in_hex_never_only_127(tmp_path, monkeypatch, capsys, code, words):
+    """GitHub's bash shows a pytest process that died by a Windows status as 127, which names nothing (#285's core
+    4/4, flakes-2026-11-05 #5): the shard says how it died, and its exit code is still the child's (red)."""
+    _core(str(tmp_path), {"test_a.py": 10})
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, code))
+    assert run_tests.run_shard(str(tmp_path), "1/1") == code
+    assert words in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", [0, 1, 2, 4, 5, 75, 127, 255, -11])
+def test_pytests_own_exit_codes_are_no_death(code):
+    assert run_tests.death(code) is None

@@ -2,8 +2,12 @@ import json
 import os
 import copy
 import importlib
-from typing import Any, Dict
-from app.path_utils import get_user_file, read_text
+import threading
+import time
+from collections.abc import Mapping
+from typing import Any, Callable, Dict, Optional
+from app import locks
+from app.path_utils import get_settings_path, read_text
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
@@ -13,6 +17,21 @@ DEFAULT_SETTINGS = {
     "strategy": "freq",
     "target_coverage": 90,
     "split_length": 3000,
+    # how an EPUB is cut into parts when it is added: "chapters" (its TOC's, else its heading lines') or "even"
+    "split_books_by": "chapters",
+    # What ▶ opens a video or an EPUB with (Settings → Content, *Videos open in* / *Books open in*; Sonic 2026-11-05,
+    # the mock's rows): "default" — the program Windows opens it with — or "program", the one chosen there
+    # (`open_video_program` / `open_book_program`: its path, kept when "default" is picked again). YouTube always opens
+    # on YouTube; a book with no EPUB opens in the default program. Read by `app/services/play.program_for` (▶'s open,
+    # `screens.Page._play`). Never in a signature.
+    "open_video": "default",
+    "open_video_program": "",
+    "open_book": "default",
+    "open_book_program": "",
+    # When you finish something (Settings → Content; the mock's *When something is finished*, N7): "ask" — the toast
+    # asks *Keep* or *Leave its new cards out of your order* (D14) — or always "keep", or always "out" (the toast then
+    # says so, its Undo takes both back). Read by `finish_cards()`. Never in a signature.
+    "finish_cards": "ask",
     "target_language": "ja",
     # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
     # every file's script as written. Files are never converted on disk (app/zh_script.py).
@@ -23,10 +42,10 @@ DEFAULT_SETTINGS = {
     "zen_limit": 50,
     "onboarding_completed": False,
     "open_count": 0,
-    "hide_satoru": True,  # This is the "internal" default
     "only_i_plus_one": False,
     "ensure_audio_example": False,
     "add_graduated_words": True,
+    "update_check_enabled": True,  # ask GitHub at start whether a new version is out (off: no request at all)
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
     "skipped_version": "",          # a version the user skipped — never offered again
     # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
@@ -40,6 +59,39 @@ DEFAULT_SETTINGS = {
     # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
     # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
     "sentence_dictionary_source": False,
+    # The token store's tokenizing pool (token_index.pool_size): None = sized from the CPU count and memory, 0 = one
+    # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
+    # signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "index_pool_workers": None,
+    # K5 C4 (alpha 4), Settings' *Use every core*: the indexer's and a library look's pools take every logical CPU instead
+    # of half (`token_index.every_core`). Speed only; never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "use_every_core": False,
+    # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: one in 3.0,
+    # "night", the redesign's palette — RS-1, 2026-10-14; Blue, Lighter blue and Sapphire retired, any other name paints
+    # the night; themes return in 3.1) and text size ("S" / "M" / "L"). Set on the window before its first paint. Never
+    # in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
+    "app_theme": "night",
+    "text_size": "M",
+    # The window's motion (Settings > App > Motion; M2.1, the window's spec 05 §5.10): "follow" Windows' own *Show
+    # animations* switch, "full" or "reduced" (no slides, short fades). No run or report reads it.
+    "app_motion": "follow",
+    # The journey's background Generate (E3.2, app/services/journey.py): seconds after the last move, and while on the
+    # battery (Sonic, E3.2-1: 3 s, 30 s on a laptop's battery; advanced settings). No run or report reads them.
+    "journey_settle_s": 3,
+    "journey_settle_battery_s": 30,
+    # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
+    # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
+    # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:
+    # empty = every arrival waits). Sources: a record's producer ("hato"), "<producer>:<channel id>", "source" (the
+    # folders Surasura reads, "source:<root id>" one of them); targets: wait · top · after-show · soon · goal ·
+    # finished (app/connect/rules.py; the store's L2.2 05 §5.12). By default a next episode of a show in Current joins
+    # it, from hato and from a folder alike (Decision 1, lean; SRC-2: "if the show exists, it should just pair"); a
+    # show never shown still waits. Merged per key, as `logic` is (`placing_rules()`, applied by load_settings): a
+    # source the file doesn't name takes its default, so {} or {"hato": "top"} keeps the folders' after-show; only an
+    # explicit target ("wait" too) changes one. Read by the command line, Connect and the folders' look (handed to
+    # `take_in`): never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_enabled": False,
+    "placing_rules": {"hato": "after-show", "source": "after-show"},
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run
@@ -59,7 +111,68 @@ DEFAULT_SETTINGS = {
     # in known words. Only then — new episodes are the user's to order first. Never in the run
     # signature.
     "anki_auto_generate": False,
+    # The Anki sync rule's S4 (E1.1 04 §3; app/anki_sync_rule.py; shared with Connect, P1.5): with the fast re-plan's
+    # preview on, Surasura asks Anki to sync this many minutes after a write that changed tomorrow's cards (0 = right
+    # away), or "off": only at a session's first write (and Anki's own sync on close). 順's "Sync AnkiWeb". Never in a
+    # signature (analyzer._NON_ANALYSIS_SETTINGS); the dashboard's save keeps it only as written.
+    "anki_sync_delay_min": 1,
+    # Surasura Connect's mine path (P1.3; docs/agent instructions/3.0/P1.3-mine-path/): which words of an episode
+    # become cards (`list`: on your list, not known, no card yet · `unknown`: every word you don't know · `i1`: only
+    # words with a line whose other words you know), whether grammar words go too (names follow logic.ignore_names:
+    # G1.3), where Anki Miner is ("" = found by its installer's key) and the Anki Miner profile Connect mines with.
+    # Read only by
+    # `surasura-cli pick` and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_mine_words": "list",
+    "connect_send_grammar": True,
+    "connect_anki_miner_path": "",
+    "connect_anki_miner_profile": "Surasura",
+    # Open Anki for me (P2.3; ✅ Q4-16; app/connect/open_anki.py): with Connect's preview on, Surasura starts Anki when a
+    # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
+    # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
+    "connect_open_anki": False,
+    # Show covers (the setup wizard's *Your shows* page, G1.2-19 / C1): on only by the user's own yes there — each show's
+    # name is sent to AniList or TMDB for its cover. Off by default (and *Skip* writes nothing). Never in a signature.
+    "covers_download": False,
+    # Find them with hato (Michi-NS, NS-2: *Needs you*'s one press, the first time; app/no_subs.py): from then Surasura
+    # hands hato its videos with no subtitle (only once hato takes a list: its tools entry lists `find`), and lists
+    # `register` for hato with Connect off too (Q3). Off by default. Never in a signature.
+    "subs_with_hato": False,
+    # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
+    # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
+    # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
+    "practice_keep_rounds": True,
+    # The version whose setup pages the learner has seen (the setup wizard, WZ-8): "" never — a profile set up in 2.x
+    # sees 3.0's wizard once. Never in a signature.
+    "setup_seen": "",
+    # The pages a profile that never finished setup saved with Next (the wizard shows them as saved when it comes back).
+    "setup_passed": [],
+    # The window's one-time hints already shown (W-1: the first watched mark's toast), each id with its library's id
+    # ("keep_watched:<store id>"): shown once per library. Never in a signature.
+    "hints_seen": [],
+    # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
+    # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
+    # than this many new, unsuspended cards of that language wait in Anki (its decks + its own), and tops up as you study; at the cap the least
+    # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own new cards count too (B3-2 A). Never in a
+    # signature.
+    "connect_backlog_cap": 300,
+    # Where Connect looks for an episode's video when it isn't where its pairing says (P2.5, G1.3-12): these folders and
+    # their subfolders, beside the folders your paired videos are in. A list for every language, or {lang: [...]}.
+    # Never in a signature.
+    "connect_video_folders": [],
+    "connect_trust_timing": False,      # P-LF-9: mine an unpaired episode nothing here can check, at its own times
+    # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
+    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
+    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
+    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
+    "known_from_anki": ["suspended"],
     "logic": {
+        # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
+        # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
+        # 2.x opt-ins keep their own switches and still run while those are on: Backfill's automatic step
+        # (`junban_auto_backfill`) and the automatic Generate (`anki_auto_generate`) (Sonic, 2026-10-13: "They get
+        # their own switches"). Read through `automation(settings)`. No run and no report reads it:
+        # _NON_ANALYSIS_LOGIC, placed "neither".
+        "automation": True,
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:
         # "hiragana" reads a hiragana group as that kanji's reading and drops it, as Aozora's 《ruby》 is dropped;
@@ -140,7 +253,7 @@ DEFAULT_SETTINGS = {
             "lopsided_threshold": 0.85
         },
         "selection": {
-            "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors — how common a word must be to be included; scale-stable across library sizes; 'native' is a tiny 1ppm floor (~= min_count on typical libraries). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. auto (Automatic rarity, Settings -> Sentences & Logic): every Generate picks the band itself, the rarest band with auto_max_words words or fewer (the counts the Rarity slider shows), in place of 'band'; auto_max_words is edited here only. These are the single source of truth (no magic numbers in code).",
+            "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors — how common a word must be to be included; scale-stable across library sizes; 'native' is a tiny 1ppm floor (~= min_count on typical libraries). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. auto (Automatic rarity, Settings -> Sentences & Logic): every Generate picks the band itself, the commonest band with auto_max_words words or more (the counts the Rarity slider shows; the rarest band when none has), in place of 'band'; auto_max_words is edited here only. These are the single source of truth (no magic numbers in code).",
             "band": "occasional",
             "auto": False,
             "auto_max_words": 850,
@@ -190,9 +303,15 @@ def _optional_module_defaults() -> Dict[str, Any]:
 _OLD_ZH_BOUNDARIES = "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
 
 
-def load_settings() -> Dict[str, Any]:
-    """Loads settings from disk and merges with defaults (plus any present optional modules)."""
-    settings_path = get_user_file("settings.json")
+class SettingsError(Exception):
+    """settings.json exists but can't be read (`load_settings(strict=True)`)."""
+
+
+def load_settings(strict: bool = False) -> Dict[str, Any]:
+    """Loads settings from disk and merges with defaults (plus any present optional modules).
+    `strict`: a settings.json that exists but can't be read raises `SettingsError` instead of falling back to the
+    defaults (the command line's `settings-unreadable`: a fallback a later save would write back, P0.3 05 §1)."""
+    settings_path = get_settings_path()
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     # Optional modules contribute their own defaults, but only when importable.
     settings.update(_optional_module_defaults())
@@ -220,7 +339,10 @@ def load_settings() -> Dict[str, Any]:
             for key, value in user_settings.items():
                 if key != "logic":
                     settings[key] = value
+            settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
         except Exception as e:
+            if strict:
+                raise SettingsError(f"settings.json can't be read: {e}") from e
             print(f"Warning: Could not load settings, using defaults: {e}")
 
     # Sentence boundaries are user-editable, but a few characters are STRUCTURAL — without them
@@ -264,21 +386,71 @@ def load_settings() -> Dict[str, Any]:
 
     return settings
 
-def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
+# settings.json is written under the `settings` lock (`app/locks.py`, P0.3 04 §2), atomically: a temp file, then
+# `os.replace`, retried briefly while another program holds the file open (02 §8). A writer waits this long for the lock;
+# another program holds it only for one write.
+LOCK_WAIT = 2.0
+_REPLACE_TRIES = 5
+
+
+def _write_atomically(path: str, to_save: Dict[str, Any]):
+    """Temp file + `os.replace` (retried 5 x 100 ms while a reader holds the file open): old or new, never half."""
+    temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())                # on disk before it replaces the old file (a power cut: old or new)
+        for attempt in range(_REPLACE_TRIES):
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError:
+                if attempt == _REPLACE_TRIES - 1:
+                    raise
+                time.sleep(0.1)
+    finally:
+        if os.path.exists(temp):
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+
+
+def _settings_lock(wait: float):
+    """The `settings` lock (a context manager), or None when this thread holds it already (a write inside
+    `save_keys` or the window's writer). Raises `locks.Busy` when another holder keeps it past `wait`."""
+    try:
+        if locks.held_here("settings"):
+            return None
+        return locks.take("settings", "saving settings", wait=wait)
+    except locks.Busy as e:
+        if e.holder is None and locks.unopenable("settings"):
+            # The lock file can't be opened (its folder's permissions): today's unlocked write beats losing the
+            # setting. Every other program writing settings.json takes the same lock, so it can only race them.
+            print("Warning: the settings lock can't be opened; saving without it.")
+            return None
+        raise
+    except Exception as e:
+        print(f"Warning: the settings lock can't be used ({e}); saving without it.")
+        return None
+
+
+def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait: float = LOCK_WAIT) -> bool:
     """
-    Saves settings to disk.
+    Saves settings to disk, atomically, under the `settings` lock (waiting up to `wait` seconds for it).
     If clean_for_build is True, or if the module is missing, 'hide_satoru' is stripped.
+    Returns True once written; False when it could not be (the reason printed), the file untouched.
     """
-    settings_path = get_user_file("settings.json")
-    
+    settings_path = get_settings_path()
+
     # 1. Start with a copy to avoid mutating the app's state
     # Ensure settings is a dict before calling copy
     if not isinstance(settings, dict):
         print(f"Error: save_settings expected dict, got {type(settings)}")
-        return
-        
+        return False
     to_save = copy.deepcopy(settings)
-    
+
     # 2. Check for module availability
     module_exists = False
     try:
@@ -287,32 +459,264 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
     except (ImportError, ModuleNotFoundError):
         module_exists = False
 
-    # 3. Strip internal/locked variables if necessary
+    # 3. Strip internal/locked variables if necessary. `hide_satoru` left the defaults in 3.0 (the 悟 button left the
+    # app in 2.5, RD-A5; nothing reads the key): an old file's copy is stripped for a build and wherever the Immersion
+    # Architect module is absent (every build); a source run with the module present writes it back, harmless.
     if clean_for_build or not module_exists:
         to_save.pop("hide_satoru", None)
 
     # 4. Write to disk
     try:
-        with open(settings_path, 'w', encoding='utf-8') as f:
-            json.dump(to_save, f, indent=4)
+        held = _settings_lock(wait)
+        try:
+            _write_atomically(settings_path, to_save)
+        finally:
+            if held is not None:
+                held.release()
+        return True
     except Exception as e:
         print(f"Error: Could not save settings: {e}")
+        return False
 
-def save_keys(changes: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
-    and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
-    so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
-    Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
-    settings. The Anki window's own save works the same way (anki_sync_gui.AnkiSyncGui._save)."""
+
+def _read_file_as_is() -> Dict[str, Any]:
     try:
-        settings = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
+        settings = json.loads(read_text(get_settings_path()))   # a BOM too, as load_settings
         if not isinstance(settings, dict):
             raise ValueError("settings.json is not an object")
     except (OSError, ValueError):
         settings = load_settings()
-    settings.update(changes)
-    save_settings(settings)
     return settings
+
+
+def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None,
+              strict: bool = False, wait: float = 0.0) -> Dict[str, Any]:
+    """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
+    and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
+    so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
+    Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
+    settings. `update(settings)`, when given, changes the file's dict in place after `changes` (a window whose keys
+    merge into what the file holds: the Anki window's per-language decks).
+
+    The read and the write hold the `settings` lock together, so no other program's save lands between them. Never
+    waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
+    by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
+    order the windows saved (`flush_keys` waits for them; the process writes them before it ends). `strict`: a write
+    that failed raises OSError (a control that must not show an unsaved value: Connect's, P3.1); a queued one doesn't.
+    `wait` (a worker only, never a window's thread): up to `wait` seconds for the lock; with `strict`, a lock still held
+    then raises OSError and nothing is queued — what follows the save reads the file (Connect's switch: its back-fill,
+    its session look), so it must hold the keys when this returns."""
+    entry = (dict(changes or {}), update)
+    try:
+        held = locks.take("settings", "saving settings", wait=wait) if not locks.held_here("settings") else None
+    except locks.Busy:
+        if strict and wait:
+            raise OSError("your settings file is being saved by another window or program just now")
+        with _QUEUED_LOCK:
+            _QUEUED.append(entry)
+        _queued_writer().submit(_build_queued)
+        return _apply([entry], _read_file_as_is())
+    except Exception as e:
+        print(f"Warning: the settings lock can't be used ({e}); saving without it.")
+        held = None
+    try:
+        settings = _apply([entry], _read_file_as_is())
+        written = save_settings(settings)
+    finally:
+        if held is not None:
+            held.release()
+    if strict and not written:
+        raise OSError("your settings file couldn't be written just now")
+    return settings
+
+
+def _apply(entries, settings):
+    for changes, update in entries:
+        settings.update(changes)
+        if update is not None:
+            update(settings)
+    return settings
+
+
+# The other windows' saves that met a held lock, in order; written by one worker (`_build_queued`).
+_QUEUED = []
+_QUEUED_LOCK = threading.Lock()
+_QUEUED_WRITER = None
+_WRITTEN_UPTO = [0]
+
+
+def _build_queued():
+    """The file as it is with every queued save applied in order (inside the lock, on the writer's worker)."""
+    with _QUEUED_LOCK:
+        entries = list(_QUEUED)
+    _WRITTEN_UPTO[0] = len(entries)
+    return _apply(entries, _read_file_as_is())
+
+
+def _queued_written(_settings):
+    with _QUEUED_LOCK:
+        del _QUEUED[:_WRITTEN_UPTO[0]]
+
+
+def _queued_writer():
+    global _QUEUED_WRITER
+    with _QUEUED_LOCK:
+        if _QUEUED_WRITER is None:
+            _QUEUED_WRITER = SettingsWriter(delay=0.0, on_saved=_queued_written)
+            import atexit
+            atexit.register(flush_keys, 10.0)
+        return _QUEUED_WRITER
+
+
+def flush_keys(timeout: Optional[float] = None) -> bool:
+    """Wait until every queued window save is written (on a worker, or as the process ends). True when none is left."""
+    writer = _QUEUED_WRITER
+    return True if writer is None else writer.flush(timeout)
+
+
+class SettingsWriter:
+    """The window's settings writes, off its thread (P0.3 04 §2): `submit` hands over what to save and returns at
+    once; one worker writes it `delay` seconds after the last submit, under the `settings` lock, atomically. A held
+    lock or a refused replace is retried every `RETRY` seconds: queued, never dropped (the newest submit replaces an
+    unwritten one, since each holds the window's whole state). Before the process ends, `flush` writes what is left.
+
+    `submit(build)`: `build()` -> the settings dict, called on the worker inside the lock, so it may read the file as it
+    is then: a key another window saved meanwhile is carried, never reverted. `on_saved(settings)` / `on_error(error)`
+    run on the worker, never Tk: a window passes callbacks that only post to its own queue."""
+
+    RETRY = 0.25
+
+    def __init__(self, delay: float = 0.25, on_saved: Optional[Callable] = None,
+                 on_error: Optional[Callable] = None, wait: float = LOCK_WAIT):
+        self.delay = delay
+        self.wait = wait
+        self.on_saved = on_saved
+        self.on_error = on_error
+        self._cond = threading.Condition()
+        self._pending = None            # the newest build not yet written
+        self._submitted = 0             # submits so far
+        self._written = 0               # the submit count the last write covered
+        self._due = 0.0                 # when the pending build may be written (the debounce)
+        self._worker = None
+
+    def submit(self, build: Callable[[], Dict[str, Any]]):
+        """Hand over the newest state to save. Never waits: safe on a window's thread."""
+        with self._cond:
+            self._pending = build
+            self._submitted += 1
+            self._due = time.monotonic() + self.delay
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, name="settings-writer", daemon=True)
+                self._worker.start()
+            self._cond.notify_all()
+
+    def pending(self) -> bool:
+        with self._cond:
+            return self._written < self._submitted
+
+    def flush(self, timeout: Optional[float] = None) -> bool:
+        """Write what is pending now, and wait (on the caller's thread: never Tk's) until everything submitted so far
+        is written. True when it is; False when `timeout` ran out first."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            target = self._submitted
+            self._due = 0.0
+            self._cond.notify_all()
+            while self._written < target:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+            return True
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while True:
+                    if self._pending is None:
+                        self._worker = None
+                        return
+                    quiet = self._due - time.monotonic()
+                    if quiet <= 0:
+                        break
+                    self._cond.wait(quiet)
+                build, upto = self._pending, self._submitted
+            try:
+                held = _settings_lock(self.wait)
+                try:
+                    settings = build()
+                    if not save_settings(settings):
+                        raise OSError("settings.json could not be written")
+                finally:
+                    if held is not None:
+                        held.release()
+            except Exception as e:
+                if self.on_error is not None:
+                    try:
+                        self.on_error(e)
+                    except Exception:
+                        pass
+                time.sleep(self.RETRY)                  # queued, never dropped: the same (or a newer) build again
+                continue
+            with self._cond:
+                self._written = max(self._written, upto)
+                if upto == self._submitted:
+                    self._pending = None
+                self._cond.notify_all()
+            if self.on_saved is not None:
+                try:
+                    self.on_saved(settings)
+                except Exception:
+                    pass
+
+
+def automation(settings) -> bool:
+    """D29's switch (`logic.automation`): on unless the logic block says False — a missing or malformed block reads
+    on. Takes a settings dict or a window's frozen copy of one."""
+    logic = settings.get("logic") if hasattr(settings, "get") else None
+    return not (hasattr(logic, "get") and logic.get("automation") is False)
+
+
+def placing_rules(held=None) -> Dict[str, Any]:
+    """`placing_rules` as every reader reads it: the defaults ({"hato": "after-show", "source": "after-show"}) with each
+    source `held` names laid over them — a missing source takes its default, the way `logic` deep-merges; only an
+    explicit target ("wait" too) changes one. `held` that is no {source: target} mapping (absent, hand-edited) reads as
+    the defaults. A new dict each call."""
+    rules = copy.deepcopy(DEFAULT_SETTINGS["placing_rules"])
+    if isinstance(held, Mapping):
+        rules.update(held)
+    return rules
+
+
+def connect_on(settings) -> bool:
+    """P4.1 C1 (row 4.1.1; WZ-4, D29): may Connect's unattended work start — Connect's own switch (`connect_enabled`,
+    *Make cards for me*) on **and** D29's switch (`automation`) on. Read by every place that *starts* Connect's work by
+    itself (`kick`, the runner's look, the Anki session, Anki Miner's daily check, *Open Anki for me*, Known from Anki,
+    the verbs' session sync); the places that describe your set-up (hato's `register` / back-fill, `status`'s `connect`
+    flag, *Undo this batch*) keep `connect_enabled` alone. Takes a settings dict, a window's frozen copy, or None
+    (off)."""
+    on = settings.get("connect_enabled") if hasattr(settings, "get") else False
+    return bool(on) and automation(settings)
+
+
+FINISH_CARDS = ("ask", "keep", "out")
+
+
+def finish_cards(settings) -> str:
+    """*When you finish something* (`finish_cards`) as every finish reads it: "ask", "keep" or "out"; absent, a
+    hand-edited value no choice names, or no settings: "ask" (the toast's question, as before the setting). Takes a
+    settings dict, a window's frozen copy, or None."""
+    value = settings.get("finish_cards") if hasattr(settings, "get") else None
+    return value if value in FINISH_CARDS else "ask"
+
+
+def update_check_on(settings) -> bool:
+    """*Check for updates* (Settings → App, on by default): may Surasura ask GitHub whether a new version is out —
+    its own release and Anki Miner's. Off, no update request is sent at all. Takes a settings dict, a window's frozen
+    copy, or None (on). The test switch `SURASURA_NO_UPDATE_CHECK` is each caller's own, as before."""
+    value = settings.get("update_check_enabled", True) if hasattr(settings, "get") else True
+    return value is not False
+
 
 def get_default_settings() -> Dict[str, Any]:
     """Returns a fresh copy of default settings."""

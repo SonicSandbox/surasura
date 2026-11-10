@@ -47,6 +47,18 @@ def test_build_subprocess_env_adds_project_root_in_source_mode(monkeypatch):
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_build_subprocess_env_drops_an_inherited_qt_platform(monkeypatch):
+    """The 3.0 window's spec 04 §4.1: a window started under the test harness's offscreen platform (or a user's
+    QT_QPA_PLATFORM) must not hand it to a child it starts — a child that opens a window would draw it to nothing.
+    The parent keeps its own value; only the child's copy loses it."""
+    from app.path_utils import build_subprocess_env
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    env = build_subprocess_env(frozen=True)
+    assert env.get("QT_QPA_PLATFORM") is None         # (never print the env: a CI log would show it)
+    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
 @pytest.fixture
 def library(tmp_path):
     """A minimal, isolated on-disk library the analyzer subprocess can run against via

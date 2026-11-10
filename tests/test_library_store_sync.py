@@ -21,8 +21,9 @@ import unicodedata
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, big_store, entry, laptop_library, library, migrated,
-                                              names, read_doc, roots, subprocess_env, touch, write_manifest)
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, laptop_library, library,
+                                              migrated, names, no_line, read_doc, roots, subprocess_env, touch,
+                                              write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
@@ -88,7 +89,7 @@ def _add_files(language, data_dir, specs):
 def test_parity_on_today_shaped_folders(language):
     """Each folder in its tier: the same rows and placement as today's sync, except exactly the cases rule 3
     lists (a show with no row in NOW or Soon → the top of NOW; hato's drops at the top of NOW)."""
-    store = migrated(language, shows=3, episodes=4)
+    store = arrivals_off(no_line(migrated(language, shows=3, episodes=4)))     # 2.4's sync, before the line
     data_dir, user_files_dir = roots(language)
     doc = read_doc(user_files_dir)
     w = names(language)
@@ -123,7 +124,7 @@ def test_parity_on_the_laptop_shaped_library(language):
     data_dir, user_files_dir, doc = laptop_library(language)
     write_manifest(user_files_dir, doc)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    store = ls.open_store(language, data_dir, user_files_dir)
+    store = arrivals_off(no_line(ls.open_store(language, data_dir, user_files_dir)))   # 2.4's sync, before the line
     w = names(language)
     later = doc["schedule"]["PHASE_3_LATER"]
     soon = doc["schedule"]["PHASE_2_SOON"]
@@ -157,6 +158,30 @@ def test_parity_on_the_laptop_shaped_library(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_new_files_for_soons_top_land_past_the_show_the_soon_line_runs_through(language):
+    """Review L3 (alpha 9 #JNFJ8Q's rule for every path): a loose file in Soon's folder, and a new show there, go to
+    Soon's top — `_tier_top`'s, after the Soon files of the show the line runs through, never between its NOW and Soon
+    halves (the show shown as two rows around them). Both found by one sync land together, in the walk's order."""
+    store = arrivals_off(migrated(language, shows=3, episodes=4))
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)                                    # the line inside the third show: 2 NOW, 2 Soon
+    soon = store.ids("soon")
+    assert soon[:2] == third[2:]
+    data_dir, _u = roots(language)
+    w = names(language)
+    rels = _add_files(language, data_dir, [f"LowPriority/{w[60]}.txt", f"LowPriority/{w[61]}/{w[62]}.srt"])
+    asked = []
+    top = store._tier_top
+    store._tier_top = lambda tier, excl: asked.append(tier) or top(tier, excl)
+    added = store.sync_disk()["added"]
+    assert asked == ["soon"], "Soon's top worked out once for the sync's files"
+    assert sorted(added) == sorted(store.item_id(r) for r in rels)
+    now_soon = store.ids("soon")
+    assert now_soon[:2] == third[2:] and now_soon[2:4] == added and now_soon[4:] == soon[2:]
+    store.close()
+
+
 # --- 2. graduated; 3. hato's drops --------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -171,7 +196,7 @@ def test_graduated_files_are_never_re_added(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_hatos_drops_land_at_the_top_of_now(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))                   # with New arrivals off (2.x's rule, Q4-11)
     data_dir, _u = roots(language)
     w = names(language)
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[60]}.srt")
@@ -204,7 +229,7 @@ def _three_ways(store, data_dir, rel_for, tab):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_show_with_rows_in_soon_and_6_months(language):
-    store = migrated(language, shows=2, episodes=4)
+    store = arrivals_off(migrated(language, shows=2, episodes=4))   # register places by rule 3 (arrivals off)
     data_dir, _u = roots(language)
     goal_show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]][:4]
     store.set_tier(goal_show[:2], "soon")                       # the show now sits in Soon and 6+ Months
@@ -235,7 +260,7 @@ def test_a_new_episode_follows_its_demoted_show(language):
 @pytest.mark.parametrize("where", ["goal", "graduated"])
 def test_q4_9_a_show_with_no_row_in_now_or_soon(language, where):
     """✅ G1.1-14, Q4-9 always: the top of NOW, for a sync, register and an Add on any tab."""
-    store = migrated(language, shows=6, episodes=2)
+    store = arrivals_off(migrated(language, shows=6, episodes=2))   # register places by rule 3 (arrivals off)
     data_dir, _u = roots(language)
     goal = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
     shows = [goal[n:n + 2] for n in range(0, 12, 2)]          # a fresh show for each way and tab
@@ -314,7 +339,7 @@ def test_renames(language):
     os.remove(os.path.join(data_dir, b))
     summary = store.sync_disk()
     assert len(summary["added"]) == 1 and sorted(summary["missing"]) == sorted([ids[5], ids[6]])
-    # the same size with a different modified time: new
+    # the same size with a different modified time: new (rule 2, a new name in its folder, asks the exact time: FIX1)
     c = store.item(ids[7])["rel_path"]
     full = os.path.join(data_dir, c)
     st = os.stat(full)
@@ -396,6 +421,38 @@ def test_a_fingerprint_refresh_is_carried_by_the_next_export(language):
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     rec = ls._records(read_doc(user_files_dir)["surasura_library"])[ls.path_key(rel)]
     assert rec["size"] == size
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_read_only_view_never_mixes_two_states(language, monkeypatch):
+    # Why: `surasura-cli status` builds the journey's signature from this schedule and says "current" when nothing
+    # is pending. A window's sync committing a hato drop while the view reads must never give the old schedule
+    # (without the drop) together with "nothing pending" (the drop already synced): that would call a stale list
+    # current. Forced here: the sync commits after the view has read its schedule, before it reads the rows its
+    # delta compares. New arrivals off: the drop lands in an analysed tier, as 2.x's did (Q4-11).
+    store = arrivals_off(migrated(language))
+    data_dir, user_files_dir = roots(language)
+    rel = f"{ls.HATO_FOLDER}/{names(language)[60]}.srt"
+    touch(data_dir, rel)
+    real_known = ls._known
+    synced = []
+
+    def a_window_syncs_then_known(reader, scope=None):
+        if reader is not store and not synced:                 # the view's read, once (the sync reads it too)
+            synced.append(True)
+            assert store.sync_disk()["added"], "the window's sync takes the drop in"
+        return real_known(reader, scope)
+
+    monkeypatch.setattr(ls, "_known", a_window_syncs_then_known)
+    mode, schedule, _versions, pending = ls.read_only_view(language, data_dir, user_files_dir)
+    assert mode == "store"
+    listed = {e["physical_path"] for rows in schedule.values() for e in rows}
+    assert pending or rel in listed, "a schedule without the drop must come with pending"
+    assert synced
+    _mode, schedule, _versions, pending = ls.read_only_view(language, data_dir, user_files_dir)
+    listed = {e["physical_path"] for rows in schedule.values() for e in rows}
+    assert not pending and rel in listed, "the next look has the drop, nothing pending"
     store.close()
 
 
@@ -484,7 +541,7 @@ def test_an_item_reset_moved_skips_an_older_undo(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_synced_new_item_crossing_the_line_logs_that_and_nothing_else(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))            # New arrivals off: the drop enters the mine line (Q4-11)
     data_dir, _u = roots(language)
     store.register_reader("connect")
     pushed = (store.ids("now") + store.ids("soon"))[19]
@@ -659,3 +716,880 @@ def test_the_windows_stall_during_a_100k_sync(language):
         r = json.loads(out.stdout.strip().splitlines()[-1])
         _record(f"14 {language} 100k sync ({'50 new files' if r['added'] else 'no change'}, switch interval "
                 f"{interval * 1000:.1f} ms): sync {r['sync'] * 1000:.0f} ms, longest window stall {r['stall'] * 1000:.1f} ms")
+
+
+# --- 9a: moved files followed; 9b: gone files' text (L3.1 row 3.1.6, the store's half; L2.2 05 §5.9–5.10) ----- #
+
+def _move_file(data_dir, old, new):
+    os.makedirs(os.path.dirname(os.path.join(data_dir, *new.split("/"))), exist_ok=True)
+    os.replace(os.path.join(data_dir, *old.split("/")), os.path.join(data_dir, *new.split("/")))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_moved_to_another_folder_keeps_its_item(language):
+    """9a (Sonic: "same name, size, modified date; exactly one match; the old item went missing since the last check"):
+    an episode watched in a download folder inside the library and moved into its show's folder is the same item — its
+    id, tier, place, piece, title, ✓, pin, Anki links, pairing and made words — available again, one change."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[1]
+    store.set_watched([item])
+    store.pin([item])
+    with store._writing():
+        store.conn.execute("INSERT INTO anki_links VALUES (?, 77, 'miner', 't')", (item,))
+        store.conn.execute("INSERT INTO pairings VALUES ('k-moved', ?, '{}', 't')", (item,))
+    store.record_made(item, [(names(language)[3], [78])])
+    before = store.item(item)
+    order = {t: store.ids(t) for t in ls.TIERS}
+    old = before["rel_path"]
+    new = f"GoalContent/{names(language)[111]}/{old.rsplit('/', 1)[-1]}"
+    _move_file(data_dir, old, new)
+    summary = store.sync_disk()
+    assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+    after = store.item(item)
+    assert after["rel_path"] == new and after["availability"] == "available"
+    for key in ("tier", "ord", "piece_id", "work_id", "watched", "pinned"):
+        assert after[key] == before[key], key
+    assert {t: store.ids(t) for t in ls.TIERS} == order
+    assert store.cards_of([item]) == {item: [77, 78]}
+    assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = 'k-moved'").fetchone()[0] == item
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_moved_into_a_folder_the_poll_cant_see_is_followed(language):
+    """9a with the scoped sync (row 3.1.8; L3.1's intent review #5): the window's poll stats only folders that hold
+    items, so a file moved from one into an empty folder shows only as gone where it was. The sync then looks at the
+    whole library in the same check — the old item went missing since the last check, as Sonic's rule asks — and
+    follows the move: the same item, its place kept, nothing added, nothing missing."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[1]
+    before = store.item(item)
+    old = before["rel_path"]
+    empty = f"GoalContent/{names(language)[112]}"
+    os.makedirs(os.path.join(data_dir, *empty.split("/")))
+    new = f"{empty}/{old.rsplit('/', 1)[-1]}"
+    _move_file(data_dir, old, new)
+    summary = store.sync_disk(folders=[old.rsplit("/", 1)[0]])
+    assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+    after = store.item(item)
+    assert after["rel_path"] == new and after["availability"] == "available"
+    assert (after["tier"], after["ord"]) == (before["tier"], before["ord"])
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_twins_are_asked_never_guessed(language):
+    """9a, 06 §6.7: twins (one name, size and time in two folders, both gone, one back) — nothing is guessed: the file
+    is held out of the library and asked (*Is this the one from …?*); later syncs skip it; `relink` answers with one,
+    `its_new` adds it as a new file and the twins stay missing."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+    b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+    mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+    os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+    store.sync_disk()
+    os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+    back = f"GoalContent/{w[114]}/same.srt"
+    _move_file(data_dir, store.item(a)["rel_path"], back)
+    summary = store.sync_disk()
+    assert summary["asked"] == [back] and summary["added"] == [] and summary["renamed"] == []
+    assert store.rename_asks()[0]["candidates"] == sorted([a, b])
+    assert store.item(a)["availability"] == store.item(b)["availability"] == "missing"
+    assert store.sync_disk() is None and store.item_id(back) is None, "held out, not asked again"
+    change = store.relink(a, os.path.join(data_dir, back))
+    assert store.item(a)["rel_path"] == back and store.item(a)["availability"] == "available"
+    assert store.rename_asks() == []
+    store.undo(change)
+    assert store.item(a)["rel_path"] != back and store.item(a)["availability"] == "missing"
+    with store._writing():
+        store._set_meta({"rename_asks": json.dumps([{"rel": back, "size": 5, "mtime_ns": mtime,
+                                                     "candidates": [a, b]}])})
+    added = store.its_new(os.path.join(data_dir, back))["added"]
+    assert [store.item(i)["rel_path"] for i in added] == [back] and store.rename_asks() == []
+    assert store.item(a)["availability"] == store.item(b)["availability"] == "missing"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undoing_a_relink_whose_old_path_is_taken_again_is_skipped(language):
+    """L3.1's adversarial review: an item relinked to another file; its old file comes back and the sync takes it in as an item
+    of its own; Undo of the relink can't point the item back at a path another item holds — it skips, with a note,
+    never a database error; the item stays at its new file."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    item = store.ids("soon")[0]
+    old = store.item(item)["rel_path"]
+    os.remove(os.path.join(data_dir, old))
+    store.sync_disk()
+    change = store.relink(item, touch(data_dir, f"GoalContent/{w[115]}/{w[116]}.srt"))
+    touch(data_dir, old)
+    back = store.sync_disk()["added"]
+    assert [store.item(i)["rel_path"] for i in back] == [old]
+    out = store.undo(change)
+    assert out is not None and out.notes, "skipped, with a note"
+    assert store.item(item)["rel_path"] == f"GoalContent/{w[115]}/{w[116]}.srt"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_question_goes_once_its_file_or_its_candidates_are_settled(language):
+    """L3.1's adversarial review: 9a's questions never go stale — Reset leaves a held-out file out (its question waits);
+    adding that file by hand answers it (it is new); relinking a twin elsewhere takes it off the other questions, and a
+    question with no candidate still missing goes."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+    b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+    mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+    os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+    store.sync_disk()
+    os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+    back = f"GoalContent/{w[114]}/same.srt"
+    _move_file(data_dir, store.item(a)["rel_path"], back)
+    assert store.sync_disk()["asked"] == [back]
+    store.reset_order()
+    assert store.item_id(back) is None and store.rename_asks()[0]["rel"] == back, "Reset leaves it to the question"
+    store.insert([os.path.join(data_dir, back)], "goal")
+    assert store.rename_asks() == [], "added by hand: it is new"
+    other = f"GoalContent/{w[117]}/same.srt"                     # a second question about the same twins
+    with store._writing():
+        store._set_meta({"rename_asks": json.dumps([{"rel": other, "size": 5, "mtime_ns": mtime,
+                                                     "candidates": [a, b]}])})
+    store.relink(a, touch(data_dir, f"GoalContent/{w[118]}/x.srt"))
+    assert store.rename_asks()[0]["candidates"] == [b], "a relinked twin leaves the other questions"
+    store.relink(b, touch(data_dir, f"GoalContent/{w[119]}/y.srt"))
+    assert store.rename_asks() == [], "no candidate still missing: the question goes"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_read_only_view_follows_a_moved_file(language):
+    """§12.5: `read_only_view` (surasura-cli status) follows 9a with no change of its own — a file moved across
+    folders, not yet synced, is pending; once synced, it isn't."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item = store.ids("goal")[0]
+    old = store.item(item)["rel_path"]
+    _move_file(data_dir, old, f"LowPriority/{names(language)[115]}/{old.rsplit('/', 1)[-1]}")
+    assert ls.read_only_view(language, data_dir, user_files_dir)[3] is True
+    assert store.sync_disk()["renamed"] == [item]
+    assert ls.read_only_view(language, data_dir, user_files_dir)[3] is False
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_missing_items_text_is_kept_and_counted(language):
+    """9b (✅ G2.2-3: a file gone from the disk is never forgotten by itself): a missing item stays in the list the
+    token store counts until the user decides; *Remove* moves its text to the kept list; Finished is set aside
+    (reference, W-1b), never counted."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    gone = store.ids("now")[0]
+    rel = store.item(gone)["rel_path"]
+    os.remove(os.path.join(data_dir, rel))
+    store.sync_disk()
+    counted, kept, _aside = store.text_lists()
+    assert rel in counted and rel not in kept, "missing: still counted"
+    store.remove([gone])
+    counted, kept, _aside = store.text_lists()
+    assert rel not in counted and rel in kept, "removed: kept, not counted"
+    done = store.ids("soon")[0]
+    store.finish([done])
+    counted, kept, aside = store.text_lists()
+    assert store.item(done)["rel_path"] in aside and store.item(done)["rel_path"] not in counted + kept
+    assert set(counted) == {e["physical_path"] for rows in store.schedule().values() for e in rows}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_missing_item_can_be_finished_and_keeps_its_text(language):
+    """✅ G2.2-3 ("they could still move it to finalized"): a missing item finishes like any — still missing, now in
+    Finished — and its sentences stay, set aside as Finished is (reference, W-1b)."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[2]
+    rel = store.item(item)["rel_path"]
+    os.remove(os.path.join(data_dir, rel))
+    store.sync_disk()
+    assert store.finish([item]) is not None
+    assert store.item(item)["tier"] == "graduated" and store.item(item)["availability"] == "missing"
+    assert rel in store.text_lists()[2]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_forget_text_drops_it(language):
+    """G2.2-3 (*This file is junk — forget its sentences too*, off by default): only a removed item's text can be
+    forgotten; ticked, it leaves the kept list (the token store drops it, E2.2); Put back of a forgotten item counts
+    it again; unticked, nothing is forgotten."""
+    store = migrated(language)
+    junk, kept = store.ids("goal")[:2]
+    junk_rel, kept_rel = store.item(junk)["rel_path"], store.item(kept)["rel_path"]
+    assert store.forget_text([junk]) == 0, "not removed: nothing to forget"
+    removed = store.remove([junk, kept])
+    assert store.forget_text([junk]) == 1
+    texts = store.text_lists()[1]
+    assert junk_rel not in texts and kept_rel in texts
+    store.restore(removed.trash_ids)
+    assert junk_rel in store.text_lists()[0]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_twins_question_another_writer_recorded_meanwhile_is_kept_once(language, monkeypatch):
+    """The sync works out its delta outside any lock; another window's sync can record the same twins question in
+    between. The question is then written once: a second copy would ask the user twice about one file."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+    b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+    mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+    os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+    store.sync_disk()
+    os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+    back = f"GoalContent/{w[114]}/same.srt"
+    _move_file(data_dir, store.item(a)["rel_path"], back)
+    real_delta = ls._sync_delta
+    recorded = []
+
+    def delta_then_another_window_asks(*args, **kwargs):
+        out = real_delta(*args, **kwargs)
+        if out["asks"] and not recorded:                        # the first delta only, outside the lock
+            recorded.append(out["asks"])
+            with store._writing():                               # what the other window's sync commits meanwhile
+                store._set_meta({"rename_asks": json.dumps(out["asks"])})
+        return out
+
+    monkeypatch.setattr(ls, "_sync_delta", delta_then_another_window_asks)
+    try:
+        summary = store.sync_disk()
+        assert recorded, "precondition: the twins were asked"
+        assert summary["asked"] == [back]
+        assert [ask["rel"] for ask in store.rename_asks()] == [back], "one question for one file"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_relinking_a_missing_item_makes_it_available_and_bumps_the_version(language):
+    """A relink of a missing item sets it available and moves availability_version up by one: the bump is what tells
+    other readers the availability changed, so a relink that leaves the version put is a stale read."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[0]
+    os.remove(os.path.join(data_dir, store.item(item)["rel_path"]))
+    store.sync_disk()
+    assert store.item(item)["availability"] == "missing"
+    v = store.versions()["availability_version"]
+    w = names(language)
+    store.relink(item, touch(data_dir, f"GoalContent/{w[115]}/{w[116]}.srt"))
+    assert store.item(item)["availability"] == "available"
+    assert store.versions()["availability_version"] == v + 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_removed_file_added_again_is_counted_not_kept(language):
+    """9b (G2.2-3): a file removed earlier keeps its text in the kept list, but once the same file is added again it is
+    counted, and its old trash row must not also put it in the kept list — a file is counted or kept, never both."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    x = store.ids("goal")[0]
+    rel = store.item(x)["rel_path"]
+    store.remove([x])
+    assert rel in store.text_lists()[1], "precondition: a removed file's text is kept"
+    store.insert([os.path.join(data_dir, rel)], "now")
+    counted, kept, _aside = store.text_lists()
+    assert rel in counted and rel not in kept, "added again: counted, and not also kept from its trash row"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_same_name_and_size_but_another_modified_time_is_a_new_file_not_a_move(language):
+    """9a (Sonic: "same name, size, modified date"): a file in another folder with the same name and size as a missing
+    item, but a different modified time, is a new file. The item stays missing; the new file is added. Size alone is
+    not a match: two different episodes can be the same size."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[1]
+    old = store.item(item)["rel_path"]
+    new = f"GoalContent/{names(language)[111]}/{old.rsplit('/', 1)[-1]}"
+    old_full = os.path.join(data_dir, *old.split("/"))
+    new_full = os.path.join(data_dir, *new.split("/"))
+    try:
+        os.makedirs(os.path.dirname(new_full), exist_ok=True)
+        shutil.copy(old_full, new_full)
+        m = os.stat(old_full).st_mtime_ns + 5_000_000_000
+        os.utime(new_full, ns=(m, m))
+        os.remove(old_full)
+        summary = store.sync_disk()
+        assert item in summary["missing"] and item not in summary["renamed"]
+        assert store.item_id(new) is not None, "the untracked file is added as new"
+        assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_corrupt_rename_asks_value_reads_as_no_questions_and_the_sync_carries_on(language):
+    """A damaged `meta.rename_asks` (not JSON) must not stop the library: it reads as no open questions and the
+    sync runs on, never raising."""
+    store = migrated(language)
+    try:
+        with store._writing():
+            store._set_meta({"rename_asks": "{not json"})
+        assert store.rename_asks() == []
+        store.sync_disk()
+        # the sync really ran past the corrupt value: a file put on disk afterwards is indexed, not just "no raise"
+        data_dir, _u = roots(language)
+        touch(data_dir, "HighPriority/after_corrupt.txt")
+        store.sync_disk()
+        assert store.item_id("HighPriority/after_corrupt.txt") is not None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_held_out_question_survives_later_syncs_until_its_file_is_gone(language):
+    """9a, 06 §6.7: a twins question is held out of the library and asked. While its file exists, every later sync
+    keeps the question (it is still open); once the file is gone, the next sync drops the question with it."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    try:
+        a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+        b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+        mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+        os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+        store.sync_disk()
+        os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+        back = f"GoalContent/{w[114]}/same.srt"
+        _move_file(data_dir, store.item(a)["rel_path"], back)
+        assert store.sync_disk()["asked"] == [back]
+        # the question is held out: a later sync with the file still there keeps it open
+        store.sync_disk()
+        assert len(store.rename_asks()) == 1 and store.rename_asks()[0]["rel"] == back
+        # the file goes: the next sync drops the question with it
+        os.remove(os.path.join(data_dir, back))
+        store.sync_disk()
+        assert store.rename_asks() == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_sync_whose_library_changed_before_its_lock_works_out_its_delta_again(language, monkeypatch):
+    # Why: the sync works out its delta outside any transaction (§6.10), so another writer can land between that
+    # read and the sync's write lock. The delta must then be worked out again under the lock: here a rename
+    # candidate's item is removed in between, and applying the stale delta would point the rename at a row that
+    # no longer exists (or re-add the removed file as that item).
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, user_files_dir = roots(language)
+    other = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        item = store.ids("soon")[2]
+        rel = store.item(item)["rel_path"]
+        renamed = rel.replace(".srt", "_renamed.srt")
+        _rename(data_dir, rel, renamed)
+        real_delta = ls._sync_delta
+        removed = []
+
+        def delta_then_another_writer_removes(s, walk, known, *scope):
+            out = real_delta(s, walk, known, *scope)
+            if not removed:                                      # the first delta only, outside the lock
+                removed.append(item)
+                other.remove([item])
+            return out
+
+        monkeypatch.setattr(ls, "_sync_delta", delta_then_another_writer_removes)
+        summary = store.sync_disk()
+        assert removed == [item]
+        assert item not in summary["renamed"], "a removed item is never the target of a rename"
+        assert store.item(item) is None
+        added = store.item_id(renamed)
+        assert added is not None and summary["added"] == [added], "the renamed file joins as a new item"
+    finally:
+        other.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_time_only_change_refreshes_the_stored_time(language):
+    """Why: a file re-saved or copied with its bytes unchanged gets a new modified time and no new size. The
+    sync must still store that time (bookkeeping, no structural change), or the next rename check compares a
+    stale time and takes a renamed file for a new one."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[3]
+        rel = store.item(item)["rel_path"]
+        full = os.path.join(data_dir, rel)
+        st = os.stat(full)
+        new_ns = st.st_mtime_ns + 5 * 10**9
+        os.utime(full, ns=(st.st_atime_ns, new_ns))
+        assert store.sync_disk() is None, "a time-only change is no structural change"
+        assert store.item(item)["mtime_ns"] == new_ns, "the refreshed time is stored"
+        _rename(data_dir, rel, rel.replace(".srt", "_t.srt"))
+        assert store.sync_disk()["renamed"] == [item], "the refreshed time keeps the rename's place"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rename_is_reported_renamed_only_never_missing(language):
+    # the file moved, it did not go: the rename takes its place, so the old path is never listed missing
+    store = migrated(language, shows=3, episodes=4)
+    try:
+        data_dir, _u = roots(language)
+        ids = store.ids("soon")
+        rel = store.item(ids[2])["rel_path"]
+        _rename(data_dir, rel, rel.replace(".srt", "_renamed.srt"))
+        summary = store.sync_disk()
+        assert summary["renamed"] == [ids[2]]
+        assert summary["missing"] == [] and store.item(ids[2])["availability"] == "available", "renamed, not missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reset_that_moves_rows_bumps_state_and_order_versions_once(language):
+    # Why: a Reset that moves rows is a recorded change; without it the versions stay put and no export is due.
+    data_dir, user_files_dir, doc = library(language, shows=3, episodes=4)
+    doc["schedule"]["PHASE_2_SOON"].reverse()
+    doc["schedule"]["PHASE_1_NOW"].insert(0, doc["schedule"]["PHASE_3_LATER"].pop(3))   # reversed Soon, so Reset moves rows
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        v = store.versions()
+        change = store.reset_order()
+        assert change is not None, "the Reset moved rows, so it is a change"
+        after = store.versions()
+        assert after["state_version"] == v["state_version"] + 1
+        assert after["order_version"] == v["order_version"] + 1
+        assert store.export_due(), "a changed library is due an export"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_file_in_a_folder_with_no_item_joins_it_after_the_folders_last_row(language):
+    # Why: a folder that holds no item yet still has a place in its tier. The new file joins it right after the
+    # folder's last row there, not at the top; a second level named like a tier is dropped from parent_folder, so
+    # only the folder's name decides, and its directory holds no item of its own.
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        soon = store.ids("soon")
+        show = store.item(soon[4])["parent_folder"]
+        last = soon[7]
+        assert store.item(last)["parent_folder"] == show
+        touch(data_dir, f"LowPriority/HighPriority/{show}/{names(language)[84]}.srt")
+        new = store.sync_disk()["added"][0]
+        after = store.ids("soon")
+        assert after.index(new) == after.index(last) + 1, \
+            "a new file in a folder with no item: right after its folder's last row in its tier, not the top"
+    finally:
+        store.close()
+
+
+# --- D2 (moves M1): rule 2b across syncs and with a file system's rounded times ----------------------------- #
+
+_ODD = 1_700_000_001_234_567_800                       # a time no FAT drive keeps (NTFS: 100 ns steps)
+
+
+def _set_time(path, ns):
+    os.utime(path, ns=(ns, ns))
+
+
+def _cut(data_dir, rel):
+    """A cut: the file leaves the library for a place the sync never reads (the clipboard's folder), times kept."""
+    held = os.path.join(os.environ["SURASURA_TEST_ROOT"], "clipboard", rel.rsplit("/", 1)[-1])
+    os.makedirs(os.path.dirname(held), exist_ok=True)
+    os.replace(os.path.join(data_dir, *rel.split("/")), held)
+    return held
+
+
+def _paste(data_dir, held, rel):
+    os.makedirs(os.path.dirname(os.path.join(data_dir, *rel.split("/"))), exist_ok=True)
+    os.replace(held, os.path.join(data_dir, *rel.split("/")))
+
+
+def _state(store, item):
+    row = store.item(item)
+    return {k: row[k] for k in ("tier", "ord", "piece_id", "work_id", "watched", "pinned")}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("scoped", [False, True])
+def test_a_file_cut_and_pasted_in_a_later_sync_keeps_its_item(language, scoped):
+    """D2: a cut, a sync, then a paste into another folder — the item went missing an earlier sync, not this one. It
+    is still the same file (its name, size and time), so it keeps its item: id, tier, place, ✓, pin; nothing added.
+    `scoped`: the paste seen by the window's poll, which syncs only the folder that changed — the missing item lives
+    outside it, so it is found by its size, never by walking the library."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        store.set_watched([item])
+        store.pin([item])
+        before, order = _state(store, item), {t: store.ids(t) for t in ls.TIERS}
+        old = store.item(item)["rel_path"]
+        held = _cut(data_dir, old)
+        assert store.sync_disk()["missing"] == [item]
+        v = store.versions()["availability_version"]
+        folder = f"GoalContent/{names(language)[111]}"
+        new = f"{folder}/{old.rsplit('/', 1)[-1]}"
+        _paste(data_dir, held, new)
+        summary = store.sync_disk(folders=[folder]) if scoped else store.sync_disk()
+        assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+        after = store.item(item)
+        assert after["rel_path"] == new and after["availability"] == "available"
+        assert store.versions()["availability_version"] == v + 1, "missing → available tells the readers"
+        assert _state(store, item) == before and {t: store.ids(t) for t in ls.TIERS} == order
+        assert store.item_id(new) == item and store.sync_disk() is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scoped_sync_finds_missing_items_through_their_index_and_an_older_store_gets_it(language):
+    """D2, the scoped sync's price: the missing items of a new file's size are read through `items_missing` (a partial
+    index: only missing rows), never a scan of every item — a window's poll after a hato drop stays its folder's cost.
+    A store made before the index gets it at its first open by a writer, its rows unchanged and no schema version."""
+    import sqlite3
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, user_files_dir = roots(language)
+    try:
+        sql = "SELECT id, rel_path, size, mtime_ns FROM items WHERE availability = 'missing' AND size IN (?, ?)"
+        plan = " | ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + sql, (1, 2)).fetchall())
+        assert "items_missing" in plan and "SCAN" not in plan, plan
+    finally:
+        store.close()
+    raw = sqlite3.connect(ls.library_db_path(language, data_dir))
+    raw.execute("DROP INDEX items_missing")                                   # the store as an older build made it
+    raw.commit()
+    rows = raw.execute("SELECT * FROM items ORDER BY id").fetchall()
+    raw.close()
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'items_missing'").fetchone()
+        assert store.conn.execute("SELECT * FROM items ORDER BY id").fetchall() == rows
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ls.STORE_SCHEMA
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("rounding", ["plus_1_5_s", "floored_to_an_even_second", "exfat_10_ms"])
+def test_a_file_whose_time_a_fat_drive_rounded_is_the_same_file(language, rounding):
+    """D2: a round trip through a FAT32 drive keeps even seconds, exFAT 10 ms, and an SMB share rounds — the file's time
+    comes back off by up to 2 s. Rule 2b (a move to another folder, its name kept) takes it as the same file; before,
+    an exact time was asked and the moved file became a new item, its old one missing. (A new name in its own folder
+    is rule 2, the exact time: FIX1, `test_rule_2_a_new_name_in_its_folder_…`.)"""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[2]
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()                                       # the stored time is the odd one
+        assert store.item(item)["mtime_ns"] == _ODD
+        new = f"GoalContent/{names(language)[112]}/{old.rsplit('/', 1)[-1]}"
+        _move_file(data_dir, old, new)
+        t = {"plus_1_5_s": _ODD + 1_500_000_000, "floored_to_an_even_second": (_ODD // 2_000_000_000) * 2_000_000_000,
+             "exfat_10_ms": (_ODD // 10_000_000) * 10_000_000}[rounding]
+        _set_time(os.path.join(data_dir, *new.split("/")), t)
+        summary = store.sync_disk()
+        assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+        assert store.item(item)["rel_path"] == new and store.item(item)["mtime_ns"] == t, "the new time is stored"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("case", ["exact_time_this_sync", "rounded_time_this_sync", "exact_time_an_earlier_sync"])
+def test_rule_2_a_new_name_in_its_folder_is_the_file_only_gone_this_sync_at_its_exact_time(language, case):
+    """FIX1 (MV-A3, Sonic's Decision 1 lean): rule 2 — a file of ANOTHER name in the item's own folder — is that
+    item only when the item's file went in this very sync and the time is exact to the nanosecond (a rename in Explorer
+    keeps it). On a rounded time, or for an item missing since an earlier sync, it is a new file and the item stays
+    missing: a different episode of the same size written within 2 s (one script writing a season) never takes a
+    deleted one's place, its ✓ and set-aside words — a moved file keeps its name, and rule 2b finds it."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[2]
+        store.set_watched([item])
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        new = old.rsplit("/", 1)[0] + "/" + old.rsplit("/", 1)[1].replace(".srt", "_renamed.srt")
+        if case == "exact_time_an_earlier_sync":
+            held = _cut(data_dir, old)
+            assert store.sync_disk()["missing"] == [item]
+            _paste(data_dir, held, new)
+        else:
+            _move_file(data_dir, old, new)
+        _set_time(os.path.join(data_dir, *new.split("/")), _ODD + (1_500_000_000 if case == "rounded_time_this_sync"
+                                                                     else 0))
+        summary = store.sync_disk()
+        if case == "exact_time_this_sync":
+            assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+            assert store.item(item)["rel_path"] == new and store.item(item)["watched"] == 1
+        else:
+            assert summary["renamed"] == [] and len(summary["added"]) == 1
+            assert summary["missing"] == ([item] if case == "rounded_time_this_sync" else [])
+            assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+            assert store.item(summary["added"][0])["watched"] == 0, "the new file inherits no ✓"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("shift_s", [3600, -3600, 3601, -3599])
+def test_a_fat_drives_hour_shift_is_the_same_file(language, shift_s):
+    """D2: FAT keeps local time, so a file copied there before a summer-time change comes back an hour off (and rounded
+    to its 2 s): still the same file, its item kept."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[0]
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        new = f"GoalContent/{names(language)[113]}/{old.rsplit('/', 1)[-1]}"
+        _move_file(data_dir, old, new)
+        _set_time(os.path.join(data_dir, *new.split("/")), _ODD + shift_s * 1_000_000_000)
+        summary = store.sync_disk()
+        assert summary["renamed"] == [item] and summary["added"] == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("shift_s", [3, -3, 3603, 3597, 7200])
+def test_a_time_beyond_a_file_systems_rounding_is_a_new_file(language, shift_s):
+    """D2's guard: only a file system's rounding (2 s, or FAT's hour ± 2 s) is the same file; 3 s off, or two hours, is
+    another file of that name and size — it is added, and the item stays missing (two episodes can be one size)."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[0]
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        new = f"GoalContent/{names(language)[113]}/{old.rsplit('/', 1)[-1]}"
+        _move_file(data_dir, old, new)
+        _set_time(os.path.join(data_dir, *new.split("/")), _ODD + shift_s * 1_000_000_000)
+        summary = store.sync_disk()
+        assert summary["renamed"] == [] and summary["missing"] == [item] and len(summary["added"]) == 1
+        assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("second_gone", ["an_earlier_sync", "this_sync"])
+def test_two_missing_twins_and_one_pasted_file_are_asked_never_guessed(language, second_gone):
+    """D2 keeps 9a's rule: two items of one name, size and time (twins), one gone in an earlier sync and the other in an
+    earlier sync or this one, and one file pasted back — nothing is guessed: the file is held out and asked, both twins
+    stay missing."""
+    store = migrated(language, shows=2, episodes=2)
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "双子\n")], "now").added[0]
+        b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "双子\n")], "soon").added[0]
+        for i in (a, b):
+            _set_time(os.path.join(data_dir, *store.item(i)["rel_path"].split("/")), _ODD)
+        store.sync_disk()
+        held = _cut(data_dir, store.item(a)["rel_path"])
+        if second_gone == "an_earlier_sync":
+            os.remove(os.path.join(data_dir, *store.item(b)["rel_path"].split("/")))
+        assert sorted(store.sync_disk()["missing"]) == sorted([a, b] if second_gone == "an_earlier_sync" else [a])
+        if second_gone == "this_sync":
+            os.remove(os.path.join(data_dir, *store.item(b)["rel_path"].split("/")))
+        back = f"GoalContent/{w[114]}/same.srt"
+        _paste(data_dir, held, back)
+        summary = store.sync_disk()
+        assert summary["asked"] == [back] and summary["added"] == [] and summary["renamed"] == []
+        assert store.rename_asks()[0]["candidates"] == sorted([a, b])
+        assert store.item(a)["availability"] == store.item(b)["availability"] == "missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_missing_item_found_again_stays_watched_and_set_aside(language):
+    """D2 with W-1: a watched episode is set aside (its text kept, never summed) while `keep_watched` is off. Cut,
+    synced (missing: watched still wins) and pasted elsewhere a sync later, it keeps its ✓ and stays aside under its new
+    path — never counted again, never a second row."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        store.set_watched([item])
+        old = store.item(item)["rel_path"]
+        counted, _kept, aside = store.text_lists()
+        assert old in aside and old not in counted, "precondition: watched is aside"
+        held = _cut(data_dir, old)
+        store.sync_disk()
+        assert old in store.text_lists()[2], "missing: still aside"
+        new = f"GoalContent/{names(language)[115]}/{old.rsplit('/', 1)[-1]}"
+        _paste(data_dir, held, new)
+        full = os.path.join(data_dir, *new.split("/"))
+        _set_time(full, os.stat(full).st_mtime_ns + 1_000_000_000)          # and a share rounded it
+        assert store.sync_disk()["renamed"] == [item]
+        counted, kept, aside = store.text_lists()
+        assert store.item(item)["watched"] == 1
+        assert new in aside and new not in counted and old not in counted + kept + aside
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("earlier_gone", [False, True])
+def test_a_file_still_present_is_never_a_candidate(language, earlier_gone):
+    """D2's guard: a copy is not a move — a file copied (times kept) to another folder while the original stays is a
+    new file; the original's item keeps its path. `earlier_gone`: its twin by name, size and time went missing an
+    earlier sync, so the copy is that twin, never the present item (a live item's identity is never taken)."""
+    store = migrated(language, shows=2, episodes=2)
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "双子\n")], "now").added[0]
+        b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "双子\n")], "soon").added[0]
+        for i in (a, b):
+            _set_time(os.path.join(data_dir, *store.item(i)["rel_path"].split("/")), _ODD)
+        store.sync_disk()
+        if earlier_gone:
+            os.remove(os.path.join(data_dir, *store.item(b)["rel_path"].split("/")))
+            store.sync_disk()
+        copy = f"GoalContent/{w[114]}/same.srt"
+        os.makedirs(os.path.dirname(os.path.join(data_dir, *copy.split("/"))))
+        shutil.copy2(os.path.join(data_dir, *store.item(a)["rel_path"].split("/")),
+                     os.path.join(data_dir, *copy.split("/")))
+        summary = store.sync_disk()
+        assert store.item(a)["rel_path"] == f"HighPriority/{w[112]}/same.srt"
+        assert store.item(a)["availability"] == "available"
+        if earlier_gone:
+            assert summary["renamed"] == [b] and store.item(b)["rel_path"] == copy
+        else:
+            assert summary["renamed"] == [] and len(summary["added"]) == 1
+    finally:
+        store.close()
+
+
+# --- FIX1 (the moves review set): rule 2b's size check and the scoped sync's exists-check --------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_file_of_another_size_is_a_new_file_never_the_missing_item(language):
+    """Rule 2b's proof is the name, the size AND the time (M1 mutant 6): a file of the missing item's name and time but
+    another size, found in another folder, is another file (an edited copy, another release) — added, the item stays
+    missing and keeps its ✓."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        store.set_watched([item])
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        held = _cut(data_dir, old)
+        assert store.sync_disk()["missing"] == [item]
+        with open(held, "a", encoding="utf-8") as f:
+            f.write("書き足した一行。\n" if language == "ja" else "又加了一行。\n")
+        _set_time(held, _ODD)
+        new = f"GoalContent/{names(language)[116]}/{old.rsplit('/', 1)[-1]}"
+        _paste(data_dir, held, new)
+        summary = store.sync_disk()
+        assert summary["renamed"] == [] and len(summary["added"]) == 1
+        assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+        assert store.item(summary["added"][0])["watched"] == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scoped_sync_never_takes_a_missing_item_whose_file_is_back(language):
+    """`_lost_by_size` checks each missing item's file is still gone (M1 mutant 10): an item synced missing whose file
+    came back in its place (not synced yet: outside the poll's folder), and a copy of it pasted into the folder the poll
+    syncs — the copy is a new file; the item keeps its own path and comes back available at the next full sync."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        old = store.item(item)["rel_path"]
+        held = _cut(data_dir, old)
+        assert store.sync_disk()["missing"] == [item]
+        _paste(data_dir, held, old)                                  # back where it was, not synced yet
+        folder = f"GoalContent/{names(language)[117]}"
+        os.makedirs(os.path.join(data_dir, *folder.split("/")))
+        shutil.copy2(os.path.join(data_dir, *old.split("/")),
+                     os.path.join(data_dir, *folder.split("/"), old.rsplit("/", 1)[-1]))
+        summary = store.sync_disk(folders=[folder])
+        assert summary["renamed"] == [] and len(summary["added"]) == 1
+        assert store.item(item)["rel_path"] == old
+        store.sync_disk()
+        assert store.item(item)["availability"] == "available"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_relinking_to_a_same_size_file_with_another_time_notes_no_move(language):
+    """A relink notes a move only for the item's own file, same size AND same time (rule 2b): a file of the same
+    size with another modified time is another file, so the token store is given no note to re-key the item's
+    tokenized row by. The note list stays empty, and the item still points at the file it was relinked to."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[0]
+        old = store.item(item)["rel_path"]
+        held = _cut(data_dir, old)
+        original_time = os.stat(held).st_mtime_ns
+        assert store.sync_disk()["missing"] == [item]
+        w = names(language)
+        other = touch(data_dir, f"GoalContent/{w[115]}/{old.rsplit('/', 1)[-1]}")
+        shutil.copy2(held, other)                                    # the same bytes, so the same size
+        _set_time(other, original_time + 10 * 1_000_000_000)         # ten seconds on: not the item's file
+        assert store.text_moved() == []
+        store.relink(item, other)
+        assert store.text_moved() == []
+        assert store.item(item)["availability"] == "available"
+        assert store.item(item)["rel_path"] == f"GoalContent/{w[115]}/{old.rsplit('/', 1)[-1]}"
+    finally:
+        store.close()
+
+
+# why: a rename is only a rename once the old path is gone; while the old file still sits at its path, a copy
+# under a new name is a new file, and the item keeps its own path (no item on two files).
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rename_whose_old_path_still_exists_is_never_repointed(language):
+    """A copy beside a still-present file is a stale walk, not a move."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        old = store.item(item)["rel_path"]
+        folder = os.path.dirname(os.path.join(data_dir, *old.split("/")))
+        new_name = f"{names(language)[118]}{os.path.splitext(old)[1]}"
+        shutil.copy2(os.path.join(data_dir, *old.split("/")), os.path.join(folder, new_name))
+        # why: the walk is stale — it lists the copy under its new name but not the old file that still sits on
+        # disk, so the item looks gone and the copy looks like its move (same folder, size and mtime). Only the
+        # old-path check stops it; without that check the item would be repointed to the copy.
+        walk = ls.walk_library(data_dir)
+        walk["files"] = [f for f in walk["files"] if ls.path_key(f[0]) != ls.path_key(old)]
+        summary = store.sync_disk(walk=walk)              # None when nothing changed
+        assert not (summary or {}).get("renamed")
+        assert store.item(item)["rel_path"] == old
+        assert os.path.exists(os.path.join(data_dir, *old.split("/")))
+    finally:
+        store.close()

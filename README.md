@@ -1,176 +1,132 @@
-# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+<div align="center">
 
-*For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
+<img src="docs/assets/images/icon_512.png" width="96" height="96" alt="Surasura">
 
-![Results](docs/assets/images/img_readability_results.PNG)
+# Surasura スラスラ
 
-## Your map to seamless immersion
+![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6) ![Japanese · Chinese](https://img.shields.io/badge/日本語%20·%20中文-learners-bb86fc) ![Offline](https://img.shields.io/badge/runs-offline-03dac6) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
 
-> **The only frequency list that matters is the one based on YOUR watch / read list.**
+**The only frequency list that matters is the one made from your own shows and books.**
 
-A tool that generates THAT list, and gives you the episode-by-episode (or chapter) *highest-leverage* order order based on:
+**Point it at your content folder. It works out the rest:** series, books, episodes, covers and order.
 
-- your known vocabulary
-- your immersion content 
-- your word frequency
+</div>
 
-After analyzing, it will generate a study plan with curated examples. 
-Optimizes the order you learn words. Easy sentence mining for Anki or Migaku.
+<div align="center">
 
-## 🎯 Why? - The Diminishing Returns of Vocab
+![Surasura and Anki side by side: Anki's next card is Bocchi the Rock!'s 一緒に; Yomi no Tsugai is dragged to the top in Surasura; Anki's next card is now Yomi no Tsugai's 取る](docs/assets/images/readme/anki.gif)
 
-> **The only frequency list that matters is the one based on YOUR watch / read list.**
+[▶ The same clip (MP4, 18 s)](docs/assets/images/readme/anki.mp4)
 
-Otherwise you're wasting time learning words you'll just forget.
+![Surasura 3.0: three episodes checked off, Mine, a new show dragged in from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
 
-Useful if you:
+[▶ Full demo (MP4, 45 s)](docs/assets/images/readme/demo.mp4)
 
-- Hit 4500+ words
+</div>
 
-- Have limited immersion time
+## What it does
 
-- Are tired of adding words you'll never see
-
-- Want to see mulitple examples and pick the best one
-
-- Enjoy seeing your progress %
-
-- Like using physical books / YouTube
-
-
-Use Surasura to know every word you learn is immediately relevant to your content goals.
-
-### 🏆 Features
-
-- 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Jiten.moe, or Anki — live from a running Anki (AnkiConnect), or from a deck file.
-
-- 順 **Anki Backlog Order**: Re-sort the new cards waiting in your Anki deck into Surasura's learn order. Only new cards move, you see a preview first, and one click restores the old order.
-
-- 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
-
-- 🎬 **YouTube & bilibili.tv Transcripts**: Pull clean, analysis-ready transcripts from YouTube videos and playlists, or bilibili.tv episodes, straight into your library.
-
-- 🔍 **Search Your Report**: Any word, every sentence that uses it, and the other forms it takes in your content.
-
-- 🔗 **Sentence Sources**: See which file or episode each example sentence came from — YouTube lines open the video at that moment.
-
-- 文 **Reading Words**: Flags words you'll mostly read but rarely hear, so they get a reading-first card.
-
-- ⌕ **Word Lookup**: One click finds more real-world sentences for a word on Nadeshiko.
-
-- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
-
-- 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
-
-- 🧘 **Zen Mode**: A distraction-free mode for focused learning.
-
-- 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
-
-- 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
-
-- 🇨🇳 **Multi-Language Support**: Now also supports Chinese via Jieba segmentation — Simplified, Traditional, or a mix of both read as one script of your choice.
-
-- 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
-
-- 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content. Supports **Migaku** (JSON), **Yomitan** (Zip with readings), and plain text formats.
-
-- 🎚️ **Commonness Slider**: Dial in how deep to go — from only the most common words to everything but one-offs — with a live word-count and coverage preview.
-
-
-### Current Limitations
-- Only executable for Windows (macOS/Linux can run from source)
-- Occasional Wacky Parsing
-
-## 📥 Latest Release Zip
-
-Download the latest release zip file from the [Releases page](https://github.com/SonicSandbox/surasura/releases).
-
-> **Quick Start:** Download -> Extract -> Run `Surasura.exe`
-
-## Screenshots
-> Dashboard with Migaku extension
-
-![Results](docs/assets/images/img_readability_results_Migaku_extension.PNG)
-
-
-| Dashboard Overview | Zen Mode |
+| Your library, in your order | The words worth learning next |
 | :---: | :---: |
-| ![Dashboard](docs/assets/images/img_readability_gui.PNG) | ![Zen Mode](docs/assets/images/img_readability_results_zen.PNG) |
+| ![Current: Up Next with its cover, % known and new words](docs/assets/images/readme/current.png) | ![The journey: each episode's new words with a sentence from it](docs/assets/images/readme/journey.png) |
+| Each row is a show or a book. **% known** and **new words** are worked out from your own known words. | The words that open up the most of your shows and books, episode by episode, each with a sentence from your library. |
+| ![New arrivals: new shows and episodes, with their covers, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Mine: the episode's cards come next](docs/assets/images/readme/mine.png) |
+| New episodes, books and videos **arrive by themselves**. Drag one into your order, or press ↑. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
 
-## 🚀 Get Started
+**Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words.
 
-1. Run `Surasura.exe` to launch the dashboard.
+## What it reads
 
-2. **Import Known Vocabulary** to sync your known words from Migaku, Anki, or Jiten.
+| 📺 Subtitles | 📖 Books | 🎧 Audiobooks | ▶️ YouTube · bilibili | 📝 Text | 🗂️ Anki decks |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| `.srt` `.ass` `.ssa`, named the way releases name them (`.ja`, `.ab`, `[jpn]`…) | EPUB, split by chapter | `.m4b` `.mp3` `.m4a`… with their transcript, joined to their book when there is one | A video's subtitles, from its link | `.txt` `.md`, or pasted | A deck's sentences (`.apkg`) |
 
-3. **Import Content** — open the Content Manager and add your files:
+Japanese and Chinese.
 
+| A book opens by chapter |
+| :---: |
+| ![A book opened by chapter: each chapter's % known and new words; 🎧 its audiobook joined to it](docs/assets/images/readme/book-chapters.png) |
 
-- **Extract** an EPUB / Anki deck
-- Pull a **YouTube** transcript
+## Get started
 
-Drag them into your immersion order across the **NOW · Soon · 6+ months** tabs:
+1. **Point it at your content folder.** Setup asks *Where are your shows and books?* It finds your shows, books (EPUB)
+   and audiobooks where they are, and works out their series, episodes and order. Nothing is moved. Covers come from
+   AniList when you turn on *Show covers*.
+2. **Tell it what you know.** Your Anki decks, Jiten, Migaku, or an Anki deck file (`.apkg`).
+   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on. On Windows, setup's **Install AnkiConnect for
+   me** gets it from AnkiWeb and adds it while Anki is closed. Or in Anki: Tools › Add-ons › Get Add-ons…, paste the
+   code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
+3. **Sort what it found.** One title at a time, one key each: **Soon (S) · Current (→) · Goal (↓) · Finished (↑) ·
+   Ignore (←)**. Not sure yet? Leave the rest in **New arrivals** and sort them later.
+4. **Watch and read in order.** **Current** is your order: **Up Next** on top, then Soon, and **Goal** (someday) at its
+   foot. Drag a show to move it. Check an episode's stone when you've watched it, and its words leave your list.
+5. **Learn the words.** *Generate* builds your list; **Journey ↗** opens it: each episode's new words, each with a
+   sentence from your library. **Mine** makes the cards with Anki Miner, and Anki shows them in your order.
 
-- **NOW**: what you're consuming today (next ~2 weeks).
+*(Nothing of your own yet? Setup's **Try it with samples first** puts a few samples in.)*
 
-- **Soon**: your medium-term list (within 6 months).
+## Download
 
-- **6+ months**: aspirations / "someday" content.
+| You have | Get |
+| :--- | :--- |
+| Windows 10 or 11 | `Surasura-<version>-setup.exe` from the [Releases page](https://github.com/SonicSandbox/surasura/releases) |
+| Surasura 2.x | The same installer: it brings your known words, word lists and settings over |
 
-   *(New library? Tap **Test with samples** to try it instantly.)*
+> **Coming from a 2.9 test build?** 3.0 sets up once more: your library order, watched / Finished marks and journey don't carry over. Your known words come back with your first Anki sync. On a PC where Surasura 2.x once ran, 3.0's first screen also offers to bring your word lists and settings from it.
 
-4. **Generate Journey** — build your personalized word list and open the interactive report.
+New to the window? The [guide](docs/Tutorial.md) shows it in a few minutes.
 
+<details>
+<summary>🛠️ Running from source</summary>
 
-## 🛠️ Running from Source
-If you prefer to run Surasura from source rather than using the pre-built executable:
-
-### 1. Requirements
-- Python 3.9 or higher.
-- (Windows only) Ensure `tkinter` is installed (usually bundled with Python).
-
-### 2. Setup
-1. Clone the repository: `git clone https://github.com/SonicSandbox/surasura.git`
-2. Install dependencies:
+1. Python 3.10 or higher.
+2. Clone the repository: `git clone https://github.com/SonicSandbox/surasura.git`
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-
-### 3. Launching
-Run the master entry point:
-```bash
-python app_entry.py
-```
-This dispatcher ensures the correct environment is set up and launches the main dashboard.
-
-## 🛠️ Building the Application
-To create your own standalone executable:
-
-1. Ensure you have the dev dependencies installed:
+4. Run the master entry point:
    ```bash
-   pip install pyinstaller
+   python app_entry.py
    ```
-2. Run the build script:
-   ```bash
-   python package_app.py
-   ```
-This runs the test suite, cleans previous builds, runs PyInstaller with the correct configuration, and creates the ready-to-use app in `dist/Surasura/`. Add `--zip` to also produce `dist/Surasura_v<version>.zip`. (See [README_PACKAGING.md](README_PACKAGING.md) for the release options.)
 
-## 📂 Project Structure
-- `app/`: Core application scripts and GUI modules.
-- `app_entry.py`: Main entry point and dispatcher.
-- `package_app.py`: Build and packaging script.
-- `scripts/`: Shared utilities and data conversion scripts.
-- `templates/`: HTML templates for visualization.
-- `data/`: Input text files (Place your TXT/SRT files here).
-- `User Files/`: Configuration and frequency lists.
-- `results/`: Generated CSVs and HTML reports.
+To build your own standalone program: `pip install pyinstaller`, then `python package_app.py` (it runs the test suite,
+then PyInstaller, into `dist/Surasura/`; `--zip` also makes `dist/Surasura_v<version>.zip`). See
+[README_PACKAGING.md](README_PACKAGING.md) for the release options.
 
+</details>
+
+## ⚠️ Known limits
+
+- Windows only. The installer isn't signed: *More info → Run anyway*.
+- Cards are made in Japanese only; Chinese works everywhere else.
+- Anki must be open for cards to be made and ordered.
+- Very large libraries (20,000+ files) can hitch for a moment as a new episode comes in.
+
+## 🗺️ Roadmap
+
+**Next**
+- Faster with huge libraries
+- Smoother YouTube downloads when YouTube asks "are you a bot?"
+
+**Soon**
+- Anki cards made only when you need them, even with Anki closed
+- The journey: replay a line where it was said, swap sentences, mark words from the page
+- Manga support
+- Everything you've finished, on one wall
+
+**Later**
+- 34+ languages to learn
+- Surasura in your language
+- Mac and Linux
+- Profiles, one per language
+- Full themes
+
+Ideas? Tell us on [Discord](https://discord.gg/Uy8mHymrRv).
 
 ## ❓ Q&A / FAQ
 
-If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md).
+If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md). Still stuck, or just want to talk? Join us on [Discord](https://discord.gg/Uy8mHymrRv).
 
 Wondering why a word on your list or your card is cut the way it is? [How Parsing Works](https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md) shows, on one page, what Surasura counts as one word, with examples — it also opens from **Settings → Language & Parsing → How parsing works**.
 
@@ -178,69 +134,35 @@ Wondering why a word on your list or your card is cut the way it is? [How Parsin
 
 Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/surasura/issues) page to see if it's already being worked on. If not, feel free to open a new issue.
 
+In the app, the bug at the top right (**Report a problem**) gathers what's needed to look into it; **Send report** shows you exactly what goes, with your Windows name and folders taken out, then sends it to Sonic privately (kept 90 days; [what leaves your computer](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md)). **Make a zip instead** keeps it on your PC, to post on Discord or attach to an issue here.
+
 ## 💡 Motivation
 *I was tired of learning words I never see, and I also like reading physical books. Otherwise, mining from physical books is a pain.* Surasura solves that friction.
 
-## 🙏 Data Credits
+Surasura 2.x's README: [docs/legacy/README_2.x.md](docs/legacy/README_2.x.md).
 
-Surasura's shared パターン data for Japanese is built from:
+## 📂 Your content
 
-- [RealPersonaChat](https://github.com/nu-dialogue/real-persona-chat) — Yamashita et al. (2023), CC BY-SA 4.0
-- [Aozora Bunko](https://www.aozora.gr.jp/) — public-domain works, via [aozorabunko-clean](https://huggingface.co/datasets/globis-university/aozorabunko-clean) (CC BY 4.0)
-- [Japanese Wikipedia](https://ja.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
-- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Japanese news 2015–2019, Universität Leipzig, CC BY 4.0 (counts only)
+Surasura provides no content. It works only with what you give it: your own subtitles, videos, books, audiobooks,
+texts, word lists and Anki decks, and anything you get with the tools and sites it can open or call (YouTube and
+bilibili through yt-dlp, jimaku, Anki Miner). **You are responsible for the content you use with Surasura:** use only
+content you own or have the right to use, and follow the law and the terms of the sites and services you get it from.
+Surasura does not host or share your content: it stays on your computer, except what you choose to send: to a service
+you connect, or in a problem report you send. The installer asks you to accept this, with the licence below.
 
-…and for Chinese from:
+## 🙏 Credits
 
-- [Tatoeba](https://tatoeba.org/) — Mandarin sentences, CC BY 2.0 FR
-- [KdConv](https://github.com/thu-coai/KdConv) — Zhou et al. (2020), film and music conversations, Apache License 2.0
-- [Chinese Wikipedia](https://zh.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
-- [Chinese Wikinews](https://zh.wikinews.org/) — 维基新闻 contributors, CC BY 4.0
-- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Chinese news 2007–2009 and 2020, Traditional newscrawl 2011, Universität Leipzig, CC BY 4.0 (counts only)
-
-The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-
-The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names as one word") come from
-[JMnedict](https://www.edrdg.org/enamdict/enamdict_doc.html), the Japanese proper-names dictionary of the JMdict/EDICT
-project, property of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html),
-used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — by way of the name lists in
-[anki_miner](https://github.com/0xzerolight/anki_miner). Only the spellings of surnames and given names are kept; that
-table (`app/name_data.py`) is shared under the same licence.
-
-Which compounds are set phrases or titles (Settings → Language & Parsing → "Phrases and titles as one word"),
-which お / ご words have a meaning of their own (お守り, お帰り), and which words the tokenizer cuts at their grammar are
-words of their own (くだらない, 知らせる, いつも, ちなみに) comes from
-[JMdict](https://www.edrdg.org/jmdict/j_jmdict.html), the Japanese–multilingual dictionary of the same project, property
-of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html), used under
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
-organizations. Only marks on spellings, and those words' spellings and readings, are kept (no meanings); that table
-(`app/dictionary_data.py`) is shared under the same licence.
-JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "Kanji
-terms your library repeats as one word" from ever joining a word the dictionary lists, and tell which word an Anki card
-is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
-too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms and set phrases on
-your list"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
-which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
-statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
-the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
-words only when they're dictionary words": 手, 顔, こと): the one-character words that JMdict lists with their reading
-and calls common — or that JPDB 2024 and Jiten both rank among their top 20,000 — and that general text (the same
-shared set's Japanese text, as statistics only) uses as words of their own; that table (`app/one_kanji_data.py`) keeps
-only spellings and readings.
-Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
-[Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
-
-The Chinese words Surasura reads as one — the numbers and doubled forms it counts as their word, the names it keeps
-by their surnames, and the Traditional spellings it reads as their Simplified pair (睡著 as 睡着) — come from
-[CC-CEDICT](https://cc-cedict.org/wiki/) (MDBG,
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) and the
-[Universal Dependencies](https://universaldependencies.org/) Chinese treebanks (GSDSimp, HK and CFL, CC BY-SA 4.0);
-only spellings are kept, in `app/cedict_data.py` and among `app/zh_script_data.py`'s phrases, shared under the same
-licence.
-
-The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
-Settings → Data & System → Data credits.
+The dictionaries, tokenizers and data Surasura is built on: [Credits](docs/CREDITS.md).
 
 ## 📜License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Surasura is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any
+later version (`GPL-3.0-or-later`; the text is in `LICENSE`, the written exception in `LICENSE-EXCEPTION.md`).
+It comes with no warranty.
+
+- **Versions up to and including 2.5.x were released under the MIT License.** Anyone holding them keeps those
+  rights; the MIT notice is kept in `licenses/Surasura-MIT-before-3.0.txt` for the code released under it.
+- The Windows program bundles third-party libraries under their own licences, listed in *Settings › App › Data
+  credits*; PyQt6's, Qt's and tsubasa's texts ship in the program's `_internal\licenses\` folder.
+- Sending a change? See `CONTRIBUTING.md`.

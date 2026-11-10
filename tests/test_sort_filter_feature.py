@@ -68,7 +68,7 @@ class TestSortFilterFeature(unittest.TestCase):
         from app.static_html_generator import generate_static_html, OUTPUT_FILE
         if theme in self._CACHE:
             return self._CACHE[theme], BeautifulSoup(self._CACHE[theme], "html.parser")
-        generate_static_html(theme=theme)
+        generate_static_html(theme=theme, open_browser=False)
         self.assertTrue(os.path.exists(OUTPUT_FILE), "Static report was not generated")
         with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
             content = f.read()

@@ -398,23 +398,22 @@ def test_the_loose_search_builds_no_pattern_per_sentence(tmp_path):
     assert not compile_.called and not finditer.called
 
 
-# --- subtitle cue timestamps --------------------------------------------------------------------- #
-def test_cue_time_locates_the_right_subtitle_cue(env):
-    """The anchor is verbatim file text, so its offset falls inside exactly one cue. No guessing, and
-    nothing about how the file was tokenized has to change."""
+# --- subtitle cue timestamps: Connect's line reader (app/cues.py, E5.1) --------------------------- #
+def test_line_names_the_subtitle_cue_the_sentence_is_said_in(env):
+    """The times are the cue reader's — the cues Connect cuts a card from — to the millisecond, start and end."""
     df = _run(env)
     path = str(env["high"] / "ep01.srt")
     finder = AnchorFinder()
 
-    sentence = _sentence_containing(df, "お前に話")          # cue 1: 00:19:50 --> 00:19:53
-    assert finder.cue_time(path, finder.anchor(path, sentence)) == 19 * 60 + 50
+    sentence = _sentence_containing(df, "お前に話")          # cue 1: 00:19:50,000 --> 00:19:53,000
+    assert finder.line(path, sentence) == (19 * 60 + 50, 19 * 60 + 53)
 
-    sentence = _sentence_containing(df, "拘流")              # cue 3: 00:20:05 --> 00:20:07
-    assert finder.cue_time(path, finder.anchor(path, sentence)) == 20 * 60 + 5
+    sentence = _sentence_containing(df, "拘流")              # cue 3: 00:20:05,930 --> 00:20:07,965
+    assert finder.line(path, sentence) == (20 * 60 + 5.93, 20 * 60 + 7.965)
 
 
-def test_cue_time_handles_ass_subtitles(tmp_path):
-    """ASS/SSA put their timing on the Dialogue line instead of a '-->' header."""
+def test_line_handles_ass_subtitles(tmp_path):
+    """ASS/SSA put their timing on the Dialogue line instead of a '-->' header (hundredths)."""
     f = tmp_path / "signs.ass"
     f.write_text(
         "[Events]\nFormat: Layer, Start, End, Style, Name, Text\n"
@@ -422,39 +421,38 @@ def test_cue_time_handles_ass_subtitles(tmp_path):
         "Dialogue: 0,1:02:03.10,1:02:05.00,Default,,廊下には誰もいなかった\n",
         encoding="utf-8")
     finder = AnchorFinder()
-    assert finder.cue_time(str(f), "少年は静かに扉を開けた") == 12
-    assert finder.cue_time(str(f), "廊下には誰もいなかった") == 1 * 3600 + 2 * 60 + 3
+    assert finder.line(str(f), "少年は静かに扉を開けた。") == (12.3, 15.0)
+    assert finder.line(str(f), "廊下には誰もいなかった。") == (3723.1, 3725.0)
 
 
-def test_plain_text_has_no_cue_time(env):
-    """Prose isn't timed — it must return None rather than inventing a position."""
+def test_plain_text_has_no_line_time(env):
+    """Prose isn't timed — no time rather than an invented position; its anchor still works."""
     path = str(env["high"] / "book.txt")
     finder = AnchorFinder()
-    anchor = finder.anchor(path, "少年は静かに扉を開けた。")
-    assert anchor
-    assert finder.cue_time(path, anchor) is None
+    assert finder.anchor(path, "少年は静かに扉を開けた。")
+    assert finder.line(path, "少年は静かに扉を開けた。") == (None, None)
 
 
-def test_cue_time_is_safe_on_junk(env, tmp_path):
+def test_line_is_safe_on_junk(env, tmp_path):
     finder = AnchorFinder()
     path = str(env["high"] / "ep01.srt")
-    assert finder.cue_time(path, "") is None
-    assert finder.cue_time(path, "この文は字幕に存在しません") is None, "text not in the file"
-    assert finder.cue_time(str(tmp_path / "missing.srt"), "何か") is None
+    assert finder.line(path, "") == (None, None)
+    assert finder.line(path, "この文は字幕に存在しません") == (None, None), "text not in the file"
+    assert finder.line(str(tmp_path / "missing.srt"), "何か") == (None, None)
 
 
-def test_cue_index_is_built_once_per_file(env):
-    """Re-parsing the cue table per sentence would undo the point of caching the file."""
+def test_a_files_lines_are_read_once(env):
+    """Reading the cues per sentence would undo the point of caching the file."""
+    from app import cues
     path = str(env["high"] / "ep01.srt")
     finder = AnchorFinder()
-    finder.cue_time(path, "そうだ")
-    offsets, _seconds = finder._cue_index(path)
-    assert offsets, "the .srt should have produced cues"
-    with patch.object(AnchorFinder, "_raw", side_effect=AssertionError("re-read the file")):
-        finder._cue_index(path)      # cached: must not touch the file again
+    with patch.object(cues, "timeline", wraps=cues.timeline) as timeline:
+        assert finder.line(path, "そうだ女｡お前に話がある｡")[0] == 19 * 60 + 50
+        assert finder.line(path, "し しかし｡")[0] == 20 * 60 + 0.724
+    assert timeline.call_count == 1
 
 
-# --- YouTube transcripts: cue times come from the sidecar ----------------------------------------- #
+# --- YouTube transcripts: line times come from the sidecar ----------------------------------------- #
 TRANSCRIPT = ("今日の話題\nチャンネル | 2026-01-01 | 12:03\n"
               "------------------------------------------------------------\n"
               "秘密の多い街を歩いてきました 答えはまだ見つかりません それでも探し続けるつもりです")
@@ -476,30 +474,32 @@ def _transcript(tmp_path, cues=CUES):
     return str(txt)
 
 
-def test_transcript_sentence_resolves_to_its_cue_time(tmp_path):
-    """A transcript is plain prose — its timings live in the sidecar, so the cue texts are located
-    in the file to give them positions."""
+def test_transcript_sentence_resolves_to_its_line(tmp_path):
+    """A transcript is plain prose — its timings live in the sidecar (whole seconds, a start only), so the cue texts
+    are located in the file to give them positions; a line runs until the next one starts."""
     path = _transcript(tmp_path)
     finder = AnchorFinder()
-    assert finder.cue_time(path, "秘密の多い街を歩いてきました") == 2
-    assert finder.cue_time(path, "答えはまだ見つかりません") == 65
-    assert finder.cue_time(path, "それでも探し続けるつもりです") == 3723
+    assert finder.line(path, "秘密の多い街を歩いてきました") == (2, 65)
+    assert finder.line(path, "答えはまだ見つかりません") == (65, 3723)
+    assert finder.line(path, "それでも探し続けるつもりです") == (3723, 3723)
+    assert finder.line(path, "今日の話題") == (None, None), "the header comes before the first line"
 
 
-def test_anchor_and_cue_time_agree_for_a_transcript(tmp_path):
+def test_anchor_and_line_agree_for_a_transcript(tmp_path):
     path = _transcript(tmp_path)
     finder = AnchorFinder()
-    anchor = finder.anchor(path, "答えはまだ見つかりません。")
-    assert anchor
-    assert finder.cue_time(path, anchor) == 65
+    anchor, at, end = finder.resolve(path, "答えはまだ見つかりません")
+    assert anchor and (at, end) == (65, 3723)
+    # The whole line, as the tokenizer yields it (its spaces dropped): from its first line's start to its last's end
+    assert finder.line(path, "秘密の多い街を歩いてきました答えはまだ見つかりませんそれでも探し続けるつもりです") == (2, 3723)
 
 
-def test_transcript_without_a_sidecar_has_no_cue_time(tmp_path):
+def test_transcript_without_a_sidecar_has_no_line_time(tmp_path):
     """Transcripts pulled before sidecars existed still work — they just can't be timed."""
     path = _transcript(tmp_path, cues=None)
     finder = AnchorFinder()
     assert finder.sidecar(path) == {}
-    assert finder.cue_time(path, "答えはまだ見つかりません") is None
+    assert finder.line(path, "答えはまだ見つかりません") == (None, None)
     assert finder.anchor(path, "答えはまだ見つかりません。"), "the deep link must still work"
 
 
@@ -510,7 +510,7 @@ def test_a_cue_absent_from_the_file_is_skipped_not_guessed(tmp_path):
                                       ["答えはまだ見つかりません", 65]]}
     path = _transcript(tmp_path, cues=cues)
     finder = AnchorFinder()
-    assert finder.cue_time(path, "答えはまだ見つかりません") == 65
+    assert finder.line(path, "答えはまだ見つかりません") == (65, 65)
 
 
 def test_corrupt_or_malformed_sidecar_is_ignored(tmp_path):
@@ -521,7 +521,7 @@ def test_corrupt_or_malformed_sidecar_is_ignored(tmp_path):
         with open(side, "w", encoding="utf-8") as f:
             f.write(junk)
         finder = AnchorFinder()
-        assert finder.cue_time(path, "答えはまだ見つかりません") is None, junk
+        assert finder.line(path, "答えはまだ見つかりません") == (None, None), junk
 
 
 # --- the on-disk memo -------------------------------------------------------------------------- #
@@ -555,7 +555,7 @@ def test_memo_is_dropped_when_the_source_file_changes(tmp_path):
 
     src.write_text("まったく違う文章になりました。ここには前の文はありません。", encoding="utf-8")
     second = AnchorFinder(cache_path=str(cache))
-    anchor, _at = second.resolve(str(src), "少年は静かに扉を開けた。")
+    anchor, _at, _end = second.resolve(str(src), "少年は静かに扉を開けた。")
     assert anchor == "", "the old sentence is gone, so there is nothing to anchor"
 
 
@@ -571,7 +571,7 @@ def test_memo_remembers_misses_too(tmp_path):
     second = AnchorFinder(cache_path=str(cache))
     second.resolve(str(src), "同じ文が続きます。")
     with patch.object(AnchorFinder, "anchor", side_effect=AssertionError("recomputed a miss!")):
-        assert second.resolve(str(src), "同じ文が続きます。") == ("", None)
+        assert second.resolve(str(src), "同じ文が続きます。") == ("", None, None)
 
 
 def test_memo_forgets_files_that_left_the_library(tmp_path):
@@ -608,19 +608,6 @@ def test_a_corrupt_or_missing_memo_is_harmless(tmp_path):
 
     # And with no cache path at all (the standalone case) nothing is written.
     assert AnchorFinder().resolve(str(src), "少年は静かに扉を開けた。")[0]
-
-
-def test_cue_time_reuses_the_position_anchor_already_found(tmp_path):
-    """cue_time used to rescan the whole file to rediscover an offset anchor() had just computed —
-    the single biggest cost in the pass."""
-    path = _transcript(tmp_path)
-    finder = AnchorFinder()
-    anchor = finder.anchor(path, "答えはまだ見つかりません。")
-    assert (path, anchor) in finder._pos, "anchor() must record where it found the anchor"
-
-    finder._cue_index(path)          # warm the cue table (its own one-time file read)
-    with patch.object(AnchorFinder, "_raw", side_effect=AssertionError("rescanned the file")):
-        assert finder.cue_time(path, anchor) == 65
 
 
 def test_files_are_read_once(tmp_path):

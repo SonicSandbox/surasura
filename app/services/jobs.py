@@ -1,0 +1,465 @@
+"""The job registry (W1.3; the window's spec 04 §4.2): every job the window starts, one record each, and one table of
+which jobs may run together.
+
+A job is anything that runs while the window stays usable: Generate, the indexer, an Anki sync, 順's reorder, Connect's
+mining, a child process. Its record — `id`, `kind`, `label` (the user's words: *Generating*), `state`, `progress`,
+`started_at`, whether it was automatic, what quitting does to it (`wait` · `cancel` · `detach`), whether it can be
+cancelled at all and the pid of the child process it runs (when it runs one) — is what the bottom bar shows
+(`snapshot()`), and a window hears every change (`subscribe`).
+
+Quitting: `cancel` jobs are stopped; `wait` jobs keep the window while under way — a job writing Anki finishes its
+batch, and a job past the point it can stop at says so (`finishes_at_quit`: Generate writing your list); `detach` jobs
+go on without the window (Connect) or are cut by the exit (the sync and the backlog read: they only read Anki).
+
+States: `queued` (asked for, not started) · `waiting` (held back, with its reason in plain words) · `running` ·
+`cancelling` (asked to stop; still ending) · `done` · `failed` (with its message). A job cancelled before it started is
+`done` with `cancelled` set. A waiting or ended job may carry `needs`: why it waits on *you* (plain words: *Anki is
+closed*, *Not timed to its video*) — the phase strip's amber (its `app/services/phase.py`); None for every other wait.
+An automatic job may carry its `cause` (`app/services/causes.Cause`, the help cards' *Why?*): set once, by whoever asks
+for it, from the trigger it was given; kept as the job ends (the strip's *Last:* line says it); None for a user's job.
+
+The exclusion rules, in one table (`RESOURCES`): two jobs that use the same resource never run together — Generate and
+the indexer both write the token store, and one Anki writer at a time (`anki-writer`, E1.4) — and never two of a kind.
+An automatic job yields to one the user started: it never starts while a user's job it conflicts with is queued,
+waiting or running; and a user's request absorbs a queued automatic job of its kind (one run, the user's). Jobs wait in
+the order they were asked for.
+
+A job is either **gated** (started by the registry when the table allows: `submit(…, start=…)`) or **recorded**
+(`record(…)`: already started by its owner — the Tk dashboard's children — listed for the bar and never held back, nor
+holding a gated job back). Nothing here waits on the caller's thread: `submit`, `record`, `snapshot` and a job's
+`progress` / `finish` / `cancel` return at once; `start` and `cancel` callbacks must too (they start a thread or a
+process). Callbacks to subscribers run on whichever thread changed the job; a window posts them to its own queue.
+"""
+import itertools
+import threading
+import time
+from collections import namedtuple
+
+QUEUED, WAITING, RUNNING, CANCELLING, DONE, FAILED = "queued", "waiting", "running", "cancelling", "done", "failed"
+LIVE = (QUEUED, WAITING, RUNNING, CANCELLING)
+QUIT_CHOICES = ("wait", "cancel", "detach")
+QUIT_LOOK = 0.05            # at quit, how often a job waited for is asked again what quitting does to it
+
+# What each kind of job uses. Two jobs sharing a resource never run together; a kind always conflicts with itself.
+RESOURCES = {
+    "generate": {"token-store", "results"},
+    "indexer": {"token-store"},
+    "sentence-corpus": {"token-store"},
+    "anki-sync": {"known-words"},
+    "junban": {"anki-writer"},
+    "backfill": {"anki-writer"},
+    "mine": {"anki-writer"},
+    "replan": {"anki-writer"},
+    # The in-app update (W3.5 row 1; `services.updates`): never two, beside everything — it downloads while the rest
+    # runs and waits for them itself (its wait list: the Tk `_update_poll`), so it holds no resource back.
+    "update": set(),
+    # The warm arrivals worker (E2.2 K9; `services.arrivals.kind_of`), one kind per language: reads only, beside
+    # anything — a Japanese and a Chinese one together — never two of one language.
+    "arrivals-ja": set(),
+    "arrivals-zh": set(),
+    # W3.5 rows 3 and 6: Generate's read of Anki's new cards (read-only on Anki, beside a sync as the Tk dashboard ran
+    # it) and the library store's helper (detached: it outlives the window).
+    "anki-backlog": set(),
+    "library-maintain": set(),
+    # W3.4 row 2: a known-words import (.apkg, Migaku, Jiten) writes KnownWord.json — never beside a sync; Extract
+    # adds its parts through the store's own lock — never two at once.
+    "known-import": {"known-words"},
+    "extract": set(),
+    # W3.4 row 4: the YouTube module's runs (a transcript download, the cue-time fill, yt-dlp's update, a preview's
+    # fetch and scoring): one yt-dlp run at a time across its windows, beside everything else.
+    "youtube": set(),
+    # W3.5 part 3: Anki Miner's installer downloaded and opened (the wizard's page 5, Settings' *Install Anki Miner…*):
+    # never two of the kind in the table's sense; the route's own lock is what keeps one at a time (a second is "busy").
+    # Beside everything: it touches no file the others write.
+    "anki-miner-install": set(),
+    # A4M1-2: Anki Miner's own `setup` run by Surasura (the wizard's *Finish its setup*): its route shares the
+    # install's lock (one at a time, never beside an install); beside everything else.
+    "anki-miner-setup": set(),
+    # IK-6: the window's start look at Anki (Q4-4, *Open Anki for me*): its session's sync is Anki's own, its
+    # known-words sync a job of its own after it — beside everything
+    "anki-session": set(),
+    # Michi-NS: a show's subtitles made from the audio (`no_subs.make`, Anki Miner's `transcribe`): one at a time, beside
+    # everything (it writes only Anki Miner's run folder, then one fill through the store's own lock)
+    "transcribe": set(),
+    # 3.0.1: *Install AnkiConnect for me* (`app/connect/ankiconnect_install.py`): AnkiWeb's add-on placed in Anki's
+    # add-ons folder while Anki is closed — touches no file the others write; its route's own lock keeps one at a time
+    "ankiconnect-install": set(),
+}
+
+Progress = namedtuple("Progress", "step done total")
+JobView = namedtuple("JobView", "id kind label state reason message progress started_at ended_at automatic on_quit "
+                                "cancelled gated pid can_cancel needs cause", defaults=(None, True, None, None))
+
+
+def conflicts(kind_a, kind_b):
+    """Whether two kinds of job may never run together (the one table)."""
+    if kind_a == kind_b:
+        return True
+    return bool(RESOURCES.get(kind_a, set()) & RESOURCES.get(kind_b, set()))
+
+
+def waits_at_quit(jobs):
+    """Of `jobs` (views or Jobs), those closing the window waits for: a `wait` job under way — an Anki write
+    finishing its batch, or a job past the point it can stop at (E20). One not started yet has nothing to finish
+    (`quit` drops it). The one rule, for the window and `quit`. -> a tuple."""
+    return tuple(j for j in jobs if j.on_quit == "wait" and j.state in (RUNNING, CANCELLING))
+
+
+# --- row 35: what goes on after the window closes, and *Stop and quit* -------------------------------------------- #
+# What outlives the window, by kind — never by "a detach job with a pid" (a Content Manager opened from the setup
+# wizard is one, mid-import). STOPPABLE_AT_QUIT: the kinds *Stop and quit* may cancel (their owner ends its own child
+# through the handle it holds: never a pid, never a tree, never a process looked up by name) — the library's upkeep
+# alone; nothing else, ever, by default. CONNECT_KIND: Connect's mining as the window lists it
+# (`status.CONNECT_JOB_KIND`): named, never stopped from here — Connect has no stop request a window can send (it
+# stops only at a step boundary, for an update staged or Connect switched off), and a card batch is Anki's to finish
+# (a decision, row 35's review R35-7: the sheet says Connect finishes by itself).
+STOPPABLE_AT_QUIT = ("library-maintain",)
+CONNECT_KIND = "mine"
+
+
+def detached_at_quit(jobs):
+    """Of `jobs` (views or Jobs), those that outlive the window: a `detach` job under way of a kind *Stop and quit* may
+    stop (`STOPPABLE_AT_QUIT`: the library's upkeep — it keeps the program's folder busy) or Connect making cards
+    (`CONNECT_KIND`). A sync or the backlog read runs on the window's own threads and ends with it; one not started
+    yet starts nothing once the window is gone; the update is cancelled by the quit itself. The one rule, for the
+    close's sheet. -> a tuple."""
+    return tuple(j for j in jobs if j.on_quit == "detach" and j.state in (RUNNING, CANCELLING)
+                 and (j.kind in STOPPABLE_AT_QUIT or j.kind == CONNECT_KIND))
+
+
+def stop_at_quit(registry):
+    """*Stop and quit*: each live `detach` job of a `STOPPABLE_AT_QUIT` kind is cancelled — read from the registry now,
+    never from a window's older view — so its owner ends its own child through the handle it holds. Connect never.
+    Returns at once (a cancel callback must). -> the ids asked to stop."""
+    asked = []
+    for view in registry.live():
+        if view.kind in STOPPABLE_AT_QUIT and view.kind != CONNECT_KIND and view.on_quit == "detach" \
+                and view.state == RUNNING and registry.cancel(view.id):
+            asked.append(view.id)
+    return tuple(asked)
+# --- end row 35
+
+
+def generating(jobs):
+    """Whether a Generate is waiting or under way among `jobs` (views or Jobs): the quit cancels one that can still stop
+    and nothing starts it again — so a restart is offered only without one (laptop fixes B2-3, *Text size*)."""
+    return any(j.kind == "generate" and j.state in LIVE for j in jobs)
+
+
+class Job:
+    """One job. Its owner reports `progress(...)` and `finish(...)`; anyone may `cancel()`."""
+
+    def __init__(self, registry, job_id, kind, label, automatic, on_quit, start, cancel, gated, cause=None):
+        self._registry = registry
+        self.id = job_id
+        self.kind = kind
+        self.label = label
+        self.automatic = automatic
+        self.on_quit = on_quit
+        self._start = start
+        self._cancel = cancel
+        self.gated = gated
+        self.state = QUEUED
+        self.reason = None
+        self.message = None
+        self.progress_now = None
+        self.started_at = None
+        self.ended_at = None
+        self.cancelled = False
+        self.pid = None                 # the child process it runs, once started (`started_process`)
+        self.needs = None               # why it waits on the user (a waiting or ended job), else None
+        self.cause = cause              # why it started by itself (`causes.Cause`), else None
+        self.ended = threading.Event()
+
+    def view(self):
+        return JobView(self.id, self.kind, self.label, self.state, self.reason, self.message, self.progress_now,
+                       self.started_at, self.ended_at, self.automatic, self.on_quit, self.cancelled, self.gated,
+                       self.pid, self._cancel is not None, self.needs, self.cause)
+
+    def progress(self, step, done=None, total=None):
+        """Where the running job is: a step in the user's words, and how far through it."""
+        self._registry._change(self, progress=Progress(step, done, total))
+
+    def finish(self, ok=True, message=None, cancelled=False, completed=False, needs=None):
+        """The job ended: `done`, or `failed` with its message (plain words; a log's path where there is one);
+        `cancelled` when it stopped because it was asked to; `completed` when it was asked too late (past the point it
+        can stop at) and ran to its end: not cancelled — the flag the ask set is taken back (E3.2's A13). `needs`: it
+        ended waiting on the user (*Anki is closed*), in plain words."""
+        self._registry._end(self, DONE if ok else FAILED, message, cancelled, completed, needs)
+
+    def hold(self, reason, needs=None):
+        """A recorded job (its owner's) waits: `waiting` with `reason`, and `needs` when it waits on the user. A gated
+        job's waits are the registry's own: nothing changes."""
+        self._registry._hold(self, reason, needs)
+
+    def resume(self):
+        """A recorded job that waited (`hold`) runs again."""
+        self._registry._hold(self, None, None, run=True)
+
+    def cancel(self):
+        """Stop it: a job not started yet ends now (`done`, cancelled — its owner's cancel callback is told); a running
+        one is asked to stop (`cancelling`) through that callback and ends when its owner says so. True when there was
+        something to cancel."""
+        return self._registry._cancel_job(self)
+
+    def wait(self, timeout=None):
+        """Wait until the job ended (a worker's call, never a window's thread). True when it has."""
+        return self.ended.wait(timeout)
+
+    def started_process(self, pid):
+        """The child process it runs is `pid`: the update's wait list shows that process as this job alone."""
+        self.pid = pid
+
+    def finishes_at_quit(self):
+        """It is past the point it can stop at (Generate writing your list): closing the window now waits for it as
+        for an Anki write (`on_quit` becomes `wait`). Said at once, before its owner reports the step."""
+        self._registry._finishes(self)
+
+
+class JobRegistry:
+    def __init__(self, keep_ended=20):
+        self._lock = threading.RLock()
+        self._jobs = []                     # every live job, in the order asked for, then the newest ended ones
+        self._ids = itertools.count(1)
+        self._subscribers = []
+        self._keep_ended = keep_ended
+        self._version = 0                   # each change's number: a listener never hears an older one after a newer
+        self._deliver = threading.RLock()
+        self._gates = []                    # check(kind) -> why a gated job of that kind may not start now, or None
+
+    # --- asking ------------------------------------------------------------------------------------------------- #
+    def submit(self, kind, label, start, cancel=None, automatic=False, on_quit="cancel", cause=None):
+        """A gated job: `start(job)` is called (at once, or when the table allows) to begin the work; `cancel(job)`
+        to ask a running one to stop; `cause`: why an automatic one was asked for (`causes.Cause`). -> the Job (a
+        user's request that absorbed a queued automatic one is still a new Job; the automatic one ends, cancelled)."""
+        if on_quit not in QUIT_CHOICES:
+            raise ValueError(f"on_quit must be one of {QUIT_CHOICES}")
+        absorbed = []
+        with self._lock:
+            job = Job(self, next(self._ids), kind, label, automatic, on_quit, start, cancel, gated=True,
+                      cause=cause)
+            if not automatic:
+                for other in self._jobs:
+                    if other.gated and other.automatic and other.kind == kind and other.state in (QUEUED, WAITING):
+                        other.state, other.cancelled, other.reason = DONE, True, "joined your request"
+                        other.ended_at = time.time()
+                        absorbed.append(other)
+            self._jobs.append(job)
+        for other in absorbed:
+            other.ended.set()
+            self._tell_owner(other)
+        self._schedule()
+        return job
+
+    def record(self, kind, label, cancel=None, automatic=False, on_quit="cancel", reason=None, needs=None, cause=None):
+        """A job its owner started already (a child process): listed as running, never held back nor holding a gated
+        job back. With a `reason` (or `needs`): listed as waiting — its owner's own wait (Connect's queued episode, one
+        not timed to its video) — until `resume()`. `cause`: as `submit`'s."""
+        with self._lock:
+            job = Job(self, next(self._ids), kind, label, automatic, on_quit, None, cancel, gated=False,
+                      cause=cause)
+            job.state, job.started_at = RUNNING, time.time()
+            if reason or needs:
+                job.state, job.reason, job.needs = WAITING, reason or needs, needs
+            self._jobs.append(job)
+        self._notify()
+        return job
+
+    # --- reading ------------------------------------------------------------------------------------------------ #
+    def snapshot(self):
+        """Every live job and the newest ended ones, as immutable records, oldest first."""
+        with self._lock:
+            return tuple(job.view() for job in self._jobs)
+
+    def live(self, kind=None):
+        with self._lock:
+            return tuple(j.view() for j in self._jobs if j.state in LIVE and (kind is None or j.kind == kind))
+
+    def subscribe(self, callback):
+        """`callback(snapshot)` after every change, on the thread that made it."""
+        with self._lock:
+            self._subscribers.append(callback)
+
+    # --- holding ------------------------------------------------------------------------------------------------ #
+    def gate(self, check):
+        """Hold gated jobs back while `check(kind)` names a reason (plain words; None lets it start) — the update's
+        "no new work while it waits" (W3.5 row 1). Asked under the registry's lock: a flag read, nothing slower. A job
+        already running is not stopped. After a gate opens, its owner calls `reschedule()`."""
+        with self._lock:
+            self._gates.append(check)
+        self._schedule()
+
+    def reschedule(self):
+        """A gate opened: start what it held (in the order asked for)."""
+        self._schedule()
+
+    def cancel(self, job_id):
+        """Cancel the live job `job_id` (a window's *Stop it*). True when there was something to cancel."""
+        with self._lock:
+            job = next((j for j in self._jobs if j.id == job_id and j.state in LIVE), None)
+        return job.cancel() if job is not None else False
+
+    # --- quitting ----------------------------------------------------------------------------------------------- #
+    def quit(self, timeout=10.0, wait_timeout=None):
+        """What closing the window does to each live job: `cancel` ones are cancelled, `wait` ones waited for (up to
+        `timeout` in all; a running `wait` job — an Anki write finishing its batch, E20 — up to `wait_timeout` when
+        given), `detach` ones left running. A `wait` job that never started has nothing to finish: it is cancelled,
+        never waited for. A `cancel` job that passes the point it can stop at meanwhile (`finishes_at_quit`) is waited
+        for as a `wait` one from then on. A worker's call. -> the jobs still running after it."""
+        with self._lock:
+            live = [j for j in self._jobs if j.state in LIVE]
+            under_way = waits_at_quit(live)
+        for job in live:
+            if job.on_quit == "cancel" or (job.on_quit == "wait" and job not in under_way):
+                job.cancel()
+        start = time.monotonic()
+        for job in live:
+            while job.on_quit in ("wait", "cancel"):
+                limit = wait_timeout if job.on_quit == "wait" and wait_timeout is not None else timeout
+                left = start + limit - time.monotonic()
+                if left <= 0 or job.wait(min(left, QUIT_LOOK)):
+                    break
+        with self._lock:
+            return tuple(j.view() for j in self._jobs if j.state in LIVE)
+
+    # --- inside ------------------------------------------------------------------------------------------------- #
+    def _blocker(self, job, earlier):
+        """The job that holds `job` back, or None. Running jobs hold back what conflicts with them; a user's job asked
+        for earlier holds back a later conflicting one (the order asked for), and any user's job an automatic one."""
+        for other in self._jobs:
+            if other is job or not other.gated or not conflicts(job.kind, other.kind):
+                continue
+            if other.state in (RUNNING, CANCELLING):
+                return other
+            if other.state in (QUEUED, WAITING):
+                if job.automatic and not other.automatic:
+                    return other                  # an automatic job yields to any user's job it conflicts with
+                if other in earlier and not (other.automatic and not job.automatic):
+                    return other                  # the order asked for — but a user's job never waits on an automatic one
+        return None
+
+    def _held(self, kind):
+        for check in self._gates:
+            try:
+                reason = check(kind)
+            except Exception:
+                reason = None
+            if reason:
+                return reason
+        return None
+
+    def _schedule(self):
+        to_start = []
+        with self._lock:
+            earlier = []
+            for job in [j for j in self._jobs if j.gated and j.state in (QUEUED, WAITING)]:
+                held = self._held(job.kind)
+                blocker = None if held else self._blocker(job, earlier)
+                if held:
+                    job.state, job.reason = WAITING, held
+                elif blocker is None:
+                    job.state, job.reason, job.started_at = RUNNING, None, time.time()
+                    to_start.append(job)
+                else:
+                    job.state = WAITING
+                    job.reason = f"waits for {blocker.label}"
+                earlier.append(job)
+        self._notify()
+        for job in to_start:
+            try:
+                job._start(job)
+            except Exception as e:                    # a start that fails is a failed job, never a stuck one
+                self._end(job, FAILED, f"couldn't start: {e}")
+
+    def _finishes(self, job):
+        with self._lock:
+            if job.state not in (RUNNING, CANCELLING) or job.on_quit == "wait":
+                return
+            job.on_quit = "wait"
+        self._notify()
+
+    def _hold(self, job, reason, needs, run=False):
+        with self._lock:
+            if job.gated or job.state not in (RUNNING, WAITING):
+                return
+            state = RUNNING if run else WAITING
+            reason = None if run else (reason or needs)
+            needs = None if run else needs
+            if (job.state, job.reason, job.needs) == (state, reason, needs):
+                return                                # the same again: no news (S19)
+            job.state, job.reason, job.needs = state, reason, needs
+        self._notify()
+
+    def _change(self, job, progress=None):
+        with self._lock:
+            if job.state not in (RUNNING, CANCELLING):
+                return
+            job.progress_now = progress
+        self._notify()
+
+    def _end(self, job, state, message, cancelled=False, completed=False, needs=None):
+        with self._lock:
+            if job.state in (DONE, FAILED):
+                return
+            job.state, job.message, job.ended_at = state, message, time.time()
+            job.needs = needs
+            job.cancelled = (job.cancelled or cancelled) and not completed
+            self._trim()
+        job.ended.set()
+        self._schedule()
+
+    def _cancel_job(self, job):
+        call = None
+        with self._lock:
+            if job.state in (QUEUED, WAITING):
+                job.state, job.cancelled, job.ended_at = DONE, True, time.time()
+                job.reason = None
+                ended = True
+            elif job.state == RUNNING:
+                job.state, job.cancelled = CANCELLING, True
+                call, ended = job._cancel, False
+            else:
+                return False
+        if ended:
+            job.ended.set()
+            self._tell_owner(job)
+            self._schedule()
+            return True
+        self._notify()
+        if call is not None:
+            try:
+                call(job)
+            except Exception as e:
+                print(f"Jobs: cancelling {job.label} failed: {e}")
+        return True
+
+    @staticmethod
+    def _tell_owner(job):
+        """A job that ended before it started: its owner hears through its cancel callback (it may be waiting on it)."""
+        if job._cancel is None:
+            return
+        try:
+            job._cancel(job)
+        except Exception as e:
+            print(f"Jobs: telling {job.label}'s owner failed: {e}")
+
+    def _trim(self):
+        ended = [j for j in self._jobs if j.state not in LIVE]
+        for old in ended[:-self._keep_ended] if len(ended) > self._keep_ended else []:
+            self._jobs.remove(old)
+
+    def _notify(self):
+        with self._lock:
+            self._version += 1
+            version = self._version
+        with self._deliver:                           # one delivery at a time, and only the newest
+            with self._lock:
+                if version != self._version:
+                    return
+                snap = tuple(job.view() for job in self._jobs)
+                subscribers = list(self._subscribers)
+            for callback in subscribers:
+                try:
+                    callback(snap)
+                except Exception as e:                # a listener's fault never stops the registry
+                    print(f"Jobs: a listener failed: {e}")

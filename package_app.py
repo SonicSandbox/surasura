@@ -4,6 +4,85 @@ import subprocess
 import sys
 import argparse
 import json
+import re
+
+CLI_EXE_NAME = "surasura-cli.exe"   # the headless command line, built beside Surasura.exe (packaging/Surasura.spec)
+TSUBASA_EXE_NAME = "tsubasa.exe"    # tsubasa's command line, built beside them from the pinned tsubasa-sync (T1 B)
+PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, TSUBASA_EXE_NAME, "updater.exe")   # exactly these at the top (S3.1 D17)
+
+# The build's one configuration (S3.1 D15): the bundled modules, the Python and SQLite floors, UPX, the window's Qt
+# modules and update.json's parts. packaging/Surasura.spec reads the same file; neither reads a settings.json.
+BUILD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "build_config.json")
+OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect")
+
+
+def load_build_config(path=BUILD_CONFIG):
+    """packaging/build_config.json, checked -> the dict. Raises ValueError naming what is wrong: a build never guesses."""
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    problems = []
+    modules = config.get("modules")
+    if not isinstance(modules, dict) or set(modules) != set(OPTIONAL_MODULES) or \
+            not all(isinstance(v, bool) for v in modules.values()):
+        problems.append(f"modules must give true/false for exactly {', '.join(OPTIONAL_MODULES)}")
+    for key in ("python_min", "sqlite_min"):
+        if not isinstance(config.get(key), str) or not _version_tuple(config.get(key)):
+            problems.append(f"{key} must be a dotted version")
+    if not valid_data_name(config.get("data_name")):
+        problems.append("data_name must be a plain folder name (letters, digits, - and _)")
+    if config.get("upx") is not False:
+        problems.append("upx must be false: UPX stays off (S3.1 D15)")
+    qt = config.get("qt_modules")
+    if not isinstance(qt, list) or not qt or not all(isinstance(m, str) and m.startswith("Qt") for m in qt):
+        problems.append("qt_modules must list the window's Qt modules")
+    never = config.get("never_bundle")
+    if not isinstance(never, list) or not never or not all(isinstance(m, str) and m.isidentifier() for m in never):
+        problems.append("never_bundle must list the top-level modules no build carries")
+    release = config.get("release")
+    if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
+                                                                                         "installer_min_from")):
+        problems.append("release must give min_from and installer_min_from")
+    elif not _telemetry_url_ok(release.get("telemetry_url")):
+        problems.append("release must give telemetry_url, the receiver's https address (update.json carries it)")
+    parts = config.get("parts")
+    names = [p.get("name") for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
+    if not isinstance(parts, list) or not parts or len(names) != len(parts) or len(set(names)) != len(names) or \
+            not all(isinstance(n, str) and n.isalnum() and n.islower() for n in names) or \
+            not all(isinstance(p.get("paths"), list) and all(isinstance(x, str) for x in p["paths"]) for p in parts) or \
+            parts[-1]["paths"] != [""]:
+        problems.append('parts must be named lower-case parts with path lists, the last one [""] (every file left)')
+    if problems:
+        raise ValueError("packaging/build_config.json: " + "; ".join(problems))
+    return config
+
+
+def _telemetry_url_ok(value):
+    """The client's own rule (`update_checker.valid_telemetry_url`): what the release writes, every 3.x reads."""
+    from app import update_checker
+    return update_checker.valid_telemetry_url(value) is not None
+
+
+def _version_tuple(text):
+    """'3.11.4' -> (3, 11, 4); anything else -> ()."""
+    try:
+        return tuple(int(p) for p in str(text).split(".")) if text else ()
+    except ValueError:
+        return ()
+
+
+def valid_data_name(name, real_name=None):
+    """The name of the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>): "Surasura", or a test
+    build's own ("Surasura-test"), so a test build never shares a real install's folders. Letters, digits, - and _.
+    With `real_name` (build_config's), the real name in another case ("surasura") is refused: Windows' folders ignore
+    case, so its program and data folders would be the real install's."""
+    return isinstance(name, str) and 0 < len(name) <= 64 and \
+        all(c.isascii() and (c.isalnum() or c in "-_") for c in name) and \
+        (real_name is None or name == real_name or name.casefold() != real_name.casefold())
+
+
+def _python_version():
+    return tuple(sys.version_info[:3])
+
 
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
@@ -15,47 +94,41 @@ def get_version():
                 return line.split(delim)[1]
     return "0.0"
 
-# Optional modules and the settings that cause them to be bundled (mirrors packaging/Surasura.spec).
-# When a module will be included in the build, its own test suite must pass first.
-def _included_module_test_dirs(settings):
+# Optional modules and the build config's flags that bundle them (mirrors packaging/Surasura.spec, which reads the
+# same `modules` block). When a module will be included in the build, its own test suite must pass first.
+def _included_module_test_dirs(modules):
     dirs = []
     # (The Immersion Architect is never bundled since 2.5 — sunset, RD-D9 — so its suite is no gate.)
-    # YouTube Downloader: bundled when either feature is enabled.
-    if settings.get("enable_youtube_transcripts", False) or settings.get("enable_youtube_preview", False):
+    # YouTube Downloader: bundled when the build config names it.
+    if modules.get("youtube_downloader") is True:
         d = os.path.join("modules", "youtube_downloader", "tests")
         if os.path.isdir(d):
             dirs.append(d)
-    # Speech (Koe): always bundled when present (it is hidden at runtime, not at build time), so
-    # its suite runs whenever the folder is there.
-    d = os.path.join("modules", "koe", "tests")
-    if os.path.isdir(d):
-        dirs.append(d)
-    # Reels: bundled when enabled, so its suite runs before a build that ships it.
-    if settings.get("enable_reels", False):
+    # Speech (Koe): bundled when named and present (it is hidden at runtime, not at build time), so its suite runs
+    # whenever it ships.
+    if modules.get("koe") is True:
+        d = os.path.join("modules", "koe", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # Reels: bundled when named, so its suite runs before a build that ships it.
+    if modules.get("reels") is True:
         d = os.path.join("modules", "reels", "tests")
         if os.path.isdir(d):
             dirs.append(d)
-    # Junban: bundled when enabled, so its suite runs before a build that ships it.
-    if settings.get("enable_junban", False):
+    # Junban: bundled when named, so its suite runs before a build that ships it.
+    if modules.get("junban") is True:
         d = os.path.join("modules", "junban", "tests")
         if os.path.isdir(d):
             dirs.append(d)
     return dirs
 
 
-def run_pre_build_tests():
+def run_pre_build_tests(modules):
     """Run the core suite plus the suite of every module that will be bundled.
 
     Everything shipped must be testable before it builds. Returns True only if all pass.
     """
-    settings = {}
-    try:
-        with open("settings.json", "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception as e:
-        print(f"Warning: could not read settings.json for test selection: {e}")
-
-    suites = ["tests"] + _included_module_test_dirs(settings)
+    suites = ["tests"] + _included_module_test_dirs(modules)
     print(f"Running pre-build tests for: {', '.join(suites)}")
 
     failed = []
@@ -90,14 +163,15 @@ def _read_runtime_baseline(default):
 
 
 def _build_updater_exe(final_dist):
-    """Build the standalone updater.exe and drop it next to Surasura.exe (release only)."""
-    print("Building updater.exe (release artifact)...")
+    """Build the standalone updater.exe and drop it next to Surasura.exe — every build: each 3.x program carries the
+    swapper its next update runs (S3.1 D9), and its `app` part lists it."""
+    print("Building updater.exe...")
     cmd = [
         sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
         "--distpath", "dist", "--workpath", "build",
         os.path.join("packaging", "updater.spec"),
     ]
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=freeze_env())
     src = os.path.join("dist", "updater.exe")
     if result.returncode != 0 or not os.path.exists(src):
         print("ERROR: updater.exe was not produced — auto-update will be disabled in this build.")
@@ -144,7 +218,8 @@ def _warn_if_runtime_changed(full_update):
 
 
 def _build_app_package(final_dist, version, full_update):
-    """Emit the release update artifacts: the app-only package zip and update.json.
+    """2.x's release artifacts (the 2.x line's packager, kept for its tests; a 3.x release is `_build_release`):
+    the app-only package zip and update.json.
 
     The app package carries the code-bearing executable (Surasura.exe — its embedded archive
     holds ALL app code) plus the loose report templates. That is the correct minimal unit: in
@@ -155,7 +230,7 @@ def _build_app_package(final_dist, version, full_update):
     Since 2.5 update.json also lists every file the package carries (`files`, K99): each entry's
     name (its path at the top of the zip — the same layout 2.4.0's updater reads), its destination
     in the install folder, its kind and its sha256 (a folder's: `updater.tree_sha256`). 2.5's
-    updater swaps exactly that list; surasura-cli.exe rides in it when the build has one.
+    updater swaps exactly that list; surasura-cli.exe is always in it (the app zip refuses a build without it).
     """
     import zipfile
 
@@ -183,18 +258,17 @@ def _build_app_package(final_dist, version, full_update):
 
     if not full_update:
         exe_src = os.path.join(final_dist, "Surasura.exe")
+        cli_src = os.path.join(final_dist, CLI_EXE_NAME)
         templates_dir = os.path.join(final_dist, "_internal", "templates")
-        if not os.path.isfile(exe_src) or not os.path.isdir(templates_dir):
-            print("ERROR: Surasura.exe or _internal/templates missing; cannot build app package.")
+        if not os.path.isfile(exe_src) or not os.path.isfile(cli_src) or not os.path.isdir(templates_dir):
+            print(f"ERROR: Surasura.exe, {CLI_EXE_NAME} or _internal/templates missing; cannot build app package.")
             return
         pkg_path = os.path.join("dist", f"Surasura_app_v{version}.zip")
         notes_src = os.path.join(final_dist, "RELEASE_NOTES.md")
-        cli_src = os.path.join(final_dist, "surasura-cli.exe")
         manifest["files"] = _package_file_list(final_dist)
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(exe_src, "Surasura.exe")
-            if os.path.isfile(cli_src):
-                z.write(cli_src, "surasura-cli.exe")
+            z.write(cli_src, CLI_EXE_NAME)    # the command line (P1.1); the updater swaps it from 2.5 (K99)
             if os.path.isfile(notes_src):
                 z.write(notes_src, "RELEASE_NOTES.md")   # refreshed in place on update (see build_marker)
             for root, dirs, files in os.walk(templates_dir):
@@ -235,23 +309,348 @@ def _package_file_list(final_dist):
     return files
 
 
+# --- The 3.x update format (S3.1 D4, D5, D6) --------------------------------------------------------------------------
+# A 3.x release lists every file of the program folder with its sha256 and size, each in one part (build_config's
+# `parts`), and publishes each part as one zip; the client downloads only the parts holding a changed or missing file.
+# update.json keeps 2.x's keys, written for 2.x readers (2.5 hands over to the installer when one is attached, older
+# versions see a download), and adds `format: 2` + `package`, which only 3.x reads. update.json.sig is Ed25519 over the
+# manifest's exact bytes, by the key in the file SURASURA_SIGNING_KEY_FILE names (never logged, never on a command line).
+
+SIGNING_KEY_ENV = "SURASURA_SIGNING_KEY_FILE"
+MANIFEST_NAME = "update.json"
+SIGNATURE_NAME = "update.json.sig"
+
+
+def part_of(path, parts):
+    """The part a program file belongs to: the first part one of whose paths names it (a path ending in / is a
+    folder, "" every file). -> the part's name, or None."""
+    for part in parts:
+        for prefix in part["paths"]:
+            if prefix == "" or path == prefix or (prefix.endswith("/") and path.startswith(prefix)):
+                return part["name"]
+    return None
+
+
+def program_files(final_dist, parts):
+    """Every file of the built program folder: [{path, sha256, size, part}], sorted by path ('/'-separated)."""
+    found = []
+    for root, dirs, names in os.walk(final_dist):
+        dirs.sort()
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            path = os.path.relpath(full, final_dist).replace(os.sep, "/")
+            part = part_of(path, parts)
+            if part is None:
+                raise ValueError(f"{path} is in no part of packaging/build_config.json")
+            found.append({"path": path, "sha256": _sha256(full), "size": os.path.getsize(full), "part": part})
+    return sorted(found, key=lambda f: f["path"])
+
+
+def canonical_json(manifest):
+    """The manifest's bytes as they are signed and published: sorted keys, indent 2, UTF-8, a final newline."""
+    return (json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def read_signing_key(path):
+    """The 32-byte Ed25519 private key in `path`: 32 raw bytes, or 64 hex characters. Raises ValueError, never
+    quoting the file. 32 bytes of hex text are a hex key cut short, never a raw key."""
+    with open(path, "rb") as f:
+        raw = f.read(4096)
+    if len(raw) == 32:
+        if raw.strip() and all(c in b"0123456789abcdefABCDEF" for c in raw.strip()):
+            raise ValueError("the signing key file holds 32 hex characters: a hex key has 64 (cut short?)")
+        return raw
+    try:
+        seed = bytes.fromhex(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        seed = b""
+    if len(seed) != 32:
+        raise ValueError("the signing key file holds neither 32 bytes nor 64 hex characters")
+    return seed
+
+
+def _build_release(final_dist, version, config, out_dir="dist", installer=None, needs_installer=False):
+    """Write a 3.x release's update artifacts into `out_dir`: one zip per part (surasura_part_<name>_v<ver>.zip),
+    update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
+    (its 2.x hand-off block is written only then, naming the updater's copy). `package.install_shape`: the .iss's
+    shape (`install_shape`); a 3.x program stamped with another runs the installer. `needs_installer`: the manual
+    override, for what the shape can't see (`--needs-installer`). -> the manifest dict, or None when
+    SURASURA_SIGNING_KEY_FILE names a key that can't be used: then nothing is written (a release named a key, so it
+    never goes out unsigned)."""
+    import zipfile
+    from app import ed25519
+
+    key_file = os.environ.get(SIGNING_KEY_ENV)
+    seed = None
+    if key_file:
+        try:
+            seed = read_signing_key(key_file)
+        except (OSError, ValueError) as e:
+            print(f"\n*** ERROR: the signing key {SIGNING_KEY_ENV} names can't be used "
+                  f"({e if isinstance(e, ValueError) else type(e).__name__}): no update.json written. ***")
+            return None
+
+    parts_rule = config["parts"]
+    files = program_files(final_dist, parts_rule)
+    parts = []
+    for part in parts_rule:
+        members = [f for f in files if f["part"] == part["name"]]
+        if not members:
+            continue
+        asset = f"surasura_part_{part['name']}_v{version}.zip"
+        path = os.path.join(out_dir, asset)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in members:
+                z.write(os.path.join(final_dist, *f["path"].split("/")), f["path"])
+        parts.append({"name": part["name"], "asset": asset, "sha256": _sha256(path), "size": os.path.getsize(path)})
+        print(f"Part {part['name']}: {asset} ({len(members)} files, {os.path.getsize(path) / (1024 * 1024):.1f} MB)")
+
+    manifest = {
+        "version": version,
+        "update_type": "full",
+        "runtime_baseline": version,
+        "critical": False,
+        "sha256": "",
+        "notes_url": f"https://github.com/SonicSandbox/surasura/releases/tag/v{version}",
+        "telemetry_url": config["release"]["telemetry_url"],    # where 3.x's next heartbeat goes (signed with it)
+        "format": 2,
+        "package": {"parts": parts, "files": files, "needs_installer": bool(needs_installer),
+                    "min_from": config["release"]["min_from"], "install_shape": install_shape()},
+    }
+    if installer:
+        # 2.x's hand-off (S1.3-6): 2.5 runs this installer, its wizard showing (args empty); 2.4.0 and older see a
+        # download. A 3.x release without an installer is "full" to every 2.x.
+        # The updater downloads its own copy of the same bytes (`updater_installer_name`), so the setup's download count
+        # on GitHub is people's, never an update's.
+        for_updates = os.path.join(out_dir, updater_installer_name(version))
+        shutil.copyfile(installer, for_updates)
+        manifest["update_type"] = "installer"
+        manifest["installer"] = {"asset": os.path.basename(for_updates), "sha256": _sha256(for_updates), "args": [],
+                                 "min_from": config["release"]["installer_min_from"]}
+
+    data = canonical_json(manifest)
+    with open(os.path.join(out_dir, MANIFEST_NAME), "wb") as f:
+        f.write(data)
+    print(f"update.json written (format 2, {len(files)} files in {len(parts)} parts, "
+          f"update_type={manifest['update_type']} for 2.x).")
+
+    sig_path = os.path.join(out_dir, SIGNATURE_NAME)
+    if os.path.exists(sig_path):
+        os.remove(sig_path)                                  # never a stale signature beside a new manifest
+    if seed is None:
+        print(f"\n*** WARNING: update.json is NOT signed (no {SIGNING_KEY_ENV} set). A 3.x install will only be "
+              "told this release is out; it installs nothing unsigned. ***\n")
+    else:
+        with open(sig_path, "wb") as f:
+            f.write(ed25519.sign(seed, data))
+        import hashlib
+        print(f"update.json.sig written (public key fingerprint "
+              f"{hashlib.sha256(ed25519.public_key(seed)).hexdigest()[:16]}).")
+    return manifest
+
+
+# --- The installer (S3.1 D1, D2, D8) ----------------------------------------------------------------------------------
+# packaging/surasura.iss, compiled by Inno Setup 6's ISCC into dist\Surasura-<ver>-setup.exe. A test build (any
+# data_name but build_config's) gets its own AppId, name, program folder and mutex, so a test install never meets a
+# real one (S3.1-3).
+INSTALLER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "surasura.iss")
+APP_GUID = "0EF53F4A-4995-48AA-A8EA-91649B265D82"   # the real program's AppId (made once, 2026-10-12): never change it
+ISCC_PLACES = (r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe",       # installed for this user (S3.1-2)
+               r"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe")            # installed for everyone (GitHub's runner)
+
+
+def install_shape(path=INSTALLER_SCRIPT):
+    """What only the installer can change (S3.1 D7): the first 16 hex of the sha256 of packaging/surasura.iss, its
+    comment and blank lines dropped (; and //, and a line that is one { } comment) and its [Files] section left out:
+    the program's files ride in the parts. A line's line end and outer spaces never count. The build stamps it into
+    the program and into update.json's package; a 3.x program stamped with another runs the installer
+    (update_checker._classify_3x)."""
+    import hashlib
+    kept, in_files = [], False
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith((";", "//")) or \
+                    (line.startswith("{") and not line.startswith("{$") and line.find("}") == len(line) - 1):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                in_files = line.lower() == "[files]"
+            if not in_files:
+                kept.append(line)
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest()[:16]
+
+
+def installer_name(version):
+    return f"Surasura-{version}-setup.exe"
+
+
+def updater_installer_name(version):
+    """The installer's second name: the same bytes, published once more for the in-app updater alone (update.json's
+    `installer.asset`), named so nobody downloads it by mistake (Sonic, 2026-10-30)."""
+    return f"in-app-updates-{version}.exe"
+
+
+def installer_defines(version, data_name, program_dir, real_name):
+    """The .iss's defines. The real program: APP_GUID, "Surasura", %LOCALAPPDATA%\\Programs\\Surasura. A test build:
+    an AppId of its own (derived from its data_name, so each test name has one), "Surasura (test)", and its data_name
+    as the program folder, the data folder and the mutexes' name. The real name in another case is refused
+    (ValueError, `valid_data_name`): its folders would be the real install's."""
+    if not valid_data_name(data_name, real_name):
+        raise ValueError(f"{data_name!r} is not a test build's data name (the real one is {real_name!r})")
+    test = data_name.casefold() != real_name.casefold()
+    import uuid
+    return {
+        "AppVersion": version,
+        "AppGuid": str(uuid.uuid5(uuid.UUID(APP_GUID), data_name)).upper() if test else APP_GUID,
+        "AppName": "Surasura (test)" if test else "Surasura",
+        "AppFolder": data_name,
+        "DataName": data_name,
+        "ProgramDir": os.path.abspath(program_dir),
+    }
+
+
+# Surasura's own licence files (the licence switch, 3.0), copied by step 3 to the top of the program folder as the repo
+# holds them: the GPL's text (Settings › App reads its licence line from it, app/credits.py; the agreement page shows
+# it), the written exception (Surasura's copyright line, beside it) and the MIT notice kept for the code released under
+# it up to 2.5.x. The checks refuse a program folder or a download zip without one.
+OWN_LICENCE_FILES = ("LICENSE", "LICENSE-EXCEPTION.md", "licenses/Surasura-MIT-before-3.0.txt")
+
+
+# The installer's agreement page (Inno's LicenseFile: "I accept" before Next): packaging/agreement.txt (your content, no
+# warranty, liability), then the LICENSE the program folder ships (the repo's, copied by this build), so a licence change
+# needs no edit here.
+AGREEMENT_HEAD = os.path.join(os.path.dirname(INSTALLER_SCRIPT), "agreement.txt")
+AGREEMENT_FILE = os.path.join("build", "installer_agreement.txt")
+AGREEMENT_RULE = "-" * 60
+
+
+def write_agreement(out=AGREEMENT_FILE, head=AGREEMENT_HEAD, licence="LICENSE"):
+    """packaging/agreement.txt, a rule, then `licence` as it is, into `out` (UTF-8 with a BOM, CRLF: what Inno's page
+    reads) -> `out`'s absolute path, or None (said why) when either can't be read: never an installer without them."""
+    texts = []
+    for path in (head, licence):
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read().strip()
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Installer not built: {path} can't be read for the agreement page ({e}).")
+            return None
+        if not text:
+            print(f"Installer not built: {path} is empty (the agreement page needs it).")
+            return None
+        texts.append(text)
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(f"{texts[0]}\n\n{AGREEMENT_RULE}\n\n{texts[1]}\n")
+    return os.path.abspath(out)
+
+
+def find_iscc():
+    """Inno Setup 6's command-line compiler, or None."""
+    for place in ISCC_PLACES:
+        path = os.path.expandvars(place)
+        if "%" not in path and os.path.isfile(path):
+            return path
+    return shutil.which("ISCC")
+
+
+ISCC_MISSING = ("Inno Setup 6's ISCC.exe was not found (looked in %LOCALAPPDATA%\\Programs\\Inno Setup 6, "
+                "%ProgramFiles(x86)%\\Inno Setup 6 and on PATH). Install Inno Setup 6.7.3, or build without "
+                "--installer.")
+
+
+def build_installer(final_dist, version, data_name, real_name, out_dir="dist"):
+    """Compile packaging/surasura.iss over the built program folder -> the installer's path, or None (said why)."""
+    iscc = find_iscc()
+    if not iscc:
+        print(f"Installer not built: {ISCC_MISSING}")
+        return None
+    out = os.path.join(out_dir, installer_name(version))
+    if os.path.exists(out):
+        os.remove(out)
+    defines = installer_defines(version, data_name, final_dist, real_name)
+    agreement = write_agreement(licence=os.path.join(final_dist, "LICENSE"))
+    if agreement is None:
+        return None
+    defines["AgreementFile"] = agreement
+    cmd = [iscc, "/Qp", f"/O{os.path.abspath(out_dir)}", f"/F{os.path.splitext(installer_name(version))[0]}"] + \
+        [f"/D{name}={value}" for name, value in defines.items()] + [INSTALLER_SCRIPT]
+    print(f"Compiling the installer ({defines['AppName']}, AppId {{{defines['AppGuid']}}}) ...")
+    os.makedirs("debug", exist_ok=True)
+    with open(os.path.join("debug", "installer_log.txt"), "w", encoding="utf-8") as log_file:
+        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+    if result.returncode != 0 or not os.path.isfile(out):
+        print(f"Installer build failed (ISCC exit {result.returncode}). Check debug/installer_log.txt.")
+        return None
+    print(f"Installer: {out} ({os.path.getsize(out) / (1024 * 1024):.1f} MB)")
+    return out
+
+
 BUILD_INFO = os.path.join("app", "build_info.py")
+
+
+def source_commit(folder="."):
+    """The trees a freeze is built from: "<public short head>", then "/<private short head>" when the private
+    repository sits beside it (`<folder>.priv.git`, the copies' layout); "+" after a tree with changes ("?" when git
+    couldn't say whether it has any). None when git
+    can't say (the build goes on without it)."""
+    def git(args, timeout):
+        """(code, its output) of one git call, or None. Its own Popen: a build's PyInstaller calls go through
+        `subprocess.run`, which the tests stand in for, and git is never one of them."""
+        try:
+            p = subprocess.Popen(["git", *args], cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True)
+            try:
+                out, _err = p.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.communicate()
+                return None
+            return p.returncode, out or ""
+        except Exception:
+            return None
+
+    def head(*where):
+        got = git([*where, "rev-parse", "--short=12", "HEAD"], 30)
+        if got is None or got[0] != 0 or not got[1].strip():
+            return None
+        dirty = git([*where, "status", "--porcelain", "--untracked-files=no"], 120)    # "+" changes, "?" unknown
+        mark = "?" if dirty is None or dirty[0] != 0 else ("+" if dirty[1].strip() else "")
+        return got[1].strip() + mark
+    public = head()
+    if not public:
+        return None
+    here = os.path.abspath(folder)
+    priv = here.rstrip("\\/") + ".priv.git"
+    private = head(f"--git-dir={priv}", f"--work-tree={here}") if os.path.isdir(priv) else None
+    return public + (f"/{private}" if private else "")
 
 
 class _release_flag:
     """For a release's freeze: app/build_info.py says RELEASE_BUILD = True (so the exe ignores the update check's
-    local-folder override), and is put back exactly as it was afterwards, whatever happens."""
-    def __init__(self, on):
+    local-folder override), and is put back exactly as it was afterwards, whatever happens. With `build_id` (every
+    build, S3.1 D18) it also carries BUILD_ID = "<id>" for the freeze, the id _internal/build_stamp.json records, so a
+    program can tell its own build from the folder's; with `commit`, BUILD_COMMIT = "<public>[/<private>]"
+    (`source_commit`), which Report a problem's zip names."""
+    def __init__(self, on, build_id=None, commit=None):
         self.on = on
+        self.build_id = build_id
+        self.commit = commit
         self.saved = None
 
     def __enter__(self):
-        if self.on:
+        if self.on or self.build_id:
             with open(BUILD_INFO, "rb") as f:
                 self.saved = f.read()
-            text = self.saved.decode("utf-8").replace("RELEASE_BUILD = False", "RELEASE_BUILD = True")
-            if "RELEASE_BUILD = True" not in text:
-                raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
+            text = self.saved.decode("utf-8")
+            if self.on:
+                text = text.replace("RELEASE_BUILD = False", "RELEASE_BUILD = True")
+                if "RELEASE_BUILD = True" not in text:
+                    raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
+            if self.build_id:
+                text = text.rstrip("\r\n") + f'\nBUILD_ID = "{self.build_id}"\n'
+            if self.commit:                               # Report a problem's about.txt names the trees built from
+                text = text.rstrip("\r\n") + f'\nBUILD_COMMIT = "{self.commit}"\n'
             with open(BUILD_INFO, "wb") as f:
                 f.write(text.encode("utf-8"))
         return self
@@ -263,36 +662,721 @@ class _release_flag:
         return False
 
 
-def build(zip_output=False, skip_tests=False, release=False, full_update=False):
+DEFAULT_LISTS = {   # a new library's starting lists, from this tree's User Files/<lang>/ (2.x shipped the same files)
+    "ja": ["frequency_list_ja_global50k.csv", "IgnoreList.txt", "Blacklist.txt"],
+    "zh": ["IgnoreList.txt", "Blacklist.txt"],
+}
+LEGACY_JITEN_ZIPS = [   # Yomitan frequency lists from User Files/, bundled when present (Japanese)
+    "jiten_freq_Anime.zip", "jiten_freq_Drama.zip", "jiten_freq_global.zip", "jiten_freq_Manga.zip",
+    "jiten_freq_Movie.zip", "jiten_freq_NonFiction.zip", "jiten_freq_Novel.zip", "jiten_freq_VideoGame.zip",
+    "jiten_freq_VisualNovel.zip", "jiten_freq_WebNovel.zip",
+]
+LIBRARY_NAMES = ("settings.json", "User Files", "data", "results")   # the library's, never the program folder's
+
+
+def copy_default_lists(final_dist):
+    """The bundled lists into _internal/defaults/<lang>/ (S3.1 D15): the program copies each one a library lacks into
+    its User Files/<lang>/ at its first start (path_utils.copy_default_lists). -> the paths written."""
+    written = []
+    for lang, names in DEFAULT_LISTS.items():
+        sources = [os.path.join("User Files", lang, n) for n in names]
+        if lang == "ja":
+            sources += [os.path.join("User Files", n) for n in LEGACY_JITEN_ZIPS]
+        for src in sources:
+            if os.path.isfile(src):
+                folder = os.path.join(final_dist, "_internal", "defaults", lang)
+                os.makedirs(folder, exist_ok=True)
+                shutil.copy2(src, os.path.join(folder, os.path.basename(src)))
+                written.append(f"_internal/defaults/{lang}/{os.path.basename(src)}")
+    return written
+
+
+def write_build_stamp(final_dist, version, build_id, data_name, shape):
+    """_internal/build_stamp.json {version, build_id, data_name, install_shape} (S3.1 D18): each program compares its
+    own with it at start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>);
+    install_shape (`install_shape()`) is what the update check compares with a release's (D7)."""
+    path = os.path.join(final_dist, "_internal", "build_stamp.json")
+    with open(path, "wb") as f:
+        f.write(canonical_json({"version": version, "build_id": build_id, "data_name": data_name,
+                                "install_shape": shape}))
+    return path
+
+
+def _is_shape(value):
+    return isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value)
+
+
+def sqlite_version_of(dll):
+    """The version a sqlite3.dll reports (sqlite3_libversion), read in a fresh Python so no sqlite already loaded
+    answers instead. -> '3.53.4', or None when it can't be loaded."""
+    code = ("import ctypes, sys; d = ctypes.CDLL(sys.argv[1]); d.sqlite3_libversion.restype = ctypes.c_char_p; "
+            "print(d.sqlite3_libversion().decode('ascii'))")
+    try:
+        out = subprocess.run([sys.executable, "-I", "-c", code, os.path.abspath(dll)], capture_output=True,
+                             text=True, timeout=60)
+    except Exception:
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def swap_sqlite(final_dist, config):
+    """Replace the frozen program's _internal/sqlite3.dll with the vendored sqlite.org build (S3.1 D16), after checking
+    the vendored file's sha256. -> None, or the reason it failed."""
+    vendored = os.path.join(os.path.dirname(BUILD_CONFIG), "..", *config["sqlite_dll"].split("/"))
+    target = os.path.join(final_dist, "_internal", "sqlite3.dll")
+    if not os.path.isfile(vendored) or _sha256(vendored) != config["sqlite_dll_sha256"]:
+        return f"the vendored {config['sqlite_dll']} is missing or not the one build_config.json records"
+    if not os.path.isfile(target):
+        return "the build has no _internal/sqlite3.dll to replace"
+    shutil.copy2(vendored, target)
+    return None
+
+
+def check_program(final_dist, config):
+    """The post-build checks (S3.1 D15–D17), also runnable on a built folder: `python package_app.py --check
+    dist\\Surasura`. -> (failures, facts): failures a list of reasons (empty = all passed)."""
+    failures, facts = [], {}
+    internal = os.path.join(final_dist, "_internal")
+    # Exactly the four programs at the top, every build (updater.exe: the swapper, S3.1 D9; tsubasa.exe: T1 B).
+    expected = set(PROGRAM_EXES)
+    found = {n for n in os.listdir(final_dist) if n.lower().endswith(".exe")} if os.path.isdir(final_dist) else set()
+    facts["exes"] = sorted(found)
+    if found != expected:
+        failures.append(f"the programs at the top are {sorted(found)}, not exactly {sorted(expected)}")
+    # The library's folders and settings.json are never in the program folder.
+    stray = [n for n in LIBRARY_NAMES if os.path.exists(os.path.join(final_dist, n))]
+    if stray:
+        failures.append(f"the program folder holds the library's {stray}")
+    # Every top-level entry is one an update owns: a one-click update moves only app.updater.OWNED_ENTRIES (and what
+    # the new release names), so any other would stay behind at the next update, never swapped or removed.
+    from app import updater
+    unowned = sorted(n for n in (os.listdir(final_dist) if os.path.isdir(final_dist) else ())
+                     if n not in updater.OWNED_ENTRIES)
+    if unowned:
+        failures.append(f"the program folder's top holds {unowned}, which app.updater.OWNED_ENTRIES doesn't name: "
+                        "an update would leave it behind (add it there first)")
+    # Surasura's own licence files (GPL-3.0-or-later, its written exception, the MIT notice before 3.0), every build.
+    unlicensed = [n for n in OWN_LICENCE_FILES if not os.path.isfile(os.path.join(final_dist, *n.split("/")))]
+    if unlicensed:
+        failures.append(f"the program folder lacks Surasura's own licence files {unlicensed}")
+    # SQLite at or above the floor, read from the frozen program's own DLL.
+    version = sqlite_version_of(os.path.join(internal, "sqlite3.dll"))
+    facts["sqlite"] = version
+    if not version or _version_tuple(version) < _version_tuple(config["sqlite_min"]):
+        failures.append(f"_internal/sqlite3.dll reports {version}, below the floor {config['sqlite_min']}")
+    # The stamp.
+    try:
+        with open(os.path.join(internal, "build_stamp.json"), encoding="utf-8") as f:
+            stamp = json.load(f)
+        facts["stamp"] = stamp
+        if set(stamp) != {"version", "build_id", "data_name", "install_shape"} or not stamp["build_id"] or \
+                not valid_data_name(stamp["data_name"], config["data_name"]) or not _is_shape(stamp["install_shape"]):
+            failures.append(f"_internal/build_stamp.json is not {{version, build_id, data_name, install_shape}}: "
+                            f"{stamp}")
+    except (OSError, ValueError) as e:
+        failures.append(f"_internal/build_stamp.json can't be read ({e})")
+    # The optional modules the build config leaves out (Koe since the 2.9 alpha, Sonic 2026-10-23; Reels; the Immersion
+    # Architect): none of their code frozen into either Python program, none of their files under _internal.
+    left_out = [m for m in OPTIONAL_MODULES if (config.get("modules") or {}).get(m) is not True]
+    facts["left_out"] = left_out
+    prefixes = tuple(f"modules.{m}" for m in left_out)
+    for exe in ("Surasura.exe", CLI_EXE_NAME):
+        path = os.path.join(final_dist, exe)
+        if not os.path.isfile(path):
+            continue                                        # the programs' own check names it
+        frozen = frozen_modules(path)
+        if frozen is None:
+            failures.append(f"{exe}'s Python archive can't be read, so the modules left out ({left_out}) can't be "
+                            "checked")
+            continue
+        inside = sorted(n for n in frozen if any(n == p or n.startswith(p + ".") for p in prefixes))
+        if inside:
+            failures.append(f"{exe} holds modules the build config leaves out: {inside[:5]}")
+    stray = []
+    for dirpath, _dirs, files in os.walk(internal):
+        parts = os.path.relpath(dirpath, internal).replace(os.sep, "/").split("/")
+        if any(parts[i:i + 2] == ["modules", m] for i in range(len(parts)) for m in left_out):
+            stray += [os.path.join(dirpath, n) for n in files] or [dirpath]     # an empty folder imports too
+    if stray:
+        failures.append(f"_internal holds files of modules the build config leaves out: {stray[:5]}")
+    # PyQt6: only the window's modules (its and Qt's licence texts: check_licences, below).
+    qt_folder = os.path.join(internal, "PyQt6")
+    if os.path.isdir(qt_folder):
+        pyds = sorted(n.split(".")[0] for n in os.listdir(qt_folder) if n.lower().endswith(".pyd"))
+        facts["qt_modules"] = pyds
+        extra = [m for m in pyds if m not in config["qt_modules"] and m != "sip"]
+        if extra:
+            failures.append(f"PyQt6 modules the window doesn't use were bundled: {extra}")
+    # The bundled software's licence texts: INDEX.txt names every part the program carries, each with its texts.
+    failures += check_licences(final_dist)
+    facts["licences"] = [f"{row[0]} {row[1]}" for row in read_licence_index(final_dist) or ()]
+    # Every DLL and extension module a copy of the build Python's own, its packages' or the repo's (not the PATH's);
+    # from another Python than the build's (check_licences says so) its files can't vouch for them.
+    built_with = _build_python(final_dist)
+    other_python = bool(built_with) and built_with != _python_fingerprint(installed_distributions())
+    failures += [] if other_python else [f"{rel} is no copy of a file of this Python ({sys.base_prefix}), its packages or the repo's "
+                 "packaging/: PyInstaller took it from somewhere else (the build machine's PATH?)"
+                 for rel in foreign_binaries(final_dist)]
+    # The test tools (and Pygments): nothing of Surasura's runs them.
+    carried = never_bundled(final_dist, config["never_bundle"])
+    facts["never_bundled"] = carried
+    if carried:
+        failures.append(f"the program carries {carried}, which build_config's never_bundle keeps out of every build")
+    return failures, facts
+
+
+def frozen_modules(exe):
+    """The Python modules frozen into a built program (PyInstaller's PYZ archive inside `exe`) -> a set of names, or
+    None when `exe` holds no archive this PyInstaller can read, or one that names none of Surasura's own `app`
+    modules (a PYZ renamed or split by another PyInstaller: a reading that saw nothing proves nothing)."""
+    names = archive_modules(exe)
+    return names if names and any(n == "app" or n.startswith("app.") for n in names) else None
+
+
+def archive_modules(exe):
+    """Every Python module frozen into a built program's PYZ archive (tsubasa.exe's too, which holds no `app`) -> a
+    set of names, or None when `exe` holds no archive this PyInstaller can read."""
+    try:
+        from PyInstaller.archive.readers import CArchiveReader
+        archive = CArchiveReader(exe)
+        names = set()
+        for entry in archive.toc:
+            if entry.endswith(".pyz"):
+                names.update(archive.open_embedded_archive(entry).toc)
+        return names
+    except Exception:
+        return None
+
+
+def check_zip_licences(zip_path):
+    """The download zip carries Surasura's own licence files at its program folder's top, the bundled software's
+    INDEX.txt with every licence text it names, and PyQt6's and Qt's whenever it carries PyQt6. -> the failures."""
+    import zipfile
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+        tops = {n.split("/", 1)[1]: n for n in names if "/" in n}    # each name inside the zip's one program folder
+        index = "/".join(LICENCE_DIR + (LICENCE_INDEX,))
+        rows = parse_licence_index(z.read(tops[index]).decode("utf-8", "replace")) if index in tops else None
+    zip_name = os.path.basename(zip_path)
+    failures = [f"{zip_name} holds no {n}" for n in OWN_LICENCE_FILES if n not in tops]
+    if rows is None:
+        return failures + [f"{zip_name} holds no {index}"]
+    folder = "/".join(LICENCE_DIR)
+    failures += [f"{zip_name} holds no {folder}/{rel}" for row in rows for rel in row[3] if f"{folder}/{rel}" not in tops]
+    if any("/_internal/PyQt6/" in n for n in names):
+        failures += [f"{zip_name}'s {index} names no licence text of {dist}" for dist in QT_LICENCES
+                     if not any(row[0] == dist and row[3] for row in rows)]
+    return failures
+
+
+# --- The bundled software's licence texts (the licence switch, 3.0) -----------------------------------------------------
+# Every library the build freezes, and the parts no pip package brings (Python with the C libraries its Windows build
+# carries, PyInstaller's bootloader, OpenCC's tables), ships with its licence texts: step 3b copies each one's files into
+# _internal/licenses/<name>-<version>/ and writes _internal/licenses/INDEX.txt (name · version · licence · its files),
+# which Settings › App › Data credits lists (app/credits.py). What ships is read from the built program itself — the
+# modules frozen into its three Python programs and the entries of _internal — and matched to the build Python's
+# installed distributions by the top-level names their files install. A part with no licence text stops the build and
+# --check, named, unless LICENCE_EXCEPTIONS (reviewed) names it.
+LICENCE_DIR = ("_internal", "licenses")
+LICENCE_INDEX = "INDEX.txt"
+LICENCE_FILE_NAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
+QT_LICENCES = ("PyQt6", "PyQt6-Qt6")            # the window's: a program with PyQt6 never ships without them
+# Licence texts a bundled part's own files lack, as its upstream repository holds them (packaging/licenses/README.md
+# says where each came from): packaging/licenses/<name>/, added to that distribution's (or part's) files.
+SUPPLIED_LICENCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "licenses")
+# The reviewed exceptions: a part that ships with no licence text -> why (the index says it in its files' place).
+LICENCE_EXCEPTIONS = {
+    "SQLite": "none: SQLite is in the public domain and has no licence text (https://sqlite.org/copyright.html)",
+    "Microsoft Visual C++ runtime": "none of its own: Python's LICENSE.txt (its row) states the terms it is "
+                                    "redistributed under",
+}
+# Surasura's own top-level names in the built program: never matched to an installed distribution.
+OWN_ROOTS = {"app", "modules", "templates", "scripts", "samples", "defaults", "licenses", "app_entry", "tsubasa_entry",
+             "updater_helper", "base_library", "base_library.zip", "build_stamp", "build_stamp.json", ".env"}
+# Where installed_distributions() looks (None: this Python's sys.path); the tests point it at a made-up site-packages.
+LICENCE_SITE = None
+_NOT_TEXT = (".py", ".pyc", ".pyd", ".pyi", ".dll", ".so", ".exe")
+
+
+def _licence_name(meta):
+    """A distribution's licence in a few words: its License-Expression or a short License field, else its licence
+    classifiers ("see its licence files" when it says none)."""
+    for key in ("License-Expression", "License"):
+        text = (meta.get(key) or "").strip()
+        if text and text.upper() != "UNKNOWN" and "\n" not in text and len(text) <= 80:
+            return text
+    named = [c.split("::")[-1].strip() for c in meta.get_all("Classifier") or [] if c.startswith("License ::")]
+    return " / ".join(named) or "see its licence files"
+
+
+def _supplied(name):
+    """The texts packaging/licenses/<name>/ supplies -> [(source path, its name in the part's folder)], sorted."""
+    folder = os.path.join(SUPPLIED_LICENCES, name)
+    if not os.path.isdir(folder):
+        return []
+    return [(os.path.join(folder, n), (n,)) for n in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, n))]
+
+
+def installed_distributions(path=None):
+    """The installed distributions (on `path`, a list of folders; LICENCE_SITE / this Python's sys.path by default)
+    -> [{name, version, licence, roots, files}]: roots the top-level names its files install (a package's folder, a
+    module's name, a .libs or .dist-info folder), files its licence texts [(source path, name in its folder)] —
+    LICENSE* / LICENCE* / COPYING* / NOTICE* anywhere in it, everything in its .dist-info/licenses/, then what
+    packaging/licenses/<name>/ supplies. The first of a name on the path wins, as for an import."""
+    from importlib import metadata
+    path = LICENCE_SITE if path is None else path
+    found, seen = [], set()
+    for dist in (metadata.distributions(path=path) if path is not None else metadata.distributions()):
+        name = (dist.metadata["Name"] or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        roots, files, taken = set(), [], set()
+        records = [tuple(f.parts) for f in dist.files or []]
+        on_path = _pth_folders(dist, records)
+        for f, parts in zip(dist.files or [], records):
+            if not parts or parts[0] in ("..", "__pycache__") or ":" in parts[0]:
+                continue                                # a script outside site-packages, a cached module
+            roots.update({parts[0], parts[0].split(".")[0]} if len(parts) == 1 else {parts[0]})
+            for folder in on_path:                      # a module a .pth puts on the path: win32/lib/win32con.py
+                if len(parts) > len(folder) and parts[:len(folder)] == folder:
+                    roots.add(parts[len(folder)].split(".")[0])
+            base = parts[-1]
+            in_licenses = parts[0].endswith(".dist-info") and len(parts) > 2 and parts[1] == "licenses"
+            if not in_licenses and not (base.upper().startswith(LICENCE_FILE_NAMES) and
+                                        not base.lower().endswith(_NOT_TEXT)):
+                continue
+            rel = parts[1:] if parts[0].endswith(".dist-info") else parts
+            source = str(dist.locate_file(f))
+            if rel not in taken and os.path.isfile(source):
+                taken.add(rel)
+                files.append((source, rel))
+        supplied = [f for f in _supplied(name) if f[1] not in taken]
+        found.append({"name": name, "version": dist.version, "licence": _licence_name(dist.metadata),
+                      "roots": roots, "files": sorted(files, key=lambda f: f[1]) + supplied})
+    return found
+
+
+def _pth_folders(dist, records):
+    """The folders a distribution's top-level .pth files put on sys.path (pywin32's win32, win32/lib, Pythonwin), as
+    path parts -> a list of tuples."""
+    folders = []
+    for parts in records:
+        if len(parts) == 1 and parts[0].endswith(".pth"):
+            try:
+                with open(str(dist.locate_file(parts[0])), encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            folders += [tuple(line.strip().replace("\\", "/").split("/")) for line in lines
+                        if line.strip() and not line.startswith(("#", "import"))]
+    return folders
+
+
+def bundled_roots(final_dist):
+    """The top-level names a built program carries: those of the modules frozen into its three Python programs, and
+    the entries of _internal (each as it is and up to its first dot: `fugashi.libs`, `fugashi`) -> (roots, the names
+    frozen into Surasura.exe, or None when its archive can't be read)."""
+    roots, main = set(), None
+    for exe in ("Surasura.exe", CLI_EXE_NAME, TSUBASA_EXE_NAME):
+        path = os.path.join(final_dist, exe)
+        names = (archive_modules if exe == TSUBASA_EXE_NAME else frozen_modules)(path) if os.path.isfile(path) else None
+        if exe == "Surasura.exe":
+            main = names
+        roots.update(n.split(".")[0] for n in names or ())
+    internal = os.path.join(final_dist, "_internal")
+    for entry in _listing(internal):
+        roots.update({entry} if entry.endswith(".dist-info") else {entry, entry.split(".")[0]})
+    return roots - OWN_ROOTS - {""}, main
+
+
+def _listing(folder):
+    """A folder's entries, [] when it can't be listed."""
+    try:
+        return os.listdir(folder)
+    except OSError:
+        return []
+
+
+def licence_components(final_dist, dists=None):
+    """Every part with a licence the built program carries -> [{name, version, licence, files}], sorted by name: the
+    installed distributions (`dists`, installed_distributions() by default) whose top-level names it carries, then
+    the parts no pip package brings, each when it ships — Python (its pythonXY.dll), PyInstaller's bootloader (its
+    programs read as PyInstaller archives), OpenCC's tables (app.zh_script_data frozen in) and SQLite (sqlite3.dll)."""
+    dists = installed_distributions() if dists is None else dists
+    roots, main = bundled_roots(final_dist)
+    parts = [d for d in dists if d["roots"] & roots and d["name"].lower() != "pyinstaller"]
+    internal = os.path.join(final_dist, "_internal")
+    listing = _listing(internal)
+    if any(re.fullmatch(r"python3\d+\.dll", n, re.I) for n in listing):
+        licence = os.path.join(sys.base_prefix, "LICENSE.txt")
+        parts.append({"name": "Python", "version": ".".join(map(str, sys.version_info[:3])),
+                      "licence": "PSF-2.0, with the licences of the libraries its Windows build carries (OpenSSL, "
+                                 "libffi, bzip2, xz, zlib, Tcl/Tk …)",
+                      "files": [(licence, ("LICENSE.txt",))] if os.path.isfile(licence) else []})
+    if main:
+        pyinstaller = next((d for d in dists if d["name"].lower() == "pyinstaller"), None)
+        parts.append({"name": "PyInstaller", "version": pyinstaller["version"] if pyinstaller else "",
+                      "licence": "GPL-2.0-or-later with its bootloader exception (the programs' bootloader)",
+                      "files": pyinstaller["files"] if pyinstaller else []})
+    if main and "app.zh_script_data" in main:
+        parts.append({"name": "OpenCC", "version": "1.4.2", "licence": "Apache-2.0 (its tables, in app.zh_script_data)",
+                      "files": _supplied("OpenCC")})
+    if "sqlite3.dll" in listing:
+        parts.append({"name": "SQLite", "version": sqlite_version_of(os.path.join(internal, "sqlite3.dll")) or "",
+                      "licence": "Public domain", "files": []})
+    if any(n.lower().startswith("vcruntime140") for n in listing):
+        parts.append({"name": "Microsoft Visual C++ runtime", "version": "", "files": [],
+                      "licence": "Microsoft Distributable Code, redistributed with Python (its LICENSE.txt's "
+                                 "Additional Conditions for this Windows binary build)"})
+    return sorted(parts, key=lambda p: p["name"].lower())
+
+
+# What PyInstaller itself adds beside the frozen code: Python's Tcl/Tk folders and its own runtime hooks' helper.
+PYINSTALLER_NAMES = {"_tcl_data", "_tk_data", "tcl8", "_pyi_rth_utils"}
+
+
+def unclaimed(final_dist, dists=None):
+    """The names the built program carries (`bundled_roots`) that no installed distribution, no part of
+    `licence_components`, Python's own standard library and install folder, PyInstaller nor Surasura claims -> sorted.
+    Code or a DLL from somewhere else (an editable install, a package without its RECORD, a DLL PyInstaller found on
+    the build machine's PATH) ships under a licence nobody looked at."""
+    dists = installed_distributions() if dists is None else dists
+    roots, _main = bundled_roots(final_dist)
+    known = {r.lower() for d in dists for r in d["roots"]} | {n.lower() for n in sys.stdlib_module_names}
+    for folder in (sys.base_prefix, os.path.join(sys.base_prefix, "DLLs")):
+        known.update(n.lower() for entry in _listing(folder) for n in (entry, entry.split(".")[0]))
+    known |= {n.lower() for name in PYINSTALLER_NAMES for n in (name, name.split(".")[0])}
+    left = {n for n in roots if n.lower() not in known and not n.startswith(("pyimod", "pyi_rth_"))}
+    return sorted(n for n in left if not any(m != n and m.split(".")[0] == n for m in left))   # an entry, not its stem
+
+
+def parse_licence_index(text):
+    """INDEX.txt's rows -> [(name, version, licence, [its files, relative to _internal/licenses])]: every line that
+    isn't blank or a # comment, split at " · " (a files column in brackets is a reviewed exception: no files)."""
+    rows = []
+    for line in (text or "").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        cells = line.split(" · ")
+        if len(cells) < 4:
+            continue
+        files = " · ".join(cells[3:]).strip()
+        rows.append((cells[0].strip(), cells[1].strip(), cells[2].strip(),
+                     [] if files.startswith("(") else [f.strip() for f in files.split(", ") if f.strip()]))
+    return rows
+
+
+def read_licence_index(final_dist):
+    """A built program's _internal/licenses/INDEX.txt, parsed (`parse_licence_index`) -> its rows, or None when it
+    can't be read."""
+    try:
+        with open(os.path.join(final_dist, *LICENCE_DIR, LICENCE_INDEX), encoding="utf-8") as f:
+            return parse_licence_index(f.read())
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _licence_folder(part):
+    return f"{part['name']}-{part['version']}" if part["version"] else part["name"]
+
+
+def gather_licences(final_dist, dists=None):
+    """Step 3b: every part the built program carries (`licence_components`), its licence texts copied into
+    _internal/licenses/<name>-<version>/ and INDEX.txt written -> the failures: each part with no licence text that
+    LICENCE_EXCEPTIONS doesn't name (then no INDEX.txt is written, and the build stops)."""
+    folder = os.path.join(final_dist, *LICENCE_DIR)
+    dists = installed_distributions() if dists is None else dists
+    parts = licence_components(final_dist, dists)
+    failures = [f"{p['name']} {p['version']} ships with no licence text (no LICENSE, COPYING or NOTICE file in its "
+                f"distribution): add its text to packaging/licenses/{p['name']}/ (README.md there: from where), or "
+                "name it in package_app.LICENCE_EXCEPTIONS after a review"
+                for p in parts if not p["files"] and p["name"] not in LICENCE_EXCEPTIONS]
+    failures += [_STRAY.format(n) for n in unclaimed(final_dist, dists)]
+    failures += [f"{p['name']}'s licence or a text's name holds ' · ' or ', ', which INDEX.txt can't carry" for p in parts
+                 if " · " in p["licence"] or any(", " in "/".join(rel) for _src, rel in p["files"])]
+    if failures:
+        return failures
+    lines = ["# The software Surasura's program bundles, each with its licence: name · version · licence · its texts "
+             "(in this folder).", "# Written by the build (package_app.py); Settings › App › Data credits lists it.",
+             BUILD_PYTHON_MARK + _python_fingerprint(dists), ""]
+    for part in parts:
+        sub, written = _licence_folder(part), []
+        for source, rel in part["files"]:
+            target = os.path.join(folder, sub, *rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(source, target)
+            written.append("/".join((sub,) + tuple(rel)))
+        files = ", ".join(written) if written else f"({LICENCE_EXCEPTIONS[part['name']]})"
+        lines.append(" · ".join((part["name"], part["version"] or "-", part["licence"], files)))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, LICENCE_INDEX), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\n".join(lines) + "\n")
+    return []
+
+
+def check_licences(final_dist, dists=None):
+    """The post-build check of step 3b, also --check's: INDEX.txt names every part the built program carries
+    (`licence_components`) at its version, each text it names is there and not empty, a row without texts is a
+    reviewed exception, and a program with PyQt6 names PyQt6's and Qt's texts -> the failures."""
+    index = "/".join(LICENCE_DIR + (LICENCE_INDEX,))
+    rows = read_licence_index(final_dist)
+    if rows is None:
+        return [f"{index} can't be read: the bundled software's licence texts were not gathered (step 3b)"]
+    failures = []
+    dists = installed_distributions() if dists is None else dists
+    built_with = _build_python(final_dist)
+    # The parts are matched to this Python's packages: another Python's versions would read as missing texts.
+    rows_only = bool(built_with) and built_with != _python_fingerprint(dists)
+    if rows_only:
+        failures.append(f"{index} was written by another Python ({built_with}; this one is "
+                        f"{_python_fingerprint(dists)}, {sys.executable}): check the program with the Python that built "
+                        "it")
+    named = {(row[0], row[1]) for row in rows}
+    for part in [] if rows_only else licence_components(final_dist, dists):
+        if (part["name"], part["version"] or "-") not in named:
+            failures.append(f"{index} doesn't name {part['name']} {part['version']}, which the program carries")
+    folder = os.path.join(final_dist, *LICENCE_DIR)
+    for name, version, _licence, files in rows:
+        if not files and name not in LICENCE_EXCEPTIONS:
+            failures.append(f"{index} names {name} {version} with no licence text, and it is no reviewed exception")
+        for rel in files:
+            path = os.path.join(folder, *rel.split("/"))
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                failures.append(f"{'/'.join(LICENCE_DIR)}/{rel}, which {index} names, is missing or empty")
+    if os.path.isdir(os.path.join(final_dist, "_internal", "PyQt6")):
+        failures += [f"{index} names no licence text of {dist}" for dist in QT_LICENCES
+                     if not any(row[0] == dist and row[3] for row in rows)]
+    return failures + ([] if rows_only else [_STRAY.format(n) for n in unclaimed(final_dist, dists)])
+
+
+_STRAY = ("the program carries {}, which comes from neither this Python, nor a package it has installed, nor a part with "
+          "its licence text (found on the build machine's PATH?): leave it out, or give it a part in licence_components")
+BUILD_PYTHON_MARK = "# Build Python: "
+
+
+def _python_fingerprint(dists):
+    """The build Python in INDEX.txt, without a path (a path would name the build machine's user): its version and a
+    short hash of its installed distributions' names and versions -> 'Python 3.11.9, packages 0123456789abcdef'."""
+    import hashlib
+    listed = "\n".join(sorted(f"{d['name'].lower()}=={d['version']}" for d in dists))
+    return f"Python {'.'.join(map(str, sys.version_info[:3]))}, packages " + \
+        hashlib.sha256(listed.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_python(final_dist):
+    """The Python INDEX.txt says the build ran with, or None."""
+    try:
+        with open(os.path.join(final_dist, *LICENCE_DIR, LICENCE_INDEX), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(BUILD_PYTHON_MARK):
+                    return line[len(BUILD_PYTHON_MARK):].strip() or None
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+# --- Where the bundled binaries come from (Minato-BE, 2026-11-10) -------------------------------------------------------
+# PyInstaller takes a DLL it finds on PATH outside the Windows folder whenever its include list names it: a local build
+# from Git Bash carried Git for Windows' OpenSSL (ucrt64\bin, for Qt's TLS), GitHub's runner a UCRT and MFC copy. The
+# freeze runs with PATH cut to this Python's folders and Windows' (`freeze_env`), and --check refuses any DLL or
+# extension module that is no byte copy of a file of the build Python, its packages or the repo (`foreign_binaries`).
+BINARY_SUFFIXES = (".dll", ".pyd")
+# Where a bundled binary may come from (None: `binary_roots()`); the tests point it at a made-up site-packages.
+BINARY_ROOTS = None
+
+
+def freeze_env(environ=None):
+    """The environment PyInstaller runs in: `environ` (os.environ) with PATH cut to the build Python's own folders and
+    Windows' -> a new dict."""
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k.upper() != "PATH"}
+    windows = env.get("SystemRoot") or env.get("SYSTEMROOT") or env.get("windir") or env.get("WINDIR") or r"C:\Windows"
+    folders = [os.path.dirname(sys.executable), sys.prefix, os.path.join(sys.prefix, "Scripts"), sys.base_prefix,
+               os.path.join(sys.base_prefix, "DLLs"), os.path.join(windows, "System32"), windows,
+               os.path.join(windows, "System32", "Wbem")]
+    env["PATH"] = os.pathsep.join(dict.fromkeys(folders))
+    return env
+
+
+def _inside(path, folder):
+    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def binary_roots():
+    """The folders a built program's DLLs and extension modules may be copies of: this Python's install and
+    environment, the folders on its sys.path neither inside the repo nor holding it (a PYTHONPATH site, the user
+    site), and the repo's
+    packaging/ (the vendored SQLite) -> a list, none inside another."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots = [sys.base_prefix, sys.prefix] + [p for p in sys.path if p and os.path.isdir(p) and not _inside(p, here)
+                                        and not _inside(here, p)]
+    roots.append(os.path.join(here, "packaging"))
+    roots = list(dict.fromkeys(os.path.abspath(r) for r in roots))
+    return [r for r in roots if not any(o != r and _inside(r, o) for o in roots)]
+
+
+def foreign_binaries(final_dist, roots=None):
+    """The DLLs and extension modules under a built program's _internal that are no byte copy of a file of the same
+    name under `roots` (BINARY_ROOTS, else `binary_roots()`; the program folder itself never counts) -> their paths
+    relative to the program folder, sorted."""
+    roots = (BINARY_ROOTS if BINARY_ROOTS is not None else binary_roots()) if roots is None else roots
+    found = {}
+    for root in roots:
+        for dirpath, dirs, files in os.walk(root):
+            if _inside(dirpath, final_dist):
+                dirs[:] = []
+                continue
+            for name in files:
+                if name.lower().endswith(BINARY_SUFFIXES):
+                    found.setdefault(name.lower(), []).append(os.path.join(dirpath, name))
+    foreign = []
+    for dirpath, _dirs, files in os.walk(os.path.join(final_dist, "_internal")):
+        for name in files:
+            if not name.lower().endswith(BINARY_SUFFIXES):
+                continue
+            path = os.path.join(dirpath, name)
+            size = os.path.getsize(path)
+            same = [p for p in found.get(name.lower(), ()) if os.path.getsize(p) == size]
+            if not same or _sha256(path) not in {_sha256(p) for p in same}:
+                foreign.append(os.path.relpath(path, final_dist).replace(os.sep, "/"))
+    return sorted(foreign)
+
+
+def never_bundled(final_dist, names):
+    """Which of `names` (build_config's never_bundle) a built program carries: a module frozen into one of its three
+    programs, or an entry of its _internal (a package's folder, its .dist-info) -> the names, sorted."""
+    wanted = {n.lower() for n in names}
+    roots, _main = bundled_roots(final_dist)
+    return sorted({re.split(r"[-.]", r, 1)[0] for r in roots if re.split(r"[-.]", r, 1)[0].lower() in wanted})
+
+
+# --- tsubasa (T1 B, 2026-10-21) ----------------------------------------------------------------------------------------
+# tsubasa.exe is frozen from the installed tsubasa-sync, the one requirements.txt pins exactly (`tsubasa-sync==X.Y.Z`).
+# A build refuses an installed tsubasa-sync that isn't the pin (before freezing) and a built tsubasa.exe whose
+# `--version` isn't the pin or says it lost its data (after): a stale tsubasa never ships. The build ritual first moves
+# the pin to tsubasa's latest release (packaging/tsubasa_pin.py, Pre-build_check.md): a tsubasa fix reaches users in
+# Surasura's next update, its own part (build_config's "tsubasa"). Nothing here imports tsubasa (K1).
+TSUBASA_DIST = "tsubasa-sync"
+REQUIREMENTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+_TSUBASA_LINE = re.compile(r"tsubasa[-_.]sync(?![\w.-])", re.I)
+_TSUBASA_PIN = re.compile(r"tsubasa[-_.]sync\s*==\s*(\d+(?:\.\d+){1,3})\Z", re.I)
+
+
+def tsubasa_pin(path=REQUIREMENTS):
+    """The tsubasa-sync version requirements.txt pins -> 'X.Y.Z', or None unless exactly one line pins it exactly
+    (a range, an extra, a marker or a second line is no pin)."""
+    found = []
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if _TSUBASA_LINE.match(line):
+                    pinned = _TSUBASA_PIN.match(line)
+                    found.append(pinned.group(1) if pinned else None)
+    except OSError:
+        return None
+    return found[0] if len(found) == 1 else None
+
+
+def tsubasa_installed():
+    """The tsubasa-sync version this Python freezes -> 'X.Y.Z', or None when it isn't installed (its metadata: never
+    an import)."""
+    from importlib import metadata
+    try:
+        return metadata.version(TSUBASA_DIST)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def tsubasa_version_of(exe):
+    """`<exe> --version` -> (exit code, its first line). tsubasa says `tsubasa <version>` first and exits 0 when the
+    build is whole, 1 when its self-check found its name tables or numpy missing. (None, why) when it won't run."""
+    try:
+        done = subprocess.run([exe, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"it won't run ({type(e).__name__})"
+    lines = (done.stdout or "").splitlines()
+    return done.returncode, (lines[0].strip() if lines else "")
+
+
+def check_tsubasa(final_dist, pin=None, version_of=None):
+    """The program's tsubasa.exe is the pinned tsubasa, whole -> (failures, the first line it said, or None)."""
+    pin = tsubasa_pin() if pin is None else pin
+    if not pin:
+        return ["requirements.txt pins no tsubasa-sync==X.Y.Z"], None
+    code, said = (version_of or tsubasa_version_of)(os.path.join(final_dist, TSUBASA_EXE_NAME))
+    if code != 0 or said != f"tsubasa {pin}":
+        return [f"{TSUBASA_EXE_NAME} --version says {said!r} (exit {code}), not a whole 'tsubasa {pin}': the bundle's "
+                "tsubasa is stale or broken (pip install -r requirements.txt, then build again)"], said
+    return [], said
+
+
+def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False,
+          needs_installer=False):
     version = get_version()
     build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
     zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
     print(f"Building Readability Analyzer {zip_name}...")
+    try:
+        config = load_build_config()
+    except (OSError, ValueError) as e:
+        print(f"Build aborted: {e}")
+        return False
+    data_name = data_name or config["data_name"]
+    if not valid_data_name(data_name, config["data_name"]):
+        print(f"Build aborted: --data-name {data_name!r} is not a plain folder name, or is the real one "
+              f"({config['data_name']!r}) in another case.")
+        return False
 
-    # A release always produces the full zip too; --full-update implies --release.
+    # A release always produces the full zip too; --full-update (2.x's runtime release) implies --release.
     if full_update:
         release = True
     if release:
         zip_output = True
 
+    if _python_version() < _version_tuple(config["python_min"]):
+        # P0.3 02-contract §8: on 3.11.2 a frozen console program with no stderr crashes on a usage error. A real
+        # release stops; a test build (its own data_name), release or not, only warns.
+        if release and data_name.casefold() == config["data_name"].casefold():
+            print(f"Build aborted: a release needs Python {config['python_min']} or later "
+                  f"(this is {sys.version.split()[0]}).")
+            return False
+        print(f"WARNING: building on Python {sys.version.split()[0]}; surasura-cli wants {config['python_min']} "
+              "or later. A test build only: a real --release refuses it.")
+
+    if installer and not find_iscc():
+        print(f"Build aborted: --installer: {ISCC_MISSING}")
+        return False
+    try:
+        shape = install_shape()
+    except OSError as e:
+        print(f"Build aborted: packaging/surasura.iss can't be read for the install shape ({e}).")
+        return False
+    pin, have = tsubasa_pin(), tsubasa_installed()
+    if not pin or have != pin:
+        print(f"Build aborted: requirements.txt pins tsubasa-sync {pin or '(no exact ==X.Y.Z)'}, and this Python has "
+              f"{have or 'none'}: tsubasa.exe would be built from another tsubasa. Run pip install -r requirements.txt.")
+        return False
+
     # Gate: everything being bundled must be testable first.
     if skip_tests:
         print("WARNING: --skip-tests set; skipping the pre-build test gate.")
-    elif not run_pre_build_tests():
+    elif not run_pre_build_tests(config["modules"]):
         print("Build aborted: fix failing tests first (or pass --skip-tests to override).")
-        return
+        return False
 
-    # Clean previous build
-    if os.path.exists("dist"):
-        try:
-            shutil.rmtree("dist")
-        except Exception:
-            pass
-    if os.path.exists("build"):
-        try:
-            shutil.rmtree("build")
-        except Exception:
-            pass
+    # Clean previous build: a tree that can't be removed stops the build, so a stale dist\Surasura (one an earlier
+    # build's program still holds open) is never packaged.
+    for folder in ("dist", "build"):
+        if os.path.exists(folder):
+            try:
+                shutil.rmtree(folder)
+            except OSError as e:
+                print(f"Build aborted: {os.path.abspath(folder)} can't be removed ({e}). Close what holds it open "
+                      "(an earlier build's Surasura, a window on it) and build again.")
+                return False
 
     # PyInstaller Command
     # Use the spec file in packaging/ directory
@@ -305,153 +1389,96 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
         "--workpath", "build",
         os.path.join("packaging", "Surasura.spec")
     ]
-    
+
     print(f"Running: {' '.join(cmd)}")
-    
+
     # Ensure debug folder exists for logs
     if not os.path.exists("debug"):
         os.makedirs("debug", exist_ok=True)
-        
-    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release):
-        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-    
+
+    import datetime
+    import secrets
+    build_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release, build_id, source_commit()):
+        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=freeze_env())
+
     if result.returncode != 0:
         print("Build failed. Check debug/build_log.txt for details.")
-        return
+        return False
 
-    # Post-Build: Create Distribution Folder
+    # Post-Build: the program folder. It holds the program only (S3.1 D15): no settings.json, User Files\, data\ or
+    # results\ — those are the library's, made at the program's first start.
     print("Creating Distribution Package...")
     final_dist = os.path.join("dist", build_name)
-    
-    # Clean previous distribution logic removed because we already cleaned dist at the start
-    # and PyInstaller works directly in this folder now.
-
-
-    # 1. Handle Built Files
-    # The spec file is configured to output directly to dist/{build_name}
-    # So we just need to verify it exists.
-    
     if not os.path.exists(final_dist):
         print(f"Error: Build output not found at {final_dist}")
-        return
+        return False
 
     print(f"Build output verified at {final_dist}")
+    for exe_name in ("Surasura.exe", CLI_EXE_NAME):
+        exe_path = os.path.join(final_dist, exe_name)
+        if not os.path.isfile(exe_path):
+            print(f"Error: {exe_name} not found in {final_dist}")
+            return False
+        print(f"  {exe_name}: {os.path.getsize(exe_path) / (1024 * 1024):.1f} MB")
 
-    # 2. Copy User Files (SANITIZED)
-    print("Copying User Files (Sanitized)...")
-    dst_user_files_base = os.path.join(final_dist, "User Files")
-    os.makedirs(dst_user_files_base, exist_ok=True)
-    
-    supported_languages = ["ja", "zh"]
-    
-    # A. Global Files (None Currently)
+    # 1. SQLite: the vendored sqlite.org build replaces the one Python 3.11 bundles (S3.1 D16).
+    reason = swap_sqlite(final_dist, config)
+    if reason:
+        print(f"Build failed: {reason}.")
+        return False
 
-    # B. Language Specific User Files
-    for lang in supported_languages:
-        dst_user_files_lang = os.path.join(dst_user_files_base, lang)
-        os.makedirs(dst_user_files_lang, exist_ok=True)
-        
-        # NOTE: KnownWord.json is explicitly EXCLUDED from build.
-        # Users start with a clean slate.
+    # 2. The bundled lists, for a new library's first start.
+    for path in copy_default_lists(final_dist):
+        print(f"Bundled default list: {path}")
 
-        # Create/Copy Ignore List
-        src_ignore = os.path.join("User Files", lang, "IgnoreList.txt")
-        if os.path.exists(src_ignore):
-             shutil.copy2(src_ignore, os.path.join(dst_user_files_lang, "IgnoreList.txt"))
-        else:
-            with open(os.path.join(dst_user_files_lang, "IgnoreList.txt"), "w", encoding="utf-8") as f:
-                f.write("# Add words to ignore here (one per line)\n")
-
-        # Copy Blacklist
-        src_blacklist = os.path.join("User Files", lang, "Blacklist.txt")
-        if os.path.exists(src_blacklist):
-            print(f"Bundling Blacklist for {lang}...")
-            shutil.copy2(src_blacklist, os.path.join(dst_user_files_lang, "Blacklist.txt"))
-        
-        # Copy Specific Frequency List (Only for JA)
-        if lang == "ja":
-            specific_freq_list = "frequency_list_ja_global50k.csv"
-            src_freq = os.path.join("User Files", "ja", specific_freq_list)
-            if os.path.exists(src_freq):
-                print(f"Bundling specific frequency list: {specific_freq_list}")
-                shutil.copy2(src_freq, os.path.join(dst_user_files_lang, specific_freq_list))
-        
-    # C. Copy Global Frequency Lists (CSV)
-    # Removed: We only bundle the specific 'frequency_list_ja_global50k.csv' now.
-
-
-    # D. Copy Legacy Yomitan Frequency Lists (Zips) - Optional/Legacy
-    freq_lists_legacy = [
-        "jiten_freq_Anime.zip",
-        "jiten_freq_Drama.zip",
-        "jiten_freq_global.zip",
-        "jiten_freq_Manga.zip",
-        "jiten_freq_Movie.zip",
-        "jiten_freq_NonFiction.zip",
-        "jiten_freq_Novel.zip",
-        "jiten_freq_VideoGame.zip",
-        "jiten_freq_VisualNovel.zip",
-        "jiten_freq_WebNovel.zip",
-    ]
-    for freq_file in freq_lists_legacy:
-        src_freq = os.path.join("User Files", freq_file)
-        if os.path.exists(src_freq):
-            shutil.copy2(src_freq, os.path.join(dst_user_files_base, freq_file))
-
-    # 3. Create EMPTY Data Directories.
-    # A fresh install ships with EMPTY tiers so the Content Manager's empty-state onboarding appears.
-    # Sample content is bundled as a resource (see Surasura.spec datas) and seeded ONLY on demand via
-    # the "Test with samples" action -> path_utils.seed_samples. Do NOT copy samples into data/ here.
-    print("Creating empty data directories...")
-    data_dir_base = os.path.join(final_dist, "data")
-    for lang in supported_languages:
-        for category in ["HighPriority", "LowPriority", "GoalContent", "Processed"]:
-            os.makedirs(os.path.join(data_dir_base, lang, category), exist_ok=True)
-
-    # 4. Create Results Directory
-    os.makedirs(os.path.join(final_dist, "results"), exist_ok=True)
-    
-    # 5. Copy Documentation
-    # 5. Copy Documentation
-    # We copy these from the docs/ folder to the root of the distribution
-    # so the user sees them immediately upon opening the folder.
-    
+    # 3. Documentation, at the top of the program folder.
     docs_to_copy = [
         ("README.md", "README.md"),
         (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
-        # Packaged under a STABLE name so it isn't version-stamped (and so an app update can refresh
-        # it in place — see _build_app_package + updater.build_marker). Content keeps its version header.
-        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md")
-    ]
-
+        # Packaged under a STABLE name so it isn't version-stamped (and so an update refreshes it in place).
+        # Content keeps its version header.
+        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md"),
+    ] + [(os.path.join(*name.split("/")), name) for name in OWN_LICENCE_FILES]     # Surasura's own licence files
     for src, dst_name in docs_to_copy:
         if os.path.exists(src):
-             shutil.copy2(src, os.path.join(final_dist, dst_name))
+            dst = os.path.join(final_dist, *dst_name.split("/"))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
         else:
             print(f"Warning: Documentation file not found: {src}")
 
-    # 6. Generate Clean Settings for Distribution
-    print("Generating Clean Settings for Distribution...")
-    try:
-        from app import settings_manager
-        # Get defaults
-        clean_settings = settings_manager.get_default_settings()
-        # Ensure 'hide_satoru' is GONE
-        if "hide_satoru" in clean_settings:
-            del clean_settings["hide_satoru"]
-            
-        settings_dst = os.path.join(final_dist, "settings.json")
-        with open(settings_dst, 'w', encoding='utf-8') as f:
-            json.dump(clean_settings, f, indent=4)
-        print(f"Clean settings.json created at {settings_dst}")
-    except Exception as e:
-        print(f"Warning: Could not generate clean settings: {e}")
+    # 3b. The bundled software's licence texts, into _internal/licenses/ with its INDEX.txt: a part without one stops
+    #     the build here (unless LICENCE_EXCEPTIONS names it).
+    licence_failures = gather_licences(final_dist)
+    if licence_failures:
+        print("Build failed:\n  " + "\n  ".join(licence_failures))
+        return False
+    print(f"Licence texts: {len(read_licence_index(final_dist) or ())} parts in _internal/licenses/{LICENCE_INDEX}")
 
-    # 6.5 Bundle updater.exe BEFORE zipping so the full package ships the helper (release only).
-    if release:
-        _build_updater_exe(final_dist)
+    # 4. The build stamp (S3.1 D18).
+    write_build_stamp(final_dist, version, build_id, data_name, shape)
+    print(f"Build stamp: version {version}, build {build_id}, data folder name {data_name}, install shape {shape}")
+
+    # 5. Bundle updater.exe BEFORE the checks, the zip, the installer and the release's file list: every build ships
+    #    the swapper (S3.1 D9), a test build too.
+    if not _build_updater_exe(final_dist):
+        print("Build failed: every build needs updater.exe.")
+        return False
+
+    # 6. The post-build checks: exactly the four programs, no library, SQLite's floor, the stamp, PyQt6's modules, the
+    #    bundled software's licence texts, and tsubasa.exe the pinned tsubasa. Any failure stops here (nothing is zipped).
+    failures, facts = check_program(final_dist, config)
+    tsubasa_failures, facts["tsubasa"] = check_tsubasa(final_dist)
+    failures += tsubasa_failures
+    print(f"Checks: programs {facts.get('exes')}, SQLite {facts.get('sqlite')}, "
+          f"PyQt6 {facts.get('qt_modules', 'not bundled')}, {facts['tsubasa']}")
+    if failures:
+        print("Build failed:\n  " + "\n  ".join(failures))
+        return False
 
     # 7. Create Zip Archive
+    zipped = False
     if zip_output:
         print("Creating Zip Archive...")
         archive_base = os.path.join("dist", zip_name) # -> dist/Surasura_v<version>.zip
@@ -460,34 +1487,90 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
             # of a version-stamped folder that would look stale after an in-place update.
             shutil.make_archive(archive_base, 'zip', root_dir="dist", base_dir=build_name)
             print(f"Zip archive created: {archive_base}.zip")
+            zipped = True
         except Exception as e:
             print(f"Warning: Could not create zip archive: {e}")
+            if release:
+                print("Build failed: a release needs its full zip.")
+                return False
+        zip_failures = check_zip_licences(archive_base + ".zip") if zipped else []
+        if zip_failures:
+            print("Build failed:\n  " + "\n  ".join(zip_failures))
+            return False
     else:
         print("Skipping Zip Archive creation (use --zip to enable).")
 
-    # 8. Emit the auto-update artifacts (app package + update.json) — release only.
+    # 8. The installer (--installer): dist\Surasura as built, into dist\Surasura-<ver>-setup.exe.
+    built_installer = None
+    if installer:
+        built_installer = build_installer(final_dist, version, data_name, config["data_name"])
+        if built_installer is None:
+            print("Build failed: --installer asked for the installer.")
+            return False
+
+    # 9. The 3.x update artifacts (parts, update.json, update.json.sig) — release only. The installer built just now
+    #    rides as 2.x's hand-off (update_type "installer"); without one, update.json says "full".
     if release:
-        _build_app_package(final_dist, version, full_update)
+        if _build_release(final_dist, version, config, out_dir="dist", installer=built_installer,
+                          needs_installer=needs_installer) is None:
+            print("Build failed: the release's update.json was not written (see the error above).")
+            return False
+        print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
+              + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
+              + (", the installer under both its names" if built_installer else ""))
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")
-    if zip_output:
+    if zipped:
         print(f"Zip Archive: {os.path.abspath(archive_base + '.zip')}")
     print("---------------------------------------------------")
 
-    # Open the dist folder in File Explorer
-    try:
-        os.startfile(os.path.abspath("dist"))
-    except Exception:
-        pass
+    # Open the dist folder in File Explorer — never on a CI runner (CI set, as GitHub's runners do): there nobody looks,
+    # and the open window holds dist, so the package proof's next step couldn't move it (Permission denied, 2026-10-15
+    # to 10-22, with no process of ours holding it).
+    if not os.environ.get("CI"):
+        try:
+            os.startfile(os.path.abspath("dist"))
+        except Exception:
+            pass
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build and package Surasura.")
     parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the pre-build test gate (not recommended).")
     parser.add_argument("--release", action="store_true",
-                        help="Also build updater.exe and emit the auto-update artifacts (app package zip + update.json). Implies --zip.")
+                        help="Also emit the 3.x update artifacts (parts, update.json, update.json.sig). "
+                             "Implies --zip. Refuses a Python below build_config's floor.")
     parser.add_argument("--full-update", action="store_true",
-                        help="Mark this release as a full/manual update (runtime or major change). Sets update_type=full and advances runtime_baseline. Implies --release.")
+                        help="2.x's runtime release; on the 3.0 line the same as --release (every release lists "
+                             "every file).")
+    parser.add_argument("--data-name", default=None,
+                        help="The program's data folder name in the build stamp (default: build_config's "
+                             "data_name, 'Surasura'); a test build uses its own, e.g. Surasura-test.")
+    parser.add_argument("--installer", action="store_true",
+                        help="Also compile packaging/surasura.iss with Inno Setup 6 (ISCC) into "
+                             "dist\\Surasura-<ver>-setup.exe; with --release, update.json carries it for 2.x.")
+    parser.add_argument("--needs-installer", action="store_true",
+                        help="With --release: every 3.x install takes this release through its installer, even when "
+                             "packaging/surasura.iss's install shape is unchanged (e.g. a new install folder).")
+    parser.add_argument("--check", metavar="FOLDER", default=None,
+                        help="Only run the post-build checks on a built program folder (e.g. dist\\Surasura); "
+                             "prints CHECKS OK or the failures.")
     args = parser.parse_known_args()[0]
-    build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release, full_update=args.full_update)
+    if args.check:
+        checked, found = check_program(args.check, load_build_config())
+        tsubasa_failures, found["tsubasa"] = check_tsubasa(args.check)
+        checked += tsubasa_failures
+        zips = [os.path.join(os.path.dirname(os.path.abspath(args.check)), n)
+                for n in os.listdir(os.path.dirname(os.path.abspath(args.check)))
+                if n.startswith("Surasura_v") and n.endswith(".zip")]
+        for z in zips:
+            checked += check_zip_licences(z)
+        print(json.dumps(found, ensure_ascii=False))
+        print("CHECKS OK" if not checked else "CHECKS FAILED:\n  " + "\n  ".join(checked))
+        sys.exit(1 if checked else 0)
+    # A failed build exits 1, so a workflow step or a script that runs it stops there.
+    sys.exit(0 if build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release,
+                        full_update=args.full_update, data_name=args.data_name, installer=args.installer,
+                        needs_installer=args.needs_installer) else 1)

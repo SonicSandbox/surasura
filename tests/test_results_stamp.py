@@ -142,6 +142,8 @@ def _fast_path_state(stamp):
                  "reading_list_static.html"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    from tests.plan_file_cases import write_plan_header
+    write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
     analyzer._set_run_stamp(results, sig if stamp == "this run" else stamp)
     return argv
 

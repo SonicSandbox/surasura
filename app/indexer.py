@@ -42,7 +42,113 @@ def _content_files(data_dir, language=None):
     return files
 
 
+def token_store_lists(language, data_dir, files):
+    """The token store's lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
+    found files): (counted, {"kept", "aside", "elsewhere", "forgotten", "moved"}) — `Store.reconcile(counted, ...,
+    **more)`, and `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted
+    items they lack (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (New
+    arrivals, removed items whose text wasn't forgotten); aside = its set-aside list (reference: Finished, W-1b, and
+    watched episodes while *Keep studying watched episodes* is off, W-1 — never summed, still the name tables' evidence
+    and a sentence source), less what `files` names; elsewhere = {a removed item's path: where its file is in the
+    trash}; forgotten = the removed items whose sentences the user forgot; moved = the library store's move notes
+    (`text_moved`, D7a), (old, old size, old mtime_ns, new, size, mtime_ns).
+    Absolute paths under `data_dir`. Without one (JSON mode, no library store): (`files`, {}) — the kept and set-aside
+    rows and their text left as they are. (None, None) when a library store is there but its lists can't be read now
+    (busy, read-only, an error): don't reconcile — `files` lacks its missing items, which would leave the token store
+    with their text unkept."""
+    try:
+        from app import library_store
+        from app.path_utils import get_user_files_path
+        mode, reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
+        if mode == "json":
+            return files, {}
+        if mode != "store":
+            return None, None
+        store = library_store.open_store(language, data_dir, get_user_files_path(language), role="reader",
+                                         busy_wait=0.0)
+        if store is None:
+            return None, None
+        with store:
+            counted_rel, kept_rel, aside_rel = store.text_lists()
+            trashed, forgotten, moved = store.text_elsewhere(), store.text_forgotten(), store.text_moved()
+    except Exception:
+        return None, None
+
+    def full(rel):
+        return os.path.join(data_dir, *(rel[2:] if rel.startswith("./") else rel).split("/"))
+
+    from app.token_index import _norm
+    seen = {_norm(p) for p in files}
+    counted = list(files)
+    for rel in counted_rel:
+        path = full(rel)
+        if _norm(path) not in seen:
+            seen.add(_norm(path))
+            counted.append(path)
+    aside = [full(rel) for rel in aside_rel if _norm(full(rel)) not in seen]
+    return counted, {"kept": [full(rel) for rel in kept_rel], "aside": aside,
+                     "elsewhere": {full(rel): full(where) for rel, where in trashed.items()},
+                     "forgotten": [full(rel) for rel in forgotten],
+                     "moved": [(full(old), old_size, old_ns, full(new), size, ns)
+                               for old, old_size, old_ns, new, size, ns in moved]}
+
+
+def run_lists(language, data_dir, files, store):
+    """Generate's lists for `store.reconcile` (the token store `store`): `token_store_lists`; when the library store
+    can't be read now (busy, read-only), the run's list alone, with every other counted or set-aside row the token
+    store holds handed on as set aside — summed nowhere, dropped never (a watched episode the indexer hasn't moved
+    yet keeps its tokens); the indexer's next pass, with the library's lists, puts each where it belongs."""
+    counted, more = token_store_lists(language, data_dir, files)
+    if counted is not None:
+        return counted, more
+    from app.token_index import _norm
+    named = {_norm(p) for p in files}
+    return list(files), {"aside": [p for p in store.counted_files() + store.aside_files() if p not in named]}
+
+
+PROGRESS_LINE = "Indexer: {done} of {total}"     # read back by setup's load screen (`services.setup_load.read_count`)
+PROGRESS_EVERY = 0.5                             # seconds between two progress lines (and the last one, always)
+
+
+def _progress_printer(clock=None):
+    """`reconcile`'s `progress`: a line `PROGRESS_LINE` at most every PROGRESS_EVERY s, and the last, flushed — the
+    window's log of this run (`Chores`' `indexer-window.log`) is where setup's load screen reads its count."""
+    import time
+    clock = clock or time.monotonic
+    last = [float("-inf")]
+
+    def told(done, total):
+        now = clock()
+        if done >= total or now - last[0] >= PROGRESS_EVERY:
+            last[0] = now
+            print(PROGRESS_LINE.format(done=done, total=total), flush=True)
+    return told
+
+
+def _holding_indexer(run):
+    """Run `run` holding the `indexer` lock (`app/locks.py`): informative — `surasura-cli status` reports the indexer
+    busy while it is held (P0.3 03) — and one index run at a time per install: a second waits for the first, then
+    reconciles whatever the first did not see."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        held = None
+        try:
+            from app import locks
+            held = locks.take("indexer", "indexing", wait=None)
+        except Exception as e:
+            print(f"Indexer: its lock can't be used ({e}); indexing without it.")
+        try:
+            return run(*args, **kwargs)
+        finally:
+            if held is not None:
+                held.release()
+    return wrapper
+
+
 @without_cycle_collection
+@_holding_indexer
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Surasura background token indexer")
@@ -56,7 +162,11 @@ def main():
         from app.path_utils import get_data_path, get_user_files_path
         from app.zh_script import effective
 
-        files = _content_files(get_data_path(language), language)
+        data_dir = get_data_path(language)
+        files, more = token_store_lists(language, data_dir, _content_files(data_dir, language))
+        if files is None:
+            print(f"Indexer: the library can't be read now; '{language}' is indexed next time.")
+            return
 
         # Must match the tokenizer identity a Generate run uses, or the two would fight over the
         # store (each rebuilding the other's tokens). The GUI passes --reinforce and --zh-script to
@@ -67,9 +177,11 @@ def main():
 
         store = token_index.open_store(language)
         try:
-            # Delta reconcile: only changed/new files are tokenized; removed files are dropped.
+            # Delta reconcile: only changed/new files are tokenized; a file in neither list is dropped, a kept one's
+            # text kept (its own file) and never counted.
             store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
-                            build_signature=token_index.build_signature(language, reinforce, script))
+                            build_signature=token_index.build_signature(language, reinforce, script),
+                            data_dir=data_dir, progress=_progress_printer(), **more)
             if language == "ja":
                 # The library's name tables the reconcile just computed: the known words read with them.
                 from app import names

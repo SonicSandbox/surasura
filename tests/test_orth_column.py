@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import analyzer
+from app import analyzer, plan_rules
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +114,7 @@ def test_a_word_whose_kana_ends_in_to_is_no_sound_word():
 
 
 def test_with_the_dictionary_table_unreadable_the_commonest_spelling_wins(monkeypatch):
-    monkeypatch.setattr(analyzer, "_TO_READINGS", [frozenset()])
+    monkeypatch.setattr(plan_rules, "_TO_READINGS", [frozenset()])   # the rule lives in app/plan_rules.py
     assert analyzer._display_orth("ぐっ", Counter({"ぐっ": 9, "ぐっと": 3})) == "ぐっ"
 
 

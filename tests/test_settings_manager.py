@@ -15,7 +15,7 @@ class TestSettingsManager(unittest.TestCase):
     def setUp(self):
         # Use a temporary settings path for testing
         self.test_settings_path = "test_settings.json"
-        self.patcher = patch('app.settings_manager.get_user_file', return_value=self.test_settings_path)
+        self.patcher = patch('app.settings_manager.get_settings_path', return_value=self.test_settings_path)
         self.mock_get_user_file = self.patcher.start()
         
         # Ensure a clean state for each test

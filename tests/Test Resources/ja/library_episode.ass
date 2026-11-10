@@ -1,0 +1,33 @@
+﻿[Script Info]
+; A broadcast-style episode: two speakers told apart by colour, a karaoke OP, a sign, a drawing.
+Title: 図書館の午後
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,MS Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,2,20,20,40,128
+Style: Yellow,MS Gothic,64,&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,2,20,20,40,128
+Style: OP_JP,MS Gothic,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,8,20,20,40,128
+Style: Sign,MS Gothic,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,8,20,20,40,128
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:04.50,OP_JP,,0,0,0,,{\k40}君{\k35}の{\k60}声{\k45}が{\k80}聞こえる
+Dialogue: 0,0:00:04.50,0:00:08.00,OP_JP,,0,0,0,,遠い空の向こうまで
+Dialogue: 0,0:01:30.00,0:01:32.40,Sign,,0,0,0,,{\pos(960,120)}市立図書館
+Dialogue: 0,0:01:33.10,0:01:36.25,Default,,0,0,0,,すみません、この本を借りたいんですが。
+Dialogue: 0,0:01:36.80,0:01:39.90,Yellow,,0,0,0,,図書カードはお持ちですか？
+Dialogue: 0,0:01:40.20,0:01:43.00,Default,,0,0,0,,いえ…今日初めて来たので
+Dialogue: 0,0:01:43.00,0:01:46.50,Yellow,,0,0,0,,それでしたら{\c&H00FFFFFF&}こちらの用紙に
+Dialogue: 0,0:01:43.00,0:01:46.50,Yellow,,0,0,0,,お名前と住所を書いてください。
+Dialogue: 0,0:01:47.00,0:01:49.30,Default,,0,0,0,,分かりました。\Nペンを借りてもいいですか？
+Dialogue: 0,0:01:49.30,0:01:52.10,Yellow,,0,0,0,,どうぞ。
+Dialogue: 0,0:01:49.30,0:01:52.10,Default,,0,0,0,,ありがとうございます。
+Comment: 0,0:01:52.10,0:01:55.00,Default,,0,0,0,,ここは訳者のメモです
+Dialogue: 0,0:01:53.00,0:01:56.40,Default,,0,0,0,,{\p1}m 0 0 l 100 0 100 100 0 100{\p0}
+Dialogue: 0,0:01:56.40,0:02:00.80,Yellow,,0,0,0,,貸し出しは二週間までです。延長もできますよ。
+Dialogue: 0,0:02:01.00,0:02:04.20,Default,,0,0,0,,じゃあ、この小説を読んでから→
+Dialogue: 0,0:02:04.20,0:02:07.50,Default,,0,0,0,,また返しに来ます。
+Dialogue: 0,0:02:08.00,0:02:10.00,Default,,0,0,0,,♪～

@@ -175,6 +175,16 @@ def test_missing_global_keeps_the_old_behaviour(web_html):
     assert "wordSearchConfig().enabled !== false" in web_html, "absent config must mean 'shown'"
 
 
+def test_zh_s_a_chinese_report_has_no_lookup_button(web_html):
+    """Zh-S (2026-11-09): Nadeshiko holds Japanese sentences only, so a Chinese word sent there finds nothing (or a
+    Japanese word written alike). The one switch the button and its backslash key share says no for a Chinese
+    report; a report with no language (older than the global) keeps the button."""
+    fn = web_html[web_html.index("function wordSearchEnabled()"):]
+    fn = fn[:fn.index("\n        }")]
+    assert "globalLanguage !== 'zh'" in fn
+    assert "typeof globalLanguage === 'undefined'" in fn
+
+
 def test_category_is_validated_before_injection():
     """A hand-edited settings.json must not be able to put arbitrary text into the report's URL."""
     import inspect
@@ -255,7 +265,7 @@ def test_settings_re_render_but_never_re_analyze():
     """
     import inspect
     from app import analyzer
-    run_src = inspect.getsource(analyzer.compute_run_signature)
+    run_src = inspect.getsource(analyzer.settings_signature)    # the run signature's settings part (P3.3 extract)
     render_src = inspect.getsource(analyzer.compute_render_signature)
     for key in ("word_search_enabled", "word_search_category"):
         assert key in run_src, f"{key} missing from the run signature's non-analysis exclusions"
@@ -328,7 +338,7 @@ def test_button_survives_into_the_generated_report(tmp_path, monkeypatch):
                         str(results / "progressive_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
 
-    static_html_generator.generate_static_html(theme="Dark Flow")
+    static_html_generator.generate_static_html(theme="Dark Flow", open_browser=False)
 
     html = out.read_text(encoding="utf-8")
     assert "https://nadeshiko.co/en/search/" in html

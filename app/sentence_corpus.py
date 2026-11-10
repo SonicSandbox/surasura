@@ -88,6 +88,54 @@ def dictionary_title(language):
     return f"Surasura Corpus ({language})"
 
 
+# The export as a window starts it (W3.4 row 1; the Tk dashboard's `_export_sentence_dictionary`, moved here): its
+# child's command line, and whether the run made the dictionary. The child writes `<path>.tmp` and renames it whole
+# only when complete, and exits 1 with nothing written on an error or no words (`main`), so a run made it when it
+# **exited 0 and** the file is fresh — written since the run started (FRESH_SLACK for a coarse file clock). The Tk
+# dashboard judged by the file's time alone: a crash after the rename, or an exit 1 beside a file written just before,
+# read as "ready".
+FRESH_SLACK = 2.0
+
+
+def export_command(language, path, show_source):
+    """The export's command line, as the window's child runner takes it (`app/services/tools.py`). Pure."""
+    argv = ["sentence_corpus.py", "--language", language, "--output", path]
+    if show_source:
+        argv.append("--show-source")
+    return argv
+
+
+def export_result(path, started, returncode):
+    """(made, summary) of a run started at `started` (time.time()) that ended with `returncode`: made only on exit 0
+    with a fresh file at `path`; `summary` is the dictionary's own description (its index.json), "" when unreadable."""
+    if returncode != 0:
+        return False, ""
+    try:
+        if os.path.getmtime(path) < started - FRESH_SLACK:
+            return False, ""
+    except OSError:
+        return False, ""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            summary = json.loads(zf.read("index.json")).get("description", "")
+    except Exception:
+        summary = ""
+    return True, summary if isinstance(summary, str) else ""
+
+
+def export_outcome(path, started, returncode, cancelled):
+    """(A worker's: it reads the file.) ("made" | "stopped" | "failed", summary) of a run. Not made, the child's own
+    `<path>.tmp` is removed (a run stopped part-way leaves it); the user's file at `path` is never touched here."""
+    made, summary = export_result(path, started, returncode)
+    if made:
+        return "made", summary
+    try:
+        os.remove(path + ".tmp")
+    except OSError:
+        pass
+    return ("stopped" if cancelled else "failed"), ""
+
+
 def length_range(settings):
     """(lo, hi, own_lo, own_hi) in characters: the user's own `logic.context` range — read from THEIR
     settings on every export, since they may change it — widened by LENGTH_LEEWAY on each side. Never
@@ -655,6 +703,15 @@ def library_counts(language):
     return (counts, floor) if counts is not None else None
 
 
+def has_sources(language):
+    """Whether the library gives sentences to build from — Generate's files or the set-aside ones
+    (`analyzer.resolve_sentence_files`): a library whose every show is Finished still has its sentences. The sentence
+    dictionary's "Add content first" check, Qt's and Tk's. Stats every file: a worker's call."""
+    from app import analyzer
+    counted, aside = analyzer.resolve_sentence_files(language)
+    return bool(counted or aside)
+
+
 def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None):
     """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
     them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
@@ -674,7 +731,10 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    # The library as `build` lists it: Generate's (a missing item still counts, its cached sentences), then what is
+    # set aside as reference (Finished, watched episodes).
+    counted, aside = analyzer.resolve_sentence_files(language)
+    files = counted + (aside or [])
     if not files:
         return {}
     store = token_index.open_store(language)
@@ -708,7 +768,10 @@ def build(language, save_path, progress=print, show_source=False):
     # The same normalization a run uses, before anything is tokenized or any list is read.
     analyzer.SANITIZE_JA = (language == "ja")
 
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    # A missing item keeps counting (9b), as Generate lists it — its row and sentences stay; what is set aside as
+    # reference (Finished, a watched episode) still gives sentences, its row kept aside.
+    counted, aside, lists = analyzer.resolve_sentence_files(language, with_lists=True)
+    files = counted + (aside or [])
     if not files:
         progress("Your library is empty — add content first.")
         return 0
@@ -719,8 +782,10 @@ def build(language, save_path, progress=print, show_source=False):
     try:
         progress("Checking your library for new or changed files…")
         try:
-            store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
-                            build_signature=token_index.build_signature(language, reinforce, script))
+            # The indexer's lists (a Finished item removed since its last pass stays kept, never dropped and read again)
+            store.reconcile(counted, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
+                            build_signature=token_index.build_signature(language, reinforce, script),
+                            data_dir=get_data_path(language), **(lists or {"aside": aside}))
             if language == "ja":
                 from app import names
                 names.use_library_tables(store.names_tables())   # the known words read with them

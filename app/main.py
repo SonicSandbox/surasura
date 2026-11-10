@@ -12,6 +12,9 @@ from typing import Optional
 from app import __version__
 from app.update_checker import get_update_info, classify_update, parse_version
 from app import settings_manager
+from app.services import generate as generate_service
+from app.services import jobs as jobs_service
+from app.services import settings as settings_service
 from app import updater
 from app import word_selection
 from app import token_index
@@ -58,66 +61,14 @@ def build_subprocess_env(frozen=None):
 
 
 def csv_has_data_rows(path):
-    """True if `path` is a CSV holding at least one row BELOW the header.
-
-    File size can't answer this. The analyzer writes the reading-words header unconditionally, so a
-    library with no read-only words leaves a small file that exists and is non-empty — a size check
-    passed it, the format picker opened, and the user only learned there was nothing to export when
-    the exporter failed with its own generic message. The explanation written for exactly that case
-    was unreachable.
-
-    Short-circuits on the first data row, so a multi-megabyte priority list costs one line.
-    A missing or unreadable file is reported as "no data" rather than raised: this only gates a
-    warning dialog, and the exporters validate their input again anyway.
-
-    Module-level rather than a method on purpose: the export dialog is exercised with a MagicMock
-    `self`, whose every attribute is a truthy Mock, so a `self.`-qualified check would be silently
-    faked and the guard would never fire (see docs/agent instructions/testing.md §5.3).
-    """
-    try:
-        with open(path, 'r', encoding='utf-8-sig', newline='') as f:
-            reader = csv.reader(f)
-            next(reader, None)                                   # header
-            return any(any(cell.strip() for cell in row) for row in reader)
-    except (OSError, UnicodeDecodeError, csv.Error):
-        return False
+    """`exports.csv_has_data_rows` (moved there so the Tk-free exports can use it too)."""
+    from app.exports import csv_has_data_rows as _has
+    return _has(path)
 
 
-# Settings -> Data & System -> Credits (a hover): every data source Surasura ships or is built from — the licences ask
-# for it wherever the data goes, and an in-place update carries only the app, never README. Keep it with README's Data
-# Credits, and with the generated modules that name their source (app/*_data.py). {jmdict} is JMdict's own date.
-DATA_CREDITS = """Data credits — what Surasura ships or is built from
-
-Dictionaries
-• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, the words the tokenizer cuts at their grammar (くだらない, いつも), kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
-• UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
-• jieba — MIT licence: how Chinese is split into words.
-• OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese, Traditional in Taiwan's standard characters.
-• CC-CEDICT — MDBG, CC BY-SA 4.0: which of jieba's phrases are words, the numbers and doubled forms Chinese counts as their word, the Traditional spellings read as their Simplified pair, the surnames a name jieba guesses starts with, and the Chinese measure words. Those tables (app/cedict_data.py, and those phrases of app/zh_script_data.py) are shared under the same licence.
-• Universal Dependencies Chinese treebanks (GSDSimp, HK, CFL) — CC BY-SA 4.0: which Chinese counts are a number and a measure word (一个 is 一 + 个).
-
-Frequency lists (ranks only)
-• JPDB 2024 and Jiten: which compounds, affixed words, set phrases, adverbs cut at their particles and one-kanji words are words, and which words live only inside a phrase.
-• TMW Netflix, Anime & J-drama, Novels and VN lists: the 文 reading-word badge.
-
-Text, counted into statistics only (never a sentence)
-• RealPersonaChat — Yamashita et al. (2023), CC BY-SA 4.0.
-• Aozora Bunko — public-domain works, via aozorabunko-clean (CC BY 4.0).
-• Japanese and Chinese Wikipedia — Wikipedia contributors, CC BY-SA 4.0.
-• Leipzig Corpora Collection — Universität Leipzig, CC BY 4.0: Japanese news and web text, Chinese news.
-• Tatoeba — CC BY 2.0 FR. KdConv — Zhou et al. (2020), Apache License 2.0. Chinese Wikinews — CC BY 4.0.
-
-The shared パターン data is shared under CC BY-SA 4.0."""
-
-
-def data_credits():
-    """DATA_CREDITS with JMdict's date, as the shipped dictionary table records it ("unknown" when it can't be read)."""
-    try:
-        from app import dictionary_data
-        created = dictionary_data.JMDICT_CREATED
-    except Exception:
-        created = ""
-    return DATA_CREDITS.replace("{jmdict}", created or "unknown")
+# Settings -> Data & System -> Credits (a hover): every data source Surasura ships or is built from, with its licence
+# (DATA_CREDITS, data_credits) — in app/credits.py since W3.3, where the 3.0 window reads them too.
+from app.credits import DATA_CREDITS, data_credits  # noqa: E402,F401
 
 
 class ToolTip:
@@ -210,6 +161,40 @@ class ToolTip:
         self.tip_window = None
         if tw:
             tw.destroy()
+
+# The window's services (W1.3): one job registry and one Generate controller per dashboard, made on first use (a test's
+# stand-in window gets real ones too).
+_CHILD_KINDS = {"indexer.py": "indexer", "analyzer.py": "generate", "sentence_corpus.py": "sentence-corpus"}
+
+
+def _window_services(app):
+    """(job registry, Generate controller) of `app`."""
+    registry = getattr(app, "job_registry", None)
+    if not isinstance(registry, jobs_service.JobRegistry):
+        registry = app.job_registry = jobs_service.JobRegistry()
+    controller = getattr(app, "generate_controller", None)
+    if not isinstance(controller, generate_service.GenerateController):
+        closing = getattr(app, "_closing_event", None)
+        controller = app.generate_controller = generate_service.GenerateController(
+            registry, closing=closing if isinstance(closing, threading.Event) else None, settle=0)
+    return registry, controller
+
+
+def carry_as_written(out, keys):
+    """Copy each of `keys` that settings.json holds, as the file holds it, into `out` (a save being built): a key the
+    user set is never dropped, and a default is never written into a file that lacks it. No file, or one that can't be
+    read, holds none of them."""
+    try:
+        from app.path_utils import get_settings_path, read_text
+        as_is = json.loads(read_text(get_settings_path()))
+    except Exception:
+        as_is = {}
+    if isinstance(as_is, dict):
+        for key in keys:
+            if key in as_is:
+                out[key] = as_is[key]
+    return out
+
 
 class MasterDashboardApp:
     # Per-sentence source badge in the report: stored key -> the label shown in Advanced Settings.
@@ -372,6 +357,14 @@ class MasterDashboardApp:
         # automatic Generate away for the first minutes after every boot.
         self._last_anki_sync = float("-inf")
         self._anki_spin_job = None
+        # Connect's session start (P2.3, `_connect_session`): the last look at Anki, and whether one is running.
+        self._connect_looked = float("-inf")
+        self._connect_looking = False
+        self._connect_opened = False        # the window's first look (the only one that may open Anki) has run
+        # Connect's preview in this window (P3.1): its line and badge above the bottom bar, its window, its settings
+        self._connect_row = None
+        self._connect_window = None
+        self._connect_panel = None
         # Junban's automatic reorder (a test option in settings.json) — the same shape as the sync.
         self._junban_auto_lock = threading.Lock()
         self._last_junban_auto = float("-inf")
@@ -439,6 +432,18 @@ class MasterDashboardApp:
 
         # Track active child processes
         self.active_processes = []
+
+        # Settings are written off this thread, under the `settings` lock (P0.3 04 §2): queued and retried, never
+        # dropped. A child process, a journey check or closing the window flushes it first (`_flush_settings`).
+        self.settings_service = settings_service.SettingsService(
+            on_error=lambda _e: self.gui_queue.put(lambda: self.status_var.set(self.SETTINGS_WAIT_LINE)), load=False)
+        self.settings_service.subscribe(lambda _keys: self.gui_queue.put(self._on_settings_saved))
+        self._settings_writer = self.settings_service.writer
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # Its copy of the file, read on a worker: a later get() on this thread is a copy in memory.
+            threading.Thread(target=self.settings_service.reload, name="settings-load", daemon=True).start()
+        # Set when the window closes: a worker still waiting on a lock (a background Generate's) stops.
+        self._closing_event = threading.Event()
 
         # Set Application Icon
         try:
@@ -518,22 +523,40 @@ class MasterDashboardApp:
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
-                                               self._maybe_anki_sync(), self._maybe_junban_auto(),
+                                               self._connect_session(), self._maybe_anki_sync(),
+                                               self._maybe_junban_auto(),
                                                self._maybe_auto_generate(), self._schedule_journey_state(),
-                                               self._schedule_maintain(), self._update_library_notice()))
+                                               self._schedule_maintain(), self._update_library_notice(),
+                                               self._replan_focus(), self._maybe_replan_generate()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
         # body is not enough; it is never invoked.
+        # A command-line call that fails while the window is open shows in the bottom bar (P0.3 02 §4, ✅ G0.3-1).
+        self._cli_events = None
+        self._cli_events_reading = False
+        try:
+            from app.cli import events as cli_events
+            self._cli_events = cli_events.Reader()
+        except Exception as e:
+            print(f"Command-line events not watched: {e}")
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(self.CLI_EVENTS_EVERY, self._watch_cli_events)
             # And once shortly after startup, so the preview appears without a manual Generate.
             self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
 
             # Reconcile the result of any update applied since we last ran (toast / manual-retry).
             self.root.after(800, self.reconcile_update_result)
 
+            # Connect's preview on: a session starts — Anki seen open gets the session's sync, or with Open Anki for me
+            # on, Anki closed is opened for you (P2.3). Before the known-words sync below.
+            self.root.after(1800, lambda: self._connect_session(opening=True))
+
             # Pick up words studied in Anki since last time (only if the user turned it on).
             self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
+
+            # The fast re-plan's preview, when 順's switch is on: a re-order left owed, cards no re-order placed.
+            self.root.after(2500, self._replan_start)
 
             # Whether the journey is up to date — the Generate button's border / check mark.
             self.root.after(1200, self._schedule_journey_state)
@@ -543,15 +566,26 @@ class MasterDashboardApp:
             self.root.after(1500, self._maybe_maintain)
             self.root.after(1600, self._update_library_notice)
 
+            # Connect's preview on: name what another program (hato) added while Surasura was closed (P2.1 row 2.1.7)
+            self.root.after(2500, self._arrivals_notice)
+
+            # Connect's preview on: its line and badge above the bottom bar (P3.1 row 3.1.4)
+            self.root.after(2000, self._connect_row_start)
+
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
-        # would otherwise go online.
-        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+        # would otherwise go online. *Check for updates* off (the 3.0 window's Settings → App): no request at all.
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK") and settings_manager.update_check_on(
+                getattr(self, "_current_settings", None)):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
         # The note naming this install's data folder, for 3.0's first start (K100). Frozen builds only; off the
         # window's thread, and a failure is only logged (write_install_note never raises).
         threading.Thread(target=self._write_install_note, daemon=True).start()
+
+        # surasura.json in the shared tools folder: how hato finds Surasura (09-hato-layer §3). Off the window's
+        # thread; a failure is only printed to the log (a source checkout writes it only with SURASURA_TOOLS_CLI).
+        threading.Thread(target=self._refresh_tools_entry, daemon=True).start()
 
         # Initial UI update for language
         self.update_ui_for_language()
@@ -560,6 +594,7 @@ class MasterDashboardApp:
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
         # Known words are per language, and so are the chosen decks.
         self.var_language.trace_add("write", lambda *args: self._maybe_anki_sync(force=True))
+        self.var_language.trace_add("write", lambda *args: self._replan_start())
         # And so is the band preview: its numbers, and the band Automatic rarity locks the slider on,
         # come from that language's store. The indexer refreshes it only when the store has work to do,
         # so a switch to an up-to-date Chinese store kept the Japanese numbers — and the Japanese
@@ -816,6 +851,13 @@ class MasterDashboardApp:
         n = self._auto_max_words()
         return f"{n:,}" if isinstance(n, (int, float)) else str(n)
 
+    def _auto_step_back_text(self):
+        """Q4-3's second line as the tooltips say it: 1,100, or the first line when a hand edit put it higher."""
+        try:
+            return f"{max(word_selection.DEFAULT_AUTO_STEP_BACK_WORDS, int(self._auto_max_words())):,}"
+        except (TypeError, ValueError):
+            return f"{word_selection.DEFAULT_AUTO_STEP_BACK_WORDS:,}"
+
     def _auto_band_choice(self):
         """The band automatic rarity picks from the current preview — word_selection.auto_band over the
         numbers the slider shows, the rule the analyzer applies on the same ones (I3) — or None before
@@ -824,7 +866,8 @@ class MasterDashboardApp:
         if not self._band_previews:
             return None
         try:
-            return word_selection.auto_band(self._band_previews, self._auto_max_words())
+            return word_selection.auto_band(self._band_previews, self._auto_max_words(),
+                                            remembered=getattr(self, "_auto_remembered", None))
         except Exception:
             return self.var_band.get()
 
@@ -952,6 +995,12 @@ class MasterDashboardApp:
         touch any tk widget; it only returns the {band: preview} dict (or None). The distribution is
         token_index.preview_frequencies: the analyzer's automatic rarity decides from the same one."""
         try:
+            try:                       # Q4-3: the band Automatic last chose, read here, never on the window's thread
+                from app import library_store
+                from app.path_utils import get_data_path
+                self._auto_remembered = library_store.read_auto_band(lang, get_data_path(lang))
+            except Exception:
+                self._auto_remembered = None
             store = token_index.open_store(lang)
             try:
                 from app.path_utils import get_user_files_path
@@ -1015,14 +1064,17 @@ class MasterDashboardApp:
         """Would the indexer have anything to do for `lang`? Stat-only (no tokenizer); False when it can't tell."""
         try:
             from app.path_utils import get_data_path, get_user_files_path
-            from app.indexer import _content_files
-            files = _content_files(get_data_path(lang), lang)
+            from app.indexer import _content_files, token_store_lists
+            data_dir = get_data_path(lang)
+            files, more = token_store_lists(lang, data_dir, _content_files(data_dir, lang))
+            if files is None:
+                return False                # the library's lists can't be read now: the next check tells
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
                 # needs_reconcile is stat-only, so a tokenizer change (the Chinese script)
                 # alone would never re-index: compare the identity the store was built with too.
-                return bool(store.needs_reconcile(files)
+                return bool(store.needs_reconcile(files, **more)
                             or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
                             or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:
@@ -1236,13 +1288,10 @@ class MasterDashboardApp:
         """This process's own store handles (the dashboard's long-lived ones): Repair renames the files, which
         Windows refuses while any is open (§6.9). They reopen on the next use."""
         for opener in self.__dict__.get("_library_openers", {}).values():
-            store = getattr(opener._local, "store", None)
-            if store is not None:
-                try:
-                    store.close()
-                except Exception:
-                    pass
-                opener._local.store = None
+            try:
+                opener.close()
+            except Exception:
+                pass
 
     def _library_notice_action(self):
         """Repair (a damaged store) or Try again (a failed move), run as the helper. Repair first closes the
@@ -1334,6 +1383,84 @@ class MasterDashboardApp:
                     library_store.spawn_maintain(lang)
             except Exception as e:
                 print(f"Library store helper check: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _arrivals_notice(self):
+        """With Connect's preview on: on a worker, the items another program registered while Surasura was closed,
+        named once in the bottom bar (`app/connect/notice.py`). With it off nothing of Connect's is imported."""
+        if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+        lang = self.var_language.get() or "ja"
+
+        def work():
+            try:
+                from app.connect import notice
+                line = notice.at_open(lang)
+            except Exception as e:
+                print(f"Arrivals notice: {e}")
+                return
+            if line:
+                self.gui_queue.put(lambda: self.status_var.set(line))
+        threading.Thread(target=work, daemon=True).start()
+
+    CONNECT_LOOK_EVERY = 60     # seconds between two of Connect's looks at Anki on focus (FocusIn fires per widget)
+
+    def _connect_session(self, opening=False):
+        """Connect's preview on (P2.3; ✅ Q4-4, Q4-16): a session's start, looked at on a worker — at the window's start
+        (`opening`) and when it comes back into focus, at most once a minute (`anki_session.at_window`, which 3.0's
+        window calls too). Anki seen closed is recorded, so the next look starts a session with a sync; at the window's
+        start, with *Open Anki for me* on, a closed Anki is opened for you — never at any other moment, never after
+        mining; Anki open and a session starting: its one sync, so your phone's reviews are in before anything reads
+        or writes Anki, then the known-words sync (when it's on) and a Connect kick. Off: nothing, and nothing of
+        Connect's is imported."""
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return
+        s = getattr(self, "_current_settings", None) or {}
+        if not s.get("connect_enabled"):
+            self._connect_opened = self._connect_opened or opening     # switched on later: a focus may look
+            return
+        import time
+        now = time.monotonic()
+        if not opening and (not self._connect_opened or now - self._connect_looked < self.CONNECT_LOOK_EVERY):
+            return                      # a focus before the window's first look never takes its place
+        if self._connect_looking:
+            return
+        self._connect_looked, self._connect_looking, self._connect_opened = now, True, True
+        try:
+            s = settings_manager.load_settings() or s
+        except Exception:
+            pass
+
+        def say(line):
+            self.gui_queue.put(lambda: self.status_var.set(line))
+
+        def work():
+            done = None
+            try:
+                from app.connect import anki_session
+                done = anki_session.at_window(dict(s), opening=opening, say=say)
+            except Exception as e:
+                print(f"Connect's session: {e}")
+            finally:
+                self._connect_looking = False
+            sync = (done or {}).get("sync")
+            if (done or {}).get("anki") == "open":
+                # The session's sync has answered — the known-words sync waited for this look (Q4-1): right away once
+                # your phone's reviews are in, else at its own five-minute pace
+                fresh = sync == "synced"
+                self.gui_queue.put(lambda: self._maybe_anki_sync(force=fresh))
+            if sync == "synced":
+                # … and let Connect see what's waiting
+                try:
+                    from app.connect import kick
+                    kick.kick(s)
+                except Exception as e:
+                    print(f"Connect wasn't started: {e}")
+            if done:
+                from app.connect import anki_session
+                line = anki_session.told(done)      # the bar's words, 3.0's too (one wording)
+                if line:
+                    say(line)
         threading.Thread(target=work, daemon=True).start()
 
     def _library_handle(self, lang):
@@ -1478,8 +1605,9 @@ class MasterDashboardApp:
         # Shown ABOVE so it doesn't cover the coverage line below. Locked by automatic rarity, it says
         # why and where to turn that off.
         ToolTip(self.band_slider, lambda: (
-                f"Chosen for you by Automatic rarity: the rarest band with {self._auto_max_words_text()} "
-                "words or fewer. To choose it yourself, turn off Automatic rarity in "
+                f"Chosen for you by Automatic rarity: the commonest band with {self._auto_max_words_text()} "
+                f"words or more, kept until a commoner band passes {self._auto_step_back_text()}. "
+                "To choose it yourself, turn off Automatic rarity in "
                 "Settings → Sentences & Logic."
                 if self.var_auto_band.get() else
                 "Which words to include, by how common they are in your library:\n\n"
@@ -1609,6 +1737,7 @@ class MasterDashboardApp:
         # Footer
         footer_frame = ttk.Frame(self.root, padding=(10, 0)) # Zero vertical padding for footer
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.footer_frame = footer_frame    # Connect's row (P3.1, preview on) packs right above it
         
         # Status Bar
         status_bar = ttk.Label(footer_frame, textvariable=self.status_var, style="Footer.TLabel")
@@ -1666,7 +1795,10 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("850x680")
+        # three columns: Connect (preview) is the third (G1.3); never taller or wider than the screen (150 % on a
+        # 1080p screen is 720 logical): the columns that can't fit clip, Connect's scrolls
+        self.settings_window.geometry(self._settings_size(self.settings_window.winfo_screenwidth(),
+                                                          self.settings_window.winfo_screenheight()))
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -1688,19 +1820,24 @@ class MasterDashboardApp:
         # Settings Grid
         grid_frame = ttk.Frame(main_container)
         grid_frame.pack(fill=tk.BOTH, expand=True)
-        grid_frame.columnconfigure(0, weight=2, uniform="settings_col") # Strictly 2:1
-        grid_frame.columnconfigure(1, weight=1, uniform="settings_col")
+        grid_frame.columnconfigure(0, weight=4, uniform="settings_col") # Strictly 4:3:3
+        grid_frame.columnconfigure(1, weight=3, uniform="settings_col")
+        grid_frame.columnconfigure(2, weight=3, uniform="settings_col")
         grid_frame.rowconfigure(0, weight=1)
 
-        # Two INDEPENDENT columns, each a simple stack. With shared grid rows, the tallest group in
+        # Three INDEPENDENT columns, each a simple stack. With shared grid rows, the tallest group in
         # a row set that row's height for both sides (Data & System stretched Language & Parsing to
         # match), and with the optional-module toggles present the third row fell off the bottom of
         # a 720px screen. Stacked, each column is only as tall as its own groups; the log takes
-        # whatever is left.
+        # whatever is left. The third (Connect's) scrolls: with the preview on its controls and the
+        # Anki Miner card are taller than the window.
         left_col = ttk.Frame(grid_frame)
         left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         right_col = ttk.Frame(grid_frame)
-        right_col.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(5, 5))
+        connect_outer, connect_col = self._scrolled_column(grid_frame)
+        connect_outer.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+        self._connect_settings_group(connect_col)
 
         # --- LEFT COLUMN (Col 0) ---
         
@@ -1882,7 +2019,7 @@ class MasterDashboardApp:
                                 "Also controls whether it is bundled when you build the app.")
 
         # 2. 📊 Experience & UI
-        group_ui = ttk.LabelFrame(left_col, text=" 📊 Experience & UI", padding="10")
+        group_ui = ttk.LabelFrame(right_col, text=" 📊 Experience & UI", padding="10")   # the middle column (P3.1)
         group_ui.pack(fill=tk.X, pady=5)
 
         chk_inline = ttk.Checkbutton(group_ui, text="Show 'Target Met' inline", variable=self.var_inline_completed)
@@ -1982,7 +2119,7 @@ class MasterDashboardApp:
         ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
 
         # 3. 🧠 Sentences & Logic
-        group_logic = ttk.LabelFrame(right_col, text=" 🧠 Sentences & Logic", padding="10")
+        group_logic = ttk.LabelFrame(left_col, text=" 🧠 Sentences & Logic", padding="10")   # under Language (P3.1)
         group_logic.pack(fill=tk.X, pady=5)
 
         # Ideal Sentence Range
@@ -2035,8 +2172,9 @@ class MasterDashboardApp:
         chk_auto_band = ttk.Checkbutton(group_logic, text="Automatic rarity", variable=self.var_auto_band)
         chk_auto_band.pack(anchor=tk.W)
         ToolTip(chk_auto_band, lambda: (
-            f"Picks the Rarity band for you: the rarest band with {self._auto_max_words_text()} words or "
-            "fewer. It moves on by itself as you learn. The slider on the main window is locked while "
+            f"Picks the Rarity band for you: the commonest band with {self._auto_max_words_text()} words or "
+            f"more, and keeps it until a commoner band passes {self._auto_step_back_text()}, so your list doesn't "
+            "flip back and forth. It moves on by itself as you learn. The slider on the main window is locked while "
             "this is on. By Commonness only."))
 
 
@@ -2044,7 +2182,7 @@ class MasterDashboardApp:
 
         # 4. 🧮 Data & System
         group_data = ttk.LabelFrame(right_col, text=" 🧮 Data & System", padding="10")
-        group_data.pack(fill=tk.X, pady=5, before=group_logic)   # Data first, then Sentences
+        group_data.pack(fill=tk.X, pady=5, before=group_ui)   # Data first, then Experience & UI
 
         chk_telemetry = ttk.Checkbutton(group_data, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
         chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
@@ -2088,6 +2226,17 @@ class MasterDashboardApp:
         btn_sentence_dictionary.pack(fill=tk.X)
         ToolTip(btn_sentence_dictionary, "A Yomitan dictionary of up to 8 of the best sentences for every word in your library — hover a word in your browser to see them.")
 
+        # FT (D8): the way back from what Surasura did to this language's Anki cards — the flow 順 opens too. Junban
+        # holds it: Junban absent, no button. Shown whether or not reordering is switched on (the way back stays).
+        try:
+            from modules.junban import first_touch_gui
+        except Exception:
+            first_touch_gui = None
+        if first_touch_gui is not None:
+            self.btn_put_back = ttk.Button(group_data, text=first_touch_gui.BUTTON_TEXT, command=self.open_put_back)
+            self.btn_put_back.pack(fill=tk.X, pady=(5, 0))
+            ToolTip(self.btn_put_back, first_touch_gui.BUTTON_TIP)
+
         # Credits: hover to read every data source Surasura ships or is built from, with its licence (DATA_CREDITS).
         self.lbl_credits = ttk.Label(group_data, text="ⓘ Data credits", cursor="question_arrow")
         self.lbl_credits.pack(anchor=tk.W, pady=(8, 0))
@@ -2117,8 +2266,346 @@ class MasterDashboardApp:
         if self.settings_window.state() == "withdrawn":
             self.settings_window.deiconify()
             self.settings_window.lift()
+            self._connect_panel_fresh()
         else:
             self.settings_window.withdraw()
+
+    @staticmethod
+    def _settings_size(screen_w, screen_h):
+        """Settings' size: 1260×740, or the screen less its taskbar and edges when that is smaller (IK15)."""
+        return f"{min(1260, screen_w - 40)}x{min(740, screen_h - 80)}"
+
+    @staticmethod
+    def _scrolled_column(parent):
+        """-> (outer, inner): a column whose groups scroll when they are taller than the window (Connect's third
+        column). The bar shows only while it's needed; the wheel scrolls it while the pointer is over it."""
+        outer = ttk.Frame(parent)
+        canvas = tk.Canvas(outer, bg=BG_COLOR, highlightthickness=0, borderwidth=0)
+        bar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def fit(_e=None):
+            canvas.configure(scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
+            if inner.winfo_reqheight() > canvas.winfo_height() > 1:
+                if not bar.winfo_ismapped():
+                    bar.pack(side=tk.RIGHT, fill=tk.Y, before=canvas)
+            elif bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0)
+        inner.bind("<Configure>", fit)
+        canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(item, width=e.width), fit()))
+        # The wheel: a bind tag on every widget in the column (Tk sends the column a <Leave> as the pointer enters a
+        # child, so an Enter / Leave pair lost the wheel over the groups) — never bind_all, so no other wheel binding
+        # is touched. Tagged again as the column enters and as its groups change (Connect's panel comes and goes).
+        tag = "Wheel" + str(canvas).replace(".", "_")
+        canvas.bind_class(tag, "<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
+                          if bar.winfo_ismapped() else None)
+
+        def tag_all(_e=None):
+            stack = [outer]
+            while stack:
+                widget = stack.pop()
+                tags = widget.bindtags()
+                if tag not in tags:
+                    widget.bindtags(tags + (tag,))
+                stack.extend(widget.winfo_children())
+        outer.bind("<Enter>", tag_all, add="+")
+        inner.bind("<Configure>", tag_all, add="+")
+        return outer, inner
+
+    # --- Connect (preview) in this window (P3.1; P1.5 05-surface U1–U6) ------------------------------------------- #
+    CONNECT_SWITCH_LINE = ("Episodes you place in your top 20 get Anki cards made by Anki Miner, by themselves. Nothing "
+                           "placed before you turn it on.")
+
+    def _connect_settings_group(self, parent):
+        """Settings → Connect (preview), the third column (U4's head, row 3.1.1): the switch and one line, always —
+        the switch must show to be turned on. Its other controls and the Anki Miner card are
+        `app/connect/settings_panel.py`'s, imported only with the switch on (off: nothing of Connect's is imported)."""
+        group = ttk.LabelFrame(parent, text=" 🔗 Connect (preview)", padding="10")
+        group.pack(fill=tk.X, pady=5)
+        on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
+        self.var_connect_enabled = tk.BooleanVar(value=on)
+        self.chk_connect = ttk.Checkbutton(group, text="Make cards automatically (preview)",
+                                           variable=self.var_connect_enabled, command=self._connect_switch_toggled)
+        self.chk_connect.pack(anchor=tk.W)
+        ToolTip(self.chk_connect, "Surasura Connect: when you place an episode in your top 20, Anki Miner makes its "
+                                  "cards and Surasura orders them. Needs Anki and Anki Miner.")
+        ttk.Label(group, text=self.CONNECT_SWITCH_LINE, foreground="#aaaaaa",
+                  wraplength=320).pack(anchor=tk.W, pady=(2, 0))
+        self._connect_panel_host = ttk.Frame(group)
+        self._connect_panel_host.pack(fill=tk.X)
+        self._connect_card_host = ttk.Frame(parent)
+        self._connect_card_host.pack(fill=tk.X)
+        self._connect_panel = None
+        if on:
+            self._connect_panel_build()
+        if not self.__dict__.get("_connect_language_traced"):
+            # The cap and the video folders are each language's: another language shows its own (a panel shown)
+            self._connect_language_traced = True
+            self.var_language.trace_add("write", lambda *_a: self._connect_panel_rebuild())
+
+    def _connect_panel_rebuild(self):
+        """The language trace: a panel shown is built again only when the language really changed (the trace fires
+        on every write of the same value too)."""
+        if self._connect_panel is not None and \
+                (self.var_language.get() or "ja") != self.__dict__.get("_connect_panel_language"):
+            self._connect_panel_drop()
+            self._connect_panel_build()
+
+    def _connect_panel_build(self, settings=None):
+        """The panel, from `settings` (the file as the switch-on saved it), else from settings.json read on a worker
+        first — never on this thread."""
+        if self._connect_panel is not None or self.__dict__.get("_connect_panel_host") is None:
+            return
+        if settings is None:
+            if self.__dict__.get("_connect_panel_reading"):
+                return
+            self._connect_panel_reading = True
+
+            def read():
+                try:
+                    loaded = settings_manager.load_settings() or {}
+                except Exception as e:
+                    print(f"Connect's settings weren't read: {e}")
+                    loaded = dict(getattr(self, "_current_settings", None) or {})
+
+                def build():
+                    self._connect_panel_reading = False
+                    if (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+                        self._connect_panel_build(loaded)
+                self.gui_queue.put(build)
+            threading.Thread(target=read, daemon=True).start()
+            return
+        try:
+            if not self._connect_panel_host.winfo_exists():
+                return
+            from app.connect import settings_panel
+            self._connect_panel_language = self.var_language.get() or "ja"
+            self._connect_panel = settings_panel.build(
+                self._connect_panel_host, lambda: self.var_language.get() or "ja",
+                lambda widget, text: ToolTip(widget, text, wrap=320), dict(settings),
+                post=self.gui_queue.put, card_parent=self._connect_card_host)
+        except Exception as e:
+            print(f"Connect's settings weren't shown: {e}")
+
+    def _connect_panel_fresh(self):
+        """Settings shown again: another window (順's) may have written a key the panel shows meanwhile — settings.json
+        read on a worker, and the panel built again from it only when one of its values changed, so what it shows and
+        its "nothing changed" check are the file's. The switch off (no panel): nothing, nothing of Connect's imported."""
+        panel = self.__dict__.get("_connect_panel")
+        if panel is None or not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+
+        def read():
+            try:
+                loaded = settings_manager.load_settings() or {}
+            except Exception as e:
+                print(f"Connect's settings weren't read: {e}")
+                return
+
+            def apply():
+                if self._connect_panel is panel and panel.stale(loaded):
+                    self._connect_panel_drop()
+                    self._connect_panel_build(loaded)
+            self.gui_queue.put(apply)
+        threading.Thread(target=read, daemon=True).start()
+
+    def _connect_panel_drop(self):
+        panel, self._connect_panel = self._connect_panel, None
+        if panel is not None:
+            panel.destroy()
+
+    CONNECT_LANGUAGES = ("ja", "zh")
+
+    def _connect_switch_toggled(self):
+        """The switch touched; the rest on a worker, the switch greyed meanwhile. **On:** each language's watermark
+        first (✅ G1.1-2: nothing placed while it was off is ever mined; the list it last looked at forgotten, so a
+        level raise while off mines nothing), then — only once every language's succeeded — `connect_enabled` saved
+        alone (`save_keys`: a file the switch never touched never gains it), then surasura.json refreshed, its
+        controls, the line and a session look, then hato's pairings back-filled on the same worker (P3.2; its summary
+        in the Processing Log, a failure never turning the switch back); no session look or kick before the save. A
+        failure: the switch goes back off, nothing saved, the reason in the Processing Log. **Off:** with cards on the
+        shelf, asked once whether to put them back (before the save: the put-back needs the preview on; one not put
+        back: still on, and asked whether to turn it off anyway), then saved off (a running Connect stops at its next
+        boundary) and surasura.json refreshed, then the controls and the line go and the readers are dropped where the
+        store can. A failed save: back on. The work is `app/connect/switch.py`'s (W3.3 P5); the greying, the asks and
+        the controls stay here."""
+        on = bool(self.var_connect_enabled.get())
+        was_on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
+        self._connect_switch_enabled(False)
+        threading.Thread(target=self._connect_switched, args=(on, was_on), daemon=True).start()
+
+    def _connect_switch_enabled(self, enabled):
+        try:
+            self.chk_connect.state(["!disabled"] if enabled else ["disabled"])
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _connect_switched(self, on, was_on=False):
+        """On a worker: the switch's work (`_connect_switch_toggled`; `switch.turn_on`, then `switch.backfill`)."""
+        if on:
+            from app.connect import switch
+            ok, saved, _why = switch.turn_on(self.CONNECT_LANGUAGES, log=self.log_to_terminal)
+            if not ok:
+                self.gui_queue.put(lambda: self._connect_switch_done(False))
+                return
+            self.gui_queue.put(lambda: self._connect_switch_done(True, saved=saved))
+            switch.backfill(self.CONNECT_LANGUAGES, saved, log=self.log_to_terminal)
+            return
+        shelved = {}
+        if was_on:
+            from app.connect import switch
+            shelved = switch.shelved(self.CONNECT_LANGUAGES)
+        if shelved:                     # asked on the Tk thread; the rest on another worker
+            self.gui_queue.put(lambda: self._connect_ask_put_back(shelved))
+            return
+        self._connect_switch_off(was_on=was_on)
+
+    def _connect_ask_put_back(self, shelved):
+        """IK-D1 (S16, gate (b)): switched off with cards on the shelf, asked once; then the switch-off goes on."""
+        n = sum(cards for cards, _runs in shelved.values())
+        parent = self.settings_window if self.__dict__.get("settings_window") is not None else self.root
+        try:
+            yes = messagebox.askyesno("Connect", f"Put the {n} shelved {'card' if n == 1 else 'cards'} back into your new cards?", parent=parent)
+        except tk.TclError:
+            yes = False
+        threading.Thread(target=self._connect_switch_off, args=(shelved if yes else None,), daemon=True).start()
+
+    PUT_BACK_WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your shelved cards go back " \
+                       "once it's done…"
+
+    def _connect_ask_off_anyway(self, failed):
+        """On the Tk thread: shelved cards weren't put back — Connect stays on unless you turn it off anyway."""
+        parent = self.settings_window if self.__dict__.get("settings_window") is not None else self.root
+        try:
+            yes = messagebox.askyesno(
+                "Connect", "Some shelved cards weren't put back:\n" + "\n".join(failed) +
+                "\n\nTurn Connect off anyway? The cards on the shelf stay suspended until you put them back.",
+                parent=parent)
+        except tk.TclError:
+            yes = False
+        if yes:
+            threading.Thread(target=self._connect_switch_off, daemon=True).start()
+            return
+        self.log_to_terminal("Connect stays on: put the shelved cards back from its window, or turn it off again.")
+        self._connect_switch_done(True, fresh=False)
+
+    def _connect_switch_off(self, put_back=None, was_on=True):
+        """On a worker: the shelf put back first when asked (`switch.put_back`: as you, never shelved again; each
+        restore point waiting for Anki's write lock as the Connect window does), then `switch.turn_off`: saved off,
+        surasura.json refreshed, the readers dropped where the store can — only for a switch that was on. H11: a switch
+        that was off imports nothing of app.connect (`switch` is in it), so its save is done here, as `turn_off` does
+        it. A restore point not put back: the switch stays on and you're asked whether to turn it off anyway
+        (`_connect_ask_off_anyway`)."""
+        if not (put_back or was_on):
+            try:
+                saved = settings_manager.save_keys({"connect_enabled": False}, strict=True,
+                                                   wait=settings_manager.LOCK_WAIT)
+            except Exception as e:
+                self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try "
+                                     "again.")
+                self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
+                return
+            self._refresh_tools_entry(saved)        # surasura.json no longer lists `register`
+            self.log_to_terminal("Connect is off.")
+            self.gui_queue.put(lambda: self._connect_switch_done(False))
+            return
+        from app.connect import switch
+        if put_back:
+            failed = switch.put_back(put_back, log=self.log_to_terminal,
+                                     waiting=lambda: self.log_to_terminal(self.PUT_BACK_WAITING))
+            if failed:
+                self.gui_queue.put(lambda: self._connect_ask_off_anyway(failed))
+                return
+        ok, _saved, _why = switch.turn_off(was_on=was_on, log=self.log_to_terminal, languages=self.CONNECT_LANGUAGES)
+        if not ok:
+            self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
+            return
+        self.gui_queue.put(lambda: self._connect_switch_done(False))
+
+    def _connect_switch_done(self, on, saved=None, fresh=True):
+        """On the Tk thread: the switch shows what is saved; on, the controls, the line and (a fresh switch-on) a
+        session look; off, they go."""
+        self._connect_switch_enabled(True)
+        try:
+            self.var_connect_enabled.set(on)
+        except (AttributeError, tk.TclError):
+            pass
+        self._current_settings = dict(getattr(self, "_current_settings", None) or {}, connect_enabled=on)
+        if not on:
+            self._connect_panel_drop()
+            self._connect_row_stop()
+            return
+        self._connect_panel_build(saved)
+        self._connect_row_start()
+        if fresh:
+            self._connect_session()
+
+    def _connect_row_start(self):
+        """U1 + U2 (row 3.1.4): Connect's line and badge, their own row above the bottom bar — only with the preview
+        on (off: no frame, the dashboard 2.5's)."""
+        if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+        if self._connect_row is not None or self.__dict__.get("footer_frame") is None:
+            return
+        try:
+            from app.connect import status_row
+            self._connect_row = status_row.StatusRow(
+                self.root, lambda: self.var_language.get() or "ja",
+                lambda widget, text: ToolTip(widget, text, wrap=320), self._open_connect_window,
+                settings=lambda: getattr(self, "_current_settings", None) or {}, below=self.footer_frame,
+                post=self.gui_queue.put)
+            self._connect_row.start()
+        except Exception as e:
+            self._connect_row = None
+            print(f"Connect's line wasn't shown: {e}")
+
+    def _connect_row_stop(self):
+        row, self._connect_row = self._connect_row, None
+        if row is not None:
+            row.stop()
+        win, self._connect_window = self._connect_window, None
+        if win is not None:
+            try:
+                win.win.destroy()
+            except Exception:
+                pass
+
+    def _open_connect_window(self):
+        """U3 (row 3.1.6): the record (and whether Junban is installed) read on a worker, then the window (one at a
+        time: a second click shows it fresh). The switch off meanwhile: nothing of Connect's imported."""
+        lang = self.var_language.get() or "ja"
+
+        def work():
+            if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+                return
+            try:
+                from app.connect import connect_window
+                record = connect_window.view(lang)
+                junban = connect_window.junban_present()
+            except Exception as e:
+                print(f"Connect's window: {e}")
+                return
+            self.gui_queue.put(lambda: self._show_connect_window(lang, record, junban))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_connect_window(self, lang, record, junban=None):
+        if self._connect_row is None:
+            return                      # switched off meanwhile
+        try:
+            from app.connect import connect_window
+            old, self._connect_window = self._connect_window, None
+            if old is not None and old.win.winfo_exists():
+                old.win.destroy()
+            row = self._connect_row
+            self._connect_window = connect_window.show(
+                self.root, lang, lambda widget, text: ToolTip(widget, text, wrap=320), record,
+                on_change=row.refresh, post=self.gui_queue.put, junban=junban)
+        except Exception as e:
+            print(f"Connect's window wasn't shown: {e}")
 
     @staticmethod
     def _write_install_note():
@@ -2127,6 +2614,16 @@ class MasterDashboardApp:
             path_utils.write_install_note()
         except Exception as e:
             print(f"Install note: {e}")
+
+    @staticmethod
+    def _refresh_tools_entry(settings=None):
+        """surasura.json rewritten when a field differs (`tools_entry.refresh`): at start, and after the Connect
+        switch's save, on and off (`settings`: the file as saved). A failure is only printed to the log."""
+        try:
+            from app import tools_entry
+            tools_entry.refresh(settings)
+        except Exception as e:
+            print(f"Shared tools file (surasura.json): {e}")
 
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.
@@ -2281,7 +2778,8 @@ class MasterDashboardApp:
         self.skipped_version = ""
         self.save_settings()
         self._sync_skipped_row()
-        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK") and settings_manager.update_check_on(
+                getattr(self, "_current_settings", None)):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
     def _do_auto_update(self, dialog):
@@ -2321,6 +2819,7 @@ class MasterDashboardApp:
             messagebox.showinfo("Update", "Another Surasura update is already in progress.")
             return
         updater.hold_children()
+        self._replan_stop_for_update()
         job = {"info": info, "lock": lock, "staged": None, "error": None, "done": False, "children": None,
                "listing": False, "window": None, "rows": None, "after": None}
         self._update_job = job
@@ -2344,6 +2843,9 @@ class MasterDashboardApp:
             # new "Update now" can never stage into the folder this worker was still writing.
             updater.discard_staged()
             updater.drop_update_lock(job.get("lock"))
+            if job.get("start_held"):
+                self._replan_restart()                 # a cancel during the download (pass 5 #1)
+                self._connect_kick_after_update()
             return
         if job is not getattr(self, "_update_job", None):
             return
@@ -2373,12 +2875,19 @@ class MasterDashboardApp:
 
     def _busy_threads(self):
         """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
-        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop.
+        A thread here holding the Anki-write lock (順, Backfill, the automatic step: E1.4) is one entry naming what it
+        writes; when that is the automatic step, in place of its own lock's entry — never listed twice."""
+        from app import anki_connect, locks
+        writing = locks.held_in_process(anki_connect.WRITER_LOCK)
         busy = []
         for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
             lock = getattr(self, attr, None)
-            if lock is not None and lock.locked():
+            if lock is not None and lock.locked() and not (
+                    attr == "_junban_auto_lock" and writing == anki_connect.AUTOMATIC_STEP):
                 busy.append({"pid": None, "name": name, "stop": None})
+        if writing is not None:
+            busy.append({"pid": None, "name": f"Writing to Anki ({writing or 'Surasura'})", "stop": None})
         return busy
 
     def _update_poll(self, job):
@@ -2409,8 +2918,8 @@ class MasterDashboardApp:
             pass
 
     def _show_update_wait(self, job, children):
-        """The waiting window: non-modal, one row per running item with *Stop it*, *Stop all and update now*, and
-        *Cancel* (Esc, or closing it, cancels too)."""
+        """The waiting window: non-modal, one row per running item with *Stop it* (none on Connect's row: it stops
+        after its batch), *Stop all and update now*, and *Cancel* (Esc, or closing it, cancels too)."""
         win = job["window"]
         if win is None or not win.winfo_exists():
             win = tk.Toplevel(self.root)
@@ -2434,7 +2943,8 @@ class MasterDashboardApp:
             stop_all = ttk.Button(btn_row, text="Stop all and update now", style="Action.TButton",
                                   command=lambda: self._stop_update_children(job, None))
             stop_all.pack(side=tk.LEFT)
-            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura.")
+            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura. Surasura "
+                              "Connect isn't stopped: it finishes its batch of cards first, then the update goes on.")
             cancel = ttk.Button(btn_row, text="Cancel", command=lambda: self._cancel_update(job))
             cancel.pack(side=tk.RIGHT)
             ToolTip(cancel, "Don't update now. Everything keeps running; the update is offered again later.")
@@ -2451,7 +2961,7 @@ class MasterDashboardApp:
                 row = ttk.Frame(job["list_frame"])
                 row.pack(fill=tk.X, pady=2)
                 ttk.Label(row, text=child["name"], background=BG_COLOR, foreground=TEXT_COLOR).pack(side=tk.LEFT)
-                if child["stop"] is None:              # this window's own work: it finishes by itself
+                if child["stop"] is None:              # this window's own work, or Connect: it finishes by itself
                     ttk.Label(row, text="finishing…", background=BG_COLOR, foreground="#888").pack(side=tk.RIGHT)
                     continue
                 stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
@@ -2461,7 +2971,8 @@ class MasterDashboardApp:
         job["status"].config(text="Downloading the update…" if not job["done"] else "The update is downloaded.")
 
     def _stop_update_children(self, job, children):
-        """*Stop it* (one item) or *Stop all* (None: everything listed)."""
+        """*Stop it* (one item) or *Stop all* (None: everything listed but what has no stop — this window's own work
+        and Connect, which stops after its batch of cards: P3.1 row 3.1.8, never ended)."""
         for child in (job["children"] or []) if children is None else children:
             if child.get("stop") is None:
                 continue
@@ -2497,6 +3008,7 @@ class MasterDashboardApp:
                 win.destroy()
         except Exception:
             pass
+        job["start_held"] = start_held
         if job.get("done"):
             updater.drop_update_lock(job.get("lock"))  # else when the download worker ends (_update_downloaded)
         updater.release_children(start=start_held)
@@ -2505,6 +3017,33 @@ class MasterDashboardApp:
                 self._maybe_auto_generate()            # one held back meanwhile
             except Exception:
                 pass
+            if job.get("done"):
+                self._replan_restart()                 # else once the download worker drops the lock (pass 5 #1)
+                self._connect_kick_after_update()
+
+    def _replan_restart(self):
+        """The preview's helper, stopped at "Update now", started again once the update's lock is gone — a helper
+        started while it is held would find an update staged and leave the jobs to this window's process."""
+        try:
+            self._replan_start()
+        except Exception:
+            pass
+
+    def _connect_kick_after_update(self):
+        """A cancelled update, its lock gone: Connect started again on a worker (`kick.kick` refuses by itself when it
+        is off, running or an update is staged), so a Connect that stopped for the update goes on and its line no
+        longer says it is installing one. Off: nothing, and nothing of Connect's imported."""
+        s = getattr(self, "_current_settings", None) or {}
+        if not s.get("connect_enabled"):
+            return
+
+        def work():
+            try:
+                from app.connect import kick
+                kick.kick(dict(s))
+            except Exception as e:
+                print(f"Connect wasn't started: {e}")
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_and_restart(self, job):
         """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the
@@ -2741,6 +3280,18 @@ class MasterDashboardApp:
             return
         open_junban(self)
 
+    def open_put_back(self):
+        """Settings' "Put Anki back the way it was before Surasura…" (FT D8): the module's window and flow."""
+        try:
+            from modules.junban import first_touch_gui
+        except Exception:
+            return
+        try:
+            first_touch_gui.open_put_back(self)
+        except Exception as e:
+            print(f"Error opening Put Anki back: {e}")
+            messagebox.showerror("Error", f"Could not open Put Anki back:\n{e}")
+
     def update_junban_visibility(self):
         """Shows the 順 button only if enabled in settings AND the module is available.
 
@@ -2925,16 +3476,11 @@ class MasterDashboardApp:
             return fallback
 
     def save_settings(self, *args, skip_ui=False):
+        """The widgets are read here, on the window's thread; the file is read and written by the settings writer
+        (`settings_manager.SettingsWriter`, P0.3 04 §2) on its worker, under the `settings` lock — this thread never
+        waits on it. Under test, or with no writer, it is written here at once."""
         try:
             cur = getattr(self, "_current_settings", {}) or {}
-            # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
-            # decks and fields) are carried through from DISK, not from `cur`: `cur` is this
-            # dashboard's snapshot from its own last load/save, so carrying from it silently
-            # reverted — or dropped — whatever a panel had saved since.
-            try:
-                panel = settings_manager.load_settings() or cur
-            except Exception:
-                panel = cur
             cur_ctx = cur.get("logic", {}).get("context", {}) if isinstance(cur.get("logic"), dict) else {}
             # Build settings dict from GUI vars
             settings = {
@@ -2994,8 +3540,8 @@ class MasterDashboardApp:
                 }
             }
 
-            # Persist YouTube settings only when the optional module is present, so a build
-            # without it never writes those keys back into settings.json.
+            # Each optional module's switch only when the module is there, so a build without it never gains its key;
+            # Speech's only once the user has revealed it (the `enable_koe` line they add themselves).
             try:
                 import modules.youtube_downloader  # noqa: F401
                 settings["enable_youtube_transcripts"] = self.var_enable_youtube.get()
@@ -3003,57 +3549,54 @@ class MasterDashboardApp:
                 settings["youtube_risk_acknowledged"] = getattr(self, "youtube_risk_acknowledged", False)
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # The speech module ships inside the app but stays hidden until the user adds the
-            # `enable_koe` line to settings.json themselves. Nothing about it is written back
-            # unless that line is already there — otherwise the first save would scatter koe_*
-            # keys through every user's settings and the feature would announce itself.
             try:
                 import modules.koe as _koe
                 if _koe.is_revealed():
                     settings["enable_koe"] = self.var_enable_koe.get()
-                    for _koe_key in ("koe_voice", "koe_model", "koe_style",
-                                     "koe_temperature", "koe_port", "koe_daily_cap"):
-                        if _koe_key in panel:
-                            settings[_koe_key] = panel[_koe_key]
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # Reels: the toggle plus whichever of its own tunables the user already has. Written
-            # only when the module imports, so a build without it never gains those keys — and the
-            # module's own defaults are carried through rather than reset on every save.
             try:
-                import modules.reels as _reels
+                import modules.reels  # noqa: F401
                 settings["enable_reels"] = self.var_enable_reels.get()
-                for _reels_key in _reels.SETTINGS_DEFAULTS:
-                    if _reels_key != "enable_reels" and _reels_key in panel:
-                        settings[_reels_key] = panel[_reels_key]
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # Junban: the same shape as Reels — the toggle plus whichever of the module's own
-            # tunables the user already has, written only when the module imports so a build
-            # without it never gains those keys. The carry-through matters because the panel writes
-            # junban_deck / junban_scope itself and this dict is rebuilt from scratch on every save.
             try:
-                import modules.junban as _junban
+                import modules.junban  # noqa: F401
                 settings["enable_junban"] = self.var_enable_junban.get()
-                for _junban_key in _junban.SETTINGS_DEFAULTS:
-                    if _junban_key != "enable_junban" and _junban_key in panel:
-                        settings[_junban_key] = panel[_junban_key]
             except (ImportError, ModuleNotFoundError):
                 pass
 
-            # The Anki window owns these (core keys, so always written).
-            for _anki_key in ("anki_connect_url", "anki_sync_decks", "anki_sync_fields",
-                              "anki_sync_include_suspended"):
-                if _anki_key in panel:
-                    settings[_anki_key] = panel[_anki_key]
+            # Only the dashboard's own keys go to settings.json, onto the file as it is (the settings service, W1.3):
+            # every other window's and module's keys — Junban's deck, the Anki window's decks, a hand edit, a key this
+            # version doesn't know — stay as the file holds them, never carried, reverted or dropped.
+            changes = {k: v for k, v in settings.items() if k != "logic"}
+            changes.update({f"logic.{k}": settings["logic"][k] for k in MasterDashboardApp.OWN_LOGIC_KEYS})
+            changes.update({f"logic.selection.{k}": settings["logic"]["selection"][k] for k in ("band", "auto")})
+            changes.update({f"logic.context.{k}": settings["logic"]["context"][k]
+                            for k in ("min_chars", "preferred_max_chars", "max_contexts")})
 
-            settings_manager.save_settings(settings)
-            self._current_settings = settings
-            # An analysis setting may have changed what Generate would compute — re-check the button.
-            self._schedule_journey_state()
+            def anki_address(on_disk):
+                # The Anki window owns the address; a hand-edited 2.x `junban_url` becomes the one address every
+                # Anki caller reads (`anki_connect.address`), so the file then holds one. And a 2.x update's
+                # `failed_update_version`, read at start into the update's own state, leaves the file.
+                from app import anki_connect
+                on_disk["anki_connect_url"] = anki_connect.address(on_disk)
+                on_disk.pop("junban_url", None)
+                on_disk.pop("failed_update_version", None)
+
+            service = getattr(self, "settings_service", None)
+            if not isinstance(service, settings_service.SettingsService):
+                writer = getattr(self, "_settings_writer", None)
+                service = self.settings_service = settings_service.SettingsService(
+                    load=False, writer=writer if isinstance(writer, settings_manager.SettingsWriter) else None)
+            if os.environ.get("SURASURA_NO_UI_TIMERS"):
+                # Under test nothing drains the queue: written here at once, and the button re-checked here.
+                service.set(changes, update=anki_address, now=True)
+                self._current_settings = settings_service.thaw(service.get())
+                self._schedule_journey_state()
+            else:
+                service.set(changes, update=anki_address)  # written on its worker; the journey check follows
+                self._current_settings = {**cur, **settings}
 
             # Update UI state (enable/disable language specific options). Skipped for band-slider
             # saves — a commonness-band change never affects the language-dependent UI, and the
@@ -3111,7 +3654,8 @@ class MasterDashboardApp:
 
     def open_tutorial(self):
         try:
-            webbrowser.open("https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md")
+            from app.path_utils import GUIDE_URL       # one link both windows open (the 3.0 window's ? › Online guide)
+            webbrowser.open(GUIDE_URL)
         except Exception as e:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
 
@@ -3121,21 +3665,79 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open the parsing guide: {e}")
             
+    SETTINGS_WAIT_LINE = "Saving your settings waits for another Surasura program…"
+    # The `logic` keys the dashboard's own widgets set (save_settings writes these and no other logic key).
+    OWN_LOGIC_KEYS = ("inline_completed_files", "hide_audio_button", "paren_readings", "names_katakana",
+                      "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles", "pronoun_bases",
+                      "phrase_rows", "ignore_names")
+
+    def _on_settings_saved(self):
+        """The settings writer wrote: the journey check follows, and its waiting line (if shown) goes."""
+        if self.status_var.get() == self.SETTINGS_WAIT_LINE:
+            self.status_var.set("Ready")
+        self._schedule_journey_state()
+
+    CLI_EVENTS_EVERY = 3000     # ms between looks at the command line's events file (a stat; the read is a worker's)
+
+    def _watch_cli_events(self):
+        """Every few seconds: a stat of the command line's events file on this thread; when it changed, the new lines
+        are read on a worker and the newest failure lands in the bottom bar (`_show_cli_event`). Never a box."""
+        try:
+            self._check_cli_events()
+        finally:
+            try:
+                self.root.after(self.CLI_EVENTS_EVERY, self._watch_cli_events)
+            except Exception:
+                pass
+
+    def _check_cli_events(self):
+        reader = getattr(self, "_cli_events", None)
+        if reader is None or self._cli_events_reading or not reader.changed():
+            return
+        self._cli_events_reading = True
+
+        def work():
+            try:
+                event = reader.newest_to_show()
+            except Exception:
+                event = None
+            self.gui_queue.put(lambda: self._show_cli_event(event))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_cli_event(self, event):
+        self._cli_events_reading = False
+        if event is None:
+            return
+        from app.cli import events as cli_events
+        self.status_var.set(cli_events.plain(event))
+
+    def _flush_settings(self, timeout=10.0):
+        """Wait until the settings writer has written what it holds: a child process or a check reads settings.json
+        from disk. On a worker, or once the window is gone — never on the window's thread while it is up."""
+        writer = getattr(self, "_settings_writer", None)
+        if isinstance(writer, settings_manager.SettingsWriter):
+            writer.flush(timeout)
+        settings_manager.flush_keys(timeout)        # the other windows' saves that met a held lock
+
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
-                          clear_log=True, on_exit=None):
+                          clear_log=True, on_exit=None, extra_env=None, on_process=None, on_end=None):
         """Runs a command with optional output redirection to the terminal.
 
         on_complete: optional zero-arg callable run on the GUI thread after the process exits
         (e.g. refreshing the band preview once a new analysis has written its token index).
         clear_log: False keeps what the log already shows (the automatic Generate appends to it).
+        extra_env: variables for this command's process only (the analyzer's wait for `results`).
         on_exit: like on_complete, but run however the command ends — also when it could not be
         started at all (Generate's "one is running" must never stick).
+        on_process(popen) / on_end(returncode or None): for an owner that follows the child (Generate's controller,
+        W1.3); a command without one is recorded in the window's job registry for as long as it runs.
         Whenever a command ends, an automatic Generate waiting for it gets its chance
         (_maybe_auto_generate).
         While an update waits for Surasura's programs (K75) nothing new starts: the command is kept and starts if the
         update is cancelled."""
         if updater.defer_child(lambda: self.run_command_async(cmd, desc, capture_output, show_spinner, on_complete,
-                                                              clear_log, on_exit)):
+                                                              clear_log, on_exit, extra_env, on_process, on_end)):
             self.status_var.set(f"{desc} will start if the update is cancelled.")
             return
         
@@ -3156,7 +3758,14 @@ class MasterDashboardApp:
         
         self.gui_queue.put(_start_loading)
 
+        job = None
+        if on_end is None:
+            job = _window_services(self)[0].record(_CHILD_KINDS.get(cmd[0], "child"), desc)
+        process = None
+
         def task():
+            nonlocal process
+            self._flush_settings()          # every child reads settings.json: the newest choice first
             # Dispatch Mapping for Frozen Environment
             SCRIPT_MAP = {
                 'analyzer.py': 'analyzer',
@@ -3190,6 +3799,7 @@ class MasterDashboardApp:
                 # SET ENVIRONMENT: UTF-8 stdio (so the strict-UTF-8 stdout capture below never
                 # chokes on locale-encoded bytes) + project root on PYTHONPATH in source mode.
                 env = build_subprocess_env(is_frozen())
+                env.update(extra_env or {})
                 
                 # subprocess.CREATE_NO_WINDOW can cause issues for GUI apps
                 # but it's good for console tools like analyzer if we capture output.
@@ -3214,6 +3824,8 @@ class MasterDashboardApp:
                 # Register process for coordinated shutdown (and named for an update's wait, K75)
                 process.surasura_desc = desc
                 self.active_processes.append(process)
+                if on_process is not None:
+                    on_process(process)
                 
                 if capture_output and process.stdout:
                     for line in process.stdout:
@@ -3247,16 +3859,24 @@ class MasterDashboardApp:
                         self.spinner.stop()
                         self.spinner.pack_forget()
                 self.gui_queue.put(_stop_loading)
+                returncode = process.returncode if process is not None else None
+                if on_end is not None:
+                    on_end(returncode)
+                if job is not None:
+                    job.finish(ok=returncode == 0, message=None if returncode == 0 else f"{desc} ended ({returncode})")
                 if on_exit:
                     self.gui_queue.put(on_exit)
                 # An automatic Generate held back while this ran (the Content Manager, an importer, the
                 # indexer, a Generate) can go now. It does nothing unless one is waiting.
                 self.gui_queue.put(self._maybe_auto_generate)
+                self.gui_queue.put(self._replan_after_child)     # the fast re-plan's preview: catch up, its Generate
                     
         threading.Thread(target=task, daemon=True).start()
 
     def on_closing(self):
         """Coordinated shutdown: terminate all active sub-processes"""
+        if self._replan_finishing():
+            return                      # the fast re-plan's re-order or sync finishes first; this runs again after
         job = getattr(self, "_update_job", None)
         if job is not None:
             self._cancel_update(job, start_held=False)   # closing while an update waits: nothing armed, nothing started
@@ -3276,7 +3896,20 @@ class MasterDashboardApp:
                         proc.terminate()
                 except Exception:
                     pass
+        self._closing_event.set()
         self.root.destroy()
+        # What the settings writer still holds is written before the process ends (the window is gone: nothing waits).
+        self._flush_settings(timeout=10.0)
+        # Connect's preview on: what arrived while the window was open was seen here — never named at the next start
+        if (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            try:
+                from app.connect import notice
+                notice.at_close(self.var_language.get() or "ja")
+            except Exception as e:
+                print(f"Arrivals notice at close: {e}")
+        # This window's own store handles closed first, through the store's close (§6.12: never at the process's
+        # end, where a plain close that is the last checkpoints outside the write lock)
+        self._close_library_handles()
         # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
         # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
         try:
@@ -3318,6 +3951,8 @@ class MasterDashboardApp:
         """
         if not self.var_anki_sync_auto.get() or os.environ.get("SURASURA_NO_ANKI_SYNC"):
             return
+        if self.__dict__.get("_connect_looking"):
+            return      # Connect's session look is running: it reads your known words once its sync is in (Q4-1)
         import time
         now = time.monotonic()
         if not force and now - self._last_anki_sync < 300:
@@ -3328,19 +3963,15 @@ class MasterDashboardApp:
             s = settings_manager.load_settings() or s
         except Exception:
             pass
-        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
-        if not decks:
-            return
-        # The FIRST sync is always the user's own "Sync now" (spec §5.6). The Anki window pre-picks
-        # every studied deck the moment it opens; until the user has reviewed that pick and synced
-        # once, nothing may be read into their known words behind their back — a sentence or kanji
-        # deck in that pick would otherwise be appended, and appends can't be taken back.
+        # The gates every sync shares (`anki_sync.may_sync`: the test switch, decks chosen, and the FIRST sync being
+        # the user's own "Sync now"); the 5-minute limit is this window's own count, above.
         try:
             from app import anki_sync
-            if not anki_sync.load_state(lang).get("last_sync"):
+            if anki_sync.may_sync(lang, s, throttle=False) is not None:
                 return
         except Exception:
             return
+        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
         if updater.children_held():
             return                      # an update waits (K75): no Anki write may begin
         if not self._anki_sync_lock.acquire(blocking=False):
@@ -3353,11 +3984,20 @@ class MasterDashboardApp:
             result = None
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
-                    result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
-                    # The same decks' new cards, for the report's backlog marks (read-only).
-                    anki_sync.sync_backlog(lang, url, decks, fields)
+                    # The one sync order (`anki_sync.sync_all`): the studied words, the same decks' new cards (the
+                    # report's backlog marks, read-only), then Known from Anki (P2.4): only with Connect's preview on;
+                    # its window when the record has news not yet shown (a Connect run may have read first, with no
+                    # window: adversary B #3) — read here, on this worker; a pending offer once a dashboard session
+                    # until answered (intent keeper #4, #5)
+                    result, signal = anki_sync.sync_all(lang, url, decks, fields, s, include_suspended=suspended)
+                    if signal and signal.get("news"):
+                        from app.connect import known_signal_window
+                        seen = known_signal_window.view(lang, with_offer=lang not in self.__dict__.setdefault("_known_offer_seen", set()))
+                        if seen and (seen["marked"] or seen["taken"] or (seen["offer"].get("state") == "pending"
+                                                                         and seen["offer"].get("cards"))):
+                            self.gui_queue.put(lambda: self._known_signal_window(lang, url, seen))
             except Exception as e:
                 print(f"Anki sync skipped: {e}")
             finally:
@@ -3369,6 +4009,19 @@ class MasterDashboardApp:
 
         self._anki_spinner(True)
         threading.Thread(target=work, daemon=True).start()
+
+    def _known_signal_window(self, language, url, seen):
+        """P2.4 row 2.4.15: *You suspended N cards since … — marked known*, with Undo per word (Connect's preview only).
+        `seen`: `known_signal_window.view`, read on the sync's worker."""
+        try:
+            from app.connect import known_signal_window
+            if seen["offer"].get("state") == "pending":
+                self.__dict__.setdefault("_known_offer_seen", set()).add(language)
+            known_signal_window.show(self.root, language, url, lambda widget, text: ToolTip(widget, text, wrap=320),
+                                     offer=seen["offer"], marked=seen["marked"], taken=seen["taken"],
+                                     terms=seen["terms"])
+        except Exception as e:
+            print(f"Known from Anki's window wasn't shown: {e}")
 
     def _maybe_backlog_sync(self):
         """Generate's own read of the Anki backlog (Junban_Backlog_Spec WP-B7): the new cards waiting
@@ -3394,7 +4047,7 @@ class MasterDashboardApp:
         def work():
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
                     anki_sync.sync_backlog(lang, url, decks, fields)
             except Exception as e:
@@ -3407,15 +4060,14 @@ class MasterDashboardApp:
 
         After a Generate (`force`) and when the window comes back into focus (at most every 5
         minutes, like the Anki sync), on a daemon thread with a spinner on the 順 button. Every
-        decision about whether to write lives in the module (`modules/junban/auto.py`); this only
-        schedules it. Never while the 順 window is open — the user is ordering by hand there, and a
-        write underneath would make the preview on their screen describe a queue that has moved.
+        decision about whether to write lives in the module (`modules/junban/auto.py`: `blocked` —
+        the test switch, the module off, an update waiting, a 順 window open — and the reorder's own
+        guards); this only schedules it.
         """
-        if os.environ.get("SURASURA_NO_ANKI_SYNC") or not self.var_enable_junban.get():
-            return
-        if updater.children_held():
-            return                      # an update waits for Surasura's programs (K75)
         import time
+        host = self.__dict__.get("_replan_host")
+        if host is not None and force:
+            host.after_generate()       # the fast re-plan's preview re-orders from the new plan (E1.1 04 §3)
         now = time.monotonic()
         if not force and now - self._last_junban_auto < 300:
             return
@@ -3425,12 +4077,15 @@ class MasterDashboardApp:
         except Exception:
             return
         settings["target_language"] = self.var_language.get()
-        if not auto.enabled(settings):
+        settings["enable_junban"] = bool(self.var_enable_junban.get())     # the switch as shown, saved or not yet
+        if host is not None and self._replan_runs(settings):
+            settings["junban_auto_reorder"] = False     # the preview's host re-orders; the Backfill step stays
+        if not auto.enabled(settings) or auto.blocked(settings, window=False):
             return
         window = getattr(self, "junban_window", None)
         try:
             if window is not None and window.winfo_exists():
-                return
+                return                  # this window's own 順 panel, before its lock is even taken
         except Exception:
             pass
         if not self._junban_auto_lock.acquire(blocking=False):
@@ -3443,6 +4098,9 @@ class MasterDashboardApp:
         def work():
             message = ""
             try:
+                if auto.window_open():          # a lock look: on this worker, never the window's thread
+                    return
+                self._flush_settings()
                 message = auto.run_quietly(settings, list_current=journey_is_current(args, language))
             finally:
                 self._junban_auto_lock.release()
@@ -3452,6 +4110,139 @@ class MasterDashboardApp:
 
         self._junban_spinner(True)
         threading.Thread(target=work, daemon=True).start()
+
+    # --- the fast re-plan's preview (E1.1 04 §3; app/replan_preview.py) --------------------------------------------- #
+    # With 順's "Re-order Anki as I move content (preview)" on, this window catches up — a re-order the Content
+    # Manager left owed, cards Anki holds that no re-order placed — at start and on focus, re-orders after every
+    # Generate (the host's helper process, 順 spinning), and runs the automatic Generate the preview asks for (moves made,
+    # switched on, the plan can't serve a move): quietly, shown working, never with the Content Manager open, never two.
+    # Off (the default): no host, 2.5's window.
+
+    def _replan_start(self):
+        """Start, stop or re-aim the host (startup, 順's switch, the language): one per language."""
+        try:
+            from app import replan_preview
+            settings = dict(settings_manager.load_settings() or {})
+            settings["enable_junban"] = bool(self.var_enable_junban.get())
+            language = self.var_language.get() or "ja"
+            on = replan_preview.is_on(settings, language)
+            if settings.get(replan_preview.SWITCH) is not True and not settings.get("connect_enabled"):
+                # switched off: a pending sync is let go (Anki's close carries it) — unless Connect's preview, whose
+                # verbs leave one for Connect to send, is on (P2.3)
+                from app import anki_sync_rule
+                anki_sync_rule.drop_pending()
+        except Exception:
+            on, language = False, self.var_language.get() or "ja"
+        host = self.__dict__.get("_replan_host")
+        if host is not None and (not on or host.language != language):
+            host.stop()
+            host = self._replan_host = None
+        if on and host is None and self.__dict__.get("_update_job") is not None:
+            return                                     # an update waits: started again when it ends (pass 5 #1)
+        if on and host is None:
+            host = self._replan_host = replan_preview.open_host(
+                language, say=lambda line: self.gui_queue.put(lambda: self._replan_said(line)),
+                working=lambda busy: self.gui_queue.put(lambda: self._junban_spinner(busy)),
+                generate=lambda reason: self.gui_queue.put(lambda: self._want_replan_generate(reason)))
+        if host is not None:
+            self._replan_focus()
+
+    def _replan_stop_for_update(self):
+        """"Update now": the preview's helper is a Surasura process the update would wait for, and this window's hold
+        isn't its own (E3.1 pass 4 #1) — stopped now (a job in hand goes on for at most CLOSE_WAIT_S; pass 5 #3), started
+        again by a cancel once the update's lock is gone."""
+        host = self.__dict__.get("_replan_host")
+        if host is not None:
+            host.stop()
+            self._replan_host = None
+
+    def replan_preview_changed(self):
+        """順's window: its "Re-order Anki as I move content" switch (or its sync choice) changed."""
+        self._replan_start()
+
+    @staticmethod
+    def _replan_runs(settings):
+        """The preview's host re-orders for these settings (else 2.5's automatic reorder keeps its own switch)."""
+        try:
+            from app import replan_preview
+            return (replan_preview.is_on(settings, settings.get("target_language"))
+                    and replan_preview.unavailable(settings) is None)
+        except Exception:
+            return False
+
+    def _child_running(self):
+        try:
+            return any(proc.poll() is None for proc in list(self.active_processes))
+        except Exception:
+            return True
+
+    def _replan_focus(self):
+        """The catch-up (04 §3): on focus and at start — not while a program of this window runs (the Content
+        Manager re-orders itself; a Generate's end re-orders)."""
+        host = self.__dict__.get("_replan_host")
+        if host is not None and not self._child_running():
+            host.catch_up()
+
+    def _replan_after_child(self):
+        """A program of this window ended (the Content Manager closing): catch up, and run a Generate that waited."""
+        self._replan_focus()
+        self._maybe_replan_generate()
+
+    def _replan_said(self, line):
+        """The host's line, in the bottom bar for a few seconds (the Content Manager shows its own)."""
+        if not line:
+            return
+        self.status_var.set(line)
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(6000, lambda: self.status_var.get() == line and self.status_var.set("Ready"))
+
+    def _want_replan_generate(self, reason):
+        self._replan_generate_reason = reason
+        self._maybe_replan_generate()
+
+    def _maybe_replan_generate(self):
+        """The preview's automatic Generate (04 §3, ✅ G1.5-2 / G1.5-5), when nothing holds it back: never with the
+        Content Manager (or any program of this window) open, never during a Generate or an update, never for the
+        other language. Quiet — the report written, not opened — and shown working: the check mark's spot spins,
+        the bottom bar says so. A request held back waits for focus or the next program's end."""
+        reason = self.__dict__.get("_replan_generate_reason")
+        host = self.__dict__.get("_replan_host")
+        if not reason or host is None or host.language != self.var_language.get():
+            return False
+        if self._generate_running is not None or updater.children_held() or self._child_running():
+            return False
+        if not self._library_has_content():
+            return False
+        self._replan_generate_reason = None
+        self.log_to_terminal("Re-order as you move: refreshing your list (Generate) so Anki follows your moves "
+                             "— the report is not opened.")
+        self.status_var.set("Refreshing your list (Generate)… · Anki is re-ordered when it's done")
+        self.run_analyzer(quiet=True)
+        if self._generate_running == "quiet":
+            self._generate_running = "automatic"
+            self._replan_generating = True
+            self._journey_spinner(True)                # the check mark's spot spins until it ends
+        return True
+
+    def _replan_finishing(self):
+        """Closing (04 §2.5): a re-order running or a sync pending finishes first — at most CLOSE_WAIT_S, the bottom
+        bar saying so — then `on_closing` runs again. False when nothing waits (closing goes on at once)."""
+        host = self.__dict__.get("_replan_host")
+        if host is None:
+            return False
+        import time
+        from app import replan_preview
+        deadline = self.__dict__.get("_replan_closing_at")
+        if deadline is None:
+            host.close()
+            deadline = self._replan_closing_at = time.monotonic() + replan_preview.CLOSE_WAIT_S
+            self.status_var.set("Finishing the re-order in Anki…")
+        if host.busy() and time.monotonic() < deadline and not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(100, self.on_closing)
+            return True
+        host.stop()
+        self._replan_host = None
+        return False
 
     def _tell_junban_list_changed(self):
         """After any Generate: an open 順 window that was waiting for an up-to-date list (its
@@ -3553,6 +4344,7 @@ class MasterDashboardApp:
         args, language = self._analyzer_args(), self.var_language.get()
 
         def work():
+            self._flush_settings()          # the check reads settings.json
             state = journey_is_current(args, language)
             self.gui_queue.put(lambda: gen == self._journey_gen and self._set_journey_state(state))
 
@@ -3579,7 +4371,9 @@ class MasterDashboardApp:
     def _journey_check_tip(self):
         """The check mark's tooltip — or, while the automatic Generate spins in its place, what runs."""
         if self._generate_running == "automatic":
-            return "Generating automatically — Anki brought in known words."
+            return ("Generating automatically — your list catches up with your moves (Re-order as you move)."
+                    if self.__dict__.get("_replan_generating") else
+                    "Generating automatically — Anki brought in known words.")
         return "Up to date — nothing has changed since your last Generate."
 
     def _journey_spinner(self, on):
@@ -3751,7 +4545,8 @@ class MasterDashboardApp:
         # Whether the report still holds is asked on a worker (Library_Store_Spec §7, A10 / A12): the check syncs
         # the library with its folders and stats every file, never on this thread. The press goes on from the answer.
         self._generate_running = "checking"
-        self._run_on_worker(lambda: self._report_reusable(args), lambda reusable: self._generate_checked(args, reusable))
+        self._run_on_worker(lambda: (self._flush_settings(), self._report_reusable(args))[1],    # the file, then the check
+                            lambda reusable: self._generate_checked(args, reusable))
 
     def _run_on_worker(self, work, then):
         """`work()` on a worker thread, then `then(result)` on this one (through gui_queue). Headless or under test
@@ -3780,14 +4575,41 @@ class MasterDashboardApp:
         self._start_analyzer(args, quiet=False)
 
     def _start_analyzer(self, args, quiet):
+        """Start the analyzer through the Generate controller (W1.3, `app/services/generate.py`): its run waits on a
+        worker until no other program's Generate holds `results` (P0.3 04 §2) — a line in the bottom bar, never a box;
+        closing the window while it waits starts nothing — and it is the `generate` job in the window's registry. This
+        thread never waits. The dashboard starts the child itself (`run_command_async`: its log, spinner and the
+        update's wait); the analyzer takes the lock itself, so the two can never write results/ together."""
         self._generate_running = "quiet" if quiet else "manual"
-        self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
-                               capture_output=True, show_spinner=not quiet, clear_log=not quiet,
-                               on_complete=lambda: (self._refresh_band_preview(force=True),
-                                                    self._maybe_junban_auto(force=True),
-                                                    self._schedule_journey_state(),
-                                                    self._tell_junban_list_changed()),
-                               on_exit=self._on_generate_exit)
+        _registry, controller = _window_services(self)
+        caller = threading.current_thread()
+
+        def launch(run):
+            self._generate_run = run        # its end is told again by _on_generate_exit (the first report counts)
+
+            def start():
+                self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
+                                       capture_output=True, show_spinner=not quiet, clear_log=not quiet,
+                                       on_complete=lambda: (self._refresh_band_preview(force=True),
+                                                            self._maybe_junban_auto(force=True),
+                                                            self._schedule_journey_state(),
+                                                            self._tell_junban_list_changed()),
+                                       on_exit=self._on_generate_exit,
+                                       # It has waited its turn already; started in the moment another program's
+                                       # Generate also starts, it waits for that one (closing the window ends it).
+                                       extra_env={"SURASURA_RESULTS_WAIT": "forever"},
+                                       on_process=run.started, on_end=run.ended)
+            if run.inline and threading.current_thread() is caller:
+                start()                     # under test nothing drains the queue: a free lock starts it here
+            else:
+                self.gui_queue.put(start)
+
+        # Under test (no UI timers) a free `results` is taken here and the analyzer starts at once; a held one is
+        # waited for on a worker, as in use.
+        controller.request(None, argv=args, quiet=quiet, settle=0, launcher=launch,
+                           on_wait=lambda _holder: self.gui_queue.put(
+                               lambda: self.status_var.set("Waiting for a background Generate…")),
+                           cancel_event=self._closing_event, inline=bool(os.environ.get("SURASURA_NO_UI_TIMERS")))
 
     def _on_generate_exit(self):
         """However a Generate ended — finished, failed, or never started — the next one may run. The
@@ -3796,68 +4618,39 @@ class MasterDashboardApp:
         Generate, which reopens the report at once when the journey is up to date."""
         if self._generate_running == "automatic":
             self._journey_spinner(False)
+        run, self._generate_run = getattr(self, "_generate_run", None), None
+        if isinstance(run, generate_service.Run):
+            run.ended(getattr(run.proc, "returncode", None))      # the controller's job ends (if not told already)
         self._generate_running = None
+        self._replan_generating = False
         self._schedule_journey_state()
         if self._open_report_when_generated:
             self._open_report_when_generated = False
             self.run_analyzer()
 
     def _analyzer_args(self):
-        """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread."""
-        args = ['analyzer.py']
-        if not self.var_exclude_single.get():
-            args.append('--include-single-chars')
-        
-        if self.var_strategy.get() == "coverage":
-            coverage_target = self.var_target_coverage.get()
-            args.append(f'--target-coverage={coverage_target}')
-        # else: density-band selection. The analyzer reads logic.selection (band + ppm floors)
-        # from settings, which are saved before this run. Raw --min-freq is retired from the UI
-        # (kept only as a CLI override); the band slider writes logic.selection.band.
+        """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread. One builder for the
+        window and the command line (`app/run_args.py`), so their runs hash alike."""
+        from app import run_args
+        return run_args.analyzer_args(self._run_settings(), self.var_language.get())
 
-        args.append('--static')
-        
-        # Add Language
-        args.append(f'--language={self.var_language.get()}')
-        
-        # Chinese script: only when one is chosen, so an as-is run passes exactly the old args.
-        zh_mode = self._effective_zh_script(self.var_language.get())
-        if zh_mode != "asis":
-            args.append(f'--zh-script={zh_mode}')
-            
-        if self.var_ensure_audio.get():
-            args.append('--ensure-audio-example')
-
-        if self.var_only_i_plus_one.get():
-            args.append('--only-i-plus-one')
-            
-        args.append(f'--context-min={self.var_context_min_chars.get()}')
-        args.append(f'--context-max={self.var_context_max_chars.get()}')
-        
-        max_c = self.var_max_contexts.get()
-        if max_c != 3:
-            args.append(f'--max-contexts={max_c}')
-        
-        # Add theme argument
-        theme_map = {
-            'Default (Dark)': 'default',
-            'Dark Flow': 'world-class',
-            'Midnight (Vibrant)': 'midnight-vibrant',
-            'Modern Light': 'modern-light',
-            'Zen Mode': 'zen-focus'
+    def _run_settings(self):
+        """The widgets Generate reads, in settings.json's shape (what `run_args.analyzer_args` takes)."""
+        return {
+            "exclude_single": self.var_exclude_single.get(),
+            "strategy": self.var_strategy.get(),
+            "target_coverage": self.var_target_coverage.get(),
+            "target_language": self.var_language.get(),
+            "zh_script": self.var_zh_script.get(),
+            "ensure_audio_example": self.var_ensure_audio.get(),
+            "only_i_plus_one": self.var_only_i_plus_one.get(),
+            "logic": {"context": {"min_chars": self.var_context_min_chars.get(),
+                                  "preferred_max_chars": self.var_context_max_chars.get(),
+                                  "max_contexts": self.var_max_contexts.get()}},
+            "theme": self.combo_theme.get(),
+            "open_app_mode": self.var_open_app_mode.get(),
+            "zen_limit": self.var_zen_limit.get(),
         }
-        selected_theme = self.combo_theme.get()
-        theme_arg = theme_map.get(selected_theme, 'default')
-        args.append(f'--theme={theme_arg}')
-        
-        if self.var_open_app_mode.get():
-            args.append('--app-mode')
-            
-        # Zen Limit (passed to analyzer just in case, or for consistency)
-        zen_limit = self.var_zen_limit.get()
-        if zen_limit > 0:
-            args.append(f'--zen-limit={zen_limit}')
-        return args
 
     def _try_open_existing_report(self, args):
         """Return True and reopen the existing report if a full analysis is provably unnecessary (the check and
@@ -3921,25 +4714,23 @@ class MasterDashboardApp:
         Same three formats as the ordinary frequency-list export — a Migaku user can't do anything
         with a Yomitan ZIP, and two export buttons that behave differently is just confusing. The
         list is a CSV with the same columns as the priority list, so every exporter reads it as-is.
+        The export itself is `app/exports.py` (Tk-free, shared with 3.0's Settings page).
         """
-        from app.path_utils import get_user_file
+        from app import exports
 
         self._show_export_dialog(
-            os.path.join(get_user_file("results"), "reading_words.csv"),
-            initial_name="Surasura Reading Words",
-            empty_message=("Generate your Vocab Journey first — the reading-words list is built "
-                           "during analysis.\n\nIf you have already run one, then no read-only "
-                           "words were found yet, which usually means there isn't enough content "
-                           "for the comparison to be confident."))
+            exports.source("reading_words"),
+            initial_name=exports.INITIAL_NAMES["reading_words"],
+            empty_message=exports.EMPTY["reading_words"])
 
     def generate_frequency_list(self):
-        """Show dialog to choose export format"""
-        from app.path_utils import get_user_file
+        """Show dialog to choose export format (the export itself: `app/exports.py`)."""
+        from app import exports
 
         self._show_export_dialog(
-            os.path.join(get_user_file("results"), "priority_learning_list.csv"),
-            initial_name="MY Immersion FreqList",
-            empty_message="You need to run an analysis first to generate data.")
+            exports.source("frequency_list"),
+            initial_name=exports.INITIAL_NAMES["frequency_list"],
+            empty_message=exports.EMPTY["frequency_list"])
 
     def export_sentence_dictionary(self):
         """Settings → Data & System → Export Sentence Dictionary: "Surasura Corpus (<lang>)", a Yomitan
@@ -3949,11 +4740,10 @@ class MasterDashboardApp:
         A small dialog asks first whether to write where each sentence came from under it — off by
         default, since file names crowd the popup (each sentence's hover shows its file either way).
         The answer is remembered (`sentence_dictionary_source`)."""
-        from app.analyzer import resolve_found_files
-        from app.sentence_corpus import dictionary_title
+        from app.sentence_corpus import dictionary_title, has_sources
 
         lang = self.var_language.get()
-        if not resolve_found_files(lang, verbose=False):
+        if not has_sources(lang):
             messagebox.showwarning("No Content", "Add content to your library first — the dictionary is "
                                                  "built from your own files.")
             return
@@ -4074,34 +4864,36 @@ class MasterDashboardApp:
         wrapper = ttk.Frame(dialog, padding=20)
         wrapper.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(wrapper, text="Which format would you like to create?", 
+        from app import exports
+        ttk.Label(wrapper, text=exports.FORMAT_QUESTION,
                  font=('Segoe UI', 11, 'bold'), foreground=TEXT_COLOR, background=BG_COLOR).pack(pady=(0, 20))
                  
         # Buttons
-        btn_migaku = ttk.Button(wrapper, text="Migaku", command=lambda: self.export_wrapper(dialog, "migaku", source_csv, initial_name))
+        btn_migaku = ttk.Button(wrapper, text=exports.FORMAT_LABELS["migaku"], command=lambda: self.export_wrapper(dialog, "migaku", source_csv, initial_name))
         btn_migaku.pack(fill=tk.X, pady=5)
-        ToolTip(btn_migaku, "Export as a JSON array (Standard Migaku Format).")
+        ToolTip(btn_migaku, exports.FORMAT_TIPS["migaku"])
         
-        btn_yomitan = ttk.Button(wrapper, text="Yomichan / Yomitan", command=lambda: self.export_wrapper(dialog, "yomitan", source_csv, initial_name))
+        btn_yomitan = ttk.Button(wrapper, text=exports.FORMAT_LABELS["yomitan"], command=lambda: self.export_wrapper(dialog, "yomitan", source_csv, initial_name))
         btn_yomitan.pack(fill=tk.X, pady=5)
-        ToolTip(btn_yomitan, "Export as a frequency dict ZIP file (v3 format).")
+        ToolTip(btn_yomitan, exports.FORMAT_TIPS["yomitan"])
         
-        btn_txt = ttk.Button(wrapper, text="Word List (Text)", command=lambda: self.export_wrapper(dialog, "txt", source_csv, initial_name))
+        btn_txt = ttk.Button(wrapper, text=exports.FORMAT_LABELS["txt"], command=lambda: self.export_wrapper(dialog, "txt", source_csv, initial_name))
         btn_txt.pack(fill=tk.X, pady=5)
-        ToolTip(btn_txt, "Export as a plain text file (one word per line).")
+        ToolTip(btn_txt, exports.FORMAT_TIPS["txt"])
 
     def generate_anki_sentence_warning(self):
-        from app.path_utils import get_user_file
-        results_dir = get_user_file("results")
-        priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
+        """Generate Sentence List: 2.4's warning, then the Anki sentence CSV (the export itself: `app/exports.py`)."""
+        from app import exports
+        priority_csv = exports.source("sentence_list")
 
-        if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
-            messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
+        not_ready = exports.ready("sentence_list")
+        if not_ready is not None:
+            messagebox.showwarning(exports.TITLES[not_ready.kind], not_ready.message)
             return
 
         # Warning Dialog
         dialog = tk.Toplevel(self.root)
-        dialog.title("Anki Export Warning")
+        dialog.title(exports.SENTENCE_WARNING_TITLE)
         dialog.geometry("450x420")
         dialog.resizable(False, False)
         dialog.configure(bg=BG_COLOR)
@@ -4113,79 +4905,49 @@ class MasterDashboardApp:
         wrapper = ttk.Frame(dialog, padding=20)
         wrapper.pack(fill=tk.BOTH, expand=True)
 
-        warn_text = (
-            "WARNING: You will learn words faster with higher retention practice "
-            "if you mine directly from the スラスラ list. You can see multiple "
-            "examples and mine with Yomitan / Migaku.\n\n"
-            "FORMAT: This will generate a list to import into Anki / SRS software. "
-            "Columns included: Index, Word, Reading, Main Sentence, Second Sentence, Tier, Sources.\n\n"
-            "Are you sure you want to do this?"
-        )
+        warn_text = exports.SENTENCE_WARNING
         
         ttk.Label(wrapper, text=warn_text, foreground=ERROR_COLOR, background=BG_COLOR, font=('Segoe UI', 10), wraplength=400, justify=tk.LEFT).pack(pady=(0, 20))
         
         confirm_var = tk.BooleanVar(value=False)
-        chk_confirm = ttk.Checkbutton(wrapper, text="I understand", variable=confirm_var)
+        chk_confirm = ttk.Checkbutton(wrapper, text=exports.SENTENCE_CONFIRM, variable=confirm_var)
         chk_confirm.pack(anchor=tk.W, pady=(0, 20))
         
         def on_generate():
             if not confirm_var.get():
-                messagebox.showwarning("Confirm", "Please check the box to confirm you understand.")
+                messagebox.showwarning("Confirm", exports.SENTENCE_UNCONFIRMED)
                 return
             self.export_wrapper(dialog, "anki", priority_csv)
             
-        btn_gen = ttk.Button(wrapper, text="Generate Sentence List", command=on_generate, style="Action.TButton")
+        btn_gen = ttk.Button(wrapper, text=exports.SENTENCE_BUTTON, command=on_generate, style="Action.TButton")
         btn_gen.pack(fill=tk.X)
 
 
     def export_wrapper(self, dialog, format_type, csv_path, initial_name="MY Immersion FreqList"):
+        """Save-as, then the export (`exports.write`, Tk-free) and 2.4's box for how it went."""
         from tkinter import filedialog
-        from app.frequency_exporter import FrequencyExporter
-        
+        from app import exports
+
         dialog.destroy()
-        
-        file_types = []
-        def_ext = ""
-        
-        if format_type == "migaku":
-            file_types = [("JSON Files", "*.json")]
-            def_ext = ".json"
-        elif format_type == "yomitan":
-            file_types = [("Zip Files", "*.zip")]
-            def_ext = ".zip"
-        elif format_type == "txt":
-            file_types = [("Text Files", "*.txt")]
-            def_ext = ".txt"
-        elif format_type == "anki":
-            file_types = [("CSV Files", "*.csv")]
-            def_ext = ".csv"
-            initial_name = "Anki_Sentence_List"
-            
+
+        def_ext, file_types, initial_file, title = exports.save_as(format_type, initial_name)
         save_path = filedialog.asksaveasfilename(
             defaultextension=def_ext,
-            initialfile=f"{initial_name}{def_ext}",
+            initialfile=initial_file,
             filetypes=file_types,
-            title=f"Save {format_type.capitalize()} List"
+            title=title
         )
-        
+
         if not save_path:
             return
-            
-        try:
-            if format_type == "migaku":
-                FrequencyExporter.export_migaku(csv_path, save_path)
-            elif format_type == "yomitan":
-                lang = self.var_language.get()
-                FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
-            elif format_type == "txt":
-                FrequencyExporter.export_word_list(csv_path, save_path)
-            elif format_type == "anki":
-                FrequencyExporter.export_anki_sentences(csv_path, save_path)
-                
-            messagebox.showinfo("Success", f"List generated successfully!\n\nSaved to: {save_path}")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export:\n{e}")
+
+        lang = self.var_language.get() if format_type == "yomitan" else None
+        outcome = exports.write(format_type, csv_path, save_path, language=lang)
+        if outcome.kind == "done":
+            messagebox.showinfo(exports.TITLES["done"], outcome.message)
+        else:
+            messagebox.showerror(exports.TITLES["failed"], outcome.message)
+
 
 def main():
     root = tk.Tk()

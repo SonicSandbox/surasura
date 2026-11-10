@@ -7,6 +7,8 @@ the next shorter one at that place is tried. Pure: a hand-built set of real phra
 shape) and the app's real tokenizer, so the matcher is tested whatever the shipped data holds.
 """
 
+import json
+
 import pytest
 
 from app import analyzer, phrases
@@ -93,6 +95,70 @@ def test_a_phrase_with_a_form_of_its_own_is_found_only_in_that_form(tokenizer):
     assert phrases.spellings(tokens, start, end, found_in.entry(index)) == ("目を輝かせる", "目を輝かせ")
     assert phrases.fixed_form(found_in.entry(found_in.of_word("此処まで来るた")))
     assert not phrases.fixed_form(found_in.entry(index)) and not phrases.fixed_form(found_in.entry(1))
+
+
+def test_a_phrase_ending_in_a_form_of_its_own_is_that_form_whatever_its_last_word(tokenizer):
+    """MATCHER_VERSION 6: not only grammar — a phrase JMdict spells with its last word in another form than the
+    dictionary's (ごめんなさい: なさる as なさい; ざまあみろ: みる as みろ; 何にせよ: する as せよ; だけでなく: ない as
+    なく) is that form only. だけじゃない 'it isn't only' and 何にする 'what will you have' are other words: before, they
+    were counted as だけでなく and 何にせよ. The kanji or kana before the ending is the writer's (あっち行け, あっちいけ)."""
+    found_in = phrases.PhraseSet([
+        ["御免|為さる", "ゴメン|ナサル", "cl", "ごめんなさい", "ゴメンナサイ"],
+        ["だけ|だ|無い", "ダケ|ダ|ナイ", "ggb", "だけでなく", "ダケデナク", 0, 1],
+        ["何|に|為る", "ナニ|ニ|スル", "cgl", "何にせよ", "ナンニセヨ"],
+        ["彼方|行く", "アチラ|イク", "cc", "あっち行け", "アッチイケ"],
+        ["気|が|付く", "キ|ガ|ツク", "cgc", "気がつく", "キガツク"]])
+    assert _found(found_in, tokenizer, "遅れてごめんなさい。") == [("御免為さる", "ごめんなさい")]
+    assert _found(found_in, tokenizer, "歌だけでなく、踊りも上手い。") == [("だけだ無い", "だけでなく")]
+    assert _found(found_in, tokenizer, "問題はそれだけじゃない。") == []
+    assert _found(found_in, tokenizer, "何にせよ、急ごう。") == [("何に為る", "何にせよ")]
+    assert _found(found_in, tokenizer, "夕飯は何にする？") == []
+    assert _found(found_in, tokenizer, "あっちいけ！") == [("彼方行く", "あっちいけ")]
+    assert _found(found_in, tokenizer, "猫ならあっち行ったよ。") == []
+    # one ending in its dictionary form is found in any form, as before
+    assert _found(found_in, tokenizer, "やっと気がついた。") == [("気が付く", "気がつい")]
+    assert [phrases.fixed_form(e) for e in found_in.entries] == [True, True, True, True, False]
+
+
+def test_a_spelling_that_is_no_form_of_its_own_finds_every_form(tokenizer):
+    """own_form's exceptions: the spelling's last kana differs from the lemma's, yet it is no form of its own — a kanji
+    ends the text's word (すぐ傍 is すぐそば), a potential's dictionary form (手間が省けた: 省ける, lemma 省く), a long
+    vowel written short (あっそう is あっそ), a word's last kana left off (万全を期する is 万全を期す). And a katakana
+    ending is the hiragana one (ちょいマチ is ちょい待ち)."""
+    found_in = phrases.PhraseSet([
+        ["直ぐ|側", "スグ|ガワ", "cc", "すぐそば", "スグソバ"],
+        ["手間|が|省く", "テマ|ガ|ハブク", "cgc", "手間が省ける", "テマガハブケル"],
+        ["あっ|そう", "アッ|ソウ", "cc", "あっそ", "アッソウ"],
+        ["万全|を|期する", "バンゼン|ヲ|キスル", "cgc", "万全を期す", "バンゼンヲキス"],
+        ["ちょい|待つ", "チョイ|マツ", "cc", "ちょい待ち", "チョイマチ"]])
+    assert all(phrases.fixed_form(e) for e in found_in.entries)
+    assert _found(found_in, tokenizer, "駅のすぐ傍に住んでいる。") == [("直ぐ側", "すぐ傍")]
+    assert _found(found_in, tokenizer, "おかげで手間が省けた。") == [("手間が省く", "手間が省け")]
+    assert _found(found_in, tokenizer, "あっそう、じゃあ帰る。") == [("あっそう", "あっそう")]
+    assert _found(found_in, tokenizer, "万全を期する。") == [("万全を期する", "万全を期する")]
+    assert _found(found_in, tokenizer, "ちょい待ち！") == [("ちょい待つ", "ちょい待ち")]
+    assert _found(found_in, tokenizer, "ちょい待って！") == []
+    entry = found_in.entry(found_in.of_word("ちょい待つ"))
+    assert phrases.ends_as(entry, "マチ") and not phrases.ends_as(entry, "待っ")
+
+
+def test_a_match_is_named_as_written_when_its_form_is_its_own_and_keeps_its_voicing(tokenizer):
+    """The row's spelling (Orth) is each match's dictionary form: for a phrase with a form of its own that is the form
+    as written (ごめんなさい — never the made-up ごめんなさる), and a word voiced inside the phrase keeps its voicing
+    (いつもどおり, 怖気づく — UniDic's dictionary forms are とおり, つく)."""
+    found_in = phrases.PhraseSet([
+        ["御免|為さる", "ゴメン|ナサル", "cl", "ごめんなさい", "ゴメンナサイ"],
+        ["何時|も|通り", "イツ|モ|トオリ", "cgc", "いつも通り", "イツモドオリ"],
+        ["怖じ気|付く", "オジケ|ツク", "bc", "怖気づく", "オジケヅク"]])
+
+    def named(text):
+        sentence, tokens = next(tokenizer.tokenize_sentences(text))
+        ((start, end, index),) = found_in.find(tokens, sentence)
+        return phrases.spellings(tokens, start, end, found_in.entry(index))
+    assert named("本当にごめんなさい。") == ("ごめんなさい", "ごめんなさい")
+    assert named("明日もいつもどおりでいい。") == ("いつもどおり", "いつもどおり")
+    assert named("怖気づいたのか。") == ("怖気づく", "怖気づい")
+    assert named("いつも通りでいい。") == ("いつも通り", "いつも通り")
 
 
 def test_a_pre_noun_adjectival_stands_only_before_a_word_of_its_own(tokenizer):
@@ -221,3 +287,46 @@ def test_the_shipped_set_loads_once_per_process():
     assert first is not None and first is phrases.load()
     from app import phrase_data
     assert len(first) == phrase_data.COUNT
+
+def _known(tmp_path, monkeypatch, found_in, terms, on=True):
+    """load_known_words over a KnownWord.json of `terms`, every one KNOWN, with these phrases -> the known lemmas."""
+    path = tmp_path / "KnownWord.json"
+    path.write_text(json.dumps({"words": [{"dictForm": t, "knownStatus": "KNOWN"} for t in terms]}, ensure_ascii=False),
+                    encoding="utf-8")
+    monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", on)
+    monkeypatch.setattr(phrases, "load", lambda: found_in if on else pytest.fail("the phrases were read with it off"))
+    analyzer.SANITIZE_JA = True
+    return analyzer.load_known_words(str(path), analyzer.JapaneseTokenizer(library=False))[1]
+
+
+def test_a_known_sentence_marks_the_set_phrases_in_it_known(found_in, tmp_path, monkeypatch):
+    """A sentence synced from an Anki card's sentence field says every word in it is known — its set phrases too:
+    found by Generate's own finder, in any form (気が付いて is 気が付く), one per sentence of a two-line entry
+    (the second line's もしかしたら too). A card that IS a phrase is still known as it was."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, [
+        "彼女はすぐに気が付いて振り返った。", "手っ取り早い方法を教えてくれ。\nもしかしたら明日は晴れるかもしれない。",
+        "気をつける"])
+    assert {"気が付く", "手っ取り早い", "若しか為るた", "気を付ける"} <= lemmas
+    assert {"彼女", "振り返る", "方法"} <= lemmas, "its words, as before"
+
+
+def test_a_known_sentence_marks_only_what_the_finder_finds_there(found_in, tmp_path, monkeypatch):
+    """The finder's own rules, never a second matcher's: words on both sides of a comma are no phrase (気が、ついた),
+    a phrase with a form of its own is that form only (もしかして is not もしかしたら), and a sentence holding none
+    marks none."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, [
+        "気が、ついたら朝だった。", "もしかして、あなたが先生ですか。", "駅までは歩くのが一番近い。"])
+    assert lemmas.isdisjoint({"気が付く", "若しか為るた"}) and "気" in lemmas and "付く" in lemmas
+    assert not {entry.word for entry in found_in.entries} & lemmas
+
+
+def test_off_a_known_sentence_marks_its_words_only(found_in, tmp_path, monkeypatch):
+    """Idioms and set phrases off: no phrase is read, and a sentence marks only its words, as before."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, ["彼女はすぐに気が付いて振り返った。"], on=False)
+    assert "気が付く" not in lemmas and {"気", "付く"} <= lemmas
+
+
+def test_an_empty_known_file_marks_nothing(found_in, tmp_path, monkeypatch):
+    """No words, an empty term and a term with no Japanese: nothing known, nothing raised."""
+    assert _known(tmp_path, monkeypatch, found_in, []) == set()
+    assert not {entry.word for entry in found_in.entries} & _known(tmp_path, monkeypatch, found_in, ["", "OK!"])

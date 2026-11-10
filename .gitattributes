@@ -1,0 +1,2 @@
+# the logos ship exactly as their owners publish them (tests/qt/test_logos.py checks each sha256): never line-end converted
+app/assets/logos/** -text

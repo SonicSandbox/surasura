@@ -61,6 +61,22 @@ def test_load_yomitan_frequency_list_respects_sanitize_toggle():
     finally:
         os.remove(tmp_path)
 
+
+def test_a_repeated_japanese_word_keeps_its_commoner_rank(tmp_path):
+    """A Yomitan list names a word once per reading (方 is かた and ほう; それ is それ and 其れ's kana): one word on the
+    list, as common as its commonest row, whichever row comes last — as a Chinese list read in another script already
+    did (S4.0; it kept the last row's rank, so 方 took the frequency tier of its rarer row). The sanitizer's cut makes repeats
+    too (パーティー-party and パーティー-pirate are both パーティー)."""
+    path = tmp_path / "frequency_list_ja_Novels.csv"
+    path.write_text("Word,Rank\n方,45\nそれ,3200\n冒険,1500\n方,9100\nそれ,30\n"
+                    "パーティー-party,4100\nパーティー-pirate,880\n", encoding="utf-8")
+    analyzer.SANITIZE_JA = True
+    ranks = load_yomitan_frequency_list(str(path), language="ja")
+    assert ranks == {"方": 45, "それ": 30, "冒険": 1500, "パーティー": 880}
+    analyzer.SANITIZE_JA = False                       # uncut: two words, each its own rank
+    ranks = load_yomitan_frequency_list(str(path), language="ja")
+    assert ranks["パーティー-party"] == 4100 and ranks["パーティー-pirate"] == 880 and ranks["方"] == 45
+
 # --------------------------------------------------------------------------- #
 # A hiragana list line also names the kanji word it is typed for
 # --------------------------------------------------------------------------- #

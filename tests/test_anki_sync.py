@@ -445,7 +445,7 @@ def test_changing_decks_or_fields_forces_a_full_resync(ja_words, change):
         assert _anki_forms() == [ja_words[0], ja_words[1]]
     else:
         result = _sync(fake, fields=["Sentence"])
-        # The field is read as the one word it holds (`anki_match.card_word`): its stop is punctuation.
+        # A word field holding a sentence is read as "Also read" reads one (`anki_match.holds_sentence`): whole.
         assert f"{ja_words[0]}の例文です" in _anki_forms()
     assert result.mode == "full"
 
@@ -658,6 +658,101 @@ def test_a_note_type_without_the_word_field_still_reads_also_read_line_by_line_a
     assert anki_sync._backlog_entry(note, [], "ja")["word"] == "辞書"
 
 
+def test_a_word_field_holding_a_sentence_is_read_as_also_read_reads_one(monkeypatch):
+    """Sonic's alpha 9 try: his Word field is the card's Sentence, with nothing under Also read. Read as one word, でも、
+    そんな気がする marked only でも. A word field that holds a sentence (`anki_match.holds_sentence`) is read as "Also
+    read" reads one — the whole line, each line a term — so every word in it is known, and its set phrases (気がする's
+    row, 気が為る) with Idioms and set phrases on. Each line loses the punctuation around it, as a word does. A second
+    line in English holds no Japanese and is no term."""
+    from app import analyzer
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    fake.add("", fields=[("Expression", "行く"), ("Sentence", "そうか。じゃあ、行こう<br>Okay, let's go then.")])
+    fake.add("", fields=[("Expression", "遅い"), ("Sentence", "もう遅い気がする。<div>帰ろうか。</div>")])
+    _sync(fake, fields=["Sentence"])
+    assert _anki_forms() == ["でも、そんな気がする", "そうか。じゃあ、行こう", "もう遅い気がする", "帰ろうか"]
+
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
+    monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", True)
+    _tuples, lemmas = analyzer.load_known_words(_known_path(), analyzer.JapaneseTokenizer(library=False))
+    assert {"でも", "そんな", "気", "為る", "気が為る", "遅い", "行く"} <= lemmas
+
+
+def test_a_one_word_or_set_phrase_word_field_is_still_its_one_word():
+    """What must not change: a word field holding one word — its reading on a second line or after a space or a comma,
+    in brackets, after a stop, a list of dictionary words — is that word, as `card_word` reads it; a set-phrase card
+    (気がする, 腑に落ちる) is the phrase, never read as a sentence; a field of one clause and no stop is read whole either
+    way (そんな気がする)."""
+    fake = FakeCollection()
+    for value in ("撒く<br>まく", "「冒険」", "仰ぐ（あおぐ）", "撒く まく", "準備、じゅんび", "上層部、首脳部", "危険。",
+                  "素晴らしい・すばらしい", "気がする", "腑に落ちる", "そんな気がする"):
+        fake.add("", fields=[("Expression", value), ("Sentence", "昨日、友達と映画を見に行きました。")])
+    _sync(fake, fields=["Expression"])
+    assert _anki_forms() == ["撒く", "冒険", "仰ぐ", "準備", "上層部", "危険", "素晴らしい", "気がする", "腑に落ちる",
+                             "そんな気がする"]
+
+
+def test_notes_read_before_a_word_field_sentence_was_read_whole_are_read_again_once():
+    """A sync state saved before this reading (no "reading" in it) makes the next sync a full one, once: the cards
+    already seen give their whole sentence (append-only: the でも they gave before stays known). The sync after it is a
+    delta again — nothing read twice."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    _sync(fake, fields=["Sentence"])
+    state = json.loads(open(_state_path(), encoding="utf-8").read())
+    assert state["reading"] == anki_sync.READING_VERSION
+    del state["reading"]                                  # as 3.0's alphas saved it, the first clause read alone
+    _write_json(_state_path(), state)
+    _write_json(_known_path(), {"words": [anki_sync._entry("でも", 1, "ja", "2026-11-01T00:00:00")]})
+    _write_json(_state_path(), dict(state, known_sig=anki_sync.known_signature(_known_path())))
+
+    again = _sync(fake, fields=["Sentence"])
+    assert again.mode == "full" and _anki_forms() == ["でも", "でも、そんな気がする"]
+    assert _sync(fake, fields=["Sentence"]).mode == "delta"
+
+
+def test_a_word_typed_with_a_stop_stays_the_entry_it_was_and_chinese_is_never_read_again():
+    """A one-word card typed with a stop or an exclamation (ありがとう！ — kana, no JMdict kanji spelling) reads as a
+    sentence of one clause: it is still the entry it was, ありがとう, so the one full re-read adds nothing beside it.
+    Chinese read every line whole already: an old Chinese state is never read again in full for this."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "ありがとう！"), ("Sentence", "本当にありがとう。")])
+    fake.add("", fields=[("Expression", "すみません。")])
+    _sync(fake)
+    assert _anki_forms() == ["ありがとう", "すみません"]
+
+    zh = FakeCollection()
+    zh.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "冒险")])
+    _sync(zh, decks=["中文"], language="zh")
+    state = json.loads(open(_state_path("zh"), encoding="utf-8").read())
+    del state["reading"]
+    _write_json(_state_path("zh"), state)
+    assert _sync(zh, decks=["中文"], language="zh").mode == "delta"
+
+
+def test_replace_records_the_reading_so_the_next_sync_is_a_delta():
+    """Replace reads every card with today's reading: it records it, so the sync after it reads nothing in full again."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    _sync(fake, fields=["Sentence"])
+    state = json.loads(open(_state_path(), encoding="utf-8").read())
+    del state["reading"]
+    _write_json(_state_path(), state)
+    assert _replace(fake, fields=["Sentence"]).error is None
+    assert json.loads(open(_state_path(), encoding="utf-8").read())["reading"] == anki_sync.READING_VERSION
+    assert _sync(fake, fields=["Sentence"]).mode == "delta"
+
+
+def test_a_chinese_word_field_holding_a_sentence_is_read_whole_as_before():
+    """Chinese: every field, the word field too, is read line by line already — a sentence there marks every word in
+    it known (the analyzer cuts the line), and a word with its pinyin after a space stays one term. Nothing changed."""
+    fake = FakeCollection()
+    fake.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "我觉得，这次的冒险很有意思。")])
+    fake.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "挑战 tiǎozhàn")])
+    _sync(fake, decks=["中文"], language="zh")
+    assert _anki_forms("zh") == ["我觉得，这次的冒险很有意思。", "挑战 tiǎozhàn"]
+
+
 def test_a_chinese_field_still_gives_one_term_per_line():
     """What of a Chinese field is its word is still open: each line stays a term of its own, and a <br>
     between two words never fuses them."""
@@ -768,6 +863,7 @@ def test_replace_builds_an_anki_only_file_and_backs_up_the_old_one_byte_identica
     result = _replace(fake)
 
     assert result.error is None and result.mode == "replace"
+    # A clean slate from Anki: every Migaku entry is gone, the words dismissed there (IGNORED) too
     assert _anki_forms() == ja_words[:3] and len(_words()) == 3, "Migaku entries are gone"
     assert result.added == 3 and result.total_known == 3
     assert re.fullmatch(r"KnownWord\.\d{8}-\d{6}\.json", result.backup)
@@ -835,9 +931,238 @@ def test_restore_backs_up_the_current_file_restores_byte_identical_and_clears_no
     assert resync.mode == "full" and resync.scanned == 3, "the next sync re-evaluates cleanly"
 
 
+def test_replace_drops_the_words_dismissed_in_migaku_counts_them_and_the_backup_keeps_them(ja_words, migaku_file):
+    """Replace is a clean slate from Anki (by decision, the rule of every replacing import): the IGNORED entries —
+    words the user dismissed in Migaku — are dropped, so they come back on the list. The dry run says how many, the
+    number the confirmation shows; the dated backup still holds every one of them, as they were."""
+    ignored = [w for w in _words() if w["knownStatus"] == "IGNORED"]
+    assert len(ignored) == 3
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert (dry.added, dry.kept_graduated, dry.dropped_ignored) == (3, 0, 3)
+    assert dry.total_known == anki_sync.count_known("ja") and dry.total_after == 3
+
+    result = _replace(fake)
+
+    assert result.error is None and result.dropped_ignored == 3 and result.total_after == result.total_known == 3
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == []
+    from app import token_index
+    assert not set(token_index.ignored_entries(get_user_files_path("ja"), "ja")) & {w["dictForm"] for w in ignored}
+    with open(os.path.join(get_user_files_path("ja"), ".trash", result.backup), encoding="utf-8") as f:
+        backed_up = json.load(f)["words"]
+    assert [w for w in backed_up if w["knownStatus"] == "IGNORED"] == ignored, "the backup keeps them, in order"
+
+
+def test_replace_with_no_dismissed_words_counts_none_and_writes_anki_and_the_graduates_as_before(ja_words,
+                                                                                                 migaku_file):
+    """Empty state: a file with no IGNORED entries — nothing to drop (no "come back" line), the known and Graduates'
+    numbers the same as with them."""
+    with open(migaku_file, encoding="utf-8") as f:
+        data = json.load(f)
+    data["words"] = [w for w in data["words"] if w["knownStatus"] != "IGNORED"]
+    data["words"].append({"dictForm": ja_words[6], "knownStatus": "KNOWN", "source": anki_sync.GRADUATED_SOURCE,
+                          "language": "ja"})
+    _write_json(migaku_file, data)
+    result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error is None and (result.added, result.kept_graduated, result.dropped_ignored) == (3, 1, 0)
+    assert result.total_known == result.total_after == 4
+    assert [w["dictForm"] for w in _words()] == ja_words[:3] + [ja_words[6]]
+
+
+def test_a_chinese_replace_drops_the_chinese_dismissed_words_and_its_backup_keeps_them(zh_resources_dir):
+    """Chinese too: the Chinese list's IGNORED entries are dropped by its Replace and kept in its own backup."""
+    with open(os.path.join(zh_resources_dir, "context_test.txt"), encoding="utf-8") as f:
+        assert "冒险" in f.read()
+    dismissed = {"dictForm": "危险", "knownStatus": "IGNORED", "language": "zh"}
+    _write_json(_known_path("zh"), {"words": [{"dictForm": "勇敢", "knownStatus": "KNOWN", "language": "zh"},
+                                              dismissed]})
+    fake = FakeCollection()
+    for w in ("冒险", "挑战"):
+        fake.add(w, deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", w)])
+
+    result = _replace(fake, decks=["中文"], language="zh")
+
+    assert result.error is None and result.dropped_ignored == 1 and result.total_known == 2
+    assert [w["dictForm"] for w in _words("zh")] == ["冒险", "挑战"]
+    with open(os.path.join(get_user_files_path("zh"), ".trash", result.backup), encoding="utf-8") as f:
+        assert dismissed in json.load(f)["words"]
+
+
+def test_replace_whose_numbers_changed_since_the_confirmation_writes_nothing_and_says_the_new_ones(ja_words,
+                                                                                                   migaku_file):
+    """The confirmation's numbers are the ones written: a card studied in Anki between the dry run and the yes makes
+    the real replace stop before its backup, with the new numbers, so the window asks again."""
+    before = _read_bytes(migaku_file)
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    fake.add(ja_words[3])                                     # studied meanwhile
+
+    changed = _replace(fake, expect=anki_sync.confirmed(dry))
+
+    assert changed.changed and changed.error is None and changed.mode == "dry-run"
+    assert (changed.added, changed.total_after) == (4, 4)
+    assert _read_bytes(migaku_file) == before and _trash_files() == [] and not os.path.exists(_state_path())
+
+    result = _replace(fake, expect=anki_sync.confirmed(changed))
+    assert result.error is None and not result.changed and result.mode == "replace" and result.total_known == 4
+
+
+def test_replace_whose_dismissed_count_alone_changed_since_the_confirmation_writes_nothing(ja_words, migaku_file):
+    """The dismissed count is one of the confirmed numbers too: a word dismissed (IGNORED) between the dry run and the
+    yes moves only that count — Anki's words, the known totals and the Graduates' are the same — and the replace
+    still stops before its backup, so the user is never told one number of words coming back and given another."""
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    data = json.loads(_read_bytes(migaku_file).decode("utf-8"))
+    data["words"].append({"dictForm": "えっと", "knownStatus": "IGNORED", "hasCard": 0, "language": "ja"})
+    _write_json(migaku_file, data)
+    before = _read_bytes(migaku_file)
+
+    changed = _replace(fake, expect=anki_sync.confirmed(dry))
+
+    assert changed.changed and changed.error is None and changed.mode == "dry-run"
+    assert (changed.added, changed.kept_graduated, changed.total_after) == (dry.added, dry.kept_graduated,
+                                                                           dry.total_after)
+    assert changed.dropped_ignored == dry.dropped_ignored + 1
+    assert _read_bytes(migaku_file) == before and _trash_files() == [] and not os.path.exists(_state_path())
+
+
+def test_restore_of_another_backup_than_the_one_confirmed_writes_nothing(ja_words, migaku_file):
+    """Restore names the list it puts back (its backup); if the state points at another one by the time it runs (a
+    second Replace meanwhile), nothing is restored and the window asks again."""
+    first = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    second = _replace(FakeCollection([{"word": w} for w in ja_words[3:6]]))
+    before = _read_bytes(migaku_file)
+    result = anki_sync.restore_previous("ja", expect=first.backup)
+    assert result.changed and result.error is None and _read_bytes(migaku_file) == before
+    assert anki_sync.load_state("ja")["last_backup"] == second.backup
+    assert anki_sync.restore_previous("ja", expect=second.backup).error is None
+
+
 def test_restore_without_a_previous_replace_is_an_error():
     result = anki_sync.restore_previous("ja")
     assert result.error and result.mode == "restore" and result.backup is None
+
+
+def test_replace_over_a_known_words_file_that_cannot_be_read_is_refused_the_dry_run_and_the_write(ja_words,
+                                                                                                  migaku_file):
+    """AD3-2: a KnownWord.json with one bad byte would count as "0 known now" and keep none of its dismissed or
+    Graduates' words — the confirmation's numbers false. Replace refuses it as Sync does: nothing backed up, nothing
+    written, the reason said (row 2's `known_file_refusal`, the rule of every replacing import)."""
+    with open(migaku_file, "rb") as f:
+        good = f.read()
+    broken = good[: len(good) // 2]                           # truncated mid-file, as a crash or a hand edit leaves it
+    with open(migaku_file, "wb") as f:
+        f.write(broken)
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert dry.error and dry.total_after == 0, "no numbers to confirm"
+    result = _replace(fake, expect=(3, 0, 0, 0, 3))           # the numbers the old dry run would have given
+    assert result.error and not result.changed
+    assert _read_bytes(migaku_file) == broken and _trash_files() == [] and not os.path.exists(_state_path())
+
+
+def test_restore_whose_known_total_changed_since_the_confirmation_writes_nothing(ja_words, migaku_file):
+    """AD3-8: "now N → then M" was confirmed; a sync that appended words meanwhile would be undone silently. The
+    total is checked with the backup's name: changed, nothing restored, and the window asks again."""
+    first = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    now = anki_sync.count_known("ja")
+    fake = FakeCollection([{"word": w} for w in ja_words[:4]])
+    _sync(fake)                                               # the automatic sync appends one word meanwhile
+    assert anki_sync.count_known("ja") == now + 1
+    before = _read_bytes(migaku_file)
+    result = anki_sync.restore_previous("ja", expect=first.backup, now=now)
+    assert result.changed and result.error is None and _read_bytes(migaku_file) == before
+    assert anki_sync.restore_previous("ja", expect=first.backup, now=now + 1).error is None
+
+
+def test_a_chinese_replace_and_restore_back_up_the_chinese_list_and_never_touch_the_japanese_one(migaku_file,
+                                                                                                 zh_resources_dir):
+    """Mutant H01 / H17 (row 3's Haiku list): the backup and the restore take the replaced language's own
+    KnownWord.json — a Chinese Replace that copied the Japanese list as its backup would leave the Chinese words with no
+    way back."""
+    with open(os.path.join(zh_resources_dir, "context_test.txt"), encoding="utf-8") as f:
+        assert "冒险" in f.read()
+    ja_before = _read_bytes(migaku_file)
+    _write_json(_known_path("zh"), {"words": [
+        {"dictForm": w, "knownStatus": "KNOWN", "language": "zh"} for w in ("勇敢", "坚强")]})
+    zh_before = _read_bytes(_known_path("zh"))
+    fake = FakeCollection()
+    for w in ("冒险", "挑战"):
+        fake.add(w, deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", w)])
+
+    result = _replace(fake, decks=["中文"], language="zh")
+
+    assert result.error is None and _anki_forms("zh") == ["冒险", "挑战"]
+    backup = os.path.join(get_user_files_path("zh"), ".trash", result.backup)
+    assert _read_bytes(backup) == zh_before, "the Chinese list's own bytes"
+    assert _read_bytes(migaku_file) == ja_before
+    restored = anki_sync.restore_previous("zh")
+    assert restored.error is None and _read_bytes(_known_path("zh")) == zh_before
+    assert _read_bytes(migaku_file) == ja_before, "the Japanese list untouched by the Chinese restore"
+
+
+def test_replace_aborts_when_the_backup_copy_differs_at_the_same_length(ja_words, migaku_file):
+    """Mutant H04: the backup is checked byte for byte, not by size — a copy of the right length with other bytes
+    (a sector gone bad) is no backup."""
+    before = _read_bytes(migaku_file)
+
+    def bad_copy(src, dst):
+        with open(src, "rb") as a, open(dst, "wb") as b:
+            data = a.read()
+            b.write(data[:-1] + (b"x" if data[-1:] != b"x" else b"y"))
+
+    with mock.patch("app.anki_sync.shutil.copyfile", bad_copy):
+        result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+
+    assert result.error and "Nothing was replaced" in result.error
+    assert _read_bytes(migaku_file) == before and not os.path.exists(_state_path())
+
+
+def test_a_known_words_file_broken_after_the_first_check_is_still_never_replaced(ja_words, migaku_file):
+    """Mutant H07: Replace checks the file again under the known-words lock — one broken between the first check and
+    the lock (another program's half write) is still refused, nothing backed up or written."""
+    real = anki_sync._hold_known
+
+    def broken_first(language, verb, *a, **k):
+        with open(_known_path(language), "wb") as f:
+            f.write(b'{"words": [{"dictForm": "')          # cut mid-entry
+        return real(language, verb, *a, **k)
+
+    with mock.patch.object(anki_sync, "_hold_known", broken_first):
+        result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error and not result.changed
+    assert _read_bytes(migaku_file) == b'{"words": [{"dictForm": "' and _trash_files() == []
+
+
+def test_replace_counts_and_drops_the_dismissed_words_of_a_bare_list_known_words_file(ja_words, migaku_file):
+    """Mutant H12: an older KnownWord.json is a bare list; its IGNORED entries are counted and dropped by Replace too,
+    and kept by its backup."""
+    with open(migaku_file, encoding="utf-8") as f:
+        entries = json.load(f)["words"]
+    ignored = [w for w in entries if w["knownStatus"] == "IGNORED"]
+    assert ignored
+    _write_json(migaku_file, entries)                        # the bare-list form
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert dry.dropped_ignored == len(ignored)
+    result = _replace(fake)
+    assert result.error is None
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == []
+    with open(os.path.join(get_user_files_path("ja"), ".trash", result.backup), encoding="utf-8") as f:
+        assert [w for w in json.load(f) if w["knownStatus"] == "IGNORED"] == ignored
+
+
+def test_a_dismissed_word_a_past_graduate_names_is_written_once_as_the_graduates(ja_words, migaku_file):
+    """Mutant H15: a word both graduated (kept known) and dismissed in the old file is written once — the Graduate's
+    KNOWN entry — never known and ignored at once."""
+    word = ja_words[5]
+    _write_json(migaku_file, {"words": [
+        {"dictForm": word, "knownStatus": "KNOWN", "source": anki_sync.GRADUATED_SOURCE, "language": "ja"},
+        {"dictForm": word, "knownStatus": "IGNORED", "language": "ja"}]})
+    result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error is None and result.kept_graduated == 1 and result.dropped_ignored == 0
+    assert [(w["dictForm"], w["knownStatus"]) for w in _words() if w["dictForm"] == word] == [(word, "KNOWN")]
 
 
 # --------------------------------------------------------------------------- #

@@ -70,7 +70,7 @@ def test_zen_mode_static_html_compression(tmp_path):
          patch("os.path.exists", return_value=True): # Pretend progressive CSV exists
          
          # Run generator in Zen mode limit to 2 words
-         generate_static_html(theme="zen", zen_limit=2)
+         generate_static_html(theme="zen", zen_limit=2, open_browser=False)
          
          assert output_html.exists()
          

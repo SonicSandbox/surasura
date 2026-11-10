@@ -1,0 +1,256 @@
+{
+ "s": {
+  "中文": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">听得懂中文</div>",
+   null,
+   "conversational"
+  ],
+  "关税": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">比如关税 · 额外关税 · 强化关税</div>",
+   null,
+   "balanced"
+  ],
+  "关系": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">关系好 · 修复关系 · 关系稳定 · 贸易关系</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜中</div>",
+   null,
+   "balanced"
+  ],
+  "冒险": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">新的冒险 · 冒险难 · 去冒险</div>",
+   null,
+   "conversational"
+  ],
+  "可能": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">可能影响</div>",
+   null,
+   "balanced"
+  ],
+  "台湾": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">协助台湾 · 提台湾</div>",
+   null,
+   "balanced"
+  ],
+  "合作": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">强调合作 · 安全合作</div>",
+   null,
+   "balanced"
+  ],
+  "問題": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">問題重要 · 沒問題 · 重要的問題</div><div class=\"pat-frame pat-src-balanced pat-thin\">這個〜 · 〜上</div>",
+   null,
+   "balanced"
+  ],
+  "喜欢": [
+   "<div class=\"pat-form pat-src-conversational pat-thin\">很喜欢 25%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">喜欢音乐</div>",
+   null,
+   "conversational"
+  ],
+  "学习": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">认真地学习 · 学习做菜</div>",
+   null,
+   "conversational"
+  ],
+  "學習": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">認真地學習 · 學習做菜</div>",
+   null,
+   "conversational"
+  ],
+  "希望": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">希望政府</div>",
+   null,
+   "balanced"
+  ],
+  "强调": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">强调合作 · 强调双方</div>",
+   null,
+   "balanced"
+  ],
+  "朋友": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜们</div>",
+   null,
+   "conversational"
+  ],
+  "桌子": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">放在桌子</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜上 · 在〜上</div>",
+   null,
+   "conversational"
+  ],
+  "没有的词": [
+   "",
+   "phrase",
+   null
+  ],
+  "特朗普": [
+   "",
+   "not found",
+   null
+  ],
+  "电话": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "表示": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">表示计划</div>",
+   null,
+   "balanced"
+  ],
+  "谈判": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">谈判空间 · 谈判成果</div>",
+   null,
+   "balanced"
+  ],
+  "通话": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">直接通话 · 列举通话 · 举行通话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "重要": [
+   "<div class=\"pat-form pat-src-balanced pat-thin\">很重要 62%</div><div class=\"pat-form pat-src-balanced pat-thin\">重要的 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">重要的事情 · 问题重要 · 重要的问题</div>",
+   null,
+   "balanced"
+  ],
+  "问题": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+   null,
+   "balanced"
+  ],
+  "電話": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打電話 · 通電話</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "非常": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">非常刺激</div>",
+   null,
+   "conversational"
+  ]
+ },
+ "t": {
+  "中文": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">聽得懂中文</div>",
+   null,
+   "conversational"
+  ],
+  "关税": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">比如关税 · 额外关税 · 强化关税</div>",
+   null,
+   "balanced"
+  ],
+  "关系": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">关系好 · 修复关系 · 关系稳定 · 贸易关系</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜中</div>",
+   null,
+   "balanced"
+  ],
+  "冒险": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">新的冒险 · 冒险难 · 去冒险</div>",
+   null,
+   "conversational"
+  ],
+  "可能": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">可能影響</div>",
+   null,
+   "balanced"
+  ],
+  "台湾": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">协助台湾 · 提台湾</div>",
+   null,
+   "balanced"
+  ],
+  "合作": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">強調合作 · 安全合作</div>",
+   null,
+   "balanced"
+  ],
+  "問題": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">問題重要 · 沒問題 · 重要的問題</div><div class=\"pat-frame pat-src-balanced pat-thin\">這個〜 · 〜上</div>",
+   null,
+   "balanced"
+  ],
+  "喜欢": [
+   "<div class=\"pat-form pat-src-conversational pat-thin\">很喜欢 25%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">喜欢音乐</div>",
+   null,
+   "conversational"
+  ],
+  "学习": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">认真地学习 · 学习做菜</div>",
+   null,
+   "conversational"
+  ],
+  "學習": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">認真地學習 · 學習做菜</div>",
+   null,
+   "conversational"
+  ],
+  "希望": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">希望政府</div>",
+   null,
+   "balanced"
+  ],
+  "强调": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">强调合作 · 强调双方</div>",
+   null,
+   "balanced"
+  ],
+  "朋友": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜們</div>",
+   null,
+   "conversational"
+  ],
+  "桌子": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">放在桌子</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜上 · 在〜上</div>",
+   null,
+   "conversational"
+  ],
+  "没有的词": [
+   "",
+   "phrase",
+   null
+  ],
+  "特朗普": [
+   "",
+   "not found",
+   null
+  ],
+  "电话": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "表示": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">表示計劃</div>",
+   null,
+   "balanced"
+  ],
+  "谈判": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">谈判空间 · 谈判成果</div>",
+   null,
+   "balanced"
+  ],
+  "通话": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">直接通话 · 列举通话 · 举行通话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "重要": [
+   "<div class=\"pat-form pat-src-balanced pat-thin\">很重要 62%</div><div class=\"pat-form pat-src-balanced pat-thin\">重要的 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">重要的事情 · 問題重要 · 重要的問題</div>",
+   null,
+   "balanced"
+  ],
+  "问题": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+   null,
+   "balanced"
+  ],
+  "電話": [
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打電話 · 通電話</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   null,
+   "balanced"
+  ],
+  "非常": [
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">非常刺激</div>",
+   null,
+   "conversational"
+  ]
+ }
+}

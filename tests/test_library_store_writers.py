@@ -25,8 +25,8 @@ import tkinter as tk
 from app import library_store as ls
 from app import content_importer_gui as cig
 from app.content_importer_gui import ContentImporterApp
-from tests.test_library_store_support import (LANGUAGES, library, names, read_doc, roots, subprocess_env, touch,
-                                              write_manifest)
+from tests.test_library_store_support import (LANGUAGES, library, names, no_line, read_doc, roots, subprocess_env,
+                                              touch, write_manifest)
 
 BENCH = bool(os.environ.get("SURASURA_STORE_BENCH"))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,7 +120,9 @@ def test_the_four_flows_show_their_files_with_no_focus_change(window, language, 
     from app.path_utils import seed_samples
     with patch("app.path_utils.seed_samples", wraps=seed_samples):
         app._seed_samples_clicked()
-    samples = [r for r in _order(app, "now") + _order(app, "soon") if "sample" in r.lower()]
+    shipped = {name for tier in ("HighPriority", "LowPriority")              # the bundled samples, by their titles
+               for name in os.listdir(os.path.join(REPO, "samples", language, tier))}
+    samples = [r for r in _order(app, "now") + _order(app, "soon") if r.rsplit("/", 1)[-1] in shipped]
     assert samples, "the samples joined the library"
 
     app._save_pasted_text(names(language)[20], "\n".join(names(language)[:5]), "HighPriority")
@@ -148,6 +150,7 @@ def test_no_order_or_tier_action_moves_a_file(window, language):
     leave every file where it is, with the same bytes (I3, L5: Sonic, "The store should never move any of the
     files")."""
     data_dir, _uf, _doc = _store_library(language)
+    no_line(ls.open_store(language, data_dir, _uf)).close()   # 2.x's tier actions, as 2.4 drew them (no Soon line)
     app = window(language)
     before = _snapshot(data_dir)
     now = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]
@@ -438,7 +441,15 @@ def test_open_and_focus_walk_on_the_worker_never_the_windows_thread(window, size
     # (20k), where an in-process count of walk_library would see none. Both are counted, with the thread asking.
     walks, in_process = [], []
     real_sync, real_walk = ls.sync_for_window, ls.walk_library
-    monkeypatch.setattr(ls, "sync_for_window", lambda s: walks.append(threading.current_thread()) or real_sync(s))
+
+    def counted(store, *args, **kwargs):
+        # Counted when it ends: a focus return asked while a sync still runs (20k: its own process, slower on a busy
+        # machine) shares one follow-up by design, so the next focus return waits for this one to finish.
+        try:
+            return real_sync(store, *args, **kwargs)
+        finally:
+            walks.append(threading.current_thread())
+    monkeypatch.setattr(ls, "sync_for_window", counted)
     monkeypatch.setattr(ls, "walk_library", lambda d: in_process.append(threading.current_thread()) or real_walk(d))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     t0 = time.perf_counter()
@@ -722,3 +733,780 @@ def test_another_windows_change_waits_for_a_drag_to_end(window, language, monkey
     assert _tree_paths(app) == shown, "redrawn mid-drag"
     app.on_drag_stop(types.SimpleNamespace(y=-1))                # released over nothing
     assert _pump(app, lambda: _tree_paths(app) != shown, timeout=2.0)
+
+
+# --- L3.2 The library watched, not checked ---------------------------------------------------------------- #
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows' change reports")
+
+
+def _settled_window(window, language, monkeypatch):
+    """A store-mode window whose open has walked and whose watch is up (its worker idle from here)."""
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)) and app.__dict__.get("_lookout") is not None
+                 and app._open_walked, timeout=10)
+    _pump(app, lambda: False, timeout=0.5)                       # the open's own commit's ring, drained
+    return app
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_idle_watched_window_never_wakes_its_worker(window, language, monkeypatch):
+    """The old poll woke the worker twice a second, all day; watched, an idle window's worker sleeps until the
+    hourly round (the Tk drain's 100 ms timer is the window's own, counted apart)."""
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.tree.alive and not lookout.slow
+    assert lookout.timeout() > 3000                              # the next thing due: the round, an hour away
+    before = lookout.wakes
+    _pump(app, lambda: False, timeout=1.5)
+    assert lookout.wakes == before, f"{lookout.wakes - before} wake-ups idle"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_dropped_into_a_folder_without_items_shows_through_the_watch(window, language, monkeypatch):
+    """The old poll only stat'ed folders that hold items: a drop into a new show folder waited for a focus. The
+    watch reports it; its folder alone is synced (a scoped sync), and the tree shows it."""
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # only the watch may bring it in here
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    word = names(language)[30]
+    rel = f"HighPriority/{word}/{word}_第01話.srt"           # NOW: the tab the tree shows
+    t0 = time.monotonic()
+    touch(app.data_root, rel, f"{word}\n")
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "a drop into a new folder never showed"
+    took = time.monotonic() - t0
+    assert [f"HighPriority/{word}"] in scoped, scoped              # its folder, never the whole library
+    assert took < (1.0 if BENCH else 5.0), took
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_without_a_watch_the_slow_look_runs_in_front_only(window, language, monkeypatch):
+    """No watch (macOS / Linux, a drive that can't report): the folders are looked at every SLOW_S while the
+    window is in front, never behind or minimized; a drop is still found while in front."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.slow and lookout.tree.state == "fallback"
+    app._set_front(True)                                         # in front (the test's window may never get focus)
+    _pump(app, lambda: lookout.slow_looks >= 3, timeout=3.0)
+    assert lookout.slow_looks >= 3
+    app._set_front(False)                                        # behind, or minimized (<Unmap>)
+    _pump(app, lambda: False, timeout=0.3)
+    behind = lookout.slow_looks
+    _pump(app, lambda: False, timeout=1.0)
+    assert lookout.slow_looks == behind, "looked while behind"
+    app._set_front(True)
+    rel = _tree_paths(app)[0]
+    os.remove(os.path.join(app.data_root, *rel.split("/")))
+    assert _pump(app, lambda: rel not in _tree_paths(app), timeout=3.0), "the slow look never found the change"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_hourly_round_finds_a_drop_the_blinded_watch_missed(window, language, monkeypatch):
+    """The watch is blind to this tree (its events never reach the worker), so only the round can find a drop into
+    a show folder that holds no items yet. The round is made due at once (a 1 s hour, batches 0.1 s apart); its
+    folder alone is synced, and the tree shows the file within 5 s."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # neither focus nor Refresh may bring it in here
+    lookout = app._lookout
+    word = names(language)[31]
+    os.makedirs(os.path.join(app.data_root, "HighPriority", word), exist_ok=True)
+    _pump(app, lambda: False, timeout=0.3)                       # the empty folder settles while the watch still sees it
+    lookout.tree.under = ("見ない",)                              # blind: no event from this tree reaches the worker
+    monkeypatch.setattr(lw, "ROUND_S", 1.0)
+    monkeypatch.setattr(lw, "ROUND_GAP_S", 0.1)
+    lookout._last_full = time.monotonic() - 2.0                  # the round's hour has passed
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    rel = f"HighPriority/{word}/{word}_第01話.srt"
+    touch(app.data_root, rel, f"{word}\n")
+    app._worker_wake.set()                                       # the worker may be waiting for the hourly round
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "the round never found the drop"
+    assert [f"HighPriority/{word}"] in scoped, scoped            # the round's folder, never the whole library
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_return_restarts_a_watch_that_stopped(window, language, monkeypatch):
+    """A watch that ended (closed here, as after a failure) is not left dead until the retry or the hourly round:
+    the focus return's look starts it again at once. The retry in jobs() waits RETRY_S (300 s) after the open, so
+    only the focus path can bring the watch back inside the 5 s bound."""
+    app = _settled_window(window, language, monkeypatch)
+    assert app._lookout.tree.alive
+    app._lookout.tree.close()                                    # the watch ended: its handle and thread are gone
+    assert not app._lookout.tree.alive
+    app._refresh_from_focus()
+    assert _pump(app, lambda: app._lookout.tree.alive, timeout=5.0), "a focus return left the watch dead"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_closing_a_settled_window_ends_its_worker_and_lookout_at_once(window, language, monkeypatch):
+    """A settled window's worker sleeps up to an hour waiting for the round; closing the window must wake it (the
+    <Destroy> stop), not leave a thread and a watch alive until the next hourly round."""
+    app = _settled_window(window, language, monkeypatch)
+    worker = app._worker
+    assert worker.is_alive() and app._lookout is not None           # sanity: idle and watched before the close
+    app.root.destroy()
+    deadline = time.monotonic() + 2.0                                # no Tk pump here: the root is gone
+    while worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not worker.is_alive(), "the worker waited out its hour after the window closed"
+    assert app._lookout is None, "the watch outlived its window"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_look_restarts_the_rounds_hour(window, language, monkeypatch):
+    """A focus return's full look covers the round, so it restarts the round's hour: a round that was due is put off
+    for an hour, not run on top of the look that just read the whole library."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    lookout._last_full = lookout.clock() - (lw.ROUND_S + 10)     # the round would be due now
+    full_looks, looked = [], []
+    real_sync = ls.sync_for_window
+
+    def counting_sync(store, folders=None):
+        if folders is None:                                       # a full look, not a round's batch or a drop
+            full_looks.append(1)
+        return real_sync(store, folders=folders)
+
+    real_looked = lookout.looked
+
+    def recording_looked(now=None):
+        result = real_looked(now)
+        looked.append(1)                                          # after the real call, so the state is set
+        return result
+
+    monkeypatch.setattr(ls, "sync_for_window", counting_sync)
+    monkeypatch.setattr(lookout, "looked", recording_looked)
+    app._refresh_from_focus()
+    assert _pump(app, lambda: bool(looked), timeout=5.0), "the focus return never ran its full look"
+    assert full_looks, "the focus return ran no full look"
+    assert lookout.timeout() > lw.ROUND_S - 60, f"the round's hour did not restart: {lookout.timeout()} s"
+    assert lookout.round is None, "a round was still under way after the full look covered it"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_out_while_the_worker_makes_its_lookout_is_kept(window, language, monkeypatch):
+    """A FocusOut that lands while the worker is making its watch (after `_make_lookout` copied the window's front
+    flag into the new lookout, before the lookout is up) is kept: the worker re-reads the flag once the lookout
+    exists, so the watch never believes a window behind it is in front. Without that re-read the lookout keeps the
+    stale True and would look at a window that is behind."""
+    from app import library_watch as lw
+    holder, ready = [], threading.Event()
+    real_open = lw.Lookout.open
+
+    def focus_out_during_make(self):
+        # Bounded: the test thread hands over the window once the constructor has returned.
+        assert ready.wait(5), "the test window never handed over to the worker"
+        holder[0]._set_front(False)                               # the FocusOut, landing mid-make
+        return real_open(self)
+
+    monkeypatch.setattr(lw.Lookout, "open", focus_out_during_make)
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    holder.append(app)
+    ready.set()
+    assert _pump(app, lambda: app.__dict__.get("_lookout") is not None and app._open_walked, timeout=10)
+    assert app._lookout.front is False, "a focus out during the make was lost"
+
+
+# --- L3.2: with no store and nothing coming, the worker sleeps (`_store_soon`) -------------------------------- #
+
+class _HelperStillRunning:
+    """A store helper that has not exited yet (its poll() says None), as `_start_store_build` leaves it."""
+
+    def poll(self):
+        return None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_keeps_polling_after_a_failed_pass(window, language):
+    """A pass that failed keeps its lookout, so the worker checks every STORE_POLL_S whatever the store's state:
+    the lookout alone decides it, the reason is set to 'no store' to show it does not."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(object()) is True
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("reason", ["busy", "not ready"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_a_busy_or_not_ready_database_is_retried(window, language, reason):
+    """A database another process holds (busy) or not ready yet opens as soon as it frees, so the worker polls."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = reason
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_opener_settle_retry_is_still_running(window, language):
+    """The opener retries a busy database on its own thread; while that thread lives the store is coming. The
+    reason stays 'no store' so only the live retry can make the answer True."""
+    app = window(language)
+    app._store_waiting = None
+    opener = app._opener()
+    opener.reason = "no store"
+    release = threading.Event()
+    settle = threading.Thread(target=release.wait, args=(5,), daemon=True)
+    opener._worker = settle
+    settle.start()
+    try:
+        assert app._store_soon(None) is True
+    finally:
+        release.set()
+        settle.join(5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_open_helper_builds_the_store(window, language):
+    """JSON mode with the helper started at open still building the store (before its deadline): poll."""
+    app = window(language)
+    app._opener().reason = "no store"
+    app._store_waiting = (_HelperStillRunning(), time.monotonic() + 60)
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_json_mode_with_nothing_building(window, language):
+    """No store file and no helper running: nothing changes until the window wakes the worker (focus, Refresh), so
+    there is no timer while nothing can change."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_read_only_mode(window, language):
+    """A damaged store opens read-only and stays that way, so no timer can bring a change: the worker sleeps."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "damaged"
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_slow_look_that_finds_nothing_writes_signals_and_redraws_nothing(window, language, monkeypatch):
+    """S19: update only what changed. With no watch, a slow look that finds no new folder is silent: no sync call,
+    no "synced" or "changed" posted to the worker's results, and the store's state_version holds. Recording starts
+    once the window has settled (and its front change has drained), so the open's own writes are not counted."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    app._set_front(True)                                         # in front, so the slow look runs
+    _pump(app, lambda: False, timeout=0.3)                       # the front change's own effects, drained
+    assert lookout.slow and lookout.tree.state == "fallback"
+    store = app._store()
+    assert store is not None
+    version = store.meta()["state_version"]
+    syncs, posts = [], []
+    real_sync = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: syncs.append(folders) or real_sync(s, folders))
+    real_put = app._worker_results.put
+
+    def put(item, *args, **kwargs):
+        if item and item[0] in ("synced", "changed"):
+            posts.append(item[0])
+        return real_put(item, *args, **kwargs)
+    monkeypatch.setattr(app._worker_results, "put", put)
+    base = lookout.slow_looks
+    assert _pump(app, lambda: lookout.slow_looks >= base + 3, timeout=3.0), "the slow look never ran in front"
+    assert syncs == [], f"a look that found nothing synced: {syncs}"
+    assert posts == [], f"a look that found nothing posted: {posts}"
+    assert store.meta()["state_version"] == version, "a look that found nothing wrote to the store"
+
+
+class _HelperDone:
+    """A store helper that has exited (its poll() gives its exit code)."""
+
+    def poll(self):
+        return 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_never_clears_the_builds_mark_the_drain_reads(window, language):
+    """The worker's question must not answer it for the window: once the open's helper has exited, `_store_soon` says
+    nothing is coming but leaves `_store_waiting` set, so the window's drain still sees the build end (its "Ready",
+    the sync that follows, or the note that the library stays in its file). Cleared here, ~1 build in 10 kept
+    "Getting your library ready…" on screen for good (the delta review's B1)."""
+    app = window(language)
+    app._opener().reason = "no store"
+    mark = (_HelperDone(), time.monotonic() + 60)
+    app._store_waiting = mark
+    assert app._store_soon(None) is False
+    assert app._store_waiting is mark
+
+
+# --- The worker with no store, a lost store, a lost track -------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_with_no_store_to_watch_the_worker_sleeps_until_woken(window, language, monkeypatch):
+    """JSON mode with nothing building: the worker checks once for a wake, then sleeps (RETRY_S) until the next one;
+    it never loops on a wake it has already taken (a loop would hold a core for as long as the window is open), nor
+    looks again every STORE_POLL_S while nothing is coming. Only the worker's own checks are counted."""
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    app._refresh_from_focus = lambda: None               # only the one wake below may start a check
+    app._store_waiting = None
+    opener = app._opener()
+    _pump(app, lambda: False, timeout=0.5)                       # the open's own first check
+    assert opener.check() != "store" and app._store_soon(None) is False, "precondition: JSON mode, nothing coming"
+    checks = []
+    real_check = opener.check
+
+    def counting_check():
+        if threading.current_thread() is app._worker:
+            checks.append(1)
+        return real_check()
+    monkeypatch.setattr(opener, "check", counting_check)
+    app._worker_wake.set()
+    _pump(app, lambda: False, timeout=1.6)                       # three STORE_POLL_S: a poller would check 3-4 times
+    assert len(checks) == 1, f"the worker checked {len(checks)} times in 1.6 s for one wake"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_that_stops_being_a_store_closes_the_workers_lookout(window, language, monkeypatch):
+    """When the window's store is no longer a store (damaged, made read-only, gone), the worker closes its lookout:
+    the tree watch ends and the bell gives back its slot. Dropped without a close, the watch thread, its handles and
+    the bell's slot would stay taken while the window lives."""
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.tree.alive and lookout.bell.slot is not None, "precondition: watched, with a bell"
+    monkeypatch.setattr(app._opener(), "check", lambda: "json")
+    lookout.wake.set()                                           # the worker sleeps in the lookout's wait
+    assert _pump(app, lambda: app.__dict__.get("_lookout") is None, timeout=5.0), "the worker kept its lookout"
+    deadline = time.monotonic() + 5.0
+    while lookout.tree.alive and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not lookout.tree.alive, "the tree watch outlived the store"
+    assert lookout.bell.slot is None, "the bell kept its slot"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_when_windows_loses_track_the_worker_runs_one_full_look(window, language, monkeypatch):
+    """Windows can lose track of a folder's changes (its buffer overflowed): the watch then asks for a full look, and
+    the worker syncs the whole library once and records the look, so nothing that changed meanwhile is missed."""
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None               # only the watch's report may start a look here
+    lookout = app._lookout
+    full_looks, looked = [], []
+    real_sync = ls.sync_for_window
+
+    def counting_sync(store, folders=None):
+        if folders is None:
+            full_looks.append(1)
+        return real_sync(store, folders=folders)
+
+    real_looked = lookout.looked
+
+    def recording_looked(now=None):
+        result = real_looked(now)
+        looked.append(1)
+        return result
+
+    monkeypatch.setattr(ls, "sync_for_window", counting_sync)
+    monkeypatch.setattr(lookout, "looked", recording_looked)
+    lookout.tree._overflow()                                     # what the watch does when Windows loses track
+    assert _pump(app, lambda: bool(looked), timeout=5.0), "the lost track never led to a full look"
+    assert full_looks, "no full sync ran for the lost track"
+
+
+# --- L3.3: the mode check reads through the window's handle (P2.4's smoothness review, row 13) ------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drag_asks_the_mode_through_the_windows_handle_not_a_new_connection(window, language, monkeypatch):
+    """P2.4's verifier: a drag asked the mode twice, each a probe (a new connection, 5–7 ms on the window's thread).
+    With the store's handle open, a drag asks through it: no probe at all (charter S19). A store marked damaged
+    meanwhile is still caught: that check probes, and the drag is refused."""
+    data_dir, _uf, _doc = _store_library(language)
+    app = window(language)
+    app.target_folder_var.set("HighPriority")
+    rows = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]     # the window's handle is open
+    rel = [os.path.relpath(r, data_dir).replace("\\", "/") for r in rows]
+    probes = []
+    real = ls._probe
+    monkeypatch.setattr(ls, "_probe", lambda *a: probes.append(a) or real(*a))
+    app.move_manifest_items_relative([rows[0]], rows[-1], "after")
+    app.move_manifest_items_relative([rows[1]], rows[0], "after")
+    assert probes == [], "a drag with the handle open opens no connection to ask the mode"
+    order = _order(app, "now")
+    assert order[-3:] == [rel[-1], rel[0], rel[1]]
+    db = ls.library_db_path(language, data_dir)
+    ls.mark_damaged(db, "a test's damage")
+    try:
+        app.move_manifest_items_relative([rows[2]], rows[-1], "after")
+        assert probes, "a damaged store is asked afresh"
+        assert app._store_mode() == "read-only"
+    finally:
+        os.remove(ls.damaged_marker(db))
+    assert _order(app, "now") == order, "the drag on a damaged store was refused"
+
+
+# --- The worker's lock, its token and its helper hand-over; Remove's rollback ---------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_workers_sync_waits_for_a_command_holding_the_store_work_lock(window, language, monkeypatch):
+    """The worker's disk sync takes `_store_work`: while a command holds it (Remove's trash, Undo-Remove's put-back),
+    a sync asked for waits, and it runs once the command lets go. Why: a sync in the middle of a command's file work
+    would list a file the window is moving as a new row."""
+    _data, _uf, app = _graduated_window(window, language, monkeypatch, timers=True)
+    _pump(app, lambda: False, timeout=1.0)                       # the open's own walk settles
+    calls = []
+    monkeypatch.setattr(ls, "sync_for_window", lambda store: calls.append(threading.current_thread()))
+    lock = app._store_work()
+    lock.acquire()                                               # a command's file work, on the window's thread
+    held = True
+    try:
+        app._request_sync()
+        _pump(app, lambda: False, timeout=1.2)                   # two of the worker's polls pass
+        assert calls == [], "the worker synced while a command held the store-work lock"
+        lock.release()
+        held = False
+        assert _pump(app, lambda: len(calls) >= 1, timeout=3.0), "the sync asked for never ran after the release"
+        assert threading.main_thread() not in calls, "the sync runs on the worker, never the window's thread"
+    finally:
+        if held:
+            lock.release()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_window_hands_the_helper_an_outside_copy_once_and_its_own_export_never(window, language, monkeypatch,
+                                                                                   store_helper_spawns):
+    """The worker hands the copy to the helper only when someone else rewrote it: never for the store's own export
+    (its stat is the store's `last_export_stat`), and an outside rewrite once, not at every 0.5 s poll."""
+    _store_library(language)                                     # its maintain exported the copy: our own
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    store_helper_spawns.clear()
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)))
+    target = ls.manifest_path(app.user_files_root)
+    assert ls._stat_str(ls._stat(target)) == app._store().meta().get("last_export_stat"), \
+        "precondition: the copy on disk is the store's own export"
+    _pump(app, lambda: False, timeout=1.5)                       # the open, then three polls with our own copy
+    assert store_helper_spawns == [], "the window handed its own export to the helper"
+    with open(target, "rb") as f:
+        data = f.read()
+    with open(target, "wb") as f:                                # another program rewrites the copy
+        f.write(data + b"\n")
+    assert _pump(app, lambda: bool(store_helper_spawns), timeout=3.0), "an outside copy was never handed over"
+    _pump(app, lambda: False, timeout=1.5)                       # three more polls, nothing new
+    assert store_helper_spawns == [(language,)], "an outside copy is handed to the helper once"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_once_another_windows_move_shows_later_polls_rebuild_nothing(window, language, monkeypatch):
+    """After the worker has shown another window's move, its token has moved on: the polls that follow, with no new
+    write, never rebuild the tree again (charter S19: a poll that finds nothing does nothing)."""
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)))
+    app._refresh_from_focus = lambda: None               # only the worker's poll may redraw here
+    shown = _tree_paths(app)
+    _other_process(language, "ids = store.ids('now')\nstore.move([ids[0]], 'now', after_id=ids[-1])\n")
+    assert _pump(app, lambda: _tree_paths(app) != shown, timeout=3.0), "another window's move never showed"
+    # The tree may show the move before the worker's poll sees it (a drain's redraw reads the new order); the
+    # worker's own "changed" for it, and its redraw, follow. Then the rebuilds must stop: three polls in a row
+    # (1.5 s) with none, well before the bound.
+    calls = []
+    real = ls.Store.ordered
+    monkeypatch.setattr(ls.Store, "ordered",
+                        lambda self, tier: calls.append(time.monotonic()) or real(self, tier))
+    start = time.monotonic()
+    settled = _pump(app, lambda: time.monotonic() - max(calls + [start]) >= 1.5, timeout=8.0)
+    assert settled, f"the tree kept rebuilding with no new write ({len(calls)} rebuilds)"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_remove_puts_every_file_back_even_when_one_rename_back_fails(window, language, monkeypatch):
+    """Remove moves the files to the trash, then commits; when the commit fails, every moved file goes back. One file
+    that can't go back must not strand the others in the trash, and the window says nothing was changed rather than
+    raising."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    a, b = (os.path.join(data_dir, *before[i].split("/")) for i in (1, 2))
+    real_rename = os.rename
+    failed = []
+
+    def one_rename_fails(src, dst, *args, **kwargs):
+        if os.path.normcase(os.path.abspath(dst)) == os.path.normcase(os.path.abspath(b)):
+            failed.append(dst)                                   # b can't go back: held open by another program
+            raise OSError("a file held open by another program")
+        return real_rename(src, dst, *args, **kwargs)
+
+    def commit_fails(self, *args, **kwargs):
+        monkeypatch.setattr(os, "rename", one_rename_fails)     # only the rollback's renames: the file work is done
+        raise ls.StoreBusy("held")
+
+    monkeypatch.setattr(ls.Store, "remove", commit_fails)
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()                                       # must not raise
+    monkeypatch.setattr(os, "rename", real_rename)
+    assert len(failed) == 1, "the rollback never tried to put b back"
+    assert os.path.exists(a), "a file that could go back was left in the trash"
+    assert not os.path.exists(b), "b's failed rename back left it in the trash"
+    assert "nothing was changed" in app.status_var.get()
+    assert _order(app, "now") == before, "the store kept both items"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_burst_of_changes_hands_the_helper_one_export_two_seconds_after_the_last(window, language, monkeypatch):
+    """Rule (§6.7): a burst of changes gives the helper one export, STORE_IDLE_MS after the last change: not
+    sooner, and not once per change (the earlier scheduled job must be cancelled, not left to run)."""
+    _data, _uf, app = _graduated_window(window, language, monkeypatch)
+    runs = []
+    app._idle_export = lambda: runs.append(time.monotonic())     # set before scheduling: the job binds it
+    app._schedule_idle_export()
+    _pump(app, lambda: False, timeout=1.0)
+    last = time.monotonic()
+    app._schedule_idle_export()                                  # the burst's second change, a second later
+    idle = cig.STORE_IDLE_MS / 1000.0
+    assert _pump(app, lambda: bool(runs), timeout=idle + 3.0), "the export never ran"
+    _pump(app, lambda: False, timeout=0.5)                       # a first change's job would have run by now too
+    assert len(runs) == 1, "a burst of two changes gives one export, not one per change"
+    assert runs[0] - last >= idle - 0.05, "the export ran sooner than STORE_IDLE_MS after the last change"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_up_arrow_moves_an_item_one_place_up_in_the_store_order_and_down_moves_it_back(window, language):
+    """▲ in store mode moves the item up one place (▼ down): the store's nudge gets the direction as written."""
+    data_dir, _uf, _doc = _store_library(language)
+    app = window(language)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    assert len(before) >= 2
+    # Press the buttons as the user does: select the tree row for before[1], then ▲ / ▼ (the handlers
+    # pick the direction, so a swapped binding fails here).
+    def row_iid(rel):
+        found = []
+
+        def walk(parent):
+            for child in app.tree.get_children(parent):
+                vals = app.tree.item(child, "values")
+                if vals and not str(vals[0]).startswith("GROUP:") and \
+                        os.path.relpath(vals[0], app.data_root).replace("\\", "/") == rel:
+                    found.append(child)
+                walk(child)
+        walk("")
+        assert found, f"{rel} is not a row of the tree"
+        return found[0]
+    app.tree.selection_set(row_iid(before[1]))
+    app.move_selected_up()
+    assert _order(app, "now")[:2] == [before[1], before[0]], "▲ moves the item up one place"
+    app.tree.selection_set(row_iid(before[1]))  # now one place up, at index 0
+    app.move_selected_down()
+    assert _order(app, "now") == before, "▼ moves it back down"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_refused_for_a_rebuilt_library_clears_the_older_undo_records_too(window, language, monkeypatch):
+    """Rule: an Undo refused because the library was rebuilt since clears the whole undo stack, so the older
+    records of that epoch are never offered again (an Undo after it must not reverse an earlier move)."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    rows = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]
+    app.move_manifest_items_relative([rows[0]], rows[-1], "after")
+    app.move_manifest_items_relative([rows[1]], rows[-1], "after")
+    after = _order(app, "now")
+    assert len(app.__dict__.get("_undo_changes", [])) == 2, "two moves leave two undo records"
+    with patch.object(ls.Store, "undo", side_effect=ls.UndoRefused("rebuilt")):
+        app.undo_last_action()
+    assert not app.__dict__.get("_undo_changes"), "a refused Undo clears the whole undo stack"
+    app.undo_last_action()
+    assert _order(app, "now") == after, "the older move is not offered again after a refused Undo"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_remove_skips_a_file_already_gone_and_restores_the_rest(window, language, monkeypatch):
+    """A Remove that included a file already gone from disk: that file has no trashed copy, so Undo skips its
+    row and puts the other files back instead of failing on the missing one (a None trash path)."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    a, b = (os.path.join(data_dir, *p.split("/")) for p in before[:2])
+    os.remove(b)
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()
+    assert not os.path.exists(a)
+    app.undo_last_action()
+    assert os.path.exists(a), "the file that had a trashed copy came back"
+    assert "Undid" in app.status_var.get(), app.status_var.get()
+    assert before[0] in _order(app, "now")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_removed_file_gets_a_fresh_thirty_day_trash_clock(window, language, monkeypatch):
+    """A file Removed in store mode goes to `.trash` with its clock restarted: its modified time is the Remove's
+    time, not the old edit time, so the 30-day purge counts from the Remove."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    a = os.path.join(data_dir, *before[0].split("/"))
+    old = time.time() - 60 * 86400
+    os.utime(a, (old, old))
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()
+    stem = os.path.splitext(os.path.basename(a))[0]
+    trashed = [f for f in os.listdir(os.path.join(data_dir, ".trash")) if f.startswith(stem)]
+    assert len(trashed) == 1, trashed
+    assert os.path.getmtime(os.path.join(data_dir, ".trash", trashed[0])) > time.time() - 3600
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_that_cannot_move_to_trash_stays_listed_while_the_rest_go(window, language, monkeypatch):
+    """A file that can't be moved (held open) stays on disk and in the list, while the other file is removed:
+    the list drops only what actually went to the trash."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    a, b = (os.path.join(data_dir, *p.split("/")) for p in before[:2])
+    real = app._move_content_file
+
+    def held(src, dst, copy_marker=True):
+        if src == b:
+            raise OSError("held open")
+        return real(src, dst, copy_marker=copy_marker)
+    app._move_content_file = held
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()
+    assert not os.path.exists(a), "the file that went to the trash is off the library folder"
+    assert os.path.exists(b), "the held file stays on disk"
+    assert before[1] in _order(app, "now"), "and stays in the list"
+    assert before[0] not in _order(app, "now"), "the other file was removed"
+
+
+def _graduate_setup(window, language, monkeypatch):
+    """Shared start of the Graduate/Demote writer tests: two NOW words of HighPriority and an empty graduated list."""
+    data_dir, user_files_dir, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    now = _order(app, "now")
+    a, b = (os.path.join(data_dir, *p.split("/")) for p in now[:2])
+    grad = os.path.join(user_files_dir, "GraduatedList.txt")
+    with open(grad, "w", encoding="utf-8") as f:
+        f.write("# Graduated Words\n")
+    index = {os.path.basename(a): [names(language)[46]], os.path.basename(b): [names(language)[47]]}
+    return app, now, a, b, grad, index
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_demote_from_now_adds_nothing_to_the_graduated_list(window, language, monkeypatch):
+    """Demote from NOW (store mode) moves the words to Soon and writes no GraduatedList block; only NOW ->
+    Graduated does."""
+    app, now, a, b, grad, index = _graduate_setup(window, language, monkeypatch)
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)), \
+         patch.object(app, "_load_graduate_index", return_value=index):
+        app.demote_content()
+    assert open(grad, encoding="utf-8").read() == "# Graduated Words\n"
+    assert now[0] in _order(app, "soon")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_graduate_strips_the_blocks_it_appended(window, language, monkeypatch):
+    """When the store's commit fails after Graduate appended GraduatedList blocks, those blocks are stripped again
+    and the list and NOW are as they were; the window says nothing was changed."""
+    app, now, a, b, grad, index = _graduate_setup(window, language, monkeypatch)
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)), \
+         patch.object(app, "_load_graduate_index", return_value=index), \
+         patch.object(ls.Store, "set_tier", side_effect=ls.StoreBusy("held")):
+        app.graduate_content()
+    assert open(grad, encoding="utf-8").read() == "# Graduated Words\n"
+    assert "nothing was changed" in app.status_var.get()
+    assert _order(app, "now") == now
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_graduate_refuses_when_an_item_changed_between_check_and_commit(window, language, monkeypatch):
+    """Graduate in store mode is refused, with nothing changed, when one of its items was changed by another
+    process between the command's check and its commit (the second word goes to goal meanwhile)."""
+    app, now, a, b, grad, index = _graduate_setup(window, language, monkeypatch)
+    store = app._store()
+    b_id = store.item_id(now[1])
+
+    def _changed_meanwhile(*_args, **_kwargs):
+        store.set_tier([b_id], "goal")
+        return index
+
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)), \
+         patch.object(app, "_load_graduate_index", side_effect=_changed_meanwhile):
+        app.graduate_content()
+    assert "changed those items meanwhile" in app.status_var.get()
+    assert now[0] in _order(app, "now")
+    assert now[1] in _order(app, "goal")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_confirmed_reset_resorts_and_undo_returns_to_the_order_before_it(window, language):
+    """Reset re-sorts the order only when the user confirms it; a decline changes nothing, and Undo puts back
+    the order from before a confirmed Reset (not the order from an earlier move)."""
+    data_dir, _uf, _doc = _store_library(language)
+    app = window(language)
+    app.target_folder_var.set("HighPriority")
+    with patch("app.content_importer_gui.messagebox.askyesno", return_value=True):
+        app.reset_to_folder_structure()
+    az = _order(app, "now")     # the folders' order, as a confirmed Reset puts it
+    rows = [os.path.join(data_dir, *p.split("/")) for p in az]
+    app.move_manifest_items_relative([rows[0]], rows[-1], "after")
+    shuffled = _order(app, "now")
+    assert shuffled != az, "the move shuffled the order, so a Reset has something to put back"
+    with patch("app.content_importer_gui.messagebox.askyesno", return_value=False):
+        app.reset_to_folder_structure()
+    assert _order(app, "now") == shuffled, "a declined Reset changes nothing"
+    with patch("app.content_importer_gui.messagebox.askyesno", return_value=True):
+        app.reset_to_folder_structure()
+    assert _order(app, "now") == az, "a confirmed Reset re-sorts the order to the folders' A-Z order"
+    app.undo_last_action()
+    assert _order(app, "now") == shuffled, "Undo puts back the order from before the Reset"
+
+
+def test_content_manager_exit_writes_the_store_copy_once_with_folders_in_order_only_in_store_mode(monkeypatch):
+    # Library_Store_Spec §6.7: the copy is written when the window closes, for a store-mode library only, and with the
+    # data folder first and the User Files folder second (a swap would write the copy to the wrong place).
+    mode = ["store"]
+    made = []
+
+    class Fake:
+        def __init__(self, root, language="ja"):
+            self.data_root, self.user_files_root, self.language = "D_ROOT", "U_ROOT", language
+
+        def _store_mode(self):
+            return mode[0]
+
+    monkeypatch.setattr(cig.tk, "Tk", lambda: types.SimpleNamespace(mainloop=lambda: None))
+    monkeypatch.setattr(cig, "ContentImporterApp", Fake)
+    monkeypatch.setattr(ls, "maintain", lambda *a, **k: made.append(a))
+    monkeypatch.setattr(sys, "argv", ["content_importer_gui", "--language", "zh"])
+    cig.main()
+    assert made == [("zh", "D_ROOT", "U_ROOT")], "a store-mode library's copy is written once at exit"
+    mode[0] = "json"
+    cig.main()
+    assert made == [("zh", "D_ROOT", "U_ROOT")], "a JSON-mode library has no store to copy, so nothing is written"

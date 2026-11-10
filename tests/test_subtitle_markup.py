@@ -1,13 +1,13 @@
 """A subtitle line loses its format's markup, never its letters.
 
-The cleaner used to delete every ASCII letter and digit from a cue, which is how 30階の中野さんの (the repo's own
-sample subtitle) became 階の中野さんの, 我有2个苹果 became 我有个苹果, T恤 became 恤, and SubRip's <b>…</b> left
+The cleaner used to delete every ASCII letter and digit from a cue, which is how 30階の中野さんの (a line of the repo's
+2.x sample subtitle) became 階の中野さんの, 我有2个苹果 became 我有个苹果, T恤 became 恤, and SubRip's <b>…</b> left
 <>…</> behind. Latin letters and digits are part of what a line says; what is not text is the format's own
 markup — SubRip's HTML-style tags, ASS's override blocks, its \\N / \\n / \\h escapes and its drawings. A line
 with no Japanese (Chinese) at all is still dropped, as before, so an English translation line never reaches a
 sentence, and a Latin token that does is never counted (analyzer.main's target-language test).
 
-The sample subtitle's lines are real (samples/ja/HighPriority/H_priority_sample_2.srt); the others are made up in
+The sample subtitle's lines are real (the 2.x sample's); the others are made up in
 the shapes streaming subtitles (<b> on every line) and broadcast .ass captions write, and ordinary Chinese.
 """
 from app import analyzer

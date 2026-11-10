@@ -47,7 +47,7 @@ def _run(env, extra_args, clear=True):
     # settings.json is the one the run reads (settings_manager.load_settings) — and so the one its run
     # signature hashes, which reads the settings as the run does.
     with patch("app.analyzer.get_user_file", side_effect=env["guf"]), \
-         patch("app.settings_manager.get_user_file", side_effect=env["guf"]), \
+         patch("app.settings_manager.get_settings_path", side_effect=lambda: env["guf"]("settings.json")), \
          patch("app.analyzer.get_data_path", side_effect=env["gdp"]), \
          patch("app.analyzer.get_user_files_path", side_effect=env["gufp"]), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \
@@ -236,8 +236,9 @@ def test_presentation_args_do_not_invalidate_the_run(env):
 def _fake_render_writing_html(env):
     """A generate_static_html stand-in that actually creates the report file, so the analyzer's
     'does the HTML exist?' fast-path check behaves realistically without opening a real browser."""
-    def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True):
+    def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
         (env["results"] / "reading_list_static.html").write_text("<html></html>", encoding="utf-8")
+        return marks            # the journey's stones it drew (none here: the run then reads them to sign)
     return _fake
 
 
@@ -326,9 +327,12 @@ def test_manifest_rephase_forces_rerun_not_skip(env):
     manifest = root / "User Files" / "ja" / "master_manifest.json"
 
     def write_manifest(b_now):
+        # every file in HighPriority listed (t.txt too): a sync that adds one at the top of NOW would push NOW's last
+        # row below the Soon line (L3.1, G2.2-1) before the re-phase this test is about
         b_item = {"physical_path": "HighPriority/b.txt", "origin_source": "01_NOW" if b_now else "02_SOON"}
         manifest.write_text(_json.dumps({"schedule": {
-            "PHASE_1_NOW": [{"physical_path": "HighPriority/a.txt", "origin_source": "01_NOW"}]
+            "PHASE_1_NOW": [{"physical_path": "HighPriority/t.txt", "origin_source": "01_NOW"},
+                            {"physical_path": "HighPriority/a.txt", "origin_source": "01_NOW"}]
                            + ([b_item] if b_now else []),
             "PHASE_2_SOON": [] if b_now else [b_item],
             "PHASE_3_LATER": [],
@@ -430,7 +434,7 @@ def _floor(band, lib):
 
 
 def test_automatic_rarity_lists_the_band_it_picks_and_library_frequency_follows(samples_env, capsys):
-    """Automatic rarity on: the run lists the RAREST band holding auto_max_words words or fewer —
+    """Automatic rarity on: the run lists the COMMONEST band holding auto_max_words words or more —
     the line drawn here at Uncommon's own count, mid-ladder — the log says which band and why, and
     library_frequency.json carries that band's floor (YouTube Preview, Junban and "In Anki" read
     their cut-off there, so they follow with no change). --min-freq and coverage mode still win over
@@ -447,7 +451,7 @@ def test_automatic_rarity_lists_the_band_it_picks_and_library_frequency_follows(
     capsys.readouterr()
     lib = _run_samples(root)
     log = capsys.readouterr().out
-    assert f"Selection band 'uncommon' (automatic: the rarest band with {line} words or fewer)" in log
+    assert f"Selection band 'uncommon' (automatic: the commonest band with {line} words or more)" in log
     assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
     words = pd.read_csv(root / "results" / "priority_learning_list.csv")["Word"].tolist()
     assert len(words) == line, "the list is exactly the band the rule counted"
@@ -496,8 +500,8 @@ def test_the_automatic_band_moves_on_as_you_learn_without_writing_settings(sampl
     _run_samples(root)
     counts, freqs = _band_counts()
     line = counts["uncommon"]
-    learned = counts["rare"] - line + 3        # the commonest words, enough to bring Rare under the line
-    assert counts["very_rare"] - learned > line + 20, counts   # ...while Very Rare stays well over it
+    learned = 3                                # the commonest words: Uncommon falls under the line (G3.2)...
+    assert counts["rare"] - learned > line + 20, counts        # ...while Rare stays well over it
 
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
@@ -519,9 +523,9 @@ def test_the_automatic_band_moves_on_as_you_learn_without_writing_settings(sampl
 def test_the_band_the_dashboard_shows_is_the_band_generate_uses(samples_env):
     """I3. The analyzer's own ignore set reads a hiragana line through the tokenizer (する -> 為る);
     the dashboard can't (fugashi never enters the GUI process), so its preview counts 為る. The
-    automatic choice is therefore made with the PREVIEW's recipe on both sides. The line is drawn one
-    word under the preview's Rare: a run that decided on its own counts (為る ignored: one word fewer)
-    would pick Rare, while the dashboard shows Uncommon. Known words come from the store's known
+    automatic choice is therefore made with the PREVIEW's recipe on both sides. The line is drawn at
+    the preview's Rare: a run that decided on its own counts (為る ignored: one word fewer) would pick
+    a rarer band, while the dashboard shows Rare. Known words come from the store's known
     cache on both sides (いる is read as 居る there, never by the dictForm approximation)."""
     from app.main import MasterDashboardApp
     root = samples_env
@@ -536,9 +540,9 @@ def test_the_band_the_dashboard_shows_is_the_band_generate_uses(samples_env):
     sel = {"bands_ppm": SMALL_LIBRARY_BANDS_PPM, "min_count": 2}
     dashboard = MasterDashboardApp.__new__(MasterDashboardApp)       # no window: the worker's own read
     previews = dashboard._compute_band_previews("ja", sel, "asis")
-    line = previews["rare"]["word_count"] - 1
+    line = previews["rare"]["word_count"]
     shown = word_selection.auto_band(previews, line)
-    assert shown == "uncommon", {b: p["word_count"] for b, p in previews.items()}
+    assert shown == "rare", {b: p["word_count"] for b, p in previews.items()}
 
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
@@ -605,7 +609,10 @@ def test_a_store_that_opens_but_cannot_be_read_at_the_cut_falls_back_to_the_runs
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)
     counts, _freqs = _band_counts()
-    line = counts["uncommon"]
+    # Between Occasional and Uncommon, not at Uncommon's own count: this run's own counts can differ from the
+    # store's by a word or two, and with "the commonest band with the line or more" a line at Uncommon's count
+    # would hang on that word (G3.2).
+    line = (counts["occasional"] + counts["uncommon"]) // 2 + 1
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
     capsys.readouterr()
@@ -614,7 +621,7 @@ def test_a_store_that_opens_but_cannot_be_read_at_the_cut_falls_back_to_the_runs
         lib = _run_samples(root)
     log = capsys.readouterr().out
     assert "could not read the token store (database is locked)" in log
-    assert f"Selection band 'uncommon' (automatic: the rarest band with {line} words or fewer)" in log
+    assert f"Selection band 'uncommon' (automatic: the commonest band with {line} words or more)" in log
     assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
 
 
@@ -659,3 +666,96 @@ def test_every_files_counts_share_each_words_one_key(samples_env, monkeypatch):
             assert held is key, f"{key}: one key object for every file"
             shared += held is key and counts is not files[0]
     assert shared, "words met in more than one file"
+
+
+# --- Q4-3: the band Automatic remembers in the library store (2.6) ------------------------------ #
+
+def _with_library_store(root):
+    from app import library_store
+    data_dir, user_files = str(root / "data" / "ja"), str(root / "User Files" / "ja")
+    assert library_store.maintain("ja", data_dir, user_files, from_folders=True) == library_store.EXIT_DONE
+    return library_store, data_dir, user_files
+
+
+def test_the_remembered_band_is_kept_by_the_second_threshold(samples_env, capsys):
+    # Why: Q4-3 — a band Automatic chose stays until the commoner band that would replace it passes ~1,100 words, so
+    # the list stops flipping. On this small library every band is far under 1,100, so a remembered rarer band holds.
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    line = counts["uncommon"]
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.record_auto_band("ja", data_dir, user_files, "rare", counts["rare"])
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True, auto_max_words=line)
+    capsys.readouterr()
+    lib = _run_samples(root)
+    log = capsys.readouterr().out
+    assert "Selection band 'rare' (automatic: kept until a commoner band passes 1100 words)" in log
+    assert lib["min_count"] == pytest.approx(_floor("rare", lib))
+    assert ls.read_auto_band("ja", data_dir) == "rare"
+
+
+def test_a_band_change_is_remembered_and_stamped_so_the_next_check_reuses_it(samples_env):
+    # Why: the remembered band is a part of the run signature (it picks the list). A run that changes the band must
+    # stamp, and write its plan with, the parts the NEXT check reads — else every band change would cost a second
+    # Generate, and the re-plan would refuse the plan ("generate-first: auto_band"). Haya's E1.3 check.
+    import gzip
+    from app.main import journey_is_current
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    line = counts["uncommon"]
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.read_auto_band("ja", data_dir) is None
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True, auto_max_words=line)
+    _run_samples(root)                                          # nothing remembered → picks Uncommon → remembers it
+    assert ls.read_auto_band("ja", data_dir) == "uncommon"
+    argv = ["analyzer.py", "--language", "ja"]
+    schedule, _versions = analyzer.read_library_schedule("ja")       # the files as the journey check reads them
+    found = analyzer.resolve_found_files("ja", verbose=False, schedule=schedule)
+    parts = analyzer.run_signature_parts("ja", found, analyzer.parse_analysis_args(argv[1:]))
+    assert parts["auto_band"] == "uncommon"
+    stamp = analyzer.read_run_stamp(str(root / "results"))
+    assert stamp == analyzer.signature_digest(parts, chunked=False), "the stamp is the next check's signature"
+    with gzip.open(root / "results" / analyzer.PLAN_FILE, "rt", encoding="utf-8") as f:
+        header = json.loads(f.readline())
+    assert header["order_free_signature"] == analyzer.signature_digest(parts, order_free=True)
+    assert journey_is_current(argv, "ja") is True, "no second Generate"
+
+
+def test_with_automatic_off_the_signature_has_no_band_part(samples_env):
+    # Why: the part exists only with Automatic on, so nobody else's signature moved (no forced re-run in 2.6 beyond
+    # its own engine bump).
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    parts = analyzer.run_signature_parts("ja", [], analyzer.parse_analysis_args(["--language", "ja"]))
+    assert "auto_band" not in parts
+
+
+def test_turning_automatic_off_forgets_its_band(samples_env):
+    # Why: a band remembered from before Automatic was switched off would come back months later when it's switched
+    # on again; switched off, the next run forgets it, so switching on starts from today's rule.
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.record_auto_band("ja", data_dir, user_files, "rare", 40)
+    _run_samples(root)                                          # Automatic off
+    assert ls.read_auto_band("ja", data_dir) is None
+
+
+def test_automatic_with_no_library_store_still_stamps_a_run_the_next_check_reuses(samples_env):
+    # Why: with no store to remember in (JSON mode), the run uses today's single line, its signature part says
+    # nothing is remembered, and the stamp still matches the next check (no endless re-Generates).
+    from app.main import journey_is_current
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True,
+                   auto_max_words=counts["uncommon"])
+    lib = _run_samples(root)
+    assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
+    assert journey_is_current(["analyzer.py", "--language", "ja"], "ja") is True

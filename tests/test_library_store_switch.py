@@ -88,6 +88,8 @@ def _generated(language):
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    from tests.plan_file_cases import write_plan_header
+    write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
     analyzer._set_run_stamp(results, sig)
     return argv
 
@@ -98,6 +100,9 @@ def test_a_hato_drop_turns_the_check_off_and_leads_the_next_generate(language):
     journey check's sync (the ✓ turns off), at the top of NOW, and the next Generate reads it first."""
     from app import analyzer
     data_dir, _uf, _doc = _store_library(language)
+    store = ls.open_store(language, data_dir, _uf)
+    store.set_library_options(arrivals_on=False)          # New arrivals off: the drop lands in NOW (2.x, Q4-11)
+    store.close()
     argv = _generated(language)
     assert analyzer.journey_is_current(argv, language) is True
     rel = f"{ls.HATO_FOLDER}/{names(language)[40]}.srt"
@@ -212,6 +217,7 @@ def test_close_terminates_children_destroys_the_window_then_maintains():
     order = []
     app = MagicMock()
     app._update_job = None
+    app._replan_finishing.return_value = False      # no fast re-plan preview waiting to finish (E3.1)
     child = MagicMock()
     child.poll.return_value = None
     child.terminate.side_effect = lambda: order.append("terminate")
@@ -310,13 +316,35 @@ def test_an_update_staged_starts_no_helper_and_register_exits_5(language, real_s
         assert ls.update_staged()
         assert ls.spawn_maintain(language) is None
         rel = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[42]}.srt")
-        assert ls.register_headless(language, rel, None) == ls.EXIT_BUSY
+        assert ls.register_headless(language, rel, None).code == ls.EXIT_BUSY
     finally:
         updater.drop_update_lock(lock)
     assert not ls.update_staged()
 
 
 # --- #5 a burst of triggers costs one helper --------------------------------------------------------- #
+
+class _Timers:
+    """The Tk root's `after` / `after_cancel` as a test clock: what is armed, for how long, and fired by hand — so the
+    2 s debounce is checked by what is pending, never by wall-clock pumps (beside other test runs the pumps' margins
+    went, and a check came early or late)."""
+
+    def __init__(self):
+        self.pending, self._ids = {}, 0
+
+    def after(self, ms, callback):
+        self._ids += 1
+        self.pending[f"after#{self._ids}"] = (ms, callback)
+        return f"after#{self._ids}"
+
+    def after_cancel(self, job):
+        self.pending.pop(job, None)
+
+    def fire(self):
+        (job, (_ms, callback)), = self.pending.items()
+        del self.pending[job]
+        callback()
+
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_burst_of_triggers_within_2_s_spawns_one_helper(language, store_helper_spawns, monkeypatch):
@@ -326,24 +354,34 @@ def test_a_burst_of_triggers_within_2_s_spawns_one_helper(language, store_helper
     with ls.open_store(language, data_dir, user_files_dir) as store:
         ids = store.ids("now")
         store.move([ids[0]], "now", after_id=ids[-1])
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = types.SimpleNamespace(root=root, var_language=types.SimpleNamespace(get=lambda: language))
-        app._maybe_maintain = lambda: MasterDashboardApp._maybe_maintain(app)
-        monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
-        for _ in range(5):
-            MasterDashboardApp._schedule_maintain(app)
-            _pump(root, lambda: False, timeout=0.2)
-        assert store_helper_spawns == []
-        assert _pump(root, lambda: bool(store_helper_spawns), timeout=4.0)
-        _pump(root, lambda: False, timeout=0.5)
-        assert store_helper_spawns == [(language,)]
-        MasterDashboardApp._schedule_maintain(app)                           # the same stat: handed once
-        _pump(root, lambda: False, timeout=2.6)
-        assert len(store_helper_spawns) == 2, "a change still due is handed again"
-    finally:
-        root.destroy()
+    timers = _Timers()
+    app = types.SimpleNamespace(root=timers, var_language=types.SimpleNamespace(get=lambda: language))
+    app._maybe_maintain = lambda: MasterDashboardApp._maybe_maintain(app)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    checks, real_start = [], threading.Thread.start
+
+    def start(thread):                                                   # the check's worker, joined before counting
+        if "_maybe_maintain" in getattr(getattr(thread, "_target", None), "__qualname__", ""):
+            checks.append(thread)
+        return real_start(thread)
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    def checked():
+        for thread in checks:
+            thread.join(30)
+            assert not thread.is_alive(), "the store check's worker hung"
+    for _ in range(5):
+        MasterDashboardApp._schedule_maintain(app)
+    assert [ms for ms, _callback in timers.pending.values()] == [2000], "each trigger re-arms the one 2 s check"
+    assert store_helper_spawns == [] and checks == []
+    timers.fire()                                                        # 2 s after the last trigger
+    checked()
+    assert len(checks) == 1 and store_helper_spawns == [(language,)]
+    MasterDashboardApp._schedule_maintain(app)                           # the same stat: handed once
+    assert [ms for ms, _callback in timers.pending.values()] == [2000]
+    timers.fire()
+    checked()
+    assert len(checks) == 2 and store_helper_spawns == [(language,), (language,)], "a change still due is handed again"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -436,7 +474,15 @@ def test_2_5_needs_no_new_runtime():
     package 2.4.0 already imported (app/anki_utils.py, the .anki21b reader); the store is standard library only."""
     with open(os.path.join(REPO, "requirements.txt"), encoding="utf-8") as f:
         lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
-    assert [l for l in lines if l not in REQUIREMENTS_2_4_0] == ["zstandard"]
+    # The 3.0 line adds the window's PyQt6 at W2.1 (the window's spec 01 §1.1, K52; approved Q3-8): 3.0 is a new
+    # install, never this in-place update, and its window is the only code that imports Qt. 2.x keeps the 2.5 rule.
+    window = ["PyQt6==6.11.*", "PyQt6-Qt6==6.11.*"]
+    # And tsubasa (T1 B), frozen into its own tsubasa.exe of the 3.0 bundle: only that program imports it.
+    tsubasa = [l for l in lines if l.startswith("tsubasa-sync==")]
+    assert len(tsubasa) == 1
+    # And mcp (approved 2026-10-28, P-3) for the 3.0 practice server: only `surasura-cli mcp` imports it.
+    practice = ["mcp==2.3.0"]
+    assert [l for l in lines if l not in REQUIREMENTS_2_4_0 and l not in window + tsubasa + practice] == ["zstandard"]
     assert all(l in lines for l in REQUIREMENTS_2_4_0)
     import ast
     tree = ast.parse(open(ls.__file__, encoding="utf-8").read())
@@ -499,6 +545,7 @@ def test_a_returning_2_4_0s_big_change_waits_for_the_user(language):
     cm.get_manifest_path = lambda: ls.manifest_path(user_files_dir)
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
+    time.sleep(0.02)        # a tick after the export (GitHub's clock: 15.6 ms): same size + one mtime would read as ours
     cm.save_manifest(manifest)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
     with ls.open_store(language, data_dir, user_files_dir) as store:
@@ -532,7 +579,7 @@ def test_read_only_mode_gives_every_reader_generates_list(language):
     ls.mark_damaged(ls.library_db_path(language, data_dir), "test")
     rel = f"HighPriority/{names(language)[49]}.srt"
     touch(data_dir, rel, names(language)[50])
-    generate = ls.read_only_schedule(language, data_dir, user_files_dir)
+    generate = ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True)   # as Generate reads it (W-1)
     schedule, _v = analyzer.read_library_schedule(language)
     assert schedule == generate
     listed = [os.path.relpath(p, data_dir).replace("\\", "/") for p, *_ in
@@ -566,3 +613,62 @@ def test_an_outside_change_taken_in_is_told_quietly_once(dashboard, language):
     app.status_var.set("Ready")
     app._update_library_notice()
     assert app.status_var.get() == "Ready", "told once"
+
+
+def test_repair_terminates_only_the_content_importers_still_running(store_helper_spawns):
+    """Repair stops the Content Importer processes that are still running and leaves the finished ones alone:
+    a process that has already exited is not ours to terminate. (The helper spawn is stubbed to None, so the
+    action stops at "Couldn't start" and nothing else runs.)"""
+    from app.main import MasterDashboardApp
+    live = MagicMock(surasura_desc="Content Importer")
+    live.poll.return_value = None
+    done = MagicMock(surasura_desc="Content Importer")
+    done.poll.return_value = 0
+    # Still running but not a Content Importer: Repair must leave it alone too (the "only" half of the rule).
+    other = MagicMock(surasura_desc="Content Manager")
+    other.poll.return_value = None
+    app = MagicMock()
+    app._library_notice_kind = "damaged"
+    app._generate_running = None
+    app.active_processes = [live, done, other]
+    MasterDashboardApp._library_notice_action(app)
+    assert live.terminate.call_count == 1
+    assert done.terminate.call_count == 0
+    assert other.terminate.call_count == 0
+
+
+# --- the update's own lock hold: a folder with no store, and a lock file that can't be opened ---------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_language_with_no_store_folder_gets_no_lock_and_no_folder_is_made(language):
+    """Library_Store_Spec §7: a language that never had a store gets no maintenance lock, and taking the
+    hold must not create its folder or a lock file (the update goes on for the others)."""
+    from app import updater, path_utils
+    db = ls.library_db_path(language, path_utils.get_data_path(language))
+    assert not os.path.exists(os.path.dirname(db)), "a fresh test root has no store folder yet"
+    held = updater.hold_library_locks((language,))
+    try:
+        assert held == [], "no folder, so nothing to hold"
+        assert not os.path.exists(os.path.dirname(db)), "the hold made a store folder"
+    finally:
+        updater.release_library_locks(held)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_maintenance_lock_file_that_cannot_be_opened_counts_as_held_and_the_update_goes_on(language, monkeypatch):
+    """Library_Store_Spec §7: a lock file that can't be opened can't be held by a helper either, so the hold
+    counts it as taken and moves on -- nothing raises, and the update is not kept waiting (the result is a
+    list, not None)."""
+    from app import updater, path_utils
+    db = ls.library_db_path(language, path_utils.get_data_path(language))
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+
+    def cannot_open(self):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(ls.MaintenanceLock, "try_acquire", cannot_open)
+    held = updater.hold_library_locks((language,))
+    try:
+        assert held == [], "an unopenable lock is no lock to keep, and the update is not made to wait"
+    finally:
+        updater.release_library_locks(held)

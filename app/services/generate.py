@@ -1,0 +1,676 @@
+"""The Generate controller (W1.3; the window's spec 04 §4.2): whether the journey is current, and running Generate.
+
+States (the consult's): `idle` (nothing known yet) · `current` · `stale` · `queued` (asked for; waiting for the
+requests to settle, for a job it can't run beside, or for another program's Generate) · `running` (with its progress)
+· `cancelling` · `failed` (with a message and the log's path — never a dialog).
+
+- `check(settings, language)` asks `analyzer.journey_is_current` on a worker (it syncs the library first and stats
+  every file: never a window's thread) and moves `idle` / `current` / `stale`.
+- `request(...)` builds the analyzer's argv with `run_args.analyzer_args` (one builder: the command line's run
+  signature) plus `--progress-json`, and coalesces: one run once the requests stop for `settle` seconds; a request
+  during a run runs once after it, or cancels it and runs after when the caller says so (`restart`, E3.2's burst rule).
+  A user's request takes an automatic run's place (one still waiting is dropped, one running asked to stop as a
+  cancel asks); an automatic request while a user's waits leaves it in place (`request` returns the user's run). Each
+  run's end is told to `on_end` listeners, whatever state the window then shows. The run is a `generate` job in the registry
+  (`app/services/jobs.py`: never beside the indexer, never two).
+- The run waits on a worker until `results` is free (`locks.take("results", …, wait=None, cancel=…)`): a cancel, or
+  the window closing, while it waits drops the request with nothing started (P1.2 left this cancel to W1.3). It lets go
+  and starts the analyzer, which takes `results` itself (`SURASURA_RESULTS_WAIT=forever`: in the moment between, another
+  program's Generate may take it, and the analyzer waits its turn).
+- **Cancel during a run** is the run's own decision: the controller makes the run's cancel file
+  (`SURASURA_CANCEL_FILE`), and the analyzer
+  stops at its next step if it hasn't reached *Writing your list* (each list is written whole since a7, the outputs
+  together are not one write),
+  else finishes. Only the run knows which step it is in — the reader always trails it — so the controller never ends
+  the child itself. A run started without `--progress-json` (the Tk dashboard's) can't be asked: a cancel waits for its
+  end. A cancelled run leaves the last journey's files as they were; the analyzer dropped its stamp as it started, so
+  the journey reads `stale` and the next Generate runs it again. From *Writing your list* on, its job quits with
+  `wait` (`Job.finishes_at_quit`, as soon as the line is read): closing the window waits for the run's end, capped, so
+  the process's exit never cuts it between the list and the journey (E20: the last good journey kept).
+- **The bar's words** (W3.5 row 7): a run's job reads *Generating*, or *Generating (automatic)* when quiet; an asker
+  that wants its own words asks through `labelled(label)` — the journey keeper's background run reads *Journey:
+  updating sentences…* (`JOURNEY_LABEL`, G7). **A failure** stays the state even when another request waits (it then
+  runs), and a run dropped later falls back to it, never to an older `current`; `failure(language)` keeps its words, for
+  its run's language, until a run finishes cleanly or a check finds the journey current (HR-23: the bar's Generate
+  line); a language switch forgets them (`forget_failure`). A run that finished though it was asked to stop (past
+  *Writing your list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
+- Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
+  environment from `path_utils.build_subprocess_env`, below normal priority (`power.popen_below_normal`, a7: the
+  window, at normal priority, stays quick beside a run). A window that starts the child its own way (the Tk dashboard:
+  its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
+
+Nothing here waits on the caller's thread. Listeners (`subscribe`, a request's `on_wait`) run on the controller's
+workers or the reader's thread, one at a time and in order (an older state is never delivered after a newer one); a
+window posts them to its own queue.
+"""
+import os
+import subprocess
+import sys
+import threading
+import time
+from collections import deque, namedtuple
+
+from app import locks
+from app.services import jobs as jobs_module
+from app.services import progress as progress_module
+
+IDLE, CURRENT, STALE, QUEUED, RUNNING, CANCELLING, FAILED = (
+    "idle", "current", "stale", "queued", "running", "cancelling", "failed")
+STEPS = ("Reading your files", "Counting words", "Picking sentences", "Writing your list", "Writing the journey")
+LOG_NAME = "generate-window.log"
+PROGRESS_FLAG = "--progress-json"
+JOURNEY_LABEL = "Journey: updating sentences…"      # the keeper's background run in the bar (W1.2 02 §2.4)
+
+# `quiet`: the run asked for or running is an automatic one (IK-20: a click on it is the user's own request).
+State = namedtuple("State", "state step done total message log_path job_id seq quiet", defaults=(False,))
+WRITING = STEPS.index("Writing your list")
+
+
+def percent(state):
+    """How far a run is, 0–99 (the header's *Generating… N %*, W3.5 row 4): the steps in their order, the reported count
+    inside a step. None before a known step."""
+    if state.step not in STEPS:
+        return None
+    part = min(1.0, (state.done or 0) / state.total) if state.total else 0.0
+    return min(99, int((STEPS.index(state.step) + part) * 100 / len(STEPS)))
+
+
+def can_cancel(state):
+    """Whether a click cancels now: asked for or waiting, or running before *Writing your list* (from there the run
+    finishes — the outputs together aren't one write)."""
+    if state.state == QUEUED:
+        return True
+    if state.state != RUNNING:
+        return False
+    return state.step not in STEPS or STEPS.index(state.step) < WRITING
+
+
+class _Either:
+    """Two cancel events as one, for `locks.take(cancel=…)`: set when either is."""
+
+    def __init__(self, first, second):
+        self.first, self.second = first, second
+
+    def is_set(self):
+        return self.first.is_set() or (self.second is not None and self.second.is_set())
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                return False
+            self.first.wait(0.05 if left is None else min(0.05, left))
+        return True
+
+
+def command_line(argv):
+    """The analyzer's process command for `argv` (`['analyzer.py', …]`): the frozen app's own verb, or the script."""
+    from app.path_utils import is_frozen
+    if is_frozen():
+        return [sys.executable, "analyzer"] + list(argv[1:])
+    return [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "analyzer.py")] \
+        + list(argv[1:])
+
+
+class Labelled:
+    """The controller as one asker sees it: each `request` carries `label`, the bar's words for its run; everything
+    else is the controller's own. The journey keeper's (`JourneyKeeper(controller.labelled(JOURNEY_LABEL), …)`, G7)."""
+
+    def __init__(self, controller, label):
+        self._controller, self._label = controller, label
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("label", self._label)
+        return self._controller.request(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._controller, name)
+
+
+class Run:
+    """One Generate on its way: its argv, its job, and what its launcher reports (`started`, `feed`, `ended`)."""
+
+    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None,
+                 cause=None):
+        self.controller = controller
+        self.argv = argv
+        self.language = language
+        self.quiet = quiet
+        self.label = label                 # the bar's words for its job (None: the controller's)
+        self.cause = cause if quiet else None   # why an automatic one was asked for (`causes.Cause`; help cards' *Why?*)
+        self.on_wait = on_wait
+        self.cancel_event = threading.Event()
+        self.external_cancel = cancel_event
+        self.launcher = launcher
+        self.inline = inline
+        self.job = None
+        self.proc = None
+        self.step = None                   # the newest step the child printed (as read: it trails the child)
+        self.begun = False                 # the registry let it start
+        self.launched = False              # the child was asked to start
+        self.cancel_asked = False
+        self.cancel_sent = False
+        self.cancel_file = None            # the file that asks the child to stop (`_spawn` names it)
+        self.done = False
+        self.dropped = False
+        self.final = None
+        self.lock = threading.Lock()
+        self.coalescer = progress_module.Coalescer(self._update, on_final=self._final, on_text=self._text)
+
+    @property
+    def can_be_asked(self):
+        """Whether the child takes a cancel (it was started with the progress flag)."""
+        return PROGRESS_FLAG in self.argv
+
+    # --- what a launcher reports -------------------------------------------------------------------------------- #
+    def started(self, proc):
+        """The child is running (its Popen)."""
+        with self.lock:
+            self.proc = proc
+            if self.cancel_asked:
+                self._ask_to_stop()
+        if self.job is not None:
+            self.job.started_process(getattr(proc, "pid", None))
+
+    def feed(self, line):
+        """One line of the child's stdout."""
+        kind, value = progress_module.parse(line)
+        if kind == "progress":
+            with self.lock:
+                self.step = value.step
+            if value.step in STEPS and STEPS.index(value.step) >= WRITING and self.job is not None:
+                self.job.finishes_at_quit()  # from here it can't stop: closing the window waits for it (E20)
+        self.coalescer.feed(line)
+
+    def ended(self, returncode):
+        """The child ended (`returncode`; None when it never started). Only the first report counts."""
+        with self.lock:
+            if self.done:
+                return
+            self.done = True
+        self.coalescer.end()
+        self.controller._ended(self, returncode)
+
+    # --- inside ------------------------------------------------------------------------------------------------- #
+    def _ask_to_stop(self):
+        """Make the child's cancel file (inside `self.lock`): it stops if it can, before writing anything."""
+        if self.cancel_sent or self.proc is None or not self.can_be_asked or not self.cancel_file:
+            return
+        try:
+            with open(self.cancel_file, "w", encoding="utf-8") as f:
+                f.write("cancel\n")
+            self.cancel_sent = True
+        except OSError:
+            pass                            # the folder is gone: the run finishes, its own end says how
+
+    def _update(self, update):
+        self.controller._progress(self, update)
+
+    def _final(self, kind, record):
+        self.final = (kind, record)
+
+    def _text(self, line):
+        self.controller._text(self, line)
+
+
+class GenerateController:
+    """One per window. `registry`: the window's job registry; `closing`: an Event set when the window closes (a run still
+    waiting for `results` then starts nothing); `settle`: the burst rule's quiet time (seconds)."""
+
+    def __init__(self, registry=None, closing=None, settle=0.4, log_folder=None):
+        self.registry = registry if registry is not None else jobs_module.JobRegistry()
+        self.closing = closing
+        self.settle = settle
+        # Where its log goes, settled now (on the window's start): a run that ends later never works out a path again.
+        if log_folder is None:
+            try:
+                from app.path_utils import get_local_data_path
+                log_folder = os.path.join(get_local_data_path(), "logs")
+            except Exception:
+                log_folder = None
+        self._log_folder = log_folder
+        self._lock = threading.RLock()
+        self._deliver = threading.RLock()  # one delivery at a time (a listener may ask for a run from inside one)
+        self._state = State(IDLE, None, None, None, None, None, None, 0)
+        self._settled = IDLE            # what a check (or the last run) found: the state to fall back to
+        self._failure = None            # the last failure (message, log path, language) until a run finishes cleanly
+        self._run = None                # the run in flight (waiting, or its child running)
+        self._pending = None            # the request that runs next
+        self._withdrawn = deque(maxlen=8)   # finish-pending: the runs their asker took back (`withdrawn`)
+        self._timer = None
+        self._subscribers = []
+        self._text_listeners = []
+        self._end_listeners = []
+
+    # --- reading ------------------------------------------------------------------------------------------------ #
+    def state(self):
+        with self._lock:
+            return self._state
+
+    def failure(self, language=None):
+        """The last run's failure in plain words, kept until a run finishes cleanly — even while another runs (the
+        bar's Generate line, HR-23) — or None. `language`: only a failure of that language's run (a Japanese failure
+        is never the Chinese bar's)."""
+        with self._lock:
+            failure = self._failure
+        if not failure or (language is not None and failure[2] != language):
+            return None
+        return failure[0]
+
+    def forget_failure(self):
+        """The window switched language: the last failure is no longer the bar's (its Generate line, Needs you keeps
+        it listed)."""
+        with self._lock:
+            self._failure = None
+
+    def labelled(self, label):
+        """This controller for an asker whose runs read `label` in the bar (`Labelled`)."""
+        return Labelled(self, label)
+
+    def subscribe(self, callback):
+        """`callback(State)` after every change, in order."""
+        with self._lock:
+            self._subscribers.append(callback)
+
+    def unsubscribe(self, callback):
+        """Stop `callback`'s deliveries (`subscribe`'s and `on_end`'s): a keeper that closed."""
+        with self._lock:
+            self._subscribers = [c for c in self._subscribers if c != callback]
+            self._end_listeners = [c for c in self._end_listeners if c != callback]
+
+    def on_end(self, callback):
+        """`callback(run, outcome)` once per run that ended — "current" (it finished: its lists and plan are written),
+        "stale" (it stopped when asked), "failed", or "dropped" (it never started) — told by the run itself, so a run
+        that ends while another request waits (whose state reads `queued`, never `current`) is told too (E3.2)."""
+        with self._lock:
+            self._end_listeners.append(callback)
+
+    def on_text(self, callback):
+        """`callback(line)` for every text line the child prints (a window's log)."""
+        with self._lock:
+            self._text_listeners.append(callback)
+
+    def log_path(self):
+        """The window's Generate log (`<local data>/logs/generate-window.log`; None when it has no folder)."""
+        return os.path.join(self._log_folder, LOG_NAME) if self._log_folder else None
+
+    # --- the journey check -------------------------------------------------------------------------------------- #
+    def check(self, settings, language, then=None):
+        """Is the journey current? Asked on a worker; the state moves to `current` / `stale` (or `idle` when it
+        can't tell) unless a run is in flight — `current` too when only the order or the pins moved since the last
+        Generate (Sonic 2026-11-06, A: `journey.only_moved`; the engine already re-planned the list, and the journey
+        catches up when a reader wants it). `then(answer)` after (the analyzer's own answer), on that worker."""
+        def work():
+            from app import analyzer, run_args
+            try:
+                answer = analyzer.journey_is_current(run_args.analyzer_args(settings, language), language)
+            except Exception as e:
+                print(f"Generate: the journey check failed: {e}")
+                answer = None
+            settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+            if answer is False:
+                from app.services import journey
+                if journey.only_moved(settings, language):
+                    settled = CURRENT       # A: only the order moved — the list is the engine's; the journey's dot says
+                                            # its sentences are catching up (one rule: `journey.only_moved`)
+            with self._lock:
+                self._settled = settled
+                if answer is True and self._failure and self._failure[2] == language:
+                    self._failure = None    # current after all (another program generated cleanly): over
+                if self._run is None and self._pending is None:
+                    snap = self._assign_settled()
+                else:
+                    snap = None
+            self._send(snap)
+            if then is not None:
+                then(answer)
+        threading.Thread(target=work, name="generate-check", daemon=True).start()
+
+    # --- asking for a run --------------------------------------------------------------------------------------- #
+    def request(self, language, settings=None, argv=None, quiet=False, restart=False, settle=None, launcher=None,
+                on_wait=None, cancel_event=None, inline=False, label=None, cause=None):
+        """Ask for a Generate. `argv` (`['analyzer.py', …]`) or `settings` (settings.json's shape) say what to run;
+        `quiet`: automatic. Either way the journey is written, never opened (laptop fixes, Sonic: "the journey should
+        never automatically pop up"; the header's *Journey ↗* opens it: `run_args`' `opens=False`). `launcher(run)`:
+        start the child another way (else this controller spawns and reads it). `on_wait(holder)`: once, if another program's Generate holds `results`.
+        `cancel_event`: another Event that also drops the run while it waits (the window's closing). `inline`: take a
+        free `results` lock and launch on this thread (a test harness with no queue to drain). `label`: the bar's
+        words for its job (`labelled`). `cause`: why a quiet one was asked for (`causes.Cause`: its job's, the phase
+        strip's *Why:* line); a user's request has none. Returns at once."""
+        if argv is None:
+            from app import run_args
+            argv = run_args.analyzer_args(settings or {}, language, opens=False) + [PROGRESS_FLAG]
+        if not isinstance(cancel_event, threading.Event):
+            cancel_event = self.closing if isinstance(self.closing, threading.Event) else None
+        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label, cause)
+        snap = None
+        with self._lock:
+            waiting = self._pending
+            if quiet and waiting is not None and not waiting.quiet:
+                return waiting              # the user's request already waits: it stays, and runs (E3.2's keeper)
+            self._pending = run
+            in_flight = self._run
+            if in_flight is not None and not quiet and in_flight.quiet:
+                restart = True              # an automatic run: the user's takes its place (asked to stop if it runs)
+            if in_flight is None:
+                snap = self._assign(QUEUED, quiet=quiet)
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        self._send(snap)
+        if in_flight is not None:
+            if restart:
+                self._cancel(in_flight)
+            return run
+        delay = self.settle if settle is None else settle
+        if delay <= 0:
+            self._launch_pending()
+        else:
+            with self._lock:
+                self._timer = threading.Timer(delay, self._launch_pending)
+                self._timer.daemon = True
+                self._timer.start()
+        return run
+
+    def cancel(self):
+        """Cancel what is asked for: a request still settling is dropped; the run in flight is cancelled (dropped
+        while it waits; asked to stop before *Writing your list*; else it finishes)."""
+        snap = None
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            dropped, self._pending = self._pending, None
+            run = self._run
+            if run is None and dropped is not None:
+                snap = self._assign_settled()
+        self._send(snap)
+        if run is not None:
+            self._cancel(run)
+
+    def withdraw(self, run):
+        """Take back one request (`run`, as `request` returned it) and nothing else — E3.2's journey keeper withdraws
+        its own automatic run when its window closes (never for a move since a7: the move looks again after the run),
+        never a run the user asked for: dropped while it settles or waits its turn; cancelled in flight (as `cancel`).
+        Nothing when it is over or another request took its place."""
+        snap = None
+        with self._lock:
+            pending = self._pending is run
+            if pending:
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
+                self._pending = None
+                if self._run is None:
+                    snap = self._assign_settled()
+            in_flight = self._run is run
+            if in_flight:
+                self._withdrawn.append(run)
+        self._send(snap)
+        if in_flight:
+            self._cancel(run)
+
+    def withdrawn(self, job_id):
+        """finish-pending (FP-A3): was the Generate job `job_id` taken back by its asker (`withdraw`: the journey
+        keeper's run, its window closing), not stopped by the user? Any thread."""
+        with self._lock:
+            return any(run.job is not None and run.job.id == job_id for run in self._withdrawn)
+
+    # --- inside: starting --------------------------------------------------------------------------------------- #
+    def _cancel(self, run):
+        """Cancel `run` whatever its stage: through its job once it has one (the registry tells `_cancel_run`)."""
+        run.cancel_event.set()
+        job = run.job
+        if job is not None:
+            job.cancel()
+        # else: the job is being made (`_launch_pending`): it sees the event as it starts
+
+    def _launch_pending(self):
+        with self._lock:
+            self._timer = None
+            if self._run is not None or self._pending is None:
+                return
+            run, self._pending = self._pending, None
+            self._run = run
+        label = run.label or ("Generating (automatic)" if run.quiet else "Generating")
+
+        def begin(job):
+            run.job = job                   # the registry may start it inside submit(): the run knows its job first
+            run.begun = True
+            if run.cancel_event.is_set():
+                self._dropped(run)          # cancelled before it could start: nothing runs
+                return
+            self._begin(run)
+        job = self.registry.submit("generate", label, start=begin, cancel=lambda job: self._cancel_run(run),
+                                   automatic=run.quiet, on_quit="cancel", cause=run.cause)
+        run.job = job
+        if run.cancel_event.is_set() and job.state in (jobs_module.QUEUED, jobs_module.WAITING):
+            job.cancel()                    # cancelled while the job was being made
+        elif job.state == jobs_module.WAITING:
+            self._set(QUEUED, message=job.reason, quiet=run.quiet)
+
+    def _begin(self, run):
+        """The registry let it start: wait for `results` (a worker), then launch."""
+        if run.inline:
+            try:
+                with locks.take("results", "Generate (waiting)"):
+                    pass
+            except locks.Busy:
+                threading.Thread(target=self._wait_then_launch, args=(run,), daemon=True).start()
+                return
+            except Exception:
+                pass                        # the lock can't be read here: the analyzer decides
+            self._launch(run)
+            return
+        threading.Thread(target=self._wait_then_launch, args=(run,), name="generate-wait", daemon=True).start()
+
+    def _wait_then_launch(self, run):
+        try:
+            if locks.read_holder("results") is None and locks.unopenable("results"):
+                pass                        # no program to wait for: the analyzer's own take says why (its log)
+            else:
+                with locks.take("results", "Generate (waiting)", wait=None,
+                                cancel=_Either(run.cancel_event, run.external_cancel),
+                                on_wait=lambda holder: self._waiting(run, holder)):
+                    pass
+        except locks.Cancelled:
+            self._dropped(run)
+            return
+        except Exception:
+            pass                            # the lock can't be read here: the analyzer decides
+        self._launch(run)
+
+    def _waiting(self, run, holder):
+        verb = (holder or {}).get("verb") or "another Generate"
+        self._set(QUEUED, message=f"Waiting for {verb} to finish", quiet=run.quiet)
+        if run.on_wait is not None:
+            run.on_wait(holder)
+
+    def _launch(self, run):
+        with run.lock:
+            stop = run.cancel_event.is_set() or (run.external_cancel is not None and run.external_cancel.is_set())
+            if not stop:
+                run.launched = True
+        if stop:
+            self._dropped(run)
+            return
+        self._set(RUNNING, job_id=run.job.id, quiet=run.quiet)
+        try:
+            (run.launcher or self._spawn)(run)
+        except Exception as e:
+            print(f"Generate: the analyzer couldn't be started: {e}")
+            run.ended(None)
+
+    def _spawn(self, run):
+        """Start the analyzer and read it on a reader thread (the headless / Qt path)."""
+        from app.path_utils import build_subprocess_env, is_frozen
+        env = build_subprocess_env(is_frozen())
+        env["SURASURA_RESULTS_WAIT"] = "forever"
+        import tempfile
+        folder = self._log_folder or tempfile.gettempdir()
+        os.makedirs(folder, exist_ok=True)
+        run.cancel_file = os.path.join(folder, f"generate-cancel-{os.getpid()}-{id(run)}.flag")
+        env["SURASURA_CANCEL_FILE"] = run.cancel_file
+        flags = 0x08000000 if sys.platform == "win32" else 0          # CREATE_NO_WINDOW
+        from app.connect.power import popen_below_normal                # a7: never beside the window at its priority
+        proc = popen_below_normal(command_line(run.argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                  env=env, creationflags=flags)
+        run.started(proc)
+
+        def read():
+            log = None
+            try:
+                log = open(self.log_path() or os.devnull, "w", encoding="utf-8")
+            except OSError:
+                log = None
+            try:
+                for line in proc.stdout:
+                    if log is not None:
+                        log.write(line)
+                    run.feed(line)
+            finally:
+                if log is not None:
+                    log.close()
+                proc.wait()
+                try:
+                    os.remove(run.cancel_file)
+                except OSError:
+                    pass
+                run.ended(proc.returncode)
+        threading.Thread(target=read, name="generate-reader", daemon=True).start()
+
+    # --- inside: cancelling and ending -------------------------------------------------------------------------- #
+    def _cancel_run(self, run):
+        """The registry's cancel for the run's job (a cancel, the window quitting, or another request taking its
+        turn): dropped while it hasn't launched; asked to stop once it has."""
+        run.cancel_event.set()
+        with run.lock:
+            run.cancel_asked = True
+            launched = run.launched
+            if launched:
+                run._ask_to_stop()
+            asked = run.cancel_sent or (run.proc is None and run.can_be_asked)
+        if not launched:
+            if not run.begun or run.job is None or run.job.state != jobs_module.CANCELLING:
+                self._dropped(run)          # never started, or waiting for the registry: nothing to wait for
+            return                          # waiting for `results`: its wait sees the cancel and drops it
+        with self._lock:
+            if self._run is not run or run.done:
+                return                      # it ended meanwhile: its end said what it is, never "Stopping…" for good
+            snap = self._assign(CANCELLING, job_id=run.job.id,
+                                message="Stopping before your list is written" if asked
+                                else "Finishing: Generate can't stop part-way here", quiet=run.quiet)
+        self._send(snap)
+
+    def _dropped(self, run):
+        """Cancelled (or the window closed) before the child started: nothing ran."""
+        with run.lock:
+            if run.dropped:
+                return
+            run.dropped = True
+        if run.job is not None:
+            run.job.finish(ok=True, cancelled=True)
+        self._after(run, None)
+        self._tell_end(run, "dropped")
+
+    def _ended(self, run, returncode):
+        final = run.final
+        if final is not None and final[0] == "error" and final[1].get("code") == "cancelled":
+            run.job.finish(ok=True, message="cancelled", cancelled=True)
+            self._tell_end(run, "stale")
+            self._after(run, STALE)
+        elif returncode == 0:
+            # A13: asked to stop too late (past *Writing your list*), it finished: a Generate that wrote everything, not
+            # a cancel — the registry takes back the flag it set when it was asked.
+            run.job.finish(ok=True, completed=True)
+            self._tell_end(run, "current")
+            self._after(run, CURRENT)
+        else:
+            what = "couldn't start" if returncode is None else f"stopped (exit code {returncode})"
+            message = f"Generate {what}." + (f" The details are in {self.log_path()}" if self.log_path() else "")
+            run.job.finish(ok=False, message=message)
+            self._tell_end(run, "failed")
+            self._after(run, FAILED, message=message, log_path=self.log_path())
+
+    def _tell_end(self, run, outcome):
+        with self._lock:
+            listeners = list(self._end_listeners)
+        for callback in listeners:
+            try:
+                callback(run, outcome)
+            except Exception as e:                    # a listener's fault never stops a Generate
+                print(f"Generate: an end listener failed: {e}")
+
+    def _after(self, run, state, message=None, log_path=None):
+        """`run` is over (`state`; None: back to what the last check found)."""
+        with self._lock:
+            if self._run is run:
+                self._run = None
+            if state in (CURRENT, STALE, FAILED):
+                self._settled = state       # a failure too: a run dropped later falls back to it, not an older current
+            if state == FAILED:
+                self._failure = (message, log_path, run.language)
+            elif state == CURRENT:
+                self._failure = None
+            nxt = self._pending
+            if nxt is not None and state != FAILED:
+                snap = self._assign(QUEUED, quiet=nxt.quiet)
+            elif state is None:
+                snap = self._assign_settled()
+            else:                           # a failure is said even while another request waits (A12): it runs next
+                snap = self._assign(state, message=message, log_path=log_path)
+        self._send(snap)
+        if nxt is not None:
+            self._launch_pending()
+
+    def _progress(self, run, update):
+        run.job.progress(update.step, update.done, update.total)
+        with self._lock:
+            if self._run is not run or self._state.state != RUNNING:
+                return                      # over, or cancelling: an update read late never moves the state back
+            snap = self._assign(RUNNING, step=update.step, done=update.done, total=update.total, job_id=run.job.id,
+                                quiet=run.quiet)
+        self._send(snap)
+
+    def _text(self, run, line):
+        with self._lock:
+            listeners = list(self._text_listeners)
+        for callback in listeners:
+            try:
+                callback(line)
+            except Exception as e:
+                print(f"Generate: a log listener failed: {e}")
+
+    def _set(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None, quiet=False):
+        with self._lock:
+            snap = self._assign(state, step, done, total, message, log_path, job_id, quiet)
+        self._send(snap)
+
+    def _assign_settled(self):
+        """(Inside `self._lock`.) Back to what the last check or run found — a failure with its words and log (A12)."""
+        if self._settled == FAILED and self._failure:
+            return self._assign(FAILED, message=self._failure[0], log_path=self._failure[1])
+        return self._assign(self._settled)
+
+    def _assign(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None,
+                quiet=False):
+        """The new state (inside `self._lock`), numbered."""
+        self._state = State(state, step, done, total, message, log_path, job_id, self._state.seq + 1, bool(quiet))
+        return self._state
+
+    def _send(self, snap):
+        """Deliver `snap` to the listeners, one delivery at a time, and only while it is still the newest."""
+        if snap is None:
+            return
+        with self._deliver:
+            with self._lock:
+                if snap.seq != self._state.seq:
+                    return
+                subscribers = list(self._subscribers)
+            for callback in subscribers:
+                try:
+                    callback(snap)
+                except Exception as e:                # a listener's fault never stops a Generate
+                    print(f"Generate: a listener failed: {e}")

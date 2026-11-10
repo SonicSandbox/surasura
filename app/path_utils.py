@@ -8,9 +8,19 @@ import shutil
 import threading
 import time
 
+# The online guide: one link both windows open (the Tk dashboard's Help › Tutorial; the 3.0 window's ? › Online guide).
+GUIDE_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md"
+
 def is_frozen():
     """Check if the application is running in a frozen (packaged) environment."""
     return getattr(sys, 'frozen', False)
+
+def program_beside(name):
+    """A program Surasura's bundle ships beside the running one — `Surasura`, `surasura-cli`, `tsubasa` share one
+    folder and its `_internal` (packaging/Surasura.spec) — by its name: its path in the running exe's folder, `.exe`
+    added on Windows. Whether it is there is the caller's to check; meaningful only when frozen."""
+    ext = ".exe" if sys.platform == "win32" else ""
+    return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name + ext)
 
 def get_base_path():
     """
@@ -27,56 +37,191 @@ def get_base_path():
         # Assumes this file is in app/path_utils.py, so root is ../
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# --- Where the program keeps its files (S3.1 D3, D14, D20) ------------------------------------------------------- #
+# The 3.0 line keeps everything under Houseki\ (G1.3-18): %LOCALAPPDATA%\Houseki\<data name> (the store, the install
+# note, library.json, the per-install folders, the update's state) and %APPDATA%\Houseki\<data name> (token stores,
+# パターン, Koe, the telemetry id, settings.json when installed). The data name is the build's (`data_name()`:
+# "Surasura", "Surasura-test" for a test installer), so a test install never shares a real one's files. 2.x's
+# SonicSandbox roots are read only — by the 2.x import — and hold the shared `anki-writer` lock 2.x and 3.0 both
+# take (app/locks.py).
+#
+# Two layouts, decided by one file: a frozen program whose `<Houseki local root>\library.json`
+# ({"version": 1, "install": <program folder>, "library": <library folder>}, written by the installer) names THIS
+# program's folder and a library folder is INSTALLED — the library (User Files\, data\, results\) in that folder,
+# settings.json in the Houseki roaming root, the per-install folder keyed on the program folder (moving the library
+# never moves window state, logs or locks). Anything else frozen is PORTABLE: 2.x's layout, everything beside the exe
+# (dist\Surasura and test builds never touch a real library). Source runs and SURASURA_TEST_ROOT never read the file.
+VENDOR = "Houseki"
+LEGACY_VENDOR = "SonicSandbox"
+LIBRARY_NOTE = "library.json"
+DATA_NAME = "Surasura"
+BUILD_STAMP = "build_stamp.json"
+UPDATE_DIRNAME = "update"               # <Houseki local root>\update: the updater's state (S3.1 D9, app/updater.py)
+UPDATE_MARKER = "pending_update.json"   # its marker there, armed at the hand-over (library_store.update_staged reads it)
+
+_LIBRARY = {}   # (library.json's path, the program folder) -> the library folder, or None: read once per process (the
+                # installer writes it only while no Surasura runs: its AppMutex)
+_DATA_NAME = {}     # the build stamp's path -> its data name
+_DATA_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")     # one plain folder name, never a path
+
+
+def data_name():
+    """The folder name under Houseki\\ — the build stamp's "data_name" (`<get_base_path()>/build_stamp.json`: the
+    frozen program's `_internal`), else "Surasura": from source, with no stamp, or with a value that isn't one plain
+    folder name."""
+    if not is_frozen():
+        return DATA_NAME
+    path = os.path.join(get_base_path(), BUILD_STAMP)
+    if path not in _DATA_NAME:
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                name = json.load(f).get("data_name")
+        except (OSError, ValueError, AttributeError):
+            name = None
+        ok = isinstance(name, str) and bool(_DATA_NAME_RE.match(name)) and name.rstrip(" .") == name
+        _DATA_NAME[path] = name if ok else DATA_NAME
+    return _DATA_NAME[path]
+
+
+def _local_base():
+    """The per-user LOCAL base folder (never roams, never redirected to a network share), one for every system:
+    Windows %LOCALAPPDATA%, macOS ~/Library/Application Support, Linux $XDG_DATA_HOME (else ~/.local/share)."""
+    if sys.platform == "win32":
+        return os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def _roaming_base():
+    """The per-user base folder that survives updates and reinstalls (and roams on Windows): %APPDATA%, else
+    $XDG_DATA_HOME (else ~/.local/share) — 2.x's rule, macOS included."""
+    if sys.platform == "win32":
+        return os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def _same_folder(a, b):
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _absolute(value):
+    """`value` as a normalised absolute path, or None (not a string, empty, relative)."""
+    if not isinstance(value, str) or not value.strip() or not os.path.isabs(value.strip()):
+        return None
+    return os.path.normpath(value.strip())
+
+
+def _read_library_note(path, program):
+    """The library folder `library.json` names when its "install" is `program` — or None (no file, not readable,
+    another shape, another program's folder, a relative path)."""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:      # the installer may write a BOM
+            note = json.load(f)
+        install, library = _absolute(note.get("install")), _absolute(note.get("library"))
+    except (OSError, ValueError, AttributeError):
+        return None
+    if install is None or library is None or not _same_folder(install, program):
+        return None
+    return library
+
+
+def installed_library():
+    """The library folder of an INSTALLED program (frozen, and the Houseki local root's library.json names this
+    program's folder and a library), else None: a portable program, a source run, a test root."""
+    if os.environ.get("SURASURA_TEST_ROOT") or not is_frozen():
+        return None
+    key = (os.path.join(_local_data_root(), LIBRARY_NOTE), os.path.dirname(sys.executable))
+    if key not in _LIBRARY:
+        _LIBRARY[key] = _read_library_note(*key)
+    return _LIBRARY[key]
+
+
+def library_available():
+    """False only for an installed program whose library folder isn't there (a NAS or OneDrive folder offline, a
+    drive unplugged — or a new install's first start, before the window makes it after its write check, D12): then
+    nothing may create it, or an empty library in its place. The one check: `ensure_data_setup` does nothing then, and
+    a window or the command line asks this before starting work on the library."""
+    library = installed_library()
+    return library is None or os.path.isdir(library)
+
+
 def get_user_data_path():
     """
-    Get the directory for USER DATA (inputs, outputs, settings).
+    Get the directory for USER DATA (inputs, outputs): the library — User Files\\, data\\, results\\.
     If SURASURA_TEST_ROOT env var is set, use it (for E2E tests).
-    If frozen: return the directory containing the executable.
+    If frozen and installed: the library folder library.json names (`installed_library`).
+    If frozen and portable: the directory containing the executable.
     If source: return the root of the project.
     """
     if os.environ.get("SURASURA_TEST_ROOT"):
         return os.environ.get("SURASURA_TEST_ROOT")
     if is_frozen():
-        return os.path.dirname(sys.executable)
+        return installed_library() or os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_settings_path():
+    """settings.json: in the Houseki roaming root when installed (`get_persistent_user_data_path`: it never moves with
+    the library); else beside the user data, as 2.x kept it — <test root>/settings.json, the project root's, the
+    portable program's folder."""
+    if installed_library():
+        return os.path.join(get_persistent_user_data_path(), "settings.json")
+    return get_user_file("settings.json")
+
+
+def persistent_root():
+    """The folder get_persistent_user_data_path() names, never made: for a reader that must find nothing where nothing
+    was ever built — a tool reading the user's own databases makes no empty folder in their profile."""
+    return _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
+
 
 def get_persistent_user_data_path():
     """
     Get the directory for PERSISTENT USER DATA (e.g. telemetry ID).
     This path should survive application updates/reinstalls.
-    Windows: %APPDATA%/SonicSandbox/Surasura/
-    Linux/Mac: ~/.local/share/SonicSandbox/Surasura/
+    Windows: %APPDATA%/Houseki/<data name>/
+    Linux/Mac: ~/.local/share/Houseki/<data name>/
+    SURASURA_TEST_ROOT moves it to <test root>/persistent_root; a test that reaches the real one raises (as the local
+    root does: a read made the real folder).
     """
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA")
-        if not base:
-            base = os.path.expanduser("~")
-        path = os.path.join(base, "SonicSandbox", "Surasura")
-    else:
-        # XDG Base Directory Specification fallback
-        base = os.environ.get("XDG_DATA_HOME")
-        if not base:
-             base = os.path.join(os.path.expanduser("~"), ".local", "share")
-        path = os.path.join(base, "SonicSandbox", "Surasura")
-        
+    path = persistent_root()
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
-        
     return path
 
 def _local_data_root():
-    """The per-user LOCAL data folder (never roams, never redirected to a network share), one root for every system
-    (S1.1 K100; the library store and the command line build on it):
-    Windows %LOCALAPPDATA%, macOS ~/Library/Application Support, Linux $XDG_DATA_HOME (else ~/.local/share),
-    each + SonicSandbox/Surasura."""
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    elif sys.platform == "darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return os.path.join(base, "SonicSandbox", "Surasura")
+    """The per-user LOCAL data folder, one root for every system (S1.1 K100; the library store and the command line
+    build on it): `_local_base()` + Houseki/<data name>."""
+    return os.path.join(_local_base(), VENDOR, data_name())
+
+def _test_redirect(name):
+    """<test root>/<name> under SURASURA_TEST_ROOT; None outside a test; a test without a root raises."""
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        return os.path.join(root, name)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError(f"a test reached a real {name.replace('_', ' ')}: set SURASURA_TEST_ROOT")
+    return None
+
+def legacy_local_root():
+    """2.x's local root, `_local_base()` + SonicSandbox/Surasura — its installs.json, its library store, its shared
+    `anki-writer` lock. Read only (the 2.x import), never written but for that lock. Under SURASURA_TEST_ROOT:
+    <test root>/legacy_local_root."""
+    return _test_redirect("legacy_local_root") or os.path.join(_local_base(), LEGACY_VENDOR, "Surasura")
+
+def legacy_persistent_root():
+    """2.x's persistent root, `_roaming_base()` + SonicSandbox/Surasura — its パターン databases, Koe's files, the
+    telemetry id. Read only (the 2.x import); never created. Under SURASURA_TEST_ROOT:
+    <test root>/legacy_persistent_root."""
+    return _test_redirect("legacy_persistent_root") or os.path.join(_roaming_base(), LEGACY_VENDOR, "Surasura")
+
+def tools_root():
+    """%LOCALAPPDATA%\\Houseki\\tools (the system's local base elsewhere): the shared tools folder (D20; 09-hato-layer
+    §3): surasura.json is written there (`tools_entry`, which makes the folder), Torii's install later (3.1). Named
+    only here: path_utils never creates it."""
+    return os.path.join(_local_base(), VENDOR, "tools")
 
 def local_data_root():
     """The local data root (`_local_data_root`): where `installs.json`, the note naming every install's data folder,
@@ -99,13 +244,20 @@ def _install_key(install_dir):
         p = unicodedata.normalize("NFC", p).casefold()
     return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
 
+def install_key():
+    """This install's key (`_install_key`): its local data folder's name, the one rule `get_local_data_path` and the
+    report's scrub (`app/scrub.py`, which writes it `<install key>` in a report) both read."""
+    return _install_key(os.path.dirname(sys.executable) if installed_library() else get_user_data_path())
+
 def get_local_data_path():
     """
     Get the per-install LOCAL data folder: the command line's logs, locks and events (P0.3 02-contract §6), and the
     update's lock and state (S1.1).
-    Windows: %LOCALAPPDATA%/SonicSandbox/Surasura/<install key>/
-    macOS: ~/Library/Application Support/SonicSandbox/Surasura/<install key>/
-    Linux: $XDG_DATA_HOME (else ~/.local/share)/SonicSandbox/Surasura/<install key>/
+    Windows: %LOCALAPPDATA%/Houseki/Surasura/<install key>/
+    macOS: ~/Library/Application Support/Houseki/Surasura/<install key>/
+    Linux: $XDG_DATA_HOME (else ~/.local/share)/Houseki/Surasura/<install key>/
+    The key names the user-data folder — an installed program's, the PROGRAM folder (S3.1 D3: moving the library
+    never moves window state, logs or locks).
     SURASURA_TEST_ROOT moves it to <test root>/local; a test that reaches the real one raises.
     """
     root = os.environ.get("SURASURA_TEST_ROOT")
@@ -114,7 +266,7 @@ def get_local_data_path():
     elif "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("a test reached the real local data folder: set SURASURA_TEST_ROOT")
     else:
-        path = os.path.join(_local_data_root(), _install_key(get_user_data_path()))
+        path = os.path.join(_local_data_root(), install_key())
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -192,8 +344,9 @@ def _install_languages(data_root):
             or os.path.isdir(os.path.join(data_root, "data", lang))]
 
 def write_install_note(frozen=None):
-    """K100: leave a note in the local data root naming this install's data folder, so 3.0's first start finds the
-    library. One entry per install, {data_root, exe, version, languages, last_run}; an install writes only its own.
+    """K100: leave a note in the local data root naming this install's data folder, so a later version's first start
+    finds the library (on the 3.0 line, the Houseki root's note; 2.x's SonicSandbox note is the import's). One entry
+    per install, {data_root, exe, version, languages, last_run}; an install writes only its own.
     Written by the frozen app only, at the dashboard's start and just before an update hands over. A unique temp file
     swapped in, then read back: when this install's entry is missing (another install wrote at the same moment), it
     is written again, up to three times; a short lock on `installs.lock` keeps two writers from crossing at all when
@@ -276,6 +429,16 @@ def get_user_files_path(language=None):
         return os.path.join(base, language)
     return base
 
+# --- W3.2 S5: the covers cache ---------------------------------------------------------------------------------- #
+def get_covers_cache_path():
+    """The covers cache (the window's spec 01 §1.3; L2.2 05 §5.5): `covers/` in the local data folder — never roams
+    (D15), re-made at will; a work's `cover_path` 'cache:<name>' names a file in it. An image the user chose is user
+    data instead: `User Files/<lang>/covers/` (`get_user_files_path`). Created on first use."""
+    path = os.path.join(get_local_data_path(), "covers")
+    os.makedirs(path, exist_ok=True)
+    return path
+# --- W3.2 S5 end ------------------------------------------------------------------------------------------------ #
+
 def get_icon_path():
     """Returns the path to the application icon."""
     return get_resource(os.path.join("app", "assets", "images", "app_icon.png"))
@@ -294,6 +457,24 @@ SAMPLE_SUBFOLDERS = ["HighPriority", "LowPriority", "GoalContent", "Graduated", 
 # analyzer's parse_ass reads (v1.6 promised ASS / SSA; the scan skipped .ssa until 2026-09).
 CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass", ".ssa")
 SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa")
+BOOK_EXTENSIONS = (".epub",)                    # a book: split into parts as it comes in (`sources.book_parts`)
+
+
+def file_kind(name):
+    """What a file is to the library — the one rule (alpha 8: setup's *Choose a file…*, a folder's look, Extract):
+    "book" (an EPUB, split into parts), "text" (a subtitle or a text, read as it is), else None (not read)."""
+    low = str(name or "").lower()
+    if low.endswith(BOOK_EXTENSIONS):
+        return "book"
+    if low.endswith(CONTENT_EXTENSIONS):
+        return "text"
+    return None
+
+
+def report_name(path):
+    """The report's name for a content file: its basename (a file path or a library path). The one rule — the
+    analyzer's per-file lists, the journey's stones, and the window opening the journey on an episode."""
+    return os.path.basename(path or "")
 
 
 def is_content_file(path):
@@ -304,8 +485,8 @@ def is_content_file(path):
 # --- Where a sentence came from (the report's per-sentence source badge) ------------------------ #
 # Kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line to a
 # timestamped video, a bilibili.tv line to an episode page, an EPUB chapter to a book, everything
-# else is plain text.
-SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text")
+# else is plain text. An audiobook's item (Hon, H-7) is "audio": it waits for Anki Miner, never in a report.
+SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text", "audio")
 
 # The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
 # stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more
@@ -393,11 +574,18 @@ def ensure_data_setup(language=None):
     Ensures the data folders exist. If language is provided, sets up data/<language>/ and
     User Files/<language>/.
 
+    Does nothing (-> False) when the installed library's folder isn't there (`library_available`): never an empty
+    library in place of one that is offline. -> True otherwise.
+
     NOTE: this NO LONGER copies sample content. Samples are seeded ONLY on explicit user request
     (the "Test with samples" action → `seed_samples`), so a new user starts with a genuinely empty
     library and the empty-state onboarding can appear. (Previously this auto-copied samples into any
     empty tier — and re-seeded a tier the user later emptied.)
     """
+    if not library_available():
+        print("The library folder is not available; nothing was set up.")
+        return False
+
     # 1. Determine Paths
     data_path = get_data_path(language)
     user_files_dir = get_user_files_path(language)
@@ -417,25 +605,53 @@ def ensure_data_setup(language=None):
     # 4. Ensure User Files folder exists
     if not os.path.exists(user_files_dir):
         os.makedirs(user_files_dir, exist_ok=True)
-        
-    # 5. Create Blacklist/IgnoreList/GraduatedList if they don't exist
-    for list_name in ["Blacklist.txt", "IgnoreList.txt", "GraduatedList.txt"]:
+
+    # 5. The bundled default lists (the frequency lists, S3.1 D15) a new library starts with: each one missing
+    #    from User Files/<lang>/ is copied from the program's defaults/<lang>/ — never over one that is there.
+    if language:
+        copy_default_lists(language)
+
+    # 6. Create Blacklist/IgnoreList if they don't exist. GraduatedList.txt is no longer made: 3.0 merges it into the
+    #    known words once (app/graduated_merge.py, S3.1 D13).
+    for list_name in ["Blacklist.txt", "IgnoreList.txt"]:
         list_path = os.path.join(user_files_dir, list_name)
         if not os.path.exists(list_path):
             try:
                 with open(list_path, "w", encoding="utf-8") as f:
                     if list_name == "Blacklist.txt":
                         f.write("# Global Blacklist\n" if not language else f"# {language} Blacklist\n")
-                    elif list_name == "GraduatedList.txt":
-                         f.write("# Words from graduated content (automatically added)\n")
                     else:
                         f.write("# Add words to ignore here (one per line)\n")
             except Exception as e:
                 print(f"Warning: Could not create {list_name}: {e}")
                 
-    # 6. Async Trash Cleanup
+    # 7. Async Trash Cleanup
     trash_dir = os.path.join(data_path, ".trash")
     cleanup_trash_async(trash_dir)
+    return True
+
+
+def copy_default_lists(language):
+    """Copy each file in the program's `defaults/<language>/` that `User Files/<language>/` lacks (copy2: its date
+    kept) -> the names copied. No such folder (a source run, a 2.x-shaped build) copies nothing; a file already
+    there is never touched; a copy that fails is reported and the rest go on."""
+    source = os.path.join(get_base_path(), "defaults", language)
+    if not os.path.isdir(source) or not library_available():
+        return []
+    target = get_user_files_path(language)
+    copied = []
+    for name in sorted(os.listdir(source)):
+        src, dst = os.path.join(source, name), os.path.join(target, name)
+        if not os.path.isfile(src) or os.path.exists(dst):
+            continue
+        try:
+            os.makedirs(target, exist_ok=True)
+            shutil.copy2(src, dst + ".tmp")             # swapped in whole: a copy cut off is never taken for the list
+            os.replace(dst + ".tmp", dst)
+            copied.append(name)
+        except OSError as e:
+            print(f"Warning: Could not copy the default list {name}: {e}")
+    return copied
 
 
 def seed_samples(language=None):
@@ -464,6 +680,10 @@ def seed_samples(language=None):
                     shutil.copytree(s, d, dirs_exist_ok=True); copied += 1
     return copied
 
+TRASH_DAYS = 30                 # a file in a data folder's .trash is purged this many days after its clock (restarted at
+                                # its move: `restart_trash_clock`); the Removed list counts the days left by it
+
+
 def cleanup_trash_async(trash_path):
     """Prunes files in the given trash directory that are older than 30 days asynchronously."""
     def run_cleanup():
@@ -471,7 +691,7 @@ def cleanup_trash_async(trash_path):
             if not os.path.exists(trash_path):
                 return
             now = time.time()
-            cutoff = now - (30 * 24 * 60 * 60) # 30 days
+            cutoff = now - (TRASH_DAYS * 24 * 60 * 60)
             for root, dirs, files in os.walk(trash_path, topdown=False):
                 for name in files:
                     filepath = os.path.join(root, name)
@@ -513,32 +733,225 @@ def backup_to_trash(path, move=False):
     """Keep a dated copy of a user-data file in the `.trash` folder beside it, before it is replaced.
 
     `KnownWord.json` -> `.trash/KnownWord.<YYYYmmdd-HHMMSS>.json` (`-1`, `-2`, ... if that name is
-    taken) — the naming the Anki sync's Replace already uses (app/anki_sync.py), so every backup of
+    taken) — the naming the Anki sync's Replace uses too (it backs up through here), so every backup of
     a file sits together and sorts by date. Unlike `data/<lang>/.trash`, this folder is never purged.
 
     A copy is verified byte-for-byte; `move=True` moves the file instead (for one that is being set
     aside, not overwritten). Returns the backup path, or None when there is no file. Raises OSError
-    when the backup can't be made — the caller must then leave the original alone."""
+    when the backup can't be made — the caller must then leave the original alone.
+
+    A copy is whole or absent: it is written under a short `.part` name of this writer's own, flushed to
+    disk and checked, and only then renamed to its dated name. Written in place, a copy cut off part way
+    (the store's helper ended by Stop and quit, a crash, a power cut) left a short file that looked like a
+    good backup; now it can leave only a `.part`, which nothing reads."""
     if not os.path.isfile(path):
         return None
     trash = os.path.join(os.path.dirname(path), ".trash")
     os.makedirs(trash, exist_ok=True)
     stem, ext = os.path.splitext(os.path.basename(path))
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = f"{stem}.{stamp}{ext}"
-    n = 1
-    while os.path.exists(os.path.join(trash, name)):
-        name = f"{stem}.{stamp}-{n}{ext}"
-        n += 1
-    dst = os.path.join(trash, name)
     if move:
-        os.replace(path, dst)
-        return dst
-    shutil.copyfile(path, dst)
-    with open(path, "rb") as a, open(dst, "rb") as b:
-        if a.read() != b.read():
-            raise OSError("the backup copy did not match the original")
-    return dst
+        return _rename_dated(path, trash, stem, stamp, ext)
+    import tempfile
+    fd, part = tempfile.mkstemp(prefix=".", suffix=".part", dir=trash)
+    try:
+        os.close(fd)
+        shutil.copyfile(path, part)
+        with open(part, "rb+") as f:
+            os.fsync(f.fileno())
+        with open(path, "rb") as a, open(part, "rb") as b:
+            if a.read() != b.read():
+                raise OSError("the backup copy did not match the original")
+        return _rename_dated(part, trash, stem, stamp, ext)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+
+
+def _rename_dated(src, trash, stem, stamp, ext):
+    """Rename `src` onto the first free `<stem>.<stamp>[-n]<ext>` in `trash`; its path. On Windows the rename
+    itself refuses a name another writer took meanwhile, so two backups in one second never overwrite each
+    other; a scanner holding the new file for a moment (antivirus, a cloud folder's client) is waited out, as
+    anki_sync's atomic write waits out a reader."""
+    rename = os.rename if sys.platform == "win32" else os.replace
+    n, held = 0, 0
+    while True:
+        dst = os.path.join(trash, f"{stem}.{stamp}{ext}" if n == 0 else f"{stem}.{stamp}-{n}{ext}")
+        if os.path.exists(dst):
+            n += 1
+            continue
+        try:
+            rename(src, dst)
+            return dst
+        except FileExistsError:
+            n += 1
+        except PermissionError:
+            held += 1
+            if held == 5:
+                raise
+            time.sleep(0.1)
+
+
+# --- Fresh library (3.0.1): every place Surasura keeps files, and what Start over does with each ----------------- #
+# `profile_parts()` is the one list (the Fresh library spec §4.1-4.4; D31: a profile is these places, never one
+# language or a global): every entry of each data place, marked by what *Start over completely* does with it (MOVES:
+# into that place's `Backups/start-over-<stamp>/`, by rename; STAYS) and by what *Sort my library again* does (PART:
+# some of it goes into the Sorted-again backup, `library_store.start_fresh`'s own steps; STAYS). Each is named by its
+# role and its path inside its place, so a record names a part by role and Put back works its path out again here.
+# tests/test_profile_parts.py fails when code writes a place this table doesn't name (as `PLACED` does for settings).
+MOVES, STAYS, PART = "moves", "stays", "part"
+BACKUPS = "Backups"                     # in each place: `Backups/start-over-<stamp>/` (never purged, never moved)
+PROFILE_JOURNAL = "profile-move.json"   # in this install's folder: a Start over / Put back in flight (profile_reset)
+_INSTALL_DIR = re.compile(r"[0-9a-f]{16}\Z")     # an install's own folder in the local root (`_install_key`)
+
+# (place, name or fnmatch pattern, role, Start over, Sort again). The places, in the order a Start over renames them:
+#   install  this install's local folder (`get_local_data_path`): logs, locks, Connect's folder, the window's files
+#   roaming  the Houseki roaming root (`persistent_root`): word stores, パターン, Koe, reports, the telemetry id
+#   local    the Houseki local root (`local_data_root`): the stores (`libraries`), the installer's and the start
+#            gate's notes, every install's folder
+#   index    a test root only (`<root>/index`): the word stores and the library stores, where tests keep both
+#   library  the library folder (`get_user_data_path`): User Files, data, results (settings.json when portable)
+# The library folder is a program's or a checkout's own folder when portable or run from source, so only the names
+# below are ever Surasura's there; in every other place an entry the table doesn't name MOVES and is named (`unlisted`).
+PARTS = (
+    ("install", "logs", "logs", STAYS, STAYS),                   # a problem report needs them
+    ("install", "locks", "locks", STAYS, STAYS),                 # the running programs' own (the running marks too)
+    ("install", "window-*.lock", "window_lock", STAYS, STAYS),   # one window per sign-in (app/qt/single.py): held now
+    ("install", "update_state.json", "update_state", STAYS, STAYS),
+    ("install", PROFILE_JOURNAL, "journal", STAYS, STAYS),
+    ("install", PROFILE_JOURNAL + ".tmp", "journal", STAYS, STAYS),
+    ("install", BACKUPS, "backups", STAYS, STAYS),
+    ("install", "connect", "connect", MOVES, PART),              # Connect's ledger, whitelist, known signal, folder times
+    ("install", "window_state.json", "window_state", MOVES, STAYS),
+    ("install", "window_cache_*.json", "window_cache", MOVES, STAYS),
+    ("install", "window_pending_*.json", "window_pending", MOVES, STAYS),
+    ("install", "needs_seen_*.json", "needs_seen", MOVES, STAYS),
+    ("install", "covers", "covers", MOVES, STAYS),
+    ("install", "airing_*.json", "airing", MOVES, STAYS),        # AniList's answers, kept as covers are
+    ("install", "settings_import.json", "settings_import", MOVES, STAYS),
+    ("install", "backlog_shows_*.json", "junban_backlog_shows", MOVES, STAYS),
+    ("install", "anki-miner-install", "staging", MOVES, STAYS),
+    ("install", "anki-miner-setup", "staging", MOVES, STAYS),
+    ("install", "ankiconnect-install", "staging", MOVES, STAYS),   # 3.0.1: AnkiWeb's add-on, while it's checked
+    ("roaming", "settings.json", "settings", MOVES, STAYS),      # installed: here; portable: in the library folder
+    ("roaming", "telemetry_id.json", "telemetry_id", STAYS, STAYS),     # P7: one install counts once
+    ("roaming", "telemetry_url.json", "telemetry_url", STAYS, STAYS),   # stays with the id
+    ("roaming", "bin", "tools", STAYS, STAYS),                   # yt-dlp's own program: never a learner's state
+    ("roaming", BACKUPS, "backups", STAYS, STAYS),
+    ("roaming", "token_store_*", "token_store", MOVES, STAYS),
+    ("roaming", "patterns_*", "patterns", MOVES, STAYS),
+    ("roaming", "koe_credentials.json", "koe_key", MOVES, STAYS),       # Q5: Koe's key goes too
+    ("roaming", "koe_usage.json", "koe_usage", MOVES, STAYS),
+    ("roaming", "reports", "reports", MOVES, STAYS),
+    ("roaming", "report_outbox", "reports", MOVES, STAYS),       # Send report: the zip waiting (saved reports)
+    ("roaming", "report_sent", "reports", MOVES, STAYS),         # the sent zips, kept 90 days
+    ("roaming", "report_send.json", "report_send", MOVES, STAYS),    # the Discord name and sender code: as settings
+    ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
+    ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
+    ("local", "installs.json", "installs_note", STAYS, STAYS),
+    ("local", "installs.lock", "installs_note", STAYS, STAYS),
+    ("local", "first_run.json*", "first_run_note", STAYS, STAYS),
+    ("local", "import.json", "import_note", STAYS, STAYS),
+    ("local", "locks", "locks", STAYS, STAYS),
+    ("local", UPDATE_DIRNAME, "update", STAYS, STAYS),
+    ("local", "tools", "tools", STAYS, STAYS),
+    ("local", BACKUPS, "backups", STAYS, STAYS),
+    ("local", "libraries", "libraries", STAYS, STAYS),           # every install's stores: only this one's move (below)
+    ("index", "token_store_*", "token_store", MOVES, STAYS),
+    ("index", "library_*", "libraries", STAYS, STAYS),           # the stores' test folder: only this install's move
+    ("index", BACKUPS, "backups", STAYS, STAYS),
+    ("library", "User Files", "user_files", MOVES, PART),        # known words, lists, the manifest, its own backups
+    ("library", "data", "data", MOVES, PART),
+    ("library", "results", "results", MOVES, STAYS),
+    ("library", "settings.json", "settings", MOVES, STAYS),
+    ("library", BACKUPS, "backups", STAYS, STAYS),
+)
+# A store's lock files beside its database stay (whoever holds one holds it open); its other files move with it
+STORE_FILE_LOCKS = (".lock", ".wlock")
+
+
+def profile_places():
+    """{place: folder} of this profile, in the order a Start over renames them (`PARTS`' comment); nothing made but
+    this install's folder (`get_local_data_path` makes it). Under SURASURA_TEST_ROOT every place is inside the test
+    root, and `index` is the stores' test folder."""
+    places = {"install": get_local_data_path(), "roaming": persistent_root(), "local": local_data_root()}
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        places["index"] = os.path.join(root, "index")
+    places["library"] = get_user_data_path()
+    return places
+
+
+def _store_files():
+    """This install's library stores' file names (`library_store.library_db_path`, one per language)."""
+    from app import library_store
+    return [os.path.basename(library_store.library_db_path(lang, get_data_path(lang))) for lang in ("ja", "zh")]
+
+
+def _rule(place, name):
+    import fnmatch
+    for where, pattern, role, start_over, sort_again in PARTS:
+        if where == place and fnmatch.fnmatchcase(name, pattern):
+            return role, start_over, sort_again
+    return None
+
+
+def _part(place, folder, rel, role, start_over, sort_again, unlisted=False):
+    return {"place": place, "role": role, "rel": rel, "path": os.path.join(folder, *rel.split("/")),
+            "start_over": start_over, "sort_again": sort_again, "unlisted": unlisted}
+
+
+def _own_store(name, stores):
+    return any(name.startswith(store) for store in stores) and not name.endswith(STORE_FILE_LOCKS)
+
+
+def profile_parts(places=None):
+    """Every entry Surasura keeps in this profile's places (`profile_places()`), each a dict {place, role, rel (its
+    path inside its place, '/'-separated), path, start_over (MOVES / STAYS), sort_again (PART / STAYS), unlisted},
+    place by place in their order. A place that isn't there has none. In the library folder only the names `PARTS`
+    lists are Surasura's (anything else there is never touched); elsewhere an entry `PARTS` doesn't name MOVES,
+    `unlisted` (never left behind silently: the record names it). Another install's folder in the local root stays;
+    of the stores only this install's files move (`library_<lang>_<key>.db` and its -wal, -shm, .bak…, never its lock
+    files). Reads folders only: never makes or writes anything."""
+    places = places or profile_places()
+    stores = _store_files()
+    own = {os.path.normcase(os.path.normpath(p)) for p in places.values()}
+    out = []
+    for place, folder in places.items():
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if os.path.normcase(os.path.normpath(path)) in own:
+                continue                                # another place inside this one (a test root's layout)
+            rule = _rule(place, name)
+            if rule is None and place == "library":
+                continue                                # never Surasura's: a program's or a checkout's own files
+            if rule is None and place == "local" and _INSTALL_DIR.match(name) and os.path.isdir(path):
+                out.append(_part(place, folder, name, "other_install", STAYS, STAYS))
+            elif rule is None:
+                out.append(_part(place, folder, name, "unlisted", MOVES, STAYS, unlisted=True))
+            elif rule[0] != "libraries":
+                out.append(_part(place, folder, name, *rule))
+            elif place == "index":                      # the test folder holds the store files themselves
+                mine = _own_store(name, stores)
+                out.append(_part(place, folder, name, "library_store" if mine else "other_store",
+                                 MOVES if mine else STAYS, PART if mine else STAYS))
+            else:
+                try:
+                    inside = sorted(os.listdir(path))
+                except OSError:
+                    continue
+                for entry in inside:
+                    mine = _own_store(entry, stores)
+                    out.append(_part(place, folder, f"{name}/{entry}", "library_store" if mine else "other_store",
+                                     MOVES if mine else STAYS, PART if mine else STAYS))
+    return out
 
 
 # --- Reading a file the user supplies or can edit ------------------------------------------------ #
@@ -569,11 +982,14 @@ def _bom_encoding(raw):
     return next((encoding for bom, encoding in _BOMS if raw.startswith(bom)), None)
 
 
-def _decoding(raw, language):
+def _decoding(raw, language, head=False):
     """(text, encoding): the bytes' text by the rule above and the encoding that read it — or (None, None) when no
-    encoding reads them whole."""
+    encoding reads them whole. `head`: the bytes are a file's first part, so a character cut at their end is left off
+    (each encoding's incremental decoder, not told the bytes end there), never taken for damage."""
     def strictly(encoding):
         try:
+            if head:
+                return codecs.getincrementaldecoder(encoding)("strict").decode(raw, final=False)
             return raw.decode(encoding)
         except UnicodeDecodeError:
             return None
@@ -591,30 +1007,39 @@ def _decoding(raw, language):
     return None, None
 
 
-def _decode(raw, language):
-    """The bytes' text by the rule above, or None when no encoding reads them whole."""
-    return _decoding(raw, language)[0]
+def decode_text(raw, language=None, errors="replace", name=None, head=False):
+    """The text of a file's bytes by THE rule above — the one every reader of a file the user supplies goes
+    through: `read_text`, and the source look's script check (`sources._in_script`) on the bytes it read already.
+    Its BOM's encoding, else strict UTF-8, else the language's Windows encodings (`language` "ja" / "zh"; None tries
+    none), a reading holding a Private Use character refused; line ends read as open() reads them (CRLF and a lone
+    CR are "\\n").
+
+    Bytes no encoding reads whole (damaged) are read as their BOM, else UTF-8, says, every bad sequence marked
+    U+FFFD — never dropped — with a warning naming the file `name` (none without one). errors="strict" raises
+    UnicodeDecodeError instead. `head`: the bytes are a file's first part (`_decoding`)."""
+    text = _decoding(raw, language, head)[0]
+    if text is None:
+        text = raw.decode(_bom_encoding(raw) or "utf-8", errors)
+        if name is not None:
+            try:
+                print(f"Warning: {name} is damaged or in an unknown encoding; "
+                      f"its unreadable bytes are marked U+FFFD.")
+            except UnicodeEncodeError:
+                print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_text(path, language=None, errors="replace"):
     """The text of a file the user supplies or can edit — content, KnownWord.json, the word lists, a
     frequency list — decoded by the rule above for `language` ("ja" / "zh"; None tries no legacy
-    encoding), line ends read as open() reads them (CRLF and a lone CR are "\\n").
+    encoding): `decode_text` on its bytes.
 
     A file no encoding reads whole (damaged) is read as its BOM, else UTF-8, says, every bad sequence
     marked U+FFFD — never dropped — with a warning. errors="strict" raises UnicodeDecodeError instead:
     for a caller that writes the file back, where nothing may be lost to a guess."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = _decode(raw, language)
-    if text is None:
-        text = raw.decode(_bom_encoding(raw) or "utf-8", errors)
-        try:
-            print(f"Warning: {os.path.basename(path)} is damaged or in an unknown encoding; "
-                  f"its unreadable bytes are marked U+FFFD.")
-        except UnicodeEncodeError:
-            print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return decode_text(raw, language, errors, name=os.path.basename(path))
 
 
 # Adding to such a file is done in its own encoding — the one read_text reads it in — and with its own line ends:
@@ -650,6 +1075,37 @@ def append_text(path, text, language=None):
         f.write(data)
 
 
+# Python's csv refuses a field over 131,072 characters, and a list's `Sources` names every file a word is in: on a
+# library of a few thousand files and few known words — a new user's — a common word passes it (a7: New arrivals, the
+# shadow check and Connect's list all failed). C's long is 32 bits on Windows, so sys.maxsize can't be the limit.
+LIST_FIELD_LIMIT = 2 ** 31 - 1
+
+
+def list_reader(f, header=True):
+    """A csv reader for one of Generate's lists (`results/*.csv`, or a list written the same way) on the open file
+    `f`: `csv.DictReader` (header=False: `csv.reader`), the field limit raised for the process first. Every reader of
+    a list reads through it."""
+    import csv
+    if csv.field_size_limit() < LIST_FIELD_LIMIT:
+        csv.field_size_limit(LIST_FIELD_LIMIT)
+    return csv.DictReader(f) if header else csv.reader(f)
+
+
+def write_app_log(msg):
+    """One line (or a traceback) in the app's log, `<local data>/logs/app_debug_log.txt`, stamped with the time to the
+    millisecond and the process (several children write it at once). Every writer of the log writes through it
+    (`app_entry.log_error`, the window's `applog.log`). Logging never stops the app."""
+    try:
+        from datetime import datetime
+        folder = os.path.join(get_local_data_path(), "logs")
+        os.makedirs(folder, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(os.path.join(folder, "app_debug_log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{stamp} [{os.getpid()}] {msg}\n")
+    except Exception:
+        pass
+
+
 def build_subprocess_env(frozen=None):
     """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
 
@@ -657,10 +1113,14 @@ def build_subprocess_env(frozen=None):
     locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
     Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
     byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
+
+    Drops an inherited QT_QPA_PLATFORM (the window's spec 04 §4.1): a window started under a test harness's
+    `offscreen` platform would otherwise hand it to a child, and a child that opens a window draws it to nothing.
     """
     if frozen is None:
         frozen = is_frozen()
     env = os.environ.copy()
+    env.pop("QT_QPA_PLATFORM", None)
     env["PYTHONIOENCODING"] = "utf-8"
     if not frozen:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

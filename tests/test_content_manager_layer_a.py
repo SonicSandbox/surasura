@@ -30,6 +30,20 @@ TIERS = ("HighPriority", "LowPriority", "GoalContent")
 SERIES = "ブリーチ"
 
 
+def _make_empty(path, timeout=10.0):
+    """`path` removed and made again, empty. On Windows a file another process still holds (a virus scanner on a file
+    just written, more often on a loaded machine) is deleted only once it lets go, and its folders stay: an empty
+    sub-folder left in HighPriority made seed_samples (it fills only an empty tier) skip it, and NOW stayed empty."""
+    deadline = time.monotonic() + timeout
+    while os.path.exists(path):
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            if time.monotonic() > deadline:
+                raise AssertionError(f"{path} could not be emptied: {os.listdir(path)}")
+            time.sleep(0.05)
+    os.makedirs(path)
+
+
 class LayerATestBase(unittest.TestCase):
 
     @classmethod
@@ -57,10 +71,7 @@ class LayerATestBase(unittest.TestCase):
 
     def setUp(self):
         for tier in TIERS:
-            d = os.path.join(self.app.data_root, tier)
-            if os.path.isdir(d):
-                shutil.rmtree(d, ignore_errors=True)
-            os.makedirs(d, exist_ok=True)
+            _make_empty(os.path.join(self.app.data_root, tier))
         self._write_manifest({})
         from app import content_importer_gui
         content_importer_gui._DIALOGS[0] = 0

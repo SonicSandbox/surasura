@@ -1,6 +1,7 @@
 
 import csv
 import importlib
+import json
 import os
 import shutil
 import sys
@@ -12,11 +13,29 @@ from unittest.mock import patch
 # Ensure the project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.quiet_windows import quiet_windows
 from tests.tk_on_github import skip_tk_tests
+from tests.network_guard import around_a_test
+# The guards every suite shares (each module suite's conftest imports them too): the real data roots, the gap
+# between tests, Tk interpreters freed on the main thread, no child left running, no real Anki reached.
+from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # noqa: F401
+                                  _clear_destroyed_default_root, pytest_collection, pytest_runtest_protocol,
+                                  pytest_runtest_teardown, pytest_runtestloop, session_finish_guards,
+                                  configure_guards)
+
+quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
 
 def pytest_collection_modifyitems(items):
     skip_tk_tests(items)                    # GitHub's runner only: the Tk window tests run in the local --all
+
+
+@pytest.fixture(autouse=True)
+def network_guard():
+    """Every test stays on this machine (the window's spec 07 §7.3; tests/network_guard.py): a connection or a name
+    lookup past loopback is refused as the app meets it offline, and the test fails at its end naming the address.
+    The fixture's value is the guard: a test that provokes a refusal on purpose reads `attempts`, then `forgive()`s."""
+    yield from around_a_test()
 
 @pytest.fixture
 def test_resources_dir():
@@ -42,18 +61,10 @@ def mock_messagebox():
         yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def no_browser_launch():
-    """Never open a real browser during a test run.
-
-    generate_static_html() ends by opening the report — correct in the app, but several tests call it
-    just to inspect the generated HTML, so a full run used to spawn a browser tab per test. Same
-    rationale as mock_messagebox above: suppress the side effect, not the behaviour under test.
-    Tests that assert on OPENING patch static_html_generator.open_report, which is untouched here.
-    """
-    with patch("webbrowser.open"), \
-         patch("app.static_html_generator.open_as_app"):
-        yield
+# No browser opens during a test run: tests/harness_guards.py refuses every way to open one (this process and every
+# Python child) and fails the test that tried, naming it (2026-10-21). It replaces the silent session-wide mock of
+# webbrowser.open / open_as_app that stood here: that reached no child, no os.startfile and no Qt, and hid the tests that
+# opened a page. A test that only inspects the report passes open_browser=False (an analyzer child: --no-open).
 
 @pytest.fixture
 def project_root():
@@ -87,6 +98,32 @@ def _no_gui_update_check(monkeypatch):
     developer's anonymous GitHub quota (60/hour) that the real app's own check also needs. The
     update logic is covered directly by test_update_checker.py with the HTTP layer patched."""
     monkeypatch.setenv("SURASURA_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _switch_interval_put_back():
+    """A re-order host in this process lowers Python's switch interval while it lives (`replan_preview`'s
+    `_share_the_window`); a test that never stops its host would leave the rest of the run at 1 ms, timed bounds
+    included. Each test ends with no host counted, and the interval a host it left behind lowered put back, as the
+    host's own stop would (`_leave_the_window`). A test's own interval is its own: the harness guards' gap probe sets
+    1 µs for the 200 tests after it, and putting 5 ms back there let its busy watcher hold the lock 5 ms at every
+    release (its nested run 8 s → past its 300 s timeout)."""
+    yield
+    preview = sys.modules.get("app.replan_preview")
+    if preview is not None:
+        with preview._SHARING_LOCK:
+            left, was = preview._SHARING["hosts"], preview._SHARING["was"]
+            preview._SHARING.update(hosts=0, was=None)
+        if left and was is not None and sys.getswitchinterval() == preview.WINDOW_SWITCH_S:
+            sys.setswitchinterval(was)
+
+
+@pytest.fixture(autouse=True)
+def _replan_in_process(monkeypatch):
+    """The fast re-plan preview's host in the test's own process (`replan_preview.open_host`), never a helper process:
+    the suites' fake AnkiConnect is a patch of this process's `urlopen`, which a helper would never see. The helper
+    itself is tested on its own (tests/test_replan_helper.py, against a fake Anki served on a loopback port)."""
+    monkeypatch.setenv("SURASURA_REPLAN_IN_PROCESS", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -139,6 +176,17 @@ def _isolate_user_data_root(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
 
 
+
+@pytest.fixture(autouse=True)
+def _no_tools_entry_from_the_shell(monkeypatch):
+    """surasura.json (app/tools_entry.py) is written by a source checkout only when SURASURA_TOOLS_CLI is set, into
+    HOUSEKI_TOOLS_DIR when that is set: a developer's shell carrying either would have every window and CLI test write
+    it, possibly into the real shared tools folder. A test that wants them sets them itself; with SURASURA_TEST_ROOT
+    the entry lands in <test root>/houseki-tools, and with neither tools_dir() raises under pytest."""
+    monkeypatch.delenv("SURASURA_TOOLS_CLI", raising=False)
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_token_store(tmp_path_factory, monkeypatch):
     """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to
@@ -149,6 +197,27 @@ def _isolate_token_store(tmp_path_factory, monkeypatch):
         lambda language: str(d / f"token_store_{language}.db"),
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_destroyed_default_root():
+    """A test that makes its root tkinter's default with `monkeypatch.setattr(tk, "_default_root", root)` right after
+    `tk.Tk()` has it put back at teardown as `root` itself (Tk() had just made it the default), destroyed by then —
+    nine files do. A later file's Font() or Variable() with no master then fails "application has been destroyed",
+    but only when no other Tk was made in between: the core suite in shards met it (test_undo_logic after
+    test_ignore_names). Before each test, a destroyed default root is cleared (before, not after: monkeypatch's own
+    teardown, which puts it back, can run after any other fixture's)."""
+    _clear_destroyed_default_root()
+
+
+@pytest.fixture(autouse=True, scope="class")
+def _no_destroyed_default_root_for_a_class():
+    """The same before a test class's own set-up: a class that makes its root in `setUpClass` / `setup_class` (the
+    Content Manager's layer-A tests) builds before any test's fixtures run, so a destroyed default root left by the
+    file before it (test_connect_switch_gaps, in shards) failed all 23 of its tests "application has been destroyed"."""
+    _clear_destroyed_default_root()
+
+
 
 
 @pytest.fixture(autouse=True)
@@ -168,6 +237,25 @@ def real_store_helper(store_helper_spawns, monkeypatch):
     """Undo `store_helper_spawns` for one test: `spawn_maintain` starts the real helper."""
     from app import library_store
     monkeypatch.setattr(library_store, "spawn_maintain", _REAL_SPAWN_MAINTAIN)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guards_for_shared_windows():
+    """The guards above — no UI timers, indexer, Anki sync or update check, no store helper (nor the store's idle
+    trigger after Connect's or the command line's writes, in this process or one a test starts) — held for the whole
+    session as well: a window a test class builds once (setUpClass) or a module fixture builds is made before any
+    function fixture runs, so it had none of them. The Content Manager of test_content_manager_layer_a.py started
+    the real store helper and its own worker thread: the helper built a store mid-test (sooner on a loaded machine),
+    and from then on the samples flow's sync went to the worker while the test read NOW at once — it failed one run
+    in two beside other test runs."""
+    mp = pytest.MonkeyPatch()
+    for name in ("SURASURA_NO_UI_TIMERS", "SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC",
+                 "SURASURA_NO_UPDATE_CHECK", "SURASURA_REPLAN_IN_PROCESS", "SURASURA_NO_IDLE_EXPORT"):
+        mp.setenv(name, "1")
+    from app import library_store
+    mp.setattr(library_store, "spawn_maintain", lambda language, *extra: None)
+    yield
+    mp.undo()
 
 
 @pytest.fixture(autouse=True)
@@ -280,6 +368,21 @@ def _isolate_analyzer_module_state():
 
 _PROF = {"file": None, "writer": None, "t0": None, "prev_rss": 0.0, "n": 0, "outcome": {}}
 
+# Each test file's time (setup + call + teardown), written at the end of the session to SURASURA_TEST_TIMES when
+# `run_tests.py --all` runs the core suite in shards: it packs the next run's shards by them.
+_TIMES = {"path": os.environ.get("SURASURA_TEST_TIMES"), "files": {}}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    session_finish_guards(session)
+    if not _TIMES["path"]:
+        return
+    try:
+        with open(_TIMES["path"], "w", encoding="utf-8") as f:
+            json.dump(_TIMES["files"], f)
+    except OSError:
+        pass
+
 
 def _init_proc_stats():
     """Bind the psapi/kernel32 calls once. Returns a callable, or None where unavailable.
@@ -346,6 +449,7 @@ def _proc_stats():
 
 
 def pytest_configure(config):
+    configure_guards(config)
     path = os.environ.get("SURASURA_TEST_PROFILE")
     if not path:
         return
@@ -370,11 +474,28 @@ def pytest_runtest_logstart(nodeid, location):
 
 
 def pytest_runtest_logreport(report):
+    if _TIMES["path"]:
+        path = report.nodeid.split("::")[0]
+        _TIMES["files"][path] = _TIMES["files"].get(path, 0.0) + report.duration
     # Worst outcome across setup/call/teardown wins.
     if report.failed:
         _PROF["outcome"][report.nodeid] = "FAILED"
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            _say_now(report)
     elif report.skipped:
         _PROF["outcome"].setdefault(report.nodeid, "skipped")
+
+
+def _say_now(report):
+    """(GitHub only.) A failed report printed as it happens, not only in pytest's closing summary: a shard whose
+    process dies a moment later (twice after test_settings_store's teardown ERROR, flakes-2026-11-05 #5) never reaches
+    that summary, and the error was lost both times."""
+    try:
+        text = report.longreprtext[-6000:]
+        sys.__stderr__.write(f"\n--- {report.nodeid} ({report.when}) failed; said at once:\n{text}\n---\n")
+        sys.__stderr__.flush()
+    except Exception:                   # never in the way of the run
+        pass
 
 
 def pytest_runtest_logfinish(nodeid, location):

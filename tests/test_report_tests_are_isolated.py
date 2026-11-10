@@ -101,3 +101,23 @@ def test_the_generator_still_resolves_its_inputs_at_import_time():
         assert isinstance(getattr(gen, const), str), (
             f"{const} is no longer a plain import-time string — if the generator now resolves "
             "paths per call, an environment fixture can isolate it and this guard can go.")
+
+
+def test_opening_the_report_looks_in_results_as_it_is_now_never_the_import_time_path(tmp_path, monkeypatch):
+    """AD-4: OUTPUT_FILE is bound at import, so `open_report` going by it opened the first test's report — a browser,
+    refused by the harness, in whichever later test clicked *Your journey*. It looks where the window's journey check
+    looks: `results` under the root as it is now."""
+    from app import static_html_generator as shg
+    earlier = tmp_path / "earlier root" / "results"
+    earlier.mkdir(parents=True)
+    (earlier / shg.REPORT_NAME).write_text("<html>前のテスト</html>", encoding="utf-8")
+    now = tmp_path / "this root"
+    monkeypatch.setattr(shg, "OUTPUT_FILE", str(earlier / shg.REPORT_NAME))      # fixed at a first import elsewhere
+    monkeypatch.setattr(shg, "get_user_file", lambda path: os.path.join(str(now), path))
+    opened = []
+    monkeypatch.setattr(shg.webbrowser, "open", opened.append)
+    assert shg.open_report() is False and opened == []             # no report under this root: nothing opens
+    (now / "results").mkdir(parents=True)
+    (now / "results" / shg.REPORT_NAME).write_text("<html>今の旅</html>", encoding="utf-8")
+    assert shg.open_report() is True
+    assert len(opened) == 1 and opened[0].endswith(os.path.join("this root", "results", shg.REPORT_NAME))

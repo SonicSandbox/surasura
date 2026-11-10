@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Standalone updater.exe — the tiny helper that swaps the release's files (Surasura.exe, _internal/templates, ...) after the app exits.
-# Built ONLY on a release (see package_app.py --release), NOT part of a normal/dev build.
+# Standalone updater.exe — the swapper (updater_helper.py): after the app exits it swaps the program's entries for a
+# release's assembled ones, proves them, and draws the update splash (raw Win32, no Qt / Tk); `--selftest out.json`
+# proves a build can draw it. From 3.0 the NEW release's copy runs, copied out of the staged program (S3.1 D9), so it
+# ships inside every 3.x program folder and in its `app` part.
 #
 # It is a onefile exe that imports NOTHING from app/ (so it can never lock the files it
 # replaces) and pulls in no heavy deps — hence the aggressive excludes below keep it small.
+# console=False: a console flashing mid-update is what the splash replaces. upx=False: UPX stays off (S3.1 D15). The
+# icon is the app's: the splash draws its mark from this exe's own icon.
 import os
 
 project_root = os.path.abspath('.')
@@ -38,7 +42,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

@@ -413,12 +413,14 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
       None                        the plan is the library's: re-plan any order of it;
       ("replan-now", parts)       only the known words ("known"), the word lists ("lists"), files that left the
                                   counted tiers ("files-removed") or files the engine added, none changed or removed
-                                  ("files-added"), set-aside files that only left ("reference-removed"), or counted
-                                  files a watched mark set aside ("reference-watched", Haya-W) moved: re-plan now from
-                                  the plan, then Generate;
+                                  ("files-added"), set-aside files that only left ("reference-removed"), counted
+                                  files set aside — a watched mark, a finish ("reference-joined", Haya-W, Haya-FN) —
+                                  or only the set-aside files' ranks as sentence sources ("finished", F7) moved:
+                                  re-plan now from the plan, then Generate;
       ("generate-first", reason)  anything else — another language, another app version, a run that didn't finish,
                                   files added or changed, a setting, the set-aside files otherwise ("reference": a
-                                  Finished drag, an un-marking the plan has no line for): a Generate first;
+                                  file the plan never counted set aside, an un-marking or a Put back the plan has no
+                                  line for): a Generate first;
       ("stand-aside", reason)     the plan is current but the engine can't replay it exactly: coverage mode
                                   ("coverage"), i+1 mode ("i+1"), a row two set phrases share ("shared-phrase") or a
                                   weight that isn't a whole number ("weights") — the preview stands aside (D7)."""
@@ -500,15 +502,16 @@ def _what_moved(plan, parts, added=()):
             replan.append("files-added")
         elif name == "reference" and _only_left(plan, parts):
             replan.append("reference-removed")
-        elif name == "reference" and _only_watched(plan, parts, memo):
-            replan.append("reference-watched")
-        elif name == "finished" and "reference" in moved:
-            continue                        # (F7) the set-aside files' ranks move with them: "reference" says which
+        elif name == "reference" and _only_joined(plan, parts, memo):
+            replan.append("reference-joined")
+        elif name == "finished":
+            if "reference" not in moved:    # (F7) only their ranks — a title of watched episodes finished: no file
+                replan.append("finished")   # the order reads moved (Haya-FN); with "reference", it says which
         else:
             return ("generate-first", name)
     if not replan:
         return ("generate-first", "signature")                     # the whole moved but no part: not ours to guess
-    if ("reference-removed" in replan or "reference-watched" in replan) and "files-added" in replan:
+    if ("reference-removed" in replan or "reference-joined" in replan) and "files-added" in replan:
         return ("generate-first", "reference")                     # a set-aside file may be back among the counted
     return ("replan-now", tuple(replan))
 
@@ -534,8 +537,8 @@ def _only_removed(plan, parts, memo=None):
 
 def _only_left(plan, parts):
     """True when the set-aside files now are some of the plan's, unchanged (W-1): one only left them — removed, or a
-    watched episode moved to Finished — so nothing ahead of the learner moved; one set aside, brought back or edited
-    is a Generate first."""
+    watched episode moved to Finished — so nothing ahead of the learner moved; one brought back or edited is a Generate
+    first (one set aside: `_only_joined`)."""
     held = plan.header.get("reference")
     if not isinstance(held, list):
         return False                                              # a plan from before the set-aside digests
@@ -545,14 +548,15 @@ def _only_left(plan, parts):
         return False
 
 
-def _only_watched(plan, parts, memo=None):
+def _only_joined(plan, parts, memo=None):
     """True when every file new among the set-aside files is a file of the plan's that left the counted files,
-    unchanged — a watched mark (Haya-W, Sonic 2026-11-06: "Responsiveness is key"): its digest is the one its plan line
-    holds (`analyzer.aside_files` signs a set-aside file as the counted files are signed), so the engine drops its uses
-    as for a file removed ("files" is then "files-removed") and nothing new joins the name tables' evidence (counted
-    and set-aside files are both its evidence). The list's edge — a word crossing the cut-off, a name — is the Generate
-    after's. Only a watched episode: the parts' unsigned `watched` (`plan_rules.SignatureParts`) names them, so a
-    Finished drag never matches (D1: a Generate first), nor do parts that don't say."""
+    unchanged — a watched mark (Haya-W, Sonic 2026-11-06: "Responsiveness is key") or a finish, a drag to Finished or a
+    title finishing by itself (Haya-FN, 2026-11-09: the watched mark's rule, never a second one): its digest is the one
+    its plan line holds (`analyzer.aside_files` signs a set-aside file as the counted files are signed), so the engine
+    drops its uses as for a file removed ("files" is then "files-removed") and nothing new joins the name tables'
+    evidence (counted and set-aside files are both its evidence). The list's edge — a word crossing the cut-off, a
+    name — is the Generate after's. A file the plan never counted (added since it, or edited) set aside: a Generate
+    first."""
     held = plan.header.get("reference")
     if not isinstance(held, list):
         return False                                              # a plan from before the set-aside digests
@@ -562,10 +566,9 @@ def _only_watched(plan, parts, memo=None):
     try:
         joined = set(parts.get("reference") or ()) - set(held)
         counted = _counted(parts, {} if memo is None else memo)
-        watched = set(getattr(parts, "watched", ()))
     except Exception:
         return False
-    return bool(joined) and joined <= (files - counted) & watched
+    return bool(joined) and joined <= files - counted
 
 
 def _only_added(plan, parts, added, memo=None):

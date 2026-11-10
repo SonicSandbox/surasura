@@ -2155,7 +2155,8 @@ class DragController(QObject):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
         something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
         itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
-        lands (Anki moves after the Generate it starts: the bar's arc — the row has left this list)."""
+        lands (Anki moves in the host's next job, as for a watched mark — Haya-FN; the Generate runs after: the bar's
+        arc — the row has left this list)."""
         how = self.finish_how()
         template = text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED)
         if how == "out":
@@ -2555,8 +2556,10 @@ class DragController(QObject):
     # Kura's W-1b (PROVISIONAL, the lead + Sonic: "Finish acts after its Generate; pending shown at once"): Finish (a
     # drop on Finished, the toast's *Leave its new cards out of your order*), Finished's *Put back* and *Leave its new
     # cards out* / *Put them back in the order*, and their Undo (the toast's, Ctrl+Z's, one asked before the change was
-    # saved) write the store at once while Anki moves only once the host re-orders for that write — after the Generate
-    # it starts. Sonic's doctrine, every press reacts at once: one press per command, painted before the writer has it
+    # saved) write the store at once while Anki moves only once the host re-orders for that write — in its next job for
+    # a finish of files the plan counted (Haya-FN: the watched mark's rule, `plan_engine._only_joined`), after the
+    # Generate it starts otherwise (a Put back, a file the plan never counted). Sonic's doctrine, every press reacts at
+    # once: one press per command, painted before the writer has it
     # (`_anki_begin`), live until the store records that re-order (`planned_order_version` / `planned_pins_version`
     # reach the change's `landed` versions, told by the reader — never a store read here). One rule ends it otherwise
     # (`_anki_end`): the line the host leaves it with — a line that gives up (`replan_preview.GivesUp`: Anki closed, a

@@ -439,12 +439,13 @@ def test_check_names_what_moved_since_the_plan(tmp_path):
     plan.header = h
 
 
-def test_check_re_plans_a_watched_mark_now_and_nothing_that_only_looks_like_one(tmp_path):
-    """Haya-W: a counted file that joined the set-aside files as a watched episode (its set-aside digest the one its
-    plan line holds, named in the parts' unsigned `watched`) is "replan-now" — the engine drops its uses as for a file
-    removed. A Generate first for everything that only looks like it: parts that don't say which digests are watched
-    (a Finished drag: D1), a set-aside file the plan never counted (a Finished import, an edited file), a "watched"
-    digest whose file still counts, a file added or changed with the mark."""
+def test_check_re_plans_a_file_set_aside_now_and_nothing_that_only_looks_like_one(tmp_path):
+    """Haya-W, Haya-FN: a counted file that joined the set-aside files — a watched mark, or a finish (a drag to
+    Finished, a title finishing by itself): one rule — its set-aside digest the one its plan line holds, is "replan-now"
+    (the engine drops its uses as for a file removed). Only the set-aside files' ranks as sentence sources (F7's
+    "finished": a title of watched episodes finished) re-plan now too: no file the order reads moved. A Generate first
+    for everything that only looks like it: a set-aside file the plan never counted (a Finished import, an edited
+    file), a set-aside digest whose file still counts, a file added or changed with it."""
     root = str(tmp_path / "lib")
     case = "rp2-ja"
     cases.build(root, case)
@@ -458,33 +459,36 @@ def test_check_re_plans_a_watched_mark_now_and_nothing_that_only_looks_like_one(
         return plan_engine.check(plan, "ja", h["engine"], analyzer.read_run_stamp(_results_dir(root)),
                                  signature_parts, None, **over)
 
-    def signed(watched=(), **values):
-        out = plan_rules.SignatureParts(dict(parts, **values))
-        out.watched = frozenset(watched)
-        return out
+    def signed(**values):
+        return dict(parts, **values)
 
     episode = parts["files"][0]
     mark = plan_rules.file_digest(episode)
     rest = parts["files"][1:]
-    assert check(signed([mark], files=rest, reference=[mark])) == ("replan-now", ("files-removed", "reference-watched"))
-    # why: the same digests with nothing saying the file is a watched episode is a Finished drag (D1): Generate first
-    assert check(dict(parts, files=rest, reference=[mark])) == ("generate-first", "reference")
-    assert check(signed((), files=rest, reference=[mark])) == ("generate-first", "reference")
+    joined = ("replan-now", ("files-removed", "reference-joined"))
+    assert check(signed(files=rest, reference=[mark])) == joined
+    # why: a watched mark and a finish set the file aside alike (F7 ranks it): the ranks ride with "reference"
+    assert check(signed(files=rest, reference=[mark], finished=[mark])) == joined
+    # only the ranks moved (the same set-aside files, another order: a title of watched episodes finished)
+    assert check(signed(finished=[mark])) == ("replan-now", ("finished",))
     # a set-aside file the plan never counted (imported into Finished, or edited since): new name evidence
     other = plan_rules.file_digest([episode[0] + "x", [1, 2], None, None, episode[4]])
-    assert check(signed([mark, other], files=rest, reference=[mark, other])) == ("generate-first", "reference")
-    # "watched" but still counted (no file left the counted ones): never re-planned as a mark
-    assert check(signed([mark], reference=[mark])) == ("generate-first", "reference")
-    # a mark with another counted file changed, or with a file added since: a Generate first
+    assert check(signed(files=rest, reference=[mark, other])) == ("generate-first", "reference")
+    assert check(signed(files=rest, reference=[other])) == ("generate-first", "reference")
+    # set aside but still counted (no file left the counted ones): never re-planned as one set aside
+    assert check(signed(reference=[mark])) == ("generate-first", "reference")
+    # with another counted file changed, or with a file added since: a Generate first
     changed = [list(entry) for entry in rest]
     changed[0][1] = [1, 2]
-    assert check(signed([mark], files=changed, reference=[mark]))[0] == "generate-first"
+    assert check(signed(files=changed, reference=[mark]))[0] == "generate-first"
     added = rest + [[episode[0] + "y", [3, 4], "Manual", 10, episode[4]]]
-    assert check(signed([mark], files=added, reference=[mark]),
+    assert check(signed(files=added, reference=[mark]),
                  added=(plan_rules.file_digest(added[-1]),)) == ("generate-first", "files")
+    # ranks moved with a set-aside file the plan never counted: the stricter wins
+    assert check(signed(files=rest, reference=[mark, other], finished=[other, mark])) == ("generate-first", "reference")
     # a plan from before the set-aside digests: never a guess
     plan.header = {k: v for k, v in h.items() if k != "reference"}
-    assert check(signed([mark], files=rest, reference=[mark])) == ("generate-first", "reference")
+    assert check(signed(files=rest, reference=[mark])) == ("generate-first", "reference")
     plan.header = h
 
 

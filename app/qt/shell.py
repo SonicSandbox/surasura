@@ -3997,16 +3997,20 @@ def _log_unhandled(kind, value, tb):
 
 
 # Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
-# hold the GUI thread off for that long — over the 4 ms step. 1 ms kept one wait under the budget (W2.1 review A3), but
-# a stretch takes the lock again at every event (the app filter, each slot, each delegate paint): with the writer's
-# numbers following a move (4–9 ms of Python) beside it, ⋯ → Goal's stretches after the press waited 1 ms at many of
-# those and ran 17–23 ms. A quarter of a millisecond: 11–14 ms at 100–250 % (Mado-SP, paired runs, 2026-11-10)
-SWITCH_INTERVAL_S = 0.00025
+# hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps one wait under the budget (W2.1 review A3).
+SWITCH_INTERVAL_S = 0.001
+# While the window is awake, finer (Mado-SP, 2026-11-10): a stretch takes the lock again at every event (the app filter,
+# each slot, each delegate paint), and beside the writer's numbers following a move (4–9 ms of Python) ⋯ → Goal's
+# stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
+# asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
+# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`)
+AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 
 def prepare_process():
     """The window process's own settings: an exception escaping a slot is logged, never fatal (PyQt6 aborts
-    otherwise); Python's lock changes hands every quarter millisecond (`SWITCH_INTERVAL_S`)."""
+    otherwise); Python's lock changes hands every millisecond (`SWITCH_INTERVAL_S`; finer while the window is awake,
+    `wire_idle`)."""
     sys.excepthook = _log_unhandled
     sys.setswitchinterval(SWITCH_INTERVAL_S)
     wire_idle()
@@ -4018,11 +4022,13 @@ _IDLE_WIRED = []
 def wire_idle():
     """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
     idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
-    step only while the window rests, so a press's stretch never takes turns at Python's lock with them)."""
+    step only while the window rests, so a press's stretch never takes turns at Python's lock with them), and while it
+    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`)."""
     from PyQt6.QtCore import QAbstractEventDispatcher
     d = QAbstractEventDispatcher.instance()
     if d is None or any(x is d for x in _IDLE_WIRED):
         return
+    window_idle.set_switch(AWAKE_SWITCH_INTERVAL_S, SWITCH_INTERVAL_S)
     d.awake.connect(window_idle.busy)
     d.aboutToBlock.connect(window_idle.rest)
     _IDLE_WIRED.append(d)
@@ -4038,6 +4044,7 @@ def unwire_idle():
             except (TypeError, RuntimeError):
                 pass
     window_idle.rest()
+    window_idle.set_switch(None, None)
 
 
 def connect_instance(window, instance):

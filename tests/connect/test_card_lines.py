@@ -86,6 +86,8 @@ def _by_word(chosen):
     ("駅から", True, True),                          # から as "from" is a case particle
     ("どんな理由があるにせよ", True, True),          # a tail
     ("どっちにしろ", True, True),                    # concessive: after a case particle に
+    ("まだ子供とはいえ", True, True),                # the other tails, by their text
+    ("頭では分かっているものの", True, True),
     ("もう勝手にしろ", False, False),                # an order (the copula's に): ends (adversary #4)
     ("これで何もなきゃ", True, True),                # なきゃ: "if not" as often as "must" (adversary #7: ASK lead)
     ("食べちゃ", True, True),                        # ては: runs on into ダメ

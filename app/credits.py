@@ -147,7 +147,7 @@ def __getattr__(name):
 
 # --- README's Data Credits, checked against DATA_CREDITS (S11) ----------------------------------------------------- #
 # README's own names for a source DATA_CREDITS names in other words.
-README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia"}
+README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia", "Anki Miner": "anki_miner"}
 _LINK = re.compile(r"\[([^\]]+)\]\(")
 
 

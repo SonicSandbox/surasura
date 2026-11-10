@@ -818,10 +818,11 @@ def test_the_credits_are_2_4s_text_byte_for_byte_and_the_tk_window_still_reads_t
 
 
 def test_readmes_data_credits_are_all_named_in_the_app():
-    """S11: an in-place update ships no README, so the in-app credits must name every source README credits."""
+    """S11: an in-place update ships no README, so the in-app credits must name every source the public credits name —
+    README's Data Credits until #320, docs/CREDITS.md since (README links to it; read here as that section)."""
     from app import credits
-    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-        readme = f.read()
+    with open(os.path.join(ROOT, "docs", "CREDITS.md"), encoding="utf-8") as f:
+        readme = "## 🙏 Data Credits\n" + f.read().split("\n", 1)[1].replace("\n## ", "\n### ")
     sources = credits.readme_sources(readme)
     assert {"JMdict", "JMnedict", "CC-CEDICT", "Tatoeba"} <= set(sources)
     assert credits.missing_from_credits(readme) == []

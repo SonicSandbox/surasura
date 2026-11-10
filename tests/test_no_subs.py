@@ -396,16 +396,18 @@ def test_todays_hato_is_never_sent_a_thing(tmp_path):
 def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tmp_path):
     """Why: NS-2 — the waiting videos alone, by list file; a found one's folder is looked at again (K5 fills it); a
     NOT_FOUND waits for hato's own date (P5), its row saying it, and is asked again on that date."""
+    # hato's retry date a day from now (a fixed date went due by itself on 2026-11-10)
+    now = time.time()
+    RETRY_AFTER = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now + 86400))
     store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
     cli = str(tmp_path / "hato-cli.exe")
     open(cli, "wb").close()
     _hato(["pairings", "find"], cli)
     calls = []
     lines = [{"type": "progress", "done": 1}, {"type": "video", "video": videos[0], "outcome": "CONFIDENT"},
-             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": "2026-11-09T00:00:00+00:00"},
+             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": RETRY_AFTER},
              {"type": "run", "videos": 2}]
     try:
-        now = time.time()
         out = no_subs.find(store, "ja", {no_subs.SETTING: True}, now=now,
                            popen=lambda c, **k: _Proc(lines, calls, c))
         assert (out["asked"], out["found"], out["not_found"]) == (2, 1, 1) and out["roots"] == {root: src}
@@ -413,7 +415,7 @@ def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tm
         assert command[:2] == [cli, src] and "--only-list" in command and "--json" in command
         rel = [r for _i, r, _a in _items(store)][1]
         assert no_subs.note(rel, "ja")[0] == no_subs.NOT_FOUND
-        later = time.mktime((2026, 11, 10, 0, 0, 0, 0, 0, -1))
+        later = now + 2 * 86400                         # past hato's date (a day from now)
         assert {v.video for v in no_subs.due(store, "ja", now=now)} == set()
         assert {v.video for v in no_subs.due(store, "ja", now=later)} == {os.path.abspath(v) for v in videos}
         assert not any("hato" in json.dumps(r) for r in [library.pairing_of(store, i) for i, _r, _a in _items(store)])

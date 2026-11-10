@@ -68,7 +68,7 @@ def test_the_builder_keys_every_word_exactly_as_the_analyzer_does(tagger, monkey
     # SANITIZE_JA (analyzer.main), and the priority list is keyed that way. Any drift here and the
     # panel quietly finds nothing.
     monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
-    with open(os.path.join(_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_1.txt"),
+    with open(os.path.join(_ROOT, "samples", "ja", "HighPriority", "蜘蛛の糸（芥川龍之介）.txt"),
               encoding="utf-8") as f:
         text = f.read()
     # ...for the words the list counts: analyzer.main counts a token only when its key or its text holds Japanese
@@ -508,7 +508,7 @@ def test_counts_merged_from_two_halves_equal_counting_the_whole(tagger):
 def test_a_parallel_build_writes_the_same_database_as_a_single_process(tmp_path, monkeypatch):
     # Preparing a large corpus uses many processes (WP-P10); the answer must not depend on how many.
     # One file per batch, so the three parts really are counted apart and merged.
-    with open(os.path.join(_ROOT, "samples", "ja", "LowPriority", "L_priority_sample_1.txt"),
+    with open(os.path.join(_ROOT, "samples", "ja", "LowPriority", "注文の多い料理店（宮沢賢治）.txt"),
               encoding="utf-8") as f:
         lines = f.read().splitlines()
     _library({f"HighPriority/part{i}.txt": "\n".join(lines[i::3]) for i in range(3)})
@@ -763,8 +763,8 @@ def test_the_builder_finds_the_pieces_the_list_finds_on_real_text(tagger, monkey
     monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
     boundaries = frozenset(analyzer.LOGIC["sentence_boundaries"]["ja"])
     tokenizer, listed, built = analyzer.JapaneseTokenizer(library=False), Counter(), Counter()
-    for name in ("HighPriority/H_priority_sample_1.txt", "LowPriority/L_priority_sample_1.txt",
-                 "LowPriority/L_priority_sample_2.txt"):
+    for name in ("HighPriority/蜘蛛の糸（芥川龍之介）.txt", "LowPriority/注文の多い料理店（宮沢賢治）.txt",
+                 "LowPriority/ごん狐（新美南吉）.txt"):
         with open(os.path.join(_ROOT, "samples", "ja", name), encoding="utf-8") as f:
             text = f.read()
         for s_text, tokens in tokenizer.tokenize_sentences(text):

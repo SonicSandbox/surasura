@@ -26,43 +26,43 @@
      "before": ""
     },
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
      "before": ""
     }
    },
    "1789712000001": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 64%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">目を開く · 目が合う · 目にぶつかる · 目を向ける</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">目にあわされる · 目をつぶる · 目の下 · 目につく</div><div class=\"pat-frame pat-src-balanced pat-thin\">ひどい〜</div>",
      "before": ""
     }
    },
    "1789712000003": {
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
      "before": ""
     }
    },
    "1789712000006": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 53%</div><div class=\"pat-form pat-src-balanced pat-thin\">持っている 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">もたれる 7%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">考えを持つ · 根に持つ · 信念を持つ · 悪意を持つ</div>",
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
      "before": ""
     }
    },
    "1789712000007": {
     "Patterns": {
-     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
      "before": ""
     }
    },
    "1789712000008": {
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
      "before": ""
     }
    },
    "1789712000009": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
      "before": ""
     }
    },
@@ -83,7 +83,7 @@
     "冒険",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
     "patterns"
    ],
    [
@@ -99,7 +99,7 @@
     "目",
     "Patterns",
     "fill",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 64%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">目を開く · 目が合う · 目にぶつかる · 目を向ける</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">目にあわされる · 目をつぶる · 目の下 · 目につく</div><div class=\"pat-frame pat-src-balanced pat-thin\">ひどい〜</div>",
     "patterns"
    ],
    [
@@ -112,7 +112,7 @@
    ],
    [
     1789712000002,
-    "老婆",
+    "蜘蛛",
     "Patterns",
     "filled",
     "",
@@ -120,7 +120,7 @@
    ],
    [
     1789712000002,
-    "老婆",
+    "蜘蛛",
     "ExampleSentences",
     "no sentence",
     "",
@@ -128,15 +128,15 @@
    ],
    [
     1789712000003,
-    "大切な",
+    "立派な",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
     "patterns"
    ],
    [
     1789712000003,
-    "大切な",
+    "立派な",
     "ExampleSentences",
     "no sentence",
     "",
@@ -179,7 +179,7 @@
     "持つ",
     "Patterns",
     "fill",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 53%</div><div class=\"pat-form pat-src-balanced pat-thin\">持っている 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">もたれる 7%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">考えを持つ · 根に持つ · 信念を持つ · 悪意を持つ</div>",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
     "patterns"
    ],
    [
@@ -195,7 +195,7 @@
     "長い",
     "Patterns",
     "fill",
-    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
     "patterns"
    ],
    [
@@ -208,15 +208,15 @@
    ],
    [
     1789712000008,
-    "おだやか",
+    "元気",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
     "patterns"
    ],
    [
     1789712000008,
-    "おだやか",
+    "元気",
     "ExampleSentences",
     "no sentence",
     "",
@@ -224,15 +224,15 @@
    ],
    [
     1789712000009,
-    "共和国",
+    "地獄",
     "Patterns",
     "fill",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
     "patterns"
    ],
    [
     1789712000009,
-    "共和国",
+    "地獄",
     "ExampleSentences",
     "no sentence",
     "",
@@ -266,19 +266,18 @@
     ]
    },
    "prefer": {
-    "共和国|キョウワコク": [
+    "元気|ゲンキ": [
      [
-      "共和国",
-      "の",
-      "誇り"
+      "元気",
+      "が",
+      "付く"
      ]
     ],
     "冒険|ボウケン": [
      [
       "冒険",
       "に",
-      "つく",
-      "て"
+      "出掛ける"
      ],
      [
       "冒険",
@@ -293,65 +292,57 @@
       "て"
      ]
     ],
-    "大切|タイセツ": [
+    "地獄|ジゴク": [
      [
-      "大切",
-      "だ",
-      "思う"
-     ],
-     [
-      "大切",
-      "だ"
+      "地獄",
+      "の",
+      "底"
      ]
     ],
     "持つ|モツ": [
      [
-      "悪意",
+      "茶碗",
       "を",
       "持つ"
-     ],
-     [
-      "持つ",
-      "て",
-      "居る"
      ]
     ],
     "目|メ": [
      [
       "目",
-      "が",
-      "悪い"
+      "に",
+      "遭わす",
+      "れる"
      ]
     ],
-    "穏やか|オダヤカ": [
+    "立派|リッパ": [
      [
-      "穏やか",
+      "立派",
       "だ",
-      "呼び掛ける"
+      "金庫"
      ],
      [
-      "穏やか",
+      "立派",
       "だ"
      ]
     ],
-    "老婆|ロウバ": [
+    "蜘蛛|クモ": [
      [
-      "老婆",
+      "蜘蛛",
       "の",
-      "近く"
+      "糸"
      ]
     ],
     "長い|ナガイ": [
      [
       "長い",
-      "人生"
+      "柄"
      ]
     ]
    },
    "wanted": [
     [
-     "共和国",
-     "キョウワコク"
+     "元気",
+     "ゲンキ"
     ],
     [
      "冒険",
@@ -362,8 +353,8 @@
      "ボウケンカ"
     ],
     [
-     "大切",
-     "タイセツ"
+     "地獄",
+     "ジゴク"
     ],
     [
      "持つ",
@@ -378,12 +369,12 @@
      "メ"
     ],
     [
-     "穏やか",
-     "オダヤカ"
+     "立派",
+     "リッパ"
     ],
     [
-     "老婆",
-     "ロウバ"
+     "蜘蛛",
+     "クモ"
     ],
     [
      "長い",
@@ -406,19 +397,18 @@
     ]
    },
    "prefer": {
-    "共和国|キョウワコク": [
+    "元気|ゲンキ": [
      [
-      "共和国",
-      "の",
-      "誇り"
+      "元気",
+      "が",
+      "付く"
      ]
     ],
     "冒険|ボウケン": [
      [
       "冒険",
       "に",
-      "つく",
-      "て"
+      "出掛ける"
      ],
      [
       "冒険",
@@ -433,46 +423,42 @@
       "て"
      ]
     ],
-    "大切|タイセツ": [
+    "地獄|ジゴク": [
      [
-      "大切",
-      "だ",
-      "思う"
-     ],
-     [
-      "大切",
-      "だ"
-     ]
-    ],
-    "穏やか|オダヤカ": [
-     [
-      "穏やか",
-      "だ",
-      "呼び掛ける"
-     ],
-     [
-      "穏やか",
-      "だ"
-     ]
-    ],
-    "老婆|ロウバ": [
-     [
-      "老婆",
+      "地獄",
       "の",
-      "近く"
+      "底"
+     ]
+    ],
+    "立派|リッパ": [
+     [
+      "立派",
+      "だ",
+      "金庫"
+     ],
+     [
+      "立派",
+      "だ"
+     ]
+    ],
+    "蜘蛛|クモ": [
+     [
+      "蜘蛛",
+      "の",
+      "糸"
      ]
     ],
     "長い|ナガイ": [
      [
       "長い",
-      "人生"
+      "柄"
      ]
     ]
    },
    "wanted": [
     [
-     "共和国",
-     "キョウワコク"
+     "元気",
+     "ゲンキ"
     ],
     [
      "冒険",
@@ -483,20 +469,20 @@
      "ボウケンカ"
     ],
     [
-     "大切",
-     "タイセツ"
+     "地獄",
+     "ジゴク"
     ],
     [
      "探検",
      "タンケン"
     ],
     [
-     "穏やか",
-     "オダヤカ"
+     "立派",
+     "リッパ"
     ],
     [
-     "老婆",
-     "ロウバ"
+     "蜘蛛",
+     "クモ"
     ],
     [
      "長い",
@@ -538,37 +524,37 @@
      "before": ""
     },
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
      "before": ""
     }
    },
    "1789712000002": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜に 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">老婆の近く · 老婆に譲る · 老婆を空く · 老婆の隣</div><div class=\"pat-frame pat-src-balanced pat-thin\">気の毒な〜</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">蜘蛛の糸 · 蜘蛛を殺す · 蜘蛛を助ける</div><div class=\"pat-frame pat-src-balanced pat-thin\">小さな〜 · 細い〜 · その〜</div>",
      "before": "<div>もう書いてある</div>"
     }
    },
    "1789712000003": {
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
      "before": ""
     }
    },
    "1789712000007": {
     "Patterns": {
-     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
      "before": ""
     }
    },
    "1789712000008": {
     "Patterns": {
-     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
      "before": ""
     }
    },
    "1789712000009": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
      "before": ""
     }
    },
@@ -589,7 +575,7 @@
     "冒険",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
     "patterns"
    ],
    [
@@ -602,15 +588,15 @@
    ],
    [
     1789712000002,
-    "老婆",
+    "蜘蛛",
     "Patterns",
     "replace",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜に 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">老婆の近く · 老婆に譲る · 老婆を空く · 老婆の隣</div><div class=\"pat-frame pat-src-balanced pat-thin\">気の毒な〜</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">蜘蛛の糸 · 蜘蛛を殺す · 蜘蛛を助ける</div><div class=\"pat-frame pat-src-balanced pat-thin\">小さな〜 · 細い〜 · その〜</div>",
     "patterns"
    ],
    [
     1789712000002,
-    "老婆",
+    "蜘蛛",
     "ExampleSentences",
     "no sentence",
     "",
@@ -618,15 +604,15 @@
    ],
    [
     1789712000003,
-    "大切な",
+    "立派な",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
     "patterns"
    ],
    [
     1789712000003,
-    "大切な",
+    "立派な",
     "ExampleSentences",
     "no sentence",
     "",
@@ -669,7 +655,7 @@
     "長い",
     "Patterns",
     "fill",
-    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
     "patterns"
    ],
    [
@@ -682,15 +668,15 @@
    ],
    [
     1789712000008,
-    "おだやか",
+    "元気",
     "Patterns",
     "fill",
-    "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
     "patterns"
    ],
    [
     1789712000008,
-    "おだやか",
+    "元気",
     "ExampleSentences",
     "no sentence",
     "",
@@ -698,15 +684,15 @@
    ],
    [
     1789712000009,
-    "共和国",
+    "地獄",
     "Patterns",
     "fill",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
     "patterns"
    ],
    [
     1789712000009,
-    "共和国",
+    "地獄",
     "ExampleSentences",
     "no sentence",
     "",

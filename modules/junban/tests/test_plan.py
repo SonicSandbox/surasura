@@ -35,7 +35,7 @@ _RESOURCE_CSV = os.path.join(_ROOT, "tests", "Test Resources", "ja", "expected_o
 # vocabulary of the kind a learner mines indiscriminately with anki_miner. The fixtures assert this,
 # so the day the resource CSV changes the suite says so instead of quietly testing nothing.
 _UNRANKED_WORDS = ["須藤", "引きずる", "冒険", "鳥取", "美術館", "新幹線",
-                   "味噌汁", "提出", "洗濯機", "駐車場", "眼鏡", "夕焼け"]
+                   "味噌汁", "提出", "洗濯機", "駐車場", "自転車", "夕焼け"]   # (眼鏡: 蜘蛛の糸 says it, Hon-SM)
 
 
 def _card(card_id, due, word, deck="TheBank", card_type=0, queue=0):
@@ -137,9 +137,9 @@ def test_suspended_cards_are_never_repositioned(the_bank, rank_of):
     """I2. Suspending is a deliberate act. A suspended card is still `type == 0`, so only the queue
     check catches it — and a suspended *review* card is reported as suspended, the reason the user
     would recognise."""
-    suspended_new = [_card(1789712099001, 2500, "老婆", queue=-1),
-                     _card(1789712099002, 2501, "此奴", queue=-1)]
-    suspended_review = [_card(1789712099003, 130, "誠実", card_type=2, queue=-1)]
+    suspended_new = [_card(1789712099001, 2500, "極楽", queue=-1),
+                     _card(1789712099002, 2501, "御釈迦様", queue=-1)]
+    suspended_review = [_card(1789712099003, 130, "血の池", card_type=2, queue=-1)]
     assert all(c["word"] in rank_of for c in suspended_new + suspended_review), \
         "suspended cards must be MATCHED ones, or this proves nothing"
 
@@ -156,9 +156,9 @@ def test_suspended_cards_are_never_repositioned(the_bank, rank_of):
 def test_a_learning_card_is_not_repositioned(rank_of):
     """`type == 1` is a card already part-way through learning; `is:new` excludes it, and so must
     the per-card re-check that backs that query up."""
-    cards = [_card(1, 2800, "老婆"),
-             _card(2, 2801, "此奴", card_type=1, queue=1),
-             _card(3, 2802, "誠実")]
+    cards = [_card(1, 2800, "極楽"),
+             _card(2, 2801, "御釈迦様", card_type=1, queue=1),
+             _card(3, 2802, "血の池")]
     writes, stats = plan(cards, rank_of)
 
     assert 2 not in {card_id for card_id, _due in writes}
@@ -169,7 +169,7 @@ def test_a_learning_card_is_not_repositioned(rank_of):
 def test_a_buried_card_is_not_repositioned(rank_of):
     """Buried (`queue` -2/-3) is temporary, but it is still not in the new queue and still not
     ours to move. It is counted apart from suspended so the panel's counts stay honest."""
-    cards = [_card(1, 2800, "老婆"), _card(2, 2801, "此奴", queue=-2)]
+    cards = [_card(1, 2800, "極楽"), _card(2, 2801, "御釈迦様", queue=-2)]
     writes, stats = plan(cards, rank_of)
 
     assert [card_id for card_id, _due in writes] == []
@@ -206,20 +206,20 @@ def test_matched_cards_come_out_in_surasura_rank_order(the_bank, rank_of):
 
 
 def test_duplicate_cards_of_one_word_land_consecutively(rank_of):
-    """The clustering promise. Three cards of 老婆, mined months apart and scattered through the
+    """The clustering promise. Three cards of 極楽, mined months apart and scattered through the
     backlog, share a rank — so `due` only breaks their tie and they arrive together, which is the
     behaviour the user explicitly asked for."""
-    rouba = [_card(10, 2900, "老婆"), _card(11, 2802, "老婆"), _card(12, 2999, "老婆")]
-    others = [_card(20, 2801, "此奴"), _card(21, 2803, "誠実"), _card(22, 2804, "混雑")]
+    rouba = [_card(10, 2900, "極楽"), _card(11, 2802, "極楽"), _card(12, 2999, "極楽")]
+    others = [_card(20, 2801, "御釈迦様"), _card(21, 2803, "血の池"), _card(22, 2804, "栗")]
     assert all(c["word"] in rank_of for c in rouba + others)
 
     _writes, stats = plan(rouba + others, rank_of)
-    positions = sorted(row.position for row in stats["order"] if row.word == "老婆")
+    positions = sorted(row.position for row in stats["order"] if row.word == "極楽")
 
     assert positions == list(range(positions[0], positions[0] + 3)), \
-        f"the three 老婆 cards were split apart: {positions}"
+        f"the three 極楽 cards were split apart: {positions}"
     # ...and within the cluster, the card that was already earliest in the queue stays earliest.
-    cluster = [row for row in stats["order"] if row.word == "老婆"]
+    cluster = [row for row in stats["order"] if row.word == "極楽"]
     assert [row.card_id for row in cluster] == [11, 10, 12]
 
 
@@ -396,10 +396,10 @@ def test_second_run_writes_nothing(the_bank, rank_of):
 def test_a_card_already_in_place_is_not_rewritten(rank_of):
     """Partial idempotence: only the pairs that actually change are emitted, so the count the panel
     shows is the number of cards that will move, not the number it looped over."""
-    cards = [_card(1, 2801, "老婆"), _card(2, 2803, "此奴"), _card(3, 2802, "誠実")]
+    cards = [_card(1, 2801, "極楽"), _card(2, 2803, "御釈迦様"), _card(3, 2802, "血の池")]
     writes, stats = plan(cards, rank_of)
 
-    assert 1 not in {card_id for card_id, _due in writes}, "老婆 is rank 0 and already at the base"
+    assert 1 not in {card_id for card_id, _due in writes}, "極楽 ranks first of the three and is already at the base"
     assert stats["to_write"] == len(writes) < 3
 
 
@@ -461,7 +461,7 @@ def test_every_card_matched(rank_of, ranked_words):
 
 def test_a_single_card(rank_of):
     """One card cannot move: the only position in the block is the one it already holds."""
-    writes, stats = plan([_card(1, 2842, "老婆")], rank_of)
+    writes, stats = plan([_card(1, 2842, "極楽")], rank_of)
 
     assert writes == []
     assert stats["base"] == 2842 and stats["order"][0].position == 2842
@@ -471,7 +471,7 @@ def test_a_single_card(rank_of):
 def test_a_word_that_cannot_be_read_is_simply_unmatched(rank_of):
     """`target_word` returns "" for a field that is only an `<img>` — a real shape in this
     collection. That card is not an error and not a match; it keeps its place at the back."""
-    cards = [_card(1, 2801, ""), _card(2, 2802, None), _card(3, 2803, "老婆")]
+    cards = [_card(1, 2801, ""), _card(2, 2802, None), _card(3, 2803, "極楽")]
     writes, stats = plan(cards, rank_of)
 
     assert stats["considered"] == 3 and stats["matched"] == 1 and stats["unmatched"] == 2
@@ -485,11 +485,11 @@ def test_cards_missing_the_fields_to_decide_on_are_skipped_not_guessed(rank_of):
 
     Booleans are rejected explicitly: `True == 1` and `False == 0` in Python, so a payload carrying
     booleans would otherwise read as a card type (`testing.md` §5.3 — decide against plain data)."""
-    cards = [_card(1, 2801, "老婆"),
-             _card(2, None, "此奴"),                  # no due
-             {"due": 2803, "type": 0, "queue": 0, "word": "誠実"},   # no card_id
-             _card(4, 2804, "混雑", card_type=False, queue=False),   # booleans, not ints
-             _card(5, 2805, "車内")]
+    cards = [_card(1, 2801, "極楽"),
+             _card(2, None, "御釈迦様"),                  # no due
+             {"due": 2803, "type": 0, "queue": 0, "word": "血の池"},   # no card_id
+             _card(4, 2804, "栗", card_type=False, queue=False),   # booleans, not ints
+             _card(5, 2805, "蓮池")]
     writes, stats = plan(cards, rank_of)
 
     assert {card_id for card_id, _due in writes} <= {1, 5}

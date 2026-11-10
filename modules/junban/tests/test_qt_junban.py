@@ -1252,9 +1252,10 @@ def test_the_reorder_button_names_the_count_its_sentence_moves(main, engine):
     n = win.session.view.to_write
     assert n > 0 and win.btn_reorder.text() == qs.JUNBAN_REORDER_N.format(n=n, s="" if n == 1 else "s")
     assert f"Reorder will move {n} of" in " ".join(win.messages.texts())
-    win.toggle_row(0)                                       # one card left alone: one fewer moves
-    settled(win)
-    assert win.btn_reorder.text() == qs.JUNBAN_REORDER_N.format(n=n - 1, s="" if n - 1 == 1 else "s")
+    win.toggle_row(0)                                       # one card left alone: fewer move (one, or more when
+    settled(win)                                            # another then lands where it already sits)
+    m = win.session.view.to_write
+    assert 0 < m < n and win.btn_reorder.text() == qs.JUNBAN_REORDER_N.format(n=m, s="" if m == 1 else "s")
     win.rb_leverage.click()                                 # the preview thrown away: no count to name
     assert win.btn_reorder.text() == qs.JUNBAN_REORDER
 

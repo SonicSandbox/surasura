@@ -1134,8 +1134,9 @@ class GoalDock(QWidget):
         self._slot_w = {}                # well -> its slot's width now
         self._anim = None
         self._pix = self._key = None
+        self._base = self._base_key = None      # the bar without its line (`_bar_base`)
         self._hand = self._hand_key = None
-        self.pictures = self.hands = self.paints = 0
+        self.pictures = self.hands = self.paints = self.bases = 0
         # --- W3.2 Q6: each cover's record by title (the wells'), a title's picture landing repaints the dock
         self._refs = {}
         self._seen = None                # (rows, finished, goal) the refs were walked from (C2)
@@ -1355,41 +1356,68 @@ class GoalDock(QWidget):
         return self._pix
 
     def _bar_picture(self, dpr):
-        pix = QPixmap(max(1, math.ceil(self.width() * dpr)), max(1, math.ceil(self.height() * dpr)))
-        pix.setDevicePixelRatio(dpr)
-        pix.fill(rows.c("frame"))
+        """The bar's kept base (`_bar_base`) with the goal's line drawn on a copy of it: a press that sends a show to
+        Goal changes its line alone (*N titles · N files*), so the stone, its shadow, the label and the hand are never
+        drawn again for it — a copy and one line (Mado-SP: the whole bar was ~1.5 ms of the press at 250 %)."""
+        base, x = self._bar_base(dpr)
         if self.goal is None:
-            return pix
+            return base
+        pix = base.copy()
+        pix.setDevicePixelRatio(dpr)
         q = QPainter(pix)
         q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         bar = self.bar_rect()
-        radius = F["goal-bar-radius"]
-        shadow.paint(q, bar, "goal-bar")                    # its lift: a short shadow and its lit edge (L14)
-        path = QPainterPath()
-        path.addRoundedRect(bar, radius, radius)
-        q.fillPath(path, rows.c("goal-bar"))
-        q.save()
-        q.setClipPath(path)
-        q.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        edge = max(1, round(dpr)) / dpr
-        q.fillRect(QRectF(bar.left(), bar.top(), bar.width(), edge), rows.c("goal-bar-edge"))
-        q.restore()
-        mid = bar.center().y()
-        x = bar.left() + 14
-        rows.icon(q, "box", QRectF(x, mid - 8.5, 17, 17), rows.c("ink-dim"))
-        x += 17 + 12
-        w, _cut = rows.TEXT.draw(q, x, mid, strings.GOAL_NAME, "goal-label", 200, rows.c("ink"), dpr=dpr)
-        x += w + 12
-        if self.goal.covers:
-            hand, room = self._hand_picture(dpr)
-            q.setOpacity(F["dock-cover-alpha"])
-            q.drawPixmap(QPointF(x - room, mid - hand.height() / dpr / 2), hand)
-            q.setOpacity(1.0)
-            x += hand.width() / dpr - 2 * room + 12
-        rows.TEXT.draw(q, x, mid, self.goal.line, "row-sub", bar.right() - x - 14, rows.c("ink-dim"), dpr=dpr)
+        rows.TEXT.draw(q, x, bar.center().y(), self.goal.line, "row-sub", bar.right() - x - 14, rows.c("ink-dim"),
+                       dpr=dpr)
         q.end()
         return pix
+
+    def _bar_base(self, dpr):
+        """The bar without its line -> (picture, where the line begins), drawn again only when the size, the ratio, the
+        look or the hand changed (the hand: `_hand_picture`'s own picture, kept per covers × their pictures)."""
+        hand = self._hand_picture(dpr) if self.goal is not None and self.goal.covers else None
+        key = (self.goal is None, hand[0] if hand is not None else None, self.width(), self.height(), dpr,
+               style.current())
+        kept = self._base_key
+        if kept is not None and len(kept) == len(key) and all(a is b or a == b for a, b in zip(kept, key)):
+            return self._base
+        pix = QPixmap(max(1, math.ceil(self.width() * dpr)), max(1, math.ceil(self.height() * dpr)))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(rows.c("frame"))
+        x = 0.0
+        if self.goal is not None:
+            q = QPainter(pix)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            bar = self.bar_rect()
+            radius = F["goal-bar-radius"]
+            shadow.paint(q, bar, "goal-bar")                    # its lift: a short shadow and its lit edge (L14)
+            path = QPainterPath()
+            path.addRoundedRect(bar, radius, radius)
+            q.fillPath(path, rows.c("goal-bar"))
+            q.save()
+            q.setClipPath(path)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            edge = max(1, round(dpr)) / dpr
+            q.fillRect(QRectF(bar.left(), bar.top(), bar.width(), edge), rows.c("goal-bar-edge"))
+            q.restore()
+            mid = bar.center().y()
+            x = bar.left() + 14
+            rows.icon(q, "box", QRectF(x, mid - 8.5, 17, 17), rows.c("ink-dim"))
+            x += 17 + 12
+            w, _cut = rows.TEXT.draw(q, x, mid, strings.GOAL_NAME, "goal-label", 200, rows.c("ink"), dpr=dpr)
+            x += w + 12
+            if hand is not None:
+                pic, room = hand
+                q.setOpacity(F["dock-cover-alpha"])
+                q.drawPixmap(QPointF(x - room, mid - pic.height() / dpr / 2), pic)
+                q.setOpacity(1.0)
+                x += pic.width() / dpr - 2 * room + 12
+            q.end()
+        self._base, self._base_key = (pix, x), key
+        self.bases += 1
+        return self._base
 
     def _hand_picture(self, dpr):
         """The loose hand, greyed once: (pixmap, the room around it for the turned covers)."""

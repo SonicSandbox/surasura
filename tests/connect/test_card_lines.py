@@ -293,8 +293,8 @@ def test_a_neighbours_copies_come_with_it(tmp_path):
     ahead = _stream(["昨日 駅前の本屋で", "前から探していた小説を"], each=2.0)
     ahead += [(4.166, 6.0, "ついに見つけた"), (6.0, 6.2, "ついに見つけた")]
     assert _expansion(tmp_path, ahead, 0) == [0, 3]
-    behind = [(0.0, 2.0, "昨日 駅前の本屋で"), (2.0, 2.2, "昨日 駅前の本屋で")]
-    behind += _stream(["前から探していた小説を", "ついに見つけた"], each=2.0, start=2.283)
+    behind = [(0.0, 2.5, "昨日 駅前の本屋で"), (2.5, 2.7, "昨日 駅前の本屋で")]
+    behind += _stream(["前から探していた小説を", "ついに見つけた"], each=2.5, start=2.783)
     assert _expansion(tmp_path, behind, 3) == [3, 0]
 
 
@@ -360,6 +360,22 @@ def test_chinese_is_capped_too(tmp_path):
                     each=2.9)
     before, after, cut, _ms = _window(tmp_path, lines, 0, "zh")
     assert ([before, after], cut) == ([0, 1], True)
+
+
+def test_a_last_word_the_tagger_gave_no_node_says_nothing_runs_on(tmp_path):
+    # a token whose node couldn't be matched (cues._read): the line ends, as a line with no words does
+    read = cues.read(_srt(tmp_path, [(1, 3, "駅の前で友達に会って")]), "ja")
+    tokens = cues.tokens(read, "ja")
+    tokens[-1] = tokens[-1]._replace(node=None)
+    assert pick.Lines(read, tokens, "ja").runs_on(0) is False
+
+
+def test_a_books_sentence_is_its_own_card_even_when_it_has_no_end_mark(tmp_path):
+    # a book's sentence that a line break ends, not a 。: still its own card, never its neighbour's
+    path = tmp_path / "book.txt"
+    path.write_text("駅の前で友達に会って\n一緒に映画を見に行った。", encoding="utf-8")
+    read, _tokens = cues.reading(str(path), "ja")
+    assert len(read) == 2 and pick.window(read, 0) == (0, 0, False, 0)
 
 
 def test_a_books_sentence_is_its_own_card(tmp_path):

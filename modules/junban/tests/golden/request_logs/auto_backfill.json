@@ -1,0 +1,141 @@
+[
+ {
+  "action": "requestPermission",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "apiReflect",
+  "version": 6,
+  "params": {
+   "scopes": [
+    "actions"
+   ],
+   "actions": [
+    "setSpecificValueOfCard",
+    "multi"
+   ]
+  }
+ },
+ {
+  "action": "guiReviewActive",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "requestPermission",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "apiReflect",
+  "version": 6,
+  "params": {
+   "scopes": [
+    "actions"
+   ],
+   "actions": [
+    "updateNoteFields",
+    "multi"
+   ]
+  }
+ },
+ {
+  "action": "modelNames",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "multi",
+  "version": 6,
+  "params": {
+   "actions": [
+    {
+     "action": "modelFieldNames",
+     "params": {
+      "modelName": "Lapis"
+     },
+     "version": 6
+    },
+    {
+     "action": "modelFieldNames",
+     "params": {
+      "modelName": "Migaku Japanese"
+     },
+     "version": 6
+    }
+   ]
+  }
+ },
+ {
+  "action": "multi",
+  "version": 6,
+  "params": {
+   "actions": [
+    {
+     "action": "findNotes",
+     "params": {
+      "query": "note:\"Lapis\" deck:* is:new"
+     },
+     "version": 6
+    },
+    {
+     "action": "findNotes",
+     "params": {
+      "query": "note:\"Migaku Japanese\" deck:* is:new"
+     },
+     "version": 6
+    }
+   ]
+  }
+ },
+ {
+  "action": "notesInfo",
+  "version": 6,
+  "params": {
+   "notes": [
+    1789712000000,
+    1789712000001
+   ]
+  }
+ },
+ {
+  "action": "findCards",
+  "version": 6,
+  "params": {
+   "query": "(note:\"Lapis\") deck:* is:new"
+  }
+ },
+ {
+  "action": "multi",
+  "version": 6,
+  "params": {
+   "actions": [
+    {
+     "action": "updateNoteFields",
+     "params": {
+      "note": {
+       "id": 1789712000000,
+       "fields": {
+        "Patterns": "<div class=\"pat-particle pat-src-conversational\">〜に 34% · 〜を 24%</div>"
+       }
+      }
+     },
+     "version": 6
+    },
+    {
+     "action": "updateNoteFields",
+     "params": {
+      "note": {
+       "id": 1789712000001,
+       "fields": {
+        "Patterns": "<div class=\"pat-form pat-src-conversational\">大切な 59% · 大切に 20%</div>"
+       }
+      }
+     },
+     "version": 6
+    }
+   ]
+  }
+ }
+]

@@ -191,6 +191,26 @@ def needs_in(win, timeout=60.0):
     return ok
 
 
+@pytest.fixture
+def qt_timer(qapp):
+    """A QTimer of the test's own: `qt_timer()` makes one, stopped and deleted on the main thread at the test's end. A
+    stand-in tick is never a bare `QTimer()` left to Python: a parentless Qt object in a reference cycle is destroyed
+    by whichever thread's collection frees it — a worker's too, and a Qt object deleted off its own thread crashed the
+    3.0.0 cut's shard 1/8 (Windows fatal 0xC0000005 in tests/qt/test_ankiconnect_install_part.py; tests/FLAKES.md)."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer
+    made = []
+
+    def make():
+        made.append(QTimer())
+        return made[-1]
+    yield make
+    for timer in made:
+        if not sip.isdeleted(timer):
+            timer.stop()
+            sip.delete(timer)
+
+
 def wait_until(predicate, timeout=5.0):
     """Run the event loop until `predicate()` is true (or the time is up). -> its last answer."""
     import time

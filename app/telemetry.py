@@ -76,10 +76,11 @@ def receiver_url():
 
 # The receiver's own address, as the build's packaging/build_config.json names it (`release.telemetry_url`; a test
 # holds the two equal): where Send report goes when no address is kept and the .env names none (update checks off).
-BUILT_IN_URL = "https://surasura-telemetry.sonicswain.workers.dev"
+# On Surasura's own domain since 3.0 (Sonic, 2026-11-09); the Workers' workers.dev addresses stay on for older builds.
+BUILT_IN_URL = "https://api.surasura.dev"
 # The same Worker deployed apart for tests (SR-3: its own storage, a report kept a day and never posted), so the live
 # one sees no report before the release (PROVISIONAL: Minato-SR's lean, 2026-11-01)
-BUILT_IN_TEST_URL = "https://surasura-telemetry-test.sonicswain.workers.dev"
+BUILT_IN_TEST_URL = "https://api-test.surasura.dev"
 
 
 def report_receiver(env="production"):

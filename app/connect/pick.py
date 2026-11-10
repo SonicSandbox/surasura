@@ -17,10 +17,18 @@ Anki now, or in the backlog of the last sync when Anki is closed — is never se
 checks for a duplicate.
 
 The line (IS:256–268, ✅ P1.5-12): never a sung line; a line no other word of this batch took, unless there is no
-other; a line with no other new word first; a written-out occurrence over a kana-only one; then the earliest. Its
-start goes as written (seconds, millisecond precision), and `line_expansion` always: a line is finished when it ends in
-。？！… or a closing bracket or quote; the next line is taken while this one runs on, the line before only when it runs
-into this one, at most 2 each side, with gaps up to 2 s.
+other; a line with no other new word first; then one whose card the 8 s cap doesn't cut (else the shortest card); a
+written-out occurrence over a kana-only one; then the earliest. Its start goes as written (seconds, millisecond
+precision), and `line_expansion` always — the lines Anki Miner adds (card lines, Sonic 2026-11-09): the next line is
+taken while this one runs on, the line before only when it runs into this one, at most 2 each side (a line's copies counting as it), with gaps up to
+2 s, and never past 8 s from the first line's start to the last's end (the word's own line is never cut). Whether a
+Japanese line runs on is its grammar (`Lines.runs_on`: its last word, from the analyzer's own tokens), not its
+punctuation; but a card the punctuation rule (`finished`: 。？！… or a closing bracket or quote ends a line) makes in
+4.5 s or less stays as it is, two speakers and all ("a pass between 2 characters"). A line shown again straight after
+itself (the same text, touching times; another speaker's line at either copy's time may sit between) counts as the
+line it repeats, and the card runs to its last copy, so the clip ends with the speech. Chinese keeps the punctuation
+rule, capped. Lines are counted as Anki Miner counts them: since 3.10.1 it drops a line holding none of the
+language's script (an English sign, a ♪～).
 
 The card front (IS:233–236): a verb, adjective or helper verb by its dictionary form as written, anything else exactly
 as written; Surasura's `Word` goes as a second entry when it differs and no word in the episode is written that way
@@ -43,6 +51,10 @@ from app.cues import seconds
 MODES = ("list", "unknown", "i1")
 SIDE = 2                # line_expansion: at most this many lines each side
 GAP_MS = 2000           # ...across gaps up to this long
+CAP_MS = 8000           # ...and never past this, first start to last end (Sonic: "8 second cap is wonderful")
+PASS_MS = 4500          # a card the punctuation rule makes this short stays as it is ("a pass between 2 characters")
+REPEAT_MS = 10          # a line shown again: the same text, starting at most this long after the copy before ends
+                        # (Generate's own window, Kotoba-R: 83 ms is the streaming gap between a line said twice)
 
 # UniDic's parts of speech
 GRAMMAR = frozenset(("助詞", "助動詞", "感動詞", "連体詞", "接続詞"))     # IS-P9 (fillers are 感動詞,フィラー)
@@ -51,6 +63,20 @@ _PROPER, _NUMBER = "固有名詞", "数詞"
 _KANA_ONLY_POS = frozenset(("名詞", "代名詞", "副詞"))
 
 _FINISHED = frozenset("。｡．.！？!?…‥")
+
+# Card lines (rule 1): what a Japanese line's end says about the next line
+_RUNS_ON_MARKS = frozenset("➡➨→⇒➔►―—、，,")        # an arrow, a dash, a comma: the sentence goes on
+_CLOSERS = frozenset("＞>")                          # a narration's closing ＞ ends it, as 》 does
+_RUN_ON_TAILS = ("とはいえ", "とはいっても", "ものの", "どころか", "かどで", "ながらも")
+_EITHER_WAY = ("せよ", "しろ")        # にせよ / にしろ: concessive after a case particle に (何にしろ, あるにせよ), runs on;
+                                      # after the copula's に (勝手にしろ, 静かにせよ) it is an order, and ends
+_RUN_ON_PARTICLES = frozenset(("格助詞", "接続助詞", "係助詞", "副助詞", "準体助詞"))     # に を や は ばっかり …
+_ENDING_PARTICLES = frozenset(("けど", "けれど", "けれども", "けども", "のに", "し", "もん", "もの", "って", "か",
+                               "の", "から", "ので"))                     # said as a whole line (言いさし)
+_REASONS = frozenset(("から", "ので"))
+_POLITE = frozenset(("です", "ます"))                                   # ですから / ますから end the line…
+_POLITE_STEMS = frozenset(("でし", "まし", "ませ"))                       # …as でしたから / ましたから / ませんから do
+_NOUN_LINKS = frozenset(("ノチ", "アト", "ウチ", "タメ", "ホド"))          # 後 内 為 程 as nouns: のち あと うち ため ほど
 _HAN = re.compile(f"[{analyzer.HAN}]")
 _HIRAGANA_ONLY = re.compile(r"^[ぁ-ゟー]+$")
 _KATAKANA_ONLY = re.compile(r"^[ァ-ヿー]+$")
@@ -72,19 +98,205 @@ def finished(text):
     return bool(text) and (text[-1] in _FINISHED or unicodedata.category(text[-1]) in ("Pe", "Pf"))
 
 
-def line_expansion(cues, at):
-    """[before, after]: the lines Anki Miner adds to line `at` so the card holds the whole sentence (§ above). A
-    book's or a text's cue is a whole sentence already (`cues.reading`, Z-9): none."""
+class Lines:
+    """What `window` reads of one episode's lines: the lines Anki Miner has (`kept`, cue indices in order: a line
+    holding the language's script — Anki Miner drops the rest since 3.10.1), and each Japanese line's words as the
+    analyzer read them (`tokens`, `cues.tokens`'s: no second tagger pass), so its grammar says whether it runs on.
+    `tokens` None: read here, for a caller with none of its own."""
+
+    def __init__(self, cues, tokens=None, language="ja"):
+        self.cues, self.language = cues, language
+        self.kept = [i for i, cue in enumerate(cues) if analyzer.has_target_language(cue.text or "", language)]
+        self.place = {cue: n for n, cue in enumerate(self.kept)}
+        self._pieces = {}                   # cue -> [(surface, UniDic feature or None)], a joined word by its parts
+        if language != "ja" or getattr(cues, "units", False):
+            return
+        if tokens is None:
+            from app import cues as cue_reader
+            tokens = cue_reader.tokens(cues, language)
+        for token in tokens:
+            node = token.node
+            pieces = self._pieces.setdefault(token.cue, [])
+            if node is None:
+                pieces.append((token.surface, None))
+            elif isinstance(node, analyzer.JoinedWord):
+                pieces.extend(node.parts)
+            else:
+                pieces.append((node.surface, node.feature))
+
+    def runs_on(self, at, forward=True):
+        """Does Japanese line `at` run on into the line after it (`forward`), or into the line after it when that
+        line is the card's (not `forward`: is it pulled in from before)? By its end (rule 1): it runs on at a て / で
+        form, a 連用形 or 仮定形 (なら, ば, たら), a case / binding / adverbial particle (に を や は ばっかり), ず, an
+        adverb after other words (ずっと; なるほど alone is a reply), an arrow, dash or comma, a tail (にせよ にしろ
+        とはいえ … ながらも; 勝手にしろ is an order), the nouns のち あと うち ため ほど; a plain から / ので only
+        forward, into its main clause (ですから, ましたから end; a reason is never pulled in from before). It ends at
+        。？！…, a closing bracket or ＞, a sentence-final particle, a plain / polite / imperative / volitional form,
+        a noun or a name, an interjection, and at けど けれど し もん もの って か
+        の. のに runs on (PROVISIONAL): UniDic reads it as の + に."""
+        text = (self.cues[at].text or "").rstrip()
+        if not text or finished(text) or text[-1] in _CLOSERS:
+            return False
+        if text[-1] in _RUNS_ON_MARKS or text.endswith(_RUN_ON_TAILS):
+            return True
+        pieces = self._pieces.get(at) or []
+        if not pieces or pieces[-1][1] is None:
+            return False                    # no word the tagger read: nothing says it runs on
+        surface, f = pieces[-1]
+        before = [piece[0] for piece in pieces[:-1]]
+        if surface in _EITHER_WAY and before[-1:] == ["に"]:
+            return pieces[-2][1] is not None and pieces[-2][1].pos2 == "格助詞"
+        if surface == "で" and before[-1:] == ["の"]:      # UniDic reads ので after ます as の + で
+            surface, before = "ので", before[:-1]
+        if surface == "ので" or (surface == "から" and f.pos2 == "接続助詞"):
+            polite = bool(before) and (before[-1] in _POLITE or (len(before) > 1 and before[-2] in _POLITE_STEMS))
+            return forward and not polite
+        if f.pos1 == "助詞":
+            if surface in _ENDING_PARTICLES and f.pos2 != "格助詞":
+                return False
+            return f.pos2 in _RUN_ON_PARTICLES
+        if f.pos1 == "助動詞" and surface == "ず":
+            return True
+        if f.pos1 in CONJUGATED:
+            return (f.cForm or "").startswith(("連用形", "仮定形"))
+        if f.pos1 == "副詞":
+            return bool(before)
+        return f.pos1 == "名詞" and f.kanaBase in _NOUN_LINKS
+
+
+def _spread(cues, kept, lo, hi):
+    """Milliseconds from the earliest start to the latest end of Anki Miner's lines `kept[lo..hi]` (its window: the
+    least start and the greatest end, as an .ass file's events needn't be in time order)."""
+    held = [cues[i] for i in kept[lo:hi + 1]]
+    return max(cue.end for cue in held) - min(cue.start for cue in held)
+
+
+def _copy(cues, kept, earlier, later):
+    """Is Anki Miner's line `kept[later]` its line `kept[earlier]` shown again: the same text, starting at most
+    REPEAT_MS after it ends (and not before it starts), each line between them at one copy's time (another speaker's
+    line, shown beside one of them)?"""
+    a, b = cues[kept[earlier]], cues[kept[later]]
+    if a.text != b.text or b.start < a.start or b.start - a.end > REPEAT_MS:
+        return False
+    return all((cues[i].start, cues[i].end) in ((a.start, a.end), (b.start, b.end)) for i in kept[earlier + 1:later])
+
+
+def _last_copy(cues, kept, n, fits=lambda hi: True):
+    """The last copy of Anki Miner's line `kept[n]` shown straight after it (`n` itself when none), while
+    `fits(copy)`."""
+    moved = True
+    while moved:
+        moved = False
+        for later in range(n + 1, min(n + SIDE + 2, len(kept))):
+            if _copy(cues, kept, n, later):
+                if fits(later):
+                    n, moved = later, True
+                break
+    return n
+
+
+def _first_copy(cues, kept, n, fits=lambda lo: True):
+    """The line Anki Miner's line `kept[n]` shows again, back to its first showing (`n` itself when none), while
+    `fits(copy)`."""
+    moved = True
+    while moved:
+        moved = False
+        for earlier in range(n - 1, max(n - SIDE - 2, -1), -1):
+            if _copy(cues, kept, earlier, n):
+                if fits(earlier):
+                    n, moved = earlier, True
+                break
+    return n
+
+
+def _next_to(cues, earlier, later):
+    """Are lines `earlier` and `later` (cue indices, in the file's order) next to each other in time: the later
+    starting at most GAP_MS after it ends and at most GAP_MS before it starts (an .ass file's events needn't be in
+    time order: two shown together are neighbours, a line said a minute away never is)?"""
+    a, b = cues[earlier], cues[later]
+    return b.start >= a.start - GAP_MS and b.start - a.end <= GAP_MS
+
+
+def _ended(text):
+    """Does a line end its sentence and run on only by an arrow or a dash after it (a TV caption's 。➡: the same
+    speaker's next sentence follows)?"""
+    text = (text or "").rstrip()
+    bare = text.rstrip("".join(_RUNS_ON_MARKS - {"、", "，", ","}))
+    return bare != text and finished(bare)
+
+
+def _walk(cues, kept, n, runs_on, cap, repeats):
+    """(lo, hi, cut): the card cut from Anki Miner's line `kept[n]` holds its lines `kept[lo..hi]`. `runs_on(cue,
+    forward)` says whether a line runs on; the lines after first (Anki Miner adds those first too), then the lines
+    before, at most SIDE a side; `repeats`: a line's copies count as that line (`_copy`), its grammar its first copy's
+    (a later copy may hold no words). `cap`: the longest card in ms (None: none). Under it the word's own sentence
+    comes first: a line past a sentence's end (`_ended`, a TV caption's 。➡ — the speaker's next or last sentence) is
+    added only once the sentence is in, while it fits; `cut` True when the cap left the word's own sentence short."""
+    cap = float("inf") if cap is None else cap
+    at = {"lo": n, "hi": n, "after": 0, "before": 0}
+    if repeats:                             # the word's line with its copies, as many as fit (the line itself always)
+        at["lo"] = _first_copy(cues, kept, n, lambda lo: _spread(cues, kept, lo, n) <= cap)
+        at["hi"] = _last_copy(cues, kept, n, lambda hi: _spread(cues, kept, at["lo"], hi) <= cap)
+    short = repeats and (_first_copy(cues, kept, n) != at["lo"] or _last_copy(cues, kept, n) != at["hi"])
+    at["judged"] = at["lo"]
+
+    def ahead(own):
+        """Add the lines after while the last runs on (`own`: within the word's sentence); False when the cap cut."""
+        while at["after"] < SIDE and at["hi"] + 1 < len(kept) and runs_on(kept[at["judged"]], True) \
+                and _next_to(cues, kept[at["hi"]], kept[at["hi"] + 1]):
+            if own and _ended(cues[kept[at["judged"]]].text):
+                return True
+            reach = _last_copy(cues, kept, at["hi"] + 1) if repeats else at["hi"] + 1
+            if _spread(cues, kept, at["lo"], reach) > cap:
+                return False
+            at.update(judged=at["hi"] + 1, hi=reach, after=at["after"] + 1)
+        return True
+
+    def behind(own):
+        """Add the lines before while each runs into the next; False when the cap cut."""
+        while at["before"] < SIDE and at["lo"] > 0 and _next_to(cues, kept[at["lo"] - 1], kept[at["lo"]]):
+            reach = _first_copy(cues, kept, at["lo"] - 1) if repeats else at["lo"] - 1
+            if not runs_on(kept[reach], False) or (own and _ended(cues[kept[reach]].text)):
+                return True
+            if _spread(cues, kept, reach, at["hi"]) > cap:
+                return False
+            at.update(lo=reach, before=at["before"] + 1)
+        return True
+
+    cut = not ahead(own=True) or short
+    cut = not behind(own=True) or cut
+    if not cut:                             # the sentence is in: its neighbours by the same speaker, while they fit
+        ahead(own=False)
+        behind(own=False)
+    return at["lo"], at["hi"], cut
+
+
+def window(cues, at, lines=None):
+    """(before, after, cut, ms): the lines Anki Miner adds to line `at` so the card holds the whole sentence (§
+    above), counted in Anki Miner's lines (`Lines.kept`); whether the 8 s cap cut that sentence short; the card's
+    length. A book's or a text's cue is a whole sentence already (`cues.reading`, Z-9): none."""
     if getattr(cues, "units", False):
-        return [0, 0]
-    after, here = 0, at
-    while after < SIDE and here + 1 < len(cues) and not finished(cues[here].text) \
-            and cues[here + 1].start - cues[here].end <= GAP_MS:
-        after, here = after + 1, here + 1
-    before, here = 0, at
-    while before < SIDE and here > 0 and not finished(cues[here - 1].text) \
-            and cues[here].start - cues[here - 1].end <= GAP_MS:
-        before, here = before + 1, here - 1
+        return 0, 0, False, 0
+    lines = lines if lines is not None else Lines(cues)      # Japanese, read here: for a caller with no Lines
+    kept, n = lines.kept, lines.place.get(at)
+    if n is None:                           # a line Anki Miner doesn't have (no script of the language)
+        return 0, 0, False, max(cues[at].end - cues[at].start, 0)
+    punctuated = lambda cue, forward: not finished(cues[cue].text)      # noqa: E731 — the rule before grammar
+    if lines.language == "ja":
+        lo, hi, cut = _walk(cues, kept, n, punctuated, None, False)
+        if _spread(cues, kept, lo, hi) > PASS_MS:
+            lo, hi, cut = _walk(cues, kept, n, lines.runs_on, CAP_MS, True)
+        else:                               # the pass as it is, but ending with the speech: its ends' copies too
+            lo = _first_copy(cues, kept, lo, lambda a: _spread(cues, kept, a, hi) <= CAP_MS)
+            hi = _last_copy(cues, kept, hi, lambda b: _spread(cues, kept, lo, b) <= CAP_MS)
+    else:
+        lo, hi, cut = _walk(cues, kept, n, punctuated, CAP_MS, False)
+    return n - lo, hi - n, cut, _spread(cues, kept, lo, hi)
+
+
+def line_expansion(cues, at, lines=None):
+    """[before, after]: the lines Anki Miner adds to line `at` so the card holds the whole sentence (`window`)."""
+    before, after, _cut, _ms = window(cues, at, lines)
     return [before, after]
 
 
@@ -241,14 +453,26 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         by_key.setdefault(o.key, []).append(o)
     met = {key: n for n, key in enumerate(by_key)}
 
-    spans = {}
+    lines = Lines(cues, tokens, language)
+    cards = {}
+
+    def card(at):
+        """A card cut from line `at`: (the cues it holds — the line and its expansion —, [before, after], whether the
+        cap cut it, its length in ms)."""
+        if at not in cards:
+            before, after, cut, ms = window(cues, at, lines)
+            n = lines.place.get(at)
+            held = lines.kept[n - before:n + after + 1] if n is not None else [at]
+            cards[at] = (held, [before, after], cut, ms)
+        return cards[at]
 
     def span(at):
-        """The lines a card cut from line `at` holds: the line and its expansion."""
-        if at not in spans:
-            before, after = line_expansion(cues, at)
-            spans[at] = range(at - before, at + after + 1)
-        return spans[at]
+        """The lines a card cut from line `at` holds."""
+        return card(at)[0]
+
+    def fits(at):
+        """Does the card cut from line `at` hold its whole sentence within the cap (rule 4)?"""
+        return not card(at)[2] and card(at)[3] <= CAP_MS
 
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
@@ -289,7 +513,9 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0,
+        # a line no other word took; no other new word; a card that fits the cap uncut (else the shortest); written out
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, not fits(o.cue),
+                                          0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]
@@ -301,7 +527,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
             "line_start": seconds(cue.start), "line_end": seconds(cue.end), "line_text": cue.text,
-            "line_expansion": line_expansion(cues, best.cue),
+            "line_expansion": list(card(best.cue)[1]),
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),
             "other_new": others(best),

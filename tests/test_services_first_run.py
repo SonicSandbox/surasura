@@ -478,3 +478,65 @@ def _timed(fn):
     st = fn()
     assert not first_run.needs_run(st)
     return time.perf_counter() - t0
+
+
+# --- 3.0.1: Windows' Controlled folder access (app/cfa.py; the move itself: tests/test_library_move.py) -------------
+
+def _documents_library(tmp_path, monkeypatch, on=True):
+    from tests.test_cfa import fake_registry
+    documents = str(tmp_path / "profile" / "Documents")
+    library = os.path.join(documents, "Surasura")
+    os.makedirs(os.path.join(library, "User Files", "ja"))
+    _write(_known(library, "ja"), json.dumps({"words": [{"dictForm": "勉強", "knownStatus": "KNOWN"}]},
+                                             ensure_ascii=False))
+    fake_registry(monkeypatch, switch=1 if on else 0, documents=documents)
+    _installed(monkeypatch, library)
+    first_run.record(library)
+    return documents, library
+
+
+def test_a_library_windows_wont_let_surasura_write_is_blocked_with_both_ways_out(tmp_path, monkeypatch):
+    # Mattias, 2026-11-10: Defender's Controlled folder access refused every write into Documents\Surasura.
+    from app import cfa
+    from tests.test_cfa import refuse_inside
+    documents, library = _documents_library(tmp_path, monkeypatch)
+    refuse_inside(monkeypatch, documents)
+    st = first_run.state()
+    assert st["state"] == first_run.READY and st["cfa"] is True and first_run.needs_run(st)
+    result = first_run.run(st)
+    assert result["status"] == "blocked" and result["reason"] == "cfa"
+    assert result["message"] == cfa.words(library)
+    assert result["cfa"] == {"library": library, "target": cfa.move_target(), "programs": cfa.programs()}
+    assert result["graduated"] is None, "nothing runs on a library Windows refuses"
+
+
+def test_a_library_surasura_is_allowed_to_write_goes_on_and_leaves_no_check_file(tmp_path, monkeypatch):
+    _documents, library = _documents_library(tmp_path, monkeypatch)
+    before = sorted(os.listdir(library))
+    st = first_run.state()
+    assert st["cfa"] is True
+    assert first_run.run(st)["status"] == "done"
+    assert sorted(os.listdir(library)) == before
+
+
+def test_with_cfa_off_an_everyday_start_makes_no_write_check(tmp_path, monkeypatch):
+    from app import cfa
+    _documents_library(tmp_path, monkeypatch, on=False)
+    monkeypatch.setattr(cfa, "probe", lambda folder: pytest.fail("a write check with CFA off"))
+    st = first_run.state()
+    assert st["cfa"] is False and not first_run.needs_run(st)
+    assert first_run.run(st)["status"] == "done"
+
+
+def test_a_new_library_in_documents_that_windows_refuses_is_the_same_blocked_answer(tmp_path, monkeypatch):
+    from tests.test_cfa import fake_registry
+    documents = str(tmp_path / "profile" / "Documents")
+    os.makedirs(documents)
+    fake_registry(monkeypatch, switch=1, documents=documents)
+
+    def denied(path):
+        raise PermissionError(13, "Access is denied", path)
+    monkeypatch.setattr(import_2x, "_write_probe", denied)
+    library = _installed(monkeypatch, os.path.join(documents, "Surasura"))
+    result = first_run.run(first_run.state(), fresh=True)
+    assert result["status"] == "blocked" and result["reason"] == "cfa" and not os.path.exists(library)

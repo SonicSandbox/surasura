@@ -53,8 +53,9 @@ EMPTY_LISTS = ("Blacklist.txt", "IgnoreList.txt")   # a new library's start writ
 TMP_SUFFIX = ".import-tmp"
 PROBE_NAME = ".surasura-write-check"
 PROGRAM_MARKS = ("Surasura.exe", "_internal")   # a folder holding either is a Surasura program, never a library
-LIBRARY_FALLBACK = "Surasura Library"           # the library's name in Documents when Documents\Surasura holds a
-                                                # program (IK-1; the installer's LibraryFallback says the same)
+LIBRARY_FALLBACK = "Surasura Library"           # the library's name in the user's folder when <user folder>\Surasura
+                                                # holds a program (IK-1; the installer's LibraryFallback says the same;
+                                                # in the user's folder since 3.0.1, Controlled folder access)
 
 CFA_MESSAGE = (
     "Surasura could not write to {folder}. Windows may be protecting this folder (Controlled folder access). "
@@ -428,7 +429,7 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
         return _refused("same_folder", "Choose a library folder outside your old Surasura folder.")
     if holds_program(library):
         return _refused("holds_program", f"{library} holds a Surasura program, not a library. Choose another folder, "
-                        f"such as Documents\\{LIBRARY_FALLBACK}.")
+                        f"such as {os.path.join(os.path.expanduser('~'), LIBRARY_FALLBACK)}.")
     previous = read_import_note()
     resuming = False
     if previous and previous.get("complete") and not again:

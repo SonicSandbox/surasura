@@ -325,6 +325,27 @@ def check_build(store=True):
 # --------------------------------------------------------------------------- #
 # The wrapper
 # --------------------------------------------------------------------------- #
+def blocked_by_windows(folder):
+    """The `needs-you` answer (exit 4) for a write Windows' Controlled folder access refused (3.0.1, app/cfa.py): the
+    two ways out in words, `need` the language-free `windows-folder-access`, the folder, the move's target and both
+    programs to allow."""
+    from app import cfa
+    words = cfa.cli_words(folder)
+    return CliError("needs-you", words, ask=words, need=cfa.NEED, folder=folder, move_to=cfa.move_target(),
+                    allow=cfa.programs(), settings=cfa.SETTINGS_PAGE)
+
+
+def _refused_by_windows(e):
+    """The folder an OSError (anywhere inside a verb) says Controlled folder access refused, or None."""
+    try:
+        from app import cfa
+        if isinstance(e, OSError) and cfa.refused(e):
+            return e.filename
+    except Exception:
+        log.exception("the folder-access look didn't run")
+    return None
+
+
 def run(verb, call, argv, progress=False):
     """Run one verb: `call()` returns the result's fields or raises. Every outcome becomes one line and an exit code;
     one log line per call (verb, exit code, duration, argv — argv never holds a secret)."""
@@ -339,7 +360,13 @@ def run(verb, call, argv, progress=False):
         code = fail(e.code, e.message, **e.context)
     except Exception as e:
         log.error("crashed:\n%s", traceback.format_exc())
-        code = fail("failed", f"Surasura's command line failed ({type(e).__name__}: {e}). The details are in its log.")
+        folder = _refused_by_windows(e)
+        if folder:
+            blocked = blocked_by_windows(os.path.dirname(folder) or folder)
+            code = fail(blocked.code, blocked.message, **blocked.context)
+        else:
+            code = fail("failed",
+                        f"Surasura's command line failed ({type(e).__name__}: {e}). The details are in its log.")
     finally:
         log.info("verb=%s exit=%s %.3fs argv=%r", verb, code, time.monotonic() - started, argv)
     return code

@@ -207,8 +207,8 @@ def read_header(path):
 def _validate(plan, deep=True):
     """Every value the engine reads, checked by type and range, every table against the header: a damaged or
     hand-edited plan is refused whole with a PlanError, never half-used and never a crash later (a TypeError in
-    `result()` on a worker). `format` 1 or 2 as `analyzer.plan_lines` writes it (01 §7; 2 adds `spell` and the
-    header's `phrase_entries`, E2.2 D8)."""
+    `result()` on a worker). `format` 1 to 4 as `analyzer.plan_lines` writes it (01 §7; 2 adds `spell` and the
+    header's `phrase_entries`, E2.2 D8; 3 the example-sentence pools; 4 each phrase entry's dictionary spelling)."""
     h = plan.header
     for name, kinds in (("language", str), ("engine", str), ("run_signature", str), ("order_free_signature", str),
                         ("weights", dict), ("files", int), ("keys", int), ("shared_phrases", list)):

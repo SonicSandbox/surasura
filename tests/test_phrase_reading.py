@@ -54,6 +54,20 @@ def test_the_rows_reading_stays_where_the_spelling_gives_no_other(orth, display,
     assert plan_rules.display_reading(orth, display, reading) == reading
 
 
+def test_a_kanji_after_other_kana_keeps_the_rows_reading():
+    # why (review): 声 is ゴエ only inside デカ声 — でかい声 would read デカイゴエ; a kanji's reading is taken only where
+    # it stands after the same kana in both spellings (いい感じ: 感 after い in both)
+    assert plan_rules.display_reading("でかい声", "デカ声", "デカゴエ") == "デカゴエ"
+    assert plan_rules.display_reading("俺の家", "俺ん家", "オレンチ") == "オレンチ"
+    assert plan_rules.display_reading("いい感じ", "よい感じ", "ヨイカンジ") == "イイカンジ"
+
+
+def test_a_counter_or_iteration_mark_is_never_read_as_a_kana_of_its_own():
+    # why (review): 三ヶ月 is さんかげつ, not サンヶゲツ
+    assert plan_rules.display_reading("三ヶ月", "三か月", "サンカゲツ") == "サンカゲツ"
+    assert plan_rules.display_reading("いすゞ", "いすず", "イスズ") == "イスズ"
+
+
 def test_a_reading_the_spellings_cannot_line_up_one_way_only_stays():
     # why: in 見の見 read ミノノミ the first 見 is ミ or ミノ: a guess would put a wrong reading on the card — the
     # row's stays; so it does where one kanji would need two readings
@@ -120,6 +134,15 @@ def test_the_replan_shows_the_same_kana_as_the_generate(run):
     plan = plan_engine.load(str(run / analyzer.PLAN_FILE))
     assert plan.header["format"] == plan_engine.FORMAT == analyzer.PLAN_FORMAT == 4
     result = plan_engine.Engine(plan).result()
+    # a format-4 plan whose phrase entries lack the spelling is refused whole, never half-read
+    lines = [json.loads(line) for line in __import__("gzip").decompress(
+        (run / analyzer.PLAN_FILE).read_bytes()).split(b"\n") if line]
+    lines[0]["phrase_entries"] = [entry[:2] for entry in lines[0]["phrase_entries"]]
+    broken = run / "broken.json.gz"
+    broken.write_bytes(__import__("gzip").compress(b"\n".join(json.dumps(line, ensure_ascii=False).encode("utf-8")
+                                                               for line in lines) + b"\n"))
+    with pytest.raises(plan_engine.PlanError, match="phrase_entries"):
+        plan_engine.load(str(broken))
     want = {(r["Word"], r["Reading"]): r["Kana"] for r in _rows(run, "priority_learning_list.csv")}
     assert {(r["Word"], r["Reading"]): r["Kana"] for r in result.priority} == want
     assert ("良い感じ", "ヨイカンジ") in want
@@ -131,5 +154,6 @@ def test_the_journey_shows_kana_where_there_is_one_and_keys_on_the_reading():
     assert "function shownReading(data)" in html
     assert 'data-reading="${shownReading(data)}"' in html
     assert "const reading = shownReading(row);" in html
+    assert "row.Reading, row.Kana, ...forms" in html          # typing いいかんじ finds the いい感じ card
     assert re.search(r"return `\$\{data\.Word\}\|\$\{\(typeof data\.Reading === 'string'\) \? data\.Reading : ''\}`",
                      html)

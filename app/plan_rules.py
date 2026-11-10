@@ -90,7 +90,10 @@ _SPELLING_PIECE = re.compile(f"([{HAN}]+)|([{KANA_LETTERS}ー]+)")
 
 def _pieces(spelling):
     """[(True, a kanji run) or (False, its kana in katakana)] for `spelling`, or None when it holds anything else (a
-    letter, a digit, a mark)."""
+    letter, a digit, a mark, a counter ヶ / ヵ or an iteration mark ゝ ヽ: kana letters that read as no kana of their
+    own)."""
+    if any(ch in _NOT_READ_AS_WRITTEN for ch in spelling):
+        return None
     pieces, at = [], 0
     for m in _SPELLING_PIECE.finditer(spelling):
         if m.start() != at:
@@ -98,6 +101,9 @@ def _pieces(spelling):
         pieces.append((True, m.group(1)) if m.group(1) else (False, _katakana(m.group(2))))
         at = m.end()
     return pieces if at == len(spelling) and pieces else None
+
+
+_NOT_READ_AS_WRITTEN = frozenset("ヶヵゝゞヽヾ")
 
 
 def _katakana(text):
@@ -119,16 +125,18 @@ def display_reading(orth, display, reading):
     them in `reading` (the row's: the dictionary's reading of `display`). いい感じ beside よい感じ's ヨイカンジ shows
     イイカンジ; ほうがいい beside ホウガヨイ shows ホウガイイ. The row's reading as it is wherever the spelling already
     reads so (気に入る キニイル, 何もない, いつの間に), where its kanji aren't the dictionary spelling's (no reading to
-    take from it — 仲よい ナカイイ), where the two spellings can't be lined up with the reading one way only, and where
-    the two readings differ only in voicing (ト / ド: a spelling that dropped a voiced sound keeps the dictionary's).
-    Display only, never the row's identity (Word, Reading). Strings only, no tagger: Connect's card reading calls it
-    too, with the line's own spelling."""
+    take from it — 仲よい ナカイイ), where a kanji stands after other kana than in the dictionary's spelling (its
+    reading there may be the neighbour's: 声 is ゴエ only inside デカ声, so でかい声 keeps デカゴエ), where the two
+    spellings can't be lined up with the reading one way only, and where the two readings differ only in voicing (ト /
+    ド: a spelling that dropped a voiced sound keeps the dictionary's). Display only, never the row's identity (Word,
+    Reading). Strings only, no tagger and no window: Connect's card reading is to call it too, with the line's own
+    spelling (3.0.1)."""
     if not orth or not reading or orth == display:
         return reading
     pieces = _pieces(orth)
     if pieces is None or _pattern(pieces, False).fullmatch(reading):
         return reading
-    read_as = {}
+    read_as, after = {}, {}             # a kanji run's reading in `display`, and the kana it stands after there
     if any(is_kanji for is_kanji, _text in pieces):
         own = _pieces(display or "")
         if own is None:
@@ -139,14 +147,20 @@ def display_reading(orth, display, reading):
         for text, kana in zip((text for is_kanji, text in own if is_kanji), lazy.groups()):
             if read_as.setdefault(text, kana) != kana:
                 return reading
-    shown = []
+        before = ""
+        for is_kanji, text in own:
+            if is_kanji and after.setdefault(text, before) != before:
+                return reading
+            before = "" if is_kanji else text[-1]
+    shown, before = [], ""
     for is_kanji, text in pieces:
         if is_kanji:
-            if text not in read_as:
+            if text not in read_as or after[text] != before:
                 return reading
             shown.append(read_as[text])
         else:
             shown.append(text)
+        before = "" if is_kanji else text[-1]
     shown = "".join(shown)
     return reading if _unvoiced(shown) == _unvoiced(reading) else shown
 

@@ -120,6 +120,28 @@ def test_a_phrase_ending_in_a_form_of_its_own_is_that_form_whatever_its_last_wor
     assert [phrases.fixed_form(e) for e in found_in.entries] == [True, True, True, True, False]
 
 
+def test_a_spelling_that_is_no_form_of_its_own_finds_every_form(tokenizer):
+    """own_form's exceptions: the spelling's last kana differs from the lemma's, yet it is no form of its own — a kanji
+    ends the text's word (すぐ傍 is すぐそば), a potential's dictionary form (手間が省けた: 省ける, lemma 省く), a long
+    vowel written short (あっそう is あっそ), a word's last kana left off (万全を期する is 万全を期す). And a katakana
+    ending is the hiragana one (ちょいマチ is ちょい待ち)."""
+    found_in = phrases.PhraseSet([
+        ["直ぐ|側", "スグ|ガワ", "cc", "すぐそば", "スグソバ"],
+        ["手間|が|省く", "テマ|ガ|ハブク", "cgc", "手間が省ける", "テマガハブケル"],
+        ["あっ|そう", "アッ|ソウ", "cc", "あっそ", "アッソウ"],
+        ["万全|を|期する", "バンゼン|ヲ|キスル", "cgc", "万全を期す", "バンゼンヲキス"],
+        ["ちょい|待つ", "チョイ|マツ", "cc", "ちょい待ち", "チョイマチ"]])
+    assert all(phrases.fixed_form(e) for e in found_in.entries)
+    assert _found(found_in, tokenizer, "駅のすぐ傍に住んでいる。") == [("直ぐ側", "すぐ傍")]
+    assert _found(found_in, tokenizer, "おかげで手間が省けた。") == [("手間が省く", "手間が省け")]
+    assert _found(found_in, tokenizer, "あっそう、じゃあ帰る。") == [("あっそう", "あっそう")]
+    assert _found(found_in, tokenizer, "万全を期する。") == [("万全を期する", "万全を期する")]
+    assert _found(found_in, tokenizer, "ちょい待ち！") == [("ちょい待つ", "ちょい待ち")]
+    assert _found(found_in, tokenizer, "ちょい待って！") == []
+    entry = found_in.entry(found_in.of_word("ちょい待つ"))
+    assert phrases.ends_as(entry, "マチ") and not phrases.ends_as(entry, "待っ")
+
+
 def test_a_match_is_named_as_written_when_its_form_is_its_own_and_keeps_its_voicing(tokenizer):
     """The row's spelling (Orth) is each match's dictionary form: for a phrase with a form of its own that is the form
     as written (ごめんなさい — never the made-up ごめんなさる), and a word voiced inside the phrase keeps its voicing

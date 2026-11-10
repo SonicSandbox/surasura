@@ -3618,7 +3618,7 @@
                 if (seen.has(id)) return;
                 seen.add(id);
                 const forms = (typeof row.Forms === 'string' && row.Forms) ? row.Forms.split('|') : [];
-                const keys = new Set([row.Word, row.Orth, row.Reading, ...forms]
+                const keys = new Set([row.Word, row.Orth, row.Reading, row.Kana, ...forms]
                     .filter(k => typeof k === 'string' && k).map(rsNorm));
                 const sents = Object.keys(row)
                     .filter(k => /^Context \d+$/.test(k) && typeof row[k] === 'string' && row[k])

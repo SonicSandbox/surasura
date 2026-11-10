@@ -868,7 +868,7 @@ def test_r3_at_250_and_125_percent_a_row_leaving_moves_the_rows_under_it_as_pain
     done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--basetemp",
                            str(tmp_path / "run")] + [f"tests/qt/test_wc_current.py::{n}" for n in names],
                           cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
-    assert done.returncode == 0 and " 5 passed" in done.stdout, done.stdout[-6000:] + done.stderr[-3000:]
+    assert done.returncode == 0 and "5 passed" in done.stdout, done.stdout[-6000:] + done.stderr[-3000:]
 
 
 def _coverage(lst, w, before, after):

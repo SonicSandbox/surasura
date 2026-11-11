@@ -224,6 +224,13 @@ ROWS = {
     "connect_send_grammar": ("Send grammar words", "Particles and endings get cards too",
                              "Grammar words (particles, endings) get cards too. Names follow Ignore names in Language "
                              "& Parsing", "grammar particles endings send"),
+    # Zh-C (PROVISIONAL words): the one line says where the word goes
+    "connect_zh_word_audio": ("Word audio from Google",
+                              "Sends each new card’s word to Google, which reads it aloud for the card",
+                              "Chinese cards can carry the word read aloud. Anki Miner gets it from Google’s "
+                              "text-to-speech, so each new card’s word is sent to Google. Off: cards have no word "
+                              "audio (the sentence’s own audio stays)", "word audio google text to speech tts "
+                              "pronunciation chinese"),
     "connect_open_anki": ("When Anki is closed", "New cards wait until you open Anki — or Surasura opens it for you",
                           "When you open Surasura and Anki is closed, Surasura can open it, so your phone's reviews "
                           "come in and your cards get made and ordered", "closed open anki start session"),

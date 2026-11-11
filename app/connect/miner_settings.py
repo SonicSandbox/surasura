@@ -20,6 +20,15 @@ from Surasura's own settings or from Anki, never guessed from a name alone:
 What can't be known — several known-words decks and no Junban deck, an empty deck — is asked in Surasura's own window
 (`plan` -> "ask", with the choices); never in Anki Miner's.
 
+**Chinese** (Zh-C, 2026-11-12; Sonic: "use his card although they may have their own so they can map it"): the note
+type offered first is **Anki Miner Note** (`AM_NOTE`: its Pinyin, MeasureWord and Traditional fields, `ZH_ROLES`, are
+filled by name like the rest), with the page to get it (`AM_NOTE_PAGE`, a link the browser opens) when Anki lacks it;
+every other note type Anki has is offered too, and one that isn't a note type Anki Miner fills completely (`PRESETS`)
+is **mapped by the learner** — `plan` asks `why: "map"` with the note type's fields and a proposal, the learner's map
+comes back as `chosen["fields"]`, is checked (`map_problem`: the word in the first field, a sentence field, every field
+the note type's, none twice) and written with the rest, into the profile Connect mines with. Japanese-only roles
+(`JA_ONLY`: furigana, pitch) are never mapped for Chinese (Anki Miner 3.12 stops a Chinese run on them).
+
 Standard library only; Anki is read through the `anki` reads handed in (`AnkiReads`: read-only AnkiConnect actions).
 """
 from collections import Counter
@@ -43,7 +52,26 @@ NAMES = {
     "source": ("MiscInfo",),
     "sentence_translation": ("SentenceTranslation",),
     "language": ("Language",),
+    # Chinese (3.12.0 `languages/zh/fields.py`'s card fields; Anki Miner Note's names)
+    "expression_pinyin": ("Pinyin",),
+    "measure_word": ("MeasureWord",),
+    "expression_traditional": ("Traditional",),
 }
+# The roles only one language fills: Chinese's three are mapped even when the profile's map doesn't name them yet;
+# Japanese's furigana and pitch (3.12.0 `note_presets.CAPABILITY_FIELD_KEYS`) are left unmapped in any other language
+ZH_ROLES = ("expression_pinyin", "measure_word", "expression_traditional")
+LANGUAGE_ROLES = {"zh": ZH_ROLES}
+JA_ONLY = frozenset(("expression_furigana", "sentence_furigana", "pitch_position", "pitch_category", "pitch_graph",
+                     "pitch_text"))
+# The note types Anki Miner fills completely (3.12.0 `services/note_presets.py`), compared casefolded
+PRESETS = frozenset(("lapis", "kiku", "senren", "anki miner note"))
+# Chinese: Anki Miner Note (0xzerolight/anki_miner_note, GPL-3.0: linked to, never bundled) first, and where to get it
+AM_NOTE = "Anki Miner Note"
+AM_NOTE_PAGE = "https://github.com/0xzerolight/anki_miner_note/releases/latest"
+# The languages whose note type the learner maps when it isn't one of PRESETS, and the roles the map shows, in order
+# (the word is the note type's first field: Anki Miner's rule); the rest keep their name match
+MAPPED = {"zh": ("sentence", "expression_reading", "expression_pinyin", "definition", "glossary", "audio", "picture",
+                 "expression_audio", "measure_word", "expression_traditional", "source")}
 # Those note types read their pitch categories as romaji (Anki Miner's presets set it with them; its default is "jp")
 ROMAJI_PITCH = frozenset(("PitchCategories", "pitchCategories"))
 RECENT_NOTES = 50               # the deck's newest notes whose note type is counted (`AnkiReads.deck_note_type`)
@@ -123,20 +151,27 @@ def note_type_for(settings, language, note_types, deck_type):
     return named[0] if len(named) == 1 else None
 
 
-def fields_for(note_fields, current, fill=True):
+def fields_for(note_fields, current, fill=True, language="ja", need_sentence=True):
     """Anki Miner's role -> field map for a note type whose fields are `note_fields` (in order), from `current` (the
     profile's map for this language: its roles are the ones this Anki Miner knows) — or None when Anki Miner can't make
     Surasura's cards with it (no fields, no sentence field). Every role of `current` is in the map ("" unmapped), the
     word in the first field (Anki's duplicate check reads it), and no field twice. `fill` False (the same note type): a
     role `current` leaves empty stays empty — but the sentence, which Surasura's cards need (review round 2: it is
-    filled, and a map with no sentence role at all still looks for one)."""
+    filled, and a map with no sentence role at all still looks for one). `language`'s own roles (`LANGUAGE_ROLES`)
+    are mapped too; outside Japanese its furigana and pitch roles stay "" (`JA_ONLY`). `need_sentence` False: the map
+    even without a sentence field (the proposal a learner's own map starts from)."""
     note_fields = [str(f) for f in note_fields or ()]
     if not note_fields:
         return None
     by_fold = {f.casefold(): f for f in note_fields}
     out, taken = {}, {note_fields[0]}
-    for role in list(current or {}) + ([] if "sentence" in (current or {}) else ["sentence"]):
+    roles = list(current or {})
+    roles += [r for r in ("sentence",) + LANGUAGE_ROLES.get(language, ()) if r not in roles]
+    for role in roles:
         if role == "word":
+            continue
+        if language != "ja" and role in JA_ONLY:
+            out[role] = ""
             continue
         have = str((current or {}).get(role) or "")
         if not have and not fill and role != "sentence":
@@ -147,9 +182,42 @@ def fields_for(note_fields, current, fill=True):
         out[role] = field
         if field:
             taken.add(field)
-    if not out.get("sentence"):
+    if not out.get("sentence") and need_sentence:
         return None
     return dict({"word": note_fields[0]}, **out)
+
+
+def map_problem(note_fields, given):
+    """What's wrong with a field map the learner made for a note type whose fields are `note_fields` — "sentence" (no
+    sentence field), "gone" (a field the note type lacks), "word" (a role in the first field, which holds the word),
+    "twice" (one field for two roles) — or None."""
+    note_fields = [str(f) for f in note_fields or ()]
+    if not isinstance(given, dict) or not note_fields:
+        return "sentence"
+    named = [str(v) for role, v in given.items() if role != "word" and str(v or "")]
+    if str(given.get("sentence") or "") not in note_fields[1:]:
+        return "word" if given.get("sentence") == note_fields[0] else "sentence"
+    if any(f not in note_fields for f in named):
+        return "gone"
+    if note_fields[0] in named:
+        return "word"
+    return "twice" if len(named) != len(set(named)) else None
+
+
+def _mapped(note_fields, current, given, language, fill):
+    """The whole role -> field map for a note type the learner mapped (`given`, checked by `map_problem`): the roles
+    the map shows (`MAPPED`) as the learner set them ("" for one left out), the rest by name (`fields_for`) unless that
+    takes a field the learner gave another role."""
+    out = fields_for(note_fields, current, fill=fill, language=language, need_sentence=False) or {}
+    shown = MAPPED[language]
+    mine = {role: str(given.get(role) or "") for role in shown}
+    taken = {f for f in mine.values() if f}
+    for role, field in list(out.items()):
+        if role != "word" and role not in shown and field in taken:
+            out[role] = ""
+    out.update(mine)
+    out["word"] = str(note_fields[0])
+    return dict({"word": out.pop("word")}, **out)
 
 
 def plan(settings, language, current, failed, anki, chosen=None):
@@ -163,7 +231,10 @@ def plan(settings, language, current, failed, anki, chosen=None):
     naming it while Anki lacks it, else None; then this language's known-words decks; the note types Backfill names),
     None when it isn't asked; one at a time, the deck first (its notes most often name the note type); the note types offered are
     only those Anki Miner can fill (`fields_for`: [] when Anki has none); "fields": `asked["note"]` has no sentence
-    field; `values`: what is already decided (the deck chosen), written meanwhile so it is never asked again (the
+    field; "map" (Chinese, a note type not in `PRESETS`): the learner maps `asked["note"]`'s fields — `note_fields`,
+    `roles` (`MAPPED`), `map` (the proposal, or their map back), `problem` (`map_problem`'s, or None), `note_type`
+    with that note type first — and sends it back as `chosen["fields"]`; Chinese's note type asks carry `get`
+    (`AM_NOTE_PAGE`) while Anki lacks Anki Miner Note; `values`: what is already decided (the deck chosen), written meanwhile so it is never asked again (the
     DevTest drill, run 1). Raises `anki_connect.AnkiError` when Anki doesn't answer."""
     chosen = chosen or {}
     failed = set(failed or ())
@@ -190,11 +261,27 @@ def plan(settings, language, current, failed, anki, chosen=None):
     elif "note_type" in failed or note not in note_types:
         note = note_type_for(settings, language, note_types, anki.deck_note_type(deck) if deck else None)
         if note is None:
-            return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types, anki, current),
-                           "why": None, "values": values}
+            return "ask", dict({"deck": None, "note_type": _note_choices(settings, language, note_types, anki,
+                                                                         current), "why": None, "values": values},
+                               **_get_note(language, note_types))
     note_fields = anki.fields(note)
     changed = note != str(current.get("anki_note_type") or "")
-    fields = fields_for(note_fields, current.get("anki_fields") or {}, fill=changed)
+    roles = current.get("anki_fields") or {}
+    if language in MAPPED and note.strip().casefold() not in PRESETS:
+        # Chinese on a note type of the learner's own: their map, asked with a proposal, checked when it comes back
+        given = chosen.get("fields") if chosen.get("note_type") == note else None
+        problem = map_problem(note_fields, given) if given is not None else None
+        if given is None or problem:
+            proposal = given if given is not None else \
+                fields_for(note_fields, roles, fill=changed, language=language, need_sentence=False) or {}
+            return "ask", dict({"deck": None, "note_type": [note] + [m for m in _note_choices(
+                settings, language, note_types, anki, current) if m != note], "why": "map", "note": note,
+                "note_fields": list(note_fields), "roles": list(MAPPED[language]),
+                "map": {r: str(proposal.get(r) or "") for r in MAPPED[language]}, "problem": problem,
+                "values": values}, **_get_note(language, note_types))
+        fields = _mapped(note_fields, roles, given, language, fill=changed)
+    else:
+        fields = fields_for(note_fields, roles, fill=changed, language=language)
     if fields is None:
         return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types, anki, current),
                        "why": "fields", "note": note, "values": values}
@@ -210,8 +297,20 @@ def plan(settings, language, current, failed, anki, chosen=None):
 
 
 def _note_choices(settings, language, note_types, anki, current):
-    """The note types Anki Miner can fill (`fields_for`), those Backfill names for this language first."""
+    """The note types Anki Miner can fill (`fields_for`), those Backfill names for this language first. A language
+    the learner maps (`MAPPED`, Chinese): Anki Miner Note first, then those, then every other note type with room for
+    a word and a sentence (two fields or more: the learner maps it)."""
     named = _backfill_types(settings, language, note_types)
     roles = (current or {}).get("anki_fields") or {}
-    return [m for m in named + [m for m in note_types if m not in named]
-            if fields_for(anki.fields(m), roles) is not None]
+    order = named + [m for m in note_types if m not in named]
+    if language not in MAPPED:
+        return [m for m in order if fields_for(anki.fields(m), roles) is not None]
+    order = [m for m in note_types if m == AM_NOTE] + [m for m in order if m != AM_NOTE]
+    return [m for m in order if (fields_for(anki.fields(m), roles, language=language) is not None
+                                 if m.strip().casefold() in PRESETS else len(anki.fields(m)) >= 2)]
+
+
+def _get_note(language, note_types):
+    """Chinese without Anki Miner Note in Anki: where to get it (`{"get": AM_NOTE_PAGE}`), said with the note type's
+    ask; else {}."""
+    return {"get": AM_NOTE_PAGE} if language in MAPPED and AM_NOTE not in note_types else {}

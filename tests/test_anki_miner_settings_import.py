@@ -260,7 +260,9 @@ def test_a_deck_chosen_is_kept_while_the_note_type_is_asked_next():
     settings = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}}
     anki = Anki(["中文::句子", "中文::HSK"], {"Basic": BASIC, "Lapis": LAPIS})
     what, asked = MS.plan(settings, "zh", FRESH, {"deck", "note_type", "fields"}, anki, {"deck": "中文::句子"})
-    assert what == "ask" and asked["note_type"] == ["Lapis"] and asked["values"] == {"anki_deck_name": "中文::句子"}
+    # Zh-C: a Chinese note type of the learner's own is mapped by them, so Basic (two fields) is offered too
+    assert what == "ask" and asked["note_type"] == ["Basic", "Lapis"]
+    assert asked["values"] == {"anki_deck_name": "中文::句子"}
 
 
 def test_a_note_type_picked_after_no_sentence_field_is_taken_when_only_the_fields_fail():
@@ -460,6 +462,7 @@ def world(monkeypatch, tmp_path):
 
 
 ZH = {"junban_deck": "中文::句子", "anki_sync_decks": {"zh": ["中文::句子"], "ja": ["日本語::Mining"]}}
+JA_ONE = {"junban_deck": "日本語::Mining", "anki_sync_decks": {"ja": ["日本語::Mining"]}}
 
 
 def test_a_never_mined_language_makes_surasuras_own_profile_then_runs_its_setup_there(world):
@@ -467,7 +470,8 @@ def test_a_never_mined_language_makes_surasuras_own_profile_then_runs_its_setup_
     own profile (a copy of it), its deck, note type and fields from Surasura's settings, then its dictionaries."""
     result, said = M.finish_setup(ZH, "zh")
     assert result == M.SET_UP and "“中文::句子”, made with “Lapis”" in said and "its own Anki Miner profile" in said
-    assert world["saved"] == [], "its name is the setting's default: nothing to save"
+    # its name is the setting's default: nothing to save — only Backfill's note language, merged by its update (Zh-C)
+    assert world["saved"] == [{}]
     [made] = world["imports"]
     assert (made["name"], made["profile"], made["language"]) == (anki_miner.DEFAULT_PROFILE, None, "zh")
     assert (made["values"]["anki_deck_name"], made["values"]["anki_note_type"]) == ("中文::句子", "Lapis")
@@ -553,7 +557,8 @@ def test_the_deck_chosen_is_written_while_the_note_type_is_asked_and_never_asked
     settings = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}}
     world["anki"] = Anki(["中文::句子", "中文::HSK"], {"Basic": BASIC, "Lapis": LAPIS})
     result, asked = M.finish_setup(settings, "zh", chosen={"deck": "中文::HSK"})
-    assert result == M.ASK and asked["note_type"] == ["Lapis"] and asked["deck"] is None
+    # Zh-C: Chinese offers every note type the learner could map (Basic too)
+    assert result == M.ASK and asked["note_type"] == ["Basic", "Lapis"] and asked["deck"] is None
     assert world["imports"][0]["values"] == {"anki_deck_name": "中文::HSK"}
     assert world["runs"] == [("zh", "surasura-1")], "its dictionaries never wait for the answer"
 
@@ -676,7 +681,8 @@ def test_choice_86_a_known_words_list_that_cant_be_saved_is_said_the_deck_still_
 
 
 def test_no_note_type_anki_miner_can_fill_is_said_after_the_rest_never_asked_in_a_loop(world):
-    world["anki"] = Anki(["中文::句子"], {"Basic": BASIC, "Cloze": ["Text", "Back Extra"]})
+    # Zh-C: Chinese maps any note type with room for a word and a sentence, so only one-field note types are left
+    world["anki"] = Anki(["中文::句子"], {"Text": ["Text"], "Note": ["Note"]})
     result, detail = M.finish_setup(ZH, "zh")
     assert result == M.SET_UP_REST and detail.startswith(M.NO_NOTE_TYPE)
     assert "go in “中文::句子”" in detail and "its own Anki Miner profile" in detail, "what it did set is said"
@@ -858,7 +864,8 @@ def test_a_note_type_set_alone_is_said_as_the_note_type(world):
 
 def test_a_note_type_anki_miner_has_no_preset_for_says_its_fields_and_what_else_changed(world, monkeypatch):
     """A5F4: a custom note type — the word and sentence fields Surasura matched by name are said; a card-type mark
-    the note type has no field for, cleared, is said; never silently."""
+    the note type has no field for, cleared, is said; never silently. (Japanese: a Chinese one is the learner's own
+    map since Zh-C, `test_zh_cards`.)"""
     world["configured"], world["items"], world["profile"] = True, ["note_type", "fields"], "surasura-1"
     world["profiles"] = [{"id": "default", "name": "Default", "active": True},
                          {"id": "surasura-1", "name": "Surasura", "active": False}]
@@ -868,7 +875,7 @@ def test_a_note_type_anki_miner_has_no_preset_for_says_its_fields_and_what_else_
                     card_type_marker_fields={"sentence": "IsSentenceCard"})
     monkeypatch.setattr(anki_miner, "settings_export",
                         lambda path, language, out, profile=None: {"configured": True, "settings": exported})
-    result, said = M.finish_setup(ZH, "zh")
+    result, said = M.finish_setup(ZH, "ja")
     assert result == M.SET_UP
     assert M.SAID_FIELDS.format(note="マイ単語", word="単語", sentence="Sentence").strip() in said
     assert M.SAID_CARD_TYPE.format(note="マイ単語").strip() in said
@@ -876,9 +883,28 @@ def test_a_note_type_anki_miner_has_no_preset_for_says_its_fields_and_what_else_
 
 
 def test_a_preset_note_type_needs_no_field_saying_but_its_romaji_pitch_is_said(world):
-    result, said = M.finish_setup(ZH, "zh")
+    world["anki"] = Anki(["日本語::Mining"], {"Basic": BASIC, "Lapis": LAPIS}, {"日本語::Mining": "Lapis"})
+    result, said = M.finish_setup(JA_ONE, "ja")
     assert result == M.SET_UP and "matched its fields" not in said
     assert M.SAID_PITCH.format(note="Lapis").strip() in said
+
+
+def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_backfill_names_it_chinese(world):
+    """Zh-C: pitch is Japanese-only (Anki Miner 3.12 stops a Chinese run on a mapped pitch field): never mapped, never
+    said, for Chinese. The note type is named Chinese for Backfill (it reads a note type's language by its kana)."""
+    saves = []
+
+    def save(changes, update=None):
+        file = {"junban_backfill_note_languages": {"Kiku": "ja"}}
+        if update is not None:
+            update(file)
+        saves.append((changes, file))
+    result, said = M.finish_setup(ZH, "zh", save=save)
+    assert result == M.SET_UP and "matched its fields" not in said and "romaji" not in said
+    values = world["imports"][0]["values"]
+    assert values["anki_fields"]["pitch_category"] == "" and values["anki_fields"]["expression_furigana"] == ""
+    assert "pitch_category_format" not in values
+    assert {"Kiku": "ja", "Lapis": "zh"} in [f.get("junban_backfill_note_languages") for _c, f in saves]
 
 
 def test_a_refusal_names_what_it_refused_in_plain_words_even_several(monkeypatch, tmp_path):
@@ -989,6 +1015,6 @@ def test_a_note_type_kept_is_never_said_as_matched_again(world, monkeypatch):
     exported = dict(FRESH, anki_note_type="マイ単語", anki_fields={"word": "単語", "sentence": "Gone"})
     monkeypatch.setattr(anki_miner, "settings_export",
                         lambda path, language, out, profile=None: {"configured": True, "settings": exported})
-    result, said = M.finish_setup(ZH, "zh")
+    result, said = M.finish_setup(ZH, "ja")         # Japanese: a Chinese one is the learner's own map (Zh-C)
     assert result == M.SET_UP and world["imports"][0]["values"]["anki_fields"]["sentence"] == "Sentence"
     assert "matched its fields" not in (said or "")

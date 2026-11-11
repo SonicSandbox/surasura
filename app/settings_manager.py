@@ -160,6 +160,10 @@ DEFAULT_SETTINGS = {
     # Never in a signature.
     "connect_video_folders": [],
     "connect_trust_timing": False,      # P-LF-9: mine an unpaired episode nothing here can check, at its own times
+    # Chinese cards' word audio (Zh-C, 2026-11-12, CLAUDE.md §1): Anki Miner reads a Chinese word aloud with Google's
+    # text-to-speech — the word goes to Google — only while this is on; off, every Chinese run file leaves its
+    # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.
+    "connect_zh_word_audio": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
     # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
     # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's

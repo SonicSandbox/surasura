@@ -35,13 +35,13 @@ import time
 REPO = "0xzerolight/anki_miner"
 # Alpha 4 M5 (Sonic 2026-10-27: "we should have approved versions that go out for each time … if we test it at 3.10.1,
 # then we should make that the new default"): the one Anki Miner Surasura installs and offers as an update — the
-# version drill LOOP passed at, run from its source tag (3.11.0: 2026-11-02, run 9, with the Stop and Z-9 drills;
-# 3.10.1 before it) — and its Windows installer's sha256 as GitHub lists it (the Install drill downloads and checks
+# version drill LOOP passed at, run from its source tag (3.12.0: 2026-11-12, Zh-C; 3.11.0: 2026-11-02, run 9, with
+# the Stop and Z-9 drills; 3.10.1 before it) — and its Windows installer's sha256 as GitHub lists it (the Install drill downloads and checks
 # the installer, never runs it: that would replace the drill PC's own Anki Miner). A newer release is offered only
 # once the drill passes at it and these two lines are bumped (the planning folder's
 # `tracks/pipeline/work/alpha4/anki-miner-pin.md`). A newer Anki Miner you installed yourself still runs.
-APPROVED = "3.11.0"
-APPROVED_SHA256 = "07338ce2f7a67b501211ca92c5adfc504f317f9a9164db4f2c61a78239626c9a"
+APPROVED = "3.12.0"
+APPROVED_SHA256 = "3d9c4cdd1a50706707f55cec07e8e0a6e54f6d9a9e189dc6f59a2df7dcc3ab24"
 STATE = "am_release.json"
 RELEASES = f"https://github.com/{REPO}/releases"
 EVERY_S = 24 * 3600             # at most once a day

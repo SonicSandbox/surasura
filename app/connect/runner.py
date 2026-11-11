@@ -24,8 +24,9 @@ day's words first:
 - **Waiting** (02 §2, one reason at a time): Anki closed (E1), you reviewing (E2, asked before each write), another
   profile (E3) — the session's `waiting` —, on battery (E32), Anki Miner open (E8), another program writing Anki: each
   may end while Connect runs, so it **stays running and looks again every 2 minutes** at below-normal priority (02
-  §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), Chinese (E24)
-  and a setup Anki Miner lacks wait for the next start. **It exits when no job is left**, or when every job left waits
+  §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), a language
+  Connect makes no cards in (E24; Chinese cards since Zh-C, 2026-11-12: `CARD_LANGUAGES`) and a setup Anki Miner lacks
+  wait for the next start. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
@@ -126,6 +127,10 @@ NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the ca
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
 MOVED = "This episode's video isn't where it was ({folder})."
+# E24: the languages Connect makes cards in — Chinese too since Zh-C (2026-11-12: Anki Miner 3.12's Chinese, Sonic's
+# "Yes to the Chinese leans"). `CHINESE` is the reason a 3.0.x ledger's Chinese job may still carry: such a job is
+# picked up again at Connect's next start like any waiting one
+CARD_LANGUAGES = ("ja", "zh")
 CHINESE = "Chinese cards come later."
 # Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
 STOPPED_BY_YOU = STOPPED_REASON
@@ -513,7 +518,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
     """Every open job of one language, once -> True when one waits on something outside Connect (look again). The top
     20 and the inbox are read again before each job (adversary P2.4-A #2): an episode moved out mid-burst is dropped,
     a new first one goes next."""
-    if lang != "ja":            # E24: Japanese first, until Anki Miner and Connect say Chinese works
+    if lang not in CARD_LANGUAGES:      # E24: a language Connect makes no cards in waits (none since Zh-C)
         return _waiting_all(ledger, lang, parked, out, CHINESE, False)
     wait = store_now = None
     only_asked = False          # on battery with a *Mine now* waiting: this pass mines the asked ones alone (M-3)
@@ -3060,7 +3065,7 @@ class Steps:
     def _mine_one(self, lang, job, picked, words, attempt):
         from app.cli import verbs
         from app.cli.contract import CliError
-        from app.connect import anki_miner
+        from app.connect import anki_miner, runfile
         miner = anki_miner.find(self.loaded)
         if miner is None:
             raise Skip("Anki Miner isn't installed")
@@ -3083,7 +3088,8 @@ class Steps:
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
-                                         from_audio=bool(picked.get("from_audio")), names=picked.get("names"))
+                                         from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
+                                         word_audio=runfile.word_audio_on(self._settings(lang), lang))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

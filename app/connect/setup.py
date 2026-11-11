@@ -71,7 +71,10 @@ UPDATE_DO = ("Update Anki Miner from Surasura (Settings → Anki & mining): its 
 UPDATE_PROFILE_DO = ("Choose a profile Anki Miner has in Surasura's settings (Anki & mining → Anki Miner profile), or "
                      "update Anki Miner from Surasura so Surasura can make it")
 ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not installed", "speech_model": "not installed",
-              "ocr": "not installed", "video_ocr": "not installed"}
+              "ocr": "not installed", "video_ocr": "not installed",
+              # Zh-C (zh-smoke #6): Anki Miner's own words send you to its window's Mining Language; Finish its setup
+              # downloads it (language_pack is only a language's whose tools Anki Miner fetches: Chinese)
+              "language_pack": "its Chinese reading tools aren't downloaded yet (about 23 MB)"}
 UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 

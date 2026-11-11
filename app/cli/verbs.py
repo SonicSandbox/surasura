@@ -1356,7 +1356,8 @@ def pick(args):
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
                                           runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
-                                 run_config=runfile.config(mapping, info.get("app"), named))
+                                 run_config=runfile.config(mapping, info.get("app"), named,
+                                                           word_audio=runfile.word_audio_on(loaded, lang)))
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

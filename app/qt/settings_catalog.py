@@ -232,6 +232,8 @@ ROWS = (
          group="from_library", when=_CONNECT),
     _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
+    # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
+    _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),

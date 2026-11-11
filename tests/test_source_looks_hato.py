@@ -1,4 +1,4 @@
-"""hato's runs on a worker of their own (Minato-SM, 2026-11-12; Michi-SIGN's note on the hato contract §7.8): the
+"""hato's runs on a worker of their own (Minato-SM; Michi-SIGN's note on the hato contract §7.8): the
 window's looks hand the videos still waiting for a subtitle to hato (`no_subs.find`), whose `--wait` queues behind
 another hato run's lock for up to 3 hours, saying only that it waits. That run sat on the source looks' tracks worker, so for those
 hours no next look's video got its own text track copied out (`tracks.fill`).

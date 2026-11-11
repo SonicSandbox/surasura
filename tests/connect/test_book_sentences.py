@@ -125,6 +125,7 @@ def test_a_sentences_inner_space_is_kept_as_the_book_writes_it_and_its_indent_an
     ("「　お止しよ。", "お止しよ。"),                                           # the space it leaves goes too
     ("彼は「もう帰る。", "彼は「もう帰る。"),                                     # an opener inside: kept
     ("（注。", "注。"),
+    ("「行くぞ。』", "行くぞ。"),                                              # another family's closer: no partner
     ("「", "「"),                                                          # nothing left: as it was
     ("", ""),
 ])
@@ -155,6 +156,8 @@ def test_a_books_word_is_cut_from_a_sentence_within_the_learners_length_before_a
     assert line((0, 4)) == "空だ。", "a short range: the short one"
     assert line((40, 45)).startswith("空には、"), "none within: too long before too short, as the report's go"
     assert line((60, 80)).startswith("空には、"), "every one too short: the earliest, whole"
+    assert line((3, 37)) == "空だ。", "its bounds are inside it: 3 characters is not too short for 3"
+    assert line((4, 38)).startswith("しかし杜子春は"), "nor 38 too long for 38"
 
 
 def test_a_videos_card_lines_never_read_the_length():

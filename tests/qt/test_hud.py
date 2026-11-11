@@ -154,10 +154,11 @@ def test_the_counters_keep_pythons_lock_while_a_worker_spins_so_the_hud_never_wa
     import threading
     c = hud.Counters(calibrate=False)
     assert c.ok
-    stop = threading.Event()
+    stop, spinning = threading.Event(), threading.Event()
 
     def spin():
         n = 0
+        spinning.set()
         while not stop.is_set():
             n += 1
     t = threading.Thread(target=spin, daemon=True)
@@ -165,7 +166,7 @@ def test_the_counters_keep_pythons_lock_while_a_worker_spins_so_the_hud_never_wa
     hud.sys.setswitchinterval(0.001)
     t.start()
     try:
-        time.sleep(0.01)
+        assert spinning.wait(5)                        # the worker is spinning before the first read (no head-start sleep)
         t0 = time.perf_counter()
         for _ in range(200):
             assert c.sample() is not None

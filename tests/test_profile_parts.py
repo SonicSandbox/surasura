@@ -35,6 +35,7 @@ CALL_SITES = {
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
     "app/import_2x.py": 2,
+    "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
     "app/instance_name.py": 1,
     "app/library_store.py": 3,
     "app/locks.py": 8,
@@ -144,6 +145,7 @@ def _writers():
         ("the telemetry URL", os.path.join(path_utils.persistent_root(), telemetry.URL_CACHE), False),
         ("the start gate's note", first_run.note_path(), False),
         ("the import's note", os.path.join(path_utils.local_data_root(), "import.json"), False),
+        ("the library move's note", os.path.join(path_utils.local_data_root(), "library_move.json"), False),
         ("the installs note", os.path.join(path_utils.local_data_root(), path_utils.INSTALLS_NOTE), False),
         ("the library note", os.path.join(path_utils.local_data_root(), path_utils.LIBRARY_NOTE), False),
         ("the update marker", ls.update_staged_path(), False),
@@ -176,7 +178,7 @@ def _writers():
 
 # What each writer's part must be: the parts that stay (the rest move)
 STAYS = {"the one-window lock", "the update's state", "the update's folder", "the CLI's log", "the CLI's events",
-         "a lock", "the telemetry id", "the telemetry URL", "the start gate's note", "the import's note",
+         "a lock", "the telemetry id", "the telemetry URL", "the start gate's note", "the import's note", "the library move's note",
          "the installs note", "the library note", "the update marker", "the update lock", "the journal", "yt-dlp"}
 
 

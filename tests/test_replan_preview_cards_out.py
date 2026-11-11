@@ -5,16 +5,16 @@ On the RP-2 library (tests/plan_file_cases.py: real Japanese and Chinese text ac
 generated as a Generate leaves it, and Junban's fake collection holding one new card per word of its list, plus three
 cards whose words aren't on it:
 
-  * *Take its new cards out* on a Current item → once the Generate its Finished drag starts has run (W-1b: Finished is
-    set aside, like a watched episode, so the drag writes nothing to Anki before it), the host's job (owed through
-    `pins_version`, T-4) places the
+  * *Take its new cards out* on a Current item → in the host's next job (Haya-FN: a Finished drag re-plans at once,
+    by the watched mark's rule; the Generate it starts runs after and changes none of it), owed through
+    `pins_version` (T-4), it places the
     item's new cards whose words left the list after every other card, tags them `Surasura::out` and suspends them —
     with your 順 actions off (T-1) — while its card whose word is on the list stays in, placed by the list (TF fix 3,
     P4.1-7); its reviewed card and a card another Current item shares stay as they are (T-3), the store records
     exactly the cards suspended and the notes tagged (`anki_changes`, T-6, by the host: TF fix 10), and the bar says
     how many were taken out (TF fix 10);
   * *Put back*, *Put them back in the order* or the take-out's undo → the next job (after the Generate for a tier
-    move: *Put back* and the undo) unsuspends exactly those, takes
+    move after the finish's Generate: *Put back* and the undo) unsuspends exactly those, takes
     the tag off exactly those notes, places them in the same job and closes the record (T-5); a card you suspended
     meanwhile stays suspended;
   * a review that begins just before the suspends → nothing taken out, and the job stays owed (TF fix 6);
@@ -102,12 +102,13 @@ def _generate(root, language):
 
 
 def _after_its_generate(lib, fake, host, out, queue):
-    """A Finished drag (in or out) waits for the Generate it starts: the host's job writes nothing to the cards before
-    it (each still in `queue`); then the Generate, and the host's job after it."""
+    """The host's next job, then the Generate the change starts and the host's job after it. `queue`: where the out
+    cards stand after that first job — a finish takes them out in it (-1, Haya-FN: at once, the watched mark's rule);
+    a Put back or an Undo after the finish's Generate waits for its own (still -1); a review at the suspends, 0."""
     language, root, _store = lib
     with _patched(fake):
         host._job("move")
-    assert [card["queue"] for card in out] == [queue] * len(out), "nothing written before the Generate"
+    assert [card["queue"] for card in out] == [queue] * len(out), "the first job, before the Generate"
     _generate(root, language)
     with _patched(fake):
         host._job("generate")
@@ -144,7 +145,7 @@ def test_taken_out_then_put_back_round_trips_exactly_what_was_changed(lib, monke
                         lambda self, rows, by="connect": recorded_by.append(by) or record(self, rows, by=by))
     change = store.finish([a], keep_cards=False)
     assert _owed(store), "T-4: owed to Anki"
-    _after_its_generate(lib, fake, host, out, 0)
+    _after_its_generate(lib, fake, host, out, -1)
     out_ids = sorted(card["cardId"] for card in out)
     assert [card["queue"] for card in out] == [-1, -1] and all(OUT_TAG in _tags(fake, card) for card in out)
     new = {c["cardId"]: c["due"] for c in fake.cards.values() if c["type"] == 0 and c["cardId"] not in out_ids}
@@ -213,7 +214,7 @@ def test_a_name_two_items_carry_is_not_returned_as_one_items_out_name(lib, monke
     fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
     a, b = store.ids("now")[:2]
     store.finish([a], keep_cards=False)
-    _after_its_generate(lib, fake, host, out, 0)
+    _after_its_generate(lib, fake, host, out, -1)
     paths = dict(store.conn.execute("SELECT id, rel_path FROM items").fetchall())
     carried = {paths[a]: {"小鳥遊", "山田"}, paths[b]: {"山田"}}
     monkeypatch.setattr(pins, "names_of", lambda path, video=None: carried.get(path, set()))
@@ -244,7 +245,7 @@ def test_a_refused_put_back_tag_removal_is_reported_in_note_failures(lib, monkey
     language, root, store = lib
     fake, host, a, out, _shared, _listed, _other, _reviewed, _said, reports = _take_out(lib)
     store.finish([a], keep_cards=False)
-    _after_its_generate(lib, fake, host, out, 0)
+    _after_its_generate(lib, fake, host, out, -1)
     assert all(OUT_TAG in _tags(fake, card) for card in out), "the take-out tagged the cards first"
     store.put_back_finished([a])
     assert _owed(store), "the Put back is owed to Anki"
@@ -266,7 +267,7 @@ def test_only_cards_out_records_are_held_as_cards_out(lib):
     language, root, store = lib
     fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
     store.finish([a], keep_cards=False)
-    _after_its_generate(lib, fake, host, out, 0)
+    _after_its_generate(lib, fake, host, out, -1)
     assert [card["queue"] for card in out] == [-1, -1], "the take-out ran, so the cards are out"
     # a non-cards-out record on the same out item (a suspend the learner made elsewhere) is open too; it must not be held
     store.record_anki_changes([(a, "suspend", [999000001], {"queue": 0}, {"queue": -1})])

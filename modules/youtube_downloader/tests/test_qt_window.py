@@ -1220,6 +1220,14 @@ def rest_run(monkeypatch):
     return box
 
 
+def _rest(language):
+    """The rest's record, read as the app reads it: under its lock (`rest_update` holds it). A read outside it holds
+    the file open on Windows while the worker's `os.replace` lands on it, which refuses the replace (Access is denied):
+    the record's write then fails the run. The app never reads it outside the lock (FLAKES.md, 2026-11-10)."""
+    with view._REST_LOCK:
+        return view.rest_read(language)
+
+
 def _waiting(n):
     from app.qt import strings
     return strings.YT_ARRIVED_WAITING.format(what=strings.yt_transcripts(n))
@@ -1256,7 +1264,7 @@ def test_offline_the_rest_waits_for_the_next_start_and_says_so_without_the_link(
     rest_run["write"], rest_run["say"] = 0, [OFFLINE]
     yt.bring_in_rest(main, "ja", [PLAYLIST])
     assert wait_until(lambda: main.bar_line.full() == S.REST_LATER.format(why=OFFLINE_WHY), 10)
-    assert view.rest_read("ja") == {"playlists": [PLAYLIST], "unrouted": [], "tries": {PLAYLIST: 1}}
+    assert _rest("ja") == {"playlists": [PLAYLIST], "unrouted": [], "tries": {PLAYLIST: 1}}
     assert rest_run["handed"] == [] and "list=" not in main.bar_line.full()
 
 
@@ -1319,10 +1327,10 @@ def test_the_apps_quit_keeps_the_rest_for_the_next_start(main, rest_run):
     """A quit mid-way: what came is recorded as it was written; the playlist stays for the next start."""
     rest_run["hold"] = threading.Event()
     yt.bring_in_rest(main, "ja", [PLAYLIST])
-    assert wait_until(lambda: len(view.rest_read("ja")["unrouted"]) == 2, 10)      # recorded as written
+    assert wait_until(lambda: len(_rest("ja")["unrouted"]) == 2, 10)      # recorded as written
     main.services.closing.set()                                       # (what the quit sets before the jobs' cancel)
     main.services.registry.quit(5.0)
-    state = view.rest_read("ja")
+    state = _rest("ja")
     assert state["playlists"] == [PLAYLIST]
 
 
@@ -1357,7 +1365,7 @@ def test_files_a_run_wrote_but_never_handed_over_are_handed_at_the_next_start(ma
     rest_run["refuse"] = "no library is open"
     yt.bring_in_rest(main, "ja", [PLAYLIST])
     assert wait_until(lambda: "no library is open" in main.bar_line.full(), 10)
-    left = view.rest_read("ja")["unrouted"]
+    left = _rest("ja")["unrouted"]
     assert len(left) == 2
     rest_run["refuse"], rest_run["write"] = None, 0
     yt.bring_in_rest(main, "ja")                                       # the next start: no links given
@@ -1372,7 +1380,7 @@ def test_a_playlist_asked_for_while_a_rest_runs_comes_after_it(main, rest_run):
     yt.bring_in_rest(main, "ja", [PLAYLIST])
     assert wait_until(lambda: rest_run["calls"], 10)
     yt.bring_in_rest(main, "ja", [second])
-    assert wait_until(lambda: view.rest_read("ja")["playlists"] == [PLAYLIST, second], 3)
+    assert wait_until(lambda: _rest("ja")["playlists"] == [PLAYLIST, second], 3)
     assert len(rest_run["calls"]) == 1                                 # one rest run at a time
     rest_run["hold"].set()
     assert wait_until(lambda: len(rest_run["calls"]) == 2, 10)
@@ -1410,7 +1418,7 @@ def test_each_start_resumes_a_recorded_rest_only_with_the_risk_acknowledged(main
     view.rest_update("ja", add=[PLAYLIST])
     windows.resume_youtube(main)
     assert bool(wait_until(lambda: asked, 3)) == starts                       # (a resume only ever goes through it)
-    assert view.rest_read("ja")["playlists"] == [PLAYLIST]
+    assert _rest("ja")["playlists"] == [PLAYLIST]
 
 
 def test_a_run_ending_while_the_window_is_in_its_icon_takes_its_bar_away_and_the_next_starts_afresh(main, held_extract):

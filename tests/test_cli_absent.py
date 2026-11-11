@@ -14,7 +14,7 @@ import pytest
 
 from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
-from tests.tk_on_github import REASON, on_github
+from tests.tk_on_github import REASON, skipping
 
 _NO_MODULES = textwrap.dedent("""
     import importlib.abc, sys
@@ -63,7 +63,7 @@ def test_the_command_line_runs_with_every_module_removed():
     assert code == 0 and line["count"] > 1000
 
 
-@pytest.mark.skipif(on_github(), reason=REASON)
+@pytest.mark.skipif(skipping(), reason=REASON)
 def test_the_dashboard_opens_and_closes_with_every_module_removed():
     h.seed_library("ja", templates=False)
     h.write_settings(enable_junban=True)

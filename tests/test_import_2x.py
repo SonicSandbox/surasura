@@ -557,7 +557,7 @@ def test_a_library_holding_a_program_is_refused_and_left_untouched(tmp_path, roa
     before = _tree(str(install))
     result = import_2x.run_import(old, str(install))
     assert result["status"] == "refused" and result["reason"] == "holds_program"
-    assert f"Documents\\{import_2x.LIBRARY_FALLBACK}" in result["message"]
+    assert os.path.join(os.path.expanduser("~"), import_2x.LIBRARY_FALLBACK) in result["message"]   # 3.0.1: user folder
     assert _tree(str(install)) == before, "nothing written into the program folder"
     for mark, make in (("Surasura.exe", lambda p: _write(str(p / "Surasura.exe"), b"MZ")),
                        ("_internal", lambda p: os.makedirs(p / "_internal"))):

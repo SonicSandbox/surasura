@@ -58,8 +58,7 @@ def steady_tk_start():
 def quiet_windows():
     """Move this thread's windows to the tests' own desktop (Windows), and Qt off-screen; Tk's start steadied. Returns
     whether the desktop was taken; anything that fails leaves the windows where they were, never fails a run."""
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        steady_tk_start()
+    steady_tk_start()                       # GitHub's runner too (tests/tk_on_github.py: the same tests everywhere)
     if os.environ.get("SURASURA_SHOW_TEST_WINDOWS") == "1":
         return False
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

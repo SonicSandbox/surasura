@@ -5,7 +5,8 @@ analyzer and the plan file the last Generate wrote. The keeper's Generate is rec
 
 The work count of the move press: a burst of drags costs zero Generates — the re-order host is still told every one
 (the engine re-orders Anki without a Generate) — and one redraw of the journey from the plan once the drags stop. A
-Finish, the other way, still asks its Generate (D1's test in tests/qt/test_journey_stones_trigger.py runs it whole).
+Finish, the other way, still asks its Generate — Anki re-ordered at once, the watched mark's rule (Haya-FN) — (D1's
+test in tests/qt/test_journey_stones_trigger.py runs it whole).
 """
 import pytest
 
@@ -36,14 +37,16 @@ def test_a_burst_of_move_presses_starts_zero_generates_and_one_redraw(language, 
 
 
 @pytest.mark.parametrize("language", LANGUAGES[:1])
-def test_a_finish_press_still_asks_its_generate(language, window, gate, fired):
+def test_a_finish_press_re_orders_anki_at_once_and_still_asks_its_generate(language, window, gate, fired):
     store, ids, _names, root, _first = _kept_on(language)
     w = window(language)
     w.writer.set_finished([ids["B3"]])
     w.saved(1)
     w.replan.store_moved(language, {"order_version": None})
-    assert _verdict(root, language, store)[0] == "generate-first"
+    assert _verdict(root, language, store) == ("replan-now", ("files-removed", "reference-joined"))
+    assert w.host_calls().count("poke") == 1, "Anki re-ordered from the engine at once (Haya-FN)"
     assert fired.done(w.keeper)
     assert h.until(lambda: w.launches.count() == 1, seconds=10), "a Finish moves what counts: its Generate"
+    assert J.REDRAW_ARG not in w.launches.runs[0].argv, "a Generate, never the redraw: the list's edge"
     assert not w.keeper.catching_up()
     store.close()

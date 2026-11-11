@@ -15,6 +15,7 @@ import package_app
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ISS = os.path.join(PROJECT, "packaging", "surasura.iss")
+BS = "\\"
 
 
 def _text():
@@ -236,11 +237,34 @@ def test_the_library_note_is_written_where_path_utils_reads_it():
     assert '\'{"version": 1, "install": \' + JsonString(ExpandConstant(\'{app}\')) + \', "library": \'' in code
 
 
-def test_the_library_page_defaults_to_documents_and_takes_a_library_parameter():
+def test_the_library_page_defaults_to_the_users_own_folder_and_takes_a_library_parameter():
+    # 3.0.1 (Controlled folder access, Mattias 2026-11-10): never Documents, a folder Windows' ransomware protection
+    # guards — C:\Users\<you>\Surasura, where app/cfa.py's move_target puts a moved library too.
+    from app import cfa
     code = "\n".join(_sections()["code"])
     assert "CreateInputDirPage(wpSelectDir" in code
-    assert r"ExpandConstant('{userdocs}\Surasura')" in code
+    assert "{userdocs}" not in code and "Documents" + BS not in code     # no Documents\Surasura left
+    user = code[code.index("function UserFolder"):code.index("function CfaOn")]
+    assert "Result := RemoveBackslashUnlessRoot(GetEnv('USERPROFILE'));" in user
+    assert f"LibraryPage.Values[0] := UserFolder + '\\{cfa.LIBRARY_NAME}';" in code
     assert "ExpandConstant('{param:LIBRARY|}')" in code
+
+
+def test_the_library_page_reads_defenders_switch_and_says_why_only_when_it_is_on():
+    # The same values app/cfa.py reads (a policy's first): 1 is on; audit (2) blocks nothing, so no line.
+    from app import cfa
+    code = "\n".join(_sections()["code"])
+    consts = "\n".join(_sections()["code"][:30])
+    assert f"CfaKey = '{cfa.KEY}';" in consts and f"CfaPolicyKey = '{cfa.POLICY_KEY}';" in consts
+    on = code[code.index("function CfaOn"):code.index("function LibraryFolder")]
+    assert on.index("CfaPolicyKey") < on.index("CfaKey,")
+    assert on.count(f"'{cfa.SWITCH}', Value) then\nResult := Value = 1") == 2
+    assert "HKLM64" in on and "RegWrite" not in code, "read only: Defender's settings are never changed"
+    page = code[code.index("procedure InitializeWizard"):code.index("function ShouldSkipPage")]
+    assert "if CfaOn then\nWhy := CfaLine + #13#10#13#10;" in page
+    assert "Why + 'Surasura keeps your books" in page
+    line = code[code.index("function CfaLine"):code.index("function LibraryFolder")]
+    assert "ransomware protection" in line and "user folder" in line and "Documents" in line
 
 
 def test_the_installer_never_creates_the_library_folder_and_the_uninstaller_deletes_nothing_of_its_own():
@@ -302,20 +326,21 @@ def test_a_library_inside_the_program_folder_is_refused_silently_too():
 
 
 def test_a_folder_holding_a_program_is_never_the_library():
-    """IK-1: a 2.x unzipped into Documents\\Surasura (Surasura.exe and _internal beside its library) is exactly the
-    page's default; 3.0 would then work on the 2.x copy in place, and an upgrade skips the page, so nothing could fix
-    it. The default steps aside to Documents\\<LibraryFallback> when that folder holds a program, and Next on a folder
-    holding one is refused (LibraryProblem: the page, and a silent run's PrepareToInstall)."""
+    """IK-1: a 2.x unzipped into <user folder>\\Surasura (Surasura.exe and _internal beside its library; Documents
+    before 3.0.1) is exactly the page's default; 3.0 would then work on the 2.x copy in place, and an upgrade skips the
+    page, so nothing could fix it. The default steps aside to <user folder>\\<LibraryFallback> when that folder holds
+    a program, and Next on a folder holding one is refused (LibraryProblem: the page, and a silent run's
+    PrepareToInstall)."""
     code = "\n".join(_sections()["code"])
     assert re.findall(r"LibraryFallback = '([^']*)';", code) == ["Surasura Library"]      # the one place it is named
     assert "Surasura Library" not in code.replace("LibraryFallback = 'Surasura Library';", "")
     holds = code[code.index("function HoldsProgram"):code.index("end;", code.index("function HoldsProgram"))]
     assert "FileExists(AddBackslash(Folder) + 'Surasura.exe') or DirExists(AddBackslash(Folder) + '_internal')" in holds
     default = code[code.index("procedure InitializeWizard"):code.index("function ShouldSkipPage")]
-    assert ("else if HoldsProgram(ExpandConstant('{userdocs}\\Surasura')) then\n"
-            "LibraryPage.Values[0] := AddBackslash(ExpandConstant('{userdocs}')) + LibraryFallback\n"
+    assert ("else if HoldsProgram(UserFolder + '\\Surasura') then\n"
+            "LibraryPage.Values[0] := UserFolder + '\\' + LibraryFallback\n"
             "else\n"
-            "LibraryPage.Values[0] := ExpandConstant('{userdocs}\\Surasura');") in default
+            "LibraryPage.Values[0] := UserFolder + '\\Surasura';") in default
     problem = code[code.index("function LibraryProblem"):code.index("function InitializeSetup")]
     assert "else if HoldsProgram(LibraryFolder) then" in problem and "LibraryFallback" in problem
 

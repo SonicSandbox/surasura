@@ -165,6 +165,17 @@ def display_reading(orth, display, reading):
     return reading if _unvoiced(shown) == _unvoiced(reading) else shown
 
 
+def kana_as_written(spelling):
+    """A word's spelling in kana alone, in katakana, read as it is written (それじゃあ ソレジャア, どおり ドオリ, もん モン),
+    or None where it holds a kanji or a kana that reads as no kana of its own (an iteration mark: こゝろ, いすゞ; a
+    counter ヶ; a letter). A word's own reading as its spelling says it: Connect's card front (`pick.front_reading`)
+    and the CLI's `kana` (`verbs.shown_kana`) — never a phrase's, which `display_reading` reads against its row."""
+    pieces = _pieces(spelling or "")
+    if pieces is None or any(is_kanji for is_kanji, _text in pieces):
+        return None
+    return "".join(text for _is_kanji, text in pieces)
+
+
 # How many inflected forms the `Forms` column keeps per row. The report's Search tab matches them
 # as plain substrings, so a handful of the commonest is all it needs — the long tail is noise.
 FORMS_LIMIT = 8
@@ -190,14 +201,6 @@ def display_forms(lemma, orths, surfaces):
 
 # One encoder for every signature: sorted keys, the text as written, anything else by its str().
 SIGNATURE_ENCODER = json.JSONEncoder(sort_keys=True, ensure_ascii=False, default=str)
-
-
-class SignatureParts(dict):
-    """The run signature's parts (`analyzer.run_signature_parts`): a dict, signed whole — and beside it, never signed,
-    `watched`: the "reference" digests that are watched episodes set aside, not Finished (Haya-W). The fast re-plan's
-    check reads it to tell a watched mark (re-plan now) from a Finished drag (a Generate first, D1); parts built any
-    other way have none, and the check then answers as before."""
-    watched = frozenset()
 
 
 def signature_digest(parts, order_free=False, chunked=True):

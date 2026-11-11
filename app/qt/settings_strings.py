@@ -763,7 +763,7 @@ PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
 PRACTICE_THEN = ("Then, to start a round:\n"
                  "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
                  "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
-                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "short story, quiz) · from what (soon: the next words on your journey, top: your list's top words, "
                  "mix). Type / and it's listed as /surasura:practice (MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
                  "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
@@ -776,7 +776,7 @@ HELP_MARK_CARD = "{text}\n• Click: its help card"         # a row's ? whose ar
 HELP_TOUR_DOOR = "Show me what runs by itself"
 HELP_TOUR_DOOR_TIP = "A short tour of what Surasura does by itself, one card each, with a Try it where one is safe"
 PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
-                   "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
+                   "words, your next words, lines from your library, what you kept from past rounds) goes to "
                    "that AI's company, as anything you type there does. Nothing else leaves.")
 PRACTICE_STARTER = "Copy a starter message"
 PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "

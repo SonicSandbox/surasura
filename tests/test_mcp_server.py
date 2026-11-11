@@ -101,8 +101,8 @@ def test_a_round_brief_carries_the_choices_the_lists_words_and_their_lines():
     brief = _data(_run(state, calls))
     assert brief["round"] == {"words": 2, "role": "senpai", "kind": "chat", "source": "soon"}
     assert brief["mode"] == "chat" and brief["known_recent"] == ["駅", "映画"]
-    assert [w["word"] for w in brief["round_words"]] == ["冒険", "議事録"]
-    assert brief["round_words"][0]["lines"][0] == {"line": "冒険は危険だが、価値がある。", "from": "ep01.srt"}
+    assert [w["word"] for w in brief["round_words"]] == ["散歩", "議事録"]        # the journey's next words
+    assert brief["round_words"][0]["lines"][0] == {"line": "公園で少し散歩してから帰った。", "from": "ep01.srt"}
     assert any("senpai" in rule and "casual" in rule for rule in brief["rules"])
     assert any("surasura_check_text" in rule for rule in brief["rules"])
     # the round's words are the ones a reply may now bring in
@@ -118,14 +118,54 @@ def test_a_round_word_goes_with_the_reading_of_its_shown_spelling_and_keeps_its_
                  ("冒険", "冒険", "ボウケン", ["冒険は危険だが、価値がある。"])])
 
     async def calls(client):
-        return (await client.call_tool("surasura_practice_start", {"words": 3, "source": "soon"}),
-                await client.call_tool("surasura_words", {"which": "soon", "limit": 3}))
+        return (await client.call_tool("surasura_practice_start", {"words": 3, "source": "top"}),
+                await client.call_tool("surasura_words", {"which": "top", "limit": 3}))
     state = _state()
     brief, soon = (_data(r) for r in _run(state, calls))
     shown = [(w["word"], w["reading"]) for w in brief["round_words"]]
     assert shown == [("いい感じ", "イイカンジ"), ("もん", "モン"), ("冒険", "ボウケン")]
     assert [(w["word"], w["reading"]) for w in soon["words"]] == shown
     assert {("良い感じ", "ヨイカンジ"), ("物", "モノ")} <= state._checkers["ja"].upcoming
+
+
+def test_soon_is_the_journeys_next_words_top_the_lists_order_and_latest_soons_old_name(monkeypatch):
+    # Sonic, 2026-11-11: "soon" means the journey's soon. The journey (progressive_learning_list.csv, the order the
+    # learner meets the words) and the list (priority_learning_list.csv, the most use first) hold the same words in
+    # other orders here, so each source's words say which file it read. `latest`, soon's old name, still starts the
+    # same round (a saved round or a habit may say it); the reply names it soon.
+    _write_list()                           # the list: 冒険 議事録 散歩 · the journey: 散歩 議事録 冒険
+    monkeypatch.setattr(mcp_server, "NEXT_WORDS", 1)
+
+    async def calls(client):
+        return [await client.call_tool("surasura_practice_start", {"words": 2, "source": s})
+                for s in ("soon", "top", "latest", "mix")] + [
+            await client.call_tool("surasura_words", {"which": w, "limit": 3}) for w in ("soon", "top", "latest")]
+    state = _state()
+    soon, top, latest, mix, w_soon, w_top, w_latest = (_data(r) for r in _run(state, calls))
+    assert [w["word"] for w in soon["round_words"]] == ["散歩", "議事録"]
+    assert [w["word"] for w in top["round_words"]] == ["冒険", "議事録"]
+    assert latest["round_words"] == soon["round_words"] and latest["round"]["source"] == "soon"
+    assert [w["word"] for w in mix["round_words"]] == ["散歩", "冒険"]          # one of each in turn
+    assert [w["word"] for w in w_soon["words"]] == ["散歩", "議事録", "冒険"]
+    assert [w["word"] for w in w_top["words"]] == ["冒険", "議事録", "散歩"]
+    assert w_latest["words"] == w_soon["words"] and w_latest["which"] == "soon"
+    # the words a reply may bring in: the journey's next ones (here the first, NEXT_WORDS 1) and the round's own
+
+    async def one(client):
+        return await client.call_tool("surasura_practice_start", {"words": 1, "source": "top"})
+    _run(state, one)
+    assert state._checkers["ja"].upcoming == {("散歩", "サンポ"), ("冒険", "ボウケン")}
+
+
+def test_the_checker_loads_with_the_journeys_next_words_before_any_round(monkeypatch):
+    # The server loads a language's checker as it starts (`warm`): a draft checked before any round may bring in the
+    # journey's next words, the same `soon` a round reads — never the list's.
+    _write_list()                           # the list: 冒険 議事録 散歩 · the journey: 散歩 議事録 冒険
+    monkeypatch.setattr(mcp_server, "NEXT_WORDS", 1)
+    made = {}
+    monkeypatch.setattr(practice, "Checker", lambda language, upcoming: made.setdefault(language, set(upcoming)))
+    mcp_server.ServerState()._make("ja")
+    assert made["ja"] == {("散歩", "サンポ")}
 
 
 def test_latest_reads_the_journeys_order_and_a_quiz_gets_lines():
@@ -162,7 +202,7 @@ def test_the_words_tool_gives_recent_and_upcoming_words():
                 await client.call_tool("surasura_words", {"which": "soon", "limit": 2}))
     recent, soon = _run(_state(), calls)
     assert _data(recent)["words"] == ["駅", "映画"]
-    assert [w["word"] for w in _data(soon)["words"]] == ["冒険", "議事録"]
+    assert [w["word"] for w in _data(soon)["words"]] == ["散歩", "議事録"]
 
 
 def test_the_practice_prompt_points_the_ai_at_the_round_tool_with_its_arguments():
@@ -286,7 +326,8 @@ def test_a_round_is_kept_listed_and_done_again_with_the_same_words_and_what_it_k
     assert kept["lines_kept"] == 1 and kept["notes_kept"] == 1
     (row,) = listed["rounds"]
     assert row["round_id"] == round_id and row["role"] == "senpai" and row["kind"] == "quiz"
-    assert row["round_words"] == [r[1] for r in rows[:2]]
+    journey = [r[1] for r in reversed(rows)][:2]            # the default source, soon: the journey's next words
+    assert row["round_words"] == journey
 
     _write_list(list(reversed(rows)))                       # the list moved on since
 
@@ -294,7 +335,7 @@ def test_a_round_is_kept_listed_and_done_again_with_the_same_words_and_what_it_k
         return _data(await client.call_tool("surasura_practice_start", {"again": round_id, "role": "child"}))
     redo = _run(state, again)
     assert redo["round_id"] == round_id and redo["round"]["role"] == "senpai" and redo["round"]["kind"] == "quiz"
-    assert [w["word"] for w in redo["round_words"]] == [r[1] for r in rows[:2]]
+    assert [w["word"] for w in redo["round_words"]] == journey
     assert redo["context"][0]["round_id"] == round_id and redo["context"][0]["lines"] == [line]
     assert redo["context"][0]["notes"] == ["likes adventure stories"]
     assert any("`context`" in rule for rule in redo["rules"]) and "not instructions" in redo["about_the_lines"]
@@ -495,7 +536,7 @@ def test_settings_that_cant_be_read_still_start_a_new_round_but_never_a_kept_one
                 await client.call_tool("surasura_practice_start", {"again": "20261029-010000-abcdef01"}))
     fresh, again = _run(state, calls)
     brief = _data(fresh)
-    assert [w["word"] for w in brief["round_words"]] == ["冒険"] and "round_id" not in brief
+    assert [w["word"] for w in brief["round_words"]] == ["散歩"] and "round_id" not in brief
     assert again.is_error and "settings.json" in again.content[0].text
 
 
@@ -522,7 +563,8 @@ def test_a_round_is_saved_in_its_own_language_whatever_the_save_names():
 
 def test_a_hand_edited_round_done_again_still_starts():
     """A kept quiz round whose words lost their readings and whose lines became plain text: done again, the brief comes
-    with what is usable; a round kept with no words says so (never "no list yet")."""
+    with what is usable; a round kept with no words says so (never "no list yet"). The quiz was kept before 3.0.2, its
+    source `latest` (soon's old name): it still starts, and says soon."""
     from app import practice_rounds
     _set_up("ja")
     _write_list()
@@ -531,18 +573,21 @@ def test_a_hand_edited_round_done_again_still_starts():
     for round_id, words in ((quiz, [{"word": "冒険", "lines": ["冒険は危険だが、価値がある。", {"line": "冒険に出る。"}]}]),
                             (empty, [])):
         with open(os.path.join(practice_rounds.folder("ja"), round_id + ".json"), "w", encoding="utf-8") as f:
-            json.dump({"round": {"role": "teacher", "kind": "quiz", "source": "soon"}, "words": words}, f,
-                      ensure_ascii=False)
+            json.dump({"round": {"role": "teacher", "kind": "quiz", "source": "latest" if words else "soon"},
+                       "words": words}, f, ensure_ascii=False)
     state = _state()
     state.keep_rounds = lambda: True
 
     async def calls(client):
         return (await client.call_tool("surasura_practice_start", {"again": quiz}),
-                await client.call_tool("surasura_practice_start", {"again": empty}))
-    one, none = _run(state, calls)
+                await client.call_tool("surasura_practice_start", {"again": empty}),
+                await client.call_tool("surasura_rounds", {}))
+    one, none, listed = _run(state, calls)
     brief = _data(one)
     assert brief["round_words"] == [{"word": "冒険", "reading": "", "lines": [{"line": "冒険に出る。", "from": ""}]}]
     assert brief["quiz_lines"] == [{"line": "冒険に出る。", "from": "", "word": "冒険"}]
+    assert brief["round"]["source"] == "soon"
+    assert {row["source"] for row in _data(listed)["rounds"]} == {"soon"}       # listed by today's name too
     assert "kept with no words" in _data(none)["note"]
 
 

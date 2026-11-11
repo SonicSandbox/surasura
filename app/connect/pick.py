@@ -489,10 +489,10 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     are counted over what its card holds — the line and the lines its expansion adds (IS:268).
 
     A book's or a text's sentences (`cues.units`, Michi-BS): each word's `line_text` is `book_line`'s, and
-    `sentence_length` ((min, max) characters: the learner's *Length*, logic.context min_chars / preferred_max_chars;
-    PROVISIONAL lean, 2026-11-12: cards honour it too) puts a sentence within it before one outside it — where the 8 s
-    cap ranks a video's lines; too long before too short, as the report's examples go — never cut. A video's lines
-    never read it."""
+    `sentence_length` ((min, preferred max, never longer than) characters: the learner's *Length* and *Never longer
+    than*, logic.context min_chars / preferred_max_chars / max_chars; PROVISIONAL lean, 2026-11-12: cards honour them
+    too) ranks its sentences (`length`) where the 8 s cap ranks a video's lines — a preference only, never cut, a word
+    with only sentences outside it still sent. A video's lines never read it."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -535,12 +535,15 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     units = bool(getattr(cues, "units", False))
 
     def length(at):
-        """A book's sentence outside the learner's Length: (too short, too long); (0, 0) inside it, for a video's
-        line, or with no Length handed in."""
+        """A book's sentence against the learner's Length (`sentence_length`: (min, preferred max, never longer than)
+        characters) -> (past the cap, too short, too long): inside it first, then longer up to the cap, then shorter,
+        then past the cap — the report's examples' order (a sentence past max_chars is only ever a word's fallback);
+        (0, 0, 0) for a video's line or with no Length handed in. Based on the approach in #372 by Mattias."""
         if not units or not sentence_length:
-            return (0, 0)
+            return (0, 0, 0)
+        low, high, cap = sentence_length
         n = len(book_line(cues[at].text))
-        return (int(n < sentence_length[0]), int(n > sentence_length[1]))
+        return (int(bool(cap) and n > cap), int(n < low), int(n > high))
 
     candidates = []
     for key, uses in by_key.items():

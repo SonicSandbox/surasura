@@ -318,13 +318,18 @@ def _reading(loaded, lang):
 
 
 def _sentence_length(loaded):
-    """The learner's *Length* for example sentences (logic.context min_chars / preferred_max_chars, the analyzer's own
-    fallbacks 10 / 50) as a book's pick reads it -> (min, max), or None when the file holds no number there."""
-    context = (loaded.get("logic") or {}).get("context") or {}
-    try:
-        return int(context.get("min_chars", 10)), int(context.get("preferred_max_chars", 50))
-    except (TypeError, ValueError):
-        return None
+    """The learner's *Length* and *Never longer than* for example sentences (logic.context min_chars /
+    preferred_max_chars / max_chars, the analyzer's own fallbacks 10 / 50 / 150) as a book's pick reads them -> (min,
+    preferred max, cap); a value that isn't a whole number ≥ 0 is its default, a max below the min the min, a cap of 0
+    none. Based on the approach in #372 by Mattias."""
+    context = ((loaded or {}).get("logic") or {}).get("context") or {}
+
+    def number(key, default):
+        value = context.get(key, default)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    high = max(low, high)
+    return low, high, max(high, cap) if cap else 0
 
 
 def _phrase_set(loaded, lang):

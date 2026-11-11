@@ -8,7 +8,8 @@ sentence Surasura sends must be: one sentence, an exact piece of the paragraph a
 kept; only line breaks and the paragraph's indent out), and clean — a quote mark the split left with no partner at the
 sentence's start or end dropped (「おれは…好い。 → おれは…好い。), which keeps it an exact piece. And, PROVISIONAL (lean,
 2026-11-12): a book's word is cut from a sentence within the learner's *Length* (logic.context min_chars /
-preferred_max_chars) when it has one there — a longer or shorter one only later, never cut short. Video and audio cards
+preferred_max_chars, and *Never longer than*'s max_chars: based on the approach in #372 by Mattias) when it has one
+there — a longer or shorter one only later, never cut short. Video and audio cards
 keep the card-line rules (Michi-CL) unchanged.
 
 What a wrong answer would cost: the learner's book cards carry a paragraph-sized sentence (Mattias's report), a stray
@@ -151,13 +152,17 @@ def test_a_books_word_is_cut_from_a_sentence_within_the_learners_length_before_a
         got = pick.pick(read, tokens, "ja", lambda k: k != key, mode="list", listed={key: 0}, sentence_length=lengths)
         return got["words"][0]["line_text"]
     assert line(None).startswith("空には、"), "no setting handed in: as before, the earliest"
-    assert line((10, 50)).startswith("しかし杜子春は"), "the one within 10–50"
-    assert line((10, 60)).startswith("空には、"), "both within: the earliest"
-    assert line((0, 4)) == "空だ。", "a short range: the short one"
-    assert line((40, 45)).startswith("空には、"), "none within: too long before too short, as the report's go"
-    assert line((60, 80)).startswith("空には、"), "every one too short: the earliest, whole"
-    assert line((3, 37)) == "空だ。", "its bounds are inside it: 3 characters is not too short for 3"
-    assert line((4, 38)).startswith("しかし杜子春は"), "nor 38 too long for 38"
+    assert line((10, 50, 150)).startswith("しかし杜子春は"), "the one within 10–50"
+    assert line((10, 60, 150)).startswith("空には、"), "both within: the earliest"
+    assert line((0, 4, 150)) == "空だ。", "a short range: the short one"
+    assert line((40, 45, 150)).startswith("空には、"), "none within: too long before too short, as the report's go"
+    assert line((60, 80, 150)).startswith("空には、"), "every one too short: the earliest, whole"
+    assert line((3, 37, 150)) == "空だ。", "its bounds are inside it: 3 characters is not too short for 3"
+    assert line((4, 38, 150)).startswith("しかし杜子春は"), "nor 38 too long for 38"
+    # *Never longer than* (max_chars, Based on the approach in #372 by Mattias): past it only as the last resort —
+    # behind a sentence too short, where one merely too long goes before it
+    assert line((40, 45, 50)) == "空だ。", "51 is past the cap of 50: the too-short one first"
+    assert line((40, 45, 0)).startswith("空には、"), "no cap: too long before too short"
 
 
 def test_a_videos_card_lines_never_read_the_length():
@@ -166,7 +171,7 @@ def test_a_videos_card_lines_never_read_the_length():
     read = cues.read(EPISODE, "ja")
     tokens = cues.tokens(read, "ja")
     plain = pick.pick(read, tokens, "ja", lambda k: False, mode="unknown")
-    for lengths in ((10, 50), (0, 4), (60, 80)):
+    for lengths in ((10, 50, 150), (0, 4, 4), (60, 80, 0), (40, 45, 50)):
         assert pick.pick(read, tokens, "ja", lambda k: False, mode="unknown", sentence_length=lengths) == plain
 
 
@@ -175,8 +180,11 @@ class _Picked(Exception):
 
 
 @pytest.mark.parametrize("logic, lengths", [
-    ({"context": {"min_chars": 12, "preferred_max_chars": 40}}, (12, 40)),
-    ({}, (10, 50)),                                         # the settings' own defaults
+    ({"context": {"min_chars": 12, "preferred_max_chars": 40, "max_chars": 90}}, (12, 40, 90)),
+    ({}, (10, 50, 150)),                                    # the settings' own defaults
+    ({"context": {"min_chars": "x", "preferred_max_chars": 5}}, (10, 10, 150)),     # not a number: its default; a
+    ({"context": {"min_chars": True, "preferred_max_chars": -3, "max_chars": 20}}, (10, 50, 50)),  # max under the
+    ({"context": {"max_chars": 0}}, (10, 50, 0)),          # min the min, a cap under it the max; 0: no cap
 ])
 def test_the_pick_verb_hands_a_books_pick_the_learners_length(monkeypatch, logic, lengths):
     # why: the setting reaches a book's pick only through the verb — a pick never handed it orders as before

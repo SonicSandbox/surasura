@@ -4,7 +4,7 @@ reading it* · *Keep waiting* — never the offline line; a folder that is only 
 keeps the offline line as before. 届 is amber while a gone card stands, and its press opens *Needs you* then (else
 Sources, as every circle opens its settings). The card goes by itself when the folder comes back.
 
-What a wrong answer would cost a learner (his real case: `Downloads\\Yomi no Tsugai` moved to `S:\\Video\\Anime\\…`,
+What a wrong answer would cost a learner (a real case: `Downloads\\Yomi no Tsugai` moved to `E:\\Video\\Anime\\…`,
 already read): 届 amber with *Needs you* empty (alpha 2: nothing to do but wait for ever); *Find its new folder…* that
 adds the show a second time, or stops reading the old folder when none of its episodes were found; *Stop reading it*
 with no Undo, or one that moves or removes anything; an unplugged drive offered *Stop reading it*.
@@ -250,7 +250,7 @@ def test_stop_reading_it_goes_through_the_writer_with_one_undo_and_the_folders_a
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_find_its_new_folder_starts_where_its_episodes_are_read_and_stops_the_old_folder_once_it_joined(world,
                                                                                                     language):
-    new = os.path.join("S:\\Video\\Anime", names(language)[71])
+    new = os.path.join("E:\\Video\\Anime", names(language)[71])
     looks = Looks({"joined": 12, "stop": True})
     seed, win, writer, ny = world(language, looks=looks)
     _told(win, language, _gone_row(language, found_in=[new]))
@@ -303,7 +303,7 @@ def test_find_its_new_folder_cancelled_asks_nothing(world):
     assert looks.finds == [] and writer.calls == []
 
 
-# --- Sonic's real case, on a real store and the real looks --------------------------------------------------------- #
+# --- the real case, on a real store and the real looks --------------------------------------------------------- #
 def _elsewhere(*parts):
     path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", *parts)
     os.makedirs(path, exist_ok=True)
@@ -465,7 +465,7 @@ def test_review3_stop_and_keep_waiting_do_nothing_while_its_find_runs_and_find_s
     seed, win, writer, ny = world("ja", looks=looks)
     _told(win, "ja", _gone_row("ja"))
     card = _card_in(win, ny)
-    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    ny.pick_folder = lambda title, start: "E:\\Video\\Anime\\X"
     _button(ny, card.key, "find_folder").click()
     _pump()
     _button(ny, card.key, "stop_reading").click()                         # A-5: the other answer meanwhile
@@ -501,10 +501,10 @@ def test_review5_a_find_answer_for_the_library_left_stops_nothing_and_says_where
     card = _card_in(win, ny)
     heard = []
     monkeypatch.setattr(win, "say", lambda text, *a, **k: heard.append(text))
-    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    ny.pick_folder = lambda title, start: "E:\\Video\\Anime\\X"
     _button(ny, card.key, "find_folder").click()
     assert wait_until(lambda: heard, 5)
-    assert heard[-1] == strings.NEEDS_FIND_JOINED_LEFT.format(name=names("ja")[71], folder="S:\\Video\\Anime\\X")
+    assert heard[-1] == strings.NEEDS_FIND_JOINED_LEFT.format(name=names("ja")[71], folder="E:\\Video\\Anime\\X")
     assert not _stops(writer)
 
 
@@ -579,7 +579,7 @@ def test_find_on_a_gone_card_reads_into_the_cards_own_language_not_the_windows_c
     _told(win, "ja", _gone_row("ja"))
     card = _card_in(win, ny)
     ny.language = "zh"                                    # the window has moved on to Chinese since the card was made
-    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    ny.pick_folder = lambda title, start: "E:\\Video\\Anime\\X"
     _button(ny, card.key, "find_folder").click()
     assert wait_until(lambda: looks.finds, 5)
     assert looks.finds[-1][2] == "ja"

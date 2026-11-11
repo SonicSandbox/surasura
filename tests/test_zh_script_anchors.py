@@ -49,7 +49,7 @@ def test_a_traditional_sentence_anchors_on_a_simplified_file(tmp_path, zh_resour
     with open(os.path.join(zh_resources_dir, "chinese_text_1.txt"), encoding="utf-8") as f:
         raw = f.read()
     path = _write(tmp_path / "news.txt", raw)
-    line = next(l for l in raw.splitlines() if l.startswith("上海孙中山故居纪念馆"))
+    line = next(l for l in raw.splitlines() if l.startswith("城南孙中山纪念馆"))
     anchor = AnchorFinder(script="t").anchor(path, zh_script.convert(line, "t"))
     assert anchor and anchor in line and raw.count(anchor) == 1
 

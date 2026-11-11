@@ -6,8 +6,8 @@ stay in git history.
 
 | File | What it is | Source |
 | --- | --- | --- |
-| `ja/MigakuDb.db` | a Migaku-shaped database (its `WordList` table): 2,947 Japanese words, 30 German | built for the tests: the commonest dictionary forms of the app's own `frequency_list_ja_global50k.csv`; statuses and times made up |
-| `ja/KnownWord.json` | that database as the app's Migaku import writes it | made by `app/migaku_converter.py` from `ja/MigakuDb.db` |
+| `ja/MigakuDb.db` | a Migaku-shaped database (its `WordList` table): 2,948 Japanese words, 30 German | built for the tests: the commonest dictionary forms of the app's own `frequency_list_ja_global50k.csv`; statuses and times made up |
+| `ja/KnownWord.json` | that database as the app's Migaku import writes it | made by `app/migaku_converter.py` from `ja/MigakuDb.db` (its `exportDate` and `databaseFile` set by hand) |
 | `ja/testAnki.apkg` | a legacy Anki package: 200 basic words, a vocabulary note and a marked sentence note each | written for the tests (words, sentences, English); a few stand-in media files |
 | `ja/testAnki2.apkg`, `ja/ankiTest3.apkg` | modern Anki packages (zstd): four mined cards | the sentences are from the public-domain samples (蜘蛛の糸, ごん狐); glossaries and pitch graphs written for the tests |
 | `ja/audiobook_sync/toshisyun_*.srt` | 杜子春 (芥川龍之介, 1920) as timed lines | public domain (青空文庫) |

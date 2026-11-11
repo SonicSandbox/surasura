@@ -50,7 +50,7 @@ def test_a_finished_shows_folder_leads_with_stop_reading_it(language):
 def test_a_folder_whose_episodes_a_look_already_joined_elsewhere_says_where_and_leads_with_stop_reading(language):
     """A look of a folder being read joined its episodes by itself: the old folder holds 0, the card still names the
     show and says where it is read now (Kura's seam: lead with *Read from … now · Stop reading it*)."""
-    new = os.path.join("S:\\Video\\Anime", names(language)[71])
+    new = os.path.join("E:\\Video\\Anime", names(language)[71])
     [card] = _cards([_row(language, items=0, found_in=[new])])
     assert card.actions[0] == "stop_reading"
     assert new in card.say and names(language)[71] in card.say
@@ -59,7 +59,7 @@ def test_a_folder_whose_episodes_a_look_already_joined_elsewhere_says_where_and_
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_its_episodes_found_in_a_folder_read_already_say_find_joins_them_there(language):
-    new = os.path.join("S:\\Video\\Anime", names(language)[71])
+    new = os.path.join("E:\\Video\\Anime", names(language)[71])
     [card] = _cards([_row(language, found_in=[new])])
     assert card.actions[0] == "find_folder" and new in card.say
 
@@ -68,7 +68,7 @@ def test_its_episodes_found_in_a_folder_read_already_say_find_joins_them_there(l
 def test_sonics_own_case_finished_and_read_elsewhere_says_either_answer_keeps_them(language):
     """His Yomi no Tsugai: every episode Finished, and already read on S:. *Stop reading it* leads, and the words say
     both answers keep the episodes (finding 3: never "Find…" advice under a Stop-first card alone)."""
-    new = os.path.join("S:\\Video\\Anime", names(language)[71])
+    new = os.path.join("E:\\Video\\Anime", names(language)[71])
     [card] = _cards([_row(language, finished=True, found_in=[new])])
     assert card.actions[0] == "stop_reading"
     assert "Finished" in card.say and new in card.say and "stop reading the old folder" in card.say

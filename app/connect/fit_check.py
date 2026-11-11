@@ -58,6 +58,11 @@ TRUST_LABEL = "Trust my subtitles’ timing"                         # Settings 
 NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards yet. If your subtitles are synced, "
               f"turn on {TRUST_LABEL} in Settings → Anki & mining.")
 SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `NOT_MATCHED`
+# tsubasa is sure of the timing, but it shifts part-way (two segments or more: a broadcast cut another way than the
+# subtitle's source). One offset can't cut it, so `fit` says not timed; the runner asks tsubasa for a retimed copy
+# (`retime`) and mines that one when every line of it stays where it was (Mattias 2026-11-11, rezeroS04)
+PART_WAY = "Its timing changes part-way through the {media}, so no cards."
+RETIMED = "retimed"             # the folder in a job's run folder that holds tsubasa's retimed copy
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
                  "another line. Mine anyway only if you know it plays in time.")
 
@@ -198,7 +203,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
         return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
-        return NOT_TIMED, "tsubasa", f"Its timing changes part-way through the {_media(video)}, so no cards.", 0.0
+        return NOT_TIMED, "tsubasa", PART_WAY.format(media=_media(video)), 0.0
     if outcome == "CONFIDENT":
         return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
     reason = (answer or {}).get("reason")
@@ -210,6 +215,68 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def part_way(why):
+    """Is `why` the reason `fit` gives a subtitle whose timing shifts part-way (`PART_WAY`)? Only that one is retimed:
+    a refusal or an error has no timing tsubasa could write."""
+    return isinstance(why, str) and why in (PART_WAY.format(media="video"), PART_WAY.format(media="audio"))
+
+
+def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
+    """tsubasa's retimed copy of `subtitle` for `video`, written in `out_dir` (emptied first) -> its path, or None.
+
+    `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: it times the subtitle piece by piece (every segment its
+    own shift) and writes the copy under DIR only — the library's copy, the original and the video's folder are never
+    written, and no record of tsubasa's is updated. Only an SRT is retimed (`lineup.srt_cues` reads both to move the
+    words' lines); anything else, no tsubasa, a refusal, an error, no answer in time, or no file where it says it
+    wrote one -> None, and the episode stays not timed. The job's *Stop* ends it as the check does."""
+    if not subtitle or os.path.splitext(subtitle)[1].lower() != ".srt":
+        return None
+    exe = tsubasa if tsubasa is not None else find_tsubasa()
+    if not exe:
+        return None
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir, exist_ok=True)
+    command = [exe, "--pair", video, subtitle, "--out", out_dir, "--json", "--no-results"]
+    try:
+        stdout = _run(command, timeout) if run is None else run(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+        return None
+    answer = _answer(stdout) or {}
+    path = answer.get("output_path")
+    if answer.get("outcome") != "CONFIDENT" or answer.get("write_failed") or not isinstance(path, str) or not path:
+        return None
+    inside = os.path.normcase(os.path.abspath(out_dir)) + os.sep
+    if not os.path.normcase(os.path.abspath(path)).startswith(inside) or not os.path.isfile(path):
+        return None                 # never a file outside the job's own folder
+    return path
+
+
+def moved_lines(words, before, after, tolerance=0.05):
+    """The picked words with their lines moved to the retimed copy -> [word, …], or None when one can't be placed.
+
+    `before` and `after` are the two files' cues (`lineup.srt_cues`): tsubasa's copy holds the same cues in the same
+    order, only their times shifted — so a word's line is the cue of the library's copy starting at its `line_start`
+    (within `tolerance`), and it takes that cue's new start and end. Different cue counts or texts (not the copy it
+    should be), or a word whose line isn't found -> None: never a card cut at a guessed time."""
+    if not before or len(before) != len(after) or any(a[2] != b[2] for a, b in zip(before, after)):
+        return None
+    starts = [cue[0] for cue in before]
+    out = []
+    for word in words:
+        start = _number(word.get("line_start"))
+        if start is None:
+            return None
+        at = min(range(len(starts)), key=lambda i: abs(starts[i] - start))
+        if abs(starts[at] - start) > tolerance:
+            return None
+        shift = after[at][0] - before[at][0]
+        end = _number(word.get("line_end"))
+        out.append(dict(word, line_start=round(after[at][0], 3),
+                        line_end=round(end + shift, 3) if end is not None else round(after[at][1], 3)))
+    return out
 
 
 def _media(path):

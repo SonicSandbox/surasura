@@ -1426,6 +1426,15 @@ def _fit(steps, ledger, lang, job):
         title = steps.title(lang, job)
         gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
+    if verdict != fit_check.TIMED and fit_check.part_way(why):
+        # its timing shifts part-way: tsubasa's retimed copy, in the job's own folder, is mined instead — the words'
+        # lines moved to it, no shift on top (Mattias 2026-11-11: a not-timed subtitle never got another look)
+        retime = getattr(steps, "retime", None)
+        retimed = retime(lang, job, picked) if retime is not None else None
+        if retimed is not None:
+            log.info("Connect: job %s mined from tsubasa's retimed copy: %s", jid, why)
+            ledger.set_state(jid, "mining", picked=retimed)
+            return
     if verdict != fit_check.TIMED:
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
@@ -2827,6 +2836,24 @@ class Steps:
             spot = lambda: self._spot(lang, job, video, subtitle)      # noqa: E731
         return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot)
 
+    def retime(self, lang, job, picked):
+        """A pick whose subtitle's timing shifts part-way (`fit_check.PART_WAY`) -> the pick mined from tsubasa's
+        retimed copy (`fit_check.retime`, in the job's run folder: `subtitle` that copy, `retimed` its path, every
+        word's line moved to it, no offset), or None: it stays not timed. The library's copy (`file`) is kept as the
+        pick's own, so its pairing and a re-pick read the library as before."""
+        from app.connect import lineup
+        video, subtitle = picked.get("video"), picked.get("file")
+        if not video or not subtitle:
+            return None
+        path = fit_check.retime(video, subtitle, os.path.join(self.run_dir(job), fit_check.RETIMED))
+        if path is None:
+            return None
+        words = fit_check.moved_lines(picked.get("words") or [], lineup.srt_cues(subtitle), lineup.srt_cues(path))
+        if words is None:
+            log.info("Connect: job %s: tsubasa's retimed copy doesn't hold the same lines: not mined from it", job["id"])
+            return None
+        return dict(picked, subtitle=path, retimed=path, words=words, offset=0.0)
+
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups
         (row 25), else read; None when Anki Miner isn't installed. Raises Wait / Needs as the mine step does."""
@@ -3064,6 +3091,8 @@ class Steps:
         miner = anki_miner.find(self.loaded)
         if miner is None:
             raise Skip("Anki Miner isn't installed")
+        if picked.get("retimed") and not os.path.isfile(picked["retimed"]):
+            raise Repick()                  # tsubasa's retimed copy is gone (its run folder tidied): timed again
         run_dir = self.run_dir(job)
         held = self._anki_miner_held(lang)      # row 25: the pick's look-ups, kept (the setup empties it on a failure)
         try:

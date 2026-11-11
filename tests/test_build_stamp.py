@@ -20,6 +20,7 @@ from app.cli import __main__ as cli
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = "20261012T080000Z-1a2b3c4d"
+OTHER = "0.0.9" if __version__ != "0.0.9" else "0.0.8"   # another build's version: never this one (3.0.1's stamp was "3.0.1")
 
 
 def _stamp(root, version=__version__, build_id=BUILD, data_name="Surasura-test"):
@@ -56,12 +57,12 @@ def test_a_frozen_program_and_its_own_stamp_match(frozen):
 
 
 def test_another_version_in_the_folder_is_skew_and_says_both(frozen):
-    _stamp(frozen, version="3.0.1")
+    _stamp(frozen, version=OTHER)
     skew = build_info.stamp_skew()
     assert skew == {"program": {"version": __version__, "build_id": BUILD},
-                    "folder": {"version": "3.0.1", "build_id": BUILD}}
+                    "folder": {"version": OTHER, "build_id": BUILD}}
     text = build_info.skew_text(skew)
-    assert __version__ in text and "3.0.1" in text
+    assert __version__ in text and OTHER in text
 
 
 def test_the_same_version_from_another_build_is_skew(frozen):
@@ -108,10 +109,10 @@ def _cli(*argv):
 
 
 def test_the_cli_refuses_a_mixed_program_folder_with_version_skew(frozen):
-    _stamp(frozen, version="3.0.1")
+    _stamp(frozen, version=OTHER)
     code, lines = _cli("_selftest", "ok")
     assert code == 2 and len(lines) == 1
-    assert lines[0]["code"] == "version-skew" and lines[0]["folder"]["version"] == "3.0.1"
+    assert lines[0]["code"] == "version-skew" and lines[0]["folder"]["version"] == OTHER
     assert lines[0]["program"] == {"version": __version__, "build_id": BUILD}
 
 
@@ -199,17 +200,17 @@ def test_no_library_store_is_fine(tmp_path):
 # --- the window -------------------------------------------------------------------------------------------------------
 
 def test_the_window_logs_and_shows_a_mixed_folder_and_exits_2(frozen, monkeypatch):
-    _stamp(frozen, version="3.0.1")
+    _stamp(frozen, version=OTHER)
     shown, logged = [], []
     monkeypatch.setattr(app_entry, "_error_box", lambda title, text: shown.append((title, text)))
     monkeypatch.setattr(app_entry, "log_error", logged.append)
     assert app_entry._start_checks(headless=False) == 2
-    assert len(shown) == 1 and "3.0.1" in shown[0][1]
+    assert len(shown) == 1 and OTHER in shown[0][1]
     assert any("version-skew" in line for line in logged)
 
 
 def test_a_headless_start_never_shows_a_box(frozen, monkeypatch):
-    _stamp(frozen, version="3.0.1")
+    _stamp(frozen, version=OTHER)
     shown = []
     monkeypatch.setattr(app_entry, "_error_box", lambda title, text: shown.append(text))
     monkeypatch.setattr(app_entry, "log_error", lambda msg: None)

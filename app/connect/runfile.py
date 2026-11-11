@@ -173,6 +173,16 @@ def word_requests(words, features=(), book=False):
     return out
 
 
+_CLOZE = re.compile(r"\{\{(c\d+::)", re.IGNORECASE)
+
+
+def no_cloze(text):
+    """Michi-RM3: text Surasura itself puts in a card (the Source's names) with an Anki cloze mark (`{{c1::`) broken
+    by a zero-width space — on a note type that isn't Cloze, Anki refuses the whole note for one (AnkiConnect's
+    *cannot create note for unknown reason*, proven on DevTest). Shown the same; anything else as it is."""
+    return _CLOZE.sub("{\u200b{\\1", text) if isinstance(text, str) else text
+
+
 def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False, names=None):
     """One episode of a run: its video and subtitle (absolute paths), the words, the job's tags, and the subtitle's
     offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269). `audio` (Z-16): `video`
@@ -188,9 +198,9 @@ def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=
     if names:
         folder, name = (str(n or "") for n in names)
         if name.strip():
-            out["episode_name_override"] = name
+            out["episode_name_override"] = no_cloze(name)
     if folder.strip():
-        out["series_name_override"] = folder
+        out["series_name_override"] = no_cloze(folder)
     return out
 
 

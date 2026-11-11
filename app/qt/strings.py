@@ -1377,6 +1377,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
     # Mattias's field report (3.0.0, #5; PROVISIONAL words)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
+    # Michi-RM3 (PROVISIONAL words)
+    "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
@@ -1523,6 +1525,8 @@ NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, t
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
+NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
 NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"

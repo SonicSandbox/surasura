@@ -105,9 +105,18 @@ MINE_FAILED = "Anki Miner stopped twice while making its cards"
 MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
                    "it made are kept.")
 # … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
-# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
-MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
-                    "more; the cards it made are kept.")
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1). Michi-RM3:
+# its own *Needs you* kind (MINE_REFUSED: *Skip this word* beside *Try again*, `actions.skip_refused`); and when Anki's
+# answer is its fields check's "unknown reason" — a cloze state, proven on DevTest: a field holds cloze marks on a note
+# type that isn't a cloze one — the line says so in plain words (PROVISIONAL words)
+MINE_REFUSED = "mine-refused"
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}){hint}. Skip this word and the rest "
+                    "of the part is done, and it's never asked again; Try again tries it once more. The cards it made "
+                    "are kept.")
+UNKNOWN_REASON = "cannot create note for unknown reason"     # AnkiConnect's words for a cloze state of Anki's check
+CLOZE_HINT = (": a dictionary's text for this word looks like an Anki cloze ({{c1::…}}), and Anki refuses it on "
+              "this note type")      # (Mattias found it: a grammar dictionary's example sentences, 2026-11-12)
+FAILED_KINDS = ("mine-failed", MINE_REFUSED)
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
 # Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
@@ -730,8 +739,8 @@ def _fixed_said(ledger, lang, says):
 
 def _failed_says(ledger, lang, item_id):
     """The words of the item's open *Anki Miner stopped* lines (Mattias #5): only a new try of its words ends them."""
-    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind = "
-                                              "'mine-failed' AND fixed_at IS NULL", (lang, item_id))}
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind IN "
+                                              "(?, ?) AND fixed_at IS NULL", (lang, item_id) + FAILED_KINDS)}
 
 
 def _skipped_says(job):
@@ -1217,6 +1226,7 @@ def _pick(steps, ledger, lang, job, record=True):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
         # either (a name: sent once a version, never again with every episode)
         declined |= ledger.uncardable(lang, got["anki_miner"])
+        declined |= ledger.skipped_words(lang, got["anki_miner"])     # Michi-RM3: *Skip this word*, any part
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
@@ -1756,14 +1766,16 @@ def _fail_mining(steps, ledger, lang, job, record=True):
              if w["word"] in refused and _outcome(ledger, job["id"], w) in UNSETTLED]
     if said and words:              # Mattias #5: the words Anki refused alone: named, with Anki's reason
         named = ", ".join(words[:3]) + (f" and {len(words) - 3} more" if len(words) > 3 else "")
-        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said)
+        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said,
+                                      hint=CLOZE_HINT if UNKNOWN_REASON in str(said) else "")
+        kind = MINE_REFUSED
     else:
-        say = MINE_FAILED_SAY.format(title=title)
+        say, kind = MINE_FAILED_SAY.format(title=title), "mine-failed"
     with ledger.transaction():
-        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'mine-failed' "
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind IN (?, ?) "
                             "AND fixed_at IS NULL AND COALESCE(job_id, -1) != ?",
-                            (_now(), lang, job["item_id"], job["id"]))
-        ledger.need(lang, "mine-failed", say, item_id=job["item_id"], job_id=job["id"])
+                            (_now(), lang, job["item_id"]) + FAILED_KINDS + (job["id"],))
+        ledger.need(lang, kind, say, item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
 
 

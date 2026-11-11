@@ -108,11 +108,13 @@ def test_a_report_heard_before_the_window_was_made_reaches_it_once_it_is(qapp):
         result = []
         t = _ask([practice.REPORT_ARG, WHAT], result)
         assert wait_until(lambda: (gc.collect(), not t.is_alive())[1], 10)
-        assert result == [True] and first.pending == [practice.REPORT_ARG, WHAT]
+        assert result == [True] and first.pending == [[practice.REPORT_ARG, WHAT]]
+        t = _ask([], result)                                          # an ordinary start after it: both kept
+        assert wait_until(lambda: (gc.collect(), not t.is_alive())[1], 10)
         heard = []
         first.activated.connect(heard.append)
-        assert first.replay() is True and heard == [[practice.REPORT_ARG, WHAT]] and first.pending is None
-        assert first.replay() is False                               # once
+        assert first.replay() == 2 and heard == [[practice.REPORT_ARG, WHAT], []] and first.pending == []
+        assert first.replay() == 0                                    # once
     finally:
         first.release()
 
@@ -121,3 +123,27 @@ def test_the_words_have_the_focus_never_a_button_a_key_could_press(main):
     main.bring_to_front([practice.REPORT_ARG, WHAT])
     w = windows.opened(main, report_ui.NAME)
     assert w.focusWidget() is w.what
+
+
+def test_the_window_takes_the_starts_it_missed_once_its_first_frame_is_drawn(main):
+    # the real start's order: the pipe listens from the claim, the window connects after setup and the gate
+    first = single.SingleInstance()
+    try:
+        first.pending = [[practice.REPORT_ARG, WHAT]]                 # heard while the gate showed
+        shell.connect_instance(main, first)
+        assert windows.opened(main, report_ui.NAME) is None            # not before the window is drawn
+        main.first_frame.emit()
+        w = windows.opened(main, report_ui.NAME)
+        assert w is not None and w.what.toPlainText() == WHAT and first.pending == []
+    finally:
+        first.release()
+
+
+def test_what_goes_up_piyos_words_bring_the_form_back_with_the_focus_on_them(main):
+    main.report_button.click()
+    w = windows.opened(main, report_ui.NAME)
+    w._whole()
+    w.pages.setCurrentIndex(w.GOES)                                   # the learner was looking at What goes
+    main.bring_to_front([practice.REPORT_ARG, WHAT])
+    assert w.pages.currentIndex() == w.FORM and w.focusWidget() is w.what      # never Send, a key away
+    assert w.what.toPlainText() == WHAT

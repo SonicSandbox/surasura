@@ -108,7 +108,7 @@ def test_every_part_is_the_reports_own_reading_with_the_learners_names_written_a
     # settings as the report keeps them: a key blanked, never shown
     assert "AIza" not in text
     assert out["anki"]["settings"]["anki_sync_auto"] is True
-    assert "<you>" in out["anki"]["settings"]["anki_export_folder"]       # every string scrubbed, not only logs
+    assert out["anki"]["settings"]["anki_export_folder"] == "<folder>"    # every string, not only the log's
     # the library's counts, by the names the learner sees (never HighPriority / NOW)
     assert out["library"]["items"].get("Current", 0) >= 4 and "HighPriority" not in text
 
@@ -189,7 +189,7 @@ def test_a_part_that_cant_be_read_says_why_and_the_rest_still_answer(world, monk
         raise OSError(f"the ledger at {world[0].home} is locked")
     monkeypatch.setitem(diagnose.PARTS, "connect", broken)
     out = diagnose.diagnose(language="ja")
-    assert out["connect"]["unreadable"] == "OSError: the ledger at <folder> is locked"      # never the home folder
+    assert out["connect"]["unreadable"] == "OSError: the ledger at <folder>"      # never the home folder (nor after it)
     assert out["library"]["items"] and out["hato"] == {"found": False}
 
 
@@ -237,3 +237,31 @@ def test_chinese_reads_its_own_library(no_anki):
     out = diagnose.diagnose("library", "zh")
     assert out["library"]["items"].get("Current", 0) >= 1
     assert diagnose.diagnose("library", "ja")["library"] == {"store": "none yet"}    # never the other language's
+
+
+# --- the content rule, every shape a path or a name takes in a line ---------------------------------------------- #
+@pytest.mark.parametrize("line, said", [
+    (r"waits: the video isn't where it was (D:\Anime\Bocchi the Rock\Season 1).", "waits: the video isn't where it was (<folder>)."),
+    ("\\\\NAS\\anime\\Bocchi the Rock\\ep1.mkv failed", "<file .mkv> failed"),             # a network share
+    ("\\\\?\\UNC\\NAS\\anime\\Bocchi\\ep1.mkv failed", "<file .mkv> failed"),
+    ("/c/Users/ztan/Bocchi the Rock/ep1.mkv: gone", "<file .mkv>: gone"),                     # Git Bash's form
+    (r"D:\Anime\Vol.2 Bocchi\ep1.mkv because the cards", "<file .mkv> because the cards"),   # a dot in a folder
+    ("Connect couldn't read 'Bocchi the Rock' now", "Connect couldn't read '…' now"),         # an apostrophe before
+    ("connect: the spot-check of [SubsPlease] Bocchi the Rock! - 01 (1080p).ja.srt couldn't run now",
+     "connect: the spot-check of … <file .srt> couldn't run now"),                             # a name, no folder
+    ("Anki Miner failed on 「ぼっち・ざ・ろっく！」 ep 3 Ｂｏｃｃｈｉ 보치", "Anki Miner failed on 「…」 ep 3 … …"),
+])
+def test_content_free_takes_every_path_and_name_shape_out(line, said):
+    assert report.content_free(line) == said
+
+
+def test_a_waits_reason_naming_a_folder_never_reaches_the_ai(world):
+    with book.Ledger() as led:
+        led.conn.execute("INSERT INTO jobs (language, item_id, state, created_at, updated_at, kind, reason) VALUES "
+                         "('ja', 34, 'waiting', '2026-11-11T20:00:00Z', '2026-11-11T20:00:00Z', 'mine', ?)",
+                         (r"This episode's video isn't where it was (D:\Anime\葬送のフリーレン\Season 1).",))
+    out = diagnose.diagnose("connect", "ja")
+    text = json.dumps(out, ensure_ascii=False)
+    assert "フリーレン" not in text and "Anime" not in text and "Season 1" not in text
+    (job,) = [j for j in out["connect"]["ja"]["open_jobs"] if j["state"] == "waiting"]
+    assert job["reason"] == "This episode's video isn't where it was (<folder>)."

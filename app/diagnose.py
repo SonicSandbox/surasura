@@ -2,13 +2,13 @@
 learner's AI can say why Surasura is doing something without a zip. Qt-free.
 
 **One source.** Every part is read by the report's own collectors (`app/report.py`: the build, the logs it takes,
-Connect's status record and job ledger, the Anki sync's record, settings with their secrets blanked), a log as the
-scrub reads text (`scrub.decode`), and every string goes through the report's scrub (`app/scrub.py`: the learner's
-Windows name, PC, home folder, Anki profiles, install keys and emails written as placeholders). The answer goes to the
-learner's AI, not to Sonic, so a free line of text (a log line, an error) also loses what the learner watched or read —
-its paths, quoted names and Japanese or Chinese (`report.content_free`), before the scrub. Then the scrub's matcher
-reads each part again, as written and as the legacy encodings would garble it (`scrub._views`): a hit leaves that
-part out, said so — the same matcher checking itself, never a second set of rules.
+Connect's status record and job ledger, the Anki sync's record, settings with their secrets blanked), a log as the zip
+reads it (`scrub.clean`), and every string goes through the report's scrub (`app/scrub.py`: the learner's Windows
+name, PC, home folder, Anki profiles, install keys and emails written as placeholders). The answer goes to the
+learner's AI, not to Sonic, so after the scrub a free line of text (a log line, an error, a wait's reason, a setting)
+also loses its paths, file names, quoted names and runs of Japanese, Chinese or Korean (`report.content_free`; English
+words outside those stay). Then the scrub's matcher reads each part again, as written and as the legacy encodings
+would garble it (`scrub._views`): a hit leaves that part out, said so — the same matcher checking itself.
 
 **Short.** Logs are never whole: only their newest lines that say something went wrong, waited or was refused, each
 cut short. Connect's jobs are their states and the counts the report keeps; a failed part names its refused words (the
@@ -133,8 +133,8 @@ def _app(lang, settings, _asked, ident):
 
 def log_lines(limit=LOG_LINES, language=None, ident=None):
     """The newest lines that matter (`MATTERS`) in the logs the report takes (`status.log_files`, the last 7 days; never
-    Anki Miner's run results), newest file first, read as the scrub reads text, what the learner watched or read taken
-    out (`report.content_free`), each cut to LINE_MAX: ["<log> | <line>"]. An event of the command line's
+    Anki Miner's run results), newest file first, read as the zip reads a log (`scrub.clean`), then
+    `report.content_free`, each cut to LINE_MAX: ["<log> | <line>"]. An event of the command line's
     (`cli-events.jsonl`) is its time, verb, code and message."""
     from app import report, scrub
     from app.connect import status
@@ -154,14 +154,14 @@ def log_lines(limit=LOG_LINES, language=None, ident=None):
             continue
         if start:                                              # read from the middle: its first line is a part
             raw = raw[raw.find(b"\n") + 1:]
-        text = scrub.decode(raw, language)
-        if text is None:                                       # not text the scrub can read: never shown
+        cleaned = scrub.clean(raw, language, ident)            # as the zip reads a log: the identity scrubbed
+        if cleaned is None:                                    # not text the scrub can read: never shown
             continue
-        lines = text.splitlines()
+        lines = cleaned.decode("utf-8").splitlines()
         if name.endswith(".jsonl"):
-            lines = [_event(ln) for ln in lines]
-        lines = [report.content_free(ident.scrub(ln.strip())) for ln in lines         # (the identity first: a home
-                 if ln and MATTERS.search(ln) and not NOISE.match(ln)]                 # ... folder's spaces)
+            lines = [ident.scrub(_event(ln)) for ln in lines]
+        lines = [report.content_free(ln.strip()) for ln in lines             # (after the identity: a home folder's
+                 if ln and MATTERS.search(ln) and not NOISE.match(ln)]       # ... spaces)
         picked, last = [], None
         for line in reversed(lines):                         # the newest first, a line repeated said once
             said = STAMP.sub("", line)
@@ -174,6 +174,19 @@ def log_lines(limit=LOG_LINES, language=None, ident=None):
         short = os.path.basename(name)
         out += [f"{short} | {line}" for line in picked]
     return out
+
+
+def _free(obj, ident):
+    """Every string in `obj` as a free line of text: the identity scrubbed, then `report.content_free` (quotes kept: a
+    reason's or a setting's own)."""
+    from app import report
+    if isinstance(obj, str):
+        return report.content_free(ident.scrub(obj), quoted=False)
+    if isinstance(obj, dict):
+        return {k: _free(v, ident) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_free(v, ident) for v in obj]
+    return obj
 
 
 def _event(line):
@@ -204,11 +217,12 @@ def _connect(lang, settings, _asked, ident):
     refused = {r.get("job_id"): r for r in ledger.get("refused") or []}
     jobs = []
     for job in (rec.get("jobs") or [])[:JOBS_SHOWN]:
-        jobs.append({k: job.get(k) for k in ("job", "kind", "state", "reason", "since", "step", "words", "made",
-                                              "not_made", "stopping")})
+        row = {k: job.get(k) for k in ("job", "kind", "state", "reason", "since", "step", "words", "made",
+                                       "not_made", "stopping")}
+        jobs.append(_free(row, ident))
     failed = []
     for part in (rec.get("failed") or [])[:JOBS_SHOWN]:
-        row = {k: part.get(k) for k in ("job", "made", "words", "reason")}
+        row = _free({k: part.get(k) for k in ("job", "made", "words", "reason")}, ident)
         said = refused.get(part.get("job"))
         if said:
             row["refused_words"] = said.get("words")
@@ -225,14 +239,14 @@ def _connect(lang, settings, _asked, ident):
     return out
 
 
-def _anki(lang, settings, asked, _ident):
+def _anki(lang, settings, asked, ident):
     from app import anki_sync, report
     state = report.anki_record(lang) or {}
     out = {"known_words": anki_sync.count_known(lang), "waiting_cards": anki_sync.count_backlog(lang),
            "last_sync": state.get("last_sync"), "last_added": state.get("last_added"),
-           "decks": state.get("decks"), "fields": state.get("fields"),
-           "settings": {k: v for k, v in settings.items() if k.startswith(("anki_", "junban_"))
-                        and not isinstance(v, (dict, list))}}
+           "decks": _free(state.get("decks"), ident), "fields": state.get("fields"),
+           "settings": _free({k: v for k, v in settings.items() if k.startswith(("anki_", "junban_"))
+                              and not isinstance(v, (dict, list))}, ident)}         # (a deck may be named for a show)
     if asked:                                                    # the one look off the file: AnkiConnect, loopback only
         from app import anki_connect
         try:

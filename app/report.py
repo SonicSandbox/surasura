@@ -119,24 +119,45 @@ CONTENT_KEYS = frozenset(("title", "titles", "name", "line", "say", "word", "wor
                           "filename", "episode", "definition", "glossary", "meaning", "translation", "hint", "fields"))
 
 
-# What a person watched or read, inside a free line of text (a log line, an error): a file or folder path keeps only its
-# file's kind, a quoted name and every run of Japanese or Chinese become "…" — for an answer read by the learner's AI
-# (Piyo's diagnose), where a line can't be counted the way CONTENT_KEYS' values are. The zip keeps its logs whole.
-# (a path may hold the scrub's placeholders, `C:\Users\<you>\…`: the identity is scrubbed first, then this)
-_FILE_PATH = re.compile(r"(?:[A-Za-z]:|\\\\|/[A-Za-z]/)[\\/][^\n\"'|*?]*?\.([A-Za-z0-9]{1,5})(?=$|[\s\"',;:)\]}])")
-_FOLDER_PATH = re.compile(r"(?:[A-Za-z]:|\\\\|/[A-Za-z]/)[\\/][^\s\"'|*?]*")
-_QUOTED = re.compile(r"'[^'\n]+'|\"[^\"\n]+\"|「[^」\n]+」|『[^』\n]+』|“[^”\n]+”")
-_CJK_RUN = re.compile(r"[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟ]+")
+# What a person watched or read, inside a free line of text (a log line, an error): a path, a file's name, a quoted name
+# and every run of Japanese, Chinese or Korean (and fullwidth letters) taken out — for an answer read by the learner's
+# AI (Piyo's diagnose), where a line can't be counted the way CONTENT_KEYS' values are. The zip keeps its logs whole.
+# Taking out too much is the safe side: a path runs to the line's end, a `)`, `]`, `"` or `|` (back to its last
+# extension when it has one); a file's name with no folder runs back to the first "of", "on", "read", "file", "for" or
+# "from" after the line's last `: `, else to that `: `. English words outside a path or quotes stay: a title written so
+# in a log line is not seen. (A path may hold the scrub's placeholders, `C:\Users\<you>\…`: the identity is scrubbed
+# first, then this.)
+_PATH_START = r"(?:[A-Za-z]:[\\/]|\\\\|/[A-Za-z]/)"
+_PATH_REST = r"[^\n)\"\]|]*"
+_ENDS = r"(?=$|[\s,;:)\]\"'])"
+_FILE_PATH = re.compile(_PATH_START + _PATH_REST + r"\.([A-Za-z0-9]{1,5})" + _ENDS)
+_FOLDER_PATH = re.compile(_PATH_START + _PATH_REST)
+_MEDIA = "srt|ass|ssa|vtt|sub|mkv|mp4|m4v|webm|avi|mov|ts|m4a|m4b|mp3|aac|flac|ogg|opus|wav|epub|txt|md|apkg|pdf"
+_NAMES_FOLLOW = (" of ", " on ", " read ", " reading ", " file ", " for ", " from ")   # a file's name comes after these
+_BARE_FILE = re.compile(r"\.(" + _MEDIA + r")" + _ENDS, re.IGNORECASE)
+_QUOTED = re.compile(r"(?<![A-Za-z])'[^'\n]+'(?![A-Za-z])|\"[^\"\n]+\"|「[^」\n]+」|『[^』\n]+』|“[^”\n]+”")
+_WIDE_RUN = re.compile("[" + "".join(f"{chr(a)}-{chr(b)}" for a, b in (
+    (0x1100, 0x11FF), (0x3040, 0x30FF), (0x3130, 0x318F), (0x3400, 0x9FFF), (0xAC00, 0xD7AF), (0xF900, 0xFAFF),
+    (0xFF10, 0xFF5A), (0xFF66, 0xFF9F))) + "]+")   # kana, CJK, Hangul, fullwidth letters
 
 
 def content_free(text, quoted=True):
-    """`text` with every path (`<file .mkv>`, `<folder>`), quoted name (`quoted`) and run of Japanese or Chinese
-    (`…`) taken out: what is left says what happened, never to what."""
+    """`text` with every path (`<file .mkv>`, `<folder>`), file's name (`… <file .srt>`), quoted name (`quoted`) and
+    run of Japanese, Chinese or Korean (`…`) taken out: what is left says what happened, never to what."""
     text = _FILE_PATH.sub(lambda m: f"<file .{m.group(1).lower()}>", str(text))
     text = _FOLDER_PATH.sub("<folder>", text)
+    while True:                                                   # a file's name with no folder: back to the `: `
+        m = next((m for m in _BARE_FILE.finditer(text) if not text[:m.start()].endswith("<file ")), None)
+        if m is None:
+            break
+        lead = text.rfind(": ", 0, m.start())
+        lead = lead + 2 if lead >= 0 else 0
+        words = [at + len(w) for w in _NAMES_FOLLOW for at in (text.find(w, max(0, lead - 1), m.start()),) if at >= 0]
+        lead = min(words) if words else lead                     # (the first of them: a title may hold "of" too)
+        text = f"{text[:lead]}… <file .{m.group(1).lower()}>{text[m.end():]}"
     if quoted:
         text = _QUOTED.sub(lambda m: m.group(0)[0] + "…" + m.group(0)[-1], text)
-    return _CJK_RUN.sub("…", text)
+    return _WIDE_RUN.sub("…", text)
 
 
 def scrub(obj):

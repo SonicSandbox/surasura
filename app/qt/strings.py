@@ -472,6 +472,10 @@ ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder or link its video
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link…"}
+# Mattias's field report (3.0.0, #5; PROVISIONAL words): a file Anki Miner stopped on twice — asked again (C2's one ask)
+ROWS_ACTION_NAMES["try-again"] = "Try again"
+ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
+                      False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -1360,11 +1364,19 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_together": ("Keep them together", "Listen alongside: the book's cards come without sentence audio, and "
                                             "Surasura doesn't try to line them up again"),
     "separate_them": ("Separate them", "The audiobook becomes its own title again. Undo takes it back"),
+    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired
+    "pick_audiobook": ("Pick its audiobook…", "Pick it from your library's audiobooks, or a folder on your computer: "
+                                             "the book's cards then come with the narrator's sentence audio. Undo "
+                                             "takes it back"),
+    "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
+                                           "this book again"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    # Mattias's field report (3.0.0, #5; PROVISIONAL words)
+    "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
@@ -1494,6 +1506,14 @@ NEEDS_SPEECH_YES = "Anki Miner downloads its speech model, then lines up your au
 NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
+NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
+NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
+NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
+                              "name says so, else pick it here")
+NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
+NEEDS_AUDIOBOOK_READING = "Reading {name}: once its audiobook is in your library, it joins the book or is listed here"
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"
@@ -1722,6 +1742,7 @@ REPORT_SEND_PAUSED = "Sending is paused for now: make a zip instead and post it 
 REPORT_SEND_REFUSED = "Not sent: the report wasn't taken ({status}). It's kept: make a zip instead and post it on Discord"
 REPORT_SEND_UNSAFE = "Surasura couldn't make this report safe to send. Make a zip instead and look it over"
 REPORT_SEND_FAILED = "The report couldn't be sent: {why}"
+REPORT_SEND_TRIED = "Tried {n} times. {words}"      # a send that failed again (Mattias 3.0.0: a same line looked like nothing)
 REPORT_WAITING = "1 report waiting to send"
 REPORT_SEND_NOW = "Send now"
 REPORT_SEND_NOW_TIP = "Send the report that's waiting (the same one: Sonic gets it once)"

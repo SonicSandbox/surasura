@@ -257,6 +257,10 @@ STRINGS = {
     "tip_deleted": "It was mined, but none of its cards are in Anki now: cards you deleted aren't made again "
                    "unless you ask",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
+    # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
+    # new try for the words its cards don't hold yet (`rows`' *Try again*)
+    "retry": "Try again", "tip_retry": "{tip}: {k} of its {n} cards made",
+    "tip_retry_none": "{tip}: none of its cards made",
     "tip_mining": "Making its cards now",
     # R47 (laptop rows 47 + 56, PROVISIONAL words): Stop's states, and an ask Connect has read (its own status)
     "stopping": "Stopping…", "tip_stopping": "Stopping: the cards made so far are kept",
@@ -1189,6 +1193,12 @@ def _connected(st, item, word, online=None):
     with the job's own reason as its tip (C7). R47: a *Mining* job that can be stopped carries its job (`stop`: the
     pill's *Stop*), one stopping says *Stopping…*. `online` (Michi-YT): an online title's episode is never *No video*
     — Connect downloads it; a *No video* a Connect from before left is a wait for its next start."""
+    if item is not None and item.kind == connect_feed.FAILED:
+        # Mattias #5: Anki Miner stopped on it twice — over its ✓ (the words it never made aren't on cards) and over
+        # *No cards in Anki* (none made: nothing was deleted): *Try again*, whatever it made
+        tip = (STRINGS["tip_retry"].format(tip=item.tip, k=item.made, n=item.total) if item.made else
+               STRINGS["tip_retry_none"].format(tip=item.tip))
+        return Status("retry", STRINGS["retry"], tip, "warn")
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
     if online and item.kind == connect_feed.NO_VIDEO:
@@ -1269,15 +1279,22 @@ def _row_connected(st, eps, connect, word):
     """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes — never
     one with its cards in Anki or whose cards were deleted (P4.1 WF, adversary S1: a level job on an episode already
     mined is no reason to turn the row's *Mine rest* into *Waiting*, whose *Mine now* asks for its other files)."""
+    retry = None                            # Mattias #5: the first part Anki Miner failed on — unless one is mining
     for e in eps:
-        if e.cards or e.deleted:
-            continue
         item = connect.get(e.id)
+        if (e.cards or e.deleted) and getattr(item, "kind", None) != connect_feed.FAILED:
+            continue                        # (a part Anki Miner failed on is no episode in Anki)
         if item is not None:
             new = _connected(st, item, word, online=getattr(e, "online", None))
-            if new is not st:
+            if new is st:
+                continue
+            if retry is None and new.kind != "retry":
                 return new
-    return st
+            if retry is None:
+                retry = new
+            elif new.kind == "mining":
+                return new                  # its progress and its *Stop* stay on the row
+    return retry or st
 # --- end P4.1 L2
 
 

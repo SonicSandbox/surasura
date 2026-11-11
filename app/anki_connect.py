@@ -110,6 +110,7 @@ class AnkiError(Exception):
     def __init__(self, message, kind="action"):
         super().__init__(message)
         self.kind = kind
+        self.busy = False           # Anki busy with a collection operation (`BUSY_REPLY`): `is_busy`
 
 
 def is_loopback(url):
@@ -226,13 +227,47 @@ def waiting_line(holder):
     return f"Waiting for {verb} to finish writing to Anki…"
 
 
-def reviewing(url):
+def reviewing(url, wait=None):
     """Is the user reviewing in Anki now (`guiReviewActive`)? False when Anki doesn't answer, or the
-    address can't be used: the writer's own first read then says why it can't go on. Never raises."""
+    address can't be used: the writer's own first read then says why it can't go on. Never raises. Anki busy with a
+    collection operation (its sync, often the one Surasura just asked for) is waited out first (`patient`, `wait`
+    seconds): the write that follows would meet the same refusal."""
     try:
-        return invoke("guiReviewActive", url, timeout=5) is True
+        return patient("guiReviewActive", url, timeout=5, wait=wait) is True
     except Exception:
         return False
+
+
+# AnkiConnect's answer while Anki runs a collection operation (an AnkiWeb sync — Surasura's own S1 / S3 ones too —,
+# Check Database, an import): every request is refused for those seconds. Anki is open and the request was fine —
+# not a refusal to show (Mattias 2026-11-11: "automatic reorder skipped: Anki refused 'guiReviewActive': A collection
+# operation is active", over and over).
+BUSY_REPLY = "collection operation is active"
+BUSY_WAIT_S = 20.0              # how long a patient read waits for Anki to finish one
+BUSY_POLL_S = 2.0
+
+
+def is_busy(error):
+    """Is this AnkiError Anki busy — a collection operation under way (`busy`), or no answer in time (`timed_out`)
+    — rather than closed or refusing? Then it clears by itself: not now, never a failure to show."""
+    return bool(getattr(error, "busy", False) or getattr(error, "timed_out", False))
+
+
+def patient(action, url, timeout=30, wait=None, sleep=None, clock=None, **params):
+    """`invoke` for a read, asked again every BUSY_POLL_S while Anki is busy with a collection operation, for up to
+    `wait` seconds (default BUSY_WAIT_S) -> its result; still busy after that: the last AnkiError (`is_busy`)."""
+    import time
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    wait = BUSY_WAIT_S if wait is None else wait
+    deadline = clock() + max(0.0, wait)
+    while True:
+        try:
+            return invoke(action, url, timeout=timeout, **params)
+        except AnkiError as e:
+            if not getattr(e, "busy", False) or clock() >= deadline:
+                raise
+        sleep(BUSY_POLL_S)
 
 
 REVIEWING = "You're reviewing in Anki. Press again when you're done."
@@ -370,7 +405,11 @@ def _send(action, url, timeout, params):
         raise AnkiError(f"Unexpected reply shape from '{action}' — is this really AnkiConnect?",
                         kind="protocol")
     if reply["error"] is not None:
-        raise AnkiError(f"Anki refused '{action}': {reply['error']}", kind="action")
+        error = AnkiError(f"Anki refused '{action}': {reply['error']}", kind="action")
+        # Anki busy with a collection operation (`BUSY_REPLY`): kept `action` for every caller as before, marked so
+        # the ones that wait can tell it from a real refusal (`is_busy`)
+        error.busy = BUSY_REPLY in str(reply["error"]).casefold()
+        raise error
     return reply["result"]
 
 

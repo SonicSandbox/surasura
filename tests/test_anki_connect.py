@@ -431,3 +431,54 @@ def test_a_deck_name_with_quotes_and_backslashes_is_escaped():
     assert anki_connect.escape_query('TheBank "2026"') == 'TheBank \\"2026\\"'
     assert anki_connect.escape_query("語彙\\N5") == "語彙\\\\N5"
     assert anki_connect.escape_query("日本語::文法") == "日本語::文法"
+
+
+# --------------------------------------------------------------------------- #
+# Anki busy with a collection operation (Mattias 2026-11-11)
+# --------------------------------------------------------------------------- #
+def _answers(*replies):
+    """A urlopen that answers each request with the next envelope."""
+    queue = list(replies)
+
+    def urlopen(request, timeout=None):
+        return _FakeResponse(json.dumps(queue.pop(0)).encode("utf-8"))
+    return urlopen
+
+
+BUSY = {"result": None, "error": "A collection operation is active."}
+
+
+def test_a_collection_operation_under_way_is_busy_and_still_an_action_refusal():
+    with mock.patch("urllib.request.urlopen", _answers(BUSY)):
+        with pytest.raises(AnkiError) as caught:
+            anki_connect.invoke("guiReviewActive", URL)
+    assert caught.value.kind == "action", "every caller branching on kind sees what it saw before"
+    assert anki_connect.is_busy(caught.value)
+
+
+def test_a_real_refusal_is_not_busy():
+    with mock.patch("urllib.request.urlopen", _answers({"result": None, "error": "unsupported action"})):
+        with pytest.raises(AnkiError) as caught:
+            anki_connect.invoke("guiReviewActive", URL)
+    assert not anki_connect.is_busy(caught.value)
+
+
+def test_patient_asks_again_while_anki_is_busy_then_answers():
+    naps = []
+    with mock.patch("urllib.request.urlopen", _answers(BUSY, BUSY, {"result": True, "error": None})):
+        assert anki_connect.patient("guiReviewActive", URL, sleep=naps.append) is True
+    assert len(naps) == 2
+
+
+def test_patient_gives_up_after_its_wait_with_the_busy_error():
+    clock = iter([0.0, 5.0, 25.0]).__next__
+    with mock.patch("urllib.request.urlopen", _answers(BUSY, BUSY)):
+        with pytest.raises(AnkiError) as caught:
+            anki_connect.patient("guiReviewActive", URL, wait=20.0, sleep=lambda s: None, clock=clock)
+    assert anki_connect.is_busy(caught.value)
+
+
+def test_reviewing_waits_out_a_busy_anki():
+    with mock.patch("urllib.request.urlopen", _answers(BUSY, {"result": True, "error": None})),             mock.patch("time.sleep", lambda s: None):
+        assert anki_connect.reviewing(URL) is True
+

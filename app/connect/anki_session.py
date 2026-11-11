@@ -67,7 +67,7 @@ def look(url):
     try:
         answer = anki_connect.invoke("requestPermission", url, timeout=LOOK_TIMEOUT)
     except anki_connect.AnkiError as e:
-        if getattr(e, "timed_out", False):
+        if anki_connect.is_busy(e):         # no answer in time, or a collection operation under way (its sync)
             return "busy"
         if e.kind != "offline":
             return "unusable"
@@ -162,7 +162,7 @@ def waiting(url, settings):
     except anki_connect.AnkiError as e:
         # no answer in time to the profile question (it answered the look just before): Anki busy, a wait that clears
         # by itself — never NO_PROFILE_YET, which waits on you (amber) for the runner's whole pause (alpha 3, A5)
-        if e.kind == "offline":
+        if e.kind == "offline" or anki_connect.is_busy(e):   # (a collection operation under way: its sync, too)
             return BUSY
         open_now = None
     open_now = open_now if isinstance(open_now, str) and open_now else None

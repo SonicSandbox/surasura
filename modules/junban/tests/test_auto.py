@@ -257,3 +257,58 @@ def test_the_command_lines_reorder_writes_positions_only_even_with_actions_on(tm
     assert done["outcome"] == "ran" and done["report"]["written"] and fake.writes
     assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
     assert not {"reloadCollection", "guiDeckBrowser"} & set(fake.action_names)
+
+
+# --- Anki busy with a collection operation (Mattias 2026-11-11) ------------------------------------ #
+# "順 automatic reorder skipped: Anki refused 'guiReviewActive': A collection operation is active. Backfill (automatic)
+# skipped: …", over and over: AnkiConnect refuses every request while Anki runs its sync (often the one Surasura
+# asked for just before). Anki is open and nothing is wrong: the step waits a little, then is simply not now.
+_BUSY = "A collection operation is active."
+
+
+def _busy_for(fake, n):
+    """The fake answers `guiReviewActive` with Anki's busy refusal `n` times, then as itself."""
+    from modules.junban.tests.test_reposition import AnkiRefusal
+    left = [n]
+    dispatch = fake._dispatch
+
+    def busy(action, params):
+        if action == "guiReviewActive" and left[0] > 0:
+            left[0] -= 1
+            return AnkiRefusal(_BUSY)
+        return dispatch(action, params)
+    fake._dispatch = busy
+    return fake
+
+
+def test_anki_busy_with_its_sync_is_waited_out_then_the_reorder_runs(tmp_path, monkeypatch):
+    from app import anki_connect
+    monkeypatch.setattr(anki_connect, "BUSY_POLL_S", 0.0)
+    fake = _busy_for(_backlog(tmp_path), 2)
+    with _patched(fake):
+        message = auto.run_quietly(_auto())
+    assert "Reordered" in message and "refused" not in message, message
+    assert fake.writes
+
+
+def test_anki_busy_past_the_wait_is_quietly_not_now_for_both_steps(tmp_path, monkeypatch):
+    from app import anki_connect
+    from modules.junban import backfill
+    monkeypatch.setattr(anki_connect, "BUSY_POLL_S", 0.0)
+    monkeypatch.setattr(anki_connect, "BUSY_WAIT_S", 0.0)
+    fake, seen = _busy_for(_backlog(tmp_path), 99), []
+    monkeypatch.setattr(backfill, "run_auto", _backfill_recorder(fake, seen))
+    with _patched(fake):
+        assert auto.run_quietly(_auto(junban_auto_backfill=True)) == "", "never a refusal shown for a busy Anki"
+        assert auto.reorder(_auto())["outcome"] == "anki-busy"
+    assert fake.writes == [] and seen == []
+
+
+def test_a_real_refusal_is_still_said(tmp_path, monkeypatch):
+    from modules.junban.tests.test_reposition import AnkiRefusal
+    fake = _backlog(tmp_path)
+    dispatch = fake._dispatch
+    fake._dispatch = lambda action, params: (AnkiRefusal("unsupported action") if action == "guiReviewActive"
+                                             else dispatch(action, params))
+    with _patched(fake):
+        assert "skipped" in auto.run_quietly(_auto())

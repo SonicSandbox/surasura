@@ -236,6 +236,9 @@ def _int(value):
 UNFINISHED = "The last Generate didn't finish, so its list may be cut short. Generate again."
 # A setting of the language's (Connect names it once for the language: `need`)
 JUNBAN_ONE_DECK = "The automatic reorder runs for one deck only: choose one in the 順 window."
+# Anki busy with a collection operation — its AnkiWeb sync, often the one Surasura asked for just before
+# (`anki_connect.is_busy`): a wait that clears by itself, never "Anki stopped answering"
+ANKI_BUSY = "Anki is busy (syncing, or another operation). Surasura {what} once it has finished."
 BACKFILL_ONE_DECK = "Backfill runs for one deck only: choose one in the Backfill window."
 
 
@@ -805,6 +808,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
         raise CliError("anki-busy", "You're reviewing in Anki. Surasura reorders once you've finished.")
+    if outcome == "anki-busy":
+        raise CliError("anki-busy", ANKI_BUSY.format(what="reorders"))
     if outcome == "busy":
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
@@ -1041,11 +1046,13 @@ def backfill(args):
     if anki_session is not None:
         anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
     try:
-        if anki_connect.invoke("guiReviewActive", url, timeout=5) is True:
+        if anki_connect.patient("guiReviewActive", url, timeout=5) is True:
             raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
         if ids is None:
             ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')
     except anki_connect.AnkiError as e:
+        if anki_connect.is_busy(e):         # Anki busy with its sync (or another collection operation): a wait
+            raise CliError("anki-busy", ANKI_BUSY.format(what="fills")) from None
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     out["notes"] = len(ids)
     if not ids:

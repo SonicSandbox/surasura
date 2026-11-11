@@ -36,7 +36,7 @@ def ask(world):  # noqa: F811
     say = runner.BOOK_AUDIO_ASK.format(title=NEKO)
     connect = {"jobs": [{"item": 7, "state": "waiting", "reason": say}],
                "needs": [{"id": 21, "kind": runner.BOOK_AUDIO_NEED, "say": say, "item": 7, "seen_at": None,
-                          "at": "2026-11-11T05:00:00Z"}]}
+                          "at": "2026-11-01T05:00:00Z"}]}
     seed, win, writer, ny = world(connect=connect, connect_calls={"book_audiobook": rec("book_audiobook"),
                                                                   "kick": rec("kick", None)})
     read = []

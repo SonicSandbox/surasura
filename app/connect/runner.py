@@ -558,8 +558,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
                     keep |= _failed_says(ledger, lang, job["item_id"])
-                elif ended.get("state") != "skipped":   # Michi-RM2: the part went through: its `alone:` records go
-                    _forget_alone(ledger, lang, job["item_id"])     # (a skipped job may be reopened: review B1)
+                elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
+                    _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
         except Wait as w:
             _wait(ledger, job, w, out, parked)
@@ -1452,9 +1452,10 @@ def _keep_alone(ledger, jid, said, words=()):
 
 
 def _forget_alone(ledger, lang, item_id):
-    """Michi-RM2: the item's jobs' `alone:` records removed — once one of its jobs (not a level raise) ended done,
-    dropped or undone; never skipped (`ledger.reopen_skipped` queues that job again under its id, its failures kept:
-    its record too). A failed part keeps its own (the problem report names its words). A ledger write that fails is
+    """Michi-RM2: the item's jobs' `alone:` records removed — once one of its jobs (not a level raise) ended done or
+    undone; never skipped (`ledger.reopen_skipped` queues that job again under its id, its failures kept: its record
+    too) nor dropped (it dropped before mining: it tried none of the failed part's words, whose *Try again* stands —
+    review r2). A failed part keeps its own (the problem report names its words). A ledger write that fails is
     logged: a record left is tidiness, never a reason to stop."""
     try:
         with ledger.transaction():

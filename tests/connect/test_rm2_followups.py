@@ -110,3 +110,16 @@ def test_two_failed_parts_the_row_names_the_first():
     eps = [SimpleNamespace(id=n, cards=0, deleted=False, online=None) for n in (1, 2)]
     st = view_rows._row_connected(view_rows.Status("mine", "Mine", "", "ink"), eps, {1: FAILED, 2: second}, "book")
     assert st.tip == view_rows.STRINGS["tip_retry_none"].format(tip=runner.MINE_FAILED)
+
+
+def test_a_new_job_dropped_before_mining_leaves_the_failed_parts_record(tmp_path):
+    """Review r2: a later job of the item that left the top 20 before mining tried none of the failed part's words:
+    its record (the report's refused words) stays with its *Try again*."""
+    steps, path = _refused_part(tmp_path)
+    steps.plan.update(queue={}, line={"ja": []})
+    with Ledger(path) as ledger:
+        with ledger.transaction():
+            ledger.queue("ja", 1, "user", None, store_id="store-1")
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+        assert [j["state"] for j in ledger.jobs("ja")] == ["failed", "dropped"]
+        assert len(_alone_keys(ledger)) == 1

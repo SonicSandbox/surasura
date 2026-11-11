@@ -185,7 +185,7 @@ def add_folder(shell, parent, folder=None):
     if adder is None or why_not(shell) is not None:
         return False
     if folder is None:
-        folder = QFileDialog.getExistingDirectory(parent, S.SOURCES_PICK_TITLE)
+        folder = QFileDialog.getExistingDirectory(parent, S.SOURCES_PICK_TITLE, windows.content_folder())
     return adder.read_folder(folder) if folder else False
 
 
@@ -628,7 +628,7 @@ class FoldersWindow(windows.SecondaryWindow):
         if looks is None or moves is None or why_not(self.shell) is not None or qpress.live(self.shell, key):
             return False
         if path is None:
-            start = next((line.source["path"] for line in self.lines.values()), "")
+            start = next((line.source["path"] for line in self.lines.values()), "") or windows.content_folder()
             path = self.pick_dialog(W.SKIP_TITLE, start)
             if not path:
                 return False

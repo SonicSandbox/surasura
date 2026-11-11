@@ -651,7 +651,7 @@ def test_the_undo_of_a_reorder_that_finished_a_cut_automatic_one_says_it_puts_ba
     """Disc-T1 (Sonic 2026-11-12): a Reorder you started took over an automatic one cut short; its Undo puts back both,
     and its own question says so (PROVISIONAL words)."""
     monkeypatch.setattr(undo, "unfinished", lambda language, kind: None)
-    monkeypatch.setattr(undo, "restorable", lambda language, scope: {"written_at": "2026-11-12T10:00:00",
+    monkeypatch.setattr(undo, "restorable", lambda language, scope: {"written_at": "2026-10-14T11:00:00",
                                                                      "cards": {"1701": 2830}, "scope": ["TheBank"],
                                                                      "finished_automatic": True})
     win = opened(main)
@@ -660,7 +660,7 @@ def test_the_undo_of_a_reorder_that_finished_a_cut_automatic_one_says_it_puts_ba
     assert card(win).title.text() == qs.JUNBAN_RESTORE_BOTH_Q and "the automatic one" in qs.JUNBAN_RESTORE_BOTH_Q
     card(win).yes.click()
     assert wait_until(lambda: engine.restores and not win.busy())
-    assert engine.restores[0][1]["confirmed"] == "2026-11-12T10:00:00"
+    assert engine.restores[0][1]["confirmed"] == "2026-10-14T11:00:00"
 
 
 def test_restore_offers_the_unfinished_automatic_run_first(main, engine, monkeypatch):

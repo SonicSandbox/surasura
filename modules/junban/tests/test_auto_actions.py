@@ -369,13 +369,18 @@ def test_a_run_you_start_never_takes_over_another_decks_cut_run(tmp_path):
     """A cut automatic run's snapshot for another deck (順's deck changed since): taking it over would leave its own
     deck's positions with no way back, so a run you start refuses, as I3 does, and nothing is written."""
     fake = _backlog(tmp_path)
+    quiet = _auto(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["ok"]               # the deck in your order
+    writes = list(fake.writes)
     undo.save([(1789712090000, 50)], ["Kanji"], language="ja", automatic=True)
     cut_snapshot = undo.load("ja")
-    with _patched(fake):
-        report = reposition.run(_auto(), refresh=False)
-    assert report["ok"] is False and report["restore_first"] is True, report
-    assert "did not finish" in report["problems"][0], report["problems"]
-    assert fake.writes == [] and fake.suspend_calls == [] and undo.load("ja") == cut_snapshot
+    for settings in (_auto(), quiet):                       # with something to write, and with nothing (`_finish_cut`)
+        with _patched(fake):
+            report = reposition.run(settings, refresh=False)
+        assert report["ok"] is False and report["restore_first"] is True, report
+        assert "did not finish" in report["problems"][0], report["problems"]
+        assert fake.writes == writes and fake.suspend_calls == [] and undo.load("ja") == cut_snapshot
 
 
 @pytest.mark.parametrize("unfinished", ["2.5", "not-quite-true"])

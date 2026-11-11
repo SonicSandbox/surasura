@@ -65,6 +65,7 @@ class FakeAnki:
         assert self.locked
         self.calls.append(("store", name))
         self.media.setdefault(name, data)
+        return name
 
     def update(self, nid, fields):
         assert self.locked
@@ -210,3 +211,115 @@ def test_a_caller_names_its_own_field_and_tag(tmp_path, ledger):
                   by="ai-audio")
     assert got["filled"] == [1] and anki.value(1, "SentAudio").startswith("[sound:")
     assert "surasura::ai-audio" in anki.notes_[1]["tags"] and sa.record(ledger, got["id"])["tag"] == "surasura::ai-audio"
+
+
+# --- review round 2 (Opus adversary): S4, N1, N2, N3, N4; the adapter ---------------------------------------------- #
+def test_r2_s4_a_failed_call_names_its_undo_and_pending_lists_it(tmp_path, ledger):
+    anki, lines = FakeAnki(), _sentences()
+    anki.add(1, lines[1], "a")
+    anki.add(2, lines[2], "b")
+    anki.fail_on_update = 2
+    with pytest.raises(RuntimeError) as e:
+        sa.fill(anki, ledger, {1: _clip(tmp_path, "a.mp3", "a"), 2: _clip(tmp_path, "b.mp3", "b")})
+    assert sa.pending(ledger) == [e.value.sentence_audio_id]
+    sa.undo(anki, ledger, e.value.sentence_audio_id)
+    assert sa.pending(ledger) == [] and anki.value(1) == ""
+
+
+def test_r2_n1_the_name_anki_stored_the_clip_under_is_the_one_written_and_recorded(tmp_path, ledger, monkeypatch):
+    """A file of that name already there with other bytes: Anki keeps it and stores ours under its own name — the field
+    points at what Anki answered, and the Undo deletes that one, never the learner's file."""
+    anki, lines = FakeAnki(), _sentences()
+    anki.add(1, lines[1], "a")
+    stored = anki.store
+    monkeypatch.setattr(anki, "store", lambda name, data: (stored("x-" + name, data), "x-" + name)[1])
+    got = sa.fill(anki, ledger, {1: _clip(tmp_path, "a.mp3", lines[1])})
+    assert anki.value(1).startswith("[sound:x-surasura-sa-")
+    rec = sa.record(ledger, got["id"])
+    assert rec["notes"]["1"] == anki.value(1) and any(m.startswith("x-") for m in rec["media"])
+    assert sa.undo(anki, ledger, got["id"])["emptied"] == [1] and not [m for m in anki.media if m.startswith("x-")]
+
+
+def test_r2_n2_two_calls_at_once_never_share_an_undo_record(tmp_path, ledger, monkeypatch):
+    anki, lines = FakeAnki(), _sentences()
+    anki.add(1, lines[1], "a")
+    anki.add(2, lines[2], "b")
+    monkeypatch.setattr(sa.time, "time_ns", lambda: 1)
+    a = sa.fill(anki, ledger, {1: _clip(tmp_path, "a.mp3", "a")})
+    b = sa.fill(anki, ledger, {2: _clip(tmp_path, "b.mp3", "b")})
+    assert a["id"] != b["id"] and sa.record(ledger, a["id"])["notes"] == {"1": anki.value(1)}
+
+
+def test_r2_n3_a_review_started_mid_way_stops_the_rest(tmp_path, ledger, monkeypatch):
+    """Between two chunks Anki is asked again whether you're reviewing: the rest wait (the record names what was
+    written so far: its Undo takes it back)."""
+    anki, lines = FakeAnki(), _sentences()
+    n = sa.CHUNK + 3
+    for i in range(1, n + 1):
+        anki.add(i, lines[i % len(lines)], "w")
+    asked = []
+
+    def reviewing():
+        asked.append(1)
+        return len(asked) > 2                       # the two looks before the first write: not yet
+    monkeypatch.setattr(anki, "reviewing", reviewing)
+    with pytest.raises(sa.Reviewing) as e:
+        sa.fill(anki, ledger, {i: _clip(tmp_path, f"{i}.mp3", f"{i}") for i in range(1, n + 1)})
+    filled = [i for i in range(1, n + 1) if anki.value(i)]
+    assert filled == list(range(1, sa.CHUNK + 1))
+    monkeypatch.setattr(anki, "reviewing", lambda: False)
+    assert sorted(sa.undo(anki, ledger, e.value.sentence_audio_id)["emptied"]) == filled
+
+
+def test_r2_n4_an_undo_read_again_under_the_lock_runs_once(tmp_path, ledger):
+    anki = FakeAnki()
+    anki.add(1, _sentences()[1], "a")
+    got = sa.fill(anki, ledger, {1: _clip(tmp_path, "a.mp3", "a")})
+    real = anki.writer
+    raced = []
+
+    @contextlib.contextmanager
+    def writer(verb):
+        if "undo" in verb and not raced:
+            raced.append(1)
+            anki.writer = real
+            sa.undo(anki, ledger, got["id"])         # another Undo got the lock first
+            anki.writer = writer
+        with real(verb):
+            yield
+    anki.writer = writer
+    assert sa.undo(anki, ledger, got["id"])["refused"]
+
+
+def test_r2_the_second_reviewing_check_under_the_lock_holds(tmp_path, ledger, monkeypatch):
+    """You start reviewing while the write waits for Anki's lock: the look under the lock refuses, nothing written
+    (review r2: the second check, Q10)."""
+    anki = FakeAnki()
+    anki.add(1, _sentences()[1], "a")
+    looks = []
+
+    def reviewing():
+        looks.append(1)
+        return len(looks) > 1                       # free at the first look, reviewing by the look under the lock
+    monkeypatch.setattr(anki, "reviewing", reviewing)
+    with pytest.raises(sa.Reviewing):
+        sa.fill(anki, ledger, {1: _clip(tmp_path, "a.mp3", "a")})
+    assert anki.value(1) == "" and not [c for c in anki.calls if c[0] in ("store", "update", "tag")]
+
+
+def test_the_adapter_sends_anki_connects_own_shapes_and_never_replaces_a_file(monkeypatch):
+    """`AnkiConnectNotes`: storeMediaFile with deleteExisting false (a file of the learner's is never replaced) and the
+    name it answers; updateNoteFields naming the note and that field; addTags / removeTags with the tag as a string."""
+    from app import anki_connect
+    sent = []
+    monkeypatch.setattr(anki_connect, "invoke", lambda action, url, **p: sent.append((action, p)) or "got.mp3")
+    a = sa.AnkiConnectNotes("http://127.0.0.1:8765")
+    assert a.store("n.mp3", "QUJD") == "got.mp3"
+    a.update(7, {"SentenceAudio": "[sound:got.mp3]"})
+    a.tag([7], sa.TAG)
+    a.tag([7], sa.TAG, on=False)
+    a.delete_media("got.mp3")
+    assert sent == [("storeMediaFile", {"filename": "n.mp3", "data": "QUJD", "deleteExisting": False}),
+                    ("updateNoteFields", {"note": {"id": 7, "fields": {"SentenceAudio": "[sound:got.mp3]"}}}),
+                    ("addTags", {"notes": [7], "tags": sa.TAG}), ("removeTags", {"notes": [7], "tags": sa.TAG}),
+                    ("deleteMediaFile", {"filename": "got.mp3"})]

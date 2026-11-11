@@ -29,11 +29,13 @@ import hashlib
 import json
 import os
 import time
+import uuid
 
 FIELD = "SentenceAudio"
 TAG = "surasura::audio-added"
 RECORD = "sentence_audio:"            # ledger meta: `sentence_audio:<id>` -> the call's Undo record (JSON)
 VERB = "Adding sentence audio"
+CHUNK = 50                            # notes written between two looks at whether you're reviewing
 WRITING, DONE, UNDONE = "writing", "done", "undone"
 GONE, NO_FIELD, HAS_AUDIO, NO_CLIP = ("not in Anki", "its note type has no {field} field",
                                       "it has sentence audio already", "its clip isn't on this computer")
@@ -62,8 +64,9 @@ class AnkiConnectNotes:
         return anki_connect.notes_info(self.url, ids)
 
     def store(self, name, data):
+        """-> the name Anki stored it under (its own, when a file of that name was there already)."""
         from app import anki_connect
-        anki_connect.invoke("storeMediaFile", self.url, filename=name, data=data, deleteExisting=False)
+        return anki_connect.invoke("storeMediaFile", self.url, filename=name, data=data, deleteExisting=False)
 
     def update(self, note_id, fields):
         from app import anki_connect
@@ -109,9 +112,23 @@ def _by_id(notes):
     return {int(n["noteId"]): n for n in notes or () if isinstance(n, dict) and n.get("noteId")}
 
 
-def _write_record(ledger, rid, record):
-    ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+def _write_record(ledger, rid, record, new=False):
+    """A call's record: its first write a plain INSERT (an id met twice raises, never overwrites an Undo: r2 N2)."""
+    ledger.conn.execute(("INSERT" if new else "INSERT OR REPLACE") + " INTO meta (key, value) VALUES (?, ?)",
                         (RECORD + rid, json.dumps(record, ensure_ascii=False)))
+
+
+def pending(ledger):
+    """The ids of the calls a failure or a kill left `writing` (their Undo works as any: r2 S4), oldest first."""
+    out = []
+    for key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
+                                          (RECORD + "%",)):
+        try:
+            if json.loads(value).get("state") == WRITING:
+                out.append(key[len(RECORD):])
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return out
 
 
 def record(ledger, rid):
@@ -148,19 +165,30 @@ def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect"):
         if not todo:
             return {"id": None, "filled": [], "skipped": skipped}
         named = {n: clip_name(p) for n, p in todo.items()}
-        rid = f"{time.time_ns()}"
+        rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
         rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "field": field, "tag": tag, "by": by,
                "notes": {str(n): sound(named[n][0]) for n in todo}, "media": sorted({v[0] for v in named.values()}),
                "state": WRITING}
-        _write_record(ledger, rid, rec)                       # before Anki: a kill after a write is undone as any
-        stored = set()
-        for n in sorted(todo):
-            name, data = named[n]
-            if name not in stored:
-                anki.store(name, data)
-                stored.add(name)
-            anki.update(n, {field: sound(name)})
-        anki.tag(sorted(todo), tag)
+        _write_record(ledger, rid, rec, new=True)             # before Anki: a kill after a write is undone as any
+        try:
+            stored = {}
+            for k, n in enumerate(sorted(todo)):
+                if k and k % CHUNK == 0 and anki.reviewing():
+                    raise Reviewing()                         # you started reviewing meanwhile: the rest wait
+                name, data = named[n]
+                if name not in stored:
+                    got = anki.store(name, data)
+                    stored[name] = got if isinstance(got, str) and got else name    # Anki's name for it (r2 N1)
+                value = sound(stored[name])
+                if value != rec["notes"][str(n)]:             # recorded before it is written, as the rest
+                    rec = dict(rec, notes=dict(rec["notes"], **{str(n): value}),
+                               media=sorted(set(rec["media"]) | {stored[name]}))
+                    _write_record(ledger, rid, rec)
+                anki.update(n, {field: value})
+            anki.tag(sorted(todo), tag)
+        except BaseException as e:
+            e.sentence_audio_id = rid                         # the caller's way to its Undo (`pending` too: r2 S4)
+            raise
         _write_record(ledger, rid, dict(rec, state=DONE))
     return {"id": rid, "filled": sorted(todo), "skipped": skipped}
 
@@ -174,11 +202,14 @@ def undo(anki, ledger, rid):
         return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
     if anki.reviewing():
         raise Reviewing()
-    field, wrote = rec["field"], {int(n): v for n, v in (rec.get("notes") or {}).items()}
     emptied, kept, deleted = [], {}, []
     with anki.writer(VERB + " (undo)"):
         if anki.reviewing():
             raise Reviewing()
+        rec = record(ledger, rid)                             # read again under the lock: two Undos, one runs (r2 N4)
+        if rec is None or rec.get("state") == UNDONE:
+            return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
+        field, wrote = rec["field"], {int(n): v for n, v in (rec.get("notes") or {}).items()}
         info = _by_id(anki.notes(sorted(wrote)))
         for n, value in sorted(wrote.items()):
             note = info.get(n)

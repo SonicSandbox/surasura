@@ -2933,7 +2933,7 @@ class Steps:
             raise _lining(LINING_UP_FILE.format(k=lineup.file_line(state)[0], n=lineup.file_line(state)[1]), key)
         if lineup.running(key):             # stopped, its child not ended yet: never a second run on its folder
             raise _lining(LINING_UP_STOPPING, key)
-        if status == lineup.STOPPED and not _newer(asked, state.get("stopped_at")):
+        if status == lineup.STOPPED and not state.get("own_stop") and not _newer(asked, state.get("stopped_at")):
             raise Wait(LINING_UP_STOPPED, look=False)
         if status in (lineup.FAILED, lineup.NO_MODEL) and (state.get("tries") or 0) >= lineup.TRIES and \
                 not _newer(asked, state.get("failed_at")):
@@ -2991,25 +2991,32 @@ class Steps:
         synced = lineup.look(ab["key"]) if ab["key"] else {}
         doubt = synced.get("status") == lineup.NONE or (
             synced.get("status") == lineup.DONE and synced.get("grade") not in lineup.GOOD)
-        said = self._own_spot(lang, job, audio, srt)
+        # never a listen while Anki Miner's own line-up is done and good (it cuts the cards: review r2 S2) or still
+        # running (each look would listen again beside it: r2 S3) — only a kept or trusted answer counts then
+        listen = not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
+        said = self._own_spot(lang, job, audio, srt, listen=listen)
         if said not in (lineup.MATCHED, OWN_TRUSTED) or (doubt and said != lineup.MATCHED):
             log.info("Connect: %s's own subtitle isn't used for its timing (%s)", ab["title"], said or "unchecked")
             return None
         if ab["key"] and lineup.running(ab["key"]):
             lineup.stop(ab["key"])
+            lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
 
-    def _own_spot(self, lang, job, audio, srt):
+    def _own_spot(self, lang, job, audio, srt, listen=True):
         """AB-Q5's spot-check of an audiobook's own subtitle for `_own_timing` -> lineup.MATCHED / NOT_MATCHED (kept per
         subtitle and audio, `lineup.spot_kept`); OWN_TRUSTED (*Trust my subtitles' timing* on: never listened to, as
         `Steps.fit` asks it first); None (not checked: no speech model — the sync's path after asks the one question
         —, *Not now* said to it, Anki Miner absent, or a check that gave no verdict now: a call that failed or timed
-        out — looked at again next time). Raises Wait on battery before an unasked listen (as the sync waits)."""
+        out — looked at again next time). Raises Wait on battery before an unasked listen (as the sync waits). A kept *not in time* wins over your trust (review r2 S1:
+        never a clip heard out of time); `listen` False: only a kept or trusted answer, never a call."""
         from app.connect import anki_miner, lineup
+        kept = lineup.spot_kept(lineup.spot_key(audio, srt))
+        if kept == lineup.NOT_MATCHED:
+            return kept
         if self._settings(lang).get("connect_trust_timing") is True:
             return OWN_TRUSTED
-        kept = lineup.spot_kept(lineup.spot_key(audio, srt))
-        if kept is not None or lineup.answer() == "no" or not anki_miner.can_now(anki_miner.SPOT_CHECK):
+        if kept is not None or not listen or lineup.answer() == "no" or not anki_miner.can_now(anki_miner.SPOT_CHECK):
             return kept
         found = self._miner_profile(lang, job)
         if found is None:

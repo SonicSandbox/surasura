@@ -343,3 +343,64 @@ def test_s3_on_battery_the_spot_check_waits_for_the_plug_unless_you_asked(monkey
     assert w.value.reason == runner.LINING_UP_BATTERY and "transcribe" not in fake_miner.commands()
     asked = dict(_job(), asked_at="2026-11-12T00:00:00Z")
     assert pair["steps"].line_up("ja", asked, pair["book"])["lineup"]["source"] == lineup.OWN
+
+
+# --- review round 2 (Opus adversary): S1, S2, S3, N5 ---------------------------------------------------------------- #
+def test_r2_s1_a_subtitle_heard_out_of_time_is_never_used_even_trusted(monkeypatch, fake_miner):
+    """The spot-check heard it out of time before (kept): turning *Trust my subtitles' timing* on never makes its clips."""
+    pair = _pair(monkeypatch, fake_miner)
+    copy = os.path.join(pair["data_dir"], *pair["rec"]["transcript"]["rel"].split("/"))
+    lineup._keep_spot(lineup.spot_key(pair["files"][0], copy), lineup.NOT_MATCHED, [0.1] * 5)
+    _trust(monkeypatch, pair)
+    fake_miner.plan(speech={"installed": [], "model": "small"})
+    assert pair["steps"].line_up("ja", _job(), pair["book"]) == {"ask": lineup.SPEECH_ASK}
+
+
+def test_r2_s2_a_good_finished_line_up_is_used_on_battery_never_waiting_to_listen(monkeypatch, fake_miner):
+    """A pair Anki Miner already lined up well (grade A) — on battery, the model there, no verdict kept: its line-up
+    cuts the cards at once, as before this lane (no listen, no wait for the plug)."""
+    pair = _pair(monkeypatch, fake_miner)
+    key = pair["rec"]["book"]["key"]
+    srt = os.path.join(lineup.folder(key), "own.srt")
+    os.makedirs(os.path.dirname(srt), exist_ok=True)
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:01,000 --> 00:00:03,000\n" + pair["lines"][0] + "\n")
+    lineup.write(key, {"status": lineup.DONE, "grade": "A", "files": [
+        {"audio_file": pair["files"][0], "subtitle_file": srt, "status": "synced", "units": {}}]})
+    monkeypatch.setattr(pair["steps"], "on_battery", lambda: True)
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"})
+    got = pair["steps"].line_up("ja", _job(), pair["book"])
+    assert got["lineup"]["grade"] == "A" and "source" not in got["lineup"]
+    assert "transcribe" not in fake_miner.commands() and "media" not in fake_miner.commands()
+
+
+def test_r2_s3_while_a_sync_runs_its_look_never_listens_again(monkeypatch, fake_miner):
+    """A sync running for the pair (a check that failed started it): each look only reads it — no spot-check beside the
+    hours of listening."""
+    pair = _pair(monkeypatch, fake_miner)
+    key = pair["rec"]["book"]["key"]
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"},
+                    sync={"files": {}, "report": {"grade": None}, "hold": 30.0})
+    lineup.start_sync(fake_miner.path, "ja", None, key, pair["book"], pair["files"])
+    with pytest.raises(runner.Wait) as w:
+        pair["steps"].line_up("ja", _job(), pair["book"])
+    assert runner.lining_up(w.value.reason)
+    assert "transcribe" not in fake_miner.commands() and "media" not in fake_miner.commands()
+    lineup.stop(key)
+
+
+def test_r2_n5_connects_own_stop_never_holds_the_book_as_your_stop(monkeypatch, fake_miner):
+    """The sync Connect stopped for the transcript; the transcript no longer used (trust off, no model): the book is
+    never held by *Lining up its audiobook stopped* — a Stop you never pressed."""
+    pair = _pair(monkeypatch, fake_miner)
+    key = pair["rec"]["book"]["key"]
+    _trust(monkeypatch, pair)
+    fake_miner.plan(sync={"files": {}, "report": {"grade": None}, "hold": 30.0})
+    lineup.start_sync(fake_miner.path, "ja", None, key, pair["book"], pair["files"])
+    assert pair["steps"].line_up("ja", _job(), pair["book"])["lineup"]["source"] == lineup.OWN
+    assert lineup.read(key)["own_stop"] is True
+    for proc, _out in list(lineup._RUNNING.values()):
+        proc.wait(30)
+    _trust(monkeypatch, pair, on=False)
+    fake_miner.plan(speech={"installed": [], "model": "small"})
+    assert pair["steps"].line_up("ja", _job(), pair["book"]) == {"ask": lineup.SPEECH_ASK}

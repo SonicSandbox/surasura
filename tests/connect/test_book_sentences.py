@@ -98,6 +98,18 @@ def test_every_sentence_a_book_sends_is_an_exact_piece_of_its_paragraph_so_anki_
     assert all(len(_cut(paragraphs, s["line_text"])) < len(SPEECH) for s in sent)
 
 
+def test_a_lone_mark_stays_when_without_it_the_sentence_would_name_an_earlier_unit(tmp_path):
+    # why (adversary SHOULD 1): Anki Miner takes the FIRST unit holding the sentence named; 畜生め。 without its 「
+    # also sits inside the first speech, so the card would come from that other sentence — keep 「畜生め。, which only
+    # its own speech holds. A trim as unique as the sentence itself still goes (あいつは逃げたな。)
+    book = tmp_path / "畜生.txt"
+    book.write_text("　「なるほど、畜生め。」と彼は呟いた。\n　「畜生め。あいつは逃げたな。」\n", encoding="utf-8")
+    read, tokens = cues.reading(str(book), "ja")
+    lines = {w["line_text"] for w in pick.pick(read, tokens, "ja", lambda key: False, mode="unknown")["words"]}
+    assert "「畜生め。" in lines and "畜生め。" not in lines
+    assert "あいつは逃げたな。" in lines
+
+
 def test_a_sentences_inner_space_is_kept_as_the_book_writes_it_and_its_indent_and_line_breaks_go(tmp_path):
     # why: Anki Miner's unit keeps a space inside a paragraph (「叔父さん‼　只今帰りました。…」, an Aozora novel) and
     # its cut is exact; the old squeezed sentence named no unit exactly (the 6 misses in 4,070 measured on 30 works)

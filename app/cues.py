@@ -215,9 +215,10 @@ def reading(path, language="ja", script="asis", tokenizer=None):
     """A book's or a text's sentences as cues, and their words (Z-9: Anki Miner mines a reading source by each word's
     sentence, `line_text`) -> (Cues, [Token]). The file is read as a Generate reads it (`analyzer.extract_text`), each
     sentence the tokenizer yields one cue (no times: 0) whose text is the sentence as the file writes it, its ends'
-    spaces out and its line breaks joined: with nothing, the indent after one out, a space inside it kept (Japanese:
-    Anki Miner's unit keeps a paragraph's inner spaces, and cuts a unit only around an exact sentence — Michi-BS,
-    `pick.book_line`), or with one space (Chinese). The Cues' `units` is True: a card is cut from its own sentence, never
+    spaces out and its line breaks joined: with nothing, the indent after one out, a full-width space inside it kept
+    (the tokenizer's sentence has already lost a half-width one: that sentence goes as the tokenizer gives it) —
+    Japanese: Anki Miner's unit keeps a paragraph's inner spaces, and cuts a unit only around an exact sentence
+    (Michi-BS, `pick.book_line`) — or with one space (Chinese). The Cues' `units` is True: a card is cut from its own sentence, never
     its neighbours (`pick.line_expansion`)."""
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"

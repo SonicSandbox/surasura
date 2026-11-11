@@ -533,6 +533,24 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
     units = bool(getattr(cues, "units", False))
+    named, book = {}, None
+
+    def line_of(at):
+        """The sentence a book's card names (`book_line`), its lone mark kept where without it the sentence sits in
+        more places of the book than with it (畜生め。 inside an earlier 「なるほど、畜生め。」…: Anki Miner takes the
+        first unit holding it — adversary SHOULD 1); a video's line as the subtitle writes it."""
+        nonlocal book
+        if not units:
+            return cues[at].text
+        if at not in named:
+            text = cues[at].text or ""
+            line = book_line(text)
+            if line != text:
+                book = book if book is not None else "\0".join(c.text or "" for c in cues)
+                if book.count(line) > book.count(text):
+                    line = text
+            named[at] = line
+        return named[at]
 
     def length(at):
         """A book's sentence against the learner's Length (`sentence_length`: (min, preferred max, never longer than)
@@ -542,7 +560,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         if not units or not sentence_length:
             return (0, 0, 0)
         low, high, cap = sentence_length
-        n = len(book_line(cues[at].text))
+        n = len(line_of(at))
         return (int(bool(cap) and n > cap), int(n < low), int(n > high))
 
     candidates = []
@@ -595,7 +613,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
             "line_start": seconds(cue.start), "line_end": seconds(cue.end),
-            "line_text": book_line(cue.text) if units else cue.text,
+            "line_text": line_of(best.cue),
             "line_expansion": list(card(best.cue)[1]),
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),

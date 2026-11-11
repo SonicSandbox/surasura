@@ -157,3 +157,54 @@ def test_the_command_line_takes_add_audio_with_its_plan_first():
     assert args.verb == "add-audio" and args.book == "x.epub" and args.confirm is False
     args = cli._parser().parse_args(["add-audio", "--undo", "17-ab"])
     assert args.undo == "17-ab"
+
+
+# --- mutants by risk: the survivors' tests ---------------------------------------------------------------------- #
+def test_anki_miner_answering_fewer_lines_than_asked_leaves_that_files_cards_out(book, fake_miner, tmp_path,
+                                                                                    monkeypatch):
+    """Lines merged or dropped: no clip is matched by its place in the answer (it could be the next line's) — those
+    cards get nothing."""
+    from app.connect import anki_miner
+    real = anki_miner.api
+
+    def merged(miner, args, **kw):
+        verdict = real(miner, args, **kw)
+        for run in verdict.get("runs") or ():
+            path = os.path.join(str(tmp_path / "run"), run["run_id"], run["file"])
+            made = lineup._read_json(path)
+            made["lines"] = made["lines"][1:]
+            lineup._write_json(path, made)
+        return verdict
+    monkeypatch.setattr(anki_miner, "api", merged)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run")) == {}
+
+
+def test_the_plan_never_writes_the_line_up_while_a_sync_runs(book, fake_miner):
+    """`lined_up` reads the pair's line-up as it is — a running sync's state file is never written by a plan."""
+    key = book["rec"]["book"]["key"]
+    fake_miner.plan(sync={"files": {}, "report": {"grade": None}, "hold": 30.0})
+    lineup.start_sync(fake_miner.path, "ja", None, key, book["book"], book["files"])
+    import time
+    time.sleep(1.0)                                     # its progress written meanwhile
+    before = open(os.path.join(lineup.folder(key), lineup.STATE), encoding="utf-8").read()
+    add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert open(os.path.join(lineup.folder(key), lineup.STATE), encoding="utf-8").read() == before
+    lineup.stop(key)
+
+
+def test_keep_them_together_or_a_poor_line_up_adds_no_audio(monkeypatch, fake_miner):
+    """*Keep them together* (no sentence audio, as you said) and a sync of grade C (another edition): not lined up."""
+    from tests import connect_helpers as c
+    pair = _pair(monkeypatch, fake_miner)
+    key = pair["rec"]["book"]["key"]
+    lineup.write(key, {"status": lineup.DONE, "grade": "C", "files": [
+        {"audio_file": pair["files"][0], "subtitle_file": pair["srt"], "status": "synced", "units": {}}]})
+    assert pair["steps"].lined_up("ja", pair["book"]) is None
+    lineup.write(key, {})                               # no sync at all: the trusted subtitle alone would line it up
+    _trust(monkeypatch, pair)
+    assert pair["steps"].lined_up("ja", pair["book"])["lineup"]["source"] == lineup.OWN
+    with c.store("ja") as s:
+        assert s.mark_audiobook_lineup(pair["item"], key, "none") is True
+        assert s.audiobook_keep_together(pair["item"], key) is True
+    assert pair["steps"].lined_up("ja", pair["book"]) is None

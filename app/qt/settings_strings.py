@@ -30,17 +30,19 @@ INSTALLED = "installed · {version}"
 # Michi-HD (Mattias 2026-11-11; lean taken, PROVISIONAL): hato installed where Surasura can't see it — *Find hato…*
 HATO_NOT_FOUND = "not found"
 FIND_HATO = "Find hato…"
-FIND_HATO_TIP = ("hato is installed but Surasura can't see it: pick the folder you unpacked hato into.\n"
+FIND_HATO_TIP = ("Already have hato? Pick the folder you unpacked it into.\n"
                  "• hato opens once, so it can connect to Surasura")
 FIND_HATO_TITLE = "Where is hato?"
 FIND_HATO_BUSY = "Opening hato so it can connect…"
 HATO_CONNECTED = "hato {version} is connected"
 HATO_CONNECTED_PLAIN = "hato is connected"
-HATO_NOT_CONNECTED = {                       # `tools_found.connect_hato`'s why -> the bar's words
-    "not-hato": "No hato in that folder: pick the one with hato.exe in it",
+HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_seen`'s why -> the bar's words
+    "not-hato": "No hato in that folder: pick the folder you unpacked hato into",
     "not-installed": "hato connects only to an installed Surasura, and this copy isn't installed",
     "not-started": "hato couldn't be opened from that folder",
-    "no-answer": "hato opened but hasn't connected yet. Leave it open a minute, then press Find hato… again",
+    "no-answer": "hato opened but didn't connect. Give it a minute, then press Find hato… again (hato 1.1 or later "
+                 "connects to Surasura)",
+    "another-hato": "Another copy of hato was open already, so Surasura uses that one",
 }
 HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
 OPEN = "Open"

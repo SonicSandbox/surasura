@@ -17,19 +17,19 @@ setup wizard (laptop fixes row 13; its review's B2-7 / IK2-3: each had decided i
     Miner" line);
   - ready (`ready=True`; the setup wizard, WZ-4, Sonic 2026-10-14: on by default once Anki Miner is *ready*): only
     `READY`, from the wizard's full look.
-- `connect_hato(folder, settings)`: *Find hato…* (Michi-HD; Mattias's 3.0.0 report, 2026-11-11: his hato, unpacked
+- `open_hato(folder, settings)` + `hato_seen(place)`: *Find hato…* (Michi-HD; Mattias's 3.0.0 report, 2026-11-11: his hato, unpacked
   on his D: drive, never seen). hato writes its entry (`hato.json`) only when it starts and Surasura's own is there
   already, so a hato last opened before Surasura was installed — or moved since — stays unseen. The learner picks
   hato's folder (the folder itself, or the `hato` folder its zip unpacks into); Surasura's entry is written fresh and
-  hato is opened from there once, so hato connects itself (its entry stays hato's to write: 09-hato-layer §3), and its
-  entry is looked at until it names that folder -> `Connected(version, why)`.
+  hato is opened from there once, so hato connects itself (its entry stays hato's to write: 09-hato-layer §3); the
+  window then looks at its entry every `CONNECT_EVERY_S` until it names that folder (or another copy), up to
+  `CONNECT_WAIT_S` -> `Connected(version, why)`.
 
 Qt-free, light: the standard library and the readers named above.
 """
 import os
 import subprocess
 import sys
-import time
 from collections import namedtuple
 
 MISSING, INSTALLED, READY = "missing", "installed", "ready"
@@ -82,11 +82,12 @@ def make_cards_shown(level, on=False, ready=False):
 
 # --- *Find hato…* ----------------------------------------------------------------------------------------------------- #
 HATO_FOLDER = "hato"            # the folder hato's zip unpacks into (hato.exe and hato-cli.exe inside it)
-CONNECT_WAIT_S = 30.0           # how long an opened hato is given to write its entry (its window's start: about 1 s)
-CONNECT_EVERY_S = 0.5
+CONNECT_WAIT_S = 30.0           # how long an opened hato is followed for its entry (its window's start: about 1 s)
+CONNECT_EVERY_S = 0.5           # the window's look at the entry meanwhile (`hato_seen`, one file read on a worker)
 NOT_HATO, NOT_INSTALLED, NOT_STARTED, NO_ANSWER = "not-hato", "not-installed", "not-started", "no-answer"
+ANOTHER = "another-hato"        # the entry names another copy of hato (one already open: the picked one only raised it)
 
-Connected = namedtuple("Connected", "version why")      # version: hato's ("" none named) once connected, else None
+Connected = namedtuple("Connected", "version why")      # version: hato's ("" none named) once one is found, else None
 
 
 def _program(name):
@@ -109,12 +110,15 @@ def _names(entry, place):
             == os.path.normcase(place))
 
 
-def start_hato(program):
+def start_hato(program, tools):
     """hato's window started from its own folder, detached, as Anki is (`open_anki.start`: this program's runtime
-    variables left out, so a frozen hato never reads Surasura's) -> the process. OSError: it couldn't start."""
+    variables left out, so a frozen hato never reads Surasura's), told the shared tools folder Surasura reads
+    (`HOUSEKI_TOOLS_DIR`, which hato honours too) -> the process. OSError: it couldn't start."""
     from app.connect import open_anki
+    env = open_anki.environment()
+    env["HOUSEKI_TOOLS_DIR"] = tools
     options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
-                   env=open_anki.environment(), cwd=os.path.dirname(program))
+                   env=env, cwd=os.path.dirname(program))
     if sys.platform != "win32":
         return subprocess.Popen([program], start_new_session=True, **options)
     flags = open_anki.DETACHED_PROCESS | open_anki.CREATE_NEW_PROCESS_GROUP
@@ -124,32 +128,37 @@ def start_hato(program):
         return subprocess.Popen([program], creationflags=flags, **options)
 
 
-def connect_hato(folder, settings, start=start_hato, wait=CONNECT_WAIT_S, every=CONNECT_EVERY_S,
-                 clock=time.monotonic, sleep=time.sleep):
-    """(A worker.) *Find hato…* on `folder` -> `Connected(version, why)`; `why` None once hato's entry names that
-    folder's hato, else NOT_HATO (no hato and hato-cli there: nothing written, nothing started), NOT_INSTALLED (this
-    Surasura writes no entry — a portable build or a source run —, so no hato can connect to it), NOT_STARTED (hato
-    couldn't be opened) or NO_ANSWER (opened, no entry naming it within `wait`). Already connected from there:
-    answered at once, nothing started. Errors writing Surasura's entry raise (the press says it failed)."""
+def open_hato(folder, settings, start=start_hato):
+    """(A worker; quick.) *Find hato…* on `folder` -> (the folder hato's programs are in or None, an answer now or
+    None). Answered now: NOT_HATO (no hato and hato-cli there: nothing written, nothing started), NOT_INSTALLED (this
+    Surasura writes no entry — a portable build, a source run — so no hato can connect to it), NOT_STARTED (hato
+    couldn't be opened), or `Connected(version, None)` (its entry names that folder already: nothing started). Else
+    Surasura's entry is written fresh and hato started there: the caller follows it with `hato_seen` (never a wait
+    here: the quit waits for workers only a few seconds). Surasura's entry not there after its refresh: raises."""
     from app import tools_entry
     place = hato_programs(folder)
     if place is None:
-        return Connected(None, NOT_HATO)
+        return None, Connected(None, NOT_HATO)
     entry = tools_entry.read("hato")
     if entry is not None and _names(entry, place):
-        return Connected(_version(entry), None)
+        return place, Connected(_version(entry), None)
     if tools_entry.entry(settings) is None:
-        return Connected(None, NOT_INSTALLED)
+        return place, Connected(None, NOT_INSTALLED)
     tools_entry.refresh(settings)           # hato connects only to an entry that is there when it starts
+    if tools_entry.read(tools_entry.TOOL) is None:
+        raise OSError("surasura.json couldn't be written in the shared tools folder")
     try:
-        start(os.path.join(place, _program("hato")))
+        start(os.path.join(place, _program("hato")), tools_entry.tools_dir())
     except OSError:
-        return Connected(None, NOT_STARTED)
-    deadline = clock() + wait
-    while True:
-        entry = tools_entry.read("hato")
-        if entry is not None and _names(entry, place):
-            return Connected(_version(entry), None)
-        if clock() >= deadline:
-            return Connected(None, NO_ANSWER)
-        sleep(every)
+        return place, Connected(None, NOT_STARTED)
+    return place, None
+
+
+def hato_seen(place):
+    """(A worker; one file read.) The opened hato's entry looked at -> `Connected(version, None)` once it names the hato
+    in `place`; `Connected(version, ANOTHER)` while it names another usable copy; None: no usable entry yet."""
+    from app import tools_entry
+    entry = tools_entry.read("hato")
+    if entry is None:
+        return None
+    return Connected(_version(entry), None if _names(entry, place) else ANOTHER)

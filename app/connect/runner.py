@@ -123,10 +123,10 @@ BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry th
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
-# length and this much (a subtitle of a longer cut is another recording's); its spot-check's two answers of its own: no
-# verdict now (a call that failed), and *Trust my subtitles' timing* on (never listened to)
+# length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
+# my subtitles' timing* on (never listened to)
 OWN_SLACK_S = 30.0
-OWN_UNCHECKED, OWN_TRUSTED = "unchecked", "trusted"
+OWN_TRUSTED = "trusted"
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -3003,9 +3003,8 @@ class Steps:
         """AB-Q5's spot-check of an audiobook's own subtitle for `_own_timing` -> lineup.MATCHED / NOT_MATCHED (kept per
         subtitle and audio, `lineup.spot_kept`); OWN_TRUSTED (*Trust my subtitles' timing* on: never listened to, as
         `Steps.fit` asks it first); None (not checked: no speech model — the sync's path after asks the one question
-        —, *Not now* said to it, Anki Miner absent); OWN_UNCHECKED (the model is there but the check gave no verdict
-        now: a call that failed or timed out — looked at again next time). Raises Wait on battery before an unasked
-        listen (as the sync waits)."""
+        —, *Not now* said to it, Anki Miner absent, or a check that gave no verdict now: a call that failed or timed
+        out — looked at again next time). Raises Wait on battery before an unasked listen (as the sync waits)."""
         from app.connect import anki_miner, lineup
         if self._settings(lang).get("connect_trust_timing") is True:
             return OWN_TRUSTED
@@ -3026,8 +3025,8 @@ class Steps:
             if e.kind == "setup":
                 anki_miner._SPEECH.clear()
             log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(srt), e.message)
-            return OWN_UNCHECKED
-        return said if said in (lineup.MATCHED, lineup.NOT_MATCHED) else OWN_UNCHECKED
+            return None
+        return said
 
     def _book_audio(self, store, epub):
         """Kura-AB2: the book `epub`, no audiobook paired -> None (mined as the book: *Not now* to the speech model,

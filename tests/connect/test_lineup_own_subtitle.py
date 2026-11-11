@@ -269,6 +269,10 @@ def test_b2_after_anki_miners_line_up_found_nothing_an_unheard_transcript_is_nev
     assert pair["steps"].line_up("ja", _job(), pair["book"]) is None
     lineup.write(key, {"status": lineup.DONE, "files": [], "grade": "C"})
     assert pair["steps"].line_up("ja", _job(), pair["book"])["lineup"] is None, "a C: the book's cards, no clip"
+    _trust(monkeypatch, pair)               # even trusted: only a subtitle heard in time outweighs Anki Miner's line-up
+    assert pair["steps"].line_up("ja", _job(), pair["book"])["lineup"] is None
+    lineup.write(key, {"status": lineup.NONE, "files": [], "grade": None})
+    assert pair["steps"].line_up("ja", _job(), pair["book"]) is None
 
 
 def test_b2_after_a_poor_line_up_a_transcript_the_spot_check_hears_in_time_is_used(monkeypatch, fake_miner):
@@ -310,6 +314,7 @@ def test_s1_a_transcript_running_past_the_audios_end_is_another_recordings(monke
         f.write(f"\n99\n{end // 3600:02d}:{end // 60 % 60:02d}:{end % 60:02d},000 --> "
                 f"{end // 3600:02d}:{end // 60 % 60:02d}:{end % 60:02d},900\n{pair['lines'][0]}\n")
     assert ls  # (the store's own copy, edited in place: the look would copy it again; the check reads it as it is)
+    _trust(monkeypatch, pair)               # trusted: still refused — its times aren't this audio's
     fake_miner.plan(speech={"installed": [], "model": "small"})
     assert pair["steps"].line_up("ja", _job(), pair["book"]) == {"ask": lineup.SPEECH_ASK}
 

@@ -14,7 +14,7 @@ keep the card-line rules (Michi-CL) unchanged.
 
 What a wrong answer would cost: the learner's book cards carry a paragraph-sized sentence (Mattias's report), a stray
 「 or 」 on every seventh card, or a sentence Anki Miner can't find exactly (the whole speech again). Real text:
-芥川龍之介「杜子春」 (public domain, `Test Resources/ja/toshisyun_book.txt`) and the suite's `placed_episode.srt`.
+芥川龍之介「杜子春」 (public domain, `Test Resources/ja/books/toshisyun_book.txt`) and the suite's `placed_episode.srt`.
 """
 import os
 import re
@@ -27,7 +27,9 @@ from app.cli import verbs
 from app.connect import pick, runfile
 
 RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources")
-BOOK = os.path.join(RESOURCES, "ja", "toshisyun_book.txt")
+# a folder of its own: test_library_store_support.names makes the store tests' file names from every .txt beside
+# the others, so a new one there changes their random library
+BOOK = os.path.join(RESOURCES, "ja", "books", "toshisyun_book.txt")
 EPISODE = os.path.join(RESOURCES, "ja", "placed_episode.srt")
 # 鉄冠子's speech: one paragraph, one 「…」, five sentences — one unit for Anki Miner
 SPEECH = ("「おれはこれから天上へ行つて、西王母に御眼にかかつて来るから、お前はその間ここに坐つて、おれの帰るのを待つてゐるが好い。"

@@ -21,10 +21,11 @@ ON = {"connect_enabled": True}
 
 class Kicks:
     def __init__(self):
-        self.calls, self.refuse = [], False
+        self.calls, self.kw, self.refuse = [], [], False
 
-    def __call__(self, settings):
+    def __call__(self, settings, **kw):
         self.calls.append(dict(settings))
+        self.kw.append(kw)
         return None if self.refuse else object()      # a started kick is its process
 
 
@@ -145,6 +146,57 @@ def test_a_refused_kick_is_tried_again_at_the_next_change():
     assert len(kicks.calls) == 2
 
 
+def _linked_video():
+    """Mattias's case (3.0.0, Michi-VF): an episode Connect waits on as *No video*, its video picked by hand — the
+    store's pairing written on the existing item (`link.link`, the writer's `link_video`): no placement, no ask."""
+    from app.connect import link
+    _library()
+    with c.store() as s:
+        item = s.ids("now")[0]
+        assert link.link(s, item, c.video("[NanakoRaws] Re Zero kara Hajimeru Isekai Seikatsu S4 - 12.mkv"))
+    assert window_link.unread("ja") is None, "a link is nothing the placement rule sees"
+
+
+def test_a_linked_video_wakes_a_running_connect_for_videos_at_every_link():
+    # why: Mattias picked four episodes' videos while Connect ran for others (at the cap); nothing unread, so the
+    # rule woke nothing — and even a plain wake leaves a job parked on *No video* until the next start. A link must
+    # wake it with the videos mark (`runner._woken` lets those jobs go again), each time: four links, four presses
+    _linked_video()
+    kicks, wakes = Kicks(), []
+    link = window_link.Link("ja", lambda: dict(ON), kick=kicks, running=lambda: True,
+                            wake=lambda videos=False: wakes.append(videos))
+    assert link.after_change() == window_link.RUNNING and wakes == [], "any other change: the rule as before"
+    assert link.after_change(op=window_link.LINKED) == window_link.RUNNING and wakes == [True]
+    assert link.after_change(op=window_link.LINKED) == window_link.RUNNING and wakes == [True, True]
+    assert kicks.calls == [], "running: never a second process"
+
+
+def test_a_linked_video_starts_connect_for_videos_when_it_isnt_running():
+    # why: with Connect not running the link must start it (its first look tries the episode), never wait for
+    # something else to; a refused start (an update staged) says so and the next link tries again
+    _linked_video()
+    kicks = Kicks()
+    link = _link(kicks)
+    assert link.after_change() == window_link.NOTHING and kicks.calls == []
+    assert link.after_change(op=window_link.LINKED) == window_link.KICKED
+    assert kicks.kw == [{"videos": True}]
+    kicks.refuse = True
+    assert link.after_change(op=window_link.LINKED) == window_link.REFUSED
+    kicks.refuse = False
+    assert link.after_change(op=window_link.LINKED) == window_link.KICKED and len(kicks.calls) == 3
+
+
+def test_a_linked_video_with_connect_or_the_automation_off_starts_nothing():
+    _linked_video()
+    kicks, wakes = Kicks(), []
+    for settings in ({"connect_enabled": False}, {"connect_enabled": True, "logic": {"automation": False}}):
+        for running in (True, False):
+            link = window_link.Link("ja", lambda s=settings: dict(s), kick=kicks, running=lambda r=running: r,
+                                    wake=lambda videos=False: wakes.append(videos))
+            assert link.after_change(op=window_link.LINKED) == window_link.OFF
+    assert kicks.calls == [] and wakes == []
+
+
 def test_no_library_or_no_reader_is_nothing_unread_and_an_ask_with_no_ledger_is():
     assert window_link.unread("ja") is None, "no store at all"
     c.library()
@@ -191,3 +243,48 @@ def test_the_windows_own_link_wakes_through_connects_wake_mark(monkeypatch):
     with c.store() as s:
         s.ask_mining([s.ids("now")[-1]])
     assert link.after_change() == window_link.RUNNING and woke == [1]
+
+
+def test_the_windows_own_link_wakes_for_videos_through_the_real_wake_mark(monkeypatch):
+    """A link's wake is `kick.wake(videos=True)` itself: the mark a running Connect reads as videos (`Steps.kicked`)."""
+    from app.connect import kick, runner
+    _linked_video()
+    steps = runner.Steps({})                        # the running Connect's own look at its mark
+    link = window_link.Link("ja", lambda: dict(ON), kick=Kicks(), running=lambda: True)
+    assert link.after_change(op=window_link.LINKED) == window_link.RUNNING
+    assert steps.kicked() == kick.VIDEOS
+
+
+def test_a_link_while_connect_settles_and_exits_starts_the_next_connect(monkeypatch):
+    # why (Michi-VF review r2): between Connect's last look at its wake mark and its lock's release it sends a pending
+    # Anki sync (seconds); a link then wakes a Connect that is going, and puts nothing in the inbox. The run hands on
+    # the last mark it read, and the verb starts the next Connect when the mark moved since; unmoved, none
+    from app.cli import connect_verbs
+    from app.connect import kick, runner
+    started = []
+    monkeypatch.setattr(connect_verbs, "_pending", lambda lang: False)
+    monkeypatch.setattr(connect_verbs, "_kick", lambda loaded: started.append(loaded))
+
+    def run_then_link(loaded, languages, looks=None):
+        seen = kick.wake_stamp()
+        kick.wake(videos=True)                          # the link, as the run settles
+        return {"languages": {}, "wake_seen": seen}
+    monkeypatch.setattr(runner, "run", run_then_link)
+    connect_verbs._loop(ON, ["ja"])
+    assert started == [ON]
+    monkeypatch.setattr(runner, "run", lambda loaded, languages, looks=None: {"wake_seen": kick.wake_stamp()})
+    connect_verbs._loop(ON, ["ja"])
+    assert started == [ON], "nothing written since its last look: no second start"
+
+
+def test_the_run_hands_on_the_last_wake_mark_it_read(tmp_path):
+    from app.connect import kick, runner
+    from tests.connect.fake_steps import FakeSteps
+    steps = FakeSteps(str(tmp_path), {})
+    steps._woken = "1-2-3"                              # the real steps' mark, as `Steps.kicked` keeps it
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+        assert summary["wake_seen"] == "1-2-3"
+        bare = runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), {}), ledger=ledger, sleep=lambda s: None, looks=1)
+    assert "wake_seen" not in bare, "a stand-in with no mark: nothing handed on"
+    assert kick.wake_stamp() is None, "nothing kicked here"

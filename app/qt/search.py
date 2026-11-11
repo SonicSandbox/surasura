@@ -323,6 +323,7 @@ class Results(motion.Overlay):
                     row.clicked.connect(self.cut.reveal)
                     row.play.connect(self.cut.play)
                     row.top.connect(self.cut.top)
+                    row.show()                           # (now: `place` measures it — see `_label`)
                 self.lines.addWidget(row)
                 self.hits.append(row)
             if g.total > len(g.hits):
@@ -344,6 +345,10 @@ class Results(motion.Overlay):
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setContentsMargins(round(12 * f), round(8 * f) if name == "searchgroup" else round(4 * f),
                                  round(12 * f), round(4 * f))
+        # Shown now: a widget added to the open overlay is otherwise shown only on the loop's next turn, after `place`
+        # has measured the lines without it — a refill in place was cut to the rows it kept (Mattias, 3.0.0: the groups'
+        # names, none of the shows).
+        label.show()
         self.lines.addWidget(label)
         return label
 

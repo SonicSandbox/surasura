@@ -10,7 +10,8 @@ what a word is: it only counts.
 What a reply may bring in (Sonic, P-1), by mode:
 - `chat`: at most one new word in the reply, and only in a sentence where every other word is known;
 - `reading` (a story, a longer reading): at most one new word in any sentence, new words under 3 % of the words.
-A new word must be one of the learner's upcoming words (the top of their list) or an easy common noun (`easy_noun`).
+A new word must be one of the learner's upcoming words (the next on their journey) or an easy common noun
+(`easy_noun`).
 
 A Checker loads once — the tagger, the join tables, the known words — and checks a reply in a few milliseconds; the
 MCP server (app/cli/mcp_server.py) keeps one per language for its session. Reads only: nothing is written anywhere.
@@ -118,7 +119,7 @@ def _created_ms(value):
 
 class Checker:
     """The learner's words for `language`, read once. `upcoming`: the (lemma, reading)s of the learner's next words
-    (the top of their list) — the new words a reply may bring in besides easy nouns. `settings` defaults to
+    (the next on their journey) — the new words a reply may bring in besides easy nouns. `settings` defaults to
     settings.json as a run reads it; `known` ((known_tuples, known_lemmas, ignore)) and `library` ((uses, floor), the
     last Generate's counts) are for tests and callers that hold them already."""
 

@@ -3963,13 +3963,14 @@ def _wake_on_feed(feed, reader):
 def connect_after_commit(language, settings):
     """The window's writer's `after_commit(change, op)` (W-A2, row 4.1.6's rule): after every write the store
     committed — a move into the top 20, an ask (*Mine now*, *Mine this*, *Mine it too*), a line moved — one look on
-    the writer's thread (`window_link.Link.after_change`: read-only), and Connect kicked when it has something unread.
-    One `Link` per writer: it remembers what it kicked for."""
+    the writer's thread (`window_link.Link.after_change`: read-only), and Connect kicked when it has something unread
+    — or, after a video linked (`op` `link_video`, Michi-VF), kicked for videos. One `Link` per writer: it remembers
+    what it kicked for."""
     from app.connect import window_link
     link = window_link.Link(language, lambda: settings_service.thaw(settings.get()))
 
-    def after_commit(_change, _op):
-        link.after_change()
+    def after_commit(_change, op):
+        link.after_change(op=op)
     after_commit.link = link
     return after_commit
 # --- end P4.1 L2

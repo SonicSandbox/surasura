@@ -445,6 +445,16 @@ def connect(args):
     return {"languages": out, "rounds": rounds}
 
 
+def _woken_since(summary):
+    """Was Connect woken after its run's last look at the wake mark (`summary["wake_seen"]`)? A link made while it
+    settled its sync and exited (Michi-VF review r2) puts nothing in the inbox: only the mark says so. A summary
+    without the stamp (a test's stand-in run) says no."""
+    if "wake_seen" not in summary:
+        return False
+    from app.connect import kick
+    return kick.wake_stamp() != summary["wake_seen"]
+
+
 def _loop(loaded, languages, looks=None):
     """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
     it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
@@ -462,7 +472,7 @@ def _loop(loaded, languages, looks=None):
                 summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
         except TooNew as e:
             raise CliError("needs-you", str(e), ask="Update Surasura") from None
-        if not summary.get("stopped") and any(_pending(lang) for lang in languages):
+        if not summary.get("stopped") and (any(_pending(lang) for lang in languages) or _woken_since(summary)):
             _kick(loaded)               # logged after its last read: the next Connect reads it
         return summary
     finally:

@@ -627,6 +627,11 @@ def test_paste_a_link_takes_anilist_and_youtube_links_and_nothing_else(lib, anil
     f = fetcher(lib.writer, anilist, language=lib.language)
     assert f.paste(w, "https://example.com/riefen.jpg") == (None, "not_a_link")
     assert f.paste(w, r"C:\Users\me\Pictures\riefen.jpg") == (None, "not_a_link")
+    # Mattias, 3.0.0: a book shop's page is no supported link either (a web source for books is Sonic's call) —
+    # nothing is asked, and the refusal names the way that works, Choose an image…
+    assert f.paste(w, "https://bookwalker.jp/de0a1b2c3d-4e5f/") == (None, "not_a_link")
+    from app.qt import strings
+    assert "Choose an image" in strings.COVER_PASTE_NOT_A_LINK
     assert f.paste(w, "https://www.themoviedb.org/tv/900999-riefen") == (None, "no_key")
     assert anilist.posts == [] and anilist.gets == []
     path, why = f.paste(w, "https://anilist.co/anime/900101/Hoshiokuri-no-Riefen/")

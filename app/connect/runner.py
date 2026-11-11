@@ -288,10 +288,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if stop:
                     summary["stopped"] = stop
                     return summary
-            if summary.get("stopped") or not work or not outside:
+            if summary.get("stopped"):
                 break
             if looks is not None and summary["looks"] >= looks:
                 break
+            if not work or not outside:
+                # nothing to look at again — unless a kick came during this pass (a video linked while Connect mined
+                # another episode: Michi-VF review B1) and let a parked job go: then one more pass, never an exit
+                # that leaves it parked for a start no one makes (a link puts nothing in the inbox)
+                if not (_woken(steps, ledger, parked) and any(_open_jobs(ledger, lang, parked) for lang in languages)):
+                    break
+                continue
             if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)
                           or _woken(steps, ledger, parked)):
                 summary["stopped"] = "cancelled"
@@ -305,6 +312,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         except Exception:
             log.exception("Connect's pending sync wasn't sent")
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
+        if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
+            summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
 
 
 def _release_check(loaded):
@@ -570,6 +579,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
                     keep |= _failed_says(ledger, lang, job["item_id"])
+                elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
+                    _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
@@ -1564,6 +1575,20 @@ def _keep_alone(ledger, jid, said, words=()):
                             (f"{ALONE}{int(jid)}", json.dumps(value, ensure_ascii=False)))
 
 
+def _forget_alone(ledger, lang, item_id):
+    """Michi-RM2: the item's jobs' `alone:` records removed — once one of its jobs (not a level raise) ended done or
+    undone; never skipped (`ledger.reopen_skipped` queues that job again under its id, its failures kept: its record
+    too) nor dropped (it dropped before mining: it tried none of the failed part's words, whose *Try again* stands —
+    review r2). A failed part keeps its own (the problem report names its words). A ledger write that fails is
+    logged: a record left is tidiness, never a reason to stop."""
+    try:
+        with ledger.transaction():
+            ledger.conn.execute("DELETE FROM meta WHERE key IN (SELECT ? || id FROM jobs WHERE language = ? AND "
+                                "item_id = ?)", (ALONE, lang, item_id))
+    except Exception:
+        log.warning("Connect couldn't tidy the alone records of item %s", item_id, exc_info=True)
+
+
 def _alone(ledger, jid):
     """{"said", "words"} when Anki refused a batch of the job (`ALONE`), else None."""
     row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{ALONE}{int(jid)}",)).fetchone()
@@ -1936,7 +1961,29 @@ class Steps:
         if now == self._woken:
             return False
         self._woken = now
-        return kick.VIDEOS if isinstance(now, str) and now.endswith("-" + kick.VIDEOS) else True
+        if not (isinstance(now, str) and now.endswith("-" + kick.VIDEOS)):
+            return True
+        self._videos_again()
+        return kick.VIDEOS
+
+    def _videos_again(self):
+        """A kick that may have found videos (a video linked, a video folder added: Michi-VF, Mattias 3.0.0): the
+        folders settings.json holds now, and a language whose folders changed has its video index made again at its
+        next use (`_videos`) — a folder you add while this run waits on an episode's video is looked in this run, never
+        only at Connect's next start. Unchanged folders keep the run's index (its one re-list a run: S19). An
+        unreadable settings.json keeps the folders the run had."""
+        from app.connect import videos
+        try:
+            from app.cli import verbs
+            now = verbs.settings()
+        except Exception:
+            log.warning("Connect couldn't read the video folders again; it keeps this run's", exc_info=True)
+            return
+        was = getattr(self, "_video_folders", None) or self.loaded
+        made = getattr(self, "_video_index", {})
+        for lang in [lang for lang in made if videos.configured(now, lang) != videos.configured(was, lang)]:
+            del made[lang]
+        self._video_folders = now
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
@@ -2280,7 +2327,8 @@ class Steps:
                                   and r["video_path"]})
                 sources = [s["path"] for s in store.sources(counts=False)]
             index = videos.Index(lang)
-            index.refresh(shallow, videos.configured(self.loaded, lang), sources=sources)
+            added = getattr(self, "_video_folders", None) or self.loaded     # read again at a videos kick (Michi-VF)
+            index.refresh(shallow, videos.configured(added, lang), sources=sources)
             made[lang] = index
             self._video_index = made
         return made[lang]

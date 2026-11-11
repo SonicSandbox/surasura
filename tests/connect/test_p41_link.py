@@ -274,3 +274,25 @@ def test_a_video_linked_during_connects_last_pass_is_mined_before_it_exits(tmp_p
         assert ledger.job("ja", item)["state"] == "done", "mined in the same run, never left on No video"
     assert [found for i, found in steps.videos_found if i == item] == [None, os.path.abspath(video)]
     assert sorted(steps.anki.words()) == sorted([w for w, _r in WORDS] + ["約束", "勇気"])
+
+
+class _KickedAtExit(FakeSteps):
+    """A plain kick (a drag, a setting) that lands just as the pass ends: read at the exit's look, none at the top."""
+
+    def __init__(self, folder, plan):
+        super().__init__(folder, plan)
+        self.looked = 0
+
+    def kicked(self):
+        self.looked += 1
+        return self.looked == 2
+
+
+def test_a_plain_kick_at_the_exit_frees_nothing_and_takes_no_extra_pass(tmp_path):
+    # why (Michi-VF, mutant M13): the exit's wake look takes one more pass only when it let a parked job go — a wake
+    # that frees nothing (nothing open) must not loop Connect again (S19: no look for nothing)
+    steps = _KickedAtExit(str(tmp_path), {})
+    with Ledger() as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None)
+    assert steps.looked == 2, "the exit looked at the wake"
+    assert summary["looks"] == 1, "nothing freed: no second pass"

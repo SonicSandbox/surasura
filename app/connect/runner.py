@@ -99,6 +99,15 @@ SPEECH_NEED = "speech-model"
 LINEUP_PAIR = "lineup:"         # ledger meta: `lineup:<job id>` -> the pair a part waits on (its *Stop* reads it: B-9)
 # AB-Q4: the one plain line of a book whose audiobook doesn't follow it closely, or skips passages (`lineup.partial_line`)
 PARTIAL_NEED = "audiobook-partial"
+# Mattias's field report (3.0.0, 2026-11-11 #5; PROVISIONAL words): a part Anki Miner stopped on twice — the job's
+# reason (`status`'s `failed`, the row's *Try again*) and its *Needs you* line, which names the way on
+MINE_FAILED = "Anki Miner stopped twice while making its cards"
+MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
+                   "it made are kept.")
+# … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
+                    "more; the cards it made are kept.")
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
 # Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
@@ -567,7 +576,10 @@ def _language(steps, ledger, lang, prepared, parked, out):
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
-                _fixed(ledger, lang, item_id=job["item_id"], keep=_skipped_says(ended))
+                keep = _skipped_says(ended)
+                if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
+                    keep |= _failed_says(ledger, lang, job["item_id"])
+                _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
             _wait(ledger, job, w, out, parked)
@@ -712,6 +724,12 @@ def _through(ledger, lang, step):
 def _fixed_said(ledger, lang, says):
     for row in ledger.fix_said(lang, says):
         log.info("Connect: fixed by itself (%s, %s, item %s): %s", lang, row["kind"], row["item_id"], row["say"])
+
+
+def _failed_says(ledger, lang, item_id):
+    """The words of the item's open *Anki Miner stopped* lines (Mattias #5): only a new try of its words ends them."""
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind = "
+                                              "'mine-failed' AND fixed_at IS NULL", (lang, item_id))}
 
 
 def _skipped_says(job):
@@ -1465,7 +1483,7 @@ def _mine(steps, ledger, lang, job, record=True):
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
         try:
-            got = steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
+            got = _mine_batch(steps, ledger, lang, job, picked, todo, attempt)
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
@@ -1501,17 +1519,26 @@ def _mine(steps, ledger, lang, job, record=True):
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
             ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-            if got.get("doubt") and not stopped:
-                _count_failure(ledger, jid)
+            if got.get("anki_said"):        # Mattias #5 (review r2 B1): Anki's refusal kept, as below
+                _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
+            if got.get("doubt") and not stopped and got.get("then") is None:
+                _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-        if got.get("doubt") and not stopped:
+        if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
+            _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
+        then = got.get("then")              # a word-at-a-time batch a wait cut short: its words not all sent
+        if got.get("doubt") and not stopped and then is None:
             _count_failure(ledger, jid)     # only a run that crashed or timed out: an unknown status is no crash
         if any(o["outcome"] == "made" for o in got["outcomes"]):
             steps.after_write(lang)         # new cards: the session's sync clock (S3), Junban or not (adversary #12)
         if stopped:
             _stopped_mid_batch(steps, ledger, lang, job, record)
+        if isinstance(then, Wait):          # (its cards recorded above; it resumes at mining)
+            raise Wait(then.reason, then.look, "mining")
+        if then is not None:
+            raise then
     left = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
     if _failures(ledger, jid) >= 2 and any(_outcome(ledger, jid, w) == "uncertain" for w in left):
         _fail_mining(steps, ledger, lang, job, record)     # a second crash in the last try
@@ -1529,6 +1556,78 @@ def _mine(steps, ledger, lang, job, record=True):
     # look (adversary B #6, S19)
     _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
+
+
+# Mattias's field report (3.0.0, #5): ledger meta `alone:<job id>` -> {"said": what Anki said when it refused a batch of
+# the job (Anki Miner's MINING_FAILED, not transient: AnkiConnect's *cannot create note …*), "words": the words it went on
+# refusing a word at a time} — the job's next batches send each word in a call of its own, so one card Anki won't take
+# never holds back the others, and the failure line names only the words Anki refused alone
+ALONE = "alone:"
+
+
+def _keep_alone(ledger, jid, said, words=()):
+    had = _alone(ledger, jid) or {}
+    value = {"said": str(said), "words": list(dict.fromkeys(list(had.get("words") or ()) + list(words or ())))}
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (f"{ALONE}{int(jid)}", json.dumps(value, ensure_ascii=False)))
+
+
+def _alone(ledger, jid):
+    """{"said", "words"} when Anki refused a batch of the job (`ALONE`), else None."""
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{ALONE}{int(jid)}",)).fetchone()
+    try:
+        got = json.loads(row[0]) if row is not None else None
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
+    """One batch -> `steps.mine`'s answer. Mattias #5: after Anki refused a batch of the job (`_alone`), each word goes
+    in a call of its own (its own run, `<attempt>-<n>`), so the words Anki takes get their cards and only the ones it
+    refuses stay in doubt (`refused`: those words) — merged as one batch, the way `Steps.mine` merges a line-up's
+    calls. Not every word sent: your *Stop* between two (`stopped`); a wait, a *Needs you* or a look-up ended at a
+    press before a later word (`then`: the caller records the batch, counts no failure, then raises it); a skip or a
+    re-pick (the next batch meets it as itself). Every word is tried, a refusal after a refusal too (a give-up cut good
+    words, every *Try again* the same way: review r2 B2): a deck, a note type or fields Anki Miner can't use are its
+    setup check's before each call (`anki_miner.preflight`: *Needs you*). What still fails for every word (a video
+    ffmpeg can't read, a full disk) costs one run a word once, then the part fails as any (review r3 N2)."""
+    if not _alone(ledger, job["id"]):
+        return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
+    got, out, refused = {}, None, []
+    for n, word in enumerate(todo):
+        if n and stopping.pressed():
+            out["stopped"] = True           # #47: pressed between two words: the rest wait with the job
+            break
+        try:
+            done = steps.mine(lang, job, _part_read(steps, lang, job, picked), [word], attempt if n == 0 else
+                              f"{attempt}-{n}")
+        except (Wait, Needs, stopping.Stopped) as e:
+            if out is None:
+                raise
+            out["then"] = e
+            break
+        except (Skip, Repick):
+            if out is None:
+                raise
+            break
+        row = (done.get("outcomes") or [None])[0]
+        if row is not None:
+            got[(word["word"], word["reading"])] = row
+        if done.get("anki_said") and (row is None or row.get("outcome") in UNSETTLED):
+            refused.append(word["word"])
+        if out is None:
+            out = dict(done, outcomes=None)
+        else:
+            for flag in ("doubt", "stopped", "anki_said"):
+                out[flag] = out.get(flag) or done.get(flag)
+            out["tag_pending"] = list(out.get("tag_pending") or ()) + list(done.get("tag_pending") or ())
+        if done.get("stopped"):
+            break
+    out["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted") for w in todo]
+    out["refused"] = refused
+    return out
 
 
 def _stop_pressed(ledger, jid):
@@ -1631,9 +1730,24 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     if _made(ledger, job["id"]):
         with ledger.transaction():
             ledger.owe_resort(lang)
-    ledger.set_state(job["id"], "failed", reason="Anki Miner stopped twice while making its cards")
-    ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice while "
-                "making its cards. Look in Anki for the cards it made.", item_id=job["item_id"], job_id=job["id"])
+    ledger.set_state(job["id"], "failed", reason=MINE_FAILED)
+    # a new try's failure is news (Mattias #5: every *Try again* reacts): an earlier job's entry for the item — seen,
+    # dismissed — gives way to this one, which counts again
+    title = steps.title(lang, job) or "An episode"
+    alone = _alone(ledger, job["id"]) or {}
+    said, refused = alone.get("said"), set(alone.get("words") or ())
+    words = [w["word"] for w in (ledger.picked(job["id"]) or {}).get("words") or ()
+             if w["word"] in refused and _outcome(ledger, job["id"], w) in UNSETTLED]
+    if said and words:              # Mattias #5: the words Anki refused alone: named, with Anki's reason
+        named = ", ".join(words[:3]) + (f" and {len(words) - 3} more" if len(words) > 3 else "")
+        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said)
+    else:
+        say = MINE_FAILED_SAY.format(title=title)
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'mine-failed' "
+                            "AND fixed_at IS NULL AND COALESCE(job_id, -1) != ?",
+                            (_now(), lang, job["item_id"], job["id"]))
+        ledger.need(lang, "mine-failed", say, item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
 
 
@@ -2980,8 +3094,12 @@ class Steps:
             self._place(lang, job, picked, done.get("outcomes") or [])
         run = done.get("run") or {}
         doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
+        # Mattias #5: Anki refused a card (Anki Miner's MINING_FAILED, not transient — AnkiConnect's *cannot create
+        # note …*): its words, in doubt, go a word at a time next (`runner._mine_batch`); a crash is no such answer
+        said = (run.get("message") or run.get("error") if run.get("error") == "MINING_FAILED" and not
+                run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped"))}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said}
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

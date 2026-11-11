@@ -77,13 +77,15 @@ def releases(before, changes):
     before = before or {}
     if changes.get("connect_trust_timing") is True and before.get("connect_trust_timing") is not True:
         return True
-    return any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS) or         _finds_videos(before, changes)
+    if any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS):
+        return True
+    return _finds_videos(before, changes)
 
 
-def _folders(value):
-    """Every folder a `connect_video_folders` value names (a list for every language, or {lang: list})."""
+def _folders(value, lang):
+    """The folders a `connect_video_folders` value names for `lang` (a list is every language's, or {lang: list})."""
     if isinstance(value, dict):
-        return {f for v in value.values() if isinstance(v, list) for f in v}
+        value = value.get(lang)
     return set(value) if isinstance(value, list) else set()
 
 
@@ -93,7 +95,12 @@ def _finds_videos(before, changes):
     folders again (`runner.Steps._videos_again`) — a plain wake leaves them parked until its next start. A folder
     taken away finds nothing: no kick."""
     before = before or {}
-    return any(key in changes and _folders(changes[key]) - _folders(before.get(key)) for key in VIDEO_KEYS)
+    for key in (k for k in VIDEO_KEYS if k in changes):
+        now, was = changes[key], before.get(key)
+        langs = {"ja", "zh"} | set(now if isinstance(now, dict) else ()) | set(was if isinstance(was, dict) else ())
+        if any(_folders(now, lang) - _folders(was, lang) for lang in langs):
+            return True
+    return False
 
 
 def kick_on_release(before, changes, store=None, win=None):

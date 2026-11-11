@@ -312,6 +312,9 @@ def test_a_video_folder_added_releases_for_videos_and_the_same_folders_do_not():
     taken_away = {"connect_video_folders": {"ja": [], "zh": []}}
     assert not store_rows.releases(folders, taken_away), "a folder taken away finds nothing: no start for it"
     assert store_rows.releases({"connect_video_folders": [r"D:\Anime"]}, folders), "a plain list (every language's)"
+    shared = r"D:\Anime"
+    assert store_rows.releases({"connect_video_folders": {"ja": [], "zh": [shared]}},
+                               {"connect_video_folders": {"ja": [shared], "zh": [shared]}}),         "a folder new to Japanese though Chinese had it: Japanese's episodes look there now"
 
 
 def test_a_video_folder_added_in_the_page_kicks_connect_for_videos_on_a_worker(qapp, kicked):

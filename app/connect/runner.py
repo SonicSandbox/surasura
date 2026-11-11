@@ -303,6 +303,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         except Exception:
             log.exception("Connect's pending sync wasn't sent")
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
+        if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
+            summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
 
 
 def _release_check(loaded):

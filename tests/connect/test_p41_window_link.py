@@ -253,3 +253,38 @@ def test_the_windows_own_link_wakes_for_videos_through_the_real_wake_mark(monkey
     link = window_link.Link("ja", lambda: dict(ON), kick=Kicks(), running=lambda: True)
     assert link.after_change(op=window_link.LINKED) == window_link.RUNNING
     assert steps.kicked() == kick.VIDEOS
+
+
+def test_a_link_while_connect_settles_and_exits_starts_the_next_connect(monkeypatch):
+    # why (Michi-VF review r2): between Connect's last look at its wake mark and its lock's release it sends a pending
+    # Anki sync (seconds); a link then wakes a Connect that is going, and puts nothing in the inbox. The run hands on
+    # the last mark it read, and the verb starts the next Connect when the mark moved since; unmoved, none
+    from app.cli import connect_verbs
+    from app.connect import kick, runner
+    started = []
+    monkeypatch.setattr(connect_verbs, "_pending", lambda lang: False)
+    monkeypatch.setattr(connect_verbs, "_kick", lambda loaded: started.append(loaded))
+
+    def run_then_link(loaded, languages, looks=None):
+        seen = kick.wake_stamp()
+        kick.wake(videos=True)                          # the link, as the run settles
+        return {"languages": {}, "wake_seen": seen}
+    monkeypatch.setattr(runner, "run", run_then_link)
+    connect_verbs._loop(ON, ["ja"])
+    assert started == [ON]
+    monkeypatch.setattr(runner, "run", lambda loaded, languages, looks=None: {"wake_seen": kick.wake_stamp()})
+    connect_verbs._loop(ON, ["ja"])
+    assert started == [ON], "nothing written since its last look: no second start"
+
+
+def test_the_run_hands_on_the_last_wake_mark_it_read(tmp_path):
+    from app.connect import kick, runner
+    from tests.connect.fake_steps import FakeSteps
+    steps = FakeSteps(str(tmp_path), {})
+    steps._woken = "1-2-3"                              # the real steps' mark, as `Steps.kicked` keeps it
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+        assert summary["wake_seen"] == "1-2-3"
+        bare = runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), {}), ledger=ledger, sleep=lambda s: None, looks=1)
+    assert "wake_seen" not in bare, "a stand-in with no mark: nothing handed on"
+    assert kick.wake_stamp() is None, "nothing kicked here"

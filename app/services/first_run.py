@@ -34,6 +34,11 @@ worker.
     Documents not synced yet looks the same. So it is never made by itself: the user's *Start with a new, empty
     library here* makes it (`run(..., fresh=True)`, through the write check `probe_library`, D12: access denied names
     Controlled Folder Access, `CFA_MESSAGE`), or *Try again* once the drive is back.
+  * Windows' Controlled folder access (3.0.1, `app/cfa.py`) — not a state of its own: an installed library inside a
+    folder Windows protects while CFA is on is marked `cfa` (registry reads only, never a write here); `run` then makes
+    one write check (`cfa.probe`) and answers `blocked` with reason `cfa` when Windows refused it — the gate's *Move my
+    library to C:\\Users\\<you>\\Surasura* (`app/library_move.py`) and *Allow Surasura in Windows Security*. A new or
+    missing library's own write check, or an import's, refused there answers the same.
   * `ready` — anything else. A source run (a developer's tree), a portable program and a test root import nothing
     unless `import.json` names their own folder as unfinished.
 
@@ -50,7 +55,7 @@ import json
 import os
 import time
 
-from app import graduated_merge, import_2x, path_utils
+from app import cfa, graduated_merge, import_2x, path_utils
 
 NOTE = "first_run.json"
 NOTE_VERSION = 1
@@ -165,7 +170,7 @@ def state():
     note = import_2x.read_import_note()
     out = {"state": READY, "library": library, "installed": bool(installed), "create": False, "recorded": True,
            "source": None, "installs": [], "note": note, "lists": [], "elsewhere": None, "lost": False,
-           "journal": None}
+           "journal": None, "cfa": bool(installed) and cfa.at_risk(library)}
     from app import profile_reset
     journal = profile_reset.pending()
     if journal is not None and (journal.get("status") != profile_reset.ASKED or not installed
@@ -212,7 +217,7 @@ def state():
 def needs_run(st):
     """Does this start need `run` (the gate's worker)? False for an everyday start: ready, the library there and
     recorded, no GraduatedList waiting."""
-    return st["state"] != READY or st["create"] or not st["recorded"] or bool(st["lists"])
+    return st["state"] != READY or st["create"] or not st["recorded"] or bool(st["lists"]) or bool(st.get("cfa"))
 
 
 def _result(status="done", reason=None, message=None):
@@ -281,6 +286,13 @@ def _abandon(library):
         import_2x._write_json(import_2x.note_path(), dict(note, abandoned=import_2x._now()))
 
 
+def blocked(library):
+    """`run`'s answer for a library Windows' Controlled folder access refused: the gate's two ways out."""
+    out = _result("blocked", "cfa", cfa.words(library))
+    out["cfa"] = {"library": library, "target": cfa.move_target(), "programs": cfa.programs()}
+    return out
+
+
 def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False, move=False, on_wait=None):
     """Do what `state()` said, on a worker -> {status, reason, message, import, graduated}. `status`: done; refused
     (`reason` library_missing or library_new — never made without the user's `fresh` —, holds_program, set_aside
@@ -314,7 +326,11 @@ def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False,
     if st["installed"] and not importing and (st["create"] or kind == LIBRARY_MISSING):
         probe = import_2x.probe_library(library)          # an import probes after its own checks (`run_import`)
         if not probe["ok"]:
+            if probe["reason"] == "access_denied" and cfa.at_risk(library):
+                return blocked(library)
             return _result("blocked", probe["reason"], probe["message"])
+    elif st.get("cfa") and os.path.isdir(library) and cfa.probe(library):
+        return blocked(library)                           # 3.0.1: a library Windows won't let Surasura write
     out = _result()
     if fresh and kind == IMPORT_UNFINISHED:
         failed = _set_aside(library)
@@ -332,6 +348,10 @@ def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False,
                                       restart=restart, again=bool(st.get("elsewhere")))
         out["import"] = result
         if result["status"] != "done":
+            if result["reason"] == "access_denied" and cfa.at_risk(library):
+                out.update(blocked(library))
+                out["import"] = result
+                return out
             status = "blocked" if result["reason"] == "access_denied" else result["status"]
             out.update(status=status, reason=result["reason"], message=result["message"])
             return out

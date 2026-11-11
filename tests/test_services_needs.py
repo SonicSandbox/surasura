@@ -438,7 +438,8 @@ def test_failures_are_listed_with_the_logs_and_count_until_the_status_service_ma
 
 def test_each_connect_kind_offers_its_own_action_and_dismiss_and_a_gap_waits_for_its_callables():
     """Each kind's button calls what fixes it: *Mine anyway* for not-timed, *Ask hato again* for no-pairing, the logs
-    for a failure; every one *Dismiss*. A gap's *Make their cards* has no callable yet (hidden), *Leave them* does."""
+    for a failure (a part Anki Miner stopped on: *Try again* first, Mattias #5); every one *Dismiss*. A gap's *Make
+    their cards* has no callable yet (hidden), *Leave them* does."""
     rec = {"jobs": [], "unseen": 3, "needs": [
         {"id": 9, "kind": "no-pairing", "say": "3 files in hato's folder have no pairing from hato.", "item": None,
          "title": None, "at": "2026-10-15T08:00:00Z", "seen_at": None},
@@ -453,13 +454,14 @@ def test_each_connect_kind_offers_its_own_action_and_dismiss_and_a_gap_waits_for
     out = needs.entries(None, connect=rec)
     assert [(e.kind, e.actions) for e in out] == [
         ("no-pairing", ("ask_hato", "dismiss")), ("not-timed", ("mine_anyway", "dismiss")),
-        ("mine-failed", ("open_logs", "dismiss")), ("known-sync", ("dismiss",)),
+        ("mine-failed", ("try_again", "open_logs", "dismiss")), ("known-sync", ("dismiss",)),
         (needs.GAP, ("make_cards", "leave_them"))]
     assert [e.data["need_id"] for e in out[:4]] == [9, 7, 5, 4]       # newest first, as the record lists them
     assert [e.unseen for e in out] == [True, False, True, True, True]
     assert out[4].title == ("Connect lost track of your moves from 2026-10-01 to 2026-10-03: 2 episodes in the top 20 "
                             "have no cards")
     assert "make_cards" in needs.WIRED_LATER and "leave_them" not in needs.WIRED_LATER
+    assert "try_again" in needs.WIRED_LATER     # Mattias #5: the window's ask, hidden until `mine_actions` hooks it
     needs.answer("ja", needs.answer_keys(out[4]))
     assert needs.GAP not in kinds(needs.entries(None, connect=rec, answered=needs.read_answered("ja")))
 

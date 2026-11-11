@@ -472,6 +472,10 @@ ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder or link its video
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link…"}
+# Mattias's field report (3.0.0, #5; PROVISIONAL words): a file Anki Miner stopped on twice — asked again (C2's one ask)
+ROWS_ACTION_NAMES["try-again"] = "Try again"
+ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
+                      False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -1371,6 +1375,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    # Mattias's field report (3.0.0, #5; PROVISIONAL words)
+    "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"

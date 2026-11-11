@@ -16,6 +16,8 @@ NO_DECK = "Backfill runs for one deck only: choose one in the Backfill window." 
 FILL_FAILED = "Nothing was filled: the note changed while Backfill read it."
 JUNBAN_NO_DECK = "The automatic reorder runs for one deck only: choose one in the 順 window."    # verbs.JUNBAN_ONE_DECK
 READ_ONLY = "Surasura's library can't be written just now, so Connect can't record the cards it made."
+# AnkiConnect's answer when Anki's own field check refuses a note (`refuse_words`)
+REFUSED_SAID = "AnkiConnect error in 'addNotes': ['cannot create note for unknown reason']"
 MINER_SETUP = "Anki Miner isn't set up for Japanese yet. Open Surasura's Connect settings to finish it."
 # Real words, by item: what each episode's pick finds (lemma, reading, its line)
 WORDS = {
@@ -69,7 +71,8 @@ class FakeSteps:
     `videos` {item: path or None} · `profile_at_pick` / `profile_at_mine` · `kill` ("pick" · "fit" · "mine" · "fill" ·
     "order" · "mid-batch:<n>" · "after-mine") · `absent` (a set of "anki-miner" · "backfill" · "junban") · `store_id` ·
     `prepare_error` · `staged` · `store_busy` (the library busy: the top 20 can't be read) · `unknown_status` (a word
-    Anki Miner answers with a status it doesn't know: uncertain, no crash, no card) · `fill_needs` (Backfill asks for
+    Anki Miner answers with a status it doesn't know: uncertain, no crash, no card) · `refuse_words` (Anki refuses
+    those words' notes: a batch holding one fails whole, MINING_FAILED, none made) · `fill_needs` (Backfill asks for
     you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
     pick has run) · `staged_after` (an update staged once that step ran: "generate") · `generate_after` (P3.3: the
     plan marks a Generate after mining) · `generate_after_error` · `level_after` (level jobs the Generate's new run
@@ -252,6 +255,12 @@ class FakeSteps:
         if self.plan.get("profile_at_mine", "p1") != picked.get("profile"):
             self.plan["profile_at_pick"] = self.plan.get("profile_at_mine", "p1")     # a re-pick sees the new one
             raise runner.Repick()
+        refuse = set(self.plan.get("refuse_words") or ())
+        if refuse & {w["word"] for w in words}:
+            # Anki refused one of the batch's notes (AnkiConnect's addNotes error, Anki Miner's MINING_FAILED, not
+            # transient): the run failed, its note write uncertain, none of its cards made (Mattias #5)
+            return {"outcomes": [_unsure(x) for x in words], "app": "3.11.0", "doubt": True,
+                    "anki_said": REFUSED_SAID}
         out = []
         crash = self.plan.get("crash_mid_batch")
         for n, w in enumerate(words):

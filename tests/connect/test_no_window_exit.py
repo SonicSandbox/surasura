@@ -117,6 +117,19 @@ def test_the_pause_ends_within_a_step_once_the_last_window_closes(tmp_path, ledg
     assert summary["looks"] == 2 and summary.get("no_window") is True
 
 
+def test_an_inbox_it_couldnt_read_is_named_so_the_next_connect_isnt_started_for_it(tmp_path, ledger):
+    # why: `_loop` starts no Connect again for a pending inbox only when the run says it couldn't read it; without the
+    # mark a busy store with no window open becomes a start every half second
+    class Unreadable(Steps):
+        def consume(self, lang, ledger):
+            raise OSError("the library store is busy")
+    steps = Unreadable(str(tmp_path), {"line": {"ja": [1]}, "window": False})
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert summary.get("no_window") is True and summary.get("inbox_unread") is True
+    _steps, read, _slept = _run(tmp_path, ledger, dict(WAITING, window=False))
+    assert read.get("no_window") is True and "inbox_unread" not in read, "an inbox read: only no_window"
+
+
 def test_a_newer_build_under_a_running_connect_stops_it_at_the_step_boundary(tmp_path, ledger):
     # why: #7J3960 — never an old version's Connect working on beside the new version: the folder's own takes over
     steps, summary, slept = _run(tmp_path, ledger, {"replaced": True})

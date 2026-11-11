@@ -108,26 +108,58 @@ class _PassSteps:
     def on_battery(self):
         return self.battery
 
+    why = None
+    before = None                                           # run before the voice asks whether to stop
+
+    def blocked(self, lang):
+        return self.why
+
     def ai_audio(self, lang, should_stop):
         if self.raises:
             raise RuntimeError("the voice broke")
+        if self.before:
+            self.before()
         self.calls.append((lang, should_stop()))
 
 
-def test_the_ai_pass_runs_and_tells_the_voice_when_to_stop():
+@pytest.fixture
+def ledger(tmp_path):
+    with Ledger(str(tmp_path / "ledger.db")) as led:
+        yield led
+
+
+def test_the_ai_pass_runs_and_tells_the_voice_when_to_stop(ledger):
     steps = _PassSteps()
-    runner._ai_audio(steps, "ja")
+    assert runner._ai_audio(steps, ledger, "ja", {}) is False
     assert steps.calls == [("ja", False)]
     steps.battery = True
-    runner._ai_audio(steps, "ja")
+    runner._ai_audio(steps, ledger, "ja", {})
     assert steps.calls[-1] == ("ja", True)                  # on battery: the voice stops between two sentences
+    steps.battery, steps.why = False, runner.REVIEWING
+    runner._ai_audio(steps, ledger, "ja", {})
+    assert steps.calls[-1] == ("ja", True)                  # you review now: it stops before the next sentence
 
 
-def test_no_ai_pass_while_an_update_is_staged_and_an_error_never_ends_the_run():
+def test_a_part_that_comes_in_stops_the_voice_and_the_pass_goes_on(ledger):
+    # why: AI audio never holds a part back (review r1 #1) — a *Mine now* meanwhile goes first
+    steps = _PassSteps()
+    steps.before = lambda: ledger.queue("ja", 31, "mine", None, "store-1")
+    assert runner._ai_audio(steps, ledger, "ja", {}) is True
+    assert steps.calls == [("ja", True)]
+
+
+def test_a_part_this_pass_already_tried_never_stops_the_voice(ledger):
+    jid = ledger.queue("ja", 32, "mine", None, "store-1")
+    steps = _PassSteps()
+    assert runner._ai_audio(steps, ledger, "ja", {}, tried={jid}) is False
+    assert steps.calls == [("ja", False)]
+
+
+def test_no_ai_pass_while_an_update_is_staged_and_an_error_never_ends_the_run(ledger):
     staged = _PassSteps(staged=True)
-    runner._ai_audio(staged, "ja")
+    assert runner._ai_audio(staged, ledger, "ja", {}) is False
     assert not staged.calls
-    runner._ai_audio(_PassSteps(raises=True), "ja")         # logged, never raised
+    assert runner._ai_audio(_PassSteps(raises=True), ledger, "ja", {}) is False      # logged, never raised
 
 
 def test_steps_without_the_module_queue_and_make_nothing(monkeypatch):
@@ -150,5 +182,5 @@ def test_steps_without_the_module_queue_and_make_nothing(monkeypatch):
 def test_the_ai_pass_comes_after_every_part_in_the_runner():
     src = open(os.path.join(os.path.dirname(runner.__file__), "runner.py"), encoding="utf-8").read()
     loop = src[src.index("def _language("):src.index("def _after_mining(")]
-    assert loop.index("_after_mining(steps, ledger, lang, out") < loop.index("_ai_audio(steps, lang)") < \
+    assert loop.index("_after_mining(steps, ledger, lang, out") < loop.index("_ai_audio(steps, ledger, lang") < \
         loop.index("job = _ordered(jobs, line)[0]")

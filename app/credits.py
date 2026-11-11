@@ -222,5 +222,5 @@ def readme_sources(readme_text):
 
 def missing_from_credits(readme_text):
     """The credits text's sources the in-app credits (data, covers, logos) don't name: [] when the app covers them."""
-    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS
+    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS + "\n" + AI_VOICE_CREDITS
     return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in named]

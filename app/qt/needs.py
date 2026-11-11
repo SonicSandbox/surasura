@@ -513,12 +513,13 @@ def _connect_callable(module, name):
         return None
 
 
-def _ai_audio_on(settings):
-    """(A worker.) Iro-AA: the AI voice's beta on, installed and its writer there (`modules.irodori.on`: settings + a
-    file look) — the book's *Make AI audio (beta)* shown; the module absent or failing: never."""
+def _ai_audio_on(settings, language):
+    """(A worker.) Iro-AA: the AI voice's beta on, installed, its writer there and the language Japanese
+    (`modules.irodori.on`: settings + a file look) — the book's *Make AI audio (beta)* shown; the module absent or
+    failing: never."""
     try:
         from modules import irodori
-        return bool(irodori.on(settings))
+        return bool(irodori.on(settings, language))
     except Exception:
         return False
 
@@ -960,7 +961,7 @@ class NeedsYou(QObject):
             settings = read_settings() or {}
             connect = read_connect(lang) if settings.get("connect_enabled") else None
             # Iro-AA: read here, on the worker; the window's thread reads only the bool it leaves (`has`)
-            self._ai_audio = bool(ai_audio_on(settings)) if connect is not None else False
+            self._ai_audio = bool(ai_audio_on(settings, lang)) if connect is not None else False
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()

@@ -42,8 +42,8 @@ def ask(world):  # noqa: F811
 def _on(ny, main, on=True):
     looked = []
 
-    def ai_audio_on(settings):
-        looked.append(threading.current_thread() is not main)
+    def ai_audio_on(settings, language):
+        looked.append(threading.current_thread() is not main and language == "ja")
         return on
     ny.ai_audio_on = ai_audio_on
     ny.refresh()

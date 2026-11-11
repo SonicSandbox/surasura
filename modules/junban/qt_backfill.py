@@ -314,7 +314,10 @@ class BackfillWindow(windows.SecondaryWindow):
         except ImportError:
             ai_audio = None
         if ai_audio is not None:
-            self.ai_audio = ai_audio.attach(self, actions)
+            try:                             # its button never keeps Backfill's window from opening
+                self.ai_audio = ai_audio.attach(self, actions)
+            except Exception as e:
+                print(f"Backfill: the AI audio button wasn't added: {e!r}")
         self.resize(round(780 * f), round(660 * f))
 
     # --- settings ---------------------------------------------------------------------------------------------- #

@@ -560,8 +560,9 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
                 continue
-            if not only_asked:
-                _ai_audio(steps, lang)  # Iro-AA: after every part — AI audio never holds one back; never on battery
+            if not only_asked and _ai_audio(steps, ledger, lang, parked, tried):
+                look = True     # Iro-AA: a part came in while the AI voice worked: it goes first, the voice after
+                continue
             break
         failed = None
         try:
@@ -1114,16 +1115,28 @@ def _queue_ai_audio(steps, ledger, lang, job, ids):
         log.warning("Connect couldn't queue job %s's cards for AI audio", job["id"], exc_info=True)
 
 
-def _ai_audio(steps, lang):
-    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`),
-    stopping between two sentences for Connect's stop, an update staged or the battery. Never raises."""
+def _ai_audio(steps, ledger, lang, parked, tried=()):
+    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`). It
+    stops between two sentences — and the pass goes on — when a part comes in meanwhile (an open job: *Mine now*, a
+    placement read; AI audio never holds a part back), for Connect's stop or an update staged, on battery, and when
+    the session can't write now (you review, Anki closed, another profile: `_blocked`). -> True when it stopped for a
+    part (the loop looks again). Never raises."""
     make = getattr(steps, "ai_audio", None)
     if make is None or _stop(steps):
-        return
+        return False
+    came = []
+
+    def should_stop():
+        if _open_jobs(ledger, lang, parked, tried):        # a part this pass hasn't tried yet
+            came.append(True)
+            return True
+        return bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)() or
+                    _blocked(steps, lang, None) is not None)
     try:
-        make(lang, should_stop=lambda: bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)()))
+        make(lang, should_stop=should_stop)
     except Exception:
         log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
+    return bool(came)
 
 
 def book_key(epub, sha256=None):
@@ -2438,7 +2451,7 @@ class Steps:
         except ImportError:
             return None
         got = irodori.run_queue(self.loaded, lang, should_stop=should_stop)
-        if got.get("written"):
+        if got.get("written"):              # each run's Undo is kept by the module (`irodori.last_run`)
             log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
             self.after_write(lang)
         return got

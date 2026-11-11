@@ -68,6 +68,7 @@ class SingleInstance(QObject):
         self.outcome = None                         # "first" · "handed-over" · "gave-up" (for the log and tests)
         self._clients = []                          # (socket, its bytes so far) for each start talking to us
         self._closing = False                       # the window is closing: no start is answered any more
+        self.pending = None                         # a start heard before the window was connected (`replay`)
 
     # --- a start ------------------------------------------------------------------------------------------------ #
     def claim(self, args=(), wait=WAIT_FOR_FIRST_S):
@@ -166,7 +167,19 @@ class SingleInstance(QObject):
         sock.write(b"ok\n")
         sock.flush()
         sock.disconnectFromServer()
+        if self.receivers(self.activated):
+            self.activated.emit(args)
+        else:                                           # the window isn't made yet (setup, the start gate): kept,
+            self.pending = args                         # ... and handed to it once it is (`replay`)
+
+    def replay(self):
+        """The window is connected now: the last start heard while it wasn't made yet reaches it (Piyo's report words
+        included). -> True when there was one."""
+        args, self.pending = self.pending, None
+        if args is None:
+            return False
         self.activated.emit(args)
+        return True
 
     def _gone(self):
         sock = self.sender()

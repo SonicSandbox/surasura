@@ -1629,6 +1629,11 @@ REPORT_SAVE_TIP = "Keep this report on your list (Ctrl+Enter). Send them all at 
 REPORT_SAVED = "Saved to your list. Note the next one whenever you like"
 REPORT_SAVE_FAILED = "That report couldn't be saved: {why}"
 REPORT_WHERE = "the {tab} tab"
+# Piyo's *Send report*: the learner's AI wrote the report with them and asked to send it; the window
+# shows it in the form for them to read, change and send — nothing is sent until they press Send on What goes
+REPORT_FROM_PIYO = ("Your AI wrote this report with you (Piyo). Read it, change anything, then press Send report: "
+                    "you'll see exactly what goes before anything is sent")
+REPORT_FROM_PIYO_WHERE = "{where}, written with Piyo"
 REPORT_LIST_HEADING = "Your list ({n})"
 REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until they're sent or zipped"
 REPORT_LIST_NAME = "Your saved reports"

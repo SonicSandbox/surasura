@@ -691,6 +691,30 @@ def copy_default_lists(final_dist):
     return written
 
 
+HELP_NEEDS = ("Get started", "Known limits", "The guide", "Questions")    # the help's own docs: never built without them
+
+
+def write_help(final_dist, root=None):
+    """_internal/app/help_index.json: the help Piyo answers from (`app/help_docs.py`), made from the user docs of the
+    checkout being built (`root`, by default the one this code is in) and the window's own words (`app/qt/help_words`),
+    so a program's help is its own version's. -> True, or False (said why): never a build without it."""
+    from app import help_docs
+    path = os.path.join(final_dist, "_internal", help_docs.FILE)
+    try:
+        from app.qt import help_words                     # the window's own words (Settings, the help cards)
+        index = help_docs.write(path, root=os.path.abspath(root or help_docs.ROOT), window=help_words.topics())
+    except Exception as e:
+        print(f"Build failed: the help index couldn't be made ({type(e).__name__}: {e}).")
+        return False
+    topics = sum(len(t.get("topics") or ()) or 1 for t in index["topics"])
+    missing = [t for t in HELP_NEEDS if t not in {x["title"] for x in index["topics"]}]
+    if missing:
+        print(f"Build failed: the help index has no {', '.join(missing)} (its docs missing?).")
+        return False
+    print(f"Help: {topics} topics in _internal/{help_docs.FILE.replace(os.sep, '/')}")
+    return True
+
+
 def write_build_stamp(final_dist, version, build_id, data_name, shape):
     """_internal/build_stamp.json {version, build_id, data_name, install_shape} (S3.1 D18): each program compares its
     own with it at start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>);
@@ -1447,6 +1471,10 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             shutil.copy2(src, dst)
         else:
             print(f"Warning: Documentation file not found: {src}")
+
+    # 3a. Piyo's help: the user docs above (and the window's own words) as this version's help index.
+    if not write_help(final_dist):
+        return False
 
     # 3b. The bundled software's licence texts, into _internal/licenses/ with its INDEX.txt: a part without one stops
     #     the build here (unless LICENCE_EXCEPTIONS names it).

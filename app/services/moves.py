@@ -127,6 +127,7 @@ JOURNALLED += ("audiobook_keep", "audiobook_separate")
 # --- Mado-O (alpha 8): the sort screen's *Start sorting over* (`placed`: its placements' records)
 JOURNALLED += ("start_over",)
 KEPT += ("placed",)
+KEPT += ("after",)                              # choice 1: a place after the sort screen's last Current pick
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole

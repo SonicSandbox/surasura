@@ -205,7 +205,7 @@ def vertical_text(title):
     first = next((i for i, ch in enumerate(title) if _CJK.search(unicodedata.normalize("NFKC", ch))), None)
     run = _LATIN_RUN.search(title, first + 1) if first is not None else None
     if run is not None:
-        title = title[:run.start()].rstrip(_OPENERS) or title
+        title = title[:run.start()].rstrip(_OPENERS + "0123456789０１２３４５６７８９") or title   # 進撃 2nd Season
     return title.translate(_VERTICAL)
 
 

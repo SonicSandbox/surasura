@@ -549,9 +549,11 @@ def test_choose_a_file_lists_what_the_library_reads_and_says_what_it_doesnt(make
     page = wiz.page
     picked = [str(tmp_path / n) for n in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "夜の図書館.epub", "日記.txt",
                                           "ぼっち・ざ・ろっく！ 第01話.png")]
-    wiz.pick_files_dialog = lambda _title, _start: picked
+    starts = []
+    wiz.pick_files_dialog = lambda _title, start: starts.append(start) or picked
     QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
     assert page.files == [os.path.normpath(p) for p in picked[:3]]
+    assert starts == [windows.content_folder()]                    # Fresh-U row 11: the Videos folder, not home
     assert not page.refused_line.isHidden() and "第01話.png" in page.refused_line.text()
     assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.png") in page.refused_line.text()
     QApplication.processEvents()                                   # (a new row is shown by the next turn of the loop)

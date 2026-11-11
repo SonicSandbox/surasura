@@ -1141,7 +1141,8 @@ def test_every_settings_path_a_line_names_starts_at_a_section_the_page_has():
             for line in _every_string(value):
                 for place in line.split("Settings › ")[1:]:
                     seen += 1
-                    if not place.startswith(sections):
-                        wrong.append((table.__name__, name, place[:40]))
+                    named = next((s for s in sections if place.startswith(s)), None)
+                    if named is None or place[len(named):len(named) + 1] not in ("", " ", ",", ".", ":", ")", "\n"):
+                        wrong.append((table.__name__, name, place[:40]))     # (a section's name whole, not a prefix)
     assert seen >= 15                      # the lines are still found (a change to the arrow would pass this silently)
     assert wrong == []

@@ -2838,6 +2838,25 @@ def test_choice_1_a_title_placed_after_the_last_one_sent_lands_there_and_the_num
     assert set(lib.ids("arrivals")) >= {a, b, c}
 
 
+def test_choice_1_a_place_after_an_anchor_queued_at_a_crash_replays_after_it(lib, make_writer, short_lock_wait):
+    """Review S2: the journal kept a place's `where` but not its `after`, so a place still queued at a crash (or a
+    timed-out quit) replayed as a plain `top`: the title at Current's top, not after the last one sent."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    w.place([a], "top")
+    assert h.until(lambda: len(heard.saved) == 1)
+    holder = LockHolder(lib.db)
+    w.place([b], "top", after=a)
+    assert h.until(lambda: journalled(lib.language) == [("place", [b])])
+    assert journal(lib.language)["pending"][0]["after"] == a
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, _heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.ids("now")[:2] == [a, b]
+
+
 def _tiers_and_values(lib, placed=()):
     """Every item's tier, place and values — and `changed_in` for the `placed` (a neighbour the Soon line moved across
     gets the line's own version, as any move's Undo gives it)."""

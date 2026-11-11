@@ -63,7 +63,8 @@ class ArrivalsWriter(FakeWriter):
             else:
                 tier = {"top": "now", "after-show": "now", "soon": "soon", "goal": "goal"}[where]
                 anchor = {r["id"]: r for r in lib.items()}.get(change.kw.get("after"))
-                start = anchor["ord"] + 0.001 if anchor is not None and anchor["tier"] == "now" else -1000.0
+                start = anchor["ord"] + 0.001 if anchor is not None and anchor["tier"] in ("now", "soon") else -1000.0
+                tier = anchor["tier"] if start != -1000.0 else tier
                 lib.commit(items=[{"id": i, "tier": tier, "ord": start + k * 0.001} for k, i in enumerate(change.ids)],
                            order=True)
         elif change.op == "remove":

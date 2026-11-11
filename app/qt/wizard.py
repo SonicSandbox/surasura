@@ -3286,7 +3286,7 @@ class SetupWizard(QWidget):
         if self.reading is not None or self._gone:
             return
         page = self.pages[2]
-        start = os.path.dirname(page.files[-1]) if page.files else os.path.expanduser("~")
+        start = os.path.dirname(page.files[-1]) if page.files else windows.content_folder()   # (Fresh-U row 11)
         refused, videos = [], []
         page.offer_folder(None)
         for path in self.pick_files_dialog(S.PICK_FILE_TITLE, start) or ():
@@ -3517,7 +3517,7 @@ class SetupWizard(QWidget):
         if self.reading is not None or self._gone or qpress.live(self, "wizard:pick"):
             return                                        # (one under way: a second press opens nothing, P5-A1)
         page = self.pages[2]
-        start = page.folders[-1] if page.folders else os.path.expanduser("~")
+        start = page.folders[-1] if page.folders else windows.content_folder()     # (Fresh-U row 11)
         path = self.pick_dialog(S.PICK_TITLE, start)
         if path:
             self.choose_folder(path)

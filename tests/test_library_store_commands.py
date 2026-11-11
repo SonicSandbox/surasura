@@ -2074,13 +2074,34 @@ def test_choice_1_titles_sent_to_current_after_the_last_one_sent_keep_the_order_
     assert store.ids("now")[:9] == a + b + c and rest == now      # (the Soon line counts files: Current's tail flows on)
     assert store.undo(third).notes == []               # the last one back: a move undone
     assert store.ids("now")[:6] == a + b and store.ids("goal")[:3] == c
-    store.set_tier(b, "soon")                          # the anchor left Current: the top, as before
+    store.set_tier(b, "goal")                          # the anchor left Current: the top, as before
     store.place(c, "top", after_id=b[-1])
     assert store.ids("now")[:6] == c + a
     store.place(b, "top", after_id=b[-1])              # an anchor inside the block: the top
     assert store.ids("now")[:3] == b
     store.place(goal[9:12], "top", after_id=999999)     # an anchor that isn't there at all: the top
     assert store.ids("now")[:3] == goal[9:12]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_choice_1_the_order_sent_holds_when_the_soon_line_runs_through_the_titles_sent(language):
+    """Review B1: Current is NOW and Soon. A long sort runs past the Soon line, so the last title sent ends below it
+    (tier `soon`); the next one goes after it there — never back to the top (eight titles came out 6 7 4 5 2 3 0 1).
+    The line stays where it is; each change says Current."""
+    store = migrated(language, shows=8, episodes=3)
+    store.set_soon_line(5)
+    titles = [store.ids("soon")[k:k + 3] for k in range(11, 35, 3)][:8]
+    titles = [t for t in titles if len(t) == 3]
+    assert len(titles) >= 6 and all(store.item(i)["tier"] == "soon" for t in titles for i in t)
+    after = None
+    for t in titles:
+        change = store.place(t, "top", after_id=after)
+        assert change is not None and change.to == "now"
+        after = t[-1]
+    current = [i for i in store.ids("now") + store.ids("soon") if any(i in t for t in titles)]
+    assert current == [i for t in titles for i in t], "in the order sent"
+    assert len(store.ids("now")) == 5 and _line_holds(store)
     store.close()
 
 

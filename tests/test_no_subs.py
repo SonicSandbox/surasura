@@ -583,6 +583,21 @@ def test_hatos_answer_never_writes_over_making(tmp_path):
         store.__exit__(None, None, None)
 
 
+def test_a_tidy_beside_a_hato_run_never_drops_its_looking_note(tmp_path):
+    """Why (Minato-SM): `tidy` (the tracks' worker) and hato's run (its own worker) now run side by side; a tidy whose
+    read of the waiting rows predates the run's LOOKING note never takes that note away — the run drops it at its end."""
+    store, data_dir, src, root, (video,) = _library("ja")
+    (item_id, rel, _a), = _items(store)
+    try:
+        no_subs._change(store, "ja", notes={rel: no_subs.LOOKING})
+        no_subs._change(store, "ja", live={})                        # a tidy that read no waiting row
+        assert no_subs.note(rel, "ja") == no_subs.LOOKING
+        no_subs._change(store, "ja", drop_if={rel: no_subs.LOOKING})  # the run's end
+        assert no_subs.note(rel, "ja") is None
+    finally:
+        store.__exit__(None, None, None)
+
+
 def test_a_video_hato_said_nothing_of_waits_an_hour(tmp_path):
     """Why (SHOULD 7): a path hato wrote another way, or a cut run, never means asking again at every look."""
     store, data_dir, src, root, videos = _library("ja", names=("01", "02"))

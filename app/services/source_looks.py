@@ -488,8 +488,11 @@ class SourceLooks:
 
     def _fill_tracks(self):
         """(The tracks' worker.) One fill with this thread's own store handle; whatever happens, the next look asks
-        again."""
+        again. A fill that went through asks hato after it (`_ask_hato`)."""
+        hato = False
         try:
+            if self._closing.is_set():                # closed meanwhile: no handle opened after its let-go
+                return
             store = self._store()
             if store is not None and not self._closing.is_set():
                 away = {root for root, reached in dict(self._reachable).items() if reached is False}
@@ -498,9 +501,9 @@ class SourceLooks:
                 if got.get("filled") or got.get("failed"):
                     print(f"Sources: subtitle tracks inside videos: {got}")
                 # Michi-NS: the rows' subtitle notes kept true (a row that waits no more, a video changed since);
-                # then hato, for those still waiting, on its own worker (`_ask_hato`)
+                # then hato, for those still waiting, on its own worker (below)
                 no_subs.tidy(store, self.language, away=away)
-                self._ask_hato()
+                hato = True
         except Exception as e:                        # never the window's fault: the next look asks again
             print(f"Sources: the videos' subtitle tracks wait for the next look: {e!r}")
         finally:
@@ -509,11 +512,15 @@ class SourceLooks:
                 again, self._tracks_again = self._tracks_again, False
             if again:
                 self._ask_tracks()
+            if hato:
+                self._ask_hato()                      # (after the flag: a fill asked meanwhile holds hato back)
 
     def _ask_hato(self):
         """Minato-SM: hato's run for the videos still waiting (`no_subs.find`) on a worker of its own, one at a time —
         a run can sit behind another hato run's lock for hours (`--wait`), and never holds the next track fill or look
-        meanwhile; an ask meanwhile is folded into one more after it."""
+        meanwhile; an ask meanwhile is folded into one more after it. A run starts only while no fill is queued or
+        running (that fill's end asks again): hato's list is fixed at its start, so it never holds a video whose own
+        track a fill is about to copy out."""
         with self._lock:
             if self._closing.is_set():
                 return
@@ -530,6 +537,10 @@ class SourceLooks:
         what it wrote beside their videos is taken in by those folders' next look (K5). Whatever happens, the next fill
         asks again."""
         try:
+            with self._lock:
+                held = self._tracking or self._closing.is_set()
+            if held:                                  # a fill first: its end asks hato again
+                return
             store = self._store()
             if store is not None and not self._closing.is_set():
                 away = {root for root, reached in dict(self._reachable).items() if reached is False}

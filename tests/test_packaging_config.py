@@ -208,11 +208,13 @@ def test_the_qt_files_the_window_never_uses_are_left_out_of_the_program(tmp_path
         "plugins/imageformats/qpdf.dll", "plugins/imageformats/qwebp.dll", "plugins/imageformats/QGIF.DLL",
         "plugins/platforms/qwindows.dll")]
     found.append((os.path.join("PyQt6", "Qt6", "bin", "QPDF.DLL"), "C:/elsewhere/QPDF.DLL", "BINARY"))
+    found.append(("opengl32sw.dll", "C:/another/opengl32sw.dll", "BINARY"))   # not Qt's: qt_never_bundle leaves it be
     collected = []
     _run_spec(tmp_path, json.loads(_source(CONFIG)), {}, binaries=found, collected=collected)
     main_binaries = collected[1]                        # COLLECT(exe, a.binaries, a.datas, cli_exe, …)
     kept = sorted(os.path.basename(dest) for dest, _src, _kind in main_binaries)
-    assert kept == ["QGIF.DLL", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Svg.dll", "qwebp.dll", "qwindows.dll"]
+    assert kept == ["QGIF.DLL", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Svg.dll", "opengl32sw.dll", "qwebp.dll",
+                    "qwindows.dll"]
 
 
 # --- build_config.json's shape ------------------------------------------------------------------------------------------

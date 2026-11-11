@@ -1995,7 +1995,7 @@ class NeedsYou(QObject):
     def _do_find_with_hato(self, entry, _line):
         """*Find them with hato* (NS-2: the one press, the first time): the yes kept (`no_subs.SETTING`, through the
         settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look — after it
-        the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+        the waiting videos go to hato on its own worker, after the look's track fill (`SourceLooks._ask_hato`)."""
         from app import no_subs
         settings = self.win.services.settings
         settings.set({no_subs.SETTING: True})

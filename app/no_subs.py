@@ -107,9 +107,10 @@ def _change(store, language, notes=None, drop_if=None, hato=None, offline_until=
     mark)); `drop_if` {rel: kind} — that note goes only while it is still that kind (another writer's newer note stays);
     `unless`: kinds a note of `notes` never writes over (hato's answer never over a MAKING); `hato` {video key:
     record}; `offline_until`; `live` {rel: video stats} (`tidy`: the rows waiting now) — a waiting row's note goes
-    once its row waits no more, a NO_SPEECH / UNREADABLE once its video changed (MADE notes stay). MAKING and LOOKING
-    carry this process's id: one a Surasura that quit or crashed left is no note at all (`_live`). The rows whose words
-    changed are drawn again (S19: only those)."""
+    once its row waits no more, a NO_SPEECH / UNREADABLE once its video changed (MADE notes stay, and LOOKING: its hato
+    run, beside `tidy` on another worker, drops it at its end). MAKING and LOOKING carry this process's id: one a
+    Surasura that quit or crashed left is no note at all (`_live`). The rows whose words changed are drawn again (S19:
+    only those)."""
     store_id = store.meta().get("store_id")
     with _state_lock:
         data = _load(language, store_id)
@@ -124,7 +125,7 @@ def _change(store, language, notes=None, drop_if=None, hato=None, offline_until=
                 continue
             data["notes"][rel] = _entry(value)
         if live is not None:
-            data["notes"] = {rel: v for rel, v in data["notes"].items() if v[0] == MADE or (
+            data["notes"] = {rel: v for rel, v in data["notes"].items() if v[0] in (MADE, LOOKING) or (
                 rel in live and (v[0] not in DONE_NOTES or len(v) < 3 or v[2] == live[rel]))}
         if hato:
             data["hato"].update(hato)

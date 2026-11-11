@@ -22,6 +22,7 @@ from tests.test_sources_scan import _drive, _empty, _fresh_module_state, _video,
 
 _SHOW = {"ja": "図書館の午後", "zh": "夜市小记"}
 WAIT_S = 30.0                                       # a bound, never a pause: every wait below ends on its event
+HELD_S = 600.0                                      # the stand-in's own bound: far past any wait of the test's
 NOTHING = {"asked": 0, "found": 0, "not_found": 0, "failed": 0, "roots": {}}
 
 
@@ -45,7 +46,7 @@ class _Hato:
                 self.events.append(("hato", self.runs))
             answer = self.answers.pop(0) if self.answers else dict(NOTHING)
         self.started.set()
-        deadline = time.monotonic() + WAIT_S
+        deadline = time.monotonic() + HELD_S
         while not self.free.wait(0.05):
             if stop():
                 with self._lock:
@@ -57,18 +58,25 @@ class _Hato:
 
 
 class _Fills:
-    """`tracks.fill`'s stand-in: counts the fills and lets the test wait for the n-th."""
+    """`tracks.fill`'s stand-in: counts the fills and lets the test wait for the n-th; a fill from `hold_from` on
+    waits until `go` is set (a long copy under way)."""
 
-    def __init__(self, events=None):
-        self.n, self.events = 0, events
+    def __init__(self, events=None, hold_from=None):
+        self.n, self.events, self.hold_from = 0, events, hold_from
+        self.go = threading.Event()
         self._cv = threading.Condition()
 
     def __call__(self, store, language, settings=None, stop=None, away=(), **_kw):
         with self._cv:
             self.n += 1
+            n = self.n
             if self.events is not None:
-                self.events.append(("fill", self.n))
+                self.events.append(("fill", n))
             self._cv.notify_all()
+        if self.hold_from is not None and n >= self.hold_from:
+            self.go.wait(HELD_S)
+        if self.events is not None:
+            self.events.append(("filled", n))
         return {}
 
     def reach(self, n, timeout=WAIT_S):
@@ -147,8 +155,35 @@ def test_hato_is_asked_only_after_a_fill_has_had_its_turn(language, monkeypatch)
     try:
         looks.asked(refreshed=True)
         assert looks.idle(WAIT_S)
-        assert events == [("fill", 1), ("hato", 1)]
+        assert events == [("fill", 1), ("filled", 1), ("hato", 1)]
     finally:
+        looks.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_hato_never_starts_while_a_fill_is_queued_or_running(language, monkeypatch):
+    """Why (the adversary's round 1): hato's list is fixed at its start and its wait can last hours — a run started
+    while a fill was copying a new video's own track would hold that video too, and later write a subtitle beside a
+    video the library already filled. A hato ask meanwhile (a folded re-run) waits for that fill's end, which asks
+    again."""
+    events = []
+    hato, fills = _Hato(events=events), _Fills(events, hold_from=2)
+    hato.free.set()
+    looks, _store, _data_dir, _root = _looks(language, monkeypatch, hato, fills)
+    try:
+        looks.asked(refreshed=True)
+        assert looks.idle(WAIT_S) and hato.runs == 1
+        looks.asked(refreshed=True)
+        assert fills.reach(2)                        # the second fill copies, held
+        looks._ask_hato()                            # as a run folded in meanwhile would ask
+        assert looks._hato.idle(WAIT_S)
+        assert hato.runs == 1, "hato started while a fill was under way"
+        fills.go.set()
+        assert looks.idle(WAIT_S)
+        assert hato.runs == 2
+        assert events.index(("filled", 2)) < events.index(("hato", 2))
+    finally:
+        fills.go.set()
         looks.close()
 
 

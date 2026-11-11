@@ -207,7 +207,8 @@ a = Analysis(
 # packaging/licenses/PyQt6-Qt6/Qt-third-party-notices.txt lists. package_app.py --check refuses a program carrying one.
 qt_never_bundle = build_config.get("qt_never_bundle") if isinstance(build_config, dict) else None
 qt_never = {n.lower() for n in qt_never_bundle if isinstance(n, str)} if isinstance(qt_never_bundle, list) else set()
-a.binaries = [b for b in a.binaries if os.path.basename(b[0]).lower() not in qt_never]
+a.binaries = [b for b in a.binaries if not (b[0].replace('\\', '/').startswith('PyQt6/')
+                                            and os.path.basename(b[0]).lower() in qt_never)]
 
 pyz = PYZ(a.pure)
 

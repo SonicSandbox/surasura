@@ -136,7 +136,7 @@ def world(qapp):
 
 def _gone_row(language, root=13, items=12, finished=False, found_in=()):
     title = names(language)[71]
-    return {"id": root, "path": os.path.join("C:\\Users\\Michael\\Downloads", title), "items": items, "on": True,
+    return {"id": root, "path": os.path.join("C:\\Users\\Takashi\\Downloads", title), "items": items, "on": True,
             "reachable": False, "gone": True, "shows": [title], "finished": finished, "found_in": list(found_in)}
 
 

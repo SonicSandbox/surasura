@@ -7,10 +7,11 @@ the word isn't there as written: 走る in 走った, 持つ in 持っていま�
 in 感じます (UniDic's 感ずる), a Simplified card's word in a Traditional sentence. Two different words that could each be
 it are never guessed between: the card stays where its sentence can't place it, and the preview names it.
 
-The proof on real cards: `tests/Test Resources/ja/testAnki.apkg` holds 200 sentences marked the way Anki Miner marks
-them. With each mark taken off, the word found by its forms must leave Junban the same count of unknown words beside
-the card as the mark did — every sentence but the two whose mark sits on another word than the card's (a deck's own
-slip: <b>未だ</b> on a 終わる card).
+The proof on a deck's cards: `tests/Test Resources/ja/testAnki.apkg` (written for these tests, 2026-11-11) holds 200
+sentences marked the way Anki Miner marks them, 86 of them on a form that isn't the card's word as written. With each
+mark taken off, the word found by its forms must leave Junban the same count of unknown words beside the card as the
+mark did — every sentence but the two whose mark sits on another word than the card's (a deck's own slip:
+<b>結局</b> on a 終わる card).
 
 Backfill reads a card's word from its word field and compares whole sentences (例文), so no Backfill step looks for the
 word inside a sentence: the fallback has no Backfill call site (as-built note, RUNBOOK P1.4).
@@ -40,7 +41,7 @@ def tokenizer():
 
 @pytest.fixture(scope="module")
 def marked_cards(tmp_path_factory):
-    """(card word, its sentence with Anki Miner's <b> mark) for every marked sentence note in the real deck."""
+    """(card word, its sentence with Anki Miner's <b> mark) for every marked sentence note in the fixture deck."""
     folder = tmp_path_factory.mktemp("apkg")
     with zipfile.ZipFile(_APKG) as package:
         package.extract("collection.anki2", str(folder))
@@ -79,9 +80,9 @@ def test_on_200_real_cards_the_word_found_by_its_forms_counts_what_the_mark_coun
         ours = anki_match.unknowns_beside(word, connect.bolded(got), tokenizer.tokenize, unknown, units, skip)
         if marked != ours:
             differ.append((word, raw))
-    assert found == 72
+    assert found == 86
     # Only where the deck marked another word than the card's.
-    assert differ == [("終わる", "宿題は<b>未だ</b>終わっていません。"), ("分かる", "この<b>言葉</b>の意味が分かりません。")]
+    assert differ == [("終わる", "会議は<b>結局</b>終わりませんでした。"), ("知る", "その<b>店</b>の名前を知りませんでした。")]
 
 
 @pytest.mark.parametrize("sentence, word, span", [

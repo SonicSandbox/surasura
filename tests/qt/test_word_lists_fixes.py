@@ -30,7 +30,7 @@ HANG = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 @pytest.fixture
 def known_file(ja_resources_dir):
-    """The real Migaku export (11,176 entries, 46 IGNORED: the Ignore list's "known words file" rows)."""
+    """The Migaku-shaped export (2,977 entries, 16 IGNORED: the Ignore list's "known words file" rows)."""
     dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), dst)
@@ -136,7 +136,7 @@ def test_a_paste_never_loads_the_tokenizer_in_the_windows_process(ja_resources_d
     # analyzer (never the tokenizer: fugashi and jieba load lazily) — not the paste's doing: the paste adds nothing.
     assert report["zh"]["after"] == report["zh"]["before"], report
     assert not {"fugashi", "jieba", "unidic_lite"} & set(report["zh"]["after"]), report
-    assert "冒険" in report["ja"]["chips"] and "特朗普" in report["zh"]["chips"]
+    assert "冒険" in report["ja"]["chips"] and "孙中山" in report["zh"]["chips"]
 
 
 def test_the_window_finds_through_the_child_never_words_in(main, monkeypatch):

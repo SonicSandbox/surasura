@@ -18,7 +18,7 @@ from app.services import word_lists
 
 @pytest.fixture
 def known_file(ja_resources_dir):
-    """The real Migaku export (11,176 entries, 46 IGNORED) as this language's KnownWord.json."""
+    """The Migaku-shaped export (2,977 entries, 16 IGNORED) as this language's KnownWord.json."""
     import shutil
     dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -77,7 +77,7 @@ def test_the_childs_chinese_words_equal_the_in_process_read(zh_resources_dir, ow
     child = word_lists.find_words(text, "zh", "blacklist")
     assert child == word_lists.words_in(text, "zh", "blacklist")
     marks = {c.word: c.status for c in child}
-    assert marks["台湾"] == "listed" and "特朗普" in marks
+    assert marks["台湾"] == "listed" and "孙中山" in marks
 
 
 def test_the_child_reads_the_settings_itself_and_the_callers_logic_never_changes(ja_resources_dir, own_logic):

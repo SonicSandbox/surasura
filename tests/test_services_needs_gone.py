@@ -17,7 +17,7 @@ from tests.test_library_store_support import LANGUAGES, names
 
 def _row(language, root=13, items=12, shows=None, finished=False, found_in=(), where=("Downloads",)):
     title = names(language)[71]
-    path = os.path.join("C:\\Users\\Michael", *where, title)
+    path = os.path.join("C:\\Users\\Takashi", *where, title)
     return {"id": root, "path": path, "items": items, "on": True, "reachable": False, "gone": True,
             "shows": list(shows if shows is not None else [title]), "finished": finished, "found_in": list(found_in)}
 

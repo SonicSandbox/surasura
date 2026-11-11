@@ -84,16 +84,16 @@ def test_the_8_3_short_form_of_a_home_is_its_home_too():
 
 
 def test_a_user_name_goes_as_a_whole_word_only_and_in_any_case():
-    ident = person(users=["Michael"])
-    assert ident.scrub("Michaelson met Michael, MICHAEL and michael2") == "Michaelson met <you>, <you> and michael2"
-    assert ident.scrub("_Michael_ (Michael) Michael.txt") == "_<you>_ (<you>) <you>.txt"
+    ident = person(users=["Takashi"])
+    assert ident.scrub("Takashison met Takashi, TAKASHI and takashi2") == "Takashison met <you>, <you> and takashi2"
+    assert ident.scrub("_Takashi_ (Takashi) Takashi.txt") == "_<you>_ (<you>) <you>.txt"
 
 
 @pytest.mark.parametrize("gap", ["%20", "\\n", "\\t", "\\x20", "\\u00e9", "%2F", "\\x5c", "\\u005c"])
 def test_an_escape_beside_a_name_is_a_gap_never_a_letter(gap):
-    """`%20Michael` is ' Michael': the C of %2C or the n of \\n is an escape's, not part of a word."""
-    ident = person(users=["Michael"])
-    assert ident.scrub(f"x{gap}Michael{gap}y") == f"x{gap}<you>{gap}y"
+    """`%20Takashi` is ' Takashi': the C of %2C or the n of \\n is an escape's, not part of a word."""
+    ident = person(users=["Takashi"])
+    assert ident.scrub(f"x{gap}Takashi{gap}y") == f"x{gap}<you>{gap}y"
 
 
 def test_a_name_in_other_letters_goes_wherever_it_stands():
@@ -398,8 +398,8 @@ def test_a_home_written_with_escaped_separators_loses_its_name(sep):
 
 def test_a_home_inside_another_homes_path_loses_both_names():
     """A test root (or a roaming profile) under a real home: the kept parent is scrubbed in its turn."""
-    ident = scrub.Identity(homes=[r"C:\Users\michaelx", r"C:\Users\michaelx\Temp\Users\Zoë Tanaka-Probe"])
-    assert ident.scrub(r"C:\Users\michaelx\Temp\Users\Zoë Tanaka-Probe\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
+    ident = scrub.Identity(homes=[r"C:\Users\takashix", r"C:\Users\takashix\Temp\Users\Zoë Tanaka-Probe"])
+    assert ident.scrub(r"C:\Users\takashix\Temp\Users\Zoë Tanaka-Probe\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
 
 
 def test_a_profile_written_with_upper_case_hex_escapes_still_goes():
@@ -542,8 +542,8 @@ def test_a_one_letter_home_is_found_through_every_separator_and_drive_form(writt
 
 
 def test_the_longer_home_is_tried_first_so_a_home_inside_another_is_found_whole():
-    ident = scrub.Identity(homes=[r"C:\Users\michaelx", r"C:\Users\michaelx\Temp\Users\z"])
-    assert ident.scrub(r"C:\Users\michaelx\Temp\Users\z\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
+    ident = scrub.Identity(homes=[r"C:\Users\takashix", r"C:\Users\takashix\Temp\Users\z"])
+    assert ident.scrub(r"C:\Users\takashix\Temp\Users\z\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
 
 
 def test_a_redirected_home_drive_is_a_home_beside_the_profile(monkeypatch, tmp_path):

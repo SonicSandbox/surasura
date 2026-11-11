@@ -192,3 +192,44 @@ def test_the_word_audio_row_shows_for_chinese_with_connect_on_only_and_is_off_by
     assert not row.when({"connect_enabled": False}, "zh", set())
     assert "Google" in settings_strings.ROWS["connect_zh_word_audio"][1], "the one line says where the word goes"
     assert settings_manager.DEFAULT_SETTINGS["connect_zh_word_audio"] is False
+
+
+@pytest.mark.parametrize("settings, lang, on", [({}, "zh", False), ({"connect_zh_word_audio": True}, "zh", True),
+                                                ({}, "ja", True)])
+def test_connects_mine_step_hands_the_word_audio_switch_to_anki_miner_as_settings_json_says_now(monkeypatch, settings,
+                                                                                               lang, on):
+    """The runner's mine step reads the switch from settings.json as it is now (`Steps._settings`) and hands it to
+    `mine_batch`: a Chinese run asks for word audio only while it is on."""
+    from types import SimpleNamespace
+
+    from app.cli import verbs
+    from app.connect import anki_miner, runner
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "am.exe")
+    monkeypatch.setattr(verbs, "_anki_miner_setup",
+                        lambda loaded, lang, run_dir, held=None: (None, None, SimpleNamespace(word="Expression")))
+    monkeypatch.setattr(verbs, "settings", lambda: dict(settings))
+    seen = {}
+    monkeypatch.setattr(anki_miner, "mine_batch",
+                        lambda *a, **k: seen.update(k) or {"outcomes": [], "app": "3.12.0"})
+    picked = {"video": "v.mp4", "subtitle": "v.srt", "offset": 0.0, "profile": None}
+    runner.Steps({}).mine(lang, {"id": 1, "item_id": 1, "tag": "zh-1"}, picked, [{"word": "夜市", "reading": ""}], 1)
+    assert seen["word_audio"] is on
+
+
+@pytest.mark.parametrize("word_audio", [False, True])
+def test_the_mine_call_writes_the_switch_into_its_run_file(tmp_path, monkeypatch, word_audio):
+    from app.connect import anki_miner
+    info = {"app": "3.12.0", "features": ["named-words-whitelisted", "word-from-line", "bold-target"]}
+    monkeypatch.setattr(anki_miner, "preflight", lambda *a, **k: (info, "surasura"))
+    sent = []
+    monkeypatch.setattr(anki_miner.runfile, "write", lambda path, data: sent.append(data) or path)
+
+    class Sent(Exception):
+        pass
+    monkeypatch.setattr(anki_miner, "result_names", lambda *a: (_ for _ in ()).throw(Sent()))
+    words = [{"word": "夜市", "reading": "", "surface": "夜市", "line_start": 4.1, "line_expansion": [0, 0],
+              "sent": ["夜市"], "predicted_class": None}]
+    with pytest.raises(Sent):
+        anki_miner._mine_held("am.exe", "zh", "zhc-1", "v.mp4", "v.srt", words, MAPPING, "Surasura", str(tmp_path),
+                              1, 0.0, 60, word_audio=word_audio)
+    assert sent[0]["config"]["anki_fields"]["expression_audio"] == ("ExpressionAudio" if word_audio else "")

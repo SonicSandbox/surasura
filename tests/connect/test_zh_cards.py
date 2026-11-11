@@ -233,3 +233,26 @@ def test_the_mine_call_writes_the_switch_into_its_run_file(tmp_path, monkeypatch
         anki_miner._mine_held("am.exe", "zh", "zhc-1", "v.mp4", "v.srt", words, MAPPING, "Surasura", str(tmp_path),
                               1, 0.0, 60, word_audio=word_audio)
     assert sent[0]["config"]["anki_fields"]["expression_audio"] == ("ExpressionAudio" if word_audio else "")
+
+
+def test_a_field_the_learner_gave_one_role_is_never_also_matched_by_name_to_another():
+    """Mutant P3: the learner put the meaning in the note type's "Frequency" field; the frequency role, matched by
+    name and not shown in the map, must not take it too (Anki Miner refuses one field for two roles)."""
+    anki = Anki(["中文::句子"], {"中文卡": ["汉字", "例句", "Frequency"]})
+    given = {"sentence": "例句", "definition": "Frequency"}
+    what, values = MS.plan(ZH, "zh", FRESH_ZH, ALL, anki, {"note_type": "中文卡", "fields": given})
+    fields = values["anki_fields"]
+    assert what == "write" and fields["definition"] == "Frequency" and fields["frequency"] == ""
+    taken = [f for f in fields.values() if f]
+    assert len(taken) == len(set(taken))
+
+
+@pytest.mark.parametrize("kana_notes, total, mostly", [(2, 3, True), (1, 2, False), (0, 0, False), (3, 3, True)])
+def test_mostly_kana_is_more_than_half_of_the_note_types_newest_notes(monkeypatch, kana_notes, total, mostly):
+    """Mutant B3: Backfill's own sign of a Japanese note type is MORE than half its notes with kana — one in two (a
+    Chinese deck with a stray の) stays Chinese."""
+    notes = [{"fields": {"Expression": {"value": "夜市" if i >= kana_notes else "よる"},
+                         "Sentence": {"value": "我们去夜市。"}}} for i in range(total)]
+    reads = MS.AnkiReads("http://127.0.0.1:8765")
+    monkeypatch.setattr(reads, "_invoke", lambda action, **p: list(range(total)) if action == "findNotes" else notes)
+    assert reads.mostly_kana("中文卡") is mostly

@@ -892,7 +892,10 @@ def test_a_preset_note_type_needs_no_field_saying_but_its_romaji_pitch_is_said(w
 def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_lapis_is_never_named_chinese(world):
     """Zh-C: pitch is Japanese-only (Anki Miner 3.12 stops a Chinese run on a mapped pitch field): never mapped, never
     said, for Chinese. Lapis is a Japanese preset: never named Chinese for Backfill — the learner's Japanese Lapis
-    cards would no longer be filled (review MUST)."""
+    cards would no longer be filled (review MUST) — by its name alone: Anki says none of its notes are kana here
+    (mutant B1)."""
+    world["anki"] = KanaAnki(["日本語::Mining", "中文::句子"], {"Basic": BASIC, "Lapis": LAPIS},
+                             {"中文::句子": "Lapis", "日本語::Mining": "Lapis"})
     saves = []
 
     def save(changes, update=None):

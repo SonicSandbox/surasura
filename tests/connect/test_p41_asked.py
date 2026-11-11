@@ -593,7 +593,7 @@ def test_connect_off_queues_nothing_for_an_ask(tmp_path):
 
 
 def test_a_chinese_ask_is_mined_like_a_japanese_one(tmp_path):
-    """Zh-C (2026-11-12): *Mine this* on a Chinese episode makes its cards — no *Chinese cards come later* any more."""
+    """Zh-C: *Mine this* on a Chinese episode makes its cards — no *Chinese cards come later* any more."""
     ids, kinds = _library("zh")
     below = _srt(ids, kinds)[-1]                        # the night-market vlog's subtitle: an episode
     _ask([below], "zh")

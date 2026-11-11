@@ -1744,7 +1744,7 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
 
 
 def test_zh_s_the_cards_page_promises_chinese_cards_with_pinyin_and_japanese_gets_its_own_line_back(make):
-    """Zh-S (2026-11-09), then Zh-C (2026-11-12): Connect makes Chinese cards now, so the Chinese cards page promises
+    """Zh-S (2026-11-09), then Zh-C: Connect makes Chinese cards now, so the Chinese cards page promises
     them — the line, its audio, a picture and the word's pinyin — and page 1's tip says "your cards in Chinese"
     again; never "Japanese only"."""
     wiz, *_ = make()

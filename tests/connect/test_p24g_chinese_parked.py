@@ -1,7 +1,7 @@
 """A Chinese job a 3.0.x Connect parked (P2.4 mutant D04; P1.5 06-edges E24) is mined at the next start (Zh-C).
 
 Rule before Zh-C: while Anki Miner could not make Chinese cards, a Chinese job was parked in the ledger as waiting for
-Chinese (`runner.CHINESE`). Since Zh-C (2026-11-12, Anki Miner 3.12's Chinese) Connect makes Chinese cards
+Chinese (`runner.CHINESE`). Since Zh-C (Anki Miner 3.12's Chinese) Connect makes Chinese cards
 (`runner.CARD_LANGUAGES`): a job a 3.0.x ledger still holds with that reason is an open job like any waiting one.
 
 What a wrong answer would cost: a Chinese learner who placed episodes under 3.0.x never gets their cards, the row

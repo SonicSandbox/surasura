@@ -51,7 +51,7 @@ def test_one_placement_goes_end_to_end_and_every_step_is_recorded(tmp_path, ledg
 
 
 def test_chinese_goes_end_to_end_like_japanese_since_anki_miner_3_12(tmp_path, ledger):
-    """Zh-C (2026-11-12): Connect makes Chinese cards — the same steps, Chinese words (夜市, 牛肉面: the night-market
+    """Zh-C: Connect makes Chinese cards — the same steps, Chinese words (夜市, 牛肉面: the night-market
     vlog's), never parked behind *Chinese cards come later* again."""
     words = {"1": [("夜市", ""), ("牛肉面", "")]}
     steps, summary = _run(tmp_path, ledger, {"line": {"zh": [1]}, "queue": {"zh": [1]}, "words": words},

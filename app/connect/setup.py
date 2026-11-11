@@ -71,10 +71,10 @@ UPDATE_DO = ("Update Anki Miner from Surasura (Settings → Anki & mining): its 
 UPDATE_PROFILE_DO = ("Choose a profile Anki Miner has in Surasura's settings (Anki & mining → Anki Miner profile), or "
                      "update Anki Miner from Surasura so Surasura can make it")
 ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not installed", "speech_model": "not installed",
-              "ocr": "not installed", "video_ocr": "not installed",
-              # Zh-C (zh-smoke #6): Anki Miner's own words send you to its window's Mining Language; Finish its setup
-              # downloads it (language_pack is only a language's whose tools Anki Miner fetches: Chinese)
-              "language_pack": "its Chinese reading tools aren't downloaded yet (about 23 MB)"}
+              "ocr": "not installed", "video_ocr": "not installed"}
+# Zh-C (zh-smoke #6): a language's own words for an item, where Anki Miner's send you to its window (its Chinese pack:
+# "Download it in Settings -> Mining Language") — Finish its setup downloads it; another language keeps Anki Miner's
+LANGUAGE_ITEM_WORDS = {("zh", "language_pack"): "its Chinese reading tools aren't downloaded yet (about 23 MB)"}
 UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 
@@ -368,10 +368,12 @@ def _miner_error(id_, e):
                   "moment; if it still doesn't answer, update Anki Miner from Surasura (Settings → Anki & mining)")
 
 
-def _named(items):
+def _named(items, language=None):
     """`check` items as the line names them: Anki Miner's own words, but Surasura's where its words send you to its
-    window (A5F2: its ffmpeg message says "set its location in Anki Miner's settings")."""
-    return "; ".join(f"{name}: {ITEM_WORDS.get(name) or item.get('message') or 'not ready'}"
+    window (A5F2: its ffmpeg message says "set its location in Anki Miner's settings"; Zh-C: its Chinese pack's,
+    `LANGUAGE_ITEM_WORDS`)."""
+    return "; ".join(f"{name}: " + (LANGUAGE_ITEM_WORDS.get((language, name)) or ITEM_WORDS.get(name)
+                                    or item.get("message") or "not ready")
                      for name, item in items.items())
 
 
@@ -454,7 +456,7 @@ def _anki_miner(settings, language, answered):
         # A4M1-2 / A4M1-2b (leans taken, PROVISIONAL): what Anki Miner's own `setup` installs and what its
         # `settings-import` sets (the deck, note type and fields), Surasura does for you
         # (`services.anki_miner_setup.finish_setup`) — never "open Anki Miner"
-        named = _named(own)
+        named = _named(own, language)
         ours = anki_miner.ours(info)
         rest = [name_ for name_ in own if name_ not in ours]
         where = set(own) & ours & anki_miner.SETTINGS_ITEMS
@@ -475,7 +477,7 @@ def _anki_miner(settings, language, answered):
     elif own:
         # A5F2: what neither verb of this Anki Miner sets (it names neither, or its ffmpeg is missing) comes with its
         # installer: Surasura's own update, never Anki Miner's window
-        named = _named(own)
+        named = _named(own, language)
         check = _check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).", UPDATE_DO)
         check["update"] = True
         out.append(check)

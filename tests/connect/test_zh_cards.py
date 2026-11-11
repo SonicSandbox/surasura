@@ -1,4 +1,4 @@
-"""Chinese cards through Anki Miner 3.12 (Zh-C, 2026-11-12; Sonic: "Yes to the Chinese leans, use his card although
+"""Chinese cards through Anki Miner 3.12 (Zh-C; Sonic: "Yes to the Chinese leans, use his card although
 they may have their own so they can map it"; the 3.0 plan's `tracks/pipeline/work/chinese-cards/`).
 
 - **The fields** (`miner_settings.fields_for(language="zh")`): Anki Miner Note's Pinyin, MeasureWord and Traditional

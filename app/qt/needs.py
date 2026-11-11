@@ -246,7 +246,7 @@ def _label(text, name, parent, wrap=True):
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them", "no_audiobook")
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
@@ -513,6 +513,16 @@ def _connect_callable(module, name):
         return None
 
 
+def _ai_audio_on(settings):
+    """(A worker.) Iro-AA: the AI voice's beta on, installed and its writer there (`modules.irodori.on`: settings + a
+    file look) — the book's *Make AI audio (beta)* shown; the module absent or failing: never."""
+    try:
+        from modules import irodori
+        return bool(irodori.on(settings))
+    except Exception:
+        return False
+
+
 def _find_miner(settings):
     """(A worker.) Row 13: whether setup's *Make cards* can be offered — Anki Miner as the one look finds it
     (`services.tools_found`, B2-7)."""
@@ -767,7 +777,10 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick"),
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
                               "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
-                              "book_audiobook": _connect_callable("actions", "book_audiobook")}     # Kura-AB2
+                              "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
+                              "book_ai_audio": _connect_callable("actions", "book_ai_audio")}       # Iro-AA
+        self.ai_audio_on = _ai_audio_on          # Iro-AA (a worker; tests replace it)
+        self._ai_audio = False                   # ... its last answer, left by the gather for `has`
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -937,7 +950,7 @@ class NeedsYou(QObject):
         view, failures, lang, data_dir = self.view, self.failures, self.language, self.data_dir
         read_connect, read_asks, find_offline, read_settings = (self.read_connect, self.read_asks,
                                                                  self.find_offline, self.read_settings)
-        find_miner = self.find_miner
+        find_miner, ai_audio_on = self.find_miner, self.ai_audio_on
         gone_folders = self.gone_folders
         library = self._library()
         emptied = self._emptied()
@@ -946,6 +959,8 @@ class NeedsYou(QObject):
         def gather():
             settings = read_settings() or {}
             connect = read_connect(lang) if settings.get("connect_enabled") else None
+            # Iro-AA: read here, on the worker; the window's thread reads only the bool it leaves (`has`)
+            self._ai_audio = bool(ai_audio_on(settings)) if connect is not None else False
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()
@@ -1053,6 +1068,8 @@ class NeedsYou(QObject):
             return self.connect_calls.get("speech_model") is not None
         if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
             return self.connect_calls.get("book_audiobook") is not None
+        if name == "ai_audio":                       # Iro-AA: ... and the AI voice's, while its beta is on + installed
+            return self._ai_audio and self.connect_calls.get("book_ai_audio") is not None
         if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
@@ -1577,6 +1594,24 @@ class NeedsYou(QObject):
                 self._stays("no_audiobook", entry)
             self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("no_audiobook", entry, run, then=done)
+
+    def _do_ai_audio(self, entry, _line):
+        """Iro-AA *Make AI audio (beta)*: the book's answer kept (`actions.book_ai_audio`), Connect kicked."""
+        answer, kick, lang, read_settings = (self.connect_calls["book_ai_audio"], self.connect_calls.get("kick"),
+                                             self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = answer(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("ai_audio", entry)
+            self._connect_done(strings.NEEDS_AI_AUDIO if ok else strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press("ai_audio", entry, run, then=done)
 
     # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
     def _do_get_speech_model(self, entry, _line):

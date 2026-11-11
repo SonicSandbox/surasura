@@ -121,7 +121,7 @@ SECTIONS = {
 GROUPS = {
     "counts_as_known": "What counts as known", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
-    "houseki": "Houseki tools", "not_on_list": "Cards not on your list",
+    "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "beta": "Beta",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -564,6 +564,10 @@ ROWS = {
     "auto_update_enabled": ("Update automatically", "One click for small releases",
                             "Offer one-click in-app updates for small releases. Big ones always download by hand",
                             "update automatic"),
+    # Iro-AA (PROVISIONAL words): the AI voice's beta
+    "ai_audio": ("AI audio for cards without audio", "An AI voice made on this computer reads the sentence of a card "
+                 "that has no sentence audio. Never over audio a card already has",
+                 "Try the AI voice (beta) for cards without sentence audio", "ai audio voice tts beta irodori sentence"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
     # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the

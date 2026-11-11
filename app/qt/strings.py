@@ -1370,6 +1370,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                              "takes it back"),
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
+    # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
+    "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
+                                         "card's sentence. Its audiobook, if you have it, sounds better"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1507,6 +1510,7 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"

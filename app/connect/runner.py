@@ -122,6 +122,12 @@ BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry th
                   "book without audio.")
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
+# Iro-AA (PROVISIONAL): *Make AI audio (beta)* — mined as *Mine without audio*, then each part's new cards queued for the
+# AI voice (`modules.irodori`, the beta: off by default, absent in a build without it) when the part fills
+# (`_queue_ai_audio`, the job marked `AI_JOB<id>` at its pick), their audio made once the run's jobs are through
+# (`_ai_audio`): only an empty SentenceAudio, through the shared writer, one Undo a part
+AI_AUDIO = "ai"
+AI_JOB = "ai_audio_job:"
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -554,6 +560,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
                 continue
+            if not only_asked:
+                _ai_audio(steps, lang)  # Iro-AA: after every part — AI audio never holds one back; never on battery
             break
         failed = None
         try:
@@ -1063,6 +1071,7 @@ def _line_up(steps, ledger, lang, job, book):
     if got and got.get("book_ask"):
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
+        _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
@@ -1074,6 +1083,47 @@ def _line_up(steps, ledger, lang, job, book):
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     return got.get("lineup")
+
+
+def _mark_ai_audio(ledger, lang, job, got):
+    """Iro-AA: a part of a book answered *Make AI audio (beta)* — its job marked (`AI_JOB<id>`), so its new cards are
+    queued for the AI voice when it fills. Read first: an unmarked book writes nothing."""
+    key, epub = got.get("key"), got.get("epub")
+    keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
+    if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
+        return
+    mark = f"{AI_JOB}{int(job['id'])}"
+    if _meta(ledger, mark) is None:
+        with ledger.transaction():
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
+
+
+def _queue_ai_audio(steps, ledger, lang, job, ids):
+    """Iro-AA: the marked part's new cards handed to the AI voice's waiting list (`steps.queue_ai_audio`), its mark
+    gone. A failure is logged: the cards stay as Anki Miner made them (without audio), never a reason to stop."""
+    mark = f"{AI_JOB}{int(job['id'])}"
+    if _meta(ledger, mark) is None:
+        return
+    queue = getattr(steps, "queue_ai_audio", None)
+    try:
+        if queue is not None:
+            queue(lang, ids, job)
+        with ledger.transaction():
+            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (mark,))
+    except Exception:
+        log.warning("Connect couldn't queue job %s's cards for AI audio", job["id"], exc_info=True)
+
+
+def _ai_audio(steps, lang):
+    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`),
+    stopping between two sentences for Connect's stop, an update staged or the battery. Never raises."""
+    make = getattr(steps, "ai_audio", None)
+    if make is None or _stop(steps):
+        return
+    try:
+        make(lang, should_stop=lambda: bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)()))
+    except Exception:
+        log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
 
 
 def book_key(epub, sha256=None):
@@ -1863,6 +1913,7 @@ def _fill(steps, ledger, lang, job):
     if not ids:
         ledger.set_state(jid, "ordering")
         return
+    _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2370,6 +2421,27 @@ class Steps:
     def on_battery(self):
         from app.connect import power
         return power.on_battery()
+
+    def queue_ai_audio(self, lang, note_ids, job):
+        """Iro-AA: a book part's new cards on the AI voice's waiting list (`modules.irodori`; absent: nothing)."""
+        try:
+            from modules import irodori
+        except ImportError:
+            return 0
+        return irodori.queue_notes(lang, note_ids, source={"job": job.get("id"), "item": job.get("item_id")})
+
+    def ai_audio(self, lang, should_stop):
+        """Iro-AA: the AI voice's waiting list made — the beta on, the voice installed, the shared writer there; else it
+        waits (`irodori.run_queue`). The cards it wrote: the session's sync clock, as any new write (S3)."""
+        try:
+            from modules import irodori
+        except ImportError:
+            return None
+        got = irodori.run_queue(self.loaded, lang, should_stop=should_stop)
+        if got.get("written"):
+            log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
+            self.after_write(lang)
+        return got
 
     def after_write(self, lang):
         """New cards made: the session's sync clock (S3; P2.3's rule), then the Anki backlog read again, so the

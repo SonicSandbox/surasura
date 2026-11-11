@@ -1752,9 +1752,15 @@ class ShellWindow(QMainWindow):
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach,
-                       settings_sources.attach,                        # --- SRC W1b: *Library folders*
-                       settings_io.attach):                            # --- a6: *Your settings*
+        attaches = [settings_connect.attach, settings_rules.attach, settings_store.attach,
+                    settings_sources.attach,                           # --- SRC W1b: *Library folders*
+                    settings_io.attach]                                # --- a6: *Your settings*
+        try:                                                           # --- Iro-AA: the AI voice's beta row
+            from modules.irodori import qt_settings
+            attaches.append(qt_settings.attach)
+        except ImportError:
+            pass
+        for attach in attaches:
             try:
                 attach(page)
             except Exception as e:                        # one package's rows never keep the page from opening

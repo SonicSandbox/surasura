@@ -85,11 +85,13 @@ PLACED = {
                                             # the fast re-plan's preview (E1.1 04 §1): 2.x's runs read it for the plan
                                             # file (3.0 writes the plan always), which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
+    "enable_irodori": "neither", "irodori_voice": "neither",      # Iro-AA: the AI voice's beta writes Anki, no run
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.
 OWNERS = (("junban_", "modules.junban"), ("enable_junban", "modules.junban"), ("koe_", "modules.koe"),
           ("enable_koe", "modules.koe"), ("reels_", "modules.reels"), ("enable_reels", "modules.reels"),
-          ("enable_youtube_", "modules.youtube_downloader"), ("youtube_", "modules.youtube_downloader"))
+          ("enable_youtube_", "modules.youtube_downloader"), ("youtube_", "modules.youtube_downloader"),
+          ("irodori_", "modules.irodori"), ("enable_irodori", "modules.irodori"))
 
 
 def _installed(path):

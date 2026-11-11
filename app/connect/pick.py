@@ -30,6 +30,11 @@ line it repeats, and the card runs to its last copy, so the clip ends with the s
 rule, capped. Lines are counted as Anki Miner counts them: since 3.10.1 it drops a line holding none of the
 language's script (an English sign, a ♪～).
 
+A book's or a text's line (Z-9, Michi-BS, Mattias's report 2026-11-12) is its sentence, 。！？ inside 「」 included —
+Anki Miner's own unit is a whole 「…」 speech, and it cuts that unit to the sentence named only when it holds it exactly
+(0xzerolight/anki_miner#148): so the sentence goes as the book writes it (`cues.reading`), a quote mark left alone at
+either end dropped (`book_line`), and one within the learner's *Length* first (PROVISIONAL; never cut).
+
 The card front (IS:233–236): a verb, adjective or helper verb by its dictionary form as written, anything else exactly
 as written; Surasura's `Word` goes as a second entry when it differs and no word in the episode is written that way
 (the homograph guard: 帰る's Word is 返る); never for a set phrase, whose front is the occurrence's own words with the
@@ -67,6 +72,8 @@ _FINISHED = frozenset("。｡．.！？!?…‥")
 # Card lines (rule 1): what a Japanese line's end says about the next line
 _RUNS_ON_MARKS = frozenset("➡➨→⇒➔►―—、，,")        # an arrow, a dash, a comma: the sentence goes on
 _CLOSERS = frozenset("＞>")                          # a narration's closing ＞ ends it, as 》 does
+_QUOTES = dict(zip("「｢『（〔［｛〈《【([{｟〝", "」｣』）〕］｝〉》】)]}｠〟"))   # Anki Miner's bracket pairs (its splitter's)
+_QUOTE_ENDS = frozenset(_QUOTES.values())
 _RUN_ON_TAILS = ("とはいえ", "とはいっても", "ものの", "どころか", "かどで", "ながらも")
 _EITHER_WAY = ("せよ", "しろ")        # にせよ / にしろ: concessive after a case particle に (何にしろ, あるにせよ), runs on;
                                       # after the copula's に (勝手にしろ, 静かにせよ) it is an order, and ends
@@ -96,6 +103,31 @@ def finished(text):
     """Does a subtitle line end its sentence: in 。？！…, or in a closing bracket or quote (IS:262)?"""
     text = (text or "").rstrip()
     return bool(text) and (text[-1] in _FINISHED or unicodedata.category(text[-1]) in ("Pe", "Pf"))
+
+
+def book_line(text):
+    """A book's or a text's sentence as its card names it (`line_text`): a quote mark the split left with no partner
+    in it — at its start (「おれはこれから…好い。) or its end (…黙つてゐるのだぞ。」) — dropped, with the space it
+    leaves; one inside it (…かな」蕗屋は…) and a whole quote (「…知れない。」) kept. It stays an exact piece of its
+    paragraph: Anki Miner cuts its unit (a 「…」 speech is one) only around a sentence it holds exactly (Mattias's
+    0xzerolight/anki_miner#148), so a partner added would bring the whole speech back. Nothing left: as it was."""
+    text = text or ""
+    stack, lone = [], set()
+    for at, ch in enumerate(text):
+        if ch in _QUOTES:
+            stack.append(at)
+        elif ch in _QUOTE_ENDS:
+            if stack and _QUOTES[text[stack[-1]]] == ch:
+                stack.pop()
+            else:
+                lone.add(at)
+    lone.update(stack)
+    lo, hi = 0, len(text)
+    while lo < hi and lo in lone:
+        lo += 1
+    while hi > lo and hi - 1 in lone:
+        hi -= 1
+    return text[lo:hi].strip() or text
 
 
 class Lines:
@@ -448,13 +480,19 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
-         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None):
+         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, sentence_length=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
     `listed` ({(lemma, reading): list position}): the list's rows, for `list` (and the order of every mode: the list's
     first). `carded`: the card keys (a card's word, its kana fold) of the words with a card. A line's other new words
-    are counted over what its card holds — the line and the lines its expansion adds (IS:268)."""
+    are counted over what its card holds — the line and the lines its expansion adds (IS:268).
+
+    A book's or a text's sentences (`cues.units`, Michi-BS): each word's `line_text` is `book_line`'s, and
+    `sentence_length` ((min, max) characters: the learner's *Length*, logic.context min_chars / preferred_max_chars;
+    PROVISIONAL lean, 2026-11-12: cards honour it too) puts a sentence within it before one outside it — where the 8 s
+    cap ranks a video's lines; too long before too short, as the report's examples go — never cut. A video's lines
+    never read it."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -494,6 +532,16 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
+    units = bool(getattr(cues, "units", False))
+
+    def length(at):
+        """A book's sentence outside the learner's Length: (too short, too long); (0, 0) inside it, for a video's
+        line, or with no Length handed in."""
+        if not units or not sentence_length:
+            return (0, 0)
+        n = len(book_line(cues[at].text))
+        return (int(n < sentence_length[0]), int(n > sentence_length[1]))
+
     candidates = []
     for key, uses in by_key.items():
         phrase = uses[0].phrase
@@ -532,7 +580,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             continue
         # a line no other word took; no other new word; a card that fits the cap uncut (else the shortest); written out
         best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, not fits(o.cue),
-                                          0 if fits(o.cue) else card(o.cue)[3],
+                                          length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]
@@ -543,7 +591,8 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "word": key[0], "reading": key[1], "orth": best.orth, "surface": best.surface, "sent": sent,
             "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
-            "line_start": seconds(cue.start), "line_end": seconds(cue.end), "line_text": cue.text,
+            "line_start": seconds(cue.start), "line_end": seconds(cue.end),
+            "line_text": book_line(cue.text) if units else cue.text,
             "line_expansion": list(card(best.cue)[1]),
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),

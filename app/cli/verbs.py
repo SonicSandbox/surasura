@@ -317,6 +317,16 @@ def _reading(loaded, lang):
     return tokenizer, script
 
 
+def _sentence_length(loaded):
+    """The learner's *Length* for example sentences (logic.context min_chars / preferred_max_chars, the analyzer's own
+    fallbacks 10 / 50) as a book's pick reads it -> (min, max), or None when the file holds no number there."""
+    context = (loaded.get("logic") or {}).get("context") or {}
+    try:
+        return int(context.get("min_chars", 10)), int(context.get("preferred_max_chars", 50))
+    except (TypeError, ValueError):
+        return None
+
+
 def _phrase_set(loaded, lang):
     if lang != "ja" or not (loaded.get("logic") or {}).get("phrase_rows", True):
         return None
@@ -1337,7 +1347,8 @@ def pick(args):
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          sentence_length=_sentence_length(loaded) if book else None)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

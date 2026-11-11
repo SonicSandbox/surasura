@@ -214,9 +214,11 @@ def read(path, language="ja"):
 def reading(path, language="ja", script="asis", tokenizer=None):
     """A book's or a text's sentences as cues, and their words (Z-9: Anki Miner mines a reading source by each word's
     sentence, `line_text`) -> (Cues, [Token]). The file is read as a Generate reads it (`analyzer.extract_text`), each
-    sentence the tokenizer yields one cue (no times: 0) whose text is the sentence as the file writes it, its line
-    breaks and spaces out (Japanese: Anki Miner joins a paragraph's wrapped lines with nothing) or one space (Chinese).
-    The Cues' `units` is True: a card is cut from its own sentence, never its neighbours (`pick.line_expansion`)."""
+    sentence the tokenizer yields one cue (no times: 0) whose text is the sentence as the file writes it, its ends'
+    spaces out and its line breaks joined: with nothing, the indent after one out, a space inside it kept (Japanese:
+    Anki Miner's unit keeps a paragraph's inner spaces, and cuts a unit only around an exact sentence — Michi-BS,
+    `pick.book_line`), or with one space (Chinese). The Cues' `units` is True: a card is cut from its own sentence, never
+    its neighbours (`pick.line_expansion`)."""
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                      else analyzer.JapaneseTokenizer())
@@ -230,7 +232,7 @@ def reading(path, language="ja", script="asis", tokenizer=None):
             found = shown.find(sentence, said) if sentence else -1
             written = text[found:found + len(sentence)] if found >= 0 else sentence
             said = found + len(sentence) if found >= 0 else said
-            line = re.sub(r"\s+", "" if language == "ja" else " ", written).strip()
+            line = (re.sub(r"\s*\n\s*", "", written) if language == "ja" else re.sub(r"\s+", " ", written)).strip()
             cues.append(Cue(len(cues), 0, 0, line, len(cues), False, True))
             cursor = max(cursor, found) if found >= 0 else cursor
         found = shown.find(surface, cursor) if surface else -1

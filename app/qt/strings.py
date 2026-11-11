@@ -1527,6 +1527,7 @@ NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
 NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
 NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
+NEEDS_SKIPPED_OWES = "Skipped: its other words still wait, Try again on its row tries them"     # (PROVISIONAL)
 NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"

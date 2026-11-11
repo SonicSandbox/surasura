@@ -46,13 +46,17 @@ def test_skip_this_word_asks_connect_then_kicks_it_and_says_so(act, monkeypatch)
     ny.connect_calls["skip_words"] = None             # Connect's actions can't be loaded: no button that does nothing
     assert not ny.available("skip_words")
     ny.connect_calls["skip_words"] = held
-    calls, answer = [], [True]
+    calls, answer = [], ["on"]
     ny.connect_calls["skip_words"] = lambda lang, need_id: calls.append(("skip", lang, need_id)) or answer[0]
     ny.connect_calls["kick"] = lambda settings: calls.append(("kick",)) or object()
     ny.act("skip_words", _entry(), None)
     assert wait_until(lambda: len(calls) == 2, 5), calls
     assert calls == [("skip", ny.language, 21), ("kick",)]
     assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_SKIPPED, 5)
+    del calls[:]
+    answer[0] = "owes"                                  # skipped, its other words still owed: said so, never "made next"
+    ny.act("skip_words", _entry(23), None)
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_SKIPPED_OWES, 5)
     del calls[:]
     answer[0] = False                                   # nothing to skip any more: no kick, said
     ny.act("skip_words", _entry(22), None)

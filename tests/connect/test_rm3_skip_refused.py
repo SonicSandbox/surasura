@@ -58,7 +58,7 @@ def test_a_part_anki_refused_words_of_is_its_own_line_naming_them_and_the_cloze_
 def test_skip_this_word_finishes_the_part_with_the_cards_it_made(tmp_path):
     steps, path = _refused_part(tmp_path)
     [need] = _need(path)
-    assert actions.skip_refused("ja", need["id"], path=path) is True
+    assert actions.skip_refused("ja", need["id"], path=path) == actions.SKIPPED_ON
     with Ledger(path) as ledger:
         job = ledger.jobs("ja")[0]
         assert (job["state"], job["resume"]) == ("waiting", "filling")
@@ -100,7 +100,7 @@ def test_skip_refuses_what_isnt_an_open_refusal_and_writes_nothing(tmp_path):
     [need] = _need(path)
     assert actions.skip_refused("zh", need["id"], path=path) is False, "another language's line"
     assert actions.skip_refused("ja", need["id"] + 99, path=path) is False
-    assert actions.skip_refused("ja", need["id"], path=path) is True
+    assert actions.skip_refused("ja", need["id"], path=path) == actions.SKIPPED_ON
     assert actions.skip_refused("ja", need["id"], path=path) is False, "pressed twice: one skip"
     assert actions.skip_refused("ja", 1, path=str(tmp_path / "none.sqlite")) is False
 
@@ -121,7 +121,7 @@ def test_a_skip_with_a_try_again_already_queued_lets_that_try_finish_the_part(tm
     [need] = _need(path)
     with Ledger(path) as ledger, ledger.transaction():
         ledger.ask("ja", 1, _now(), store_id="store-1")
-    assert actions.skip_refused("ja", need["id"], path=path) is True
+    assert actions.skip_refused("ja", need["id"], path=path) == actions.SKIPPED_OWES, "the try open finishes it"
     before = len(steps.log)
     _run(steps, path)
     with Ledger(path) as ledger:
@@ -149,7 +149,7 @@ def test_a_skip_leaves_the_part_failed_while_it_owes_a_word_anki_never_refused(t
     _run(steps, path)
     [need] = _need(path)
     assert "塗れ" in need["say"] and "気配" not in need["say"]
-    assert actions.skip_refused("ja", need["id"], path=path) is True
+    assert actions.skip_refused("ja", need["id"], path=path) == actions.SKIPPED_OWES, "said: it still owes 気配"
     with Ledger(path) as ledger:
         assert ledger.jobs("ja")[0]["state"] == "failed", "it still owes 気配: its Try again stands"
         with ledger.transaction():

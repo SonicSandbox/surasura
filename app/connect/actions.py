@@ -57,10 +57,14 @@ def mine_anyway(language, need_id, path=None):
     return True
 
 
+SKIPPED_ON, SKIPPED_OWES = "on", "owes"   # Michi-RM3 review r2 N1: what a skip did, for the bar's words
+
+
 def skip_refused(language, need_id, path=None):
     """Michi-RM3: *Skip this word* on a part whose cards Anki refused for some words (its *Needs you* line, kind
-    `mine-refused`) -> True when skipped; False (nothing written) with no ledger, no such open line of this language,
-    or its job no longer failed. Those words' outcomes become `skipped` (never sent again: in this part, `declined`,
+    `mine-refused`) -> SKIPPED_ON when skipped and the part goes on to its fill; SKIPPED_OWES when skipped but the
+    part still owes another word (its row's *Try again* tries it) or a try already open holds it; False (nothing
+    written) with no ledger, no such open line of this language, no word named, or its job no longer failed. Those words' outcomes become `skipped` (never sent again: in this part, `declined`,
     and in any other for that Anki Miner, `Ledger.skipped_words`); the line fixed; and the part goes on to fill and
     order the cards it did make (waiting at `filling`: Connect's next look, the caller kicks it) — unless a new try of
     the item is open already (one open job an item), which finishes the part without those words."""
@@ -91,13 +95,16 @@ def skip_refused(language, need_id, path=None):
             "SELECT outcome FROM outcomes WHERE job_id = ? AND word = ? AND reading = ?",
             (job_id, w.get("word"), w.get("reading"))).fetchone() or [None])[0] in (None, "uncertain", "not_attempted")]
         marks = ",".join("?" * len(book.OPEN))
+        answer = SKIPPED_OWES
         if not owed and ledger.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN "
                                             f"({marks})", (language, item_id) + book.OPEN).fetchone() is None:
             ledger.set_state(job_id, "waiting", reason=None, resume="filling")   # this part goes on to its fill
+            answer = SKIPPED_ON
         # (a word it still owes that Anki never refused alone — a run that timed out —: the part stays failed, its
-        # *Try again* tries that word; the skipped ones never again)
+        # *Try again* tries that word; the skipped ones never again. A try already open finishes it: SKIPPED_OWES too,
+        # the row says what it does)
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
-    return True
+    return answer
 
 
 def speech_model(language, need_id, yes, path=None):

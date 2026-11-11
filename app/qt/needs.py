@@ -1905,7 +1905,8 @@ class NeedsYou(QObject):
         def done(ok):
             if not ok:
                 self._stays("skip_words", entry)
-            self._connect_done(strings.NEEDS_SKIPPED if ok else strings.NEEDS_SKIPPED_NOT)
+            self._connect_done(strings.NEEDS_SKIPPED if ok == "on" else strings.NEEDS_SKIPPED_OWES if ok
+                               else strings.NEEDS_SKIPPED_NOT)       # (review r2 N1: never "made next" untrue)
         self._press("skip_words", entry, run, then=done)
 
     def _do_ask_hato(self, entry, _line):

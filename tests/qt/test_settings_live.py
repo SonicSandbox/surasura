@@ -471,13 +471,13 @@ class Hato:
     """`open_hato` and `hato_seen` faked: each call kept with whether it ran on the GUI thread. `opened`: open_hato's
     answer (an Exception raised); `looks`: hato_seen's answers in turn (the last one repeats); `gate`: open_hato held."""
 
-    def __init__(self, monkeypatch, opened, looks=(None,)):
+    def __init__(self, monkeypatch, opened, looks=(None,), wait=10.0):
         from app.services import tools_found
         self.opens, self.seen, self.opened, self.looks, self.gate = [], [], opened, list(looks), None
         monkeypatch.setattr(live, "open_hato", self.open_hato)
         monkeypatch.setattr(live, "hato_seen", self.hato_seen)
         monkeypatch.setattr(tools_found, "CONNECT_EVERY_S", 0.01)
-        monkeypatch.setattr(tools_found, "CONNECT_WAIT_S", 0.3)
+        monkeypatch.setattr(tools_found, "CONNECT_WAIT_S", wait)   # short only where the time running out is tested
 
     def open_hato(self, folder, settings):
         self.opens.append((folder, threading.current_thread() is threading.main_thread()))
@@ -520,7 +520,7 @@ def test_find_hato_opens_hato_then_follows_its_entry_on_workers_and_the_row_says
     assert store.calls == []                                        # nothing written to settings.json
 
 
-def test_a_second_press_while_it_goes_opens_no_dialog(qapp, fakes, monkeypatch):
+def test_a_second_find_hato_press_while_it_goes_opens_no_dialog(qapp, fakes, monkeypatch):
     from app.services import tools_found
     hato = Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[tools_found.Connected("1.2.0", None)])
     hato.gate = threading.Event()
@@ -559,7 +559,7 @@ def test_find_hato_answered_at_once_says_why_and_the_row_stays_not_found(qapp, f
 
 
 def test_a_hato_that_never_connects_is_followed_for_its_time_then_said(qapp, fakes, monkeypatch):
-    hato = Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[None])
+    hato = Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[None], wait=0.3)
     page, store, shell, find = _not_found(fakes)
     page.live.pick_hato_folder = lambda: "D:/hato"
     find.click()
@@ -570,7 +570,7 @@ def test_a_hato_that_never_connects_is_followed_for_its_time_then_said(qapp, fak
 
 def test_another_copy_of_hato_connected_counts_as_found_and_says_so(qapp, fakes, monkeypatch):
     from app.services import tools_found
-    Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[tools_found.Connected("1.1.0", tools_found.ANOTHER)])
+    Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[tools_found.Connected("1.1.0", tools_found.ANOTHER)], wait=0.3)
     page, store, shell, find = _not_found(fakes, found=EVERYTHING - {"hato_found"})
     page.live.pick_hato_folder = lambda: "D:/hato"
     find.click()
@@ -587,6 +587,33 @@ def test_find_hato_that_fails_says_so_in_the_bar(qapp, fakes, monkeypatch):
     find.click()
     assert wait_until(lambda: shell.bar_line.lines and shell.bar_line.lines[-1] == S.HATO_FIND_FAILED)
     assert not find.isHidden() and wait_until(lambda: not qpress.live(shell, "settings:hato"))
+
+
+def test_find_hato_press_ends_when_the_page_goes_mid_follow(qapp, fakes, monkeypatch):
+    # the page torn down while hato is followed (the quit): the press never stays live on the shell
+    hato = Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[None])
+    page, store, shell, find = _not_found(fakes)
+    page.live.pick_hato_folder = lambda: "D:/hato"
+    find.click()
+    assert wait_until(lambda: hato.seen)
+    monkeypatch.setattr(page.live, "_alive", lambda: False)
+    assert wait_until(lambda: not qpress.live(shell, "settings:hato"))
+
+
+def test_find_hato_press_ends_when_the_page_goes_before_a_look(qapp, fakes, monkeypatch):
+    # gone between hato's start and the first look (the timer's tick): no look starts, and the press ends
+    hato = Hato(monkeypatch, ("D:\\hato\\hato", None), looks=[None])
+    page, store, shell, find = _not_found(fakes)
+    page.live.pick_hato_folder = lambda: "D:/hato"
+    follow = page.live._hato_next
+
+    def gone_then_follow():
+        monkeypatch.setattr(page.live, "_alive", lambda: False)
+        follow()
+    monkeypatch.setattr(page.live, "_hato_next", gone_then_follow)
+    find.click()
+    assert wait_until(lambda: hato.opens) and wait_until(lambda: not qpress.live(shell, "settings:hato"))
+    assert hato.seen == []
 
 
 def test_every_why_find_hato_answers_has_words():

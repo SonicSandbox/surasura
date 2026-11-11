@@ -15,7 +15,8 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   (`anki_connect.probe`, loopback) — and *Check* (also the status service's refresh). **Connections:** hato installed
   or not (its entry in the shared tools folder) — not found, *Find hato…* (Michi-HD, PROVISIONAL): its folder picked,
   `tools_found.open_hato` on a worker (hato opened once from there, so it connects itself), then its entry looked at
-  every `CONNECT_EVERY_S` on a worker up to `CONNECT_WAIT_S`, the press live throughout; the bar says how it went —, jimaku *coming with hato*, AniList and More from Houseki *coming later*; no buttons (logos: package PL).
+  every `CONNECT_EVERY_S` on a worker up to `CONNECT_WAIT_S`, the press live throughout; the bar says how it went.
+  jimaku *coming with hato*, AniList and More from Houseki *coming later*; no buttons (logos: package PL).
 - **App:** *Text size*: the page saves it and *Restart now to apply?* is asked — *Restart now* closes the window the
   quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
   (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
@@ -912,8 +913,8 @@ class Live(QObject):
         if p is None:
             return
         self._finding = p
-        self._run(open_hato, os.path.normpath(folder), settings_service.thaw(self._settings()),
-                  then=self._hato_opened, failed=self._hato_failed)
+        self._hato_run(open_hato, os.path.normpath(folder), settings_service.thaw(self._settings()),
+                       then=self._hato_opened)
 
     def pick_hato_folder(self):
         return QFileDialog.getExistingDirectory(self.page, S.FIND_HATO_TITLE, "")
@@ -934,8 +935,26 @@ class Live(QObject):
 
     def _hato_look(self):
         if not self._alive():
+            qpress.end(self._finding, self.shell)           # the page gone mid-follow: its press ends too
             return
-        self._run(hato_seen, self._hato_follow[0], then=self._hato_looked, failed=self._hato_failed)
+        self._hato_run(hato_seen, self._hato_follow[0], then=self._hato_looked)
+
+    def _hato_run(self, fn, *args, then):
+        """`_run` for *Find hato…*'s steps: the page gone when a step answers, its press ends there (`_run` would drop
+        the answer and leave the press live); a step that fails ends it failed, said in the bar."""
+        def done(answer):
+            if self._alive():
+                then(answer)
+            else:
+                qpress.end(self._finding, self.shell)
+
+        def fault(info):
+            applog.log("settings", f"Find hato: {info[1]}")
+            if self._alive():
+                self._hato_failed(info)
+            else:
+                qpress.end(self._finding, self.shell, failed=True)
+        return bridge.run_in_worker(fn, *args, then=done, failed=fault)
 
     def _hato_looked(self, seen):
         from app.services import tools_found

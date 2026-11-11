@@ -40,8 +40,8 @@ HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_s
     "not-hato": "No hato in that folder: pick the folder you unpacked hato into",
     "not-installed": "hato connects only to an installed Surasura, and this copy isn't installed",
     "not-started": "hato couldn't be opened from that folder",
-    "no-answer": "hato opened but didn't connect. Give it a minute, then press Find hato… again (hato 1.1 or later "
-                 "connects to Surasura)",
+    "no-answer": "hato opened but didn't connect. If hato was open already, quit it from its tray icon, then press "
+                 "Find hato… again (hato 1.1 or later connects to Surasura)",
     "another-hato": "Another copy of hato was open already, so Surasura uses that one",
 }
 HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"

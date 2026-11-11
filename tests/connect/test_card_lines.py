@@ -103,6 +103,7 @@ def _by_word(chosen):
     ("待ってくれ、", True, True),                    # a comma
     ("本当に知らないんだ…", False, False),           # an ellipsis ends
     ("＜こうして冬は過ぎ＞", False, False),          # a closing ＞ ends, as 》 does
+    ("この湖には竜がいるという", False, False),      # という with no line after it: nothing to name, it ends
 ])
 def test_a_lines_last_word_says_whether_it_runs_on(tmp_path, text, forward, back):
     read = cues.read(_srt(tmp_path, [(1, 3, text)]), "ja")
@@ -146,6 +147,45 @@ def test_a_closing_angle_bracket_ends_a_narration_line(tmp_path):
     lines = _stream(["＜こうして冬は過ぎ＞", "＜村に春が来た＞"], each=3.0)
     assert _expansion(tmp_path, lines, 0) == [0, 0]
     assert _expansion(tmp_path, lines, 1) == [0, 0]
+
+
+def test_a_toiu_line_runs_on_into_the_noun_it_names(tmp_path):
+    # という at a line end names the next line's noun (竜がいるという / 言い伝え) as often as it ends a report or a
+    # name (鬼が出たという / だとしたら): the next line decides. A noun, a pronoun, その / 大それた, 立派な or 古い
+    # opening it is the thing named, so the two lines are one sentence, whichever line holds the word.
+    for first, second in (("この湖には竜がいるという", "言い伝えが今も残っている"),
+                          ("戦いをやめたいという", "彼の気持ちは分かる"),
+                          ("彼女ってゆう", "その人のことだけど"),
+                          ("何かを守るなどという", "大それた話じゃない"),
+                          ("誰でも魔法が使えるという", "古い本を読んだ")):
+        lines = _stream([first, second])
+        assert _expansion(tmp_path, lines, 0) == [0, 1], first
+        assert _expansion(tmp_path, lines, 1) == [1, 0], first     # pulled in from before too
+
+
+def test_a_toiu_line_ends_when_the_next_line_starts_a_sentence_of_its_own(tmp_path):
+    # A report (…という: "so they say"), a name given (名をシロという), the other speaker's reply: the next line
+    # opens with a conjunction, a verb, an adverb or an interjection, and the card stays one line. (A next line
+    # opening on a noun that starts its own sentence — 毎朝…, 彼の両親が… — joins: the rule's known limit.)
+    for first, second in (("昔この村に鬼が出たという", "だとしたら 気をつけないと"),
+                          ("その犬の名をシロという", "走るのが好きでね"),
+                          ("魔法が使えなくなったっていう", "ええっ 本当ですか"),
+                          ("みんな喜ぶという", "もちろん 私もです")):
+        lines = _stream([first, second])
+        assert _expansion(tmp_path, lines, 0) == [0, 0], first
+        assert _expansion(tmp_path, lines, 1) == [0, 0], first
+
+
+def test_a_toiu_line_looks_past_its_own_copy_and_ends_the_episode(tmp_path):
+    # Shown again through another line, the line after its last copy is the one it names; with no line after it
+    # (the episode's last) nothing follows to name, so it ends; a kanji 言う is the verb "say" itself, and ends.
+    copied = [(0.0, 2.5, "この湖には竜がいるという"), (2.5, 3.5, "この湖には竜がいるという"),
+              (3.583, 6.0, "言い伝えが今も残っている")]
+    assert _expansion(tmp_path, copied, 2) == [2, 0]
+    last = _stream(["湖の底を見に行った", "そこには竜がいるという"])
+    assert _expansion(tmp_path, last, 1) == [0, 0]
+    said = _stream(["妙な噂を聞いたと言う", "話が村に広まった"])
+    assert _expansion(tmp_path, said, 0) == [0, 0]
 
 
 # --------------------------------------------------------------------------- #

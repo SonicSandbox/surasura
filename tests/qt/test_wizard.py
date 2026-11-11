@@ -1846,8 +1846,8 @@ def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_ag
     page = wiz.page
     assert wait_until(lambda: len(waits) == 1), "nothing to count: asked again"
     assert not page.counting.isHidden() and page.counting.text() == S.NO_SHOWS and page.numbers_part.isHidden()
-    api.numbers = NUMBERS                                           # a show arrived
-    waits[-1][1]()
+    api.numbers = NUMBERS                                           # a show arrived, and the indexer read it
+    shell.bridge.indexed.emit("ja")
     assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
     assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
     page.show_numbers(None)                                         # (counting again, as a language change starts it)

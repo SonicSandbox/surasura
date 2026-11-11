@@ -357,17 +357,19 @@ def test_choice_1_current_keeps_the_order_titles_were_sent_in_the_first_sent_on_
     the reckoning (all undone: the next goes to the top)."""
     _seed, win, writer = world()
     screen = open_sort(win)
-    first, second, third = (a for _k, a in screen.visible_rows()[:3])
-    screen.choose("now")
-    screen.choose("soon")                               # another place between: still after the last Current one
-    screen.choose("now")
+    rows_ = [a for _k, a in screen.visible_rows()[:3]]
+    many = next(i for i, a in enumerate(rows_) if len(a.item_ids) >= 2)     # a title of several files sent first
+    order = [many] + [i for i in range(3) if i != many]
+    first, second, third = (rows_[i] for i in order)
+    for name, a in (("now", first), ("soon", second), ("now", third)):  # another place between: still after the last
+        screen.choose(name, a)                                          # Current one
     assert _saved(writer, 3)
     places = calls(writer, "place")
     assert places[0] == ("place", list(first.item_ids), {"where": "top"})
     assert places[1] == ("place", list(second.item_ids), {"where": "soon"})
-    assert places[2] == ("place", list(third.item_ids), {"where": "top", "after": first.item_ids[-1]})
+    assert places[2] == ("place", list(third.item_ids), {"where": "top", "after": first.item_ids[-1]})   # its LAST file:
     now = [r["id"] for r in sorted((r for r in writer.library.items() if r["tier"] == "now"), key=lambda r: r["ord"])]
-    sent = list(first.item_ids) + list(third.item_ids)
+    sent = list(first.item_ids) + list(third.item_ids)                  # (never inside the title before it)
     assert [i for i in now if i in sent] == sent, "the first sent on top, in the order sent"
     screen.undo()                                       # all three back: the next goes to the top
     screen.undo()

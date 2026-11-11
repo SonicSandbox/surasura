@@ -188,6 +188,37 @@ def test_hato_never_starts_while_a_fill_is_queued_or_running(language, monkeypat
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_fill_asked_while_hatos_store_opens_still_goes_first(language, monkeypatch):
+    """Why (the adversary's round 2): opening hato's store handle may wait; a fill asked meanwhile is seen before hato's
+    list is made, and that fill's end asks hato again."""
+    hato, fills = _Hato(), _Fills()
+    hato.free.set()
+    looks, _store, _data_dir, _root = _looks(language, monkeypatch, hato, fills)
+    real_store = looks._store
+    opened = []
+
+    def store_then_a_fill():
+        handle = real_store()
+        if threading.current_thread().name == f"window-hato-{language}" and not opened:
+            opened.append(True)
+            with looks._lock:
+                looks._tracking = True                # a look's fill queued while the handle opened
+        return handle
+    monkeypatch.setattr(looks, "_store", store_then_a_fill)
+    try:
+        looks.asked(refreshed=True)
+        assert looks.idle(WAIT_S)
+        assert opened and hato.runs == 0, "hato listed its videos ahead of a fill asked meanwhile"
+        with looks._lock:
+            looks._tracking = False
+        looks.asked(refreshed=True)                  # that fill's end (here: the next one) asks hato again
+        assert looks.idle(WAIT_S)
+        assert hato.runs == 1
+    finally:
+        looks.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_window_closing_stops_a_waiting_hato_run_and_lets_its_worker_go(language, monkeypatch):
     """Why: a run waiting for hours must end with the window (`stop`, the run killed: `_hato_run`), and its worker's
     thread and store handle go with it — never a thread left behind holding the library open."""

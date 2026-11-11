@@ -537,12 +537,8 @@ class SourceLooks:
         what it wrote beside their videos is taken in by those folders' next look (K5). Whatever happens, the next fill
         asks again."""
         try:
-            with self._lock:
-                held = self._tracking or self._closing.is_set()
-            if held:                                  # a fill first: its end asks hato again
-                return
-            store = self._store()
-            if store is not None and not self._closing.is_set():
+            store = None if self._fill_first() else self._store()
+            if store is not None and not self._fill_first():  # looked at again after the open (it may wait)
                 away = {root for root, reached in dict(self._reachable).items() if reached is False}
                 settings = settings_manager.load_settings()
                 found = no_subs.find(store, self.language, settings, stop=self._closing.is_set, away=away)
@@ -558,6 +554,11 @@ class SourceLooks:
                 again, self._find_again = self._find_again, False
             if again:
                 self._ask_hato()
+
+    def _fill_first(self):
+        """(hato's worker.) A fill is queued or running (its end asks hato again), or the window closes."""
+        with self._lock:
+            return self._tracking or self._closing.is_set()
 
     def _scan(self, store, row, full=False, first=False, progress=None, stop=None):
         path = row["path"]

@@ -238,7 +238,8 @@ def _notes(language):
 
 def tidy(store, language, away=()):
     """(The looks' worker, after each look.) The notes kept true: a row that waits no more says nothing (MADE notes
-    stay), a NO_SPEECH / UNREADABLE whose video changed since is offered again. Writes only when something moved."""
+    stay, and a hato run's LOOKING: the run drops it), a NO_SPEECH / UNREADABLE whose video changed since is offered
+    again. Writes only when something moved."""
     held = _notes(language)
     if not held:
         return
@@ -253,8 +254,8 @@ def tidy(store, language, away=()):
             except (OSError, TypeError, ValueError):
                 pass
         live[rel] = stats
-    if any(v and v[0] != MADE and (rel not in live or (v[0] in DONE_NOTES and len(v) > 2 and v[2] != live[rel]))
-           for rel, v in held.items()):
+    if any(v and v[0] not in (MADE, LOOKING) and (rel not in live or (v[0] in DONE_NOTES and len(v) > 2 and
+                                                                   v[2] != live[rel])) for rel, v in held.items()):
         _change(store, language, live=live)
 
 

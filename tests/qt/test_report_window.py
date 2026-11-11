@@ -928,12 +928,9 @@ def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(ma
     assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
     gate.set()
     assert wait_until(lambda: made, 15)                                # the zip was made after the close
-    for _ in range(50):
-        QApplication.processEvents()
-    for t in threading.enumerate():
-        if t.name == "report-discard":
-            t.join(5)
-    assert _outbox_empty()
+    # its delete waited on, not a count of loop turns: the pool's answer that starts it can come later (GitHub,
+    # Flake-P2, tests/FLAKES.md)
+    assert wait_until(_outbox_empty, 10), "the zip made after the close is deleted"
     w = _press(main)
     assert wait_until(lambda: w.sender_line.text() != "")
     assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1

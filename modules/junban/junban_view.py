@@ -555,7 +555,8 @@ def restore_question(language, settings):
     if not snapshot:
         return {"kind": "none", "line": undo.describe(None)}
     return {"kind": "snapshot", "confirmed": snapshot.get("written_at"), "body": undo.describe(snapshot),
-            "both": bool(snapshot.get("finished_automatic"))}     # Disc-T1: the Undo says it puts back both
+            "both": bool(snapshot.get("finished_automatic")) and snapshot.get("complete") is not False}   # Disc-T1:
+    # the Undo says it puts back both — once yours finished it (cut too, it is the plain question: nothing finished)
 
 
 def restore_work(settings, confirmed=None, run=None, progress=None, cancel=None, on_wait=None):

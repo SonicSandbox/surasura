@@ -314,9 +314,11 @@ def test_a_run_you_start_in_junban_takes_over_a_cut_automatic_run_and_one_restor
 
 
 def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_run(tmp_path):
-    """Disc-T1: an automatic run cut after its last position, and your Reorder (its not-on-the-list actions off) finds
-    every card in place — nothing to write. It still ends the block: the cut snapshot is marked finished, and its Undo
-    still puts back what the cut run did."""
+    """Disc-T1: an automatic run cut after its last position, then a positions-only job past it (today's baseline,
+    newer than the cut snapshot — Mattias's sequence), and your Reorder (its not-on-the-list actions off) finds every
+    card in place — nothing to write. It still ends the block, and Undo is still the way back from the cut run (the
+    adversary's MUST: never the newer baseline, which knows nothing of it): a snapshot of its own takes the cut run
+    over, newest, and its question says both."""
     from modules.junban import junban_view
     fake = _backlog(tmp_path)
     before = _queues(fake)
@@ -324,7 +326,14 @@ def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_
     quiet = _auto(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
     with _patched(fake):
         assert reposition.run(quiet, refresh=False)["ok"]               # the deck in your order
-    undo.save(pairs, ["TheBank"], language="ja", automatic=True)        # then a run cut after its last position
+    path = undo.save(pairs, ["TheBank"], language="ja", automatic=True)     # then a run cut after its last position
+    with open(path, encoding="utf-8") as handle:
+        cut = json.load(handle)
+    cut["written_at"] = "2026-01-02T03:04:05"                           # earlier than the baseline after it
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(cut, handle)
+    now = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
+    assert undo.save_baseline(now, ["TheBank"], language="ja")[1], "the positions-only job's baseline, newer"
     writes = list(fake.writes)
     with _patched(fake):
         report = reposition.run(quiet, refresh=False)
@@ -332,7 +341,9 @@ def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_
     assert fake.writes == writes, "nothing written"
     saved = undo.load("ja")
     assert saved["complete"] is True and saved["finished_automatic"] is True, saved
+    assert saved["written_at"] > cut["written_at"], "a snapshot of its own, newer than the baseline"
     assert junban_view.restore_question("ja", quiet)["both"] is True
+    assert undo.restorable("ja", ["TheBank"]) == undo.load("ja"), "Undo is the take-over, never the baseline"
     with _patched(fake):
         again = reposition.run(quiet, refresh=False)
     assert again["ok"] is True and not again.get("restore_first"), "never blocked again"
@@ -340,6 +351,18 @@ def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_
         restored = reposition.restore(quiet)
     assert restored["ok"], restored["problems"]
     assert _queues(fake) == before
+
+
+def test_a_take_over_cut_short_too_never_says_it_finished_anything(tmp_path):
+    """Disc-T1 (the adversary's SHOULD): your take-over run, cut in turn, leaves its snapshot unfinished but already
+    holding both runs' originals. Its Undo still puts back both (I3), but its question is the plain one — nothing was
+    finished — until a run completes it."""
+    from modules.junban import junban_view
+    _backlog(tmp_path)
+    undo.save([(1789712090000, 50)], ["TheBank"], language="ja", finished_automatic=True)
+    assert junban_view.restore_question("ja", _auto())["both"] is False
+    assert undo.mark_complete("ja")
+    assert junban_view.restore_question("ja", _auto())["both"] is True
 
 
 def test_a_run_you_start_never_takes_over_another_decks_cut_run(tmp_path):

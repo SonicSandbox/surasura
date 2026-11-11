@@ -2398,7 +2398,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
             # #50: the order stands, but a card's show label is behind it (a list moved, a show renamed): only those
             # labels, never a snapshot (one of nothing would replace your route back from the last run)
             labelled, label_failures = show_tags.apply(url, labels, _chunk_size(settings))
-            _finish_cut(settings, cut, automatic)
+            _finish_cut(settings, cut, automatic, decks, stats)
             return _report(True, "Every card is already in the right place — nothing to change." +
                            _labels_clause(labelled), warnings=checks["warnings"] + _labels_warning(label_failures),
                            decks=decks, stats=stats)
@@ -2406,7 +2406,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # order with an empty one would throw away the user's only route back from the *previous*
         # run, and they would not find out until they pressed Restore. (With the cards not on the
         # list still to tag, flag or suspend, the run goes ahead, snapshot first, positions or not.)
-        _finish_cut(settings, cut, automatic)
+        _finish_cut(settings, cut, automatic, decks, stats)
         return _report(True, "Every card is already in the right place — nothing to change.",
                        warnings=checks["warnings"], decks=decks, stats=stats)
 
@@ -2860,11 +2860,23 @@ def _same_scope(snapshot, decks, settings):
             and (snapshot.get("mode") == "all") == (_scope_mode(settings) == "all"))
 
 
-def _finish_cut(settings, cut, automatic):
+def _finish_cut(settings, cut, automatic, decks, stats):
     """Disc-T1: a run you start that takes over a cut automatic run and finds nothing left to write still ends it —
-    its snapshot marked finished (`finished_automatic`): never refused again, and its Undo puts back what it did."""
-    if cut is not None and not automatic:
-        undo.mark_complete(_language(settings), finished_automatic=True)
+    a snapshot of its own takes the cut run over, as one with writes does (every card in scope where it is, the cut
+    run's originals winning), saved complete and `finished_automatic`, and today's baseline ended. Newest, it is what
+    Undo offers: never a baseline a positions-only job wrote after the cut (the adversary's MUST: that one knows
+    nothing of the cut run's tags, flags and suspends). Not saved: the cut snapshot stays unfinished, as it was."""
+    if cut is None or automatic:
+        return
+    language = _language(settings)
+    try:
+        undo.save([(row.card_id, row.due) for row in stats.get("order") or []], decks, language=language,
+                  fields=undo.carry_forward_fields(cut, None), mode=_scope_mode(settings), cut=[cut],
+                  finished_automatic=True)
+    except OSError:
+        return
+    undo.end_baseline(language)
+    undo.mark_complete(language)
 
 
 def _unfinished_refusal(checks, decks, stats=None):

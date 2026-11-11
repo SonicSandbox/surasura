@@ -372,17 +372,14 @@ def _take_over(payload, cut):
         payload["marker_tags"] = markers
 
 
-def mark_complete(language="ja", kind="reorder", run_id=None, restored=False, after=None, taken_over=False,
-                  finished_automatic=False):
+def mark_complete(language="ja", kind="reorder", run_id=None, restored=False, after=None, taken_over=False):
     """Record that the run (or restore) this snapshot belongs to finished cleanly. Returns success.
 
     Best-effort and atomic. Failing leaves the snapshot marked incomplete, which only ever errs on
     the safe side: the next run asks for a Restore first instead of overwriting it. `restored`: one of
     Connect's runs was put back (`restored_at`), so it is never offered again. `after`: one of Connect's
     runs wrote fewer cards than it planned (the fast re-plan's re-check left some, E2.1) — what it did write.
-    `taken_over`: one of Connect's runs left unfinished, taken over by an automatic job's window snapshot.
-    `finished_automatic`: a cut automatic run's snapshot that a run you started finished with nothing left to write
-    (Disc-T1): its Undo is both."""
+    `taken_over`: one of Connect's runs left unfinished, taken over by an automatic job's window snapshot."""
     path = snapshot_path(language, kind, run_id)
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -394,8 +391,6 @@ def mark_complete(language="ja", kind="reorder", run_id=None, restored=False, af
             data["restored_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if taken_over:              # its way back is now the window's snapshot that took it over (`reposition._run`)
             data["taken_over_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if finished_automatic:
-            data["finished_automatic"] = True
         if after is not None and run_id is not None:
             data["after"] = {str(int(card_id)): int(due) for card_id, due in _as_pairs(after)}
         temporary = path + ".tmp"

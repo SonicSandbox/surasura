@@ -117,8 +117,9 @@ def test_the_spec_names_no_settings_json():
     assert not [s for s in strings if "settings.json" in s]
 
 
-def _run_spec(tmp_path, config, settings):
-    """The whole spec executed in a scratch project (PyInstaller's steps stubbed, recording every Analysis)."""
+def _run_spec(tmp_path, config, settings, binaries=(), collected=None):
+    """The whole spec executed in a scratch project (PyInstaller's steps stubbed, recording every Analysis). `binaries`:
+    the (dest, source, kind) entries the main Analysis finds; `collected` (a list) gets what COLLECT is handed."""
     root = tmp_path / "project"
     (root / "app").mkdir(parents=True)
     (root / "packaging").mkdir()
@@ -135,7 +136,8 @@ def _run_spec(tmp_path, config, settings):
     class _Analysis:
         def __init__(self, scripts, **kw):
             analyses.append(kw)
-            self.pure, self.scripts, self.binaries, self.datas = [], [], [], kw["datas"]
+            self.pure, self.scripts, self.datas = [], [], kw["datas"]
+            self.binaries = list(binaries) if len(analyses) == 1 else []
 
     hooks = types.ModuleType("PyInstaller.utils.hooks")
     hooks.collect_all = lambda name: ([], [], [])
@@ -147,7 +149,8 @@ def _run_spec(tmp_path, config, settings):
     try:
         with patch.dict(sys.modules, fakes):
             exec(code, {"Analysis": _Analysis, "PYZ": lambda *a, **k: None, "EXE": lambda *a, **k: None,
-                        "COLLECT": lambda *a, **k: None, "__name__": "__main__"})
+                        "COLLECT": lambda *a, **k: [] if collected is None else collected.extend(a),
+                        "__name__": "__main__"})
     finally:
         os.chdir(here)
     return analyses
@@ -196,6 +199,22 @@ def test_the_window_gets_five_qt_modules_and_their_licences(tmp_path):
     assert "PyQt6" in cli["excludes"]
 
 
+def test_the_qt_files_the_window_never_uses_are_left_out_of_the_program(tmp_path):
+    """Minato-SM: Qt6Pdf.dll, the image plugin that reads a PDF through it and Mesa's software OpenGL never reach the
+    program (their components — PDFium, Mesa, LLVM — are in no notice it ships); every other Qt file still does, in
+    whatever case PyInstaller writes its name."""
+    found = [(os.path.join("PyQt6", "Qt6", *rel.split("/")), "C:/site/" + rel, "BINARY") for rel in (
+        "bin/Qt6Core.dll", "bin/Qt6Gui.dll", "bin/Qt6Pdf.dll", "bin/opengl32sw.dll", "bin/Qt6Svg.dll",
+        "plugins/imageformats/qpdf.dll", "plugins/imageformats/qwebp.dll", "plugins/imageformats/QGIF.DLL",
+        "plugins/platforms/qwindows.dll")]
+    found.append((os.path.join("PyQt6", "Qt6", "bin", "QPDF.DLL"), "C:/elsewhere/QPDF.DLL", "BINARY"))
+    collected = []
+    _run_spec(tmp_path, json.loads(_source(CONFIG)), {}, binaries=found, collected=collected)
+    main_binaries = collected[1]                        # COLLECT(exe, a.binaries, a.datas, cli_exe, …)
+    kept = sorted(os.path.basename(dest) for dest, _src, _kind in main_binaries)
+    assert kept == ["QGIF.DLL", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Svg.dll", "qwebp.dll", "qwindows.dll"]
+
+
 # --- build_config.json's shape ------------------------------------------------------------------------------------------
 
 def test_the_build_config_reads_and_carries_the_floors():
@@ -205,6 +224,7 @@ def test_the_build_config_reads_and_carries_the_floors():
     assert config["python_min"] == "3.11.4" and config["sqlite_min"] == "3.51.3"
     assert config["upx"] is False
     assert config["qt_modules"] == ["QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg"]
+    assert config["qt_never_bundle"] == ["Qt6Pdf.dll", "qpdf.dll", "opengl32sw.dll"]
     assert config["data_name"] == "Surasura"
     assert [p["name"] for p in config["parts"]] == ["app", "qt", "dict", "tsubasa", "runtime"]
     assert config["parts"][-1]["paths"] == [""]
@@ -230,6 +250,9 @@ def test_the_vendored_sqlite_is_the_recorded_one_and_its_readme_says_where_from(
     {"qt_modules": []},
     {"never_bundle": []},
     {"never_bundle": ["py test"]},
+    {"qt_never_bundle": None},
+    {"qt_never_bundle": ["Qt6Pdf"]},                                 # a file name, never a module's
+    {"qt_never_bundle": ["imageformats/qpdf.dll"]},                  # a name, never a path
     {"parts": [{"name": "app", "paths": ["Surasura.exe"]}]},          # no catch-all last
     {"release": {"min_from": "3.0.0"}},
 ])
@@ -356,6 +379,16 @@ def test_a_whole_program_passes_every_check(tmp_path):
                               "install_shape": "0123456789abcdef"}
 
 
+def _qt_file(folder, rel):
+    path = folder / "_internal" / "PyQt6" / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"MZ")
+
+
+def _rewrite(path, change):
+    path.write_text(change(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+
 @pytest.mark.parametrize("damage, expected", [
     (lambda f: (f / "Setup.exe").write_bytes(b"MZ"), "programs at the top"),
     (lambda f: (f / "updater.exe").unlink(), "programs at the top"),
@@ -382,6 +415,15 @@ def test_a_whole_program_passes_every_check(tmp_path):
     # A top-level entry no update owns: the next one-click update would leave it behind (U-S2 / IK-8).
     (lambda f: (f / "LICENSE.txt").write_text("MIT\n", encoding="utf-8"), "OWNED_ENTRIES"),
     (lambda f: (f / "plugins" / "語彙").mkdir(parents=True), "OWNED_ENTRIES"),
+    # Qt files the window never uses (Minato-SM): the notices file lists none of what they carry (PDFium, Mesa).
+    (lambda f: _qt_file(f, "Qt6/plugins/imageformats/qpdf.dll"), "qt_never_bundle"),
+    (lambda f: _qt_file(f, "Qt6/bin/Qt6Pdf.dll"), "qt_never_bundle"),
+    (lambda f: _qt_file(f, "Qt6/bin/OPENGL32SW.DLL"), "qt_never_bundle"),
+    # Qt's own third-party notices: gone from PyQt6-Qt6's row, or written for another Qt than the one carried.
+    (lambda f: _rewrite(f / "_internal" / "licenses" / "INDEX.txt",
+                        lambda t: t.replace(", PyQt6-Qt6-6.11.2/Qt-third-party-notices.txt", "")), "names no Qt-third"),
+    (lambda f: _rewrite(f / "_internal" / "licenses" / "PyQt6-Qt6-6.11.2" / "Qt-third-party-notices.txt",
+                        lambda t: t.replace("Qt 6.11.2 ", "Qt 6.10.1 ", 1)), "written for Qt 6.10.1"),
     # Surasura's own licence files (GPL-3.0-or-later since 3.0): a program without one is not shared as its licence asks.
     (lambda f: (f / "LICENSE").unlink(), "own licence files"),
     (lambda f: (f / "LICENSE-EXCEPTION.md").unlink(), "own licence files"),

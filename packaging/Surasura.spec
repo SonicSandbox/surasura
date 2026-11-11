@@ -202,6 +202,13 @@ a = Analysis(
     optimize=0,
 )
 
+# Qt files the window never uses (Minato-SM, 2026-11-12): build_config's qt_never_bundle — Qt6Pdf.dll and the image
+# plugin that reads a PDF through it, Mesa's software OpenGL — left out, so the program's Qt carries only what
+# packaging/licenses/PyQt6-Qt6/Qt-third-party-notices.txt lists. package_app.py --check refuses a program carrying one.
+qt_never_bundle = build_config.get("qt_never_bundle") if isinstance(build_config, dict) else None
+qt_never = {n.lower() for n in qt_never_bundle if isinstance(n, str)} if isinstance(qt_never_bundle, list) else set()
+a.binaries = [b for b in a.binaries if os.path.basename(b[0]).lower() not in qt_never]
+
 pyz = PYZ(a.pure)
 
 # UPX is off everywhere (S3.1 D15, E12): it can corrupt Qt's DLLs and feeds antivirus false positives;

@@ -52,8 +52,10 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 - **A video's own subtitle track** (Michi-ST, `app/tracks.py`): after every look, the videos waiting for a subtitle
   (K5) are asked of Anki Miner on a worker of their own (`_ask_tracks`): one fill at a time, an ask meanwhile folded
   into one more after it; never on the looks' worker, so a long copy never holds a look or Refresh. The window closing
-  cancels the copy under way. Michi-NS: then, on the same worker, the ones still waiting are handed to hato
-  (`no_subs.find`, once it takes them and you said yes), and the folders it wrote into are looked at again.
+  cancels the copy under way. Michi-NS: then the ones still waiting are handed to hato (`no_subs.find`, once it takes
+  them and you said yes), and the folders it wrote into are looked at again — on hato's own worker (`_ask_hato`,
+  Minato-SM: a hato run waiting behind another's lock, up to 3 h, never holds the next fill), one run at a time, an ask
+  meanwhile folded into one more after it; the window closing stops it.
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
   `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
@@ -167,6 +169,9 @@ class SourceLooks:
         self._tracks = Worker(f"window-tracks-{language}")   # Michi-ST: the waiting videos' tracks (`_ask_tracks`)
         self._tracking = False                        # a fill queued or running
         self._tracks_again = False                    # asked meanwhile: one more after it
+        self._hato = Worker(f"window-hato-{language}")       # Minato-SM: hato's runs (`_ask_hato`), never the tracks'
+        self._finding = False                         # a hato run queued or running
+        self._find_again = False                      # asked meanwhile: one more after it
         self._lock = threading.Lock()
         self._closing = threading.Event()             # the window closes: a look under way stops between files
         self._last = None                             # when the cadence's last look began (`sources.due`'s `last`)
@@ -366,10 +371,13 @@ class SourceLooks:
         self._worker.close()
         self._tracks.put(self._let_go)
         self._tracks.close()
+        self._hato.put(self._let_go)
+        self._hato.close()
 
     def idle(self, timeout=None):
-        """(Tests.) Everything queued has run (a look's track fill too: queued by the look, so waited for after it)."""
-        return self._worker.idle(timeout) and self._tracks.idle(timeout)
+        """(Tests.) Everything queued has run (a look's track fill too: queued by the look, so waited for after it; and
+        hato's run, queued by the fill)."""
+        return self._worker.idle(timeout) and self._tracks.idle(timeout) and self._hato.idle(timeout)
 
     # --- the worker -------------------------------------------------------------------------------------------- #
     def _queue(self, full, roots):
@@ -490,14 +498,9 @@ class SourceLooks:
                 if got.get("filled") or got.get("failed"):
                     print(f"Sources: subtitle tracks inside videos: {got}")
                 # Michi-NS: the rows' subtitle notes kept true (a row that waits no more, a video changed since);
-                # then hato, for those still waiting — only once it takes a list and you said yes; what it wrote
-                # beside their videos is taken in by those folders' next look (K5)
+                # then hato, for those still waiting, on its own worker (`_ask_hato`)
                 no_subs.tidy(store, self.language, away=away)
-                found = no_subs.find(store, self.language, settings, stop=self._closing.is_set, away=away)
-                if found.get("asked") or found.get("failed"):
-                    print(f"Sources: hato looked for subtitles: { {k: v for k, v in found.items() if k != 'roots'} }")
-                for root in (found.get("roots") or {}) if not self._closing.is_set() else ():
-                    self.look_at(root)
+                self._ask_hato()
         except Exception as e:                        # never the window's fault: the next look asks again
             print(f"Sources: the videos' subtitle tracks wait for the next look: {e!r}")
         finally:
@@ -506,6 +509,44 @@ class SourceLooks:
                 again, self._tracks_again = self._tracks_again, False
             if again:
                 self._ask_tracks()
+
+    def _ask_hato(self):
+        """Minato-SM: hato's run for the videos still waiting (`no_subs.find`) on a worker of its own, one at a time —
+        a run can sit behind another hato run's lock for hours (`--wait`), and never holds the next track fill or look
+        meanwhile; an ask meanwhile is folded into one more after it."""
+        with self._lock:
+            if self._closing.is_set():
+                return
+            if self._finding:
+                self._find_again = True
+                return
+            self._finding = True
+        if not self._hato.put(self._find_subs):
+            with self._lock:
+                self._finding = False
+
+    def _find_subs(self):
+        """(hato's worker.) hato asked for the videos still waiting — only once it takes a list and you said yes;
+        what it wrote beside their videos is taken in by those folders' next look (K5). Whatever happens, the next fill
+        asks again."""
+        try:
+            store = self._store()
+            if store is not None and not self._closing.is_set():
+                away = {root for root, reached in dict(self._reachable).items() if reached is False}
+                settings = settings_manager.load_settings()
+                found = no_subs.find(store, self.language, settings, stop=self._closing.is_set, away=away)
+                if found.get("asked") or found.get("failed"):
+                    print(f"Sources: hato looked for subtitles: { {k: v for k, v in found.items() if k != 'roots'} }")
+                for root in (found.get("roots") or {}) if not self._closing.is_set() else ():
+                    self.look_at(root)
+        except Exception as e:                        # never the window's fault: the next fill asks again
+            print(f"Sources: hato's look for subtitles waits for the next look: {e!r}")
+        finally:
+            with self._lock:
+                self._finding = False
+                again, self._find_again = self._find_again, False
+            if again:
+                self._ask_hato()
 
     def _scan(self, store, row, full=False, first=False, progress=None, stop=None):
         path = row["path"]

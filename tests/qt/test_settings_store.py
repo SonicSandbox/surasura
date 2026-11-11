@@ -232,14 +232,23 @@ def test_a_write_of_no_connect_key_asks_for_no_watermark(qapp, turned):
 
 
 # --- Trust my subtitles' timing turned on: Connect is started, so the episodes waiting on it mine now ----------------- #
+class _Calls(list):
+    """Each kick's (settings, on the main thread), and its keywords in `kw`."""
+
+    def __init__(self):
+        super().__init__()
+        self.kw = []
+
+
 @pytest.fixture
 def kicked(monkeypatch):
     from app.connect import kick
-    calls = []
+    calls = _Calls()
     done = threading.Event()
 
-    def record(settings):
+    def record(settings, **kw):
         calls.append((settings, threading.current_thread() is threading.main_thread()))
+        calls.kw.append(kw)
         done.set()
     monkeypatch.setattr(kick, "kick", record)
     return calls, done
@@ -289,7 +298,37 @@ def test_a_cap_change_releases_and_the_same_cap_does_not():
     assert store_rows.releases({"connect_backlog_cap": 300}, {"connect_backlog_cap": {"ja": 500, "zh": 300}})
     assert store_rows.releases({"connect_backlog_cap": {"ja": 500}}, {"connect_backlog_cap": {"ja": 0}})
     assert not store_rows.releases({"connect_backlog_cap": {"ja": 500}}, {"connect_backlog_cap": {"ja": 500}})
-    assert not store_rows.releases({"connect_backlog_cap": 300}, {"connect_video_folders": {"ja": ["D:/Anime"]}})
+    assert not store_rows.releases({"connect_backlog_cap": 300}, {"connect_backlog_cap": 300})
+
+
+def test_a_video_folder_added_releases_for_videos_and_the_same_folders_do_not():
+    # why (Michi-VF, Mattias 3.0.0): a folder added to *More video folders* must make a running Connect look for the
+    # waiting episodes' videos again — a plain wake leaves a job parked on *No video* until its next start
+    folders = {"connect_video_folders": {"ja": [r"\\hemma\data\Japanese\Anime\incoming"], "zh": []}}
+    assert store_rows.releases({"connect_backlog_cap": 300}, folders)
+    assert store_rows._finds_videos({}, folders)
+    assert not store_rows.releases(folders, dict(folders)), "the same folders: nothing to look for"
+    assert not store_rows._finds_videos({}, {"connect_backlog_cap": 500}), "the cap: a plain kick"
+    taken_away = {"connect_video_folders": {"ja": [], "zh": []}}
+    assert not store_rows.releases(folders, taken_away), "a folder taken away finds nothing: no start for it"
+    assert store_rows.releases({"connect_video_folders": [r"D:\Anime"]}, folders), "a plain list (every language's)"
+    shared = r"D:\Anime"
+    assert store_rows.releases({"connect_video_folders": {"ja": [], "zh": [shared]}},
+                               {"connect_video_folders": {"ja": [shared], "zh": [shared]}}),         "a folder new to Japanese though Chinese had it: Japanese's episodes look there now"
+
+
+def test_a_video_folder_added_in_the_page_kicks_connect_for_videos_on_a_worker(qapp, kicked):
+    calls, done = kicked
+    data = dict(ALL_ON, connect_video_folders={"ja": [], "zh": []})
+    page, _rows, _shell, _store = make({"soon_line": 25, "mine_line": 20, "arrivals_on": 1}, data=data)
+    try:
+        assert page.rows["connect_video_folders"].controls[0].add_item(r"H:\Anime\incoming")   # *Add a folder…*'s
+        assert wait_until(done.is_set)
+        settings, on_main = calls[0]
+        assert on_main is False and calls.kw == [{"videos": True}], "kicked for videos, on a worker"
+        assert settings["connect_video_folders"]["ja"] == [r"H:\Anime\incoming"]
+    finally:
+        _close(page)
 
 
 def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked):

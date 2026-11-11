@@ -216,6 +216,53 @@ def test_a_store_with_no_sources_gives_the_index_exactly_the_folders_it_had(monk
     assert seen[-1][1:] == ([added], []), "a stopped source: as before"
 
 
+def test_a_video_folder_added_while_connect_runs_is_looked_in_after_its_videos_kick():
+    # why (Michi-VF, Mattias 3.0.0): he added his anime's video folder while Connect ran for other episodes; the run's
+    # index kept the folders it started with, so even woken the episode stayed *No video* until Connect's next start.
+    # A videos kick (the folder's setting changed, a video linked) makes the index again from settings.json now;
+    # a plain kick (a *Mine now*, a drag) reads nothing again (S19)
+    from app.connect import kick
+    c.library("ja")
+    with c.store("ja") as store:
+        item = store.ids("now")[0]
+        sub = os.path.basename(store.item(item)["rel_path"])
+    added = os.path.join(h.root(), "elsewhere", "Anime", "incoming")
+    video = _video(os.path.join(added, sub.split(".")[0] + ".mkv"))     # the subtitle's own name, in the new folder
+    s = _steps()                                                        # the run began before the folder was added
+    job = {"id": 1, "item_id": item}
+    assert s.video("ja", job) is None, "not in any folder the run knows: No video"
+    h.write_settings(connect_enabled=True, connect_video_folders={"ja": [added], "zh": []})     # the page's write
+    kick.wake()
+    assert s.kicked() is True and s.video("ja", job) is None, "a plain kick: the run's folders as they were"
+    kick.wake(videos=True)
+    assert s.kicked() == kick.VIDEOS
+    assert _same(s.video("ja", job), video), "found in the folder added mid-run"
+    index = s._videos("ja")
+    kick.wake(videos=True)                                              # a link: the folders as they were
+    assert s.kicked() == kick.VIDEOS and s._videos("ja") is index, "unchanged folders: the run's index kept (S19)"
+
+
+def test_an_unreadable_settings_file_at_a_videos_kick_keeps_the_runs_folders(monkeypatch):
+    # why: settings.json half-written by the window at that moment must not make Connect forget the folders it had
+    from app.cli import verbs
+    from app.cli.contract import CliError
+    from app.connect import kick
+    c.library("ja")
+    with c.store("ja") as store:
+        item = store.ids("now")[0]
+        sub = os.path.basename(store.item(item)["rel_path"])
+    added = os.path.join(h.root(), "Added videos")
+    video = _video(os.path.join(added, sub.split(".")[0] + ".mkv"))
+    s = _steps(connect_video_folders=[added])
+
+    def unreadable():
+        raise CliError("settings-unreadable", "half-written")
+    monkeypatch.setattr(verbs, "settings", unreadable)
+    kick.wake(videos=True)
+    assert s.kicked() == kick.VIDEOS
+    assert _same(s.video("ja", {"id": 1, "item_id": item}), video)
+
+
 # --------------------------------------------------------------------------- #
 # The index's walk skips what a source's look skips (B3: `library_store.skip_dir`), in every folder it lists
 # --------------------------------------------------------------------------- #

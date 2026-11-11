@@ -186,3 +186,113 @@ def test_a_chinese_episode_links_too(tmp_path):
         link.link(s, item, c.video("示例节目 - 05.mp4"))
         rec = library.pairing_of(s, item)
     assert rec["language"] == "zh" and rec["video_path"].endswith("示例节目 - 05.mp4")
+
+
+class _RunningSteps(LinkedSteps):
+    """A Connect running for hours (Mattias's, 3.0.0): its wake mark read as the real run reads it, and every video
+    look kept — `during_pause` is the user's press while it pauses between two looks."""
+
+    def __init__(self, folder, plan, tsubasa, during_pause):
+        super().__init__(folder, plan, tsubasa)
+        self.during_pause, self.videos_found = during_pause, []
+
+    def kicked(self):
+        return self.real.kicked()
+
+    def video(self, lang, job):
+        found = super().video(lang, job)
+        self.videos_found.append((job["item_id"], found))
+        return found
+
+    def sleep(self, _seconds):
+        press, self.during_pause = self.during_pause, None
+        if press is not None:
+            press()
+
+    def mine(self, lang, job, picked, words, attempt):
+        press, self.during_mine = getattr(self, "during_mine", None), None
+        if press is not None:
+            press()                                     # the user's press while Anki Miner makes this one's cards
+        return super().mine(lang, job, picked, words, attempt)
+
+
+def test_a_video_linked_while_connect_runs_is_mined_from_in_the_same_run(tmp_path, lang="ja"):
+    # why (Michi-VF): Mattias's episodes waited *No video* while Connect ran on (other episodes kept it looking);
+    # he picked each video by hand and nothing changed until a restart that never came. The link, through the
+    # window's own Link (as the writer's hook calls it), must let the next look find that video and go on —
+    # here to Anki Miner (busy: the episode then waits on it, never on *No video*). Japanese: Connect waits on a
+    # Chinese episode before its pick (E24); the link's kick is the same for both (`test_p41_window_link`)
+    from app.connect import window_link
+    s, item = _episode(lang)
+    other = s.ids("now")[1]
+    with s:
+        link.link(s, other, c.video("Other - 02.mkv"))                  # the episode keeping it looking
+    video = c.video("[NanakoRaws] Example Show S4 - 12 (AT-X 1080p).mkv")
+
+    def pick_it_by_hand():
+        with c.store(lang) as st:
+            assert link.link(st, item, video) is not None
+        on = window_link.Link(lang, lambda: {"connect_enabled": True}, running=lambda: True)
+        assert on.after_change(op=window_link.LINKED) == window_link.RUNNING
+
+    plan = {"line": {lang: [item, other]}, "queue": {lang: [item, other]}, "words": {str(item): WORDS,
+            str(other): WORDS}, "miner_busy": True}
+    steps = _RunningSteps(str(tmp_path), plan, Tsubasa(), pick_it_by_hand)
+    with Ledger() as ledger:
+        summary = runner.run({}, [lang], steps=steps, ledger=ledger, sleep=steps.sleep, looks=3)
+    mine = [found for i, found in steps.videos_found if i == item]
+    assert mine[0] is None, "no video at the first look: No video, parked"
+    assert mine[1:] and all(found == os.path.abspath(video) for found in mine[1:]), "looked at again after the link"
+    assert summary["languages"][lang]["waiting"][item] == runner.ANKI_MINER_OPEN, "past No video: at Anki Miner"
+
+
+def test_a_video_linked_during_connects_last_pass_is_mined_before_it_exits(tmp_path):
+    # why (Michi-VF review B1): nothing holding Connect open — its pass parks episode A on *No video*, then mines B
+    # (a minute of Anki Miner) while you link A's video. The pass ends with nothing to look at again, and a link puts
+    # nothing in the inbox: exiting there leaves A parked for a start no one makes. The wake read before the exit
+    # takes one more pass, and A is mined
+    from app.connect import window_link
+    s, item = _episode()
+    other = s.ids("now")[1]
+    with s:
+        link.link(s, other, c.video("Other - 02.mkv"))
+    video = c.video("[NanakoRaws] Example Show S4 - 13 (AT-X 1080p).mkv")
+
+    def pick_it_by_hand():
+        with c.store() as st:
+            assert link.link(st, item, video) is not None
+        on = window_link.Link("ja", lambda: {"connect_enabled": True}, running=lambda: True)
+        assert on.after_change(op=window_link.LINKED) == window_link.RUNNING
+
+    plan = {"line": {"ja": [item, other]}, "queue": {"ja": [item, other]},
+            "words": {str(item): WORDS, str(other): [("約束", "ヤクソク"), ("勇気", "ユウキ")]}}
+    steps = _RunningSteps(str(tmp_path), plan, Tsubasa(), None)
+    steps.during_mine = pick_it_by_hand
+    with Ledger() as ledger:
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=steps.sleep, looks=5)
+        assert ledger.job("ja", other)["state"] == "done"
+        assert ledger.job("ja", item)["state"] == "done", "mined in the same run, never left on No video"
+    assert [found for i, found in steps.videos_found if i == item] == [None, os.path.abspath(video)]
+    assert sorted(steps.anki.words()) == sorted([w for w, _r in WORDS] + ["約束", "勇気"])
+
+
+class _KickedAtExit(FakeSteps):
+    """A plain kick (a drag, a setting) that lands just as the pass ends: read at the exit's look, none at the top."""
+
+    def __init__(self, folder, plan):
+        super().__init__(folder, plan)
+        self.looked = 0
+
+    def kicked(self):
+        self.looked += 1
+        return self.looked == 2
+
+
+def test_a_plain_kick_at_the_exit_frees_nothing_and_takes_no_extra_pass(tmp_path):
+    # why (Michi-VF, mutant M13): the exit's wake look takes one more pass only when it let a parked job go — a wake
+    # that frees nothing (nothing open) must not loop Connect again (S19: no look for nothing)
+    steps = _KickedAtExit(str(tmp_path), {})
+    with Ledger() as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None)
+    assert steps.looked == 2, "the exit looked at the wake"
+    assert summary["looks"] == 1, "nothing freed: no second pass"

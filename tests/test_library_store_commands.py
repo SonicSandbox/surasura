@@ -2057,6 +2057,49 @@ def test_a_title_sent_to_soon_never_lands_inside_the_show_the_line_runs_through(
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_choice_1_titles_sent_to_current_after_the_last_one_sent_keep_the_order_sent(language):
+    """Choice 1 (Sonic, 2026-11-09: "sure"): the sort screen sends each title to Current after the last one it sent
+    (`place top --after`), so the first sent stays on top, not the last. Each lands right after its anchor as one
+    block, says it went to Current (`change.to`, Start sorting over's "still placed" rule) and undoes as a move; an
+    anchor no longer in Current (moved on, put back) or inside the block itself sends it to the top, as before."""
+    store = migrated(language, shows=5, episodes=3)
+    now, goal = store.ids("now"), store.ids("goal")
+    a, b, c = goal[0:3], goal[3:6], goal[6:9]          # three titles from 6+ Months, sent in this order
+    first = store.place(a, "top")
+    assert first.to == "now" and store.ids("now")[:3] == a
+    second = store.place(b, "top", after_id=a[-1])
+    assert second.to == "now" and store.ids("now")[:6] == a + b
+    third = store.place(c, "top", after_id=b[-1])
+    rest = [i for i in store.ids("now") + store.ids("soon") if i in now]
+    assert store.ids("now")[:9] == a + b + c and rest == now      # (the Soon line counts files: Current's tail flows on)
+    assert store.undo(third).notes == []               # the last one back: a move undone
+    assert store.ids("now")[:6] == a + b and store.ids("goal")[:3] == c
+    store.set_tier(b, "soon")                          # the anchor left Current: the top, as before
+    store.place(c, "top", after_id=b[-1])
+    assert store.ids("now")[:6] == c + a
+    store.place(b, "top", after_id=b[-1])              # an anchor inside the block: the top
+    assert store.ids("now")[:3] == b
+    store.place(goal[9:12], "top", after_id=999999)     # an anchor that isn't there at all: the top
+    assert store.ids("now")[:3] == goal[9:12]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_choice_1_a_title_sent_after_one_inside_a_group_lands_after_the_group(language):
+    """LM11 (G4): a title sent after an anchor never lands inside a group — after the group's last row."""
+    store = migrated(language, shows=5, episodes=3)
+    now = store.ids("now")
+    group = store.join([store.item(now[0])["piece_id"], store.item(now[3])["piece_id"]], how="group")
+    assert group is not None
+    grouped = [i for i in store.ids("now") if store.item(i)["piece_id"] == store.item(now[0])["piece_id"]]
+    sent = store.ids("goal")[:3]
+    store.place(sent, "top", after_id=now[0])          # the group's first row
+    order = store.ids("now")
+    assert order[:len(grouped)] == grouped and order[len(grouped):len(grouped) + 3] == sent
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_sent_to_soon_still_goes_first_in_soon_when_the_line_falls_between_two_shows(language):
     """The line between two shows (the usual case): Soon's very top, as before."""
     store = migrated(language, shows=3, episodes=4)

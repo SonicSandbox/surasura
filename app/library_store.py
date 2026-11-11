@@ -5162,11 +5162,13 @@ class Store:
                              after_id=None if before else anchor, by=by, explicit=explicit) is not None
         return self.move([item_id], tier, by=by, explicit=explicit) is not None
 
-    def place(self, item_ids, where, by="user", explicit=None):
+    def place(self, item_ids, where, by="user", explicit=None, after_id=None):
         """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
         episode before it in Current (before its next one when only later ones are there), a title only in Finished
         or 6+ Months goes to the top of Current (Q4-9), a title with nothing anywhere stays where it is; `top`, `goal`,
-        `finished` — the rule targets. One command; undone as a move. Returns the change, or None."""
+        `finished` — the rule targets. `after_id` with `top` (the sort screen, choice 1: the order titles were sent
+        in): right after that item while it is still in Current (past its group, LM11), else the top. One command;
+        undone as a move. Returns the change, or None."""
         ids = list(dict.fromkeys(item_ids))
         if not ids:
             return None
@@ -5189,7 +5191,11 @@ class Store:
             tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
             if tier is None:
                 raise ValueError(f"unknown place {where!r}")
-            return _placed_to(self.move(ids, tier, by=by, explicit=explicit), tier)
+            anchor = None
+            if after_id is not None and tier == "now" and after_id not in ids:
+                row = self.conn.execute("SELECT tier FROM items WHERE id = ?", (after_id,)).fetchone()
+                anchor = self._past_group(after_id) if row is not None and row[0] == "now" else None
+            return _placed_to(self.move(ids, tier, after_id=anchor, by=by, explicit=explicit), tier)
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).

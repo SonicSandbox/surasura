@@ -41,7 +41,9 @@ class ArrivalsWriter(FakeWriter):
     """test_drag's recording writer, with S2's commands the tray gives (written into the stand-in library as the store
     would: a place moves the items, Finished dates them, Remove takes them out)."""
 
-    def place(self, ids, where, label=None):
+    def place(self, ids, where, label=None, after=None):
+        if after is not None:                           # choice 1: the sort screen's next Current pick
+            return self._put("place", ids, label, where=where, after=after)
         return self._put("place", ids, label, where=where)
 
     def remove(self, ids, label=None):
@@ -60,7 +62,9 @@ class ArrivalsWriter(FakeWriter):
                                   for i in change.ids], order=True)
             else:
                 tier = {"top": "now", "after-show": "now", "soon": "soon", "goal": "goal"}[where]
-                lib.commit(items=[{"id": i, "tier": tier, "ord": -1000.0 + k} for k, i in enumerate(change.ids)],
+                anchor = {r["id"]: r for r in lib.items()}.get(change.kw.get("after"))
+                start = anchor["ord"] + 0.001 if anchor is not None and anchor["tier"] == "now" else -1000.0
+                lib.commit(items=[{"id": i, "tier": tier, "ord": start + k * 0.001} for k, i in enumerate(change.ids)],
                            order=True)
         elif change.op == "remove":
             lib.commit(gone=[("item", i) for i in change.ids], order=True)

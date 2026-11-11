@@ -3322,6 +3322,9 @@ def _wait_or_needs(error, resume, url=None):
         return Needs(context["need"], error.message, whole=True)
     if error.code in ("anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
         say = {"anki-busy": REVIEWING, "anki-miner-busy": _miner_busy()}.get(error.code, error.message)
+        if error.code == "anki-busy" and context.get("anki") == "busy":     # Anki busy with its sync (#370)
+            from app.connect import anki_session
+            say = anki_session.BUSY
         return Wait(say, resume=resume)
     return Needs(error.code, error.message)
 

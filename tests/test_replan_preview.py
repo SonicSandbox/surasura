@@ -2005,3 +2005,23 @@ def test_the_helpers_pipe_keeps_a_line_that_gives_up_as_that_kind():
     # a7: a line that gives up on a fault keeps that kind too (the strip's red, never amber)
     remote._receive({"say": "Re-ordering as you move stopped: disk full", "gives_up": True, "fails": True, "seen": 0})
     assert isinstance(heard[3], replan_preview.Fails) and not isinstance(heard[2], replan_preview.Fails)
+
+
+def test_anki_busy_mid_read_is_not_answering_and_tried_again():
+    """#370: a run that met Anki busy with a collection operation (its sync, Check Database) reports `anki_busy`: the
+    host says Anki isn't answering just now and tries again — never "Anki not re-ordered: Anki refused …"."""
+    from types import SimpleNamespace
+    from modules.junban import auto
+    host, lines = _host()
+    host._retry_at = None
+    report = {"ok": False, "anki_error": "action", "anki_busy": True,
+              "problems": ["Anki refused 'findCards': Collection lifecycle operation is active."]}
+    original = reposition.run, auto.decide_actions
+    reposition.run = lambda *a, **k: dict(report)
+    auto.decide_actions = lambda settings: None
+    try:
+        host._write({}, SimpleNamespace(front_size=0, kind=None, front_ids=frozenset()), "move")
+    finally:
+        reposition.run, auto.decide_actions = original
+    assert lines[-1] == replan_preview.NOT_ANSWERING and host._retry_at is not None
+    assert not isinstance(lines[-1], (replan_preview.GivesUp, replan_preview.Fails))

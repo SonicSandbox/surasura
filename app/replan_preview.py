@@ -826,6 +826,10 @@ class Host:
         if report.get("restore_first"):
             self._tell(RESTORE_FIRST, in_junban=True)   # only you can clear it, in 順: said, not retried
             return report
+        if report.get("anki_busy"):                  # (before `anki_error`, which a busy report carries too)
+            self._tell(NOT_ANSWERING)                # Anki busy with a collection operation (its sync, #370): again
+            self._retry(kind)                        # shortly, never "Anki not re-ordered: Anki refused …"
+            return report
         if not report.get("ok"):
             written = len(report.get("written") or [])
             problems = report.get("problems") or ["it could not finish"]

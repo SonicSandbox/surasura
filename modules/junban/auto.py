@@ -121,14 +121,16 @@ def _backfill_quietly(settings):
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return ""
-        if ankiconnect.invoke("guiReviewActive", url, timeout=5) is True:
+        if anki_connect.patient("guiReviewActive", url) is True:
             return ""
         from modules.junban import backfill
         report = backfill.run_auto(settings)
     except Exception as e:          # a background job must never take the window down
+        if anki_connect.is_busy(e):         # Anki busy with a collection operation (its sync, #370): not now
+            return ""
         return f"Backfill (automatic) skipped: {e}"
-    if report.get("busy"):          # another writer holds Anki (E1.4): not now, the next trigger tries again
-        return ""
+    if report.get("busy") or report.get("anki_busy"):  # another writer holds Anki (E1.4), or Anki is busy: not now,
+        return ""                                       # the next trigger tries again
     if not report.get("ok"):
         return f"Backfill (automatic) did not run: {(report.get('problems') or ['it could not finish'])[0]}"
     if not report.get("written"):
@@ -159,8 +161,9 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
     """One automatic reorder, with every guard of the automatic step -> a dict:
 
       * `outcome`: "ran" (the report holds what was written), "needs-deck" (not one nominated deck), "anki-closed",
-        "reviewing", "list-stale", "busy" (another Anki writer held the lock), "refused" (Junban's own refusal:
-        `report["problems"]`), "failed" (`error`);
+        "reviewing", "list-stale", "busy" (another Anki writer held the lock), "anki-busy" (Anki itself busy with a
+        collection operation — its sync, Check Database — past `anki_connect.patient`'s wait, #370), "refused"
+        (Junban's own refusal: `report["problems"]`), "failed" (`error`);
       * `report`: `reposition.run`'s report, when it ran or refused.
 
     `positions_only`: due positions and nothing else, whatever `junban_auto_actions` says (`surasura-cli junban
@@ -190,7 +193,7 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return {"outcome": "anki-closed"}
-        if ankiconnect.invoke("guiReviewActive", url, timeout=5) is True:
+        if anki_connect.patient("guiReviewActive", url) is True:
             return {"outcome": "reviewing"}
         language = reposition._language(settings)
         if list_current is False or (list_current is None and reposition.list_is_stale(
@@ -213,11 +216,15 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
         extra["job"].cards_out = bool(cards_out) and not positions_only        # P4.1 L2
         report = reposition.run(settings, refresh=False, verb=anki_connect.AUTOMATIC_STEP, **extra)
     except Exception as e:          # a background job must never take the window down
+        if anki_connect.is_busy(e):
+            return {"outcome": "anki-busy"}
         return {"outcome": "failed", "error": str(e)}
     if report.get("reviewing"):     # a review started while it planned: nothing written (P1.4, §7.2)
         return {"outcome": "reviewing", "report": report}
     if report.get("busy"):          # another writer holds Anki (E1.4)
         return {"outcome": "busy", "report": report}
+    if report.get("anki_busy"):     # Anki busy with a collection operation mid-read: nothing written
+        return {"outcome": "anki-busy", "report": report}
     if not report.get("ok"):
         return {"outcome": "refused", "report": report}
     return {"outcome": "ran", "report": report}
@@ -235,7 +242,7 @@ def _reorder_quietly(settings, list_current=None, job=None):
     if outcome == "refused":
         problems = report.get("problems") or ["it could not finish"]
         return f"順 automatic reorder did not run: {problems[0]}"
-    if outcome != "ran":            # Anki closed, reviewing, the list behind, another writer: not now, quietly
+    if outcome != "ran":            # Anki closed or busy, reviewing, the list behind, another writer: not now, quietly
         return ""
     if report.get("empty_list"):                # M-W2-1: nothing put away, and said so
         return f"順 (automatic): {report.get('message', '')}"

@@ -1595,7 +1595,7 @@ def _answer(reply, action):
     if not isinstance(reply, dict) or "result" not in reply or "error" not in reply:
         raise AnkiError(f"Unexpected reply shape from '{action}' — is this really AnkiConnect?", kind="protocol")
     if reply["error"] is not None:
-        raise AnkiError(f"Anki refused '{action}': {reply['error']}", kind="action")
+        raise anki_connect.refusal(action, reply["error"])
     return reply["result"]
 
 
@@ -2366,10 +2366,12 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                                     out_read=out_read)
     except (AnkiError, spaced.SpacedError) as e:
         # `anki_error`: Anki stopped answering mid-read (its kind) — the fast re-plan's job tries again (E3.1 review 3
-        # R2), where a refusal only the user can clear is said once.
+        # R2), where a refusal only the user can clear is said once. `anki_busy`: Anki busy with a collection operation
+        # (its sync, #370) — not now, quietly, for every automatic caller.
         return _report(False, "Junban did not make any changes.",
                        problems=[str(e)], warnings=checks["warnings"], decks=decks,
-                       **({"anki_error": e.kind} if isinstance(e, AnkiError) else {}))
+                       **({"anki_error": e.kind} if isinstance(e, AnkiError) else {}),
+                       **({"anki_busy": True} if anki_connect.is_busy(e) else {}))
 
     if stats.get("problems"):
         # M-W2-1 (review #2): the list couldn't be read — nothing written, and never ok (the caller tries again)

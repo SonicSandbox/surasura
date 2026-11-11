@@ -50,6 +50,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import time
 from types import SimpleNamespace
 
@@ -230,9 +231,10 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
-class _Beside(Repick):
-    """Michi-NT: pick again from the subtitle beside its video (`_fit`) — a choice of file, never a change: it counts
-    as none of `_job`'s re-picks (once a pass: `_fit` never switches from the file beside)."""
+class _Again(Repick):
+    """Pick again from the same subtitle in other bytes (`_fit`) — the one beside its video (Michi-NT), or its library
+    copy re-timed by tsubasa (Michi-NT2) — never a change of what the words were picked for: it counts as none of
+    `_job`'s re-picks (each at most once a pass: `_fit` never switches from the file beside, a job is re-timed once)."""
 
 
 def _now():
@@ -941,8 +943,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
                         step = "filling"
                     break
-                except _Beside:
-                    step = "picking"            # Michi-NT: the file beside its video — no change, no re-pick spent
+                except _Again:
+                    step = "picking"            # Michi-NT: the same subtitle, another file — no re-pick spent
                 except Repick:
                     step = "picking"
                     repicks += 1
@@ -1252,6 +1254,7 @@ def _pick(steps, ledger, lang, job, record=True):
     if beside:
         picked["beside"], picked["copy"] = beside, before.get("copy")
         picked["beside_at"] = _stamp(beside)    # the file as checked: changed or gone before a batch -> picked again
+        picked["part_way"] = bool(before.get("part_way"))   # Michi-NT2: the copy's own verdict, for its re-time
     if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
         picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
         #                             marked origin's video standing in is another file); a new one clears it
@@ -1406,6 +1409,35 @@ def _fit_tries(ledger, jid, failed):
         return tries
 
 
+RETIMED = "retimed:"            # ledger meta: `retimed:<job id>` -> when its library copy was given to tsubasa to re-time
+RETIMED_FOLDER = "retimed"      # in a job's run folder: tsubasa's re-timed copy, until it takes the copy's place
+
+
+def _retime(steps, ledger, lang, job, video, copy):
+    """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa in its own place (`Steps.retime`)
+    -> True. Once a job (`RETIMED`, marked before tsubasa is asked: a Connect killed meanwhile never asks again and
+    again); *Check again* lets it be asked once more. A stand-in Steps without it, no video, or a failure: False, the
+    copy as it was, the job named not timed. Your *Stop* ends it as the check does."""
+    do = getattr(steps, "retime", None)
+    if do is None or not video or not copy:
+        return False
+    key = f"{RETIMED}{int(job['id'])}"
+    if ledger.conn.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is not None:
+        return False
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, _now()))
+    try:
+        done = do(lang, job, video, copy)
+    except stopping.Stopped:
+        raise
+    except Exception:                       # a re-time that fails is no reason for the job to fail: not timed, named
+        log.warning("Connect couldn't have tsubasa re-time job %s's subtitle", job.get("id"), exc_info=True)
+        return False
+    if done:
+        log.info("Connect: job %s: tsubasa re-timed its library copy, every part its own shift: %s", job["id"], copy)
+    return bool(done)
+
+
 def _stamp(path):
     """[path, size, modified time] of a file as it is now, or None (no path, or it can't be read)."""
     try:
@@ -1471,23 +1503,24 @@ def retimed_beside(video, copy, language):
         stamp = _stamp(path)
         if stamp is not None and _on_disk(path):     # never a cloud placeholder: its read would download it (RD-S1)
             found.append((stamp[2], path))
-    if not found:
-        return None
-    try:
-        lines = [c.text for c in cues.read(copy, language)]
-        with open(copy, "rb") as f:
-            own = f.read()
-    except (OSError, UnicodeDecodeError, ValueError):
-        return None
     for _at, path in sorted(found, reverse=True):
-        try:
-            with open(path, "rb") as f:
-                same_bytes = f.read() == own
-            if lines and not same_bytes and [c.text for c in cues.read(path, language)] == lines:
-                return path
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
+        if same_subtitle(copy, path, language):
+            return path
     return None
+
+
+def same_subtitle(copy, other, language):
+    """Is `other` the subtitle `copy` is, re-timed — the very lines (`cues.read`'s texts, in order: CRLF or LF, a BOM
+    or none read alike) in other bytes? No line, or a file that can't be read: no."""
+    from app import cues
+    try:
+        with open(copy, "rb") as f, open(other, "rb") as g:
+            if f.read() == g.read():
+                return False
+        lines = [c.text for c in cues.read(copy, language)]
+        return bool(lines) and [c.text for c in cues.read(other, language)] == lines
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
 
 
 def _fit(steps, ledger, lang, job):
@@ -1536,18 +1569,27 @@ def _fit(steps, ledger, lang, job):
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
         was = picked.pop("beside", None)
+        part_way = who == "tsubasa" and fit_check.part_way(why)     # this check's: the copy's, unless `was`
         if was:
             # Michi-NT: the subtitle beside its video wasn't timed either — the next check starts from the copy again
             log.info("Connect: job %s: the subtitle beside its video isn't timed either: %s", jid, was)
+            part_way = picked.pop("part_way", False)                # the copy's own verdict, kept at the switch
         elif who == "tsubasa" and verdict == fit_check.NOT_TIMED:
             # Michi-NT (Mattias #XP44T6): the library's copy isn't timed — the same subtitle re-timed beside its video
             # (tsubasa's own output, named after the video) is checked in its place: timed, its cards are cut from it
             other = _retimed(steps, lang, job, picked)
             if other:
                 log.info("Connect: job %s: its subtitle re-timed beside its video is checked: %s", jid, other)
-                picked["beside"], picked["copy"] = other, picked.get("file")
+                picked["beside"], picked["copy"], picked["part_way"] = other, picked.get("file"), part_way
                 ledger.set_state(jid, "fit-check", picked=picked)
-                raise _Beside()
+                raise _Again()
+        copy = picked.get("copy") if was else picked.get("file")
+        if part_way and _retime(steps, ledger, lang, job, picked.get("video"), copy):
+            # Michi-NT2 (based on Mattias's #364): its timing changes part-way — tsubasa re-timed the library's copy
+            # itself, every segment its own shift: picked again from it and checked again (a copy that still changes
+            # part-way is named, never re-timed twice a job)
+            ledger.set_state(jid, "fit-check", picked=picked)
+            raise _Again()
         # the library's copy as checked (never one beside a video: a share is never looked at each look) — a change
         # to it lets the job go again in this run (`_copy_changed`)
         picked["checked"] = _stamp(picked.get("copy") if was else picked.get("file"))
@@ -2957,6 +2999,39 @@ class Steps:
     def retimed(self, lang, job, video, subtitle):
         """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
         return retimed_beside(video, subtitle, lang)
+
+    def retime(self, lang, job, video, copy):
+        """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa (`fit_check.retime`, written
+        in the job's own run folder, removed after) put in its place by S5's own rule (`sources.put_copy`: the old copy
+        into the data folder's `.trash` first, purged 30 days on; the new one written beside it, then `os.replace`)
+        -> True; else False and the copy as it was. Only a copy inside the language's `Library` (`sources.
+        inside_library`: a hato / 2.x file, a `Library` that leads elsewhere, never), only the same subtitle
+        (`same_subtitle`: its very lines). Its original is left as it is: one that changes is copied over it again
+        (S5), and checked again."""
+        from app import sources
+        from app.path_utils import get_data_path
+        data_dir = get_data_path(lang)
+        try:
+            rel = os.path.relpath(copy, data_dir).replace("\\", "/")
+        except ValueError:                  # another drive: never inside
+            return False
+        full = sources.inside_library(data_dir, rel)
+        if full is None or not os.path.isfile(full):
+            return False
+        out_dir = os.path.join(self.run_dir(job), RETIMED_FOLDER)
+        part = full + ".part"
+        try:
+            made = fit_check.retime(video, full, out_dir)
+            if made is None or not same_subtitle(full, made, lang):
+                log.info("Connect: job %s: tsubasa gave no re-timed copy of the same subtitle; its copy kept", job["id"])
+                return False
+            shutil.copyfile(made, part)
+        except OSError:
+            sources._drop(part)
+            return False
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+        return sources.put_copy(data_dir, full, part)
 
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups

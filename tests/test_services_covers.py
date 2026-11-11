@@ -413,7 +413,13 @@ _PAGE = ('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1
      '<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>',
      {"Images/cover.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>', "Images/00001.jpeg": _COVER},
      '<meta name="cover" content="img_0001"/>', ""),
-], ids=["epub3-cover-image", "epub2-meta-id", "epub2-meta-file", "guide-page-img", "guide-page-svg", "svg-then-meta"])
+    # the guide naming the picture itself (no manifest item for it), from the book's top, as some tools write it
+    ('', {"Images/00001.jpeg": _COVER}, "", '<guide><reference type="cover" href="/OEBPS/Images/00001.jpeg"/></guide>'),
+    # a Windows-made book: a backslash in the href
+    ('<item id="img_0001" href="Images\\00001.jpeg" media-type="image/jpeg" properties="cover-image"/>',
+     {"Images/00001.jpeg": _COVER}, "", ""),
+], ids=["epub3-cover-image", "epub2-meta-id", "epub2-meta-file", "guide-page-img", "guide-page-svg", "svg-then-meta",
+        "guide-picture-from-top", "backslash-href"])
 def test_a_books_own_cover_is_found_however_its_package_names_it(tmp_path, manifest, files, meta, guide):
     """Mattias, 3.0.0: a book showed no cover. A shop's EPUB names its cover by the manifest's cover-image property or
     EPUB 2's <meta name="cover"> / guide, its file often not called *cover* — every one of those is the book's cover,
@@ -444,6 +450,78 @@ def test_a_cover_page_that_isnt_xml_or_names_nothing_leaves_the_generated_cover(
                      'media-type="application/xhtml+xml"/>', {"Text/t.xhtml": page}, "",
                      '<guide><reference type="cover" href="Text/t.xhtml"/></guide>')
         assert C.epub_cover(book) is None
+
+
+def _break_member(book, member):
+    """The book's `member` with its compressed bytes spoiled (a bad download): its CRC, then its deflate stream."""
+    import zipfile
+    with zipfile.ZipFile(book) as z:
+        info = z.getinfo(member)
+    with open(book, "r+b") as f:
+        f.seek(info.header_offset + 26)
+        skip = struct.unpack("<HH", f.read(4))
+        f.seek(info.header_offset + 30 + sum(skip))
+        f.write(b"\xff" * min(8, info.compress_size))
+
+
+def test_a_spoiled_cover_page_never_hides_the_cover_image_nor_breaks_the_scan(tmp_path):
+    """A book with a spoiled guide page: its cover-image item is still its cover (the page is never read for it), and
+    with nothing else the book has none — no error out of the reader (the scan would skip the title's other books)."""
+    import zipfile
+    page = _PAGE.format("<div><img src='../Images/00001.jpeg'/></div>" + "<p>表紙</p>" * 200)
+    guide = '<guide><reference type="cover" href="Text/titlepage.xhtml"/></guide>'
+    with_item = _book(str(tmp_path / "星の歌.epub"), '<item id="i" href="Images/i-0001.jpg" media-type="image/jpeg" '
+                      'properties="cover-image"/>', {"Images/i-0001.jpg": _COVER}, "", guide)
+    only_page = _book(str(tmp_path / "表紙.epub"), '', {"Images/00001.jpeg": _COVER}, "", guide)
+    for book in (with_item, only_page):
+        with zipfile.ZipFile(book, "a", compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("OEBPS/Text/titlepage.xhtml", page)
+        _break_member(book, "OEBPS/Text/titlepage.xhtml")
+    assert C.epub_cover(with_item) == (_COVER, ".jpg")
+    assert C.epub_cover(only_page) is None
+
+
+def test_a_crafted_book_is_looked_at_a_few_answers_deep_by_their_first_bytes(tmp_path, monkeypatch):
+    """Forty items named *cover* that aren't pictures: at most COVER_TRIES are looked at, each by its first bytes —
+    never every member decompressed whole."""
+    import zipfile
+    items = "".join(f'<item id="cover{i}" href="Images/cover{i}.jpg" media-type="image/jpeg"/>' for i in range(40))
+    book = _book(str(tmp_path / "表紙.epub"), items, {f"Images/cover{i}.jpg": "表紙" * 5000 for i in range(40)})
+    opened, read = [], []
+    real_open = zipfile.ZipFile.open
+
+    def counting(self, name, *a, **kw):
+        f = real_open(self, name, *a, **kw)
+        if "Images/" in str(getattr(name, "filename", name)):       # (the container and the package are read whole)
+            opened.append(name)
+            real_read = f.read
+            f.read = lambda n=-1: read.append(n) or real_read(n)
+        return f
+    monkeypatch.setattr(zipfile.ZipFile, "open", counting)
+    assert C.epub_cover(book) is None
+    assert len(opened) == C.COVER_TRIES and read == [16] * C.COVER_TRIES, "a few first bytes each, never a whole one"
+
+
+def test_a_book_whose_3_0_0_cover_was_its_back_cover_gets_its_real_cover(lib):
+    """3.0.0 could take a back cover named *cover* over the book's cover-image; its record is in every such library.
+    The next scan reads each book once again (a new cache name) and records its real cover."""
+    item = lib.store.ids("soon")[0]
+    work = lib.work_of(item)
+    book = _book(os.path.join(lib.folder_of(item), "星の歌.epub"),
+                 '<item id="i-back" href="Images/backcover.png" media-type="image/png"/>'
+                 '<item id="i-0001" href="Images/i-0001.jpg" media-type="image/jpeg" properties="cover-image"/>',
+                 {"Images/backcover.png": _BACK, "Images/i-0001.jpg": _COVER})
+    st = os.stat(book)
+    old = C._digest("epub", lib.language, work, lib.rel(book), st.st_size, st.st_mtime_ns)[:32] + ".png"
+    write(os.path.join(path_utils.get_covers_cache_path(), old), _BACK)         # 3.0.0's copy and record
+    lib.writer.set_cover(work, "file", ref=lib.rel(book), path="cache:" + old, auto=True)
+    assert h.until(lambda: lib.row(work)[2] == "cache:" + old)
+    assert lib.scan() == 1
+    path = lib.row(work)[2]
+    assert path != "cache:" + old
+    with open(os.path.join(path_utils.get_covers_cache_path(), path[len("cache:"):]), "rb") as f:
+        assert f.read() == _COVER
+    assert lib.scan() == 0, "read once again, not at every scan"
 
 
 def test_a_locked_title_is_never_looked_at_on_disk(lib, monkeypatch):

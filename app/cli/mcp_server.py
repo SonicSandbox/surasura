@@ -322,7 +322,11 @@ def rounds_tool(state, limit=10, language=None):
         raise ToolError(f"`limit` is how many past rounds: a number from 1 to {practice_rounds.LIST_LIMIT}.")
     if not state.keep_rounds():
         return {"language": lang, "keep": False, "rounds": [], "note": OFF}
-    return {"language": lang, "keep": True, "rounds": practice_rounds.rounds(lang, limit),
+    rounds = practice_rounds.rounds(lang, limit)
+    for row in rounds:                      # a round kept before 3.0.2 says `latest`: listed by today's name
+        if row.get("source") in OLD_SOURCES:
+            row["source"] = OLD_SOURCES[row["source"]]
+    return {"language": lang, "keep": True, "rounds": rounds,
             "to_do_one_again": "surasura_practice_start(again=<its round_id>)"}
 
 

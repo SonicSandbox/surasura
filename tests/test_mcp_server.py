@@ -157,6 +157,17 @@ def test_soon_is_the_journeys_next_words_top_the_lists_order_and_latest_soons_ol
     assert state._checkers["ja"].upcoming == {("散歩", "サンポ"), ("冒険", "ボウケン")}
 
 
+def test_the_checker_loads_with_the_journeys_next_words_before_any_round(monkeypatch):
+    # The server loads a language's checker as it starts (`warm`): a draft checked before any round may bring in the
+    # journey's next words, the same `soon` a round reads — never the list's.
+    _write_list()                           # the list: 冒険 議事録 散歩 · the journey: 散歩 議事録 冒険
+    monkeypatch.setattr(mcp_server, "NEXT_WORDS", 1)
+    made = {}
+    monkeypatch.setattr(practice, "Checker", lambda language, upcoming: made.setdefault(language, set(upcoming)))
+    mcp_server.ServerState()._make("ja")
+    assert made["ja"] == {("散歩", "サンポ")}
+
+
 def test_latest_reads_the_journeys_order_and_a_quiz_gets_lines():
     _write_list()
 
@@ -569,12 +580,14 @@ def test_a_hand_edited_round_done_again_still_starts():
 
     async def calls(client):
         return (await client.call_tool("surasura_practice_start", {"again": quiz}),
-                await client.call_tool("surasura_practice_start", {"again": empty}))
-    one, none = _run(state, calls)
+                await client.call_tool("surasura_practice_start", {"again": empty}),
+                await client.call_tool("surasura_rounds", {}))
+    one, none, listed = _run(state, calls)
     brief = _data(one)
     assert brief["round_words"] == [{"word": "冒険", "reading": "", "lines": [{"line": "冒険に出る。", "from": ""}]}]
     assert brief["quiz_lines"] == [{"line": "冒険に出る。", "from": "", "word": "冒険"}]
     assert brief["round"]["source"] == "soon"
+    assert {row["source"] for row in _data(listed)["rounds"]} == {"soon"}       # listed by today's name too
     assert "kept with no words" in _data(none)["note"]
 
 

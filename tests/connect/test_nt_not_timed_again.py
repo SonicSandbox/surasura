@@ -417,3 +417,35 @@ def test_check_again_leaves_an_episode_waiting_on_anything_else_as_it_is(tmp_pat
     assert job["state"] == "waiting" and job["reason"] == runner.NO_VIDEO
     assert actions.check_again("ja", 1, path=path) is False
     assert _job(path)[0]["state"] == "waiting"
+
+
+def test_a7_the_switch_to_the_file_beside_its_video_is_no_repick(tmp_path, path, episode):
+    # `_job` picks again at most twice when what the words were picked for changed (a profile, a pairing): the switch
+    # from the copy to the subtitle beside its video is a choice of file, never such a change — two real changes
+    # after it still mine (red before: the switch spent one, and *keeps changing* was said with nothing mined)
+    copy, video = episode
+    fixed = _beside(video, ".ja.srt", _shifted(_source_text(), 1500))
+    steps = Steps(str(tmp_path), _plan(), copy, video, answers={fixed: (fit_check.TIMED, -1.5)})
+    real, changed = steps.mine, []
+
+    def mine(lang, job, picked, words, attempt):
+        if len(changed) < 2:                        # Anki Miner's profile changed twice under it
+            changed.append(1)
+            raise runner.Repick()
+        return real(lang, job, picked, words, attempt)
+    steps.mine = mine
+    _run(steps, path)
+    job, picked = _job(path)
+    assert job["state"] == "done" and picked["file"] == fixed and len(steps.anki.words()) == 3
+    assert _needs(path, listed=False) == []
+
+
+def test_a7_two_real_changes_more_than_allowed_still_say_so(tmp_path, path, episode):
+    # the limit itself stands: three real changes in one pass -> *keeps changing*, whatever the file
+    copy, video = episode
+    fixed = _beside(video, ".ja.srt", _shifted(_source_text(), 1500))
+    steps = Steps(str(tmp_path), _plan(), copy, video, answers={fixed: (fit_check.TIMED, -1.5)})
+    steps.mine = lambda lang, job, picked, words, attempt: (_ for _ in ()).throw(runner.Repick())
+    _run(steps, path)
+    with Ledger(path) as ledger:
+        assert [n["kind"] for n in ledger.needs("ja")] == ["repick"] and steps.anki.words() == []

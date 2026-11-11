@@ -230,6 +230,11 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
+class _Beside(Repick):
+    """Michi-NT: pick again from the subtitle beside its video (`_fit`) — a choice of file, never a change: it counts
+    as none of `_job`'s re-picks (once a pass: `_fit` never switches from the file beside)."""
+
+
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -915,7 +920,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
         # look-up still under way at a press is ended, and the job stops before the step it was in
         with stopping.watching(lambda: _stop_pressed(ledger, jid)):
-            for _ in range(3):      # a profile or pairing that changed since the pick: picked again (at most twice)
+            repicks = 0             # a profile or pairing that changed since the pick: picked again (at most twice)
+            while repicks < 3:
                 try:
                     if step in (None, "picking"):
                         _stop_here(steps, ledger, lang, job, step, record)
@@ -935,8 +941,11 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
                         step = "filling"
                     break
+                except _Beside:
+                    step = "picking"            # Michi-NT: the file beside its video — no change, no re-pick spent
                 except Repick:
                     step = "picking"
+                    repicks += 1
             else:
                 raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was "
                             "mined.")
@@ -1538,7 +1547,7 @@ def _fit(steps, ledger, lang, job):
                 log.info("Connect: job %s: its subtitle re-timed beside its video is checked: %s", jid, other)
                 picked["beside"], picked["copy"] = other, picked.get("file")
                 ledger.set_state(jid, "fit-check", picked=picked)
-                raise Repick()
+                raise _Beside()
         # the library's copy as checked (never one beside a video: a share is never looked at each look) — a change
         # to it lets the job go again in this run (`_copy_changed`)
         picked["checked"] = _stamp(picked.get("copy") if was else picked.get("file"))

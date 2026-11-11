@@ -43,7 +43,7 @@ def _writer(cues, outcome="CONFIDENT", name="ep.srt", where=None):
     def run(command, **kw):
         out = where or command[command.index("--out") + 1]
         path = _srt(os.path.join(out, name), cues)
-        answer = tsubasa_answer(outcome, segments=((None, 8.76), (86.35, -1.168)), output_path=path,
+        answer = tsubasa_answer(outcome, segments=((86.35, -1.168), (None, 8.761)), undetermined=[[86.35, 100.53]], output_path=path,
                                 write_failed=False)
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(answer) + "\n")
     return run
@@ -66,7 +66,8 @@ def test_retime_writes_only_in_its_own_folder_and_answers_the_copy(tmp_path):
     def run(command, **kw):
         seen.append(command)
         return _writer(AFTER)(command, **kw)
-    path = fit_check.retime(VIDEO, sub, str(out), tsubasa="tsubasa", run=run)
+    path, spans = fit_check.retime(VIDEO, sub, str(out), tsubasa="tsubasa", run=run)
+    assert spans == [(86.35, 110.459)], "tsubasa's undetermined span, widened by the jump"
     assert path == os.path.join(str(out), "ep.srt") and os.path.isfile(path)
     assert "--dry-run" not in seen[0] and seen[0][seen[0].index("--out") + 1] == str(out)
     assert "--no-results" in seen[0], "tsubasa's own record of what it synced is never touched"
@@ -92,6 +93,37 @@ def test_same_lines_only_for_the_same_cues_moved_in_time():
     assert not fit_check.same_lines([], [])
 
 
+def test_unsure_spans_come_from_tsubasa_else_a_fallback_and_are_widened_by_the_jump():
+    # Re:Zero S04E18: the break reported at 158.86, undetermined to 214.85, a +10.03 s jump
+    cut = {"segments": [[158.86, -1.308], [None, 8.726]], "undetermined": [[158.86, 214.85]]}
+    assert fit_check.unsure_spans(cut) == [(158.86, 224.884)]
+    # tsubasa 0.1.11 has no `undetermined`: UNSURE_FALLBACK_S after its point
+    old = {"segments": [[158.86, -1.308], [None, 8.726]]}
+    assert fit_check.unsure_spans(old) == [(158.86, round(158.86 + fit_check.UNSURE_FALLBACK_S + 10.034, 3))]
+    # a negative jump (a cut removed): widened downwards
+    assert fit_check.unsure_spans({"segments": [[100.0, 10.0], [None, 0.0]], "undetermined": [[100.0, 110.0]]})         == [(90.0, 110.0)]
+    assert fit_check.unsure_spans({"segments": [[None, 1.5]]}) == []
+    assert fit_check.unsure_spans({"segments": "garbled"}) == []
+
+
+def test_unsure_spans_are_kept_by_the_files_bytes_and_found_again_only_for_them(tmp_path):
+    sub = _srt(tmp_path / "ep.srt", AFTER)
+    folder = str(tmp_path / "retimed")
+    fit_check.keep_unsure(sub, [(158.86, 224.884)], folder=folder)
+    assert fit_check.unsure_of(sub, folder=folder) == [(158.86, 224.884)]
+    _srt(tmp_path / "ep.srt", BEFORE)                       # its original copied over it again (S5)
+    assert fit_check.unsure_of(sub, folder=folder) == []
+    fit_check.keep_unsure(sub, [], folder=str(tmp_path / "none"))
+    assert not (tmp_path / "none").exists(), "nothing unsure: nothing written"
+
+
+def test_the_cues_inside_an_unsure_span_are_named_by_position():
+    from app.cues import Cue
+    read = [Cue(i, int(a * 1000), int(b * 1000), t, None, False, True) for i, (a, b, t) in enumerate(AFTER)]
+    assert fit_check.unsure_cues(read, [(19.0, 30.0)]) == {0, 1}
+    assert fit_check.unsure_cues(read, []) == set()
+
+
 # --------------------------------------------------------------------------- #
 # Steps.retime: the library copy replaced for good
 # --------------------------------------------------------------------------- #
@@ -102,6 +134,8 @@ def library(tmp_path, monkeypatch):
     (data / "Library" / "show").mkdir(parents=True)
     monkeypatch.setattr("app.path_utils.get_data_path", lambda language=None: str(data))
     monkeypatch.setattr(runner.Steps, "run_dir", lambda self, job: str(tmp_path / "runs" / str(job["id"])))
+    real = fit_check._unsure_folder
+    monkeypatch.setattr(fit_check, "_unsure_folder", lambda folder=None: real(folder or str(data / "unsure")))
     return data, _srt(data / "Library" / "show" / "ep01.srt", BEFORE)
 
 
@@ -122,6 +156,7 @@ def test_the_retimed_copy_takes_the_library_copys_place_and_the_old_one_goes_to_
     assert lineup.srt_cues(str(data / ".trash" / trashed[0]))[0][0] == 10.0, "the old copy kept in the trash"
     assert not os.path.exists(sub + ".part")
     assert not os.path.exists(os.path.join(steps.run_dir({"id": 7}), fit_check.RETIMED)), "the run folder tidied"
+    assert fit_check.unsure_of(sub, folder=str(data / "unsure")) == [(86.35, 110.459)],         "its unsure lines kept for the retimed copy"
 
 
 def test_a_copy_with_other_lines_or_outside_the_library_is_never_written(library, tmp_path, monkeypatch):

@@ -2867,7 +2867,8 @@ class Steps:
         if not os.path.normcase(os.path.abspath(subtitle)).startswith(library):
             return False
         out_dir = os.path.join(self.run_dir(job), fit_check.RETIMED)
-        path = fit_check.retime(video, subtitle, out_dir)
+        got = fit_check.retime(video, subtitle, out_dir)
+        path, spans = got if got is not None else (None, [])
         try:
             if path is None or not fit_check.same_lines(lineup.srt_cues(subtitle), lineup.srt_cues(path)):
                 log.info("Connect: job %s: no retimed copy holding the same lines; its library copy kept", job["id"])
@@ -2892,6 +2893,14 @@ class Steps:
             return False
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+        try:
+            # the lines near a break whose side tsubasa couldn't tell: never cut into a card (`verbs.pick`)
+            fit_check.keep_unsure(subtitle, spans)
+        except OSError as e:
+            log.warning("Connect: job %s: the unsure lines of its retimed subtitle couldn't be kept: %s", job["id"], e)
+        if spans:
+            log.info("Connect: job %s: lines in %s are unsure after its retime; no card is cut from them", job["id"],
+                     ", ".join(f"{lo:.1f}–{hi:.1f} s" for lo, hi in spans))
         return True
 
     def _miner_profile(self, lang, job):

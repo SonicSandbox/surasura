@@ -89,6 +89,7 @@ REASONS = {
     "name": "a name (Ignore names is on)",
     "grammar": "a grammar word (Send grammar words is off)",
     "sung": "said only in a song line",
+    "unsure-timing": "said only where its timing is unsure (near a break tsubasa retimed around)",
 }
 
 
@@ -448,15 +449,17 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
-         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None):
+         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
     `listed` ({(lemma, reading): list position}): the list's rows, for `list` (and the order of every mode: the list's
     first). `carded`: the card keys (a card's word, its kana fold) of the words with a card. A line's other new words
-    are counted over what its card holds — the line and the lines its expansion adds (IS:268)."""
+    are counted over what its card holds — the line and the lines its expansion adds (IS:268). `unsure`: the indexes
+    of cues whose time is unsure (a retimed copy's lines near a break, `fit_check.unsure_cues`): no card holds one."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    unsure = set(unsure or ())
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
     listed = listed or {}
     carded = carded or set()
@@ -523,9 +526,14 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
-        usable = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
-        if reason is None and not usable:
+        sung_free = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
+        # a card never holds a line whose time is unsure after tsubasa retimed the copy (`unsure`): not as its own
+        # line, nor in its expansion
+        usable = [o for o in sung_free if not unsure or unsure.isdisjoint(span(o.cue))]
+        if reason is None and not sung_free:
             reason = "sung"
+        elif reason is None and not usable:
+            reason = "unsure-timing"
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})

@@ -424,3 +424,20 @@ def test_a_grammar_expressions_row_follows_send_grammar_a_set_phrase_always_goes
     off = pick.pick(read, tokens, "ja", _known(), mode="list", listed=listed, phrase_set=loaded, send_grammar=False)
     assert [w["word"] for w in off["words"]] == [gut.word]
     assert [(n["word"], n["reason"]) for n in off["not_offered"]] == [(may.word, "grammar")]
+
+
+# --------------------------------------------------------------------------- #
+# A retimed copy's unsure lines (Mattias 2026-11-11, Re:Zero S04E18)
+# --------------------------------------------------------------------------- #
+def test_a_line_whose_timing_is_unsure_is_never_cut_into_a_card(tmp_path):
+    # 小説 is said twice: the first line is unsure (near a break tsubasa retimed around), the second is sure
+    path = _srt(tmp_path, [(1, 3, "この小説は面白い。"), (10, 12, "延長した。"), (20, 22, "小説を読む。")])
+    read, tokens = _read(path)
+    chosen = pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure={0, 1})
+    words = _by_word(chosen)
+    assert words["小説"]["line_start"] == 20.0, "the sure line is taken"
+    assert "延長" not in words
+    left = {w["word"]: w for w in chosen["not_offered"]}
+    assert left["延長"]["reason"] == "unsure-timing"
+    assert pick.pick(read, tokens, "ja", _known(), mode="unknown")["words"], "no unsure lines: as before"
+

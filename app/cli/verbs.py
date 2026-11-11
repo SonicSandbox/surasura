@@ -1333,11 +1333,15 @@ def pick(args):
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
     view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
+    # a library copy tsubasa retimed: the lines near a break whose side it couldn't tell are never cut into a card
+    from app.connect import fit_check
+    unsure = set() if book else fit_check.unsure_cues(read, fit_check.unsure_of(args.file))
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          unsure=unsure)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

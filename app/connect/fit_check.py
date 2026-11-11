@@ -225,7 +225,8 @@ def part_way(why):
 
 
 def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
-    """tsubasa's retimed copy of `subtitle` for `video`, written in `out_dir` (emptied first) -> its path, or None.
+    """tsubasa's retimed copy of `subtitle` for `video`, written in `out_dir` (emptied first) -> (its path, the spans of
+    its time where a line may sit on the wrong side of a break: `unsure_spans`), or None.
 
     `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: it times the subtitle piece by piece (every segment its
     own shift) and writes the copy under DIR only — the library's copy, the original and the video's folder are never
@@ -253,7 +254,92 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     inside = os.path.normcase(os.path.abspath(out_dir)) + os.sep
     if not os.path.normcase(os.path.abspath(path)).startswith(inside) or not os.path.isfile(path):
         return None                 # never a file outside the job's own folder
-    return path
+    return path, unsure_spans(answer)
+
+
+# tsubasa reports a break at the EARLIEST point it could be (its quiet-gap convention); since Tsubasa-sync's
+# `undetermined` it also says the stretch the break lies somewhere inside. Re:Zero S04E18 against its AT-X broadcast
+# (Mattias 2026-11-11): reported at 158.86 s, undetermined to 214.85 s, the real break near 190 s — eight lines between
+# were retimed ~10 s late, and a card's audio held the next scene. A tsubasa without the field (0.1.11) gives only
+# the point: this much after it is taken as unsure instead (E18's real break sat 34 s after its point).
+UNSURE_FALLBACK_S = 60.0
+
+
+def unsure_spans(answer):
+    """[(lo, hi)] in the retimed copy's time (the video's): per break of a cut file, where a line may carry the other
+    segment's shift — tsubasa's `undetermined` span (else `UNSURE_FALLBACK_S` after its point), widened by the jump
+    itself, since a line given the wrong side's shift lands that much further. [] for one segment."""
+    segments = answer.get("segments") if isinstance(answer, dict) else None
+    if not isinstance(segments, list) or len(segments) < 2:
+        return []
+    said = answer.get("undetermined")
+    said = said if isinstance(said, list) and len(said) == len(segments) - 1 else None
+    out = []
+    for i in range(len(segments) - 1):
+        here, after = segments[i], segments[i + 1]
+        if not (isinstance(here, list) and isinstance(after, list) and len(here) == 2 and len(after) == 2):
+            return []
+        split, before_off, after_off = _number(here[0]), _number(here[1]), _number(after[1])
+        if split is None or before_off is None or after_off is None:
+            return []
+        lo, hi = split, split + UNSURE_FALLBACK_S
+        if said is not None and isinstance(said[i], list) and len(said[i]) == 2:
+            got = _number(said[i][0]), _number(said[i][1])
+            if got[0] is not None and got[1] is not None and got[0] <= got[1]:
+                lo, hi = got
+        jump = after_off - before_off
+        out.append((round(lo + min(0.0, jump), 3), round(hi + max(0.0, jump), 3)))
+    return out
+
+
+UNSURE_FOLDER = "retimed"       # under Connect's folder: one record a retimed library copy, named by its sha256
+
+
+def _unsure_folder(folder=None):
+    if folder:
+        return folder
+    from app.cli.verbs import _connect_folder
+    return os.path.join(_connect_folder(), UNSURE_FOLDER)
+
+
+def keep_unsure(path, spans, folder=None):
+    """Remember the unsure spans of a library copy tsubasa retimed, by its bytes (sha256): a copy changed since (its
+    original copied over it again, S5) has none. Nothing to keep: nothing written. A write that fails is logged by the
+    caller's rules — the spans are a guard, never a reason to undo the retime."""
+    if not spans:
+        return
+    sha = _sha256(path)
+    if sha is None:
+        return
+    where = _unsure_folder(folder)
+    os.makedirs(where, exist_ok=True)
+    with open(os.path.join(where, sha + ".json"), "w", encoding="utf-8") as f:
+        json.dump({"spans": [list(s) for s in spans], "file": os.path.basename(path)}, f, ensure_ascii=False)
+
+
+def unsure_of(path, folder=None):
+    """The unsure spans kept for this subtitle's bytes -> [(lo, hi)], [] when none (never retimed, or changed since)."""
+    sha = _sha256(path) if path and os.path.isfile(path) else None
+    if sha is None:
+        return []
+    try:
+        with open(os.path.join(_unsure_folder(folder), sha + ".json"), encoding="utf-8") as f:
+            spans = json.load(f).get("spans")
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = []
+    for s in spans if isinstance(spans, list) else ():
+        if isinstance(s, list) and len(s) == 2 and _number(s[0]) is not None and _number(s[1]) is not None:
+            out.append((float(s[0]), float(s[1])))
+    return out
+
+
+def unsure_cues(cues, spans):
+    """The positions of `cues` (`app.cues.Cue`s, times in ms) that overlap one of `spans` (seconds)."""
+    if not spans:
+        return set()
+    return {i for i, cue in enumerate(cues)
+            if any(cue.start / 1000.0 < hi and cue.end / 1000.0 > lo for lo, hi in spans)}
 
 
 def same_lines(before, after):

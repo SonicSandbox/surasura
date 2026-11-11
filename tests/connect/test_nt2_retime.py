@@ -98,7 +98,7 @@ def test_retime_writes_only_under_its_folder_never_a_dry_run_and_records_nothing
     out.mkdir(parents=True)
     (out / "stale.srt").write_text("left from before", encoding="utf-8")
     made = fit_check.retime("video.mkv", copy, str(out))
-    assert made == os.path.join(str(out), "Show", "ep01.ja.srt") and os.path.isfile(made)
+    assert made == (os.path.join(str(out), "Show", "ep01.ja.srt"), 0) and os.path.isfile(made.path)
     [command] = ts.calls
     assert command[:4] == ["tsubasa", "--pair", "video.mkv", copy] and "--dry-run" not in command
     assert "--no-results" in command and command[command.index("--out") + 1] == str(out)
@@ -124,7 +124,7 @@ def test_no_tsubasa_no_answer_or_not_a_text_subtitle_is_no_copy(tmp_path, monkey
         raise subprocess.TimeoutExpired(command, timeout)
     monkeypatch.setattr(fit_check, "find_tsubasa", lambda: "tsubasa")
     monkeypatch.setattr(fit_check, "_run", slow)
-    assert fit_check.retime("video.mkv", copy, str(tmp_path / "out")) is None
+    assert fit_check.retime("video.mkv", copy, str(tmp_path / "out")) == fit_check.RETRY, "no answer: not now"
     ts = Tsubasa(monkeypatch)
     text = tmp_path / "ep01.txt"
     text.write_text(_source_text(), encoding="utf-8")
@@ -331,7 +331,7 @@ def test_the_retime_spends_no_repick(tmp_path, path, episode):
     assert _job(path)[0]["state"] == "done" and len(steps.anki.words()) == 3
 
 
-def test_your_stop_during_the_retime_stops_the_job(tmp_path, path, episode):
+def test_your_stop_during_the_retime_stops_the_job_and_gives_the_retime_back(tmp_path, path, episode):
     copy, video = episode
     steps = RetimeSteps(str(tmp_path), _plan(), copy, video)
 
@@ -341,3 +341,69 @@ def test_your_stop_during_the_retime_stops_the_job(tmp_path, path, episode):
     _run(steps, path)
     job, _picked = _job(path)
     assert job["state"] == "waiting" and job["reason"] == runner.STOPPED_BY_YOU and steps.anki.words() == []
+    with Ledger(path) as ledger:
+        assert ledger.conn.execute("SELECT 1 FROM meta WHERE key LIKE 'retimed:%'").fetchone() is None, \
+            "the one re-time is still the job's when it goes on (adversary 4)"
+
+
+# --- the adversary's findings (register: TheForge 3.0 tracks/pipeline/reviews/michi-nt2-register.md) ----------- #
+
+def _cut(text, n):
+    """The subtitle with its `n`th cue left out (a stretch the broadcast doesn't hold)."""
+    blocks = text.replace("\r\n", "\n").split("\n\n")
+    return "\n\n".join(blocks[:n] + blocks[n + 1:])
+
+
+def test_b1_cues_tsubasa_says_it_dropped_are_the_same_subtitle_and_no_other_is(tmp_path, monkeypatch, library):
+    # a cut broadcast: tsubasa leaves out the cue in the stretch the video doesn't hold, and says so
+    data, full = library
+    before = _bytes(full).decode("utf-8")
+    cut = _cut(_two_parts(before), 3)
+    Tsubasa(monkeypatch, text=cut, answer={"outcome": "CONFIDENT", "segments": [[0, 8.76], [21.0, -1.17]],
+                                           "dropped_in_gap": 1, "dropped_before_zero": 0})
+    assert _steps(tmp_path, monkeypatch).retime("ja", {"id": 7}, "video.mkv", full) is True
+    assert _bytes(full).decode("utf-8") == cut
+    assert not runner.same_subtitle(full, SOURCE, "ja", 1), "it can't have gained a line"
+
+
+def test_b1_a_cue_missing_that_tsubasa_never_said_it_dropped_is_never_written(tmp_path, monkeypatch, library):
+    data, full = library
+    before = _bytes(full)
+    Tsubasa(monkeypatch, text=_cut(_two_parts(before.decode("utf-8")), 3))      # says nothing dropped
+    assert _steps(tmp_path, monkeypatch).retime("ja", {"id": 7}, "video.mkv", full) is False
+    assert _bytes(full) == before and not os.path.exists(os.path.join(data, ".trash"))
+
+
+def test_b2_the_library_copying_its_original_in_meanwhile_wins(tmp_path, monkeypatch, library):
+    # S5 copies a changed original over the copy while tsubasa re-times the old one: never replaced by the old text
+    data, full = library
+    ts = Tsubasa(monkeypatch)
+    real = ts.run
+    newer = _shifted(_bytes(full).decode("utf-8"), 300)
+
+    def meanwhile(command, timeout):
+        out = real(command, timeout)
+        with open(full, "w", encoding="utf-8", newline="\n") as f:
+            f.write(newer)
+        return out
+    monkeypatch.setattr(fit_check, "_run", meanwhile)
+    assert _steps(tmp_path, monkeypatch).retime("ja", {"id": 7}, "video.mkv", full) is None, "not now: checked next"
+    assert _bytes(full).decode("utf-8") == newer and not os.path.exists(os.path.join(data, ".trash"))
+    assert not os.path.exists(full + runner.RETIME_PART) and runner.RETIME_PART != ".part"
+
+
+def test_b4_no_answer_from_tsubasa_gives_the_retime_back_for_the_next_start(tmp_path, path, episode):
+    copy, video = episode
+    steps = RetimeSteps(str(tmp_path), _plan(), copy, video)
+    steps.retime = lambda lang, job, v, c: (steps.retimed_copies.append(c), None)[1]
+    _run(steps, path)
+    assert len(_needs(path)) == 1
+    again = RetimeSteps(str(tmp_path), _plan(), copy, video)
+    _run(again, path)
+    assert steps.retimed_copies == [copy] and again.retimed_copies == [copy] and _job(path)[0]["state"] == "done"
+
+
+def test_b5_no_test_anywhere_sees_the_machines_tsubasa():
+    # the guard lives in tests/conftest.py: Connect's tests outside tests/connect build a real Steps too
+    import shutil
+    assert shutil.which("tsubasa") is None and shutil.which("tsubasa.exe") is None

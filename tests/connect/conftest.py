@@ -17,21 +17,6 @@ def never_the_real_anki_miner(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def never_the_machines_tsubasa(monkeypatch):
-    # Michi-NT2 (found by Mattias, #364): a tsubasa on this machine's PATH (a developer's pip install) was found by
-    # `fit_check.find_tsubasa` and run on a test's files. Connect's tests see none unless they hand their own
-    # (`tsubasa=`, `run=`) or stand in for `shutil.which` themselves (a later monkeypatch wins over this one).
-    import shutil
-    real = shutil.which
-
-    def which(name, *args, **kwargs):
-        if os.path.splitext(os.path.basename(str(name)))[0].lower() == "tsubasa":
-            return None
-        return real(name, *args, **kwargs)
-    monkeypatch.setattr(shutil, "which", which)
-
-
-@pytest.fixture(autouse=True)
 def never_the_real_anki_miner_home(tmp_path, monkeypatch):
     # Connect stamps Anki Miner's settings files (`anki_miner.home`): a test's own home, never ~/.anki_miner; the
     # Anki Miner a test starts inherits it.

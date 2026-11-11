@@ -76,6 +76,21 @@ def project_root():
 
 
 @pytest.fixture(autouse=True)
+def _never_the_machines_tsubasa(monkeypatch):
+    """Michi-NT2 (found by Mattias, #364): a tsubasa on this machine's PATH (a developer's `pip install tsubasa-sync`)
+    was found by `fit_check.find_tsubasa` and run on a test's files (`test_lineup`'s trust test went red). No test sees
+    it: a test hands its own (`tsubasa=`, `run=`) or stands in for `shutil.which` itself (a later monkeypatch wins)."""
+    import shutil
+    real = shutil.which
+
+    def which(name, *args, **kwargs):
+        if os.path.splitext(os.path.basename(str(name)))[0].lower() == "tsubasa":
+            return None
+        return real(name, *args, **kwargs)
+    monkeypatch.setattr(shutil, "which", which)
+
+
+@pytest.fixture(autouse=True)
 def _no_gui_autoindex(monkeypatch):
     """Stop the dashboard from spawning a real background-indexer subprocess during tests.
 

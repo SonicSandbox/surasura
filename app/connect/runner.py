@@ -1411,12 +1411,14 @@ def _fit_tries(ledger, jid, failed):
 
 RETIMED = "retimed:"            # ledger meta: `retimed:<job id>` -> when its library copy was given to tsubasa to re-time
 RETIMED_FOLDER = "retimed"      # in a job's run folder: tsubasa's re-timed copy, until it takes the copy's place
+RETIME_PART = ".retimed.part"   # beside the copy: its re-timed bytes, flushed, until `os.replace` (never S5's `.part`)
 
 
 def _retime(steps, ledger, lang, job, video, copy):
     """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa in its own place (`Steps.retime`)
     -> True. Once a job (`RETIMED`, marked before tsubasa is asked: a Connect killed meanwhile never asks again and
-    again); *Check again* lets it be asked once more. A stand-in Steps without it, no video, or a failure: False, the
+    again) — given back when tsubasa gave no answer this time, the copy changed meanwhile, or at your *Stop*;
+    *Check again* lets it be asked once more. A stand-in Steps without it, no video, or a failure: False, the
     copy as it was, the job named not timed. Your *Stop* ends it as the check does."""
     do = getattr(steps, "retime", None)
     if do is None or not video or not copy:
@@ -1429,13 +1431,21 @@ def _retime(steps, ledger, lang, job, video, copy):
     try:
         done = do(lang, job, video, copy)
     except stopping.Stopped:
+        _unmark(ledger, key)                # your *Stop*: asked again when the job goes on
         raise
     except Exception:                       # a re-time that fails is no reason for the job to fail: not timed, named
         log.warning("Connect couldn't have tsubasa re-time job %s's subtitle", job.get("id"), exc_info=True)
         return False
+    if done is None:                        # no answer this time, or its copy changed meanwhile: asked at the next check
+        _unmark(ledger, key)
     if done:
         log.info("Connect: job %s: tsubasa re-timed its library copy, every part its own shift: %s", job["id"], copy)
     return bool(done)
+
+
+def _unmark(ledger, key):
+    with ledger.transaction():
+        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
 
 
 def _stamp(path):
@@ -1509,18 +1519,23 @@ def retimed_beside(video, copy, language):
     return None
 
 
-def same_subtitle(copy, other, language):
+def same_subtitle(copy, other, language, dropped=0):
     """Is `other` the subtitle `copy` is, re-timed — the very lines (`cues.read`'s texts, in order: CRLF or LF, a BOM
-    or none read alike) in other bytes? No line, or a file that can't be read: no."""
+    or none read alike) in other bytes, less exactly the `dropped` cues tsubasa says it left out (in a stretch its
+    video doesn't hold: Michi-NT2's re-time)? No line, or a file that can't be read: no."""
     from app import cues
     try:
         with open(copy, "rb") as f, open(other, "rb") as g:
             if f.read() == g.read():
                 return False
         lines = [c.text for c in cues.read(copy, language)]
-        return bool(lines) and [c.text for c in cues.read(other, language)] == lines
+        kept = [c.text for c in cues.read(other, language)]
     except (OSError, UnicodeDecodeError, ValueError):
         return False
+    if not lines or not kept or len(lines) - len(kept) != dropped:
+        return False
+    rest = iter(lines)                      # `kept` in `lines`' order, nothing new (a subsequence)
+    return all(any(line == text for line in rest) for text in kept)
 
 
 def _fit(steps, ledger, lang, job):
@@ -3004,10 +3019,13 @@ class Steps:
         """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa (`fit_check.retime`, written
         in the job's own run folder, removed after) put in its place by S5's own rule (`sources.put_copy`: the old copy
         into the data folder's `.trash` first, purged 30 days on; the new one written beside it, then `os.replace`)
-        -> True; else False and the copy as it was. Only a copy inside the language's `Library` (`sources.
-        inside_library`: a hato / 2.x file, a `Library` that leads elsewhere, never), only the same subtitle
-        (`same_subtitle`: its very lines). Its original is left as it is: one that changes is copied over it again
-        (S5), and checked again."""
+        -> True; else False and the copy as it was; None: not now (no answer from tsubasa, or the copy changed
+        while it was re-timed — the library's own re-copy wins, and its text is checked next). Only a copy inside the
+        language's `Library` (`sources.inside_library`: a hato / 2.x file, a `Library` that leads elsewhere, never),
+        only the same subtitle (`same_subtitle`: its very lines, less the cues tsubasa says it dropped). Written whole
+        and flushed (`sources._copy_part`) under a name of its own (`RETIME_PART`: never the look's `.part`), and the
+        copy checked unchanged right before its place is taken. Its original is left as it is: one that changes is
+        copied over it again (S5), and checked again."""
         from app import sources
         from app.path_utils import get_data_path
         data_dir = get_data_path(lang)
@@ -3019,18 +3037,25 @@ class Steps:
         if full is None or not os.path.isfile(full):
             return False
         out_dir = os.path.join(self.run_dir(job), RETIMED_FOLDER)
-        part = full + ".part"
+        part = full + RETIME_PART
+        was = _stamp(full)
         try:
             made = fit_check.retime(video, full, out_dir)
-            if made is None or not same_subtitle(full, made, lang):
+            if made == fit_check.RETRY:
+                return None
+            if made is None or not same_subtitle(full, made.path, lang, made.dropped):
                 log.info("Connect: job %s: tsubasa gave no re-timed copy of the same subtitle; its copy kept", job["id"])
                 return False
-            shutil.copyfile(made, part)
+            sources._copy_part(made.path, part)
         except OSError:
             sources._drop(part)
             return False
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+        if _stamp(full) != was:             # the library copied its original in meanwhile (S5): that text first
+            sources._drop(part)
+            log.info("Connect: job %s: its copy changed while tsubasa re-timed it; checked again", job["id"])
+            return None
         return sources.put_copy(data_dir, full, part)
 
     def _miner_profile(self, lang, job):

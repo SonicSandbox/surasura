@@ -47,6 +47,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import namedtuple
 
 from app.connect import stopping
 
@@ -225,15 +226,19 @@ def part_way(why):
 
 
 RETIME_EXTENSIONS = (".srt", ".ass", ".ssa")     # what tsubasa writes back in its own format (place.EXTENSIONS)
+# tsubasa's re-timed copy: its path, and the cues it dropped (in a stretch the video doesn't hold, or before its
+# start: its answer's `dropped_in_gap` + `dropped_before_zero` — a cut broadcast's own)
+Retimed = namedtuple("Retimed", "path dropped")
 
 
 def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
-    """Michi-NT2 (based on Mattias's #364): tsubasa's re-timed copy of `subtitle` for `video` -> its path, else None.
+    """Michi-NT2 (based on Mattias's #364): tsubasa's re-timed copy of `subtitle` for `video` -> `Retimed`, else None;
+    RETRY when tsubasa gave no answer this time (it timed out, or couldn't start).
     `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: every segment its own shift, written under `out_dir`
     only (emptied first) — an explicit pair never trashes anything, `--out` never writes beside the video or over
-    the subtitle, `--no-results` records nothing of tsubasa's. None: not a text subtitle, no tsubasa, no answer in
-    time, a refusal or an error, a write that failed, or no file inside `out_dir` where it says it wrote one. The
-    job's *Stop* ends it as the check does (`stopping.Stopped`)."""
+    the subtitle, `--no-results` records nothing of tsubasa's. None: not a text subtitle, no tsubasa, a refusal or
+    an error, a write that failed, or no file inside `out_dir` where it says it wrote one. The job's *Stop* ends it as
+    the check does (`stopping.Stopped`)."""
     if not subtitle or os.path.splitext(subtitle)[1].lower() not in RETIME_EXTENSIONS:
         return None
     exe = tsubasa if tsubasa is not None else find_tsubasa()
@@ -246,7 +251,7 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
         stdout = _run(command, timeout) if run is None else run(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
     except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
-        return None
+        return RETRY
     answer = _answer(stdout) or {}
     path = answer.get("output_path")
     if answer.get("outcome") != "CONFIDENT" or answer.get("write_failed") or not isinstance(path, str) or not path:
@@ -254,7 +259,8 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     root = os.path.normcase(os.path.realpath(out_dir)).rstrip("\\/") + os.sep
     if not os.path.normcase(os.path.realpath(path)).startswith(root) or not os.path.isfile(path):
         return None                 # never a file outside the job's own folder
-    return path
+    dropped = [answer.get(k) for k in ("dropped_in_gap", "dropped_before_zero")]
+    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0))
 
 
 def _media(path):

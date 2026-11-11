@@ -218,8 +218,8 @@ def reading(path, language="ja", script="asis", tokenizer=None):
     spaces out and its line breaks joined: with nothing, the indent after one out, a full-width space inside it kept
     (the tokenizer's sentence has already lost a half-width one: that sentence goes as the tokenizer gives it) —
     Japanese: Anki Miner's unit keeps a paragraph's inner spaces, and cuts a unit only around an exact sentence
-    (Michi-BS, `pick.book_line`) — or with one space (Chinese). The Cues' `units` is True: a card is cut from its own sentence, never
-    its neighbours (`pick.line_expansion`)."""
+    (Michi-BS, `pick.book_line`) — or with one space (Chinese). The Cues' `units` is True: a card is cut from its own
+    sentence, never its neighbours (`pick.line_expansion`)."""
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                      else analyzer.JapaneseTokenizer())

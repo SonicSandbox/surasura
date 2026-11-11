@@ -341,7 +341,7 @@ def test_s3_on_battery_the_spot_check_waits_for_the_plug_unless_you_asked(monkey
     with pytest.raises(runner.Wait) as w:
         pair["steps"].line_up("ja", _job(), pair["book"])
     assert w.value.reason == runner.LINING_UP_BATTERY and "transcribe" not in fake_miner.commands()
-    asked = dict(_job(), asked_at="2026-11-12T00:00:00Z")
+    asked = dict(_job(), asked_at="2026-11-01T00:00:00Z")
     assert pair["steps"].line_up("ja", asked, pair["book"])["lineup"]["source"] == lineup.OWN
 
 

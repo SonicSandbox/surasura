@@ -1,4 +1,4 @@
-"""Sentence audio put on cards that have none — ONE field-writing path (Kura-AB3, 2026-11-12; shared on purpose with
+"""Sentence audio put on cards that have none — ONE field-writing path (Kura-AB3, 2026-11-11; shared on purpose with
 Iro-AA's AI sentence audio): `fill`, and its one `undo`. *Add audio to these cards* (a book's text-only cards, once its
 audiobook is lined up: spec `tracks/pipeline/work/AB3/add-audio-spec.md`) calls it with Anki Miner's clips; the AI audio
 calls it with its own. Neither ever writes the field another way.

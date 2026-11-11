@@ -96,7 +96,7 @@ def main():
                                              for n, w in zip(ids, WORDS)])
         ledger.set_state(job_id, "done")
         with library.open_store("ja") as s:
-            library.record_batch(s, item_id, {w: [n] for w, n in zip(WORDS, ids)}, "2026-11-12T00:00:00Z")
+            library.record_batch(s, item_id, {w: [n] for w, n in zip(WORDS, ids)}, "2026-11-01T00:00:00Z")
         say("batch made", job_tag, ids)
         out["made_before"] = {"mine": made(MINE), "asked": made(ASKED)}
 

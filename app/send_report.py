@@ -14,7 +14,8 @@ when typed, `X-Discord-Name` (the name's UTF-8 in base64url, unpadded). The rece
 (a test report: the test Worker).
 Its answer: 201 (or 200 for a nonce it knows) with `{"id": "K3Q7PM"}` → sent: the reports in the zip leave the list
 (`report._clear`, only those unchanged since) and the zip moves to `<persistent>/report_sent/<id>.zip`, kept 90 days.
-Anything else keeps the outbox zip for *Send now* — never sent again by itself (Q4).
+Anything else keeps the outbox zip for *Send now* — never sent again by itself (Q4). Each request made leaves one line in
+the app's log (`_logged`: what came of it, the receiver's host; never the name, nonce or sender code).
 
 **On this PC** (`report_send.json`, written atomically): the day's count (5 a day, refused before any request), the
 Discord name when one was typed, and the sender code: 8 random letters made once (never the telemetry id, nothing
@@ -313,21 +314,33 @@ def send(name="", url=None, root=None, now=None, nonce=None):
             body = f.read()
         if hashlib.sha256(body).hexdigest() != ob.sha256:
             raise ValueError("the waiting zip changed since it was made")
+        endpoint = _endpoint(url or telemetry.report_receiver(env()))
         try:
-            got = requests.post(_endpoint(url or telemetry.report_receiver(env())), data=body,
-                                headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
+            got = requests.post(endpoint, data=body, headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
         except requests.RequestException:
-            return Result(OFFLINE)
+            return _logged(Result(OFFLINE), endpoint)
         if got.status_code not in (200, 201):
-            return Result(_outcome(got.status_code), status=got.status_code)
+            return _logged(Result(_outcome(got.status_code), status=got.status_code), endpoint)
         try:
             rid = got.json().get("id")
         except (ValueError, AttributeError):
             rid = None
         if not isinstance(rid, str) or not _ID.match(rid):
-            return Result(REFUSED, status=got.status_code)
+            return _logged(Result(REFUSED, status=got.status_code), endpoint)
         _sent(ob, rid, root, now)
-        return Result(SENT, rid, got.status_code)
+        return _logged(Result(SENT, rid, got.status_code), endpoint)
+
+
+def _logged(result, endpoint):
+    """One line in the app's log for each try (Mattias's 3.0.0 zip held no trace of a send the receiver had refused
+    with a 404): what came of it and the receiver's host — never the name, the nonce or the sender code. -> result."""
+    host = urllib.parse.urlsplit(endpoint).netloc
+    if result.outcome == SENT:
+        path_utils.write_app_log(f"Send report: sent #{result.id} to {host}")
+    else:
+        answer = f"HTTP {result.status}" if result.status else "no answer"
+        path_utils.write_app_log(f"Send report: not sent ({result.outcome}, {answer}) to {host}")
+    return result
 
 
 def _sent(ob, rid, root, now):

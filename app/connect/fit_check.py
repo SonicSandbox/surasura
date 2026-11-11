@@ -60,7 +60,8 @@ NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards
 SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `NOT_MATCHED`
 # tsubasa is sure of the timing, but it shifts part-way (two segments or more: a broadcast cut another way than the
 # subtitle's source). One offset can't cut it, so `fit` says not timed; the runner asks tsubasa for a retimed copy
-# (`retime`) and mines that one when every line of it stays where it was (Mattias 2026-11-11, rezeroS04)
+# (`retime`) and, when it holds the same lines (`same_lines`), it becomes Surasura's library copy for good — the episode
+# is picked again from it and checked again (Mattias 2026-11-11, rezeroS04)
 PART_WAY = "Its timing changes part-way through the {media}, so no cards."
 RETIMED = "retimed"             # the folder in a job's run folder that holds tsubasa's retimed copy
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
@@ -228,9 +229,10 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
 
     `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: it times the subtitle piece by piece (every segment its
     own shift) and writes the copy under DIR only — the library's copy, the original and the video's folder are never
-    written, and no record of tsubasa's is updated. Only an SRT is retimed (`lineup.srt_cues` reads both to move the
-    words' lines); anything else, no tsubasa, a refusal, an error, no answer in time, or no file where it says it
-    wrote one -> None, and the episode stays not timed. The job's *Stop* ends it as the check does."""
+    written by tsubasa, and no record of tsubasa's is updated (the runner puts the copy in the library's place). Only
+    an SRT is retimed (`lineup.srt_cues` reads both for `same_lines`); anything else, no tsubasa, a refusal, an error,
+    no answer in time, or no file where it says it wrote one -> None, and the episode stays not timed. The job's
+    *Stop* ends it as the check does."""
     if not subtitle or os.path.splitext(subtitle)[1].lower() != ".srt":
         return None
     exe = tsubasa if tsubasa is not None else find_tsubasa()
@@ -254,29 +256,11 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     return path
 
 
-def moved_lines(words, before, after, tolerance=0.05):
-    """The picked words with their lines moved to the retimed copy -> [word, …], or None when one can't be placed.
-
-    `before` and `after` are the two files' cues (`lineup.srt_cues`): tsubasa's copy holds the same cues in the same
-    order, only their times shifted — so a word's line is the cue of the library's copy starting at its `line_start`
-    (within `tolerance`), and it takes that cue's new start and end. Different cue counts or texts (not the copy it
-    should be), or a word whose line isn't found -> None: never a card cut at a guessed time."""
-    if not before or len(before) != len(after) or any(a[2] != b[2] for a, b in zip(before, after)):
-        return None
-    starts = [cue[0] for cue in before]
-    out = []
-    for word in words:
-        start = _number(word.get("line_start"))
-        if start is None:
-            return None
-        at = min(range(len(starts)), key=lambda i: abs(starts[i] - start))
-        if abs(starts[at] - start) > tolerance:
-            return None
-        shift = after[at][0] - before[at][0]
-        end = _number(word.get("line_end"))
-        out.append(dict(word, line_start=round(after[at][0], 3),
-                        line_end=round(end + shift, 3) if end is not None else round(after[at][1], 3)))
-    return out
+def same_lines(before, after):
+    """Does tsubasa's retimed copy hold the library copy's lines — the same cues (`lineup.srt_cues`), the same texts,
+    in the same order, only their times moved? Only then may it take the library copy's place: anything else is not
+    the copy it should be, and the library copy is left as it is."""
+    return bool(before) and len(before) == len(after) and all(a[2] == b[2] for a, b in zip(before, after))
 
 
 def _media(path):

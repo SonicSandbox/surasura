@@ -48,6 +48,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import time
 from types import SimpleNamespace
 
@@ -1364,6 +1365,19 @@ class _Finished(Exception):
 FIT_TRIES = 3
 FIT_TRY = "fit_try:"            # ledger meta: `fit_try:<job id>` -> the looks running tsubasa gave no answer
 MINE_ANYWAY_HINT = "Mine anyway to cut its lines where the subtitle puts them."
+# ledger meta: `retimed:<job id>` -> when tsubasa's retimed copy took the library copy's place for the job (Mattias
+# 2026-11-11): once a job, so a copy that still shifts part-way is named not timed, never retimed again and again
+RETIMED_KEY = "retimed:"
+
+
+def _retimed_once(ledger, jid):
+    """Has the job's library copy been retimed already? Else it is marked now -> False (the one retime goes ahead)."""
+    key = f"{RETIMED_KEY}{int(jid)}"
+    if ledger.conn.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is not None:
+        return True
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, _now()))
+    return False
 
 
 def _fit_tries(ledger, jid, failed):
@@ -1426,15 +1440,14 @@ def _fit(steps, ledger, lang, job):
         title = steps.title(lang, job)
         gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
-    if verdict != fit_check.TIMED and fit_check.part_way(why):
-        # its timing shifts part-way: tsubasa's retimed copy, in the job's own folder, is mined instead — the words'
-        # lines moved to it, no shift on top (Mattias 2026-11-11: a not-timed subtitle never got another look)
-        retime = getattr(steps, "retime", None)
-        retimed = retime(lang, job, picked) if retime is not None else None
-        if retimed is not None:
-            log.info("Connect: job %s mined from tsubasa's retimed copy: %s", jid, why)
-            ledger.set_state(jid, "mining", picked=retimed)
-            return
+    retime = getattr(steps, "retime", None)
+    if verdict != fit_check.TIMED and fit_check.part_way(why) and retime is not None \
+            and not _retimed_once(ledger, jid):
+        # its timing shifts part-way: tsubasa retimes Surasura's library copy for good, and the episode is picked
+        # again from it and checked again (Mattias 2026-11-11: a not-timed subtitle never got another look)
+        if retime(lang, job, picked):
+            log.info("Connect: job %s: tsubasa retimed its library copy (%s); picked again", jid, why)
+            raise Repick()
     if verdict != fit_check.TIMED:
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
@@ -2837,22 +2850,49 @@ class Steps:
         return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot)
 
     def retime(self, lang, job, picked):
-        """A pick whose subtitle's timing shifts part-way (`fit_check.PART_WAY`) -> the pick mined from tsubasa's
-        retimed copy (`fit_check.retime`, in the job's run folder: `subtitle` that copy, `retimed` its path, every
-        word's line moved to it, no offset), or None: it stays not timed. The library's copy (`file`) is kept as the
-        pick's own, so its pairing and a re-pick read the library as before."""
+        """A pick whose subtitle's timing shifts part-way (`fit_check.PART_WAY`): tsubasa's retimed copy
+        (`fit_check.retime`, written in the job's run folder) takes the library copy's place for good -> True; else
+        False, and nothing is written. Only a copy inside the language's `Library` (a hato / 2.x file outside it is
+        never rewritten, as S5 never does) and only one holding the same lines (`fit_check.same_lines`). The old
+        copy goes to the data folder's `.trash` first (purged 30 days on, as S5's), the new one is put in its place
+        with `os.replace` (written beside it first: the run folder may be on another drive). Its original is left
+        alone: a changed original is copied over it again as before (S5)."""
         from app.connect import lineup
+        from app.path_utils import get_data_path, restart_trash_clock
         video, subtitle = picked.get("video"), picked.get("file")
-        if not video or not subtitle:
-            return None
-        path = fit_check.retime(video, subtitle, os.path.join(self.run_dir(job), fit_check.RETIMED))
-        if path is None:
-            return None
-        words = fit_check.moved_lines(picked.get("words") or [], lineup.srt_cues(subtitle), lineup.srt_cues(path))
-        if words is None:
-            log.info("Connect: job %s: tsubasa's retimed copy doesn't hold the same lines: not mined from it", job["id"])
-            return None
-        return dict(picked, subtitle=path, retimed=path, words=words, offset=0.0)
+        if not video or not subtitle or not os.path.isfile(subtitle):
+            return False
+        data_dir = get_data_path(lang)
+        library = os.path.normcase(os.path.abspath(os.path.join(data_dir, "Library"))) + os.sep
+        if not os.path.normcase(os.path.abspath(subtitle)).startswith(library):
+            return False
+        out_dir = os.path.join(self.run_dir(job), fit_check.RETIMED)
+        path = fit_check.retime(video, subtitle, out_dir)
+        try:
+            if path is None or not fit_check.same_lines(lineup.srt_cues(subtitle), lineup.srt_cues(path)):
+                log.info("Connect: job %s: no retimed copy holding the same lines; its library copy kept", job["id"])
+                return False
+            trash = os.path.join(data_dir, ".trash")
+            os.makedirs(trash, exist_ok=True)
+            base, ext = os.path.splitext(os.path.basename(subtitle))
+            kept = os.path.join(trash, f"{base}_{time.strftime('%Y%m%d%H%M%S')}_untimed{ext}")
+            shutil.copyfile(subtitle, kept)
+            restart_trash_clock(kept)
+            part = subtitle + ".part"
+            shutil.copyfile(path, part)
+            try:
+                os.replace(part, subtitle)
+            except OSError:
+                if os.path.exists(part):
+                    os.remove(part)
+                raise
+        except OSError as e:                # held open, a full disk: the library copy stays as it was
+            log.warning("Connect: job %s: its retimed subtitle couldn't take the library copy's place: %s",
+                        job["id"], e)
+            return False
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+        return True
 
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups
@@ -3091,8 +3131,6 @@ class Steps:
         miner = anki_miner.find(self.loaded)
         if miner is None:
             raise Skip("Anki Miner isn't installed")
-        if picked.get("retimed") and not os.path.isfile(picked["retimed"]):
-            raise Repick()                  # tsubasa's retimed copy is gone (its run folder tidied): timed again
         run_dir = self.run_dir(job)
         held = self._anki_miner_held(lang)      # row 25: the pick's look-ups, kept (the setup empties it on a failure)
         try:

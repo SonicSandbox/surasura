@@ -573,7 +573,9 @@ def test_hatos_answer_never_writes_over_making(tmp_path):
     try:
         no_subs._change(store, "zh", notes={rel: no_subs.MAKING})
         v = no_subs.waiting(store)[0]
-        lines = [{"type": "video", "video": video, "outcome": "NOT_FOUND", "retry_after": "2027-01-01T00:00:00Z"}]
+        # hato's retry date ahead of the run, whatever day the suite runs on (a fixed 2027-01-01 would pass)
+        ahead = datetime.datetime.fromtimestamp(time.time() + 30 * 86400, datetime.timezone.utc).isoformat()
+        lines = [{"type": "video", "video": video, "outcome": "NOT_FOUND", "retry_after": ahead}]
         no_subs._hato_run(store, "zh", cli, src, [v], str(tmp_path), lambda: False, None, {"asked": 0, "found": 0,
                           "not_found": 0, "failed": 0}, lambda c, **k: _Proc(lines, [], c))
         assert no_subs.note(rel, "zh") == no_subs.MAKING

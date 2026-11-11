@@ -163,7 +163,7 @@ def test_the_command_line_takes_add_audio_with_its_plan_first():
 def test_anki_miner_answering_fewer_lines_than_asked_leaves_that_files_cards_out(book, fake_miner, tmp_path,
                                                                                     monkeypatch):
     """Lines merged or dropped: no clip is matched by its place in the answer (it could be the next line's) — those
-    cards get nothing."""
+    cards get nothing, and with nothing cut at all, it says why (r3 S2)."""
     from app.connect import anki_miner
     real = anki_miner.api
 
@@ -177,7 +177,9 @@ def test_anki_miner_answering_fewer_lines_than_asked_leaves_that_files_cards_out
         return verdict
     monkeypatch.setattr(anki_miner, "api", merged)
     got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
-    assert add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run")) == {}
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert add_audio.OTHER_COUNT in e.value.message
 
 
 def test_the_plan_never_writes_the_line_up_while_a_sync_runs(book, fake_miner):
@@ -476,9 +478,9 @@ def test_nothing_cut_says_why_and_a_part_cut_names_why_the_rest_werent(book, fak
     assert len(clips) == 2 and troubles == ["Anki Miner took too long."]
 
 
-def test_a_sentence_both_a_cue_and_inside_a_longer_cue_is_no_answer(book, monkeypatch):
-    """r2 N4: the card's sentence is a cue once and also said inside a longer line elsewhere — which moment is
-    unknown: unheard (B-14), even for a short sentence."""
+def test_a_sentence_that_is_a_cue_once_wins_over_a_longer_line_holding_it_elsewhere(book, monkeypatch):
+    """r3 S1 (round 2's N4 reverted): the card's sentence is a cue once and also said inside a longer line elsewhere —
+    its own cue says its words word for word: heard (a short card isn't silenced for a longer line's sake)."""
     real = lineup.cues
 
     def also_inside(state):
@@ -487,7 +489,7 @@ def test_a_sentence_both_a_cue_and_inside_a_longer_cue_is_no_answer(book, monkey
         return found + [c._replace(start=500.0, end=503.0, text=lineup.clean("彼はもう一度冒険するつもりだ"))]
     monkeypatch.setattr(lineup, "cues", also_inside)
     got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
-    assert 100 not in got["can"] and 100 in got["unheard"]
+    assert got["can"][100].text == lineup.clean(book["lines"][1]) and got["can"][100].start != 500.0
 
 
 def test_square_brackets_that_are_not_furigana_stay_in_the_sentence():
@@ -563,3 +565,57 @@ def test_act_end_to_end_a_write_stopped_part_way_names_its_undo(book, fake_miner
         add_audio.act({"connect_enabled": True}, "ja", book=book["book"], confirm=True)
     assert e.value.code == "anki-closed" and e.value.context["undo"] in e.value.message and owed
     assert not os.listdir(str(tmp_path / "connect" / "add-audio"))
+
+
+# --- review A1 round 3 (Opus adversary, delta 6e3dd3a2..b0442b67) ------------------------------------------------ #
+def test_every_line_past_the_audios_end_says_so_and_a_part_past_it_names_its_file(book, fake_miner, tmp_path):
+    """r3 S2: Anki Miner cut no clip at all (every line past the audio's end, its `audio` null) — an error saying so,
+    never *0 cut* unexplained; one line past it: the answer's reason names that file."""
+    from app.connect import anki_miner
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    fake_miner.plan(audio_seconds=0.5)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert "past the audio's end" in e.value.message
+    last = max(got["can"], key=lambda n: got["can"][n].start)
+    fake_miner.plan(audio_seconds=got["can"][last].start - 0.1)
+    troubles = []
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run2"), troubles=troubles)
+    assert len(clips) == 4
+    assert troubles == [os.path.basename(got["can"][last].audio) + ": " + add_audio.NO_CLIP.format(n=1)]
+
+
+def test_a_refused_file_keeps_anki_miners_own_kind(book, fake_miner, tmp_path, monkeypatch):
+    """r3 N3: every file refused as unreadable is Anki Miner's `unreadable` (the command line's bad-data), not a
+    generic refusal."""
+    from app.connect import anki_miner
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+
+    def unreadable(miner, args, **kw):
+        job = lineup._read_json(args[1])
+        return {"ok": True, "runs": [{"run_id": e["run_id"], "ok": False, "error": "AUDIO_UNREADABLE",
+                                      "message": "The audio can't be read."} for e in job["episodes"]]}
+    monkeypatch.setattr(anki_miner, "api", unreadable)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert e.value.kind == "unreadable"
+
+
+def test_an_answered_line_without_its_times_is_never_taken_for_the_cue(book, fake_miner, tmp_path, monkeypatch):
+    """r3 N6: a line with no `start` / `end` can't be checked for its length (another line of the same start): no
+    clip from it."""
+    from app.connect import anki_miner
+    real = anki_miner.api
+
+    def no_times(miner, args, **kw):
+        verdict = real(miner, args, **kw)
+        for run in verdict.get("runs") or ():
+            path = os.path.join(str(tmp_path / "run"), run["run_id"], run["file"])
+            made = lineup._read_json(path)
+            made["lines"] = [dict(line, end=None) for line in made["lines"]]
+            lineup._write_json(path, made)
+        return verdict
+    monkeypatch.setattr(anki_miner, "api", no_times)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    with pytest.raises(anki_miner.AnkiMinerError):
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))

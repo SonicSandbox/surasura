@@ -42,6 +42,9 @@ NO_MINER = "Anki Miner isn't installed: it cuts the clips."
 PART_WRITTEN = ("Some cards got their audio before this stopped ({why}). Undo takes them back: "
                 "surasura-cli add-audio --undo {id}")
 FILE_TROUBLE = "A file Add audio needs couldn't be read or written just now: "
+NO_CLIP = "Anki Miner cut no clip for {n} of its lines (past the audio's end?)"
+NOT_THE_LINES = "{n} of Anki Miner's answers weren't the lines asked for"
+OTHER_COUNT = "Anki Miner answered another number of lines than asked"
 CUT_LINES = 100                 # lines a `media` call (S6: each call bounded, never one for a whole book)
 _MARKUP = re.compile(r"<[^>]*>")
 _RUBY = re.compile(r"<(rt|rp)\b[^>]*>.*?</\1\s*>", re.I | re.S)       # furigana over the text: not the sentence
@@ -72,18 +75,20 @@ def _form(sentence_value, word):
 
 def place(sentence, form, found):
     """The cue a card's clip is cut from -> a Cue, or None (unheard). Across the WHOLE book (review A1 S1: an earlier
-    short line inside the sentence never wins over the sentence's own cue): the one cue that IS the sentence or holds it
-    whole (a short sentence, under MIN_CHARS, only as its own cue; a cue once and inside another elsewhere: two); else, of the cues inside it (MIN_CHARS or longer each: the sentence
+    short line inside the sentence never wins over the sentence's own cue): the one cue that IS the sentence; else the
+    one cue holding it whole (MIN_CHARS or longer); else, of the cues inside it (MIN_CHARS or longer each: the sentence
     said over several cues), the one holding `form` (any of them when `form` is None) — two answers at any step is no
     answer (B-14), never a guess."""
     from app.connect import lineup
     want = lineup.clean(sentence)
     if not want:
         return None
-    holders = [c for c in found if c.text and want in c.text]
-    if holders:                                 # r2 N4: a cue once and inside a longer one elsewhere is two answers
-        one = holders[0] if len(holders) == 1 else None
-        return one if one is not None and (one.text == want or len(want) >= lineup.MIN_CHARS) else None
+    exact = [c for c in found if c.text == want]
+    if exact:                                   # its words word for word (r3 S1: a longer line holding them elsewhere
+        return exact[0] if len(exact) == 1 else None      # is never this one's rival)
+    holders = [c for c in found if c.text and want in c.text] if len(want) >= lineup.MIN_CHARS else []
+    if holders:
+        return holders[0] if len(holders) == 1 else None
     hold = lineup.clean(form) if form else ""
     hits = [c for c in found if c.text and len(c.text) >= lineup.MIN_CHARS and c.text in want and
             (not hold or hold in c.text)]
@@ -177,7 +182,7 @@ def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None):
     if not order:
         return {}
     os.makedirs(run_dir, exist_ok=True)
-    clips, why = {}, troubles if troubles is not None else []
+    clips, why, kind = {}, troubles if troubles is not None else [], None
     for c, at in enumerate(range(0, len(order), CUT_LINES), 1):
         runs = {}                                # run_id -> (audio, subtitle, [its cues in order])
         for cue in order[at:at + CUT_LINES]:
@@ -204,25 +209,34 @@ def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None):
                 raise
             why.append(e.message)
             break                               # what was cut is kept; a press again cuts the rest
-        for run_id, (_audio, _sub, cues) in runs.items():
+        for run_id, (audio, _sub, cues) in runs.items():
+            name = os.path.basename(audio)              # r3 N4: each reason names its file
             run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == run_id),
                        None)
             if run is None or not run.get("ok"):
-                why.append(str((run or {}).get("message") or (run or {}).get("error") or "no answer for that file"))
+                code = (run or {}).get("error")
+                kind = kind or anki_miner.KINDS.get(code, "failed")       # r3 N3: Anki Miner's own kind
+                why.append(f"{name}: {(run or {}).get('message') or code or 'no answer for that file'}")
                 continue
             made = lineup._read_json(os.path.join(run_dir, run_id, os.path.basename(str(run.get("file") or "")))) or {}
             lines = [line for line in made.get("lines") or () if isinstance(line, dict)]
             if len(lines) != len(cues):
-                continue                        # merged or dropped: which answer is which line is unknown
+                why.append(f"{name}: {OTHER_COUNT}")    # merged or dropped: which answer is which line is unknown
+                continue
+            other = none = 0
             for cue, line in zip(cues, lines):
                 if not _is_line(cue, line):
+                    other += 1
                     continue
                 clip = os.path.join(run_dir, run_id, line["audio"]) if isinstance(line.get("audio"), str) else None
                 if clip and os.path.isfile(clip):
                     for note_id in cards[cue]:
                         clips[note_id] = clip
-    if not clips and why:
-        raise anki_miner.AnkiMinerError("refused", f"Anki Miner couldn't cut the clips: {why[0]}")
+                else:
+                    none += 1
+            why.extend(f"{name}: {say.format(n=n)}" for say, n in ((NOT_THE_LINES, other), (NO_CLIP, none)) if n)
+    if not clips and why:                       # r3 S2: nothing cut always says why
+        raise anki_miner.AnkiMinerError(kind or "refused", f"Anki Miner couldn't cut the clips: {why[0]}")
     return clips
 
 
@@ -233,11 +247,10 @@ def _is_line(cue, line):
     if isinstance(start, bool) or not isinstance(start, (int, float)) or \
             abs(float(start) - float(cue.start)) > anki_miner.LINE_TOLERANCE:
         return False
-    end = line.get("end")
-    begun = line.get("start")
-    if isinstance(end, (int, float)) and isinstance(begun, (int, float)) and not isinstance(end, bool) and \
+    end, begun = line.get("end"), line.get("start")
+    if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in (end, begun)) or \
             abs((float(end) - float(begun)) - (float(cue.end) - float(cue.start))) > 2 * anki_miner.LINE_TOLERANCE:
-        return False                            # another line of the same start (its length: offsets cancel)
+        return False                            # no times (r3 N6), or another line of the same start (its length)
     text = lineup.clean(line.get("text"))
     return bool(text) and (cue.text in text or text in cue.text)
 

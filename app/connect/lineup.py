@@ -20,8 +20,9 @@ held by `tests/connect/test_lineup.py`; plan: `tracks/pipeline/work/AB/plan.md`)
   `Store.audiobook_mismatches`).
 - **Its own timed subtitle instead** (Kura-AB3, Mattias's 3.0.2 report; PROVISIONAL): an audiobook of one audio file
   whose transcript Hon found this book's (`audiobooks.TIMING`: an `.srt` beside the audio, its lines in the book in
-  order) is the line-up as it is (`own`: no sync, no speech model) — its cues cut the cards as a sync's do. Its timing
-  is spot-checked first when Anki Miner has its speech model (a subtitle not timed to that audio: lined up as above).
+  order) is the line-up as it is (`own`: no sync) — its cues cut the cards as a sync's do — once its timing to that
+  audio is checked (the spot-check, below) or trusted (*Trust my subtitles' timing*: then no speech model at all), the
+  one rule an audiobook's subtitle has alone; else lined up as above.
 - **The speech model** (AB-Q1/Q2): one Anki Miner already has is used (`anki_miner.speech_ready`); else the one question,
   its answer kept here (`answer`, `set_answer`); yes → Anki Miner's own `setup --speech-model --model small`
   (`start_speech`), a child as the sync is (`look(SPEECH)`), its progress file in *Finish its setup*'s folder so a Connect

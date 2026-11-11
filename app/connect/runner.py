@@ -279,10 +279,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if stop:
                     summary["stopped"] = stop
                     return summary
-            if summary.get("stopped") or not work or not outside:
+            if summary.get("stopped"):
                 break
             if looks is not None and summary["looks"] >= looks:
                 break
+            if not work or not outside:
+                # nothing to look at again — unless a kick came during this pass (a video linked while Connect mined
+                # another episode: Michi-VF review B1) and let a parked job go: then one more pass, never an exit
+                # that leaves it parked for a start no one makes (a link puts nothing in the inbox)
+                if not (_woken(steps, ledger, parked) and any(_open_jobs(ledger, lang, parked) for lang in languages)):
+                    break
+                continue
             if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)
                           or _woken(steps, ledger, parked)):
                 summary["stopped"] = "cancelled"
@@ -1822,7 +1829,29 @@ class Steps:
         if now == self._woken:
             return False
         self._woken = now
-        return kick.VIDEOS if isinstance(now, str) and now.endswith("-" + kick.VIDEOS) else True
+        if not (isinstance(now, str) and now.endswith("-" + kick.VIDEOS)):
+            return True
+        self._videos_again()
+        return kick.VIDEOS
+
+    def _videos_again(self):
+        """A kick that may have found videos (a video linked, a video folder added: Michi-VF, Mattias 3.0.0): the
+        folders settings.json holds now, and a language whose folders changed has its video index made again at its
+        next use (`_videos`) — a folder you add while this run waits on an episode's video is looked in this run, never
+        only at Connect's next start. Unchanged folders keep the run's index (its one re-list a run: S19). An
+        unreadable settings.json keeps the folders the run had."""
+        from app.connect import videos
+        try:
+            from app.cli import verbs
+            now = verbs.settings()
+        except Exception:
+            log.warning("Connect couldn't read the video folders again; it keeps this run's", exc_info=True)
+            return
+        was = getattr(self, "_video_folders", None) or self.loaded
+        made = getattr(self, "_video_index", {})
+        for lang in [lang for lang in made if videos.configured(now, lang) != videos.configured(was, lang)]:
+            del made[lang]
+        self._video_folders = now
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
@@ -2166,7 +2195,8 @@ class Steps:
                                   and r["video_path"]})
                 sources = [s["path"] for s in store.sources(counts=False)]
             index = videos.Index(lang)
-            index.refresh(shallow, videos.configured(self.loaded, lang), sources=sources)
+            added = getattr(self, "_video_folders", None) or self.loaded     # read again at a videos kick (Michi-VF)
+            index.refresh(shallow, videos.configured(added, lang), sources=sources)
             made[lang] = index
             self._video_index = made
         return made[lang]

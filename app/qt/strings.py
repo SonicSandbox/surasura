@@ -1721,6 +1721,7 @@ REPORT_SEND_PAUSED = "Sending is paused for now: make a zip instead and post it 
 REPORT_SEND_REFUSED = "Not sent: the report wasn't taken ({status}). It's kept: make a zip instead and post it on Discord"
 REPORT_SEND_UNSAFE = "Surasura couldn't make this report safe to send. Make a zip instead and look it over"
 REPORT_SEND_FAILED = "The report couldn't be sent: {why}"
+REPORT_SEND_TRIED = "Tried {n} times. {words}"      # a send that failed again (Mattias 3.0.0: a same line looked like nothing)
 REPORT_WAITING = "1 report waiting to send"
 REPORT_SEND_NOW = "Send now"
 REPORT_SEND_NOW_TIP = "Send the report that's waiting (the same one: Sonic gets it once)"

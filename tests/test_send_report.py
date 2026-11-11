@@ -230,6 +230,41 @@ def test_a_refusal_keeps_the_zip_and_the_list(saved, receiver, status, outcome):
     assert send_report.sent_today() == 0
 
 
+def _app_log():
+    from app import path_utils
+    try:
+        with open(os.path.join(path_utils.get_local_data_path(), "logs", "app_debug_log.txt"), encoding="utf-8") as f:
+            return [line for line in f if "Send report:" in line]
+    except FileNotFoundError:
+        return []
+
+
+def test_each_send_leaves_one_log_line_with_the_answer_and_nothing_of_the_sender(saved, receiver):
+    # Mattias's 3.0.0 zip (2026-11-11): production's /report answered 404 and his log held no trace of any send, so
+    # the report couldn't say what the receiver had answered. Now one line a try: what came of it and the receiver's
+    # host; never the Discord name, the nonce or the sender code.
+    import urllib.parse
+    receiver.answer = (404, b"Not found")
+    ob = send_report.build("ja")
+    send_report.send(name="ゆき#0429")
+    receiver.answer = (201, {"id": "K3Q7PM"})
+    send_report.send(name="ゆき#0429")
+    lines = _app_log()
+    host = urllib.parse.urlsplit(receiver.url).netloc
+    assert len(lines) == 2
+    assert lines[0].rstrip().endswith(f"Send report: not sent (refused, HTTP 404) to {host}")
+    assert lines[1].rstrip().endswith(f"Send report: sent #K3Q7PM to {host}")
+    text = "".join(lines)
+    assert "ゆき" not in text and ob.nonce not in text and send_report.sender_code() not in text
+
+
+def test_a_send_with_no_connection_is_logged_too(saved, receiver):
+    receiver.close()                                                   # nothing listens there any more
+    send_report.build("ja")
+    assert send_report.send().outcome == send_report.OFFLINE
+    assert _app_log()[-1].rstrip().endswith("not sent (offline, no answer) to " + receiver.url.split("//")[1])
+
+
 @pytest.mark.parametrize("answer", [b"not json", {"id": "k3q7pm"}, {"id": "K3Q7P"}, {"id": "K3Q7PI"}, {}])
 def test_a_201_without_a_proper_id_is_not_taken_as_sent(saved, receiver, answer):
     receiver.answer = (201, answer)

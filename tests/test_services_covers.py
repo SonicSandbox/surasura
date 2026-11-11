@@ -356,6 +356,96 @@ def test_a_books_cover_named_outside_its_package_folder_is_refused(tmp_path):
     assert C.epub_cover(book) is None
 
 
+def _book(path, manifest, files, meta="", guide=""):
+    """An EPUB as a shop's or a converter's tools write it, byte for byte: `manifest` (the OPF's items), `files`
+    ({member under OEBPS/: bytes or text}), `meta` (inside <metadata>), `guide` (EPUB 2's <guide>)."""
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" '
+                   'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                   '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                   '</rootfiles></container>')
+        z.writestr("OEBPS/content.opf", '<?xml version="1.0" encoding="UTF-8"?><package '
+                   'xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata '
+                   f'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>星の歌</dc:title>{meta}</metadata>'
+                   f'<manifest>{manifest}<item id="p1" href="Text/p1.xhtml" media-type="application/xhtml+xml"/>'
+                   f'</manifest><spine><itemref idref="p1"/></spine>{guide}</package>')
+        z.writestr("OEBPS/Text/p1.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>むかしむかし、ある'
+                   '村に星の歌を歌う娘がいました。</p></body></html>')
+        for name, data in files.items():
+            z.writestr("OEBPS/" + name, data)
+    return path
+
+
+_COVER, _BACK = jpeg(30, 45), png()
+_PAGE = ('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml" '
+         'xmlns:xlink="http://www.w3.org/1999/xlink"><head><title>表紙</title></head><body>{}</body></html>')
+
+
+@pytest.mark.parametrize("manifest, files, meta, guide", [
+    # EPUB 3 (a Japanese shop's book): the manifest's cover-image item, its file not named *cover* — and a back cover
+    # that is, earlier in the manifest
+    ('<item id="i-back" href="Images/backcover.png" media-type="image/png"/>'
+     '<item id="i-0001" href="Images/i-0001.jpg" media-type="image/jpeg" properties="cover-image"/>',
+     {"Images/backcover.png": _BACK, "Images/i-0001.jpg": _COVER}, "", ""),
+    # EPUB 2: <meta name="cover"> naming the item by its id
+    ('<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>',
+     {"Images/00001.jpeg": _COVER}, '<meta name="cover" content="img_0001"/>', ""),
+    # EPUB 2 by some converters: <meta name="cover"> naming the file instead of the id
+    ('<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>',
+     {"Images/00001.jpeg": _COVER}, '<meta name="cover" content="Images/00001.jpeg"/>', ""),
+    # EPUB 2's guide: the cover page, the picture inside it as <img>
+    ('<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>'
+     '<item id="titlepage" href="Text/titlepage.xhtml" media-type="application/xhtml+xml"/>',
+     {"Images/00001.jpeg": _COVER, "Text/titlepage.xhtml": _PAGE.format('<div><img src="../Images/00001.jpeg" '
+                                                                         'alt="表紙"/></div>')},
+     "", '<guide><reference type="cover" href="Text/titlepage.xhtml" title="表紙"/></guide>'),
+    # ... and as an SVG <image xlink:href> filling the page
+    ('<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>'
+     '<item id="p-cover" href="Text/p-cover.xhtml" media-type="application/xhtml+xml"/>',
+     {"Images/00001.jpeg": _COVER, "Text/p-cover.xhtml": _PAGE.format(
+         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 45"><image width="30" height="45" '
+         'xlink:href="../Images/00001.jpeg"/></svg>')}, "", '<guide><reference type="Cover" href="Text/p-cover.xhtml"/>'
+                                                            '</guide>'),
+    # a cover-image Surasura can't show (an SVG drawing): the book's next answer, its <meta name="cover"> item
+    ('<item id="c-svg" href="Images/cover.svg" media-type="image/svg+xml" properties="cover-image"/>'
+     '<item id="img_0001" href="Images/00001.jpeg" media-type="image/jpeg"/>',
+     {"Images/cover.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>', "Images/00001.jpeg": _COVER},
+     '<meta name="cover" content="img_0001"/>', ""),
+], ids=["epub3-cover-image", "epub2-meta-id", "epub2-meta-file", "guide-page-img", "guide-page-svg", "svg-then-meta"])
+def test_a_books_own_cover_is_found_however_its_package_names_it(tmp_path, manifest, files, meta, guide):
+    """Mattias, 3.0.0: a book showed no cover. A shop's EPUB names its cover by the manifest's cover-image property or
+    EPUB 2's <meta name="cover"> / guide, its file often not called *cover* — every one of those is the book's cover,
+    and never the back cover named *cover* beside it."""
+    book = _book(str(tmp_path / "星の歌.epub"), manifest, files, meta, guide)
+    assert C.epub_cover(book) == (_COVER, ".jpg")
+
+
+def test_a_shops_book_gets_its_own_cover_in_the_library_scan(lib):
+    """The same through the scan: a book whose cover is its cover-image item (named i-0001.jpg) gets it, copied once."""
+    item = lib.store.ids("soon")[0]
+    work = lib.work_of(item)
+    _book(os.path.join(lib.folder_of(item), "星の歌.epub"),
+          '<item id="i-0001" href="Images/i-0001.jpg" media-type="image/jpeg" properties="cover-image"/>',
+          {"Images/i-0001.jpg": _COVER})
+    assert lib.scan() == 1
+    source, _ref, path, locked = lib.row(work)
+    assert (source, locked) == ("file", 0) and path.startswith("cache:")
+    with open(os.path.join(path_utils.get_covers_cache_path(), path[len("cache:"):]), "rb") as f:
+        assert f.read() == _COVER
+
+
+def test_a_cover_page_that_isnt_xml_or_names_nothing_leaves_the_generated_cover(tmp_path):
+    """A guide whose cover page won't parse (an HTML entity XML doesn't know) or holds no picture gives no cover, and
+    nothing breaks."""
+    for page in (_PAGE.format("<p>&nbsp;表紙</p>"), _PAGE.format("<p>表紙</p>")):
+        book = _book(str(tmp_path / "表紙なし.epub"), '<item id="t" href="Text/t.xhtml" '
+                     'media-type="application/xhtml+xml"/>', {"Text/t.xhtml": page}, "",
+                     '<guide><reference type="cover" href="Text/t.xhtml"/></guide>')
+        assert C.epub_cover(book) is None
+
+
 def test_a_locked_title_is_never_looked_at_on_disk(lib, monkeypatch):
     work = lib.work_of(lib.store.ids("goal")[0])
     lib.writer.set_cover(work, "generated", locked=True)

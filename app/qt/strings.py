@@ -1563,7 +1563,8 @@ COVER_NONE_FOUND = "No cover found on AniList for {title}"
 COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
 COVER_FETCHING = "Fetching the cover for {title}…"
 COVER_LOOKUP_BROKE = "The cover lookup for {title} stopped with an error: {why}"
-COVER_PASTE_NOT_A_LINK = "Copy an AniList, TMDB or YouTube link first, then choose Paste a link"
+COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList, TMDB or YouTube link. For a book's cover, save the "
+                          "picture, then use Choose an image…")
 COVER_PASTE_WHY = {
     "off": "Download covers is off in Settings → Connections, so nothing was looked up or fetched",
     "no_key": "TMDB covers aren't available yet: copy an AniList or YouTube link instead",

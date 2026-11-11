@@ -16,7 +16,8 @@ decodes an image for the screen (Q6 does, off the window's thread).
   2. else an EPUB of its own — the one its parts were read from (an origin `<book>.epub#3`, whichever door: a look,
      Extract, + Add) — then one beside its files (the one its folder's source marker names first): the book's own
      cover — the OPF
-     manifest's `cover-image` item, else its `<meta name="cover">`, else an image item named *cover* — copied ONCE into
+     manifest's `cover-image` item, else its `<meta name="cover">` (an id, or a file), else the picture on its guide's
+     cover page, else an image item named *cover*; the first that is a whole picture (`epub_cover`) — copied ONCE into
      the covers cache (`path_utils.get_covers_cache_path()`; its name a hash of the language, the work, the EPUB's
      path, size and time — never the user's path; a changed book is a new name): `set_cover(work, "file", ref=<the
      EPUB's path>, path="cache:<name>")`.
@@ -321,44 +322,83 @@ def epub_cover(path):
         return None
     try:
         with zipfile.ZipFile(path) as z:
-            name = _cover_member(z)
-            if name is None:
-                return None
-            info = z.getinfo(name)
-            if info.file_size > MAX_IMAGE:
-                return None
-            data = z.read(info)
+            for name in _cover_members(z):          # the book's answers, best first: the first whole picture
+                try:
+                    info = z.getinfo(name)
+                except KeyError:
+                    continue
+                if info.file_size > MAX_IMAGE:
+                    continue
+                data = z.read(info)
+                ext = image_ext(data)
+                if ext:
+                    return data, ext
     except (OSError, KeyError, ValueError, RuntimeError, zipfile.BadZipFile, ElementTree.ParseError, EOFError):
         return None
-    ext = image_ext(data)
-    return (data, ext) if ext else None
+    return None
 
 
 def _local(tag):
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
-def _cover_member(z):
-    """The zip member holding the book's cover: the manifest's `cover-image` item (EPUB 3), its `<meta name="cover">`
-    item (EPUB 2), else an image item whose id or file is named *cover*."""
+def _member(base, href):
+    """The zip member an href names from the member `base` (the package file, a page), or None: one climbing out."""
+    member = posixpath.normpath(posixpath.join(posixpath.dirname(base), unquote(href.split("#", 1)[0])))
+    return None if member.startswith("../") or member in (".", "..") else member
+
+
+def _page_picture(z, page):
+    """The picture a cover page shows (EPUB 2's guide): its first `<img src>` or SVG `<image href>`, as a zip member —
+    or None (no such page, too big, not XML, no picture)."""
+    try:
+        if z.getinfo(page).file_size > MAX_OPF:
+            return None
+        root = ElementTree.fromstring(z.read(page))
+    except (KeyError, ElementTree.ParseError):
+        return None
+    for e in root.iter():
+        if _local(e.tag) == "img":
+            href = e.get("src")
+        elif _local(e.tag) == "image":              # SVG's: xlink:href (SVG 1.1) or href (SVG 2)
+            href = next((v for k, v in e.attrib.items() if _local(k) == "href"), None)
+        else:
+            continue
+        if href:
+            return _member(page, href)
+    return None
+
+
+def _cover_members(z):
+    """The zip members that may hold the book's cover, best first: the manifest's `cover-image` item (EPUB 3), its
+    `<meta name="cover">` item (EPUB 2: by its id, or the file some tools name there), the picture on the guide's cover
+    page (EPUB 2's `<reference type="cover">`), else an image item whose id or file is named *cover*. (Each is tested
+    `is None`: an ElementTree item has no children, so it is falsy — `a or b` passed over every found item, 3.0.0.)"""
     container = ElementTree.fromstring(z.read("META-INF/container.xml"))
     opf = next((e.get("full-path") for e in container.iter() if _local(e.tag) == "rootfile" and e.get("full-path")),
                None)
     if opf is None or z.getinfo(opf).file_size > MAX_OPF:
-        return None
+        return []
     package = ElementTree.fromstring(z.read(opf))
     items = [e for e in package.iter() if _local(e.tag) == "item" and e.get("href")]
     images = [e for e in items if (e.get("media-type") or "").startswith("image/")]
     meta = next((e.get("content") for e in package.iter()
                  if _local(e.tag) == "meta" and e.get("name") == "cover" and e.get("content")), None)
-    pick = (next((e for e in images if "cover-image" in (e.get("properties") or "").split()), None)
-            or next((e for e in images if e.get("id") == meta), None)
-            or next((e for e in images if "cover" in (e.get("id") or "").lower()
-                     or "cover" in posixpath.basename(e.get("href")).lower()), None))
-    if pick is None:
-        return None
-    member = posixpath.normpath(posixpath.join(posixpath.dirname(opf), unquote(pick.get("href"))))
-    return None if member.startswith("../") else member
+    found = [_member(opf, e.get("href")) for e in images if "cover-image" in (e.get("properties") or "").split()]
+    found += [_member(opf, e.get("href")) for e in images if meta is not None and meta in (e.get("id"), e.get("href"))]
+    for ref in package.iter():
+        if _local(ref.tag) == "reference" and (ref.get("type") or "").lower() == "cover" and ref.get("href"):
+            page = _member(opf, ref.get("href"))
+            if page is not None:
+                found.append(page if any(_member(opf, e.get("href")) == page for e in images)
+                             else _page_picture(z, page))
+    found += [_member(opf, e.get("href")) for e in images if "cover" in (e.get("id") or "").lower()
+              or "cover" in posixpath.basename(e.get("href")).lower()]
+    out = []
+    for member in found:
+        if member is not None and member not in out:
+            out.append(member)
+    return out
 
 
 # --- the cache and the user's covers ----------------------------------------------------------------------------- #

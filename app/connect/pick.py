@@ -448,13 +448,15 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
-         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None):
+         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, chars=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
     `listed` ({(lemma, reading): list position}): the list's rows, for `list` (and the order of every mode: the list's
     first). `carded`: the card keys (a card's word, its kana fold) of the words with a card. A line's other new words
-    are counted over what its card holds — the line and the lines its expansion adds (IS:268)."""
+    are counted over what its card holds — the line and the lines its expansion adds (IS:268). `chars`: (min,
+    preferred max, hard cap) characters, the sentence length to prefer among a word's lines (`length_rank`); None:
+    no preference, as before."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -494,6 +496,18 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
+    def length_rank(at):
+        """How well the card's sentence (its lines' text) fits your sentence length (`chars`: Settings' min_chars,
+        preferred_max_chars, max_chars — the range Generate's examples use): 0 inside the range, 1 shorter than it or
+        longer up to the hard cap, 2 past the cap. A preference only: the word is never left out for it."""
+        if not chars:
+            return 0
+        low, high, cap = chars
+        n = sum(len(cues[c].text or "") for c in span(at))
+        if low <= n <= high:
+            return 0
+        return 2 if cap and n > cap else 1
+
     candidates = []
     for key, uses in by_key.items():
         phrase = uses[0].phrase
@@ -530,9 +544,10 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        # a line no other word took; no other new word; a card that fits the cap uncut (else the shortest); written out
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, not fits(o.cue),
-                                          0 if fits(o.cue) else card(o.cue)[3],
+        # a line no other word took; no other new word; a sentence of the length you chose (`chars`); a card that fits
+        # the cap uncut (else the shortest); written out
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, length_rank(o.cue),
+                                          not fits(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]

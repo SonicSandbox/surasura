@@ -1264,6 +1264,19 @@ def _check_note_type(loaded, mapping, info=None):
         raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
 
 
+def _sentence_chars(loaded):
+    """(min, preferred max, hard cap) characters of a card's sentence: Settings' sentence length (`logic.context`,
+    the range Generate's examples use and `run_args` hands the analyzer) — Mattias 2026-11-11: Connect's book cards
+    took sentences of 3 and 113 characters with a range of 10–50 set. A value that isn't a number: its default."""
+    context = ((loaded or {}).get("logic") or {}).get("context") or {}
+
+    def number(key, default):
+        value = context.get(key, default)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    return low, max(low, high), max(high, cap) if cap else 0
+
+
 def pick(args):
     """The words of one subtitle to make cards from, each with its line (start + end), the words left out and why,
     and — given the video and an installed Anki Miner — the run file for its `--api mine` (P1.3 row 1.3.3). Writes
@@ -1337,7 +1350,8 @@ def pick(args):
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          chars=_sentence_chars(loaded))
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

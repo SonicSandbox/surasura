@@ -424,3 +424,33 @@ def test_a_grammar_expressions_row_follows_send_grammar_a_set_phrase_always_goes
     off = pick.pick(read, tokens, "ja", _known(), mode="list", listed=listed, phrase_set=loaded, send_grammar=False)
     assert [w["word"] for w in off["words"]] == [gut.word]
     assert [(n["word"], n["reason"]) for n in off["not_offered"]] == [(may.word, "grammar")]
+
+
+# --------------------------------------------------------------------------- #
+# The sentence length you chose (Mattias 2026-11-11: book cards of 3 and 113 characters with 10–50 set)
+# --------------------------------------------------------------------------- #
+def test_the_line_inside_your_sentence_length_is_preferred(tmp_path):
+    short = "小説。"
+    long = "昨日の夕方に駅前の大きな本屋で見つけたあの古い小説は、思っていたよりもずっと面白くて、気がついたら朝になるまで夜更かしをして読み続けてしまった。"
+    fits = "この小説はとても面白かった。"
+    path = _srt(tmp_path, [(1, 3, short), (10, 14, long), (20, 23, fits)])
+    read, tokens = _read(path)
+    only = lambda key: key[0] != "小説"     # noqa: E731 — every other word known: each line is i+1 for 小説
+    chosen = pick.pick(read, tokens, "ja", only, mode="unknown", chars=(10, 50, 100))
+    assert _by_word(chosen)["小説"]["line_text"] == fits
+    # no preference: as before (the first line wins its tie)
+    assert _by_word(pick.pick(read, tokens, "ja", only, mode="unknown"))["小説"]["line_text"] == short
+
+
+def test_a_word_said_only_in_a_line_outside_the_range_is_still_sent(tmp_path):
+    path = _srt(tmp_path, [(1, 3, "延長。")])
+    read, tokens = _read(path)
+    assert "延長" in _by_word(pick.pick(read, tokens, "ja", _known(), mode="unknown", chars=(10, 50, 100)))
+
+
+def test_the_range_comes_from_settings_logic_context():
+    from app.cli import verbs
+    assert verbs._sentence_chars({"logic": {"context": {"min_chars": 10, "preferred_max_chars": 50,
+                                                          "max_chars": 100}}}) == (10, 50, 100)
+    assert verbs._sentence_chars({}) == (10, 50, 150)
+    assert verbs._sentence_chars({"logic": {"context": {"min_chars": "x", "preferred_max_chars": 5}}}) == (10, 10, 150)

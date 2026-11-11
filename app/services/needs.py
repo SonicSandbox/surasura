@@ -132,10 +132,11 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
          BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
-WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
+WIRED_LATER = frozenset(("make_cards", "try_again"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
-                   "mine-failed": ("open_logs",), "error": ("open_logs",),
+                   # Mattias #5: a part Anki Miner stopped on twice — *Try again* (the rows' own ask, `mine_actions`)
+                   "mine-failed": ("try_again", "open_logs"), "error": ("open_logs",),
                    # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
                    "speech-model": ("get_speech_model", "no_speech_model")}
 SEEN_VERSION = 1

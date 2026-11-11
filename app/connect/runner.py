@@ -128,6 +128,11 @@ NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the ca
 # (`_ai_audio`): only an empty SentenceAudio, through the shared writer, one Undo a part
 AI_AUDIO = "ai"
 AI_JOB = "ai_audio_job:"
+# Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
+# length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
+# my subtitles' timing* on (never listened to)
+OWN_SLACK_S = 30.0
+OWN_TRUSTED = "trusted"
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -2975,15 +2980,22 @@ class Steps:
         n`; its `pair`), while another book's does (one at a time: review B-2), while a stopped one hasn't ended (B-1),
         downloads the model, or waits for the plug, and after your *Stop* until your next *Mine now* (`restarted`
         then). Nothing lined up at all: the store's mark (once), so *Needs you* asks the one question, and the book is
-        mined as it is. Given up (TRIES failures) until a *Mine now* newer than the last failure (B-18)."""
+        mined as it is. Given up (TRIES failures) until a *Mine now* newer than the last failure (B-18). Kura-AB3: an
+        audiobook whose own timed subtitle is the book's is lined up by it, never synced (`_own_timing`)."""
         from app.connect import anki_miner, library, lineup
-        if not anki_miner.can_now(anki_miner.LINE_UP):
+        sync = anki_miner.can_now(anki_miner.LINE_UP)
+        if not sync and not anki_miner.mines_now("audio"):
             return None
         with self._open(lang) as store:
             ab = library.audiobook_of_book(store, epub)
             if ab is None:
-                return self._book_audio(store, epub)
-        if not ab["key"] or ab["lineup"] == "kept":
+                return self._book_audio(store, epub) if sync else None
+        if ab["lineup"] == "kept":
+            return None                     # *Keep them together*: no sentence audio, as you said (review B1)
+        own = self._own_timing(lang, job, ab)
+        if own is not None:
+            return own
+        if not sync or not ab["key"]:
             return None
         key = ab["key"]
         state = lineup.look(key)
@@ -3006,7 +3018,7 @@ class Steps:
             raise _lining(LINING_UP_FILE.format(k=lineup.file_line(state)[0], n=lineup.file_line(state)[1]), key)
         if lineup.running(key):             # stopped, its child not ended yet: never a second run on its folder
             raise _lining(LINING_UP_STOPPING, key)
-        if status == lineup.STOPPED and not _newer(asked, state.get("stopped_at")):
+        if status == lineup.STOPPED and not state.get("own_stop") and not _newer(asked, state.get("stopped_at")):
             raise Wait(LINING_UP_STOPPED, look=False)
         if status in (lineup.FAILED, lineup.NO_MODEL) and (state.get("tries") or 0) >= lineup.TRIES and \
                 not _newer(asked, state.get("failed_at")):
@@ -3037,6 +3049,76 @@ class Steps:
         wait = _lining(LINING_UP_FILE.format(k=1, n=len(ab["files"])), key)
         wait.restarted = status == lineup.STOPPED
         raise wait
+
+    def _own_timing(self, lang, job, ab):
+        """Kura-AB3 (Mattias's 3.0.2 report; PROVISIONAL): the paired audiobook `ab` (`library.audiobook_of_book`) whose
+        own timed subtitle Hon found this book's (`timing`: its copy in the library) — one audio file, an `.srt`, both
+        on this computer, its last cue inside the audio's length — is the book's line-up as it is (`lineup.own`: no
+        sync) -> {"lineup", "line": None, "item_id"}; else None (lined up as before). Its timing to that audio is
+        checked or trusted, the one rule an audiobook's own subtitle has alone (`fit_check.fit`, review S1): heard in
+        time by the spot-check (`_own_spot`), or *Trust my subtitles' timing* on (`connect_trust_timing`: no speech
+        model at all). Never a wrong clip (review B2): not heard in time, not checked now, or — once Anki Miner's own
+        line-up said this audio doesn't follow the book (nothing lined up, a grade of C or D) — anything but heard in
+        time, is None. A sync still running for the pair is stopped once its subtitle is used (S2)."""
+        from app.connect import lineup
+        from app.path_utils import get_data_path
+        rel = ab.get("timing")
+        if not rel or len(ab["files"]) != 1 or not rel.lower().endswith(".srt"):
+            return None
+        audio, srt = ab["files"][0], os.path.join(get_data_path(lang), *rel.split("/"))
+        if not _on_disk(audio) or not os.path.isfile(srt):
+            return None
+        found = lineup.srt_cues(srt)
+        seconds = ab.get("seconds")
+        if not found or (isinstance(seconds, (int, float)) and seconds > 0 and
+                         max(end for _s, end, _t in found) > seconds + OWN_SLACK_S):
+            return None                     # timed to a longer cut than this audio (S1)
+        synced = lineup.look(ab["key"]) if ab["key"] else {}
+        doubt = synced.get("status") == lineup.NONE or (
+            synced.get("status") == lineup.DONE and synced.get("grade") not in lineup.GOOD)
+        # never a listen while Anki Miner's own line-up is done and good (it cuts the cards: review r2 S2) or still
+        # running (each look would listen again beside it: r2 S3) — only a kept or trusted answer counts then
+        listen = not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
+        said = self._own_spot(lang, job, audio, srt, listen=listen)
+        if said not in (lineup.MATCHED, OWN_TRUSTED) or (doubt and said != lineup.MATCHED):
+            log.info("Connect: %s's own subtitle isn't used for its timing (%s)", ab["title"], said or "unchecked")
+            return None
+        if ab["key"] and lineup.running(ab["key"]):
+            lineup.stop(ab["key"])
+            lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
+        return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
+
+    def _own_spot(self, lang, job, audio, srt, listen=True):
+        """AB-Q5's spot-check of an audiobook's own subtitle for `_own_timing` -> lineup.MATCHED / NOT_MATCHED (kept per
+        subtitle and audio, `lineup.spot_kept`); OWN_TRUSTED (*Trust my subtitles' timing* on: never listened to, as
+        `Steps.fit` asks it first); None (not checked: no speech model — the sync's path after asks the one question
+        —, *Not now* said to it, Anki Miner absent, or a check that gave no verdict now: a call that failed or timed
+        out — looked at again next time). Raises Wait on battery before an unasked listen (as the sync waits). A kept *not in time* wins over your trust (review r2 S1:
+        never a clip heard out of time); `listen` False: only a kept or trusted answer, never a call."""
+        from app.connect import anki_miner, lineup
+        kept = lineup.spot_kept(lineup.spot_key(audio, srt))
+        if kept == lineup.NOT_MATCHED:
+            return kept
+        if self._settings(lang).get("connect_trust_timing") is True:
+            return OWN_TRUSTED
+        if kept is not None or not listen or lineup.answer() == "no" or not anki_miner.can_now(anki_miner.SPOT_CHECK):
+            return kept
+        found = self._miner_profile(lang, job)
+        if found is None:
+            return None
+        miner, profile = found
+        try:
+            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+                return None
+            if self.on_battery() and not job.get("asked_at"):
+                raise Wait(LINING_UP_BATTERY)
+            said = lineup.spot_check(miner, lang, profile, audio, srt)
+        except anki_miner.AnkiMinerError as e:
+            if e.kind == "setup":
+                anki_miner._SPEECH.clear()
+            log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(srt), e.message)
+            return None
+        return said
 
     def _book_audio(self, store, epub):
         """Kura-AB2: the book `epub`, no audiobook paired -> None (mined as the book: *Not now* to the speech model,

@@ -1857,6 +1857,10 @@ def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_ag
     wiz.fetching = {"links": 2}                                     # YouTube's videos still coming: still counting
     page.show_numbers(dict(SW_NOTHING))
     assert page.counting.text() == S.COUNTING
+    asked = api.calls.count(("level_numbers", "ja"))
+    wiz._youtube_landed(0, 1, "")                                   # they came: counted at once, never after 30 s
+    assert wiz.fetching is None
+    assert wait_until(lambda: api.calls.count(("level_numbers", "ja")) == asked + 1)
 
 
 def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):

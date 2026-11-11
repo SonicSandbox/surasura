@@ -608,6 +608,19 @@ def test_open_anki_miner_while_its_window_is_open_says_so_and_never_starts_a_sec
     QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5), "a closed window's leftover: it opens"
     assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    for name in os.listdir(home):
+        os.remove(os.path.join(home, name))
+    stuck = os.path.join(home, f"instance.window-{gone_child.pid}.lock")   # a read-only leftover (round 2): refused
+    with open(stuck, "w", encoding="utf-8") as f:                          # to write, but its process is gone
+        f.write(f"{gone_child.pid}\nAnkiMiner\nhost\n")
+    os.chmod(stuck, 0o444)
+    try:
+        opened = len(world.opened)
+        QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+        assert wait_until(lambda: len(world.opened) == opened + 1, 5), "a read-only leftover: it opens"
+        assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    finally:
+        os.chmod(stuck, 0o666)
     assert store.calls == []
 
 

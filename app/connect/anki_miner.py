@@ -255,7 +255,8 @@ def window_open():
     for its lifetime, one started past its "already running" warning included (3.11's `gui/app.py`
     `_hold_window_marker`). On Windows a held QLockFile is open with reads shared only, so opening it to write is
     refused while its window lives and allowed once it has gone (a killed window's marker naming a pid Windows gave
-    another program reads as closed, never "open" for good); elsewhere the pid in its name must still run. An older
+    another program reads as closed, never "open" for good) and its pid must still run (a refused open alone is also a
+    read-only leftover's); elsewhere the pid in its name must still run. An older
     Anki Miner without markers reads as closed. Never raises (a file read: a worker's)."""
     from app import locks
     try:
@@ -275,8 +276,9 @@ def window_open():
         try:
             with open(os.path.join(home(), name), "r+b"):
                 pass                                    # not held: its window has gone
-        except PermissionError:
-            return True
+        except PermissionError:                         # held — or a read-only / refused leftover: its pid says which
+            if locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
         except OSError:
             continue
     return False

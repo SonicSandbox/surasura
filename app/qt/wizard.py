@@ -3483,6 +3483,8 @@ class SetupWizard(QWidget):
             else:                                         # nothing came in at all: the page again, with why
                 self._load = None
                 self._cover(None)
+        if self.page.id == "level" and not self.pages[5].counted():
+            self.read_numbers(fresh=True)                 # Disc-T1: the last page counts what came, at once
 
     def _added(self, _text=None):
         """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""

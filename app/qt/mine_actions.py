@@ -40,6 +40,10 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   until the file leaves Mining (stopped: it waits for your *Mine now*; `RowsView.stop_moved`). Refused (the job past
   its stop point, or gone), the pill is its own again and the bar says why. This episode only: Connect goes on to the
   next (Sonic LF4-5 = A).
+- ***Check again*** (Michi-NT, Mattias #XP44T6): a *Not timed* pill (listed in *Needs you*, or that entry dismissed)
+  and the episode's ⋯ check its timing anew — `connect.actions.check_again` on a worker (the entry fixed, the job
+  queued), then Connect kicked. Pressed, its pill turns at once (`check:<language>:<id>`, as *Mine now*'s) until its
+  status moves; nothing to check again (the episode no longer waits on its timing): the bar says so.
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -85,6 +89,19 @@ def _stop(language, job_id):
     return actions.stop(language, job_id)
 
 
+def _check_again(language, ids, settings):
+    """(A worker.) Michi-NT: Connect's `actions.check_again` for each file, then Connect kicked when any was queued (a
+    kick that fails leaves them queued: the next start checks them) -> the ids queued."""
+    from app.connect import actions, kick
+    queued = [i for i in ids if actions.check_again(language, i)]
+    if queued:
+        try:
+            kick.kick(settings() or {})
+        except Exception as e:
+            print(f"Connect wasn't kicked: {e}")
+    return queued
+
+
 class MineActions(QObject):
     """Made by the shell when it has a writer (as Finished's actions). The controller, the writer and the language are
     the window's as they are at each call (a language switch rebuilds `win.moves`: nothing here is rebuilt)."""
@@ -100,6 +117,7 @@ class MineActions(QObject):
                                                                                   "mine_requested")]
         self.make_cards = _make_cards                # (tests replace it)
         self.stop_job = _stop                        # R47 (tests replace it)
+        self.check_job = _check_again                # Michi-NT (tests replace it)
         self._stops = {}                             # R47: file id -> its Stop's press key
         self._asked = {}                             # round 8 row 45: file id -> (its ask's number, its press's key)
         self._asks = itertools.count(1)
@@ -107,6 +125,7 @@ class MineActions(QObject):
             lst.press_moved = self.settle
             lst.stop_moved = self.stopped                # --- R47
             lst.stop_requested.connect(lambda row, ask: self.stop(ask))
+            lst.check_requested.connect(lambda row, ask: self.check_again(ask))     # --- Michi-NT
             lst.mine_requested.connect(self.mine_row)
             lst.link_requested.connect(lambda row, ep, lst=lst: self.link(row, ep, lst))
             lst.find_folder_requested.connect(lambda row, ep: self.find_folder(ep))         # --- MV-2
@@ -253,6 +272,50 @@ class MineActions(QObject):
         self.settle(list(self._asked) + [i for lst in self.lists for i in lst.pressed_ids])
         self.stopped(list(self._stops) + [i for lst in self.lists for i in lst.stopping_ids])
 
+    # --- Michi-NT: *Not timed*'s *Check again* ------------------------------------------------------------------- #
+    def check_again(self, ask):
+        """*Check again* on the files `ask` names (`rows.Ask`): their pills turn now — painted before the worker is
+        handed the check — until their status moves (`press_moved` -> `settle`), or `SETTLE_S` after the check was
+        queued; nothing queued (no episode waits on its timing any more) or a worker that failed: their pills are their
+        own again and the bar says why. Connect off: nothing is checked and the bar says why. Pressed again while they
+        turn: nothing."""
+        if ask is None or not ask.ids:
+            return None
+        if self.off:
+            self.win.say(self.off)
+            return None
+        lang = getattr(self.win, "language", "")
+        ids = list(dict.fromkeys(ask.ids))
+        presses = qpress.presses_of(self.win)
+        keys_of = {i: f"check:{lang}:{i}" for i in ids}
+        if all(presses.get(k).live() for k in keys_of.values()):
+            return None                              # pressed already: still turning
+        n = next(self._asks)
+        for i, key in keys_of.items():
+            qpress.begin(None, key, win=self.win, at=qpress.NOWHERE)     # (its pills are its mark: below)
+            self._asked[i] = (n, key)
+        for lst in self.lists:                       # its pills turn now, painted before the worker is handed it
+            lst.press_ids(ids)
+        get = self.win.services.settings.get
+
+        def done(queued):
+            if sip.isdeleted(self):
+                return
+            if not queued:
+                self.settle(ids, why=strings.CHECK_AGAIN_NOTHING)
+                self.win.say(strings.CHECK_AGAIN_NOTHING)
+                return
+            self._told("saved", ids, n)              # the feed looked at now; the press ends with its status
+
+        def broke(info):
+            if sip.isdeleted(self):
+                return
+            why = strings.CHECK_AGAIN_FAILED.format(why=info[0] if info else "")
+            self.settle(ids, why=why)
+            self.win.say(why)
+        bridge.run_in_worker(self.check_job, lang, ids, get, then=done, failed=broke)
+        return n
+
     # --- R47: a Mining pill's *Stop* ------------------------------------------------------------------------------ #
     def stop(self, ask):
         """*Stop* on the file `ask` names (`rows.Ask`: its job): its pill reads *Stopping…* now — painted before the
@@ -332,6 +395,9 @@ class MineActions(QObject):
                                     payload=lambda: self.find_folder(ep), writes=True)]
         if name == rows.STOP:                        # --- R47
             return [item_menu.Entry("ep-stop", strings.MINE_STOP_ENTRY, tip, True, payload=lambda: self.stop(ask))]
+        if name == rows.CHECK:                       # --- Michi-NT: no store write, so never greyed for one
+            return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
+                                    payload=lambda: self.check_again(ask))]
         if name not in ("mine-now", "try-again"):       # (Mattias #5: *Try again* where its pill is *Try again*)
             return []
         return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,

@@ -5,6 +5,10 @@
   pick mines it untimed (`runner._fit`: tsubasa isn't asked, no shift; logged *mined anyway: not timed*). The choice
   holds for the pairing it was made on: a pairing changed since (hato re-timed it, a new subtitle) is picked again and
   checked again, as any. On hato's name-only pairings (`verdict: untimed`) the entry carries `feed.UNTIMED_WARNING`.
+- `check_again(language, item_id)` (Michi-NT, Mattias #XP44T6): *Check again* on a *Not timed* row or its ⋯ — the
+  item's entry fixed (listed or dismissed) and its job queued, so its timing is checked anew: a subtitle you fixed is
+  seen (the copy, or the same subtitle re-timed beside its video, `runner.retimed_beside`); still not timed, its entry
+  is back in *Needs you*.
 - `make_cards(language, gap_id)` (P4.1 WF; IK D-1 lean (a), P2.1-3): *Make their cards* on a *Needs you* gap — the
   gap's episodes queued as Connect's ordinary jobs (kind `mine`, by `user`), never an ask: a word Connect ever made,
   a deleted card's included, is never made again (`library.made_words_for`, N15 / G1.3-4); the gap marked noticed.
@@ -54,6 +58,33 @@ def mine_anyway(language, need_id, path=None):
         picked["forced"] = True
         ledger.set_state(job["id"], "queued", picked=picked)        # its reason and resume step cleared: picks anew
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
+    return True
+
+
+def check_again(language, item_id, path=None):
+    """Michi-NT (Mattias #XP44T6, #7J3960): *Check again* on an episode Connect found not timed to its video (its row,
+    or its ⋯) -> True when its job was queued again; False (nothing written) when there's no ledger, the item has no
+    open *not timed* entry in this language (listed or dismissed), or no job of it is waiting any more. The entry fixed
+    and the job queued (its reason, resume step and timing-check count cleared; the subtitle beside its video looked
+    for again), so its next pick checks its timing anew — a subtitle you fixed since is seen; still not timed, a new
+    entry counts in *Needs you* (its *Mine anyway*), a dismissed one included. The caller kicks Connect after."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return False
+    with book.Ledger(path) as ledger, ledger.transaction():
+        open_ = ledger.conn.execute("SELECT 1 FROM needs WHERE language = ? AND item_id = ? AND kind = 'not-timed' "
+                                    "AND fixed_at IS NULL", (language, item_id)).fetchone()
+        job = ledger.job(language, item_id)
+        if open_ is None or job is None or job.get("state") not in book.NOT_STARTED:
+            return False
+        picked = ledger.picked(job["id"]) or {}
+        for key in ("beside", "copy", "beside_at", "checked"):
+            picked.pop(key, None)
+        ledger.set_state(job["id"], "queued", picked=picked)       # its reason and resume step cleared: picks anew
+        ledger.forget_stop(job["id"])       # your press is your go, as a newer *Mine now* is (a *Stop* it waited by)
+        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (f"fit_try:{int(job['id'])}",))   # runner.FIT_TRY
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'not-timed' "
+                            "AND fixed_at IS NULL", (book._now(), language, item_id))
     return True
 
 

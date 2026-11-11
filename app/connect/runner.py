@@ -559,6 +559,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             ended = ledger.job_by_id(job["id"]) or {}
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
                 _fixed(ledger, lang, item_id=job["item_id"], keep=_skipped_says(ended))
+                _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
             _wait(ledger, job, w, out, parked)
             outside |= w.look
@@ -1069,36 +1070,62 @@ def _json_or_none(text):
 def _book_question(ledger, lang, got):
     """Kura-AB2: the book's one question (`Steps._book_audio`'s `got`: its words, the part it is asked by, its key and
     EPUB) -> True while it holds the book (each part held by its words, looked at again at each look: an audiobook
-    paired since, by any door, lets it go); False — answered (*Mine without audio*), or its card dismissed (kept as an
-    answer, so a later part never asks again): mined as the book. A question about the same book asked by another part
-    before (its first part left the library, a new edition) goes, so one card stands for the book. Writes only what
-    changed (S19)."""
+    paired since, by any door, lets it go); False — answered (*Mine without audio*, by its sha256 or its path), or its
+    card dismissed (kept as an answer, so a later part never asks again): mined as the book. A question the same EPUB
+    asked by another part before (its first part left the library) goes, so one card stands for the book; another copy
+    of the same bytes elsewhere is a book of its own (its answer shared: the same key). Read first: a look that
+    changes nothing writes nothing and takes no lock (S19)."""
     item, key, say, epub = got["item_id"], got["key"], got["book_ask"], os.path.abspath(got["epub"])
-    if _meta(ledger, f"{BOOK_SAID}{lang}:{key}"):
+    if any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") for k in dict.fromkeys((key, book_key(epub)))):
         return False
     record = json.dumps({"key": key, "epub": epub}, sort_keys=True, ensure_ascii=False)
     lo = f"{BOOK_ASKED}{lang}:"
     mine = f"{lo}{item}"
+    stale = [k for k, v in ledger.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                                               (lo, lo[:-1] + ";")).fetchall()
+             if k != mine and (_json_or_none(v) or {}).get("epub") == epub]
+    open_need = ledger.conn.execute("SELECT say, dismissed_at FROM needs WHERE language = ? AND kind = ? AND "
+                                    "item_id = ? AND fixed_at IS NULL", (lang, BOOK_AUDIO_NEED, item)).fetchone()
+    if not stale and _meta(ledger, mine) == record and open_need is not None and open_need[0] == say and \
+            open_need[1] is None:
+        return True                                 # asked already, as it is: nothing to write
     with ledger.transaction():
-        for meta_key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?",
-                                                   (lo, lo[:-1] + ";")).fetchall():
-            was = _json_or_none(value) or {}
-            if meta_key != mine and (was.get("key") == key or was.get("epub") == epub):
-                ledger.conn.execute("DELETE FROM meta WHERE key = ?", (meta_key,))
-                ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? "
-                                    "AND fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, int(meta_key[len(lo):])))
+        for meta_key in stale:
+            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (meta_key,))
+            ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                                "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, int(meta_key[len(lo):])))
         if _meta(ledger, mine) != record:
             ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mine, record))
         if ledger.need(lang, BOOK_AUDIO_NEED, say, item_id=item, standing=True):
             log.info("Connect: asks whether a book has its audiobook (%s, item %s)", lang, item)
-        elif ledger.conn.execute("SELECT 1 FROM needs WHERE language = ? AND kind = ? AND item_id = ? AND fixed_at IS "
-                                 "NULL AND dismissed_at IS NOT NULL", (lang, BOOK_AUDIO_NEED, item)).fetchone():
+        elif open_need is not None and open_need[1] is not None:
             # *Dismiss*: you let it be — mined as the book, never held for good; kept, since the part whose job ends
             # takes its needs with it and the next part would ask again
             ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                                 (f"{BOOK_SAID}{lang}:{key}", DISMISSED))
             return False
     return True
+
+
+def _book_orphans(ledger, lang):
+    """Kura-AB2: a book's question no waiting part holds any more (its parts' jobs ended without an answer — dropped,
+    skipped, removed — while the part it is asked by has no job to take it along) fixed, by itself: never a card that
+    nothing clears. A job's end; nothing open: the ledger read alone."""
+    open_needs = [n for n in ledger.needs(lang, listed=False) if n["kind"] == BOOK_AUDIO_NEED]
+    if not open_needs:
+        return
+    held = {j.get("reason") for j in ledger.jobs(lang, states=("waiting",))}
+    for n in open_needs:
+        if n["say"] not in held:
+            _fixed_book(ledger, lang, n["item_id"])
+
+
+def _fixed_book(ledger, lang, item):
+    """The book question asked by part `item` fixed — that question alone, never the part's other needs (03 §4)."""
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                            "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, item))
+    log.info("Connect: fixed by itself (%s, %s): item %s", lang, BOOK_AUDIO_NEED, item)
 
 
 def _book_answered(ledger, lang, epub):
@@ -1112,10 +1139,7 @@ def _book_answered(ledger, lang, epub):
     for item in sorted(open_ids):
         rec = _json_or_none(_meta(ledger, f"{BOOK_ASKED}{lang}:{item}")) or {}
         if rec.get("epub") == want:
-            with ledger.transaction():
-                ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
-                                    "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, item))
-            log.info("Connect: fixed by itself (%s, %s): item %s", lang, BOOK_AUDIO_NEED, item)
+            _fixed_book(ledger, lang, item)
 
 
 def _pick(steps, ledger, lang, job, record=True):

@@ -13069,8 +13069,14 @@ def _store_book_audiobooks(self, item_id):
         if origin is None or not _EPUB_PART.search(origin.get("origin") or ""):
             return None
         epub = origin["origin"].rsplit("#", 1)[0]
-        title = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+        title = self.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
                                   (item_id,)).fetchone()
+        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+        if title and self.conn.execute(
+                f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND {_LIVE_ORIGIN} AND "
+                f"instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND p.content_key < ?) AND "
+                f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
+            title = None                                 # two books in one title: this one named by its file
         title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
         lone, seen = [], set()
         for _k, ab_id, rec in self._audiobook_rows():

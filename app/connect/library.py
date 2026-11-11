@@ -138,7 +138,8 @@ def audiobook_of_book(store, epub):
 def book_of(store, epub):
     """Kura-AB2: the book `epub` as the library holds it -> {item (its first part's id: the one the book's question is
     asked by, so every part asks the same one), sha256 (the EPUB's, from its parts' records: the answer survives a
-    move), title (its title's)}; None when no live part of it is in the library. One range read of the pairings."""
+    move), title (its title's — its file's when the title holds another book too, `Store.library_books`' rule)}; None
+    when no live part of it is in the library. One range read of the pairings."""
     from app import library_store
     if not epub:
         return None
@@ -149,8 +150,14 @@ def book_of(store, epub):
             f"AND p.content_key < ? AND {library_store._LIVE_ORIGIN} ORDER BY p.item_id", (lo, lo[:-1] + "$")).fetchall()
         if not rows:
             return None
-        title = store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+        title = store.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
                                    (rows[0][0],)).fetchone()
+        if title and store.conn.execute(
+                f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND "
+                f"{library_store._LIVE_ORIGIN} AND instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND "
+                f"p.content_key < ?) AND lower(p.content_key) LIKE '%.epub#%' LIMIT 1",
+                (title[1], lo, lo[:-1] + "$")).fetchone():
+            title = None                        # two books in one title: this one named by its file
     try:
         sha = json.loads(rows[0][1]).get("sha256")
     except (ValueError, AttributeError):

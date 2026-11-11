@@ -249,10 +249,14 @@ def test_hons_own_question_about_the_book_stands_beside_it_and_its_audiobook_is_
     """Review S6: Hon unsure (H-8: *Is this audiobook 「…」 the book 「…」?*) — the book still asks its own question (a
     hidden H-8 card never holds it with nothing shown), and *Pick its audiobook…* offers that audiobook first."""
     from tests import connect_helpers as c
+    other = _drive("driveA2")
+    _audio_folder(os.path.join(other, "Audio", "A Cat Story"), "A Cat Story", _fit("ja"))
     with c.store("ja") as s:
+        _look(s, "ja", s.add_source(other))
         assert s.pair_audiobook(lone["audio"], ask={"item": lone["parts"][0], "epub": lone["book"], "sha256": None,
                                                     "key": "k-ask", "title": NEKO})
-        assert [a["item_id"] for a in s.book_audiobooks(lone["parts"][0])["audiobooks"]] == [lone["audio"]]
+        listed = [a["item_id"] for a in s.book_audiobooks(lone["parts"][0])["audiobooks"]]
+        assert len(listed) == 2 and listed[0] == lone["audio"], "the one Hon asks about first, before A… by title"
         assert s.pick_audiobook_book(lone["audio"], lone["book"]) is not None, "the pick pairs an asked one too"
     with pytest.raises(runner.Wait) as w:
         lone["steps"].line_up("ja", _job(), lone["book"])
@@ -271,3 +275,69 @@ def test_the_pick_lists_the_librarys_audiobooks_with_no_book_and_none_once_paire
         assert s.book_audiobooks(lone["audio"]) is None, "an audiobook's own item is no book"
         assert s.pick_audiobook_book(lone["audio"], lone["book"]) is not None
         assert s.book_audiobooks(lone["parts"][1])["audiobooks"] == []
+
+
+def test_two_copies_of_one_epub_are_two_books_whose_questions_never_take_each_others_place(tmp_path):
+    """Round 2 S1: the same bytes in two library folders (one key, two EPUBs): each its own card, standing — a look of
+    one never fixes the other's (else each look would raise it anew, unseen); one answer counts for both (the key)."""
+    ledger_path = str(tmp_path / "ledger.db")
+    with Ledger(ledger_path) as ledger:
+        a = ledger.queue("ja", 11, "mine", None, "store-1")
+        b = ledger.queue("ja", 21, "mine", None, "store-1")
+        one, two = _got(item=11, epub="b.epub"), _got(item=21, epub="copy/b.epub")
+        _hold(_AskSteps(one), ledger, a, 11, "b.epub")
+        _hold(_AskSteps(two), ledger, b, 21, "copy/b.epub")
+        before = ledger.conn.execute("SELECT * FROM needs ORDER BY id").fetchall()
+        assert len(before) == 2
+        for _ in range(2):
+            _hold(_AskSteps(one), ledger, a, 11, "b.epub")
+            _hold(_AskSteps(two), ledger, b, 21, "copy/b.epub")
+        assert ledger.conn.execute("SELECT * FROM needs ORDER BY id").fetchall() == before
+        first = _asks(ledger)[0]["id"]
+    assert actions.book_audiobook("ja", first, path=ledger_path) is True
+    with Ledger(ledger_path) as ledger:
+        assert _hold(_AskSteps(two), ledger, b, 21, "copy/b.epub") is None, "the same book's answer"
+
+
+def test_a_question_no_waiting_part_holds_any_more_goes_when_a_job_ends(tmp_path):
+    """Round 2 S2: the card is asked by the book's first part, which may have no job; once no part waits on it (their
+    jobs dropped or done without an answer), a job's end takes the card away — never one nothing clears."""
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        b = ledger.queue("ja", 12, "mine", None, "store-1")
+        _hold(_AskSteps(_got(item=11)), ledger, b, 12)
+        runner._book_orphans(ledger, "ja")
+        assert [n["item_id"] for n in _asks(ledger)] == [11], "a part still waits on it"
+        ledger.set_state(b, "dropped", reason="left the top 20")
+        runner._book_orphans(ledger, "ja")
+        assert _asks(ledger) == []
+
+
+def test_an_answer_kept_by_the_books_path_holds_once_its_sha256_is_known(tmp_path):
+    """Round 2 N4: asked (and answered) while its parts had no sha256 — the path key; a later look knows the EPUB's
+    sha256: still answered, never asked once more."""
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        jid = ledger.queue("ja", 11, "mine", None, "store-1")
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
+                            (f"{runner.BOOK_SAID}ja:{runner.book_key('b.epub')}", runner.NO_AUDIOBOOK))
+        assert _hold(_AskSteps(_got(key="sha256:later")), ledger, jid, 11) is None
+        assert _asks(ledger) == []
+
+
+def test_two_books_in_one_title_are_each_named_by_their_file():
+    """Round 2 S3: two volumes in one folder are one title — each card and its pick name the book by its file, so the
+    two questions differ (and an answer to one never lets the other go)."""
+    from app.connect import library
+    store, _data_dir = _empty("ja")
+    src = _drive("driveV")
+    books = [_epub(os.path.join(src, "Books", "星屑の剣士", f"星屑の剣士 {n}.epub"), f"星屑の剣士 {n}", "ja",
+                   repeat=19 + n) for n in (1, 2)]          # each volume its own text (the same text is one item)
+    with store:
+        _look(store, "ja", store.add_source(src), first=True)
+        found = [library.book_of(store, b) for b in books]
+        assert found[0]["item"] != found[1]["item"]
+        works = [store.item(f["item"])["work_id"] for f in found]
+        store.merge_works(works[0], [works[1]])             # the learner's own join: one title, two books
+        found = [library.book_of(store, b) for b in books]
+        assert store.item(found[0]["item"])["work_id"] == store.item(found[1]["item"])["work_id"], "one title"
+        assert [f["title"] for f in found] == ["星屑の剣士 1", "星屑の剣士 2"]
+        assert [store.book_audiobooks(f["item"])["title"] for f in found] == ["星屑の剣士 1", "星屑の剣士 2"]

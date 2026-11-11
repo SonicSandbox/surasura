@@ -1501,7 +1501,7 @@ NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence aud
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
-NEEDS_AUDIOBOOK_GONE = "That book isn't in your library any more"
+NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
 NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
                               "name says so, else pick it here")

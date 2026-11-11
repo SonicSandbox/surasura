@@ -1,7 +1,7 @@
 """Haya-W (Sonic 2026-11-06: "what is the behavior if they mark an ep done but still have the cards for it not yet
 studied … Responsiveness is key"): a watched mark re-plans at once, like a move — the episode is a counted file leaving
 (`plan_engine.check`'s "files-removed") that joins the set-aside files with the digest its plan line holds
-("reference-watched"): the engine drops its uses, Anki's order follows in the host's next job, and the Generate still
+("reference-joined"; a finish by the same rule since Haya-FN: tests/test_finish_replan.py): the engine drops its uses, Anki's order follows in the host's next job, and the Generate still
 runs after, in the background, for the list's edge (a word crossing the cut-off).
 
 On RP-2's libraries (tests/plan_file_cases.py: real Japanese and Chinese text across NOW, Soon and 6+ Months),
@@ -29,7 +29,7 @@ from modules.junban.tests.test_reposition import _patched  # noqa: E402
 from tests.test_replan_preview import _generate, _host, _language, lib  # noqa: E402,F401
 from tests.test_replan_preview_watched import _acting, _job, _suspended  # noqa: E402
 
-MARK = ("replan-now", ("files-removed", "reference-watched"))
+MARK = ("replan-now", ("files-removed", "reference-joined"))
 
 
 def _verdict(host, store):
@@ -65,7 +65,7 @@ def test_a_stone_with_unstudied_cards_moves_its_words_on_and_its_cards_back_at_o
         written = _job(fake, host)
         assert written, "the stone's job wrote nothing: Anki waits for the Generate"
         assert _suspended(fake, own) == set(own), "the stone's own words' cards step back at once"
-        assert asked == ["replan-now: files-removed,reference-watched"], "the Generate still runs after, for the edge"
+        assert asked == ["replan-now: files-removed,reference-joined"], "the Generate still runs after, for the edge"
 
         got = _connect(store)
         assert got.verdict == MARK and got.generate == "after" and got.result is not None, (got.verdict, got.reason)
@@ -158,10 +158,9 @@ def test_the_background_generate_after_a_stone_brings_anki_to_its_own_order(lib,
 
 
 @pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
-def test_the_parts_name_a_stone_watched_and_never_a_finished_file(lib):
-    # why: the one fact that tells a stone (re-plan now) from a Finished drag (a Generate first, D1) rides beside the
-    # signed parts; a Finished file named watched would take its show's cards out before the Generate
-    from app import plan_rules
+def test_the_parts_sign_a_stone_and_a_finished_file_alike_and_both_re_plan_now(lib):
+    # why: one rule (Haya-FN) — a stone and a Finished file each set aside with the digest its plan line holds, so a
+    # stone and a Finished drag in one settle re-plan at once together
     root, store = lib
     now = store.ids("now")
     store.set_watched([now[0]])
@@ -170,7 +169,5 @@ def test_the_parts_name_a_stone_watched_and_never_a_finished_file(lib):
     parts = host._parts(host._settings(), store)
     plan = plan_engine.load(replan_preview.plan_path())
     digest = {store.item_id(entry[0]): entry[2] for entry in plan.files}
-    assert isinstance(parts, plan_rules.SignatureParts)
     assert set(parts["reference"]) == {digest[now[0]], digest[now[1]]}, "each set aside with its plan line's digest"
-    assert parts.watched == {digest[now[0]]}, "the stone is watched; the Finished file never"
-    assert _verdict(host, store) == ("generate-first", "reference"), "a stone with a Finished drag: the stricter wins"
+    assert _verdict(host, store) == MARK, "a stone with a Finished drag: re-planned at once together"

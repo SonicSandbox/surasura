@@ -41,13 +41,13 @@ def _write_list(rows=LIST):
     for name in (verbs.PRIORITY_CSV, verbs.PROGRESSIVE_CSV):
         with open(os.path.join(folder, name), "w", encoding="utf-8-sig", newline="") as f:
             out = csv.writer(f)
-            out.writerow(["Word", "Orth", "Reading", "Score", "Context 1", "Src 1", "Context 2", "Src 2"])
+            out.writerow(["Word", "Orth", "Reading", "Kana", "Score", "Context 1", "Src 1", "Context 2", "Src 2"])
             ordered = rows if name == verbs.PRIORITY_CSV else list(reversed(rows))
-            for word, orth, reading, lines in ordered:
+            for word, orth, reading, lines, *kana in ordered:
                 cells = []
                 for line in lines + [""] * (2 - len(lines)):
                     cells += [line, "HighPriority/Show/ep01.srt" if line else ""]
-                out.writerow([word, orth, reading, 100] + cells)
+                out.writerow([word, orth, reading, "".join(kana), 100] + cells)
 
 
 def _run(state, calls):
@@ -107,6 +107,25 @@ def test_a_round_brief_carries_the_choices_the_lists_words_and_their_lines():
     assert any("surasura_check_text" in rule for rule in brief["rules"])
     # the round's words are the ones a reply may now bring in
     assert ("議事録", "ギジロク") in state._checkers["ja"].upcoming
+
+
+def test_a_round_word_goes_with_the_reading_of_its_shown_spelling_and_keeps_its_rows_identity():
+    # A phrase the library writes otherwise than its row (いい感じ, row 良い感じ ヨイカンジ): the AI sees the spelling
+    # with its own reading (the Generate's Kana, as the journey shows it), never the row's ヨイカンジ beside いい感じ; a
+    # word written in kana reads as written (もん, row 物 モノ). The checker still knows each by its row.
+    _write_list([("良い感じ", "いい感じ", "ヨイカンジ", ["いい感じに仕上がったね。"], "イイカンジ"),
+                 ("物", "もん", "モノ", ["そんなもんだよ、人生って。"]),
+                 ("冒険", "冒険", "ボウケン", ["冒険は危険だが、価値がある。"])])
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"words": 3, "source": "soon"}),
+                await client.call_tool("surasura_words", {"which": "soon", "limit": 3}))
+    state = _state()
+    brief, soon = (_data(r) for r in _run(state, calls))
+    shown = [(w["word"], w["reading"]) for w in brief["round_words"]]
+    assert shown == [("いい感じ", "イイカンジ"), ("もん", "モン"), ("冒険", "ボウケン")]
+    assert [(w["word"], w["reading"]) for w in soon["words"]] == shown
+    assert {("良い感じ", "ヨイカンジ"), ("物", "モノ")} <= state._checkers["ja"].upcoming
 
 
 def test_latest_reads_the_journeys_order_and_a_quiz_gets_lines():

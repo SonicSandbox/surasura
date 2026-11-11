@@ -516,7 +516,7 @@ def main():
         results += run_screen(out_dir)
     system = _system_scale()
     for s in [int(x) for x in args.scales.split(",") if x.strip()]:
-        env = dict(os.environ, QT_SCALE_FACTOR=f"{s / 100 / system:.6f}", QT_ENABLE_HIGHDPI_SCALING="1")
+        env = dict(os.environ, QT_SCALE_FACTOR=repr(s / 100 / system), QT_ENABLE_HIGHDPI_SCALING="1")
         env.pop("QT_QPA_PLATFORM", None)
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--one", str(s), "--out", out_dir] +
                               (["--screens"] if args.screens else []) + (["--integrated"] if args.integrated else []),

@@ -664,7 +664,8 @@ DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagg
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
 ANKI_WAIT_GENERATE_STOPPED = "Generate was stopped, so Anki wasn't changed"     # ... a Generate stopped from the bar
-ANKI_WAIT_TIP = "Anki moves after this Generate"     # finish-pending FP-1 (PROVISIONAL, lean b): the bar's arc, hovered
+ANKI_WAIT_TIP = "Anki moves once its new order is ready"   # FP-1 (PROVISIONAL): the bar's arc, hovered — a finish
+# moves Anki in seconds (Haya-FN), a Put back after its Generate waits for one: words true for both
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"

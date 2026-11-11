@@ -397,13 +397,12 @@ def test_ankiconnect_missing_shows_copy_code_and_the_steps_and_a_closed_anki_sho
     assert wait_until(lambda: mark.words() == S.ANKI_WORDS["closed"]) and steps.isHidden()
 
 
-def test_check_runs_by_itself_once_anki_answers_while_the_row_is_on_screen(qapp, fakes, monkeypatch):
+def test_check_runs_by_itself_once_anki_answers_while_the_row_is_on_screen(qapp, fakes, monkeypatch, qt_timer):
     # Mado-A: the row's watch rides the shell's poll; armed while Anki is closed or AnkiConnect missing, it takes the
     # light look on a worker and, once AnkiConnect answers, runs *Check* itself; connected, it asks nothing more
-    from PyQt6.QtCore import QTimer
     from app import ankiconnect_addon as A
     from app.qt import addon_steps
-    tick = QTimer()
+    tick = qt_timer()
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []

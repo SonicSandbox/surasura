@@ -7,6 +7,8 @@ good — a window that never rests — stops the library's views and the saves f
 import threading
 import time
 
+import pytest
+
 from app.services import window_idle
 
 
@@ -88,3 +90,31 @@ def test_a_pause_inside_a_step_waits_out_a_young_window_stretch_and_never_an_old
         assert _in_a_worker(lambda: _timed(window_idle.pause)) < window_idle.SPAN_S
     finally:
         window_idle.rest()
+
+
+def test_while_the_window_is_awake_pythons_lock_comes_back_to_it_at_once_and_at_rest_as_before():
+    # Mado-SP: under 1 ms Windows' Python asks for the lock at once (and two busy workers spin, 3.5x as slow), so the
+    # fine hand-over holds only from the window's waking to its rest; once a stretch, not at each `awake`
+    import sys
+    was = sys.getswitchinterval()
+    try:
+        window_idle.set_switch(0.00025, 0.001)
+        sys.setswitchinterval(0.001)
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+        sys.setswitchinterval(0.002)                    # (someone's own setting inside the stretch: a second awake
+        window_idle.busy()                              # of the same stretch leaves it)
+        assert sys.getswitchinterval() == pytest.approx(0.002)
+        window_idle.rest()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        sys.setswitchinterval(0.003)
+        window_idle.rest()                              # already at rest: nothing set again
+        assert sys.getswitchinterval() == pytest.approx(0.003)
+        window_idle.set_switch(None, None)              # without a window: never changed
+        window_idle.busy()
+        window_idle.rest()
+        assert sys.getswitchinterval() == pytest.approx(0.003)
+    finally:
+        window_idle.set_switch(None, None)
+        window_idle.rest()
+        sys.setswitchinterval(was)

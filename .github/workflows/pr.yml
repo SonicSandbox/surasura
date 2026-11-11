@@ -82,8 +82,9 @@ jobs:
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
           TEMP: ${{ runner.temp }}
         shell: bash
-        # Never retried: the tests that open a Tk window are skipped on this runner (its Tk can't always start;
-        # tests/tk_on_github.py) and run in the local `run_tests.py --all` before every pull request.
+        # Never retried, and the same tests the local `run_tests.py --all` runs: the Tk window tests too (3.0.1,
+        # tests/FLAKES.md; Tk's own start steadied as locally, tests/quiet_windows.py). Only SURASURA_SKIP_TK_TESTS=1
+        # would skip them (tests/tk_on_github.py).
         run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
   tests:

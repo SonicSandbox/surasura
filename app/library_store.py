@@ -106,7 +106,8 @@ STONES_EXIST_SQL = (f"SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ({_tiers_
 STONES_COUNTED = "stones_counted"   # meta: this library's old watched marks were counted once (`count_old_stones`)
 # `schedule(with_aside=True)`'s key: the SET-ASIDE items' entries, read in the same transaction as the list — the run
 # signature's "reference" part (`analyzer.aside_files`): their text is the name tables' evidence and 例文's sentences, so
-# a mark, its Undo, the option flipped or a set-aside file edited is a Generate first, never the fast re-plan.
+# a set-aside file edited, or one brought back after its Generate, is a Generate first; a counted file set aside (a
+# watched mark, a finish) the fast re-plan re-plans at once (`plan_engine._only_joined`).
 ASIDE = "SET_ASIDE"
 
 

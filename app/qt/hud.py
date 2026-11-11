@@ -530,7 +530,12 @@ class Counters:
         try:
             import ctypes
             from ctypes import wintypes
-            k = ctypes.WinDLL("kernel32")
+            # Python's lock kept through each call (`PyDLL`; x64's one calling convention): a read is a few hundred ns,
+            # but a call that lets the lock go waits to take it back behind a busy worker — four a tick, a 2 ms tick
+            # stretched by 4–9 ms while the writer ran (Mado-SP): the HUD measured itself, a window without it never
+            # waits there. 32-bit Windows (stdcall): let go as before
+            dll = ctypes.PyDLL if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.WinDLL
+            k = dll("kernel32")
             self._k = k
             self._u64 = ctypes.c_uint64
             self._byref = ctypes.byref
@@ -544,7 +549,7 @@ class Counters:
             self.cpus = os.cpu_count() or 1
             self._idle_buf = (ctypes.c_uint64 * self.cpus)()
             self._idle_len = wintypes.ULONG(ctypes.sizeof(self._idle_buf))
-            nt = ctypes.WinDLL("ntdll")
+            nt = dll("ntdll")
             nt.NtQueryTimerResolution.argtypes = [ctypes.POINTER(wintypes.ULONG)] * 3
             self._nt = nt
             self._res = [wintypes.ULONG() for _ in range(3)]

@@ -4804,8 +4804,7 @@ def aside_files(language, schedule):
 
     -> [AsideFile(path, source_type, watched, rank)]: `source_type` as a run reads a counted file's (`_source_typer`),
     so a set-aside file signs as it did while it counted — its digest is the one its plan line holds (Haya-W);
-    `watched`: a watched episode set aside, not Finished (the fast re-plan re-plans a watched mark at once,
-    `plan_engine._only_watched`); `rank` (F7): its place as a sentence source, 0 first — the watched episodes set
+    `watched`: a watched episode set aside, not Finished; `rank` (F7): its place as a sentence source, 0 first — the watched episodes set
     aside, then Finished, the newest finished first."""
     ls = _library_store()
     if ls is None or not schedule:
@@ -4934,11 +4933,12 @@ def settings_signature(settings, language):
 
 
 def run_signature_parts(language, found_files, args, aside=()):
-    """What the run signature hashes (`compute_run_signature`), as a `plan_rules.SignatureParts`; None when it can't be
+    """What the run signature hashes (`compute_run_signature`), a dict; None when it can't be
     read. `aside`: the set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`,
     as "files" are told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a
-    set-aside file edited moves it, so Generate runs (never skips) (W-1); the fast re-plan re-plans a watched mark at
-    once (the parts' unsigned `watched`, Haya-W) and asks for a Generate first for the rest."""
+    set-aside file edited moves it, so Generate runs (never skips) (W-1); the fast re-plan re-plans at once a counted
+    file set aside — a watched mark, a finish (Haya-W, Haya-FN: `plan_engine._only_joined`) — and asks for a Generate
+    first for the rest."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -4970,7 +4970,7 @@ def run_signature_parts(language, found_files, args, aside=()):
             pass
 
         from app import __version__ as _app_version
-        _sig_parts = plan_rules.SignatureParts({
+        _sig_parts = {
             "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
@@ -4983,18 +4983,16 @@ def run_signature_parts(language, found_files, args, aside=()):
                      args.context_min, args.context_max, args.max_contexts, script],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
-        })
+        }
         if aside:
             # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
             # Each as the "files" part signs it (Haya-W: `aside_files`' type), so a counted file set aside keeps its
             # digest and the plan's line for it is found again; Finished ↔ watched moves no counted file here (F7: their ranks below).
-            digests = [(plan_rules.file_digest([a.path, _fsig(a.path), None, None, a.source_type]), a.watched)
-                       for a in aside]
-            _sig_parts["reference"] = sorted(d for d, _w in digests)
-            _sig_parts.watched = frozenset(d for d, w in digests if w)
+            digests = [plan_rules.file_digest([a.path, _fsig(a.path), None, None, a.source_type]) for a in aside]
+            _sig_parts["reference"] = sorted(digests)
             # F7: the set-aside files in the order they rank as sentence sources (watched, then Finished newest
             # first): example sentences follow it, so another order is another run. Present only with set-aside files.
-            ranked = sorted((a.rank, d) for a, (d, _w) in zip(aside, digests) if a.rank is not None)
+            ranked = sorted((a.rank, d) for a, d in zip(aside, digests) if a.rank is not None)
             if ranked:
                 _sig_parts["finished"] = [d for _rank, d in ranked]
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second

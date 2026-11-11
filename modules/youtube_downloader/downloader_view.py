@@ -18,6 +18,7 @@ mid-run leaves the files finished before it in Processed, un-routed.
 import json
 import os
 import threading
+import time
 
 from app.path_utils import ensure_data_setup, get_data_path
 from modules.youtube_downloader import downloader as core
@@ -128,8 +129,22 @@ def rest_update(language, add=(), done=(), unrouted=(), routed=(), prune=False, 
         temp = path + ".tmp"
         with open(temp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
-        os.replace(temp, path)
+        _replace(temp, path)
         return state
+
+
+def _replace(temp, path):
+    """`os.replace`, a reader holding the record for a moment (a virus scanner, a cloud folder's client) waited out:
+    on Windows its open file refuses the replace (PermissionError), and a transcript written then would drop out of
+    the record (tests/FLAKES.md, 2026-11-10). 5 tries, 0.1 s apart, as path_utils waits out a held file."""
+    for attempt in range(5):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
 
 
 def rest_kept(problems, stopped):

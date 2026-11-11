@@ -908,13 +908,12 @@ def test_copy_code_puts_ankiconnects_code_on_the_clipboard_and_says_copied_at_on
     assert wiz.say_line.accessibleName() != A.COPIED_LINE and wiz.say_line.isHidden()
 
 
-def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch):
+def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch, qt_timer):
     # Mado-A: the closed part's watch rides the shell's poll; each light look runs on a worker, one at a time; the
     # first one that finds AnkiConnect answering runs Check again's look, which opens the page's decks
-    from PyQt6.QtCore import QTimer
     from app import ankiconnect_addon as A
     from app.qt import addon_steps
-    tick = QTimer()
+    tick = qt_timer()
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
@@ -949,13 +948,12 @@ def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_i
     assert len(asked) == n                                # Anki is in: the part is gone, the watch asks nothing
 
 
-def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch):
+def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch, qt_timer):
     # A8A-1: the commonest first run — Anki closed (no steps), then opened without AnkiConnect: the light look sees the
     # Anki process (the last look saw none) and the full look shows Copy code and the steps, no press
-    from PyQt6.QtCore import QTimer
     from app import ankiconnect_addon as A
     from app.qt import addon_steps
-    tick = QTimer()
+    tick = qt_timer()
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     seen = []

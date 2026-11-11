@@ -394,6 +394,35 @@ def test_todays_hato_is_never_sent_a_thing(tmp_path):
         store.__exit__(None, None, None)
 
 
+def test_a_chinese_video_is_never_handed_to_hato_whose_subtitles_are_japanese(tmp_path):
+    """Why (Zh-C, Chinese end to end): hato searches jimaku.cc, Japanese anime subtitles, and its ranking never tries
+    a file tagged with another language and no Japanese — asked with `--lang zh` it would put a Japanese subtitle beside
+    a Chinese video, named as Chinese. With the learner's yes and a hato that takes a list, a Chinese look starts
+    nothing; *Find them with hato* is never offered for Chinese; Japanese is asked as before."""
+    store, data_dir, src, root, (video,) = _library("zh")
+    cli = str(tmp_path / "hato-cli.exe")
+    open(cli, "wb").close()
+    calls = []
+    try:
+        _hato(["pairings", "find"], cli)
+        assert no_subs.find(store, "zh", {no_subs.SETTING: True}, popen=lambda c, **k: _Proc([], calls, c)) == \
+            {"off": True}
+        assert calls == [] and not no_subs.hato_on({no_subs.SETTING: True}, "zh")
+        assert no_subs.hato_on({no_subs.SETTING: True}, "ja"), "Japanese: hato as before"
+        from app.services import needs
+        from types import SimpleNamespace
+        view = SimpleNamespace(language="zh")
+        needs_waiting = needs.no_subs_waiting
+        try:
+            needs.no_subs_waiting = lambda v: [("row", "episode")]
+            assert needs.no_subs_offer(view, {}) in (None, {"make": True, "hato": False})
+            assert needs.no_subs_offer(SimpleNamespace(language="ja"), {})["hato"] is True
+        finally:
+            needs.no_subs_waiting = needs_waiting
+    finally:
+        store.__exit__(None, None, None)
+
+
 def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tmp_path):
     """Why: NS-2 — the waiting videos alone, by list file; a found one's folder is looked at again (K5 fills it); a
     NOT_FOUND waits for hato's own date (P5), its row saying it, and is asked again on that date."""

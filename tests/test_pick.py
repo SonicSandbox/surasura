@@ -1,7 +1,8 @@
 """Which of a subtitle's words become cards, and the line each is cut from (app/connect/pick.py, P1.3 row 1.3.3).
 
 Real subtitles: the bundled café episode (喫茶店の朝.srt, written for Surasura: speaker labels, a name, 家庭教師), the library episode (.ass, with a karaoke OP and two speakers), the
-phrases sample (set phrases) and a Chinese night-market vlog. The learner's known words and list are made per test
+phrases sample (set phrases), the readings sample (fronts a line spells unlike the dictionary) and a Chinese
+night-market vlog. The learner's known words and list are made per test
 from the words the files hold, so each rule is seen on its own.
 """
 import os
@@ -17,6 +18,7 @@ RESOURCES = os.path.join(PROJECT_ROOT, "tests", "Test Resources")
 EPISODE = os.path.join(RESOURCES, "ja", "library_episode.ass")
 PHRASES = os.path.join(RESOURCES, "ja", "phrases_sample.srt")
 NIGHT_MARKET = os.path.join(RESOURCES, "zh", "night_market.srt")
+READINGS = os.path.join(RESOURCES, "ja", "readings_sample.srt")
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +201,70 @@ def test_a_set_phrase_reads_as_the_dictionary_reads_it():
     (word,) = pick.pick(read, tokens, "ja", _known(), mode="list", listed={(phrase.word, phrase.reading): 0},
                         phrase_set=loaded)["words"]
     assert word["front_reading"] == "ふにおちる" and word["surface"].startswith("腑に落ち")
+
+
+def _readings_sent(listed):
+    """{word: front_reading} for `listed`'s words in the readings sample (a short scene: いい感じ, そんなもん, 気にすんな,
+    目をつむる, それじゃあ, 大手を振って, 日本, 立川さん, 気に入った, くくっ, ウッ, ほうがいい, いつもどおり), as Connect
+    sends them (list mode, the phrase table on)."""
+    loaded = phrases.load()
+    if loaded is None:
+        pytest.skip("no phrase data in this build")
+    read, tokens = _read(READINGS)
+    chosen = pick.pick(read, tokens, "ja", _known(), mode="list", listed={key: n for n, key in enumerate(listed)},
+                       phrase_set=loaded)
+    return {w["word"]: w["front_reading"] for w in chosen["words"]}
+
+
+def test_a_set_phrase_written_otherwise_than_its_row_reads_as_the_line_writes_it():
+    # Sonic, 2026-11-09 (option A): the card's reading follows its front, the line's spelling — the dictionary row's
+    # reading only for its kanji (plan_rules.display_reading, the journey's Kana): いい感じ is いいかんじ, not よいかんじ
+    sent = _readings_sent([("良い感じ", "ヨイカンジ"), ("そんな物", "ソンナモノ"), ("気に為るな", "キニスルナ"),
+                           ("目を瞑る", "メヲツブル"), ("方が良い", "ホウガヨイ")])
+    assert sent == {"良い感じ": "いいかんじ", "そんな物": "そんなもん", "気に為るな": "きにすんな",
+                    "目を瞑る": "めをつむる", "方が良い": "ほうがいい"}
+
+
+def test_a_set_phrase_whose_line_reads_as_its_row_keeps_the_rows_reading():
+    # 大手を振る is written as its row: the row's おおで stays (Anki Miner alone reads おおて); 気に入る never takes the
+    # tagger's 入る (はいる); いつもどおり keeps the voicing its row has
+    sent = _readings_sent([("大手を振る", "オオデヲフル"), ("気に入る", "キニイル"), ("何時も通り", "イツモドオリ")])
+    assert sent == {"大手を振る": "おおでをふる", "気に入る": "きにいる", "何時も通り": "いつもどおり"}
+
+
+def test_a_word_written_in_kana_alone_reads_as_itself():
+    # not its lemma's kana (それじゃ, もの, くくと, とおり); katakana folded to hiragana as Anki Miner writes readings
+    sent = _readings_sent([("それじゃ", "ソレジャ"), ("物", "モノ"), ("くくく", "ククク"), ("通り", "トオリ"),
+                           ("ウッ", "ウッ")])
+    assert sent == {"それじゃ": "それじゃあ", "物": "もん", "くくく": "くくっ", "通り": "どおり", "ウッ": "うっ"}
+
+
+def test_an_iteration_mark_is_no_sound_of_its_own_so_its_word_keeps_the_dictionarys_kana(tmp_path):
+    # review #1: こゝろ and the name いすゞ are written in kana, but ゝ / ゞ read as the kana before them — sent as
+    # written, the card's reading would hold a mark, not a sound
+    path = _srt(tmp_path, [(1, 3, "こゝろが痛む。"), (4, 6, "いすゞの車に乗った。")])
+    read, tokens = _read(path)
+    found, _new = pick.occurrences(read, tokens, "ja", _known())
+    sent = {o.key[0]: pick.front_reading(o, o.key, "ja") for o in found}
+    assert sent["心"] == "こころ" and sent["イスズ"] == "いすず"
+
+
+def test_a_name_keeps_its_reading_and_nihon_reads_as_people_say_it(tmp_path):
+    sent = _readings_sent([("タチカワ", "タチカワ"), ("日本", "ニッポン")])
+    assert sent == {"タチカワ": "たちかわ", "日本": "にほん"}     # UniDic's 日本 is ニッポン
+    path = _srt(tmp_path, [(1, 3, "日本人って本当に親切だね。")])
+    read, tokens = _read(path)
+    words = _by_word(pick.pick(read, tokens, "ja", _known(), mode="unknown"))
+    assert words["日本人"]["front_reading"] == "にほんじん"          # a join's own reading, as before
+
+
+def test_a_phrase_spelling_that_cant_be_lined_up_with_its_row_keeps_the_rows_reading():
+    # でかい声 beside the row's デカ声: 声 reads ゴエ only inside デカ声, so the row's reading stands; no node needed
+    from types import SimpleNamespace
+    occurrence = SimpleNamespace(front="でかい声", phrase=SimpleNamespace(display="デカ声"),
+                                 token=SimpleNamespace(node=None))
+    assert pick.front_reading(occurrence, ("でかい声", "デカゴエ"), "ja") == "でかごえ"
+    assert pick.front_reading(occurrence, ("でかい声", "デカゴエ"), "zh") is None
 
 
 def test_the_homograph_guard_keeps_word_out_when_the_episode_writes_it(tmp_path):

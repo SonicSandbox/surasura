@@ -75,8 +75,8 @@ def _read(path, language):
 
 
 def words(data):
-    """A saved round's words as a brief uses them, each {word, orth, reading, lines: [{line, from}]}; an entry that isn't
-    one (a hand-edited file) is passed over."""
+    """A saved round's words as a brief uses them, each {word, orth, reading, lines: [{line, from}]} (and `kana`, the
+    reading of `orth`, where the round kept it: 3.0.1); an entry that isn't one (a hand-edited file) is passed over."""
     out = []
     for w in data.get("words") or []:
         if isinstance(w, dict) and isinstance(w.get("word"), str) and w["word"]:
@@ -85,6 +85,8 @@ def words(data):
             out.append({"word": w["word"], "orth": w.get("orth") if isinstance(w.get("orth"), str) else w["word"],
                         "reading": w.get("reading") if isinstance(w.get("reading"), str) else "",
                         "lines": lines if isinstance(w.get("lines"), list) else []})
+            if isinstance(w.get("kana"), str):
+                out[-1]["kana"] = w["kana"]
     return out
 
 

@@ -1,13 +1,11 @@
-"""Connect parks a Chinese job until the next start (P2.4 mutant D04; P1.5 06-edges E24).
+"""A Chinese job a 3.0.x Connect parked (P2.4 mutant D04; P1.5 06-edges E24) is mined at the next start (Zh-C).
 
-Rule: while Anki Miner cannot make Chinese cards yet, a Chinese job is parked in the ledger as waiting for Chinese
-(`runner.CHINESE`) and the run does not look again every 2 minutes for it: `run` looks once and returns.
+Rule before Zh-C: while Anki Miner could not make Chinese cards, a Chinese job was parked in the ledger as waiting for
+Chinese (`runner.CHINESE`). Since Zh-C (2026-11-12, Anki Miner 3.12's Chinese) Connect makes Chinese cards
+(`runner.CARD_LANGUAGES`): a job a 3.0.x ledger still holds with that reason is an open job like any waiting one.
 
-Mutant P2.4-D04 flips the `False` passed to `_waiting_all` for Chinese into `True`, so the run reports "outside
-Connect, look again" and loops until its look budget runs out.
-
-What a wrong answer would cost: the loop wakes every 2 minutes all night, reads Anki and the library for a language
-that cannot mine yet, and burns the laptop's battery and the Anki session for nothing.
+What a wrong answer would cost: a Chinese learner who placed episodes under 3.0.x never gets their cards, the row
+saying *Chinese cards come later* for ever.
 
 Runs against `FakeSteps` with a real ledger; never a live Anki.
 """
@@ -15,10 +13,13 @@ from app.connect import runner
 from tests.connect.test_runner import _run, ledger  # noqa: F401  (fixture)
 
 
-def test_chinese_job_is_parked_and_run_looks_only_once_even_with_looks_budget(tmp_path, ledger):
-    # Why looks=3: the budget allows three looks; a parked Chinese job must not spend more than the first one.
-    steps, summary = _run(tmp_path, ledger, {"line": {"zh": [1]}, "queue": {"zh": [1]}}, looks=3, languages=("zh",))
+def test_a_chinese_job_parked_by_3_0_x_is_mined_at_the_next_start(tmp_path, ledger):
+    job = ledger.queue("zh", 1, "user", None, store_id="store-1")      # FakeSteps' store
+    ledger.set_state(job, "waiting", reason=runner.CHINESE)          # as a 3.0.x Connect left it
+    words = {"1": [("夜市", "")]}
+    steps, summary = _run(tmp_path, ledger, {"line": {"zh": [1]}, "queue": {"zh": []}, "words": words},
+                          languages=("zh",))
     job = ledger.jobs("zh")[0]
-    assert (job["state"], job["reason"]) == ("waiting", runner.CHINESE), "parked until the next start"
-    assert not any(e[0] in ("prepare", "pick", "mine") for e in steps.log), "nothing of Chinese is mined"
-    assert summary["looks"] == 1, "Chinese is parked: the run does not look again every 2 minutes for it"
+    assert job["state"] == "done" and job["reason"] != runner.CHINESE
+    assert any(e[0] == "mine" for e in steps.log), "the parked job reaches Anki Miner"
+    assert summary["languages"]["zh"]["done"] == [1]

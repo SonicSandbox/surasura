@@ -1693,16 +1693,17 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
     assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
 
 
-def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its_own_line_back(make):
-    """Zh-S (2026-11-09): 3.0 makes cards in Japanese only (Connect parks every Chinese entry). Before, a Chinese learner
-    met the Japanese page's promise over a Chinese card picture, and the page-1 tip said "your cards in Chinese"."""
+def test_zh_s_the_cards_page_promises_chinese_cards_with_pinyin_and_japanese_gets_its_own_line_back(make):
+    """Zh-S (2026-11-09), then Zh-C (2026-11-12): Connect makes Chinese cards now, so the Chinese cards page promises
+    them — the line, its audio, a picture and the word's pinyin — and page 1's tip says "your cards in Chinese"
+    again; never "Japanese only"."""
     wiz, *_ = make()
-    assert "Japanese only" not in wiz.pages[4].line.text()          # Japanese: the page as it was
+    assert "pinyin" not in wiz.pages[4].line.text()                  # Japanese: the page as it was
     wiz.pages[0].channel.choose("zh", user=True)
     wiz.next()
     assert wiz.language == "zh"
-    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "Japanese only" in S.CARDS_LINE_ZH
-    assert "your cards in Chinese" not in S.LANGUAGE_TIPS["zh"]
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "pinyin" in S.CARDS_LINE_ZH
+    assert "Japanese only" not in S.CARDS_LINE_ZH and "your cards in Chinese" in S.LANGUAGE_TIPS["zh"]
     while wiz.index:
         wiz.back()
     wiz.pages[0].channel.choose("ja", user=True)

@@ -16,6 +16,7 @@ import tkinter as tk
 from unittest.mock import patch
 
 from tests import connect_helpers as c
+from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 from tests.connect_tk_helpers import read_settings, settings_bytes
 from tests.test_connect_switch import (SHELF, _act_refusing, _answers, _pump, _settings_open, _shelf, _switch,
@@ -123,11 +124,16 @@ def test_switched_off_while_settings_were_read_no_panel_is_built_and_it_can_be_b
     with patch.object(main.threading, "Thread", Held):
         app._connect_panel_build()
     assert len(workers) == 1 and app._connect_panel is None
-    app._current_settings = dict(app._current_settings, connect_enabled=False)    # switched off meanwhile
+    # switched off meanwhile, as the switch does it: the file too (Hato-SP, the GitHub-only flake: a settings save
+    # still due from Settings opening re-reads settings.json into `_current_settings` on a slow runner, and a file
+    # still saying on put the panel back — reproduced by re-reading the file here)
+    h.write_settings(target_language="ja", connect_enabled=False)
+    app._current_settings = dict(app._current_settings, connect_enabled=False)
     workers[0]()
     _pump(app.root, lambda: False, timeout=0.5)
     assert app._connect_panel is None, "off by the time the read came back: no panel"
-    app._current_settings = dict(app._current_settings, connect_enabled=True)     # on again: it can be built
+    h.write_settings(target_language="ja", connect_enabled=True)                    # on again: it can be built
+    app._current_settings = dict(app._current_settings, connect_enabled=True)
     app._connect_panel_build()
     assert _pump(app.root, lambda: app._connect_panel is not None)
 

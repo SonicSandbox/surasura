@@ -1279,7 +1279,7 @@ def _row_connected(st, eps, connect, word):
     """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes — never
     one with its cards in Anki or whose cards were deleted (P4.1 WF, adversary S1: a level job on an episode already
     mined is no reason to turn the row's *Mine rest* into *Waiting*, whose *Mine now* asks for its other files)."""
-    retry = None                            # Mattias #5: the first part Anki Miner failed on — unless one is mining
+    retry = None        # Mattias #5: the first part Anki Miner failed on — unless one is mining or waits on you
     for e in eps:
         item = connect.get(e.id)
         if (e.cards or e.deleted) and getattr(item, "kind", None) != connect_feed.FAILED:
@@ -1292,8 +1292,8 @@ def _row_connected(st, eps, connect, word):
                 return new
             if retry is None:
                 retry = new
-            elif new.kind == "mining":
-                return new                  # its progress and its *Stop* stay on the row
+            elif new.kind == "mining" or new.tone == "warn":
+                return new                  # its progress and *Stop*; or *Not timed*, *No video*, Anki (RM2)
     return retry or st
 # --- end P4.1 L2
 

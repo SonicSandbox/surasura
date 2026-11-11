@@ -558,6 +558,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
                     keep |= _failed_says(ledger, lang, job["item_id"])
+                else:                           # Michi-RM2: the part went through: its `alone:` records go
+                    _forget_alone(ledger, lang, job["item_id"])
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
         except Wait as w:
             _wait(ledger, job, w, out, parked)
@@ -1447,6 +1449,18 @@ def _keep_alone(ledger, jid, said, words=()):
     with ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                             (f"{ALONE}{int(jid)}", json.dumps(value, ensure_ascii=False)))
+
+
+def _forget_alone(ledger, lang, item_id):
+    """Michi-RM2: the item's jobs' `alone:` records removed — once one of its jobs (not a level raise) ended done,
+    dropped, skipped or undone. A failed part keeps its own (the problem report names its words). A ledger write that
+    fails is logged: a record left is tidiness, never a reason to stop."""
+    try:
+        with ledger.transaction():
+            ledger.conn.execute("DELETE FROM meta WHERE key IN (SELECT ? || id FROM jobs WHERE language = ? AND "
+                                "item_id = ?)", (ALONE, lang, item_id))
+    except Exception:
+        log.warning("Connect couldn't tidy the alone records of item %s", item_id, exc_info=True)
 
 
 def _alone(ledger, jid):

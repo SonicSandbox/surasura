@@ -1987,6 +1987,7 @@ class OrderPage(_Page):
         rows.addLayout(behind)
         self._behind_key = None           # (language, deck) last looked at
         self._behind = None               # its offer record
+        self._behind_seq = 0              # the newest look (Disc-T1: an older one's late answer never applies)
         # --- end Michi-C
         rows.addWidget(style.separator(self.controls))
         later = QVBoxLayout()                            # the words above the three (beside them they were wider
@@ -2074,6 +2075,8 @@ class OrderPage(_Page):
         if not deck or key == self._behind_key:
             return
         self._behind_key, self._behind = key, None
+        self._behind_seq += 1
+        seq = self._behind_seq
         _set_text(self.behind_line, S.BEHIND_LOOKING)
         _show(self.behind_line, True)
         _show(self.btn_behind, False)
@@ -2083,7 +2086,7 @@ class OrderPage(_Page):
             return api.backlog_shows(language, settings, deck)
 
         def done(record):
-            if self._behind_key == key:
+            if self._behind_seq == seq and self._behind_key == key:     # (two looks for one deck: the newer one's)
                 self._behind = record
                 if record is None:
                     self._behind_key = None        # (Anki closed meanwhile: asked again when it answers)

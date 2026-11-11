@@ -2184,6 +2184,40 @@ def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(
     assert wait_until(lambda: page.btn_behind.isVisible())
 
 
+class HeldBehindApi(BehindApi):
+    """Each look at the shows behind the deck held until the test lets it answer (`answers`, in the order asked)."""
+    def __init__(self, answers, **kw):
+        super().__init__(None, **kw)
+        self.answers, self.gates = list(answers), []
+
+    def backlog_shows(self, language, settings, deck):
+        gate = threading.Event()
+        self.gates.append(gate)
+        n = len(self.gates)
+        self.asked.append((language, deck))
+        gate.wait(10)
+        return self.answers[n - 1] if n <= len(self.answers) else None
+
+
+def test_michi_c_an_older_look_answering_late_never_undoes_a_newer_one(make):
+    """Disc-T1 (the stress gate's red: the test above, 1 in 4 under load): arriving on the page starts two looks for
+    the same deck (shown, then entered: looked at again). The older one answers with Anki closed; the newer one's
+    shows are what the page says, never dropped because the older answer cleared the look (both carry one key)."""
+    api = HeldBehindApi([None, BEHIND])
+    wiz, shell, api, settings, _m = make(api=api)
+    try:
+        go_to(wiz, "order")
+        page = wiz.page
+        assert wait_until(lambda: len(api.gates) == 2), len(api.gates)   # both out at once
+        api.gates[0].set()                                          # the older one: Anki closed, late
+        wait_until(lambda: False, 0.3)
+        api.gates[1].set()                                          # the newer one: the shows
+        assert wait_until(lambda: page.btn_behind.isVisible()), "the newer look's answer is shown"
+    finally:
+        for gate in api.gates:
+            gate.set()
+
+
 def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_browser(make):
     """3.0: *Questions? Join us on Discord* — one link on the last page, hover-tipped, the invite opened on a worker
     (a link the browser opens, never a call of the app's); nothing written."""

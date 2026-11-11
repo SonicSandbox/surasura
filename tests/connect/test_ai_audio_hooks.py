@@ -184,3 +184,31 @@ def test_the_ai_pass_comes_after_every_part_in_the_runner():
     loop = src[src.index("def _language("):src.index("def _after_mining(")]
     assert loop.index("_after_mining(steps, ledger, lang, out") < loop.index("_ai_audio(steps, ledger, lang") < \
         loop.index("job = _ordered(jobs, line)[0]")
+
+
+def test_a_kick_while_the_voice_works_stops_it_so_a_placement_goes_first(ledger):
+    # why: a library placement becomes a job only at the loop's next look (review r2 #3): a kick since the pass began
+    from app.connect import kick
+    steps = _PassSteps()
+    steps.before = kick.wake
+    assert runner._ai_audio(steps, ledger, "ja", {}) is True
+    assert steps.calls == [("ja", True)]
+
+
+def test_connect_reads_the_beta_switch_again_and_stops_when_it_is_turned_off(monkeypatch):
+    # why: a Connect started with the beta on must stop once the learner turns it off in Settings (review r2 #4)
+    irodori = pytest.importorskip("modules.irodori")
+    from app import settings_manager
+    seen = {}
+    switch = {"enable_irodori": True}
+    monkeypatch.setattr(settings_manager, "load_settings", lambda strict=False: dict(switch))
+
+    def run_queue(settings, lang, should_stop=None, say=None):
+        seen["settings"] = settings
+        seen["before"] = should_stop()
+        switch["enable_irodori"] = False
+        seen["after"] = should_stop()
+        return {"written": 0, "runs": [], "left": 0}
+    monkeypatch.setattr(irodori, "run_queue", run_queue)
+    runner.Steps({}).ai_audio("ja", lambda: False)
+    assert seen == {"settings": {"enable_irodori": True}, "before": False, "after": True}

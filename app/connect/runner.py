@@ -1130,9 +1130,13 @@ def _ai_audio(steps, ledger, lang, parked, tried=()):
     if make is None or _stop(steps):
         return False
     came = []
+    from app.connect import kick
+    woken = kick.wake_stamp()
 
     def should_stop():
-        if _open_jobs(ledger, lang, parked, tried):        # a part this pass hasn't tried yet
+        # a part waiting (*Mine now*), or a kick since the pass began — a placement in the library, a press: the
+        # inbox is read by the loop's next look (review r2 #3)
+        if _open_jobs(ledger, lang, parked, tried) or kick.wake_stamp() != woken:
             came.append(True)
             return True
         return bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)() or
@@ -2450,12 +2454,20 @@ class Steps:
 
     def ai_audio(self, lang, should_stop):
         """Iro-AA: the AI voice's waiting list made — the beta on, the voice installed, the shared writer there; else it
-        waits (`irodori.run_queue`). The cards it wrote: the session's sync clock, as any new write (S3)."""
+        waits (`irodori.run_queue`). settings.json read now, and again between two sentences: the beta switched off in
+        the window stops it (review r2 #4). The cards it wrote: the session's sync clock, as any new write (S3)."""
         try:
             from modules import irodori
         except ImportError:
             return None
-        got = irodori.run_queue(self.loaded, lang, should_stop=should_stop)
+        from app import settings_manager
+
+        def fresh():
+            try:
+                return settings_manager.load_settings(strict=True)
+            except Exception:
+                return {}                       # unreadable now: read as off (nothing made)
+        got = irodori.run_queue(fresh(), lang, should_stop=lambda: bool(should_stop() or not irodori.enabled(fresh())))
         if got.get("written"):              # each run's Undo is kept by the module (`irodori.last_run`)
             log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
             self.after_write(lang)

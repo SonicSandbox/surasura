@@ -189,6 +189,24 @@ def clear_covers():
 
 
 _CJK = re.compile(f"[{unicode_ranges.HAN}{unicode_ranges.KANA}]")
+_LATIN_RUN = re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]{2,}")
+_OPENERS = " \u3000([{（［｛【「『〔:：-–—・/"
+# a character's vertical form (the forms a vertical book prints): the long vowel and dashes a line down, brackets turned
+_VERTICAL = str.maketrans({"ー": "︱", "ｰ": "︱", "―": "︱", "—": "︱", "－": "︱", "(": "︵", ")": "︶", "（": "︵",
+                           "）": "︶", "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄", "【": "︻", "】": "︼", "〔": "︹",
+                           "〕": "︺"})
+
+
+def vertical_text(title):
+    """A Japanese / Chinese title as a vertical cover writes it (Fresh-U row 17: *杜子春 (audiobook subs)* stood "( a u d
+    i o" one letter under another): cut before the first run of Latin letters after its first Japanese or Chinese
+    letter (the brackets and spaces before that run go too; the full title is beside the cover), each long vowel, dash
+    and bracket in its vertical form. A romaji name before the kana stays (*Akari:灯…*), as does one letter (超電磁砲S)."""
+    first = next((i for i, ch in enumerate(title) if _CJK.search(unicodedata.normalize("NFKC", ch))), None)
+    run = _LATIN_RUN.search(title, first + 1) if first is not None else None
+    if run is not None:
+        title = title[:run.start()].rstrip(_OPENERS) or title
+    return title.translate(_VERTICAL)
 
 
 def cover_label(title, w, fm):
@@ -200,7 +218,7 @@ def cover_label(title, w, fm):
     title = title or ""
     t = title.strip()
     if not t or _CJK.search(unicodedata.normalize("NFKC", t)):
-        return True, title
+        return True, vertical_text(title)
     first = next((ch for ch in t if ch.isalnum()), t[0])
     room = max(0, int(w * 0.84))
     line = fm.elidedText(t, Qt.TextElideMode.ElideRight, room)

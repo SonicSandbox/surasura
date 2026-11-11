@@ -78,7 +78,7 @@ _POLITE = frozenset(("です", "ます"))                                   # �
 _POLITE_STEMS = frozenset(("でし", "まし", "ませ"))                       # …as でしたから / ましたから / ませんから do
 _NOUN_LINKS = frozenset(("ノチ", "アト", "ウチ", "タメ", "ホド"))          # 後 内 為 程 as nouns: のち あと うち ため ほど
 _TOIU = (frozenset(("と", "って")), frozenset(("いう", "ゆう")))         # という / っていう in kana (言う: the verb "say")
-_NAMED = frozenset(("名詞", "代名詞", "接頭辞", "連体詞", "形状詞"))       # a line opening on what という names
+_NAMED = frozenset(("名詞", "接頭辞", "連体詞", "形状詞"))                 # a line opening on what という names
 _HAN = re.compile(f"[{analyzer.HAN}]")
 _HIRAGANA_ONLY = re.compile(r"^[ぁ-ゟー]+$")
 _KATAKANA_ONLY = re.compile(r"^[ァ-ヿー]+$")
@@ -170,20 +170,22 @@ class Lines:
 
     def _names_next(self, at):
         """Does the line after Japanese line `at` (past `at`'s own copies) open on what a という at `at`'s end names:
-        a noun, a pronoun, a prefix, a 連体詞 (その, 大それた), a 形状詞 (立派な) or an adjective before its noun (古い)?
-        A report or a name given (…という / だとしたら, 名をシロという / 走るのが…) is followed by a sentence of its own;
-        a next line opening on a noun that starts its own sentence (毎朝…, 彼の両親が…) joins: the rule's known limit."""
+        a noun, a prefix, a 連体詞 (その, 大それた), a 形状詞 (立派な), an adjective before its noun (古い), a pronoun
+        before の (彼の…) or the の that stands for one (…という / のは嘘だ)? A report or a name given (…という /
+        だとしたら, 名をシロという / 走るのが…), or a pronoun as the next sentence's subject (私は…), is followed by a
+        sentence of its own; a next line opening on a noun that starts its own sentence (毎朝…, 彼の両親が…) joins: the
+        rule's known limit."""
         n = self.place.get(at)
         text = self.cues[at].text
         for cue in self.kept[n + 1:] if n is not None else ():
             if self.cues[cue].text == text:
                 continue                    # `at` shown again
-            for _surface, f in self._pieces.get(cue) or []:
-                if f is not None and f.pos1 in ("補助記号", "空白"):
-                    continue
-                return f is not None and (f.pos1 in _NAMED
-                                          or (f.pos1 == "形容詞" and (f.cForm or "").startswith("連体形")))
-            return False
+            pieces = [p for p in self._pieces.get(cue) or [] if p[1] is None or p[1].pos1 not in ("補助記号", "空白")]
+            if not pieces or pieces[0][1] is None:
+                return False
+            f = pieces[0][1]
+            return (f.pos1 in _NAMED or (f.pos1 == "形容詞" and (f.cForm or "").startswith("連体形"))
+                    or (f.pos1 == "代名詞" and pieces[1:2] and pieces[1][0] == "の") or f.pos2 == "準体助詞")
         return False
 
 

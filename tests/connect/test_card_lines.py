@@ -157,7 +157,9 @@ def test_a_toiu_line_runs_on_into_the_noun_it_names(tmp_path):
                           ("戦いをやめたいという", "彼の気持ちは分かる"),
                           ("彼女ってゆう", "その人のことだけど"),
                           ("何かを守るなどという", "大それた話じゃない"),
-                          ("誰でも魔法が使えるという", "古い本を読んだ")):
+                          ("誰でも魔法が使えるという", "古い本を読んだ"),
+                          ("湖に竜がいるとゆう", "言い伝えを聞いた"),      # とゆう: the analyzer reads ゆう as 言う
+                          ("竜がいるという", "のは本当かな")):              # the の that stands for the thing named
         lines = _stream([first, second])
         assert _expansion(tmp_path, lines, 0) == [0, 1], first
         assert _expansion(tmp_path, lines, 1) == [1, 0], first     # pulled in from before too
@@ -165,12 +167,13 @@ def test_a_toiu_line_runs_on_into_the_noun_it_names(tmp_path):
 
 def test_a_toiu_line_ends_when_the_next_line_starts_a_sentence_of_its_own(tmp_path):
     # A report (…という: "so they say"), a name given (名をシロという), the other speaker's reply: the next line
-    # opens with a conjunction, a verb, an adverb or an interjection, and the card stays one line. (A next line
+    # opens with a conjunction, a verb, an adverb, an interjection or its subject, and the card stays one line. (A next line
     # opening on a noun that starts its own sentence — 毎朝…, 彼の両親が… — joins: the rule's known limit.)
     for first, second in (("昔この村に鬼が出たという", "だとしたら 気をつけないと"),
                           ("その犬の名をシロという", "走るのが好きでね"),
                           ("魔法が使えなくなったっていう", "ええっ 本当ですか"),
-                          ("みんな喜ぶという", "もちろん 私もです")):
+                          ("みんな喜ぶという", "もちろん 私もです"),
+                          ("竜の話は嘘だという", "私は信じないけど")):       # a pronoun as the next sentence's subject
         lines = _stream([first, second])
         assert _expansion(tmp_path, lines, 0) == [0, 0], first
         assert _expansion(tmp_path, lines, 1) == [0, 0], first

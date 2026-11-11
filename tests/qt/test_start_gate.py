@@ -613,3 +613,26 @@ def test_the_real_move_through_the_gate_opens_surasura_on_the_new_library(qapp, 
     g.try_button.click()                                                          # *Open Surasura*
     assert wait_until(lambda: g.ended) and g.result is True
     assert not cfa.at_risk(new) and library_move.read_record()["to"] == new
+
+
+def test_quit_while_undoing_quits_and_never_opens_surasura(qapp, monkeypatch):
+    # (delta review N2) ✕ pressed while Undo runs: Undo finishes, then the gate quits — the old library, ready again,
+    # is never opened over the learner's ✕.
+    from app import library_move
+    go = threading.Event()
+    monkeypatch.setattr(library_move, "move", lambda target, progress=None, cancel=None: {
+        "status": "done", "reason": None, "words": "moved", "old": "o", "new": target})
+    monkeypatch.setattr(library_move, "can_undo", lambda: {"from": "o", "to": "n"})
+
+    def slow_undo():
+        go.wait(5)
+        return {"status": "done", "reason": None, "words": "back", "aside": "n (moved back)"}
+    monkeypatch.setattr(library_move, "undo", slow_undo)
+    g, _library = _cfa_gate(qapp, monkeypatch)
+    monkeypatch.setattr(first_run, "state", lambda: _st(first_run.READY))
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-moved")
+    g.fresh_button.click()                                                        # *Undo*
+    g.quit()
+    go.set()
+    assert wait_until(lambda: g.ended) and g.result is False

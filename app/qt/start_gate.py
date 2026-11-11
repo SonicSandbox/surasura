@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QPro
 
 from app import cfa, import_2x, library_move, path_utils, theme
 from app.qt import bridge, hud, style, tooltip
+from app.qt import press as qpress
 from app.services import first_run
 
 # --- start_gate: the strings (RS-7: short, what it does for the user; a tip holds anything longer) ------------------ #
@@ -157,6 +158,8 @@ LIB_UNDO_TIP = ("Use your library from its old folder again.\n"
 LIB_OPEN = "Open Surasura"
 LIB_OPEN_TIP = "Open Surasura with your library in its new folder."
 LIB_SCREENS = ("cfa", "lib-moving", "lib-moved", "lib-didnt")
+# Their presses (app/qt/press.py, the Qt guide's *Every press reacts at once*): each screen is its own mark (NOWHERE)
+PRESS_MOVE, PRESS_UNDO, PRESS_OPEN = ("gate", "move-library"), ("gate", "undo-move"), ("gate", "open-moved")
 MOVE_SCREENS = ("move-moving", "move-waiting", "move-ask", "move-didnt", "move-rolled", "move-stuck",
                 "move-unreadable")
 
@@ -663,18 +666,20 @@ class Gate(QWidget):
 
     # --- Controlled folder access: *Move my library*, its Undo, *Allow* (3.0.1) ---------------------------------- #
     def _move_library(self):
-        if self.working:
-            return
+        if self.working or qpress.live(self, PRESS_MOVE):
+            return                                # (pressed already: nothing of the running move is touched)
         self.working = True
         self.undoable = False
         self._cancel = threading.Event()
-        self.show_screen("lib-moving")
+        self.show_screen("lib-moving")            # the press's mark: its own screen, painted before the work starts
         relay = self.relay
 
         def progress(done, total):
             relay.call(("lib-move", done, total))
-        bridge.run_in_worker(library_move.move, self._target(), _throttled_files(progress), self._cancel.is_set,
-                             then=self._library_moved, failed=self._crashed)
+        if qpress.run(None, PRESS_MOVE, library_move.move, self._target(), _throttled_files(progress),
+                      self._cancel.is_set, then=self._library_moved, failed=self._crashed, win=self,
+                      at=qpress.NOWHERE) is None:
+            self.working = False                  # (live already: the press under way answers)
 
     def _library_moved(self, result):
         self.working = False
@@ -694,13 +699,19 @@ class Gate(QWidget):
         if self.working or not self.undoable:
             return
         self.working = True
-        self._looking()
-        bridge.run_in_worker(library_move.undo, then=self._library_undone, failed=self._crashed)
+        self._looking()                           # the press's mark: LOOKING on the stage line, buttons held
+        if qpress.run(None, PRESS_UNDO, library_move.undo, then=self._library_undone, failed=self._crashed,
+                      win=self, at=qpress.NOWHERE) is None:
+            self.working = False
 
     def _library_undone(self, result):
         self.working = False
         self.undoable = False
         if self.ended:
+            return
+        if self.quit_after:                       # ✕ while it undid: quit, never open over the learner's ✕
+            _paths_moved()
+            self.finish(False)
             return
         _paths_moved()
         if result.get("status") != "done":
@@ -742,7 +753,9 @@ class Gate(QWidget):
             return
         if self.screen == "lib-moved":            # *Open Surasura*: the gate looks at the moved library and goes on
             self.undoable = False
-            self._after_move()
+            self._looking()                       # the press's mark: LOOKING on the stage line, buttons held
+            qpress.run(None, PRESS_OPEN, first_run.state, then=self._after_looked, failed=self._look_failed,
+                       win=self, at=qpress.NOWHERE)
             return
         self._looking()
         bridge.run_in_worker(first_run.state, then=self._looked_again, failed=self._look_failed)

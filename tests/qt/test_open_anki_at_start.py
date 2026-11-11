@@ -254,13 +254,15 @@ def test_open_anki_for_me_never_opens_anki_twice_in_a_session(qapp, anki, monkey
                          ids=["off", "never-set"])
 def test_with_open_anki_for_me_off_a_closed_anki_is_never_opened(qapp, anki, settings):
     """Off (its default): the window's start looks (Connect on), finds Anki closed, and opens nothing; the start's
-    known-words sync still goes once, and nothing is kicked."""
+    known-words sync still goes once — and Connect is kicked once all the same (Haya-CL: a Connect that ended with no
+    window open is started again at the window's start, whatever the look found; it waits for Anki while the window is
+    open). The focus after it kicks nothing more."""
     services, said, _log = _services(settings)
     services.start()
     _settled(services)
     services.activated()
     _settled(services)
-    assert anki.starts == [] and anki.begins == [] and anki.kicks == [] and said == []
+    assert anki.starts == [] and anki.begins == [] and len(anki.kicks) == 1 and said == []
     assert _began(services) == [(BEGAN, True)]
     services.shutdown(0.05)
 
@@ -306,14 +308,14 @@ def test_an_anki_already_open_is_never_started_again_and_its_session_syncs(qapp,
 
 
 def test_an_anki_that_never_answers_is_left_and_the_bar_says_so(qapp, anki, monkeypatch):
-    """Started, but no answer within the session's wait: no sync, no kick, the bar says to open it yourself — and the
-    start's known-words sync still goes, once."""
+    """Started, but no answer within the session's wait: no sync, the bar says to open it yourself — and the
+    start's known-words sync still goes, once; Connect is kicked once, as at every window's start (Haya-CL)."""
     anki.answers = False
     monkeypatch.setattr(anki_session, "OPENING_WAIT_S", 0.05)
     services, said, _log = _services(ON)
     services.start()
     _settled(services)
-    assert len(anki.starts) == 1 and anki.begins == [] and anki.kicks == []
+    assert len(anki.starts) == 1 and anki.begins == [] and len(anki.kicks) == 1
     assert _began(services) == [(BEGAN, True)]
     assert said[-1] == "Anki didn't open within two minutes. Open it yourself when you're ready."
     services.shutdown(0.05)

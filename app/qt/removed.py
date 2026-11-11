@@ -84,14 +84,8 @@ def read_store(shell, language, ask, then):
     def run():
         try:
             store = opener.handle()
-            if store is None and getattr(opener, "mode", None) == "store":
-                # A store only busy this moment (its handle opens without a wait): asked again here, off the window's
-                # thread, for as long as an open waits (§6.2) — never answered as unreadable (as the writer, LM11b)
-                from app.library_store import BUSY_AT_OPEN
-                deadline = time.monotonic() + BUSY_AT_OPEN
-                while store is None and getattr(opener, "mode", None) == "store" and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                    store = opener.handle()
+            if store is None:
+                store = _when_busy(opener)
             return None if store is None else ask(store)
         except Exception as e:
             print(f"Removed: the trash couldn't be read: {e!r}")
@@ -106,6 +100,30 @@ def read_store(shell, language, ask, then):
     from app.qt import bridge
     bridge.run_in_worker(run, then=then, failed=lambda _info: then(None))
     return True
+
+
+def _when_busy(opener):
+    """(A pool thread's, `read_store`.) No handle: a store only busy (its handle opens without a wait) is asked again,
+    off the window's thread, for as long as an open waits (§6.2) — never answered as unreadable, the window's writer's
+    rule (`moves.Writer._store`, LM11b). The opener looked at again each time: a store found damaged, newer or not a
+    store answers None at once. -> the handle, or None."""
+    from app.library_store import BUSY_AT_OPEN
+    check = getattr(opener, "check", None)
+    if check is None:
+        return None                                       # (a stand-in opener: its answer as given)
+    deadline = time.monotonic() + BUSY_AT_OPEN
+    while time.monotonic() < deadline:
+        check()
+        state = getattr(opener, "state", None)
+        mode, reason = state() if state is not None else (opener.mode, getattr(opener, "reason", None))
+        if mode == "store":
+            store = opener.handle()
+            if store is not None:
+                return store
+        elif reason != "busy":
+            return None
+        time.sleep(0.02)
+    return None
 
 
 def removed_by_root(store, roots):

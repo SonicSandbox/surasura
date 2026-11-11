@@ -256,6 +256,33 @@ def test_bring_back_shows_though_the_store_was_busy_the_moment_its_removed_files
     assert busy and line.back.text() == strings.REMOVED_BRING_BACK.format(n=4)
 
 
+class _Opener:
+    """A store opener whose looks answer `states` in turn (its last one kept): (mode, reason), as StoreOpener.state."""
+
+    def __init__(self, *states):
+        self.states, self.looks, self.handles = list(states), 0, 0
+
+    def check(self):
+        self.looks += 1
+
+    def state(self):
+        return self.states[min(self.looks, len(self.states)) - 1]
+
+    def handle(self):
+        self.handles += 1
+        return object() if self.state()[0] == "store" else None
+
+
+def test_a_busy_store_is_waited_out_on_the_pool_thread_and_a_damaged_one_answers_at_once():
+    # Flake-P2: the writer's rule (moves.Writer._store, LM11b): busy -> asked again; damaged or not a store -> None now
+    busy = _Opener(("read-only", "busy"), ("read-only", "busy"), ("store", None))
+    assert removed._when_busy(busy) is not None and busy.looks == 3
+    damaged = _Opener(("read-only", "damaged"))
+    t = time.monotonic()
+    assert removed._when_busy(damaged) is None and damaged.handles == 0 and time.monotonic() - t < 0.5
+    assert removed._when_busy(type("Bare", (), {"handle": lambda self: None})()) is None   # a stand-in: as given
+
+
 def test_a_folder_with_nothing_removed_shows_no_button_and_the_trash_button_opens_the_list(real):
     src, before, got = _source_with("ja", n=2)
     _store, win, _writer = real(before=before)

@@ -558,8 +558,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
                     keep |= _failed_says(ledger, lang, job["item_id"])
-                else:                           # Michi-RM2: the part went through: its `alone:` records go
-                    _forget_alone(ledger, lang, job["item_id"])
+                elif ended.get("state") != "skipped":   # Michi-RM2: the part went through: its `alone:` records go
+                    _forget_alone(ledger, lang, job["item_id"])     # (a skipped job may be reopened: review B1)
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
         except Wait as w:
             _wait(ledger, job, w, out, parked)
@@ -1453,8 +1453,9 @@ def _keep_alone(ledger, jid, said, words=()):
 
 def _forget_alone(ledger, lang, item_id):
     """Michi-RM2: the item's jobs' `alone:` records removed — once one of its jobs (not a level raise) ended done,
-    dropped, skipped or undone. A failed part keeps its own (the problem report names its words). A ledger write that
-    fails is logged: a record left is tidiness, never a reason to stop."""
+    dropped or undone; never skipped (`ledger.reopen_skipped` queues that job again under its id, its failures kept:
+    its record too). A failed part keeps its own (the problem report names its words). A ledger write that fails is
+    logged: a record left is tidiness, never a reason to stop."""
     try:
         with ledger.transaction():
             ledger.conn.execute("DELETE FROM meta WHERE key IN (SELECT ? || id FROM jobs WHERE language = ? AND "

@@ -1292,7 +1292,7 @@ def _row_connected(st, eps, connect, word):
                 return new
             if retry is None:
                 retry = new
-            elif new.kind == "mining" or new.tone == "warn":
+            elif new.kind == "mining" or (new.tone == "warn" and new.kind != "retry"):
                 return new                  # its progress and *Stop*; or *Not timed*, *No video*, Anki (RM2)
     return retry or st
 # --- end P4.1 L2

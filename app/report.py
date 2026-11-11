@@ -486,13 +486,16 @@ def _refused(conn, meta, prefix):
             said = record.get("said")
         except (ValueError, AttributeError, TypeError):
             continue
-        job = int(key[len(prefix):])
         try:
+            job = int(key[len(prefix):])
             state = (conn.execute("SELECT state FROM jobs WHERE id = ?", (job,)).fetchone() or [None])[0]
+        except (ValueError, sqlite3.Error):
+            continue
+        try:
             made = {r[0] for r in conn.execute("SELECT word FROM outcomes WHERE job_id = ? AND outcome = 'made'",
                                                (job,))}
         except sqlite3.Error:
-            continue
+            made = set()
         left = [w for w in words if w not in made]
         if state == "failed" and left:
             out.append({"job_id": job, "words": left, "said": said if isinstance(said, str) else None})
@@ -503,6 +506,9 @@ def _connect_status_bytes():
     """Connect's status record as the window reads it, its titles, lines and words left out (`scrub`)."""
     from app.connect import status
     return _json_bytes(scrub(status.read()))
+
+
+WORD_MAX = 40                   # a refused word kept in a run's result: longer is no word (a line): counted instead
 
 
 def _scrubbed_json(path):
@@ -517,8 +523,9 @@ def _scrubbed_json(path):
     if isinstance(data, dict) and data.get("outcome") == "failed":
         rows = data.get("words")
         row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
-        if isinstance(row, dict) and isinstance(row.get("word"), str):
-            out["words"] = [{"word": row["word"], "status": row.get("status")}]
+        word, status = (row.get("word"), row.get("status")) if isinstance(row, dict) else (None, None)
+        if isinstance(word, str) and 0 < len(word) <= WORD_MAX and (status is None or isinstance(status, str)):
+            out["words"] = [{"word": word, "status": status}]
     return _json_bytes(out)
 
 

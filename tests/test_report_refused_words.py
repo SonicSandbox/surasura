@@ -64,11 +64,12 @@ def test_a_failed_parts_refused_words_and_the_reason_go_in_the_ledger_never_its_
         later = _job(led, 34, "failed", [("場所", "ばしょ", "made"), ("立つ", "たつ", "uncertain")],
                      {"said": SAID, "words": ["場所"]})
         done = _job(led, 35, "done", [("抜ける", "ぬける", "made")], {"said": SAID, "words": []})
+        skipped = _job(led, 36, "skipped", [("待つ", "まつ", "uncertain")], {"said": SAID, "words": ["待つ"]})
     ledger = json.loads(_zip(tmp_path, root)["connect/ledger.json"])
     assert ledger["refused"] == [{"job_id": failed, "words": ["約束"], "said": SAID}]
     assert later not in {r["job_id"] for r in ledger["refused"]}, "its one refused word was made after all"
     assert not any(k.startswith(runner.ALONE) for k in ledger["meta"]), "no second, unchosen copy in meta"
-    assert done not in {r["job_id"] for r in ledger["refused"]}
+    assert {done, skipped}.isdisjoint(r["job_id"] for r in ledger["refused"]), "a failed part's only"
     text = json.dumps(ledger, ensure_ascii=False)
     assert SENTENCE not in text and "やくそく" not in text and "彼女" not in text and "改札" not in text
 
@@ -105,3 +106,20 @@ def test_an_unreadable_alone_record_is_said_never_a_reason_the_ledger_is_missing
         led.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (f"{runner.ALONE}{job}", "{broken"))
     ledger = json.loads(_zip(tmp_path, root)["connect/ledger.json"])
     assert ledger["refused"] == [] and [j["id"] for j in ledger["jobs"]] == [job]
+
+
+@pytest.mark.parametrize("row", [
+    {"word": SENTENCE * 2, "status": "uncertain", "sentence": SENTENCE},      # no word: a whole line
+    {"word": "約束", "status": {"why": SENTENCE}, "sentence": SENTENCE},       # a status that isn't a string
+    {"word": "", "status": "uncertain"},
+])
+def test_an_odd_one_word_row_is_counted_never_copied(root, tmp_path, row):
+    """Review N1: only a short word and a plain status are kept; anything else is counted as before."""
+    runs = os.path.join(os.path.dirname(book.path()), "runs", "3b-77", "3b-77-1")
+    os.makedirs(runs)
+    with open(os.path.join(runs, "result-1.json"), "w", encoding="utf-8") as f:
+        json.dump({"outcome": "failed", "error": "MINING_FAILED", "message": SAID, "words": [row]}, f,
+                  ensure_ascii=False)
+    files = _zip(tmp_path, root)
+    assert json.loads(files["anki-miner/3b-77/3b-77-1/result-1.json"])["words"] == "1 left out"
+    assert SENTENCE not in b"".join(files.values()).decode("utf-8", "replace")

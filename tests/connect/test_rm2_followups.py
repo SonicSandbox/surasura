@@ -83,3 +83,30 @@ def test_a_failed_part_keeps_its_record_through_a_level_raise_and_a_new_failure(
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
         assert [j["state"] for j in ledger.jobs("ja")][-1] == "failed"
         assert len(_alone_keys(ledger)) == 2, "each failed try keeps its own: the report names their words"
+
+
+def test_a_skipped_part_keeps_its_record_for_when_it_is_queued_again(tmp_path):
+    """Review B1: a part set aside mid-way (Anki Miner no longer reads books: skipped) is queued again later under the
+    same job, its failures kept — so it keeps its record, and goes on a word at a time, never the whole batch again."""
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "words": {"1": WORDS}, "refuse_words": [WORDS[1][0]]}
+    steps = FakeSteps(str(tmp_path), plan)
+    original = steps.mine
+
+    def books_wait_on_the_retry(lang, job, picked, words, attempt):
+        if attempt == 2:
+            raise runner.Skip(runner.BOOKS_WAIT)
+        return original(lang, job, picked, words, attempt)
+    steps.mine = books_wait_on_the_retry
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+        assert [j["state"] for j in ledger.jobs("ja")] == ["skipped"]
+        assert len(_alone_keys(ledger)) == 1
+
+
+def test_two_failed_parts_the_row_names_the_first():
+    """Review N6: a second failed part never replaces the first's *Try again* (its own counts in the tip)."""
+    second = FAILED._replace(job=6, made=1, total=4)
+    eps = [SimpleNamespace(id=n, cards=0, deleted=False, online=None) for n in (1, 2)]
+    st = view_rows._row_connected(view_rows.Status("mine", "Mine", "", "ink"), eps, {1: FAILED, 2: second}, "book")
+    assert st.tip == view_rows.STRINGS["tip_retry_none"].format(tip=runner.MINE_FAILED)

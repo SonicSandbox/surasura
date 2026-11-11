@@ -476,6 +476,15 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 ROWS_ACTION_NAMES["try-again"] = "Try again"
 ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
                       False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
+# Michi-NT (Mattias #XP44T6; PROVISIONAL words): a *Not timed* pill checks its timing again — its subtitle, or the same
+# subtitle re-timed beside its video (where tsubasa writes one it fixed)
+ROWS_ACTION_NAMES["check-again"] = "Check again"
+ROWS_CHECK_AGAIN_TIP = {True: "{tip}\n• Click to check its timing again: a subtitle you re-timed beside its video "
+                              "counts too",
+                        False: "{tip}\n• Click to check the timing of its {n} episodes again: a subtitle you re-timed "
+                               "beside its video counts too"}
+CHECK_AGAIN_NOTHING = "Nothing to check again: its episode isn't waiting on its timing any more."
+CHECK_AGAIN_FAILED = "Its timing couldn't be checked again: {why}"
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"

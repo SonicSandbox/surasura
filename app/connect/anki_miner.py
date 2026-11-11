@@ -959,6 +959,13 @@ def before_anki(run_dir, run_id, progress):
     return not os.path.exists(os.path.join(folder, PROGRESS)) and not os.path.exists(os.path.join(folder, "media"))
 
 
+# Zh-C (review SHOULD): Chinese cards are made only with the Anki Miner they were proven with (3.12.0: its Chinese
+# field fix, word audio only into a mapped field); an older one is the update's, said once for the language
+ZH_FROM = (3, 12, 0)
+ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner from Surasura (Settings → Anki & "
+             "mining).")
+
+
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
                show=None, reading=None, from_audio=False, names=None, word_audio=True):
@@ -966,6 +973,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
     asks, named = features(info), info.get("features")
+    if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
+        raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)     # nothing sent: the language waits for the update
     if "Z-1" not in asks:
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     if reading is not None and READING not in (named or ()):

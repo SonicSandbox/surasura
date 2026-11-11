@@ -543,11 +543,23 @@ def _make_deck(settings, language, deck, save):
     return {"settings": settings, "said": said}
 
 
-def _backfill_language(note, language, save):
+def _backfill_language(note, language, save, settings):
     """Zh-C: the note type Chinese cards are made with, named Chinese in Backfill's note languages
     (`junban_backfill_note_languages`) when it names none for it — Backfill tells a note type's language by its kana,
     so a Chinese one is never filled until it is named — merged onto settings.json as it is when written; one the
-    learner set is never changed. -> "" (nothing to say), or a line when it couldn't be saved."""
+    learner set is never changed. Never a Japanese preset (Lapis, Kiku, Senren) nor a note type whose notes are mostly
+    kana (`AnkiReads.mostly_kana`; Anki unread: not named) — a Japanese note type named Chinese would stop Backfill
+    filling every Japanese card of it (review MUST). -> "" (nothing to say), or a line when it couldn't be saved."""
+    from app import anki_connect
+    from app.connect import miner_settings
+    if note.strip().casefold() in miner_settings.JA_PRESETS:
+        return ""
+    try:
+        if miner_settings.AnkiReads(anki_connect.address(settings)).mostly_kana(note):
+            return ""
+    except Exception:                   # Anki unread: Backfill keeps telling it by its kana
+        return ""
+
     def name(file):
         saved = file.get("junban_backfill_note_languages")
         saved = dict(saved) if isinstance(saved, dict) else {}
@@ -660,7 +672,7 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
     elif own and note != before:
         said += SAID_FIELDS.format(note=note, word=mapped["word"], sentence=mapped["sentence"])
     if note and language in MAPPED:         # Zh-C: Backfill fills a Chinese note type only once it is named Chinese
-        out["said"] += _backfill_language(note, language, save)
+        out["said"] += _backfill_language(note, language, save, settings)
     if values.get("card_type") == "":
         said += SAID_CARD_TYPE.format(note=note)
     if values.get("pitch_category_format") == "romaji":

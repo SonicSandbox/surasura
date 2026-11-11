@@ -42,8 +42,8 @@ from functools import lru_cache
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
-                             QLayout,
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
+                             QLabel, QLayout,
                              QPlainTextEdit, QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import ankiconnect_addon, path_utils, scrub, settings_manager, theme

@@ -470,8 +470,8 @@ def test_a_never_mined_language_makes_surasuras_own_profile_then_runs_its_setup_
     own profile (a copy of it), its deck, note type and fields from Surasura's settings, then its dictionaries."""
     result, said = M.finish_setup(ZH, "zh")
     assert result == M.SET_UP and "“中文::句子”, made with “Lapis”" in said and "its own Anki Miner profile" in said
-    # its name is the setting's default: nothing to save — only Backfill's note language, merged by its update (Zh-C)
-    assert world["saved"] == [{}]
+    # its name is the setting's default: nothing to save (Lapis, a Japanese preset, is never named Chinese: Zh-C)
+    assert world["saved"] == []
     [made] = world["imports"]
     assert (made["name"], made["profile"], made["language"]) == (anki_miner.DEFAULT_PROFILE, None, "zh")
     assert (made["values"]["anki_deck_name"], made["values"]["anki_note_type"]) == ("中文::句子", "Lapis")
@@ -889,9 +889,10 @@ def test_a_preset_note_type_needs_no_field_saying_but_its_romaji_pitch_is_said(w
     assert M.SAID_PITCH.format(note="Lapis").strip() in said
 
 
-def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_backfill_names_it_chinese(world):
+def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_lapis_is_never_named_chinese(world):
     """Zh-C: pitch is Japanese-only (Anki Miner 3.12 stops a Chinese run on a mapped pitch field): never mapped, never
-    said, for Chinese. The note type is named Chinese for Backfill (it reads a note type's language by its kana)."""
+    said, for Chinese. Lapis is a Japanese preset: never named Chinese for Backfill — the learner's Japanese Lapis
+    cards would no longer be filled (review MUST)."""
     saves = []
 
     def save(changes, update=None):
@@ -904,7 +905,45 @@ def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_backfill_names_it_ch
     values = world["imports"][0]["values"]
     assert values["anki_fields"]["pitch_category"] == "" and values["anki_fields"]["expression_furigana"] == ""
     assert "pitch_category_format" not in values
-    assert {"Kiku": "ja", "Lapis": "zh"} in [f.get("junban_backfill_note_languages") for _c, f in saves]
+    assert all("Lapis" not in (f.get("junban_backfill_note_languages") or {}) for _c, f in saves)
+
+
+class KanaAnki(Anki):
+    """The stand-in with Backfill's sign of a Japanese note type (`AnkiReads.mostly_kana`)."""
+
+    def __init__(self, *args, kana=(), unread=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.kana, self.unread = set(kana), unread
+
+    def mostly_kana(self, note_type):
+        self._ask(("kana", note_type))
+        if self.unread:
+            raise anki_connect.AnkiError("Anki isn't open", kind="offline")
+        return note_type in self.kana
+
+
+@pytest.mark.parametrize("note, kana, unread, named", [
+    ("Anki Miner Note", (), False, True),            # its Chinese notes, or none yet: named Chinese
+    ("中文卡", (), False, True),
+    ("Anki Miner Note", ("Anki Miner Note",), False, False),   # the learner's Japanese cards use it too: never
+    ("中文卡", (), True, False),                      # Anki unread: Backfill keeps telling it by its kana
+])
+def test_backfill_names_a_chinese_note_type_chinese_only_when_its_notes_arent_japanese(world, note, kana, unread,
+                                                                                        named):
+    fields = ["Expression", "Sentence", "Pinyin"] if note == "Anki Miner Note" else ["汉字", "例句", "拼音"]
+    world["anki"] = KanaAnki(["中文::句子"], {note: fields}, {"中文::句子": note}, kana=kana, unread=unread)
+    saves = []
+
+    def save(changes, update=None):
+        file = {}
+        if update is not None:
+            update(file)
+        saves.append(file)
+    chosen = {"note_type": note} if note == "Anki Miner Note" else {"note_type": note, "fields": {"sentence": "例句"}}
+    result, _said = M.finish_setup(ZH, "zh", save=save, chosen=chosen)
+    assert result == M.SET_UP
+    languages = [f.get("junban_backfill_note_languages") for f in saves if f]
+    assert (languages == [{note: "zh"}]) is named
 
 
 def test_a_refusal_names_what_it_refused_in_plain_words_even_several(monkeypatch, tmp_path):

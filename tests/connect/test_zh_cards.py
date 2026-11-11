@@ -149,6 +149,37 @@ def test_a_chinese_run_file_with_word_audio_off_sends_the_word_audio_field_unmap
     assert on["anki_fields"]["expression_audio"] == "ExpressionAudio"
 
 
+@pytest.mark.parametrize("app, refused", [("3.11.0", True), ("3.12.0", False), ("3.13.1", False)])
+def test_chinese_cards_wait_for_anki_miner_3_12_and_nothing_is_sent_to_an_older_one(tmp_path, monkeypatch, app,
+                                                                                      refused):
+    """Review SHOULD: Chinese was proven with Anki Miner 3.12 only (its Chinese field fix, word audio only into a
+    mapped field). An older one gets nothing — the update's *Needs you* (kind `setup`) — and Japanese is unchanged."""
+    from app.connect import anki_miner
+    info = {"app": app, "features": ["named-words-whitelisted", "word-from-line", "bold-target",
+                                     "sentence-rules-off"]}
+    monkeypatch.setattr(anki_miner, "preflight", lambda *a, **k: (info, "surasura"))
+    sent = []
+    monkeypatch.setattr(anki_miner.runfile, "write", lambda path, data: sent.append(data) or path)
+
+    class Sent(Exception):
+        pass
+    monkeypatch.setattr(anki_miner, "result_names", lambda *a: (_ for _ in ()).throw(Sent()))
+    words = [{"word": "夜市", "reading": "", "surface": "夜市", "line_start": 4.1, "line_expansion": [0, 0],
+              "sent": ["夜市"], "predicted_class": None}]
+    for language in ("zh", "ja"):
+        sent.clear()
+        try:
+            anki_miner._mine_held("am.exe", language, "zhc-1", "v.mp4", "v.srt", words, MAPPING, "Surasura",
+                                  str(tmp_path), 1, 0.0, 60)
+        except anki_miner.AnkiMinerError as e:
+            assert language == "zh" and refused and e.kind == "setup" and "3.12" in e.message
+            assert sent == [], "nothing sent to an Anki Miner that can't make them"
+            continue
+        except Sent:
+            pass
+        assert not (language == "zh" and refused) and len(sent) == 1, (language, app)
+
+
 def test_the_word_audio_row_shows_for_chinese_with_connect_on_only_and_is_off_by_default():
     """Settings › Anki & mining: *Word audio from Google* (its one line names Google) — a Chinese learner's with
     Connect on; never Japanese's (its word audio is Anki Miner's own); off as shipped."""

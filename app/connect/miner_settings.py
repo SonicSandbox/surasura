@@ -31,6 +31,7 @@ the note type's, none twice) and written with the rest, into the profile Connect
 
 Standard library only; Anki is read through the `anki` reads handed in (`AnkiReads`: read-only AnkiConnect actions).
 """
+import re
 from collections import Counter
 
 # Each role's field in the note types Anki Miner fills completely, in its own preset's names (3.11.0
@@ -75,6 +76,11 @@ MAPPED = {"zh": ("sentence", "expression_reading", "expression_pinyin", "definit
 # Those note types read their pitch categories as romaji (Anki Miner's presets set it with them; its default is "jp")
 ROMAJI_PITCH = frozenset(("PitchCategories", "pitchCategories"))
 RECENT_NOTES = 50               # the deck's newest notes whose note type is counted (`AnkiReads.deck_note_type`)
+_KANA = re.compile("[ぁ-ゖァ-ヺ]")    # hiragana, katakana (`AnkiReads.mostly_kana`)
+# Japanese's own presets: never named another language's note type for Backfill (Zh-C review MUST)
+JA_PRESETS = frozenset(("lapis", "kiku", "senren"))
+# Anki's own note types no word card fits (review NIT): never offered as a Chinese one to map
+NOT_CARDS = frozenset(("cloze", "image occlusion"))
 # Choice 86 (Sonic, 2026-11-09: "Offer a surasura deck is ok. Both options good"): the deck asked while the language
 # has at most one known-words deck (often a premade course, Kaishi 1.5k), a deck of Surasura's own is offered first —
 # made in Anki when the press takes it (`anki_miner_setup._make_deck`) — so one quick press never sends mined cards
@@ -102,6 +108,18 @@ class AnkiReads:
 
     def fields(self, note_type):
         return [str(f) for f in self._invoke("modelFieldNames", modelName=note_type) or ()]
+
+    def mostly_kana(self, note_type):
+        """Do most of `note_type`'s newest notes (RECENT_NOTES) hold kana in some field — Backfill's own sign of a
+        Japanese note type (D7)? False for one with no notes."""
+        query = '"note:' + note_type.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        ids = sorted(self._invoke("findNotes", query=query) or ())[-RECENT_NOTES:]
+        if not ids:
+            return False
+        notes = [n for n in self._invoke("notesInfo", notes=ids) or () if isinstance(n, dict)]
+        kana = sum(1 for n in notes if any(_KANA.search(str((f or {}).get("value") or ""))
+                                           for f in (n.get("fields") or {}).values()))
+        return kana * 2 > len(notes)
 
     def deck_note_type(self, deck):
         """The note type most of `deck`'s newest notes (RECENT_NOTES) use, or None (an empty deck)."""
@@ -306,8 +324,9 @@ def _note_choices(settings, language, note_types, anki, current):
     if language not in MAPPED:
         return [m for m in order if fields_for(anki.fields(m), roles) is not None]
     order = [m for m in note_types if m == AM_NOTE] + [m for m in order if m != AM_NOTE]
-    return [m for m in order if (fields_for(anki.fields(m), roles, language=language) is not None
-                                 if m.strip().casefold() in PRESETS else len(anki.fields(m)) >= 2)]
+    return [m for m in order if m.strip().casefold() not in NOT_CARDS
+            and (fields_for(anki.fields(m), roles, language=language) is not None
+                 if m.strip().casefold() in PRESETS else len(anki.fields(m)) >= 2)]
 
 
 def _get_note(language, note_types):

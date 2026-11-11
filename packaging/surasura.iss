@@ -98,9 +98,13 @@ Type: filesandordirs; Name: "{app}\licenses"
 
 [Code]
 const
-  // The library's name in Documents when Documents\Surasura holds a program (a 2.x unzipped there; IK-1).
+  // The library's name in the user's folder when <user folder>\Surasura holds a program (a 2.x unzipped there; IK-1).
   // app/import_2x.py's LIBRARY_FALLBACK says the same.
   LibraryFallback = 'Surasura Library';
+  // 3.0.1: Windows Defender's Controlled folder access (app/cfa.py reads the same values): 1 = on. A new library starts
+  // in the user's own folder, never in Documents (a folder it protects); with it on, the page says why.
+  CfaKey = 'SOFTWARE\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access';
+  CfaPolicyKey = 'SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access';
 
 var
   LibraryPage: TInputDirWizardPage;
@@ -177,6 +181,34 @@ begin
   Result := Result + '"';
 end;
 
+{ The user's own folder (C:\Users\<you>): where a new library starts (3.0.1), as app/cfa.py's move_target. }
+function UserFolder: String;
+begin
+  Result := RemoveBackslashUnlessRoot(GetEnv('USERPROFILE'));
+  if Result = '' then
+    Result := ExpandConstant('{%HOMEDRIVE}{%HOMEPATH}');
+end;
+
+{ The library page's one line why, when Controlled folder access is on (3.0.1). }
+function CfaLine: String;
+begin
+  Result := 'Windows'' ransomware protection blocks apps writing into Documents, so Surasura''s library starts in ' +
+    'your user folder.';
+end;
+
+{ Controlled folder access on (1; 2 is audit, which blocks nothing): a policy's value wins over the user's setting. }
+function CfaOn: Boolean;
+var
+  Value: Cardinal;
+begin
+  if RegQueryDWordValue(HKLM64, CfaPolicyKey, 'EnableControlledFolderAccess', Value) then
+    Result := Value = 1
+  else if RegQueryDWordValue(HKLM64, CfaKey, 'EnableControlledFolderAccess', Value) then
+    Result := Value = 1
+  else
+    Result := False;
+end;
+
 function LibraryFolder: String;
 begin
   Result := RemoveBackslashUnlessRoot(ExpandFileName(Trim(LibraryPage.Values[0])));
@@ -203,10 +235,10 @@ begin
   Prog := Lowercase(AddBackslash(WizardDirValue));
   if Copy(Folder, 1, Length(Prog)) = Prog then
     Result := 'Your library can''t be inside Surasura''s program folder (' + WizardDirValue + '): updating or ' +
-      'uninstalling Surasura replaces that folder. Choose another folder, such as Documents\Surasura.'
+      'uninstalling Surasura replaces that folder. Choose another folder, such as ' + UserFolder + '\Surasura.'
   else if HoldsProgram(LibraryFolder) then
-    Result := 'That folder holds a Surasura program, not a library. Choose another folder, such as Documents\' +
-      LibraryFallback + '.';
+    Result := 'That folder holds a Surasura program, not a library. Choose another folder, such as ' +
+      UserFolder + '\' + LibraryFallback + '.';
 end;
 
 function InitializeSetup: Boolean;
@@ -216,18 +248,23 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  Why: String;
 begin
+  Why := '';
+  if CfaOn then
+    Why := CfaLine + #13#10#13#10;
   LibraryPage := CreateInputDirPage(wpSelectDir, 'Your library', 'Where should Surasura keep your library?',
-    'Surasura keeps your books, subtitles, word lists and reports in this folder. It is created when Surasura ' +
-    'first starts; a folder that already exists is fine too.' + #13#10#13#10 +
+    Why + 'Surasura keeps your books, subtitles, word lists and reports in this folder. It is created when ' +
+    'Surasura first starts; a folder that already exists is fine too.' + #13#10#13#10 +
     'To keep using it, click Next. To choose another folder, click Browse.', False, '');
   LibraryPage.Add('');
   if LibraryParam <> '' then
     LibraryPage.Values[0] := LibraryParam
-  else if HoldsProgram(ExpandConstant('{userdocs}\Surasura')) then
-    LibraryPage.Values[0] := AddBackslash(ExpandConstant('{userdocs}')) + LibraryFallback
+  else if HoldsProgram(UserFolder + '\Surasura') then
+    LibraryPage.Values[0] := UserFolder + '\' + LibraryFallback
   else
-    LibraryPage.Values[0] := ExpandConstant('{userdocs}\Surasura');
+    LibraryPage.Values[0] := UserFolder + '\Surasura';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -362,7 +399,7 @@ begin
   if (CurUninstallStep = usPostUninstall) and not UninstallSilent then begin
     Lib := NoteLibrary;
     if Lib = '' then
-      Lib := 'the folder you chose when installing (Documents\Surasura unless you changed it)';
+      Lib := 'the folder you chose when installing';
     MsgBox('{#AppName} is removed. Everything that is yours was kept, where it is:' + #13#10#13#10 +
       'Your library: ' + Lib + #13#10 +
       'Your settings: ' + ExpandConstant('{userappdata}\Houseki\{#DataName}') + #13#10 +

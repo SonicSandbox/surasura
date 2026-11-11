@@ -99,8 +99,29 @@ SPEECH_NEED = "speech-model"
 LINEUP_PAIR = "lineup:"         # ledger meta: `lineup:<job id>` -> the pair a part waits on (its *Stop* reads it: B-9)
 # AB-Q4: the one plain line of a book whose audiobook doesn't follow it closely, or skips passages (`lineup.partial_line`)
 PARTIAL_NEED = "audiobook-partial"
+# Mattias's field report (3.0.0, 2026-11-11 #5; PROVISIONAL words): a part Anki Miner stopped on twice — the job's
+# reason (`status`'s `failed`, the row's *Try again*) and its *Needs you* line, which names the way on
+MINE_FAILED = "Anki Miner stopped twice while making its cards"
+MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
+                   "it made are kept.")
+# … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
+                    "more; the cards it made are kept.")
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
+# Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
+# asks first — ONE standing *Needs you* question a book (its first part's need: every part held by its words,
+# `feed.HELD`), *Pick its audiobook…* (the window pairs it: `Store.pick_audiobook_book`) · *Mine without audio*
+# (`actions.book_audiobook`) · *Dismiss* (mined as the book). Its record and answer live in the ledger's meta, by
+# language: `BOOK_ASKED<lang>:<item>` -> {key, epub} (the part it is asked by), `BOOK_SAID<lang>:<key>` -> the answer
+# (`book_key`: the EPUB's sha256, else its path). Never a book already paired, never once the speech model was
+# declined, never without Anki Miner's `sync`.
+BOOK_AUDIO_NEED = "book-audiobook"
+BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry the narrator's voice: pick it, or mine the "
+                  "book without audio.")
+BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
+NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -546,7 +567,11 @@ def _language(steps, ledger, lang, prepared, parked, out):
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
-                _fixed(ledger, lang, item_id=job["item_id"], keep=_skipped_says(ended))
+                keep = _skipped_says(ended)
+                if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
+                    keep |= _failed_says(ledger, lang, job["item_id"])
+                _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
+                _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
             _wait(ledger, job, w, out, parked)
             outside |= w.look
@@ -690,6 +715,12 @@ def _through(ledger, lang, step):
 def _fixed_said(ledger, lang, says):
     for row in ledger.fix_said(lang, says):
         log.info("Connect: fixed by itself (%s, %s, item %s): %s", lang, row["kind"], row["item_id"], row["say"])
+
+
+def _failed_says(ledger, lang, item_id):
+    """The words of the item's open *Anki Miner stopped* lines (Mattias #5): only a new try of its words ends them."""
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind = "
+                                              "'mine-failed' AND fixed_at IS NULL", (lang, item_id))}
 
 
 def _skipped_says(job):
@@ -1015,7 +1046,14 @@ def _line_up(steps, ledger, lang, job, book):
             _keep_pair(ledger, job["id"], w.pair)
         if getattr(w, "restarted", False):
             _free_stopped(ledger, lang)
+        if lining_up(w.reason):
+            _book_answered(ledger, lang, book[1])     # paired and lining up now: the book asks no more
         raise
+    if got and got.get("book_ask"):
+        if _book_question(ledger, lang, got):
+            raise Wait(got["book_ask"])
+        return None
+    _book_answered(ledger, lang, book[1])
     if not got:
         return None
     if got.get("ask"):
@@ -1025,6 +1063,101 @@ def _line_up(steps, ledger, lang, job, book):
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     return got.get("lineup")
+
+
+def book_key(epub, sha256=None):
+    """Kura-AB2: a book's answer key — its EPUB's sha256 (the answer follows a moved or renamed book; a new edition is
+    asked again), else its path."""
+    from app import library_store
+    return f"sha256:{sha256}" if sha256 else f"path:{library_store.path_key(os.path.abspath(epub))}"
+
+
+def _meta(ledger, key):
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _json_or_none(text):
+    try:
+        got = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _book_question(ledger, lang, got):
+    """Kura-AB2: the book's one question (`Steps._book_audio`'s `got`: its words, the part it is asked by, its key and
+    EPUB) -> True while it holds the book (each part held by its words, looked at again at each look: an audiobook
+    paired since, by any door, lets it go); False — answered (*Mine without audio*, by its sha256 or its path), or its
+    card dismissed (kept as an answer, so a later part never asks again): mined as the book. A question the same EPUB
+    asked by another part before (its first part left the library) goes, so one card stands for the book; another copy
+    of the same bytes elsewhere is a book of its own (its answer shared: the same key). Read first: a look that
+    changes nothing writes nothing and takes no lock (S19)."""
+    item, key, say, epub = got["item_id"], got["key"], got["book_ask"], os.path.abspath(got["epub"])
+    if any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") for k in dict.fromkeys((key, book_key(epub)))):
+        return False
+    record = json.dumps({"key": key, "epub": epub}, sort_keys=True, ensure_ascii=False)
+    lo = f"{BOOK_ASKED}{lang}:"
+    mine = f"{lo}{item}"
+    stale = [k for k, v in ledger.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                                               (lo, lo[:-1] + ";")).fetchall()
+             if k != mine and (_json_or_none(v) or {}).get("epub") == epub]
+    open_need = ledger.conn.execute("SELECT say, dismissed_at FROM needs WHERE language = ? AND kind = ? AND "
+                                    "item_id = ? AND fixed_at IS NULL", (lang, BOOK_AUDIO_NEED, item)).fetchone()
+    if not stale and _meta(ledger, mine) == record and open_need is not None and open_need[0] == say and \
+            open_need[1] is None:
+        return True                                 # asked already, as it is: nothing to write
+    with ledger.transaction():
+        for meta_key in stale:
+            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (meta_key,))
+            ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                                "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, int(meta_key[len(lo):])))
+        if _meta(ledger, mine) != record:
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mine, record))
+        if ledger.need(lang, BOOK_AUDIO_NEED, say, item_id=item, standing=True):
+            log.info("Connect: asks whether a book has its audiobook (%s, item %s)", lang, item)
+        elif open_need is not None and open_need[1] is not None:
+            # *Dismiss*: you let it be — mined as the book, never held for good; kept, since the part whose job ends
+            # takes its needs with it and the next part would ask again
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                (f"{BOOK_SAID}{lang}:{key}", DISMISSED))
+            return False
+    return True
+
+
+def _book_orphans(ledger, lang):
+    """Kura-AB2: a book's question no waiting part holds any more (its parts' jobs ended without an answer — dropped,
+    skipped, removed — while the part it is asked by has no job to take it along) fixed, by itself: never a card that
+    nothing clears. A job's end; nothing open: the ledger read alone."""
+    open_needs = [n for n in ledger.needs(lang, listed=False) if n["kind"] == BOOK_AUDIO_NEED]
+    if not open_needs:
+        return
+    held = {j.get("reason") for j in ledger.jobs(lang, states=("waiting",))}
+    for n in open_needs:
+        if n["say"] not in held:
+            _fixed_book(ledger, lang, n["item_id"])
+
+
+def _fixed_book(ledger, lang, item):
+    """The book question asked by part `item` fixed — that question alone, never the part's other needs (03 §4)."""
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                            "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, item))
+    log.info("Connect: fixed by itself (%s, %s): item %s", lang, BOOK_AUDIO_NEED, item)
+
+
+def _book_answered(ledger, lang, epub):
+    """Kura-AB2: the book `epub` asks no more (an audiobook paired since — *Pick its audiobook…*, a look, Hon's own
+    question — or Anki Miner can't line it up now): its open question fixed, by itself; never the asking part's other
+    needs. Nothing open: the ledger read alone."""
+    open_ids = {n["item_id"] for n in ledger.needs(lang, listed=False) if n["kind"] == BOOK_AUDIO_NEED}
+    if not open_ids:
+        return
+    want = os.path.abspath(epub)
+    for item in sorted(open_ids):
+        rec = _json_or_none(_meta(ledger, f"{BOOK_ASKED}{lang}:{item}")) or {}
+        if rec.get("epub") == want:
+            _fixed_book(ledger, lang, item)
 
 
 def _pick(steps, ledger, lang, job, record=True):
@@ -1341,7 +1474,7 @@ def _mine(steps, ledger, lang, job, record=True):
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
         try:
-            got = steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
+            got = _mine_batch(steps, ledger, lang, job, picked, todo, attempt)
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
@@ -1377,17 +1510,26 @@ def _mine(steps, ledger, lang, job, record=True):
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
             ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-            if got.get("doubt") and not stopped:
-                _count_failure(ledger, jid)
+            if got.get("anki_said"):        # Mattias #5 (review r2 B1): Anki's refusal kept, as below
+                _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
+            if got.get("doubt") and not stopped and got.get("then") is None:
+                _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-        if got.get("doubt") and not stopped:
+        if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
+            _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
+        then = got.get("then")              # a word-at-a-time batch a wait cut short: its words not all sent
+        if got.get("doubt") and not stopped and then is None:
             _count_failure(ledger, jid)     # only a run that crashed or timed out: an unknown status is no crash
         if any(o["outcome"] == "made" for o in got["outcomes"]):
             steps.after_write(lang)         # new cards: the session's sync clock (S3), Junban or not (adversary #12)
         if stopped:
             _stopped_mid_batch(steps, ledger, lang, job, record)
+        if isinstance(then, Wait):          # (its cards recorded above; it resumes at mining)
+            raise Wait(then.reason, then.look, "mining")
+        if then is not None:
+            raise then
     left = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
     if _failures(ledger, jid) >= 2 and any(_outcome(ledger, jid, w) == "uncertain" for w in left):
         _fail_mining(steps, ledger, lang, job, record)     # a second crash in the last try
@@ -1405,6 +1547,78 @@ def _mine(steps, ledger, lang, job, record=True):
     # look (adversary B #6, S19)
     _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
+
+
+# Mattias's field report (3.0.0, #5): ledger meta `alone:<job id>` -> {"said": what Anki said when it refused a batch of
+# the job (Anki Miner's MINING_FAILED, not transient: AnkiConnect's *cannot create note …*), "words": the words it went on
+# refusing a word at a time} — the job's next batches send each word in a call of its own, so one card Anki won't take
+# never holds back the others, and the failure line names only the words Anki refused alone
+ALONE = "alone:"
+
+
+def _keep_alone(ledger, jid, said, words=()):
+    had = _alone(ledger, jid) or {}
+    value = {"said": str(said), "words": list(dict.fromkeys(list(had.get("words") or ()) + list(words or ())))}
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (f"{ALONE}{int(jid)}", json.dumps(value, ensure_ascii=False)))
+
+
+def _alone(ledger, jid):
+    """{"said", "words"} when Anki refused a batch of the job (`ALONE`), else None."""
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{ALONE}{int(jid)}",)).fetchone()
+    try:
+        got = json.loads(row[0]) if row is not None else None
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
+    """One batch -> `steps.mine`'s answer. Mattias #5: after Anki refused a batch of the job (`_alone`), each word goes
+    in a call of its own (its own run, `<attempt>-<n>`), so the words Anki takes get their cards and only the ones it
+    refuses stay in doubt (`refused`: those words) — merged as one batch, the way `Steps.mine` merges a line-up's
+    calls. Not every word sent: your *Stop* between two (`stopped`); a wait, a *Needs you* or a look-up ended at a
+    press before a later word (`then`: the caller records the batch, counts no failure, then raises it); a skip or a
+    re-pick (the next batch meets it as itself). Every word is tried, a refusal after a refusal too (a give-up cut good
+    words, every *Try again* the same way: review r2 B2): a deck, a note type or fields Anki Miner can't use are its
+    setup check's before each call (`anki_miner.preflight`: *Needs you*). What still fails for every word (a video
+    ffmpeg can't read, a full disk) costs one run a word once, then the part fails as any (review r3 N2)."""
+    if not _alone(ledger, job["id"]):
+        return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
+    got, out, refused = {}, None, []
+    for n, word in enumerate(todo):
+        if n and stopping.pressed():
+            out["stopped"] = True           # #47: pressed between two words: the rest wait with the job
+            break
+        try:
+            done = steps.mine(lang, job, _part_read(steps, lang, job, picked), [word], attempt if n == 0 else
+                              f"{attempt}-{n}")
+        except (Wait, Needs, stopping.Stopped) as e:
+            if out is None:
+                raise
+            out["then"] = e
+            break
+        except (Skip, Repick):
+            if out is None:
+                raise
+            break
+        row = (done.get("outcomes") or [None])[0]
+        if row is not None:
+            got[(word["word"], word["reading"])] = row
+        if done.get("anki_said") and (row is None or row.get("outcome") in UNSETTLED):
+            refused.append(word["word"])
+        if out is None:
+            out = dict(done, outcomes=None)
+        else:
+            for flag in ("doubt", "stopped", "anki_said"):
+                out[flag] = out.get(flag) or done.get(flag)
+            out["tag_pending"] = list(out.get("tag_pending") or ()) + list(done.get("tag_pending") or ())
+        if done.get("stopped"):
+            break
+    out["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted") for w in todo]
+    out["refused"] = refused
+    return out
 
 
 def _stop_pressed(ledger, jid):
@@ -1507,9 +1721,24 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     if _made(ledger, job["id"]):
         with ledger.transaction():
             ledger.owe_resort(lang)
-    ledger.set_state(job["id"], "failed", reason="Anki Miner stopped twice while making its cards")
-    ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice while "
-                "making its cards. Look in Anki for the cards it made.", item_id=job["item_id"], job_id=job["id"])
+    ledger.set_state(job["id"], "failed", reason=MINE_FAILED)
+    # a new try's failure is news (Mattias #5: every *Try again* reacts): an earlier job's entry for the item — seen,
+    # dismissed — gives way to this one, which counts again
+    title = steps.title(lang, job) or "An episode"
+    alone = _alone(ledger, job["id"]) or {}
+    said, refused = alone.get("said"), set(alone.get("words") or ())
+    words = [w["word"] for w in (ledger.picked(job["id"]) or {}).get("words") or ()
+             if w["word"] in refused and _outcome(ledger, job["id"], w) in UNSETTLED]
+    if said and words:              # Mattias #5: the words Anki refused alone: named, with Anki's reason
+        named = ", ".join(words[:3]) + (f" and {len(words) - 3} more" if len(words) > 3 else "")
+        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said)
+    else:
+        say = MINE_FAILED_SAY.format(title=title)
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'mine-failed' "
+                            "AND fixed_at IS NULL AND COALESCE(job_id, -1) != ?",
+                            (_now(), lang, job["item_id"], job["id"]))
+        ledger.need(lang, "mine-failed", say, item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
 
 
@@ -2619,7 +2848,9 @@ class Steps:
             return None
         with self._open(lang) as store:
             ab = library.audiobook_of_book(store, epub)
-        if ab is None or not ab["key"] or ab["lineup"] == "kept":
+            if ab is None:
+                return self._book_audio(store, epub)
+        if not ab["key"] or ab["lineup"] == "kept":
             return None
         key = ab["key"]
         state = lineup.look(key)
@@ -2673,6 +2904,21 @@ class Steps:
         wait = _lining(LINING_UP_FILE.format(k=1, n=len(ab["files"])), key)
         wait.restarted = status == lineup.STOPPED
         raise wait
+
+    def _book_audio(self, store, epub):
+        """Kura-AB2: the book `epub`, no audiobook paired -> None (mined as the book: *Not now* to the speech model,
+        or it isn't in the library); else the one question for `runner._book_question`, which reads its answer in the
+        ledger: {"book_ask": BOOK_AUDIO_ASK, "item_id": its first part, "key": `book_key`, "epub"}. Hon's own question
+        about an audiobook for it (H-8) may stand beside it: *Pick its audiobook…* lists that audiobook first, and
+        either answer that pairs them lets the book go."""
+        from app.connect import library, lineup
+        if lineup.answer() == "no":
+            return None
+        book = library.book_of(store, epub)
+        if book is None:
+            return None
+        return {"book_ask": BOOK_AUDIO_ASK.format(title=book["title"]), "item_id": book["item"],
+                "key": book_key(epub, book["sha256"]), "epub": os.path.abspath(epub)}
 
     def _mark_line_up(self, lang, ab, status):
         """The store's mark on the audiobook's records (`Store.mark_audiobook_lineup`): nothing lined up — *Needs you*
@@ -2816,8 +3062,12 @@ class Steps:
             self._place(lang, job, picked, done.get("outcomes") or [])
         run = done.get("run") or {}
         doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
+        # Mattias #5: Anki refused a card (Anki Miner's MINING_FAILED, not transient — AnkiConnect's *cannot create
+        # note …*): its words, in doubt, go a word at a time next (`runner._mine_batch`); a crash is no such answer
+        said = (run.get("message") or run.get("error") if run.get("error") == "MINING_FAILED" and not
+                run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped"))}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said}
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

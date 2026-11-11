@@ -1,18 +1,17 @@
-"""W-1, W-1b: the set-aside files move cards — a Finished drag after the Generate it starts (D1, PROVISIONAL), never on
-the window's fast re-order (app/replan_preview.py: the set-aside files are the run signature's "reference" part, and
-`plan_engine.check` asks for a Generate first when a file joins them as Finished). A watched mark re-plans at once since
-Haya-W (2026-11-06, "Responsiveness is key"): `tests/test_watched_replan.py`.
+"""W-1, W-1b: the set-aside files move cards (app/replan_preview.py: the set-aside files are the run signature's
+"reference" part). A watched mark re-plans at once since Haya-W (2026-11-06, "Responsiveness is key"):
+`tests/test_watched_replan.py`; a Finished drag by the same rule since Haya-FN (2026-11-09): `tests/test_finish_replan.py`
+(its Undo there too). This file keeps the fake collection those share, and the two together in one settle.
 
 On RP-2's Japanese library (tests/plan_file_cases.py: twelve files of real text across NOW, Soon and 6+ Months), with
 your 順 actions on (tag + suspend, as Sonic runs them) and a fake AnkiConnect holding a card for every listed word.
 What these prove:
 
-  - a stone and a Finished drag in one settle: the stricter wins (nothing until the Generate);
-  - a Finished drag alone, and its Undo: the same as a stone (W-1b: Finished is set aside, as a watched episode is) —
-    nothing written until the Generate, which steps the show's words back, and brings them back after the Undo.
+  - a stone and a Finished drag in one settle: one rule, both re-planned in the same job (the stone's own words step
+    back at once).
 
-What a wrong answer would cost a learner: a mis-dragged show's cards taken out within seconds while its Undo waits for
-a whole Generate to bring them back.
+What a wrong answer would cost a learner: a stone's cards left at the front of Anki's queue for a whole Generate
+because a show was finished in the same moment.
 """
 import pytest
 
@@ -89,7 +88,7 @@ def _suspended(fake, card_ids):
     return {card_id for card_id in card_ids if fake.cards[card_id]["queue"] == -1}
 
 
-def test_a_stone_and_a_finished_drag_in_one_settle_wait_for_the_generate(lib, monkeypatch):
+def test_a_stone_and_a_finished_drag_in_one_settle_re_plan_in_the_same_job(lib, monkeypatch):
     root, store = lib
     episode, own, fake = _acting(root, store, monkeypatch)
     host, _lines = _host(generate=lambda reason: None)
@@ -97,33 +96,5 @@ def test_a_stone_and_a_finished_drag_in_one_settle_wait_for_the_generate(lib, mo
         host._job("catch-up")
         store.set_watched([episode])
         store.finish([store.ids("goal")[0]])
-        assert _job(fake, host) == [], "the stricter wins: a stone with a tier move waits for the Generate"
-    assert not _suspended(fake, own)
-
-
-def test_a_finished_drag_alone_and_its_undo_each_wait_for_the_generate(lib, monkeypatch):
-    # why: Finished is reference like a watched episode (W-1b) — a drag in joins the set-aside files, the name tables'
-    # evidence, so it moves cards the way a stone does: after the Generate, both ways
-    root, store = lib
-    episode, own, fake = _acting(root, store, monkeypatch)
-    asked = []
-    host, _lines = _host(generate=asked.append)
-    with _patched(fake):
-        host._job("catch-up")
-        asked.clear()
-        change = store.finish([episode])
-        plan = plan_engine.load(replan_preview.plan_path())
-        verdict = host._verdict(plan, host._parts(host._settings(), store), store)
-        assert verdict == ("generate-first", "reference"), verdict
-        assert _job(fake, host) == [], "a Finished drag wrote to Anki before the Generate"
-        assert not _suspended(fake, own) and asked == ["generate-first: reference"], asked
-        _generate(root)
-        _job(fake, host, "generate")
-        assert _suspended(fake, own) == set(own), "after the Generate the show's words step back"
-
-        store.undo(change)
-        assert _job(fake, host) == [], "the Undo wrote to Anki before the Generate"
-        assert _suspended(fake, own) == set(own), "nothing moves back before the Generate either"
-        _generate(root)
-        _job(fake, host, "generate")
-    assert not _suspended(fake, own), "after the Generate the words and their cards are back"
+        assert _job(fake, host), "a stone with a Finished drag waited for the Generate"
+    assert _suspended(fake, own) == set(own)

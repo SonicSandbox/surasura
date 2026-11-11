@@ -16,7 +16,12 @@
 * no test opens a browser or a file viewer, in this process or a Python child it starts (tests/open_guard_site/): the
   open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too);
 * a test's own `monkeypatch.undo()` never takes its test root away: the root is put back, and the test fails naming
-  it (claimed by `_guard_anki_port` too).
+  it (claimed by `_guard_anki_port` too);
+* a collection on a worker thread frees nothing: what it found is freed on the main thread at each test's teardown
+  (a Qt object Python owns deleted there, never off its thread), as the Tk interpreters are;
+* no Qt object is used from a thread other than its own: Qt's own cross-thread warning fails the test during which it
+  came (claimed by `_guard_anki_port` too; tests/FLAKES.md). The lints that read the source for the same causes — a
+  parentless Qt helper, a date written in the future, a bare sleep in a Qt test — are tests/flake_lints.py's.
 
 A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
 conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` and `pytest_configure` — a
@@ -25,6 +30,7 @@ whose own hooks do more, calls `session_finish_guards()` and `configure_guards()
 tests/test_harness_guards.py.
 """
 import atexit
+import gc
 import json
 import os
 import re
@@ -228,6 +234,7 @@ def _free_tk_interpreters():
 def pytest_runtest_teardown(item, nextitem):
     yield
     _between_tests()
+    _free_worker_garbage()                  # (first: a Tk root a worker found lets its interpreter go now)
     _free_tk_interpreters()
     _forget_ended_children(_CHILDREN)
 
@@ -584,15 +591,123 @@ def _claim_anki_tries():
     return lines
 
 
+# --- No Qt object used from another thread (Flake-P, 2026-11-10; tests/FLAKES.md) ----------------------------------- #
+# A Qt object belongs to the thread that made it; used, stopped or deleted from another, Qt warns once — and the
+# process may crash later, in whatever test runs then (the 3.0.0 cut's shard 1/8: Windows fatal 0xC0000005 one run in
+# thirty, a parentless test timer deleted by a worker's collection). Qt's own message handler is the harness's: a
+# cross-thread warning fails the test during which it came, naming it and the thread, at once and every time. Every
+# message is still printed as Qt prints it. (The parentless objects themselves: tests/flake_lints.py.)
+_QT_CROSS_THREAD = re.compile(r"another thread|different thread|outside the GUI thread|not the object's thread|"
+                              r"event dispatcher has already been destroyed|threads started with QThread")
+_QT_WARNINGS = []         # [message, the test running then, thread, claimed]
+_QT_PREVIOUS = [None]
+
+
+def _qt_message(kind, context, message):
+    # never raises: an exception out of a Qt callback is PyQt6's qFatal, an abort (the shard-death class)
+    try:
+        if message and _QT_CROSS_THREAD.search(message):
+            _QT_WARNINGS.append([message, _test_now(), threading.current_thread().name, False])
+        previous = _QT_PREVIOUS[0]
+        if previous is not None:
+            previous(kind, context, message)
+        else:                                   # Qt's own default: the message's text on stderr
+            sys.stderr.write(f"{message}\n")
+    except BaseException:
+        pass
+
+
+def _guard_qt_threads():
+    """Qt's message handler, once per process (a checkout without PyQt6: nothing to guard)."""
+    if getattr(_guard_qt_threads, "installed", False):
+        return
+    try:
+        from PyQt6.QtCore import qInstallMessageHandler
+    except ImportError:
+        return
+    _QT_PREVIOUS[0] = qInstallMessageHandler(_qt_message)
+    _guard_qt_threads.installed = True
+
+
+_guard_qt_threads()
+
+
+# A Qt object Python owns (no parent) freed by the cycle collector is deleted on whichever thread's collection ran — a
+# worker's too, and Qt says nothing (Qt 6.11: no warning, active timer or not); the process crashes later, natively,
+# in whatever test runs then. The app parents its objects or keeps them until the GUI thread deletes them (bridge's
+# `_pending`); a test's helpers needn't. So, as the Tk interpreters above: a collection on any thread but the main one
+# deletes nothing: what it found is kept (gc.DEBUG_SAVEALL for that collection alone; CPython still runs its
+# finalizers and weakref callbacks there, but frees no object's memory, a Qt object's included) until the main thread
+# frees it — its next full collection (a test's own gc.collect()), or each test's teardown: the kept finds let go,
+# then one collection on the main thread (what is garbage still is freed there; what a Qt registry handed back lives).
+_WORKER_GARBAGE = []      # what workers' collections found, kept for the main thread
+_GC_ON_WORKER = {}        # thread id -> (the debug flags before, gc.garbage's length) while its collection runs
+
+
+def _worker_gc(phase, info):
+    try:
+        me = threading.get_ident()
+        if threading.current_thread() is threading.main_thread():
+            if phase == "start" and _WORKER_GARBAGE and info.get("generation") == 2:
+                del _WORKER_GARBAGE[:]          # a full collection of the main thread's frees them, here (a test's
+            return                              # gc.collect() frees what a worker found before it); a young one
+            #                                     can't reach them (kept: the teardown's collection does)
+        if phase == "start":
+            _GC_ON_WORKER[me] = (gc.get_debug(), len(gc.garbage))
+            gc.set_debug(_GC_ON_WORKER[me][0] | gc.DEBUG_SAVEALL)
+            return
+        if me not in _GC_ON_WORKER:
+            return
+        flags, start = _GC_ON_WORKER.pop(me)
+        gc.set_debug(flags)
+        found = gc.garbage[start:]
+        del gc.garbage[start:]
+        if found:
+            _WORKER_GARBAGE.append(found)
+    except BaseException:       # a callback's raise would surface in the collecting thread: never
+        pass
+
+
+def _free_worker_garbage():
+    """On the main thread: what workers' collections found is let go and one collection frees it here — never a Qt
+    object deleted by hand (one a Qt registry handed back to Python meanwhile is reachable again, and lives).
+    -> how many objects were kept."""
+    if not _WORKER_GARBAGE or threading.current_thread() is not threading.main_thread():
+        return 0
+    count = sum(len(batch) for batch in _WORKER_GARBAGE)
+    del _WORKER_GARBAGE[:]
+    gc.collect()
+    return count
+
+
+if _worker_gc not in gc.callbacks:
+    gc.callbacks.append(_worker_gc)
+
+
+def _claim_qt_warnings():
+    lines = []
+    for warning in _QT_WARNINGS:
+        if not warning[3]:
+            warning[3] = True
+            lines.append(f"{warning[0]!r} during {warning[1]}, thread {warning[2]!r}")
+    return lines
+
+
 @pytest.fixture(autouse=True)
 def _guard_anki_port():
     """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
     its own code, a thread left by an earlier test, or a try in the gap before it — naming each try. And one during
     which anything opened a browser or a viewer (refused), a child of it included. And one that undid its own
-    monkeypatch mid-test (its root put back)."""
+    monkeypatch mid-test (its root put back). And one during which Qt warned of a Qt object used from another
+    thread."""
     yield
     undone, tries, opened = _claim_undone(), _claim_anki_tries(), _claim_opens()    # all claimed: none left to the next
+    crossed = _claim_qt_warnings()
     problems = []
+    if crossed:
+        problems.append("Qt warned of a Qt object used from a thread other than its own (it can crash the process "
+                        "later, in another test): give it a parent, delete it on its own thread, or hand the work to "
+                        "the window's thread (bridge.Relay): " + "; ".join(crossed))
     if undone:
         problems.append("monkeypatch.undo() in a test undoes the harness's sandbox too (its SURASURA_TEST_ROOT was put "
                         "back; the conftests' other patches stay undone): scope the test's own patches with "
@@ -709,11 +824,25 @@ def _report_late_opens(reporter):
     return len(late)
 
 
+def _report_late_qt_warnings(reporter):
+    """The cross-thread Qt warnings no test's end claimed (after the last test) -> how many."""
+    late = _claim_qt_warnings()
+    for line in late:
+        line = f"A QT OBJECT WAS USED FROM ANOTHER THREAD after its test had ended: {line}"
+        if reporter:
+            reporter.write_sep("!", line, red=True)
+            reporter.stats.setdefault("qt threads", []).append(line)
+        else:
+            print(line)
+    return len(late)
+
+
 def session_finish_guards(session=None):
+    _free_worker_garbage()
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
     reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
-    late = _report_late_anki_tries(reporter) + _report_late_opens(reporter)
+    late = _report_late_anki_tries(reporter) + _report_late_opens(reporter) + _report_late_qt_warnings(reporter)
     if late and session is not None and session.exitstatus == 0:
         session.exitstatus = 1  # a try or an open after the test loop (an interrupted run's, or at the session's end)
 

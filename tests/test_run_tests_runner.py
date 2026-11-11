@@ -414,3 +414,93 @@ def test_a_shard_whose_pytest_died_says_so_in_hex_never_only_127(tmp_path, monke
 @pytest.mark.parametrize("code", [0, 1, 2, 4, 5, 75, 127, 255, -11])
 def test_pytests_own_exit_codes_are_no_death(code):
     assert run_tests.death(code) is None
+
+
+# --- --stress, --stress-changed (tests/FLAKES.md) ----------------------------------------------------------------- #
+def test_the_stress_set_is_never_a_core_file_nor_collected_by_a_plain_run(tmp_path):
+    """tests/stress/ is opt-in: no shard (--all, GitHub's) holds its files; a folder of that name deeper down does."""
+    _core(str(tmp_path), {"test_a.py": 10, "stress/test_stress_store.py": 10, "qt/stress/test_x.py": 10})
+    assert run_tests._core_files(str(tmp_path)) == ["tests/qt/stress/test_x.py", "tests/test_a.py"]
+    with open(os.path.join(os.path.dirname(os.path.abspath(run_tests.__file__)), "tests", "conftest.py"),
+              encoding="utf-8") as f:
+        assert 'collect_ignore = [] if os.environ.get("SURASURA_STRESS") else ["stress"]' in f.read()
+
+
+def test_stress_runs_the_stress_set_n_times_with_its_switch_and_stops_at_the_first_red(monkeypatch, capsys):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs["env"].get("SURASURA_STRESS")))
+        return subprocess.CompletedProcess(cmd, 1 if len(calls) == 2 else 0, stdout=b"1 failed in 2.0s")
+    monkeypatch.setattr(run_tests.subprocess, "run", fake_run)
+    assert run_tests.run_stress("root", 5) == 1
+    assert len(calls) == 2, "stopped at the first red"
+    assert all(cmd[3] == os.path.join("tests", "stress") and on == "1" for cmd, on in calls)
+    assert "run 2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv, times", [(["run_tests.py", "--stress"], 1), (["run_tests.py", "--stress", "20"], 20),
+                                         (["run_tests.py", "--stress=3"], 3)])
+def test_main_with_stress_takes_its_count(monkeypatch, argv, times):
+    seen = []
+    monkeypatch.setattr(run_tests, "run_stress", lambda root, n: seen.append(n) or 0)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert seen == [times] and exit_info.value.code == 0
+
+
+@pytest.mark.parametrize("argv, base", [(["run_tests.py", "--stress-changed"], "origin/3.0-dev"),
+                                        (["run_tests.py", "--stress-changed", "origin/2.x-dev"], "origin/2.x-dev")])
+def test_main_with_stress_changed_takes_its_base(monkeypatch, argv, base):
+    seen = []
+    monkeypatch.setattr(run_tests, "run_stress_changed", lambda root, b: seen.append(b) or 0)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        run_tests.main()
+    assert seen == [base]
+
+
+def test_the_changed_test_files_are_the_branchs_and_the_uncommitted_ones_still_on_disk(tmp_path, monkeypatch):
+    _core(str(tmp_path), {"test_a.py": 10, "qt/test_b.py": 10})
+    os.makedirs(tmp_path / "modules" / "junban" / "tests")
+    (tmp_path / "modules" / "junban" / "tests" / "test_c.py").write_text("", encoding="utf-8")
+    answers = {("diff", "--name-only", "base...HEAD"): "tests/test_a.py\napp/sources.py\ntests/test_gone.py\n"
+                                                         "modules/junban/tests/test_c.py\ntests/helpers.py\n",
+               ("diff", "--name-only", "HEAD"): "tests/qt/test_b.py\n"}
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, stdout=answers[tuple(cmd[1:])].encode()))
+    assert run_tests._changed_test_files(str(tmp_path), "base") == [
+        "modules/junban/tests/test_c.py", "tests/qt/test_b.py", "tests/test_a.py"]
+    assert [run_tests._suite_of(p) for p in run_tests._changed_test_files(str(tmp_path), "base")] == [
+        "modules/junban/tests", "tests", "tests"]
+
+
+def test_stress_changed_repeats_each_suites_files_in_its_own_process_beside_two_load_shards(monkeypatch, capsys):
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: [
+        "modules/junban/tests/test_c.py", "tests/qt/test_b.py", "tests/test_a.py"])
+    loads, runs, lock = [], [], threading.Lock()
+
+    class Load:
+        def __init__(self, cmd, **kwargs):
+            with lock:
+                loads.append(cmd[2:])
+            self.pid = 0
+
+        def poll(self):
+            return None
+    ended = []
+    monkeypatch.setattr(run_tests.subprocess, "Popen", Load)
+    monkeypatch.setattr(run_tests, "_end_tree", lambda proc: ended.append(proc))
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append(cmd[3:-4]) or
+                        subprocess.CompletedProcess(cmd, 0, stdout=b"3 passed in 1.0s"))
+    assert run_tests.run_stress_changed("root", "base", times=3) == 0
+    assert runs == [["modules/junban/tests/test_c.py"], ["tests/qt/test_b.py", "tests/test_a.py"]] * 3
+    assert sorted(loads) == [["--shard", "1/4"], ["--shard", "3/4"]] and len(ended) == 2, "the load ended with them"
+    assert "passed 3 times under load" in capsys.readouterr().out
+
+
+def test_stress_changed_with_no_changed_test_file_passes_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: [])
+    assert run_tests.run_stress_changed("root", "base") == 0
+    assert "No test file changed" in capsys.readouterr().out

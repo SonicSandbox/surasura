@@ -22,6 +22,7 @@ import pytest
 import tkinter as tk
 
 from app import library_store as ls
+from tests import services_helpers as h
 from tests.test_library_store_support import (LANGUAGES, library, migrated, names, read_doc, roots,
                                               subprocess_env, touch, write_manifest)
 
@@ -117,14 +118,31 @@ def test_journey_checks_asked_together_share_their_syncs(language, monkeypatch):
     """§7: the journey check's syncs run one at a time; checks asked while one runs share one follow-up — five at
     once cost two walks, not five."""
     from app import analyzer
-    walks = []
-    monkeypatch.setattr(ls, "sync_for_window", lambda store: walks.append(1) or time.sleep(0.3))
+    walks, go = [], threading.Event()
+
+    class Counted:
+        """The language's sync lock, counting the checks that came to it: the first walk holds until all five are
+        there (a check asked while one runs is the case; a head start of so many ms raced the machine's load)."""
+        def __init__(self):
+            self.lock, self.came = threading.Lock(), 0
+
+        def __enter__(self):
+            self.came += 1
+            self.lock.acquire()
+
+        def __exit__(self, *exc):
+            self.lock.release()
+    counted = Counted()
+    monkeypatch.setitem(analyzer._JOURNEY_SYNC_LOCKS, language, counted)
+    monkeypatch.setattr(ls, "sync_for_window", lambda store: walks.append(1) or (len(walks) == 1 and go.wait(10)))
     first = threading.Thread(target=analyzer._journey_sync, args=(ls, None, language))
     first.start()
-    time.sleep(0.05)
+    assert h.until(lambda: walks == [1], seconds=10)                # the first walk is under way
     rest = [threading.Thread(target=analyzer._journey_sync, args=(ls, None, language)) for _ in range(4)]
     for t in rest:
         t.start()
+    assert h.until(lambda: counted.came == 5, seconds=10)           # all four asked while it runs
+    go.set()
     for t in [first] + rest:
         t.join(10)
     assert len(walks) == 2, walks

@@ -91,7 +91,7 @@ def run_child(seed_path, out_path, scale, root, env=None):
     env.pop("QT_QPA_PLATFORM", None)
     env["SURASURA_TEST_ROOT"] = root
     if scale:
-        env["QT_SCALE_FACTOR"] = f"{scale / 100 / system_scale():.6f}"
+        env["QT_SCALE_FACTOR"] = repr(scale / 100 / system_scale())       # (every digit: an exact ratio, bench_moments)
     else:
         env.pop("QT_SCALE_FACTOR", None)
     if FREEZE:

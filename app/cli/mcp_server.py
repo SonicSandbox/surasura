@@ -180,7 +180,8 @@ def next_words(language, source="soon", limit=NEXT_WORDS):
                 break
             if text.strip():
                 lines.append({"line": text.strip(), "from": os.path.basename(row.get(f"Src {n}") or "")})
-        words.append({"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1], "lines": lines})
+        words.append({"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1],
+                      "kana": verbs.shown_kana(row), "lines": lines})
     return words
 
 
@@ -242,8 +243,8 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     ]
     out = {"language": lang, "round": {"words": words, "role": role, "kind": kind, "source": source},
            "mode": mode, "rules": rules, "known_recent": recent,
-           "round_words": [{"word": w["orth"], "reading": w["reading"], "lines": w["lines"][:LINES_PER_WORD]}
-                           for w in targets]}
+           "round_words": [{"word": w["orth"], "reading": w.get("kana") or w["reading"],   # the shown spelling's
+                            "lines": w["lines"][:LINES_PER_WORD]} for w in targets]}
     if keep:
         round_id = again or practice_rounds.new_id()
         state.started[round_id] = {"language": lang, "round": dict(out["round"]), "words": [
@@ -339,8 +340,8 @@ def words_tool(state, which="recent", limit=20, language=None):
         return {"language": lang, "which": which, "words": state.checker(lang).recent_words(limit)}
     if which in SOURCES:
         return {"language": lang, "which": which,
-                "words": [{"word": w["orth"], "reading": w["reading"], "lines": w["lines"][:LINES_PER_WORD]}
-                          for w in next_words(lang, which, limit)]}
+                "words": [{"word": w["orth"], "reading": w.get("kana") or w["reading"],
+                           "lines": w["lines"][:LINES_PER_WORD]} for w in next_words(lang, which, limit)]}
     raise ToolError("`which` is recent (the words still being learned, then the newest known), soon (the list's next words), latest (the words of "
                     "what's next in the learner's content) or mix.")
 

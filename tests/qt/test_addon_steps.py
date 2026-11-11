@@ -2,7 +2,7 @@
 *Check again* by itself (the wizard's and Settings' own tests drive them in place)."""
 import threading
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
+from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
 
 from app import ankiconnect_addon as A
@@ -41,7 +41,7 @@ def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp
     host.close()
 
 
-def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, monkeypatch):
+def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, monkeypatch, qt_timer):
     monkeypatch.setattr(A, "EVERY", 0.0)
     gate = threading.Event()
     asked, answered = [], []
@@ -52,7 +52,7 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
         return True
     monkeypatch.setattr(A, "answers", answers)
     host = QWidget()
-    tick = QTimer()
+    tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "http://127.0.0.1:8765", lambda: answered.append(1))
     tick.timeout.emit()
     assert asked == []                                    # not armed
@@ -74,7 +74,7 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
     host.close()
 
 
-def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup_wizard(qapp, monkeypatch):
+def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup_wizard(qapp, monkeypatch, qt_timer):
     # A8A-1: `seen` (the host's look's `running`) goes to the light look, so an Anki opened where none was seen is
     # news; A8A-3: the setup wizard over the window disables the parts under it — their watch asks nothing
     monkeypatch.setattr(A, "EVERY", 0.0)
@@ -82,7 +82,7 @@ def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(seen) or False)
     host = QWidget()
     host.show()
-    tick = QTimer()
+    tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
     watch.arm(True, False)
     tick.timeout.emit()
@@ -97,13 +97,13 @@ def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup
     host.close()
 
 
-def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch):
+def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch, qt_timer):
     monkeypatch.setattr(A, "EVERY", 60.0)
     asked = []
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or False)
     host = QWidget()
     host.show()
-    tick = QTimer()
+    tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
     watch.arm(True)                                       # the host has just looked: the first look EVERY s on
     for _ in range(5):
@@ -115,7 +115,7 @@ def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch):
 
 
 def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_and_closing_counts_at_once(
-        qapp, monkeypatch):
+        qapp, monkeypatch, qt_timer):
     # Mado-N A8N-1: a starting Anki loads AnkiConnect first — *Open Anki* (or opening it by hand) never flashes the
     # steps; A8N-2: an Anki seen running that closes is news at once
     monkeypatch.setattr(A, "EVERY", 0.0)
@@ -126,7 +126,7 @@ def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_a
     answered = []
     host = QWidget()
     host.show()
-    tick = QTimer()
+    tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: answered.append(watch.news))
     watch.arm(True, False)
 
@@ -151,13 +151,13 @@ def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_a
     assert answered == [A.OPENED, A.GONE]                 # closed: at once
     host.close()
 
-def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch):
+def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch, qt_timer):
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or True)
     host = QWidget()
     host.show()
-    tick = QTimer()
+    tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
     watch.arm(True)
     host.deleteLater()

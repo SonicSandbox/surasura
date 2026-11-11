@@ -225,7 +225,7 @@ def test_esc_closes_nothing_on_a_move_screen(qapp, monkeypatch):
 
 
 # --- end to end: the real move through `gate()` ----------------------------------------------------------------- #
-def test_gate_on_the_restarts_own_start_moves_the_profile_aside_and_a_plain_start_only_asks(qapp, monkeypatch):
+def test_gate_on_the_restarts_own_start_moves_the_profile_aside_and_a_plain_start_only_asks(qapp, monkeypatch, qt_timer):
     from tests.test_profile_reset import _profile
     _profile()
     settings = path_utils.get_settings_path()
@@ -245,8 +245,7 @@ def test_gate_on_the_restarts_own_start_moves_the_profile_aside_and_a_plain_star
             g.quit_button.click()
             return True
         return False
-    from PyQt6.QtCore import QTimer
-    timer = QTimer()
+    timer = qt_timer()
     timer.timeout.connect(answer_no)
     timer.start(50)
     try:

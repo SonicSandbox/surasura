@@ -166,6 +166,39 @@ def test_the_record_adds_each_playlist_once_and_goes_when_nothing_is_left(tmp_pa
     assert not os.path.exists(view.rest_path("ja"))
 
 
+def test_a_reader_holding_the_record_for_a_moment_never_drops_a_transcript(tmp_path, monkeypatch):
+    """(Flake-P, tests/FLAKES.md) A virus scanner or a cloud folder's client opens the record just replaced: on Windows
+    its open file refuses the next replace (Access is denied), and the transcript written then dropped out of the
+    record — a quit before the hand-over lost it. The write waits the reader out."""
+    import threading
+    view.rest_update("ja", add=[PLAYLIST])
+    held, let_go = threading.Event(), threading.Event()
+    refused = []
+
+    def outside_reader():
+        with open(view.rest_path("ja"), encoding="utf-8"):
+            held.set()
+            let_go.wait(5)
+    real_replace = os.replace
+
+    def replace(src, dst):
+        try:
+            return real_replace(src, dst)
+        except PermissionError:
+            refused.append(1)
+            let_go.set()                                # the reader lets go once a replace was refused: no timing
+            raise
+    monkeypatch.setattr(view.os, "replace", replace)
+    reader = threading.Thread(target=outside_reader)
+    reader.start()
+    assert held.wait(5)
+    transcript = str(tmp_path / "ひとり旅の話.txt")
+    state = view.rest_update("ja", unrouted=[transcript])
+    reader.join()
+    assert refused, "the reader's open file refused the first replace (the case)"
+    assert state["unrouted"] == [transcript] and view.rest_read("ja")["unrouted"] == [transcript]
+
+
 def test_a_broken_record_reads_as_none_and_is_written_whole_again(tmp_path):
     path = view.rest_path("ja")
     with open(path, "w", encoding="utf-8") as f:

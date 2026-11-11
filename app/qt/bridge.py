@@ -171,9 +171,38 @@ class _Job(QRunnable):
 _pending = set()                                   # relays waiting for their answer (kept alive until it arrives)
 
 
+# PyQt6 (6.11, sip 6.17) makes a Qt class's enums the first time anything looks one up, and two threads looking at
+# once can each make their own: the loser's `QImage.Format` or `QPainter.CompositionMode` is then "unexpected type
+# 'Format'" to every call that takes one — a cover decoded on the pool while the window's first paint used the same
+# enum (Mado-SP: the bench window gone at its first frame; 7 of 150 fresh processes in a two-thread probe, 0 of 150
+# warmed). The classes a worker draws or decodes with are looked at once on the GUI thread, before the pool's first job
+WORKER_QT = (("PyQt6.QtCore", ("Qt", "QIODevice")),
+             ("PyQt6.QtGui", ("QPainter", "QImage", "QImageReader", "QPainterPath", "QGradient", "QColor")))
+_warmed = []
+
+
+def warm_worker_types():
+    """(The GUI thread, once.) Every enum of `WORKER_QT`'s classes made now — a type's `__dict__` makes all its lazy
+    attributes at once. -> the classes warmed (the first call; then ())."""
+    if _warmed:
+        return ()
+    import importlib
+    out = []
+    for module, names in WORKER_QT:
+        mod = importlib.import_module(module)
+        for name in names:
+            cls = getattr(mod, name)
+            cls.__dict__                            # (sip: all of the type's lazy attributes, its enums among them)
+            out.append(cls)
+    _warmed.append(True)
+    return tuple(out)
+
+
 def run_in_worker(fn, *args, then=None, failed=None, pool=None):
     """Run `fn(*args)` on the thread pool; `then(value)` or `failed((exception, traceback))` runs on the GUI thread
     afterwards. Call it on the GUI thread. A failure with no `failed` handler is printed (never raised in the pool)."""
+    if not _warmed:
+        warm_worker_types()                         # (before the pool's first job can look at a Qt enum)
     relay = _Relay()                               # made here, so it lives on the caller's (the GUI) thread
     gate = Gate(relay)                             # (the pool's emit and the relay's deletion never overlap)
 

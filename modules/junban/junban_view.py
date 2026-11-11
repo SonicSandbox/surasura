@@ -554,7 +554,8 @@ def restore_question(language, settings):
     snapshot = undo.restorable(language, reposition._restore_scope(settings))
     if not snapshot:
         return {"kind": "none", "line": undo.describe(None)}
-    return {"kind": "snapshot", "confirmed": snapshot.get("written_at"), "body": undo.describe(snapshot)}
+    return {"kind": "snapshot", "confirmed": snapshot.get("written_at"), "body": undo.describe(snapshot),
+            "both": bool(snapshot.get("finished_automatic"))}     # Disc-T1: the Undo says it puts back both
 
 
 def restore_work(settings, confirmed=None, run=None, progress=None, cancel=None, on_wait=None):

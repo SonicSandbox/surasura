@@ -271,18 +271,88 @@ def test_a_cut_run_on_another_deck_is_never_taken_over_and_a_positions_only_job_
     assert undo.load("ja") == cut_snapshot
 
 
-def test_a_run_you_start_in_junban_still_waits_for_restore_after_a_cut_automatic_run(tmp_path):
-    """Only an automatic job goes on past a cut automatic run's snapshot. A run you start in 順's window finds it
-    unfinished and refuses, as I3 does, sending you to Restore (HY-11, as built): nothing is written and the cut run's
-    snapshot stays the way back."""
+def test_a_run_you_start_in_junban_takes_over_a_cut_automatic_run_and_one_restore_undoes_both(tmp_path):
+    """Disc-T1 (Mattias, 3.0.0: "Can't reorder with Junban" — "The last reorder did not finish… Press Undo the last
+    reorder first"; Sonic 2026-11-12: "yes to the Junban recovery one"; HY-11 before). AutoJunban's run after a
+    Generate is cut by Anki closing after its first suspend; the next automatic job, positions only, goes on and leaves
+    the cut snapshot unfinished — for good, as his did. A Reorder you start in 順 now takes it over and finishes the
+    job instead of being refused: the cut run's original positions and flags win, the suspends are both runs', and
+    one Undo — its question saying so — puts back how the deck was before either. 洗濯機, suspended by you, is never
+    touched."""
+    from modules.junban import junban_view
     fake = _backlog(tmp_path)
-    _cut(fake, "position")
-    cut_snapshot, writes = undo.load("ja"), list(fake.writes)
+    before = _queues(fake)
+    _cut(fake)
+    cut_cards = undo.load("ja")["cards"]
+    one, two = _card_of(fake, "冒険"), _card_of(fake, "散歩")
+    one["due"], two["due"] = two["due"], one["due"]                     # a move in Anki since: the job has work
+    with _patched(fake):
+        positions = auto.reorder(_auto(junban_auto_actions=False), list_current=True)
+    assert positions["outcome"] == "ran", positions
+    assert undo.load("ja")["complete"] is False, "his state: the cut run's snapshot left unfinished"
+
+    with _patched(fake):
+        report = reposition.run(_auto(), refresh=False)
+    assert report["ok"] is True and not report.get("restore_first"), report
+    assert [_card_of(fake, word)["queue"] for word in _OFF_THE_LIST] == [-1, -1, -1, -1], "the job finished"
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved.get("automatic") is not True, saved
+    assert saved["finished_automatic"] is True
+    assert {key: due for key, due in saved["cards"].items() if key in cut_cards} == cut_cards
+    assert saved["suspended"] == _ids(fake, _OFF_THE_LIST), "the cut run's suspends and this run's"
+    asked = junban_view.restore_question("ja", _auto())
+    assert asked["kind"] == "snapshot" and asked["both"] is True, asked
+
+    with _patched(fake):
+        restored = reposition.restore(_auto())
+    assert restored["ok"], restored["problems"]
+    assert _queues(fake) == before, "one Undo puts back both runs (the move since included)"
+    assert all("Surasura::later" not in _tags_of(fake, word) for word in _OFF_THE_LIST)
+    assert all(not fake.cards[card_id].get("flags") for card_id in _ids(fake, _OFF_THE_LIST))
+    yours = _card_of(fake, "洗濯機")["cardId"]
+    assert _card_of(fake, "洗濯機")["queue"] == -1 and not [ids for _a, ids in fake.suspend_calls if yours in ids]
+
+
+def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_run(tmp_path):
+    """Disc-T1: an automatic run cut after its last position, and your Reorder (its not-on-the-list actions off) finds
+    every card in place — nothing to write. It still ends the block: the cut snapshot is marked finished, and its Undo
+    still puts back what the cut run did."""
+    from modules.junban import junban_view
+    fake = _backlog(tmp_path)
+    before = _queues(fake)
+    pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
+    quiet = _auto(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["ok"]               # the deck in your order
+    undo.save(pairs, ["TheBank"], language="ja", automatic=True)        # then a run cut after its last position
+    writes = list(fake.writes)
+    with _patched(fake):
+        report = reposition.run(quiet, refresh=False)
+    assert report["ok"] is True and not report.get("restore_first"), report
+    assert fake.writes == writes, "nothing written"
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["finished_automatic"] is True, saved
+    assert junban_view.restore_question("ja", quiet)["both"] is True
+    with _patched(fake):
+        again = reposition.run(quiet, refresh=False)
+    assert again["ok"] is True and not again.get("restore_first"), "never blocked again"
+    with _patched(fake):
+        restored = reposition.restore(quiet)
+    assert restored["ok"], restored["problems"]
+    assert _queues(fake) == before
+
+
+def test_a_run_you_start_never_takes_over_another_decks_cut_run(tmp_path):
+    """A cut automatic run's snapshot for another deck (順's deck changed since): taking it over would leave its own
+    deck's positions with no way back, so a run you start refuses, as I3 does, and nothing is written."""
+    fake = _backlog(tmp_path)
+    undo.save([(1789712090000, 50)], ["Kanji"], language="ja", automatic=True)
+    cut_snapshot = undo.load("ja")
     with _patched(fake):
         report = reposition.run(_auto(), refresh=False)
     assert report["ok"] is False and report["restore_first"] is True, report
     assert "did not finish" in report["problems"][0], report["problems"]
-    assert fake.writes == writes and undo.load("ja") == cut_snapshot
+    assert fake.writes == [] and fake.suspend_calls == [] and undo.load("ja") == cut_snapshot
 
 
 @pytest.mark.parametrize("unfinished", ["2.5", "not-quite-true"])
@@ -317,17 +387,13 @@ def test_an_unfinished_connect_run_never_stops_an_automatic_job_which_takes_it_o
     """Lead 2026-11-07 (Mattias, alpha 3; Sonic's W3.5 row 7, "a run nobody started never stops the automation"): 順's
     automatic step, with actions or positions only, goes on past one of Connect's unfinished runs and takes it over in
     the window's snapshot (its cards' numbers from before it, its suspends), as row 7 takes over the window's own cut
-    run; the run's file is marked taken over, so 順's Reorder is no longer refused. Before the takeover, that Reorder
-    asks for the Undo first."""
+    run; the run's file is marked taken over, so 順's Reorder is no longer refused."""
     fake = _backlog(tmp_path)
     pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
     first = pairs[0][0]
     run_id = undo.new_run_id("reorder")
     undo.save([(first, pairs[0][1] + 7)], ["TheBank"], language="ja", run_id=run_id, after=[(first, pairs[0][1])],
               suspended=[pairs[1][0]])
-    with _patched(fake):
-        yours = reposition.run(_auto())
-    assert not yours["ok"] and yours["restore_first"] and yours["unfinished"] == run_id and fake.writes == []
     with _patched(fake):
         done = auto.reorder(_auto(junban_auto_actions=actions), list_current=True)
     assert done["outcome"] == "ran" and not done["report"].get("restore_first"), done
@@ -339,6 +405,27 @@ def test_an_unfinished_connect_run_never_stops_an_automatic_job_which_takes_it_o
     with _patched(fake):
         again = reposition.run(_auto())
     assert not again.get("restore_first"), again
+
+
+def test_a_run_you_start_takes_over_an_unfinished_connect_run_too(tmp_path):
+    """Disc-T1 (Sonic's yes): one of Connect's runs is an automatic reorder too. Left unfinished, it no longer blocks
+    a Reorder you start (it asked for its Undo first before): your run takes it over in the window's snapshot as the
+    automatic step does — its cards' numbers from before it, its suspends — and marks it taken over."""
+    fake = _backlog(tmp_path)
+    pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
+    first = pairs[0][0]
+    run_id = undo.new_run_id("reorder")
+    undo.save([(first, pairs[0][1] + 7)], ["TheBank"], language="ja", run_id=run_id, after=[(first, pairs[0][1])],
+              suspended=[pairs[1][0]])
+    with _patched(fake):
+        yours = reposition.run(_auto(), refresh=False)
+    assert yours["ok"] is True and not yours.get("restore_first"), yours
+    assert undo.unfinished("ja", "reorder") is None
+    assert undo.load("ja", run_id=run_id)["taken_over_at"]
+    window = undo.load("ja")
+    assert window["complete"] is True and window["finished_automatic"] is True
+    assert window["cards"][str(first)] == pairs[0][1] + 7, "the cut run's number from before it wins"
+    assert pairs[1][0] in window.get("suspended", []), "and what it suspended is undone with it"
 
 
 # --------------------------------------------------------------------------------------------------------------- #

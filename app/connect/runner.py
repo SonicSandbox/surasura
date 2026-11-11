@@ -1309,8 +1309,10 @@ def _pick(steps, ledger, lang, job, record=True):
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
-    if isinstance(pairing, dict) and pairing.get("verdict") == "transcribed":
+    if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
+            pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
+        #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
@@ -2330,6 +2332,13 @@ class Steps:
         from app.connect import library
         with self._open(lang) as store:
             return library.pairing_of(store, job["item_id"])
+
+    def heard(self, lang, job):
+        """Hato-SP: was the item's text made from its video's audio by another tool (`library.heard`)? A busy
+        store is a Wait."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return library.heard(store, job["item_id"])
 
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text

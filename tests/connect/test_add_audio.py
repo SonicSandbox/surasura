@@ -208,3 +208,209 @@ def test_keep_them_together_or_a_poor_line_up_adds_no_audio(monkeypatch, fake_mi
         assert s.mark_audiobook_lineup(pair["item"], key, "none") is True
         assert s.audiobook_keep_together(pair["item"], key) is True
     assert pair["steps"].lined_up("ja", pair["book"]) is None
+
+
+# --- review A1 (Opus adversary, round 1): S1–S6 and its notes, each red first ------------------------------------ #
+def _made(book, nid, sentence, word):
+    """One more text-only card Connect made from the book's first part."""
+    book["anki"].add(nid, sentence, word)
+    with book["steps"]._open("ja") as store:
+        library.record_batch(store, add_audio.book_items(store, book["book"])[0], {f"n{nid}": [nid]},
+                             "2026-11-01T00:00:00Z")
+
+
+def _act_ready(monkeypatch, tmp_path):
+    """`act` past its gates (Connect on, set up, Anki on, a ledger in the test's folder) -> the owed syncs' list."""
+    from app.connect import ledger as ledger_mod
+    monkeypatch.setattr("app.cli.verbs.require_set_up", lambda lang: None)
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(ledger_mod, "path", lambda: str(tmp_path / "ledger.sqlite"))
+    Ledger(str(tmp_path / "ledger.sqlite")).close()
+    owed = []
+    monkeypatch.setattr("app.connect.undo.owe_sync", lambda settings: owed.append(1))
+    return owed
+
+
+def test_an_earlier_shorter_line_inside_the_sentence_never_wins_over_the_sentences_own_cue(book, monkeypatch):
+    """S1: a line said earlier in the book (9 characters, the card's word in it) sits inside the card's sentence; the
+    sentence's own cue, later, is the one — the earlier line's clip would teach another moment's sound."""
+    real = lineup.cues
+    sentence = book["lines"][4]                         # 私たちは新しい冒険を求めている。 — card 103
+    first = real(book["steps"].lined_up("ja", book["book"])["lineup"])[0]
+
+    def with_fragment(state):
+        return [first._replace(start=0.5, end=1.5, text=lineup.clean(sentence[:9]))] + real(state)
+    monkeypatch.setattr(lineup, "cues", with_fragment)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][103].start != 0.5 and got["can"][103].text == lineup.clean(sentence)
+
+
+def test_a_sentence_said_twice_in_the_book_is_no_answer(book, monkeypatch):
+    """S1 / B-14 across the book: two cues ARE the card's sentence — which moment is unknown: unheard, never a guess."""
+    real = lineup.cues
+
+    def twice(state):
+        found = real(state)
+        again = next(c for c in found if c.text == lineup.clean(book["lines"][3]))
+        return found + [again._replace(start=again.start + 100.0, end=again.end + 100.0)]
+    monkeypatch.setattr(lineup, "cues", twice)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert 102 not in got["can"] and 102 in got["unheard"]
+
+
+def test_a_card_whose_word_is_its_dictionary_form_is_placed_by_the_form_its_sentence_bolds(book):
+    """S3: Anki Miner's Expression is the dictionary form (できる) — the sentence says できて, bolded; the card is
+    placed by its sentence's cue (and over two cues, by the bold form's), not left unheard."""
+    one = book["lines"][5]                              # 冒険の準備はできていますか？
+    _made(book, 110, one.replace("でき", "<b>でき</b>"), "できる")
+    two = book["lines"][3] + book["lines"][4]           # two cues, said as one sentence on the card
+    _made(book, 111, two.replace("求め", "<b>求め</b>"), "求める")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][110].text == lineup.clean(one)
+    assert got["can"][111].text == lineup.clean(book["lines"][4]), "the cue holding 求め, never its neighbour"
+
+
+def test_a_sentence_written_with_furigana_or_entities_is_placed_as_read_aloud(book):
+    """N: ruby, Anki's bracket furigana and HTML entities are not the sentence's sound."""
+    line = book["lines"][3]                             # 彼は毎日冒険に出かけます。
+    _made(book, 120, "<ruby>彼<rt>かれ</rt></ruby>は毎日冒険に<b>出</b>かけます。", "出かける")
+    _made(book, 121, " 彼[かれ]は 毎日[まいにち]冒険に出かけます&#12290;", "毎日")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][120].text == got["can"][121].text == lineup.clean(line)
+
+
+def test_a_clip_is_matched_back_by_its_start_and_text_never_by_its_place_alone(book, fake_miner, tmp_path,
+                                                                                   monkeypatch):
+    """S2: Anki Miner answers its lines in another order (same count): only a line whose start and text are the cue's
+    gives a clip — the rest of those cards get nothing, never a neighbour's sentence."""
+    from app.connect import anki_miner
+    real = anki_miner.api
+
+    def reversed_lines(miner, args, **kw):
+        verdict = real(miner, args, **kw)
+        for run in verdict.get("runs") or ():
+            path = os.path.join(str(tmp_path / "run"), run["run_id"], run["file"])
+            made = lineup._read_json(path)
+            made["lines"] = made["lines"][::-1]
+            lineup._write_json(path, made)
+        return verdict
+    monkeypatch.setattr(anki_miner, "api", reversed_lines)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert len(clips) == 1, "five reversed: only the middle one is its own line"
+    for note_id, clip in clips.items():
+        with open(clip, encoding="utf-8") as f:
+            assert lineup.clean(f.read()) == got["can"][note_id].text
+
+
+def test_two_cues_of_one_start_are_never_given_one_clip(book, fake_miner, tmp_path):
+    """S2: two cues starting at the same moment (an overlapping line): Anki Miner's nearest line is the first's — the
+    second's card gets nothing rather than the first's sentence."""
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    a = got["can"][100]
+    twin = a._replace(text=got["can"][102].text)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", {100: a, 102: twin}, str(tmp_path / "run"))
+    assert sorted(clips) == [100]
+    with open(clips[100], encoding="utf-8") as f:
+        assert lineup.clean(f.read()) == a.text
+
+
+def test_a_book_of_many_cards_is_cut_in_bounded_calls_and_a_later_refusal_keeps_what_was_cut(book, fake_miner,
+                                                                                               tmp_path, monkeypatch):
+    """S6: never one `media` call for a whole book (its 20-minute timeout over a thousand clips): CUT_LINES a call;
+    a later call refused stops there with the clips already cut (a press again does the rest — only empty fields)."""
+    from app.connect import anki_miner
+    monkeypatch.setattr(add_audio, "CUT_LINES", 2)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert fake_miner.commands() == ["media", "media", "media"] and sorted(clips) == sorted(got["can"])
+    for note_id, clip in clips.items():
+        with open(clip, encoding="utf-8") as f:
+            assert lineup.clean(f.read()) == got["can"][note_id].text
+    real, calls = anki_miner.api, []
+
+    def refuse_second(miner, args, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise anki_miner.AnkiMinerError("crashed", "Anki Miner stopped")
+        return real(miner, args, **kw)
+    monkeypatch.setattr(anki_miner, "api", refuse_second)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run2"))
+    assert len(clips) == 2 and len(calls) == 2
+
+    def refuse_first(miner, args, **kw):
+        raise anki_miner.AnkiMinerError("crashed", "Anki Miner stopped")
+    monkeypatch.setattr(anki_miner, "api", refuse_first)
+    with pytest.raises(anki_miner.AnkiMinerError):
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run3"))
+
+
+@pytest.mark.parametrize("raised, code", [
+    ("miner", "failed"), ("wait", "busy"), ("needs", "needs-you"), ("os", "failed"), ("sqlite", "failed")])
+def test_act_says_every_failure_in_plain_words(monkeypatch, tmp_path, raised, code):
+    """S4: Anki Miner refusing, the library busy or unwritable, a disk or the ledger refusing — each the command
+    line's error line in plain words, never a traceback."""
+    import sqlite3
+    from app.cli.contract import CliError
+    from app.connect import anki_miner, runner
+    _act_ready(monkeypatch, tmp_path)
+    errors = {"miner": anki_miner.AnkiMinerError("crashed", "Anki Miner stopped answering."),
+              "wait": runner.Wait("Surasura's library is busy just now."),
+              "needs": runner.Needs("no-store", "Surasura's library can't be written just now."),
+              "os": PermissionError("the folder is read-only"),
+              "sqlite": sqlite3.OperationalError("database is locked")}
+
+    def fails(*a, **k):
+        raise errors[raised]
+    monkeypatch.setattr(add_audio, "_add", fails)
+    with pytest.raises(CliError) as e:
+        add_audio.act({"connect_enabled": True}, "ja", book="x.epub", confirm=True)
+    assert e.value.code == code and e.value.message
+
+
+def test_a_write_stopped_part_way_names_its_undo_and_owes_the_sync(book, fake_miner, monkeypatch, tmp_path):
+    """S5: Anki stops answering after two cards were written — the error says so with the Undo's id (and the record
+    is there to take them back), and Anki's sync is owed for the two."""
+    from app import anki_connect
+    from app.cli.contract import CliError
+    owed = _act_ready(monkeypatch, tmp_path)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    real = book["anki"].update
+
+    def stops(nid, fields):
+        if nid == 102:
+            raise anki_connect.AnkiError("Anki stopped answering")
+        return real(nid, fields)
+    monkeypatch.setattr(book["anki"], "update", stops)
+
+    def add(settings, language, b, confirm, anki, ledger):
+        return sa.fill(book["anki"], ledger, clips, field="SentenceAudio", tag=add_audio.TAG, by=add_audio.BY)
+    monkeypatch.setattr(add_audio, "_add", add)
+    with pytest.raises(CliError) as e:
+        add_audio.act({"connect_enabled": True}, "ja", book="x.epub", confirm=True)
+    rid = e.value.context.get("undo")
+    assert rid and rid in e.value.message and owed
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        assert sorted(sa.record(ledger, rid)["notes"]) == ["100", "101", "102", "103", "104"]
+        assert sa.undo(book["anki"], ledger, rid)["emptied"] == [100, 101]
+
+
+def test_undo_takes_back_only_an_add_audio_and_anki_miner_absent_is_skipped(monkeypatch, tmp_path):
+    """N: `--undo` with another path's record (the AI audio's) is no *Add audio* to take back; Anki Miner not
+    installed is `skipped` (a known answer), never an unknown error code."""
+    import json
+    from app.cli.contract import CliError
+    _act_ready(monkeypatch, tmp_path)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (sa.RECORD + "9-ai", json.dumps(
+            {"field": "SentenceAudio", "tag": "x", "by": "ai-audio", "notes": {}, "media": [], "state": sa.DONE})))
+    monkeypatch.setattr(sa, "AnkiConnectNotes", lambda url: FakeAnki())
+    with pytest.raises(CliError) as e:
+        add_audio.act({"connect_enabled": True}, "ja", undo_id="9-ai")
+    assert e.value.code == "bad-data"
+    epub = tmp_path / "b.epub"
+    epub.write_bytes(b"PK")
+    monkeypatch.setattr("app.cli.verbs._anki_miner_setup", lambda *a, **k: None)
+    assert add_audio.act({"connect_enabled": True}, "ja", book=str(epub), confirm=True)["skipped"] == \
+        "Anki Miner isn't installed: it cuts the clips."

@@ -1852,6 +1852,11 @@ def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_ag
     assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
     page.show_numbers(None)                                         # (counting again, as a language change starts it)
     assert page.counting.text() == S.COUNTING
+    page.show_numbers({"empty": "arrivals"})                        # only New arrivals': sort one into Current
+    assert page.counting.text() == S.NO_SORTED and page.numbers_part.isHidden()
+    wiz.fetching = {"links": 2}                                     # YouTube's videos still coming: still counting
+    page.show_numbers(dict(SW_NOTHING))
+    assert page.counting.text() == S.COUNTING
 
 
 def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):

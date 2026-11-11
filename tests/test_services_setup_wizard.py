@@ -485,6 +485,34 @@ def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_s
         "word_count"], "Set up again with a band of your own: that band"
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_library_of_only_new_arrivals_is_nothing_to_count_never_counting_for_good(language):
+    """Disc-T1 (the adversary's MUST): Setup's read puts every folder in New arrivals, and *Done* on the sort screen
+    leaves them there — kept, never counted (`token_index`), so the count has nothing to read. That is said
+    (ONLY_ARRIVALS), never *Counting your shows…* for good; one title in Current brings the numbers back."""
+    from app import library_store
+    h.seed_library(language)
+    data_dir, user_files_dir = roots(language)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        ids = [i for (i,) in store.conn.execute("SELECT id FROM items")]
+        assert ids, "the seeded shows are in the store"
+        assert store.set_tier(ids, "arrivals") is not None              # as Setup's read leaves them
+    finally:
+        store.close()
+    _index(language)
+    assert SW.level_numbers(settings_manager.load_settings(), language) == SW.ONLY_ARRIVALS
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.set_tier(ids[:1], "now") is not None
+    finally:
+        store.close()
+    _index(language)
+    numbers = SW.level_numbers(settings_manager.load_settings(), language)
+    assert numbers is not None and numbers.get("bands"), "a title in Current: counted"
+
+
 # --- the Content Manager and Generate --------------------------------------------------------------------------- #
 def test_the_content_manager_opens_as_a_child_job_for_the_language(monkeypatch):
     from app.services import tools

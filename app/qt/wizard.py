@@ -2573,8 +2573,9 @@ class LevelPage(_Page):
     def _paint(self):
         n = self.numbers
         counted = self.counted()
-        if not counted:                                   # Disc-T1: a library with nothing in it says so, never
-            _set_text(self.counting, S.NO_SHOWS if (n or {}).get("empty") else S.COUNTING)     # *Counting* for good
+        if not counted:                                   # Disc-T1: nothing to count is said, never *Counting* for
+            empty = None if self.wiz.fetching is not None else (n or {}).get("empty")  # good (YouTube's videos coming:
+            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, S.COUNTING))  # still)
         _show(self.counting, not counted)
         _show(self.numbers_part, counted)
         if not counted:

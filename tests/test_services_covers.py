@@ -473,12 +473,15 @@ def test_a_spoiled_cover_page_never_hides_the_cover_image_nor_breaks_the_scan(tm
     with_item = _book(str(tmp_path / "星の歌.epub"), '<item id="i" href="Images/i-0001.jpg" media-type="image/jpeg" '
                       'properties="cover-image"/>', {"Images/i-0001.jpg": _COVER}, "", guide)
     only_page = _book(str(tmp_path / "表紙.epub"), '', {"Images/00001.jpeg": _COVER}, "", guide)
-    for book in (with_item, only_page):
+    named_after = _book(str(tmp_path / "月の舟.epub"), '<item id="c" href="Images/cover.jpg" media-type="image/jpeg"/>',
+                        {"Images/cover.jpg": _COVER}, "", guide)
+    for book in (with_item, only_page, named_after):
         with zipfile.ZipFile(book, "a", compression=zipfile.ZIP_DEFLATED) as z:
             z.writestr("OEBPS/Text/titlepage.xhtml", page)
         _break_member(book, "OEBPS/Text/titlepage.xhtml")
     assert C.epub_cover(with_item) == (_COVER, ".jpg")
     assert C.epub_cover(only_page) is None
+    assert C.epub_cover(named_after) == (_COVER, ".jpg"), "the spoiled page is passed over, the next answer still read"
 
 
 def test_a_crafted_book_is_looked_at_a_few_answers_deep_by_their_first_bytes(tmp_path, monkeypatch):

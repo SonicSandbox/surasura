@@ -108,6 +108,14 @@ def test_connects_modules_failing_to_import_leave_the_switch_off(dashboard, monk
     assert not any(line.startswith("Connect is on") for line in lines)
 
 
+def _switched_by_hand(app, on):
+    """The switch as its save leaves it: settings.json (`save_keys`, as `_connect_switched`) and the window's copy. The
+    copy alone is not the switch: a settings save rebuilds the copy from the file (Flake-P2, tests/FLAKES.md)."""
+    from app import settings_manager
+    settings_manager.save_keys({"connect_enabled": on}, strict=True)
+    app._current_settings = dict(app._current_settings, connect_enabled=on)
+
+
 def test_switched_off_while_settings_were_read_no_panel_is_built_and_it_can_be_built_again(dashboard, monkeypatch):
     from app import main
     app, _lines = _settings_open(dashboard, monkeypatch, connect_enabled=True)
@@ -123,11 +131,12 @@ def test_switched_off_while_settings_were_read_no_panel_is_built_and_it_can_be_b
     with patch.object(main.threading, "Thread", Held):
         app._connect_panel_build()
     assert len(workers) == 1 and app._connect_panel is None
-    app._current_settings = dict(app._current_settings, connect_enabled=False)    # switched off meanwhile
+    _switched_by_hand(app, False)                    # switched off meanwhile
     workers[0]()
-    _pump(app.root, lambda: False, timeout=0.5)
+    app.save_settings()                             # a save landing before the read's answer (on GitHub: the band
+    _pump(app.root, lambda: False, timeout=0.5)     # slider's debounced one) keeps it off
     assert app._connect_panel is None, "off by the time the read came back: no panel"
-    app._current_settings = dict(app._current_settings, connect_enabled=True)     # on again: it can be built
+    _switched_by_hand(app, True)                    # on again: it can be built
     app._connect_panel_build()
     assert _pump(app.root, lambda: app._connect_panel is not None)
 

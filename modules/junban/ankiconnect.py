@@ -277,7 +277,7 @@ def set_due(url, pairs, chunk=150, progress=None):
     return written, failures
 
 
-def set_due_checked(url, batches, gathered, progress=None, stop_if=None, mods=None, since=None):
+def set_due_checked(url, batches, gathered, progress=None, stop_if=None, mods=None, since=None, on_busy=None):
     """The fast re-plan's writes (E1.1 03 §3.5–6): `batches` as `spaced.requests` builds them — request
     1 tomorrow's cards, then the rest — each sent as ONE `multi`, in order. Returns `(written, failures,
     left)`.
@@ -296,7 +296,8 @@ def set_due_checked(url, batches, gathered, progress=None, stop_if=None, mods=No
     request with the review check (`stop_if(active)`).
 
     Nothing raises: once Anki stops answering, the remaining cards are failures, as `set_due` reports; a re-check
-    read met by Anki busy (`anki_connect.is_busy`) leaves this and every later request's cards in `left` instead.
+    read met by Anki busy (`anki_connect.is_busy`: its sync, Check Database, #370) leaves this and every later
+    request's cards in `left` instead, and calls `on_busy()` (the caller's report says so).
 
     `stop_if` (the fast re-plan's automatic job: a review began): asked before every request, the first too (a
     session's sync may just have run); True leaves this and every later request's cards in `left`, for the next job.
@@ -339,6 +340,8 @@ def set_due_checked(url, batches, gathered, progress=None, stop_if=None, mods=No
             if _core.is_busy(e):        # Anki busy (its sync, Check Database, #370): nothing sent, the next re-order
                 paused = True
                 left.extend(ids)
+                if on_busy is not None:
+                    on_busy()
                 continue
             stopped = str(e)
             failures.extend((card_id, stopped) for card_id, _due in batch)
@@ -388,9 +391,11 @@ def _checked(url, ids, mods, since, review):
     reviewing = False
     if review:
         reply = replies.pop(0)
-        # a busy refusal (#370) counts as a review: a card answered in the reviewer is itself a collection operation
-        reviewing = isinstance(reply, dict) and (reply.get("result") is True if reply.get("error") is None
-                                                 else _core.refusal("guiReviewActive", reply["error"]).busy)
+        if isinstance(reply, dict) and reply.get("error") is not None:
+            refused = _core.refusal("guiReviewActive", reply["error"])
+            if refused.busy:            # no proof you aren't reviewing (an answered card is a collection operation,
+                raise refused           # #370): this request and the rest wait, as for any busy read
+        reviewing = isinstance(reply, dict) and reply.get("error") is None and reply.get("result") is True
     sure, unsure = {}, []
     if clear:
         reply = replies.pop(0)

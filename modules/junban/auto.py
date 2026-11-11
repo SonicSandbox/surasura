@@ -223,8 +223,8 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
         return {"outcome": "reviewing", "report": report}
     if report.get("busy"):          # another writer holds Anki (E1.4)
         return {"outcome": "busy", "report": report}
-    if report.get("anki_busy"):     # Anki busy with a collection operation mid-read: nothing written
-        return {"outcome": "anki-busy", "report": report}
+    if report.get("anki_busy") and not report.get("written"):   # Anki busy with a collection operation: nothing
+        return {"outcome": "anki-busy", "report": report}       # written (part written: it ran, the rest wait)
     if not report.get("ok"):
         return {"outcome": "refused", "report": report}
     return {"outcome": "ran", "report": report}

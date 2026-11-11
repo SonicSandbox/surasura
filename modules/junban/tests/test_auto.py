@@ -345,17 +345,29 @@ def test_a_busy_re_check_read_leaves_the_cards_for_the_next_re_order_never_failu
     fake = _busy_for(_backlog(tmp_path), "cardsInfo", 99, text=_SYNCING)
     ids = sorted(fake.cards)
     batches = [[(ids[0], 5)], [(ids[1], 6)]]
+    busy = []
     with _patched(fake):
         written, failures, left = ankiconnect.set_due_checked(
-            "http://127.0.0.1:8765", batches, {card_id: fake.cards[card_id]["due"] for card_id in ids})
+            "http://127.0.0.1:8765", batches, {card_id: fake.cards[card_id]["due"] for card_id in ids},
+            on_busy=lambda: busy.append(1))
     assert (written, failures, sorted(left)) == ([], [], sorted(ids[:2])) and fake.writes == []
+    assert busy == [1], "said once: the report says Anki was busy, never 'changed in Anki'"
 
 
-def test_a_busy_review_check_inside_the_re_checks_multi_counts_as_a_review(tmp_path):
-    # review 1 S6: a card answered in the reviewer is itself a collection operation — busy is no proof you aren't
+def test_a_busy_review_check_inside_the_re_checks_multi_pauses_as_busy_never_as_a_review(tmp_path):
+    # review 1 S6 / 2 S2: a card answered in the reviewer is itself a collection operation — busy is no proof you
+    # aren't reviewing, so nothing is written; and no proof you are, so the pause is Anki's busy one, never "review"
     from modules.junban import ankiconnect
-    fake = _busy_for(_backlog(tmp_path), "guiReviewActive", 1)
+    fake = _busy_for(_backlog(tmp_path), "guiReviewActive", 99)
     ids = sorted(fake.cards)
+    reviews, busy = [], []
+
+    def stop_if(active=None):
+        reviews.append(active)
+        return bool(active)
     with _patched(fake):
-        reviewing, _sure, now = ankiconnect._checked("http://127.0.0.1:8765", ids[:1], {}, None, True)
-    assert reviewing is True and ids[0] in now
+        written, failures, left = ankiconnect.set_due_checked(
+            "http://127.0.0.1:8765", [[(ids[0], 5)]], {ids[0]: fake.cards[ids[0]]["due"]}, stop_if=stop_if,
+            mods={ids[0]: 1}, since=0, on_busy=lambda: busy.append(1))
+    assert (written, failures, left) == ([], [], [ids[0]]) and fake.writes == []
+    assert busy == [1] and reviews == [], "never taken for a review"

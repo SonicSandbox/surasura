@@ -2025,3 +2025,23 @@ def test_anki_busy_mid_read_is_not_answering_and_tried_again():
         reposition.run, auto.decide_actions = original
     assert lines[-1] == replan_preview.NOT_ANSWERING and host._retry_at is not None
     assert not isinstance(lines[-1], (replan_preview.GivesUp, replan_preview.Fails))
+
+
+def test_a_busy_pause_part_way_says_anki_was_busy_never_changed_in_anki():
+    """#370 review 2 S1: the writes stopped part-way by Anki busy (its sync) — the line says so, and the rest wait
+    for the retry; never "changed in Anki meanwhile"."""
+    from types import SimpleNamespace
+    from modules.junban import auto
+    host, lines = _host()
+    host._retry_at = None
+    report = {"ok": True, "anki_busy": True, "written": [11, 12], "left": [13], "message": "Reordered 2 cards."}
+    original = reposition.run, auto.decide_actions
+    reposition.run = lambda *a, **k: dict(report)
+    auto.decide_actions = lambda settings: None
+    try:
+        host._write({}, SimpleNamespace(front_size=0, kind=None, front_ids=frozenset(), stopped_for_review=False),
+                    "move")
+    finally:
+        reposition.run, auto.decide_actions = original
+    assert "Anki's busy moment" in lines[-1] and "changed in Anki" not in lines[-1], lines[-1]
+    assert host._retry_at is not None

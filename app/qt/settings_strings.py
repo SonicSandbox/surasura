@@ -746,7 +746,7 @@ PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
 PRACTICE_THEN = ("Then, to start a round:\n"
                  "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
                  "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
-                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "short story, quiz) · from what (soon: the next words on your journey, top: your list's top words, "
                  "mix). Type / and it's listed as /surasura:practice (MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
                  "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")

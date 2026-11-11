@@ -137,7 +137,10 @@ WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    "mine-failed": ("open_logs",), "error": ("open_logs",),
                    # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
-                   "speech-model": ("get_speech_model", "no_speech_model")}
+                   "speech-model": ("get_speech_model", "no_speech_model"),
+                   # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
+                   # · *Mine without audio*
+                   "book-audiobook": ("pick_audiobook", "no_audiobook")}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 

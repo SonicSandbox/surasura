@@ -1360,6 +1360,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_together": ("Keep them together", "Listen alongside: the book's cards come without sentence audio, and "
                                             "Surasura doesn't try to line them up again"),
     "separate_them": ("Separate them", "The audiobook becomes its own title again. Undo takes it back"),
+    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired
+    "pick_audiobook": ("Pick its audiobook…", "Pick it from your library's audiobooks, or a folder on your computer: "
+                                             "the book's cards then come with the narrator's sentence audio. Undo "
+                                             "takes it back"),
+    "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
+                                           "this book again"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1494,6 +1500,14 @@ NEEDS_SPEECH_YES = "Anki Miner downloads its speech model, then lines up your au
 NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
+NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
+NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
+NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
+                              "name says so, else pick it here")
+NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
+NEEDS_AUDIOBOOK_READING = "Reading {name}: once its audiobook is in your library, it joins the book or is listed here"
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"

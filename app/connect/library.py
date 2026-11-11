@@ -112,9 +112,10 @@ def audiobook_files(store):
 def audiobook_of_book(store, epub):
     """Michi-AB Stage B: the audiobook Hon paired with the book `epub` (its record's `book`, sure or answered, naming
     that EPUB) -> {item_id, key (the pair's answer key: the line-up's), files (in order), title (the book's, as the
-    pairing named it), lineup (the store's mark: `none` / `kept`, or None)}; None when no audiobook reads it (or its
-    record holds no file). The first such item when two do. One read of the records."""
-    from app import library_store
+    pairing named it), lineup (the store's mark: `none` / `kept`, or None), timing (Kura-AB3: its transcript's copy,
+    `rel` in the library's data folder, while Hon found it this book's — `audiobooks.TIMING` — else None)}; None when
+    no audiobook reads it (or its record holds no file). The first such item when two do. One read of the records."""
+    from app import audiobooks, library_store
     want = library_store.path_key(os.path.abspath(epub)) if epub else None
     if not want:
         return None
@@ -129,9 +130,11 @@ def audiobook_of_book(store, epub):
             continue
         mark = ab.get("lineup") if isinstance(ab.get("lineup"), dict) else {}
         key = book.get("key")
+        rel = (ab.get("transcript") or {}).get("rel") if audiobooks.transcript_use(ab) == audiobooks.TIMING else None
         return {"item_id": item_id, "key": key if isinstance(key, str) and key else None, "files": files,
                 "title": book.get("title") or ab.get("title") or os.path.splitext(os.path.basename(epub))[0],
-                "lineup": mark.get("status") if mark.get("key") == key else None}
+                "lineup": mark.get("status") if mark.get("key") == key else None,
+                "timing": rel if isinstance(rel, str) and rel else None}
     return None
 
 

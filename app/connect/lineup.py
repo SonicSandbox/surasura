@@ -18,6 +18,10 @@ held by `tests/connect/test_lineup.py`; plan: `tracks/pipeline/work/AB/plan.md`)
   wrong clip); the narrator's skipped passages (`unheard`) are said in one plain line (`partial_line`).
 - **Nothing lined up** (`NONE`: no grade, no file synced): the one question per pair (`library_store`'s mark,
   `Store.audiobook_mismatches`).
+- **Its own timed subtitle instead** (Kura-AB3, Mattias's 3.0.2 report; PROVISIONAL): an audiobook of one audio file
+  whose transcript Hon found this book's (`audiobooks.TIMING`: an `.srt` beside the audio, its lines in the book in
+  order) is the line-up as it is (`own`: no sync, no speech model) — its cues cut the cards as a sync's do. Its timing
+  is spot-checked first when Anki Miner has its speech model (a subtitle not timed to that audio: lined up as above).
 - **The speech model** (AB-Q1/Q2): one Anki Miner already has is used (`anki_miner.speech_ready`); else the one question,
   its answer kept here (`answer`, `set_answer`); yes → Anki Miner's own `setup --speech-model --model small`
   (`start_speech`), a child as the sync is (`look(SPEECH)`), its progress file in *Finish its setup*'s folder so a Connect
@@ -54,6 +58,7 @@ SPOT_RULE = "v2"                # the spot-check's rule (one line a place, SAMPL
 RUNNING, DONE, NONE, STOPPED, FAILED, INTERRUPTED, NO_MODEL = (
     "running", "done", "none", "stopped", "failed", "interrupted", "no-model")
 GOOD = ("A", "B")               # AB-Q4: grades whose cues cut cards (C / D: another edition, the wrong book)
+OWN = "transcript"              # Kura-AB3: a line-up that is the audiobook's own timed subtitle (`own`), never graded
 TRIES = 3                       # a line-up that failed this many times running is given up (the book mined as it is)
 MIN_CHARS = 8                   # a sentence this long (clean characters) or longer is found inside a longer one
 # AB-Q5 (PROVISIONAL): SAMPLES places through the subtitle, ONE line each (review B-13: a 30 s window passed a subtitle
@@ -314,10 +319,18 @@ def file_line(state):
 # --------------------------------------------------------------------------- #
 # What the cards are cut from
 # --------------------------------------------------------------------------- #
+def own(key, audio, subtitle):
+    """Kura-AB3: the line-up an audiobook's own timed subtitle is (one audio file, its `.srt`): DONE, no grade — its
+    cues the transcript's, read as a sync's are (`cues`)."""
+    return {"status": DONE, "key": key, "source": OWN, "grade": None,
+            "files": [{"audio_file": os.path.abspath(audio), "subtitle_file": os.path.abspath(subtitle),
+                       "status": "synced", "units": {}}]}
+
+
 def usable(state):
     """Are this line-up's cues fit to cut cards from (AB-Q4: grade A or B; never C / D — another edition, the wrong
-    book: never a wrong clip)?"""
-    return state.get("status") == DONE and state.get("grade") in GOOD
+    book: never a wrong clip)? The audiobook's own subtitle (`own`) is: Hon found it the book's."""
+    return state.get("status") == DONE and (state.get("grade") in GOOD or state.get("source") == OWN)
 
 
 def partial_line(state, title):

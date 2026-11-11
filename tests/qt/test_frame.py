@@ -237,6 +237,8 @@ def test_the_level_mark_follows_generate_and_the_journey(world):
     assert count(rgb_array(level.grab()), theme.STATUS["warn"], 12) > 0          # amber when failed
     world.controller.push(state=G.CURRENT)
     assert wait_until(lambda: level.mark is None)
+    _journey_on_disk()                                   # the mark shows only beside a journey (Fresh-U row 16)
+    world.win._check_journey()
     world.win._poll.stop()
     world.status.providers["journey"] = lambda: True
     world.status.refresh_soon("journey")
@@ -692,6 +694,8 @@ def test_the_level_mark_shows_failed_over_stale_over_the_journey_all_at_once(wor
     """With the journey's sentences owed all along, a failed Generate is the amber mark, a stale one the accent mark,
     and only with Generate clean is the mark the journey's (a failure is never hidden behind the other two)."""
     level, win = world.d.level, world.win
+    _journey_on_disk()                                   # the mark shows only beside a journey (Fresh-U row 16)
+    win._check_journey()
     win._poll.stop()
     world.status.providers["journey"] = lambda: True
     world.status.refresh_soon("journey")

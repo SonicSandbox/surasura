@@ -828,12 +828,26 @@ def test_bar_replan_ankiweb_countdown_counts_down_and_says_when_it_synced(world,
     assert wait_until(lambda: mark.ankiweb == "" and "AnkiWeb" not in mark.toolTip())
 
 
+def _a_journey(win=None):
+    """A journey on disk (the report's file in `results`): the dot shows only beside one (Fresh-U row 16). With `win`
+    open, its header looks again and shows *Journey ↗*."""
+    from app import path_utils
+    folder = path_utils.get_user_file("results")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, shell.JOURNEY_FILE), "w", encoding="utf-8") as f:
+        f.write("<html><body>旅</body></html>")
+    if win is not None:
+        win._check_journey()
+        assert wait_until(lambda: win.duties.journey_button.isEnabled())
+
+
 def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tooltip(world):
     """02-state-model *Plan current, sentences catching up*: *Your journey ↗* shows a small dot, its tooltip in plain
     words; the store saying nothing is owed (False), or no store yet (None), shows none. *Your journey ↗* itself is
     untouched (it still opens the journey as it is: nothing waits for the sentences)."""
     win = world.win
     dot = world.d.journey_dot
+    _a_journey(win)
     assert dot.isHidden()
     values = _provide(world, journey=True)
     _ask(world, "journey")
@@ -844,6 +858,23 @@ def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tool
         _ask(world, "journey")
         assert wait_until(lambda: dot.isHidden() != bool(value))
     assert win.status_paints[dot] == 4
+
+
+def test_fresh_u_no_journey_yet_no_dot_and_no_mark_on_the_level_even_while_the_store_owes_a_generate(world):
+    """Fresh-U row 16: on a first start, behind setup, the store's order had moved before any Generate, so the empty
+    window said *Your journey's sentences are catching up* — with no journey to catch up. The dot (and the ▾'s mark)
+    shows only beside a journey; once one is written, the owed sentences show at once, with no new snapshot."""
+    win = world.win
+    dot = world.d.journey_dot
+    _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: world.status.snapshot().journey is True)
+    QApplication.processEvents()
+    assert dot.isHidden() and not world.d.journey_button.isEnabled()
+    assert world.d.level.toolTip() == strings.LEVEL_TIP.format(level=world.d.level_tip)   # no catching-up words
+    _a_journey(win)
+    assert not dot.isHidden() and dot.text() == strings.JOURNEY_DOT
+    assert strings.LEVEL_MARKS["journey"] in world.d.level.toolTip()
 
 
 def test_bar_replan_journey_dot_owed_before_the_duties_attach_shows_once_they_do(qapp):
@@ -857,6 +888,7 @@ def test_bar_replan_journey_dot_owed_before_the_duties_attach_shows_once_they_do
     win = shell.open_window(qapp, services)
     try:
         assert status.snapshot().journey is True
+        _a_journey(win)                                  # (Fresh-U row 16: only beside a journey)
         assert not win.duties.journey_dot.isHidden() and win.duties.journey_dot.text() == strings.JOURNEY_DOT
     finally:
         win.close()
@@ -868,6 +900,7 @@ def test_bar_replan_journey_dot_promises_a_generate_by_itself_only_while_the_aut
     journey keeper runs one); off, it says in plain words to press Generate — and follows a D29 change made while the
     dot shows (read through the settings service)."""
     dot = world.d.journey_dot
+    _a_journey(world.win)
     _provide(world, journey=True)
     _ask(world, "journey")
     assert wait_until(lambda: not dot.isHidden())
@@ -886,6 +919,7 @@ def test_bar_replan_journey_dot_made_with_the_automation_off_says_press_generate
     try:
         w.services.settings.set({"logic.automation": False}, now=True)
         w.win._poll.stop()
+        _a_journey(w.win)
         w.status.providers["journey"] = lambda: True
         w.status.refresh_soon("journey")
         assert wait_until(lambda: not w.d.journey_dot.isHidden())
@@ -902,6 +936,7 @@ def test_bar_replan_journey_dot_reads_the_automation_switch_as_the_duties_attach
     try:
         assert wait_until(lambda: w.win._d29 is False)
         w.win._poll.stop()
+        _a_journey(w.win)
         w.status.providers["journey"] = lambda: True
         w.status.refresh_soon("journey")
         assert wait_until(lambda: not w.d.journey_dot.isHidden())
@@ -928,6 +963,7 @@ def test_bar_replan_journey_dot_never_reads_the_settings_on_the_window_thread(wo
     readers, real = [], settings.automation
     monkeypatch.setattr(settings, "automation", lambda: readers.append(threading.current_thread()) or real())
     dot = world.d.journey_dot
+    _a_journey(world.win)
     _provide(world, journey=True)
     _ask(world, "journey")
     assert wait_until(lambda: not dot.isHidden())
@@ -966,6 +1002,7 @@ def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_t
     """S19: the bar's row-7 labels and the dot repaint only when their own value changed — a snapshot with only its
     time, or only a job's line, changed (the bar's status line moves) leaves every one of them as it was."""
     win = world.win
+    _a_journey(win)
     _provide(world, replan="Anki: placing tomorrow's 20 cards…", connect="Up to date", ankiweb="AnkiWeb: synced 18:42",
              journey=True)
     _ask(world)

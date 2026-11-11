@@ -248,6 +248,19 @@ def test_fit_on_screens_keeps_a_visible_place_and_centres_a_lost_one():
     assert abs(lost.center().x() - 960) <= 2 and abs(lost.center().y() - (520 + shell.CAPTION // 2)) <= 2
 
 
+@pytest.mark.parametrize("screen", [QRect(0, 0, 1280, 720), QRect(0, 0, 1281, 721), QRect(-1280, -200, 1280, 1032)])
+def test_fresh_u_a_first_window_lies_inside_its_screen_to_the_pixel_title_strip_too(screen):
+    """Fresh-U row 21: on a two-monitor desk the first window opened across both. A window with no place saved, on a
+    screen exactly as wide as the default (a 1920 px screen at 150 %), began at x -1 — on the screen to its left —
+    with its title strip 1 px above (`QRect.center()` is half a pixel short). It now lies inside, to the pixel."""
+    beside = QRect(screen.left() - 617, screen.top() - 574, 617, 1097)          # the other monitor, to its left
+    placed = shell.fit_on_screens(QRect(-100000, -100000, *shell.DEFAULT_SIZE), [screen, beside])
+    strip = QRect(placed.left(), placed.top() - shell.CAPTION, placed.width(), shell.CAPTION)
+    assert screen.contains(placed) and screen.contains(strip)
+    assert not beside.intersects(placed) and not beside.intersects(strip)
+    assert abs(placed.center().x() - screen.center().x()) <= 1
+
+
 def test_a_saved_place_is_made_usable_on_its_screen():
     # Review A5: too big for the screen → shrunk to it; hanging off an edge → moved in; the title bar above the
     # screen → brought down so it can be grabbed; a second screen keeps its own place.

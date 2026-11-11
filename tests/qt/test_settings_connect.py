@@ -608,6 +608,9 @@ def test_open_anki_miner_while_its_window_is_open_says_so_and_never_starts_a_sec
     QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5), "a closed window's leftover: it opens"
     assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    # the opener ran on the press's worker; the press ends after, on the window's thread: a click while it is still
+    # live does nothing (`press.begin`) — wait for it, as a second press would find it (GitHub core 1/4, train 27)
+    assert wait_until(lambda: not qpress.live(page.shell, f"open:{rows.miner.state['path']}"), 5)
     for name in os.listdir(home):
         os.remove(os.path.join(home, name))
     stuck = os.path.join(home, f"instance.window-{gone_child.pid}.lock")   # a read-only leftover (round 2): refused

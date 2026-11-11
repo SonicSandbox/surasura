@@ -2329,15 +2329,21 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         if not automatic and not _same_scope(previous, decks, settings):
             return _unfinished_refusal(checks, decks)       # another deck's: only its own Restore puts it back
         cut = previous
-    # One of Connect's runs left unfinished (P1.4, §7.2): its snapshot is the only way back from it. An automatic job
-    # goes on (lead 2026-11-07, Mattias's alpha-3 notes; Sonic's W3.5 row 7, "a run nobody started never stops the
-    # automation"; PROVISIONAL), and so does a reorder you start (Disc-T1, as above): one without a run of its own (the
-    # re-plan's, 順's automatic step, 順's Reorder) takes that run over in the window's snapshot for the same deck, as
-    # row 7 takes over the window's own cut run (`connect_cut`, below): one Undo then goes back past both, never the
-    # older first. Connect's own next run (`run_id`) leaves it as it is: its Undo still offered first.
+    # One of Connect's runs left unfinished (P1.4, §7.2): its snapshot is the only way back from it, so a reorder you
+    # start (順's Reorder) asks for its Undo first (the lead's 2026-11-07 ruling; Disc-T1 left it as it is). An
+    # automatic job goes on (lead 2026-11-07, Mattias's alpha-3 notes; Sonic's W3.5 row 7, "a run nobody started never
+    # stops the automation"; PROVISIONAL): one without a run of its own (the re-plan's, 順's automatic step) takes that
+    # run over in the window's snapshot for the same deck, as row 7 takes over the window's own cut run (`connect_cut`,
+    # below): one Undo then goes back past both, never the older first. Connect's own next run (`run_id`) leaves it as
+    # it is: its Undo still offered first.
     unfinished = undo.unfinished(_language(settings), "reorder")
     connect_cut = undo.load(_language(settings), run_id=unfinished) if (
-        unfinished is not None and run_id is None) else None
+        unfinished is not None and automatic and run_id is None) else None
+    if unfinished is not None and not automatic:
+        return _report(False, "Junban did not make any changes.",
+                       problems=[f"An automatic reorder ({unfinished}) did not finish, and its saved order is the "
+                                 "only way back from it. Press Undo the last reorder first, then reorder again."],
+                       warnings=checks["warnings"], decks=decks, unfinished=unfinished, restore_first=True)
     # Backlog onboarding: Try it's numbers from before, carried (`carry_forward_tried`) — only while no automatic write
     # came after it (today's baseline newer than the window's snapshot): that write's baseline is the way back then.
     window_snapshot = None if undo.newer_baseline(_language(settings), previous) else previous
@@ -2463,7 +2469,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                          **({"unsuspended": back} if back else {}),
                          **({"later_back": stats.get("later_back")} if stats.get("later_back") else {}),
                          automatic=automatic and (acting or taking) and run_id is None, cut=[cut, connect_cut],
-                         finished_automatic=not automatic and (cut is not None or connect_cut is not None))
+                         finished_automatic=not automatic and cut is not None)
     map_read = reads is not None and job.cards.reads > reads
     try:
         parked = set(back)

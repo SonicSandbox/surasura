@@ -1,4 +1,4 @@
-"""A book's card sentence is the sentence that holds the word (Michi-BS, Mattias's field report 2026-11-12: a card of
+"""A book's card sentence is the sentence that holds the word (Michi-BS, Mattias's field report: a card of
 カラフル took a 241-character 「…」 speech where Surasura had named one 33-character sentence of it).
 
 Anki Miner's splitter never ends a sentence inside 「…」, so a long speech is one of its units, and the card took the
@@ -6,8 +6,8 @@ whole unit. Surasura names the sentence (`line_text`, the analyzer's split, 。�
 side of the cure (Mattias's PR 0xzerolight/anki_miner#148) cuts the unit around a `line_text` it holds EXACTLY. So the
 sentence Surasura sends must be: one sentence, an exact piece of the paragraph as the book writes it (its inner spaces
 kept; only line breaks and the paragraph's indent out), and clean — a quote mark the split left with no partner at the
-sentence's start or end dropped (「おれは…好い。 → おれは…好い。), which keeps it an exact piece. And, PROVISIONAL (lean,
-2026-11-12): a book's word is cut from a sentence within the learner's *Length* (logic.context min_chars /
+sentence's start or end dropped (「おれは…好い。 → おれは…好い。), which keeps it an exact piece. And, PROVISIONAL (a
+lean): a book's word is cut from a sentence within the learner's *Length* (logic.context min_chars /
 preferred_max_chars, and *Never longer than*'s max_chars: based on the approach in #372 by Mattias) when it has one
 there — a longer or shorter one only later, never cut short. Video and audio cards
 keep the card-line rules (Michi-CL) unchanged.

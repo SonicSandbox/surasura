@@ -63,6 +63,7 @@ VERBS = {
     # P2.3: the setup checks
     "setup": (connect_verbs.setup_args, connect_verbs.setup, True),
     "undo": (connect_verbs.undo_args, connect_verbs.undo, True),               # P2.5
+    "add-audio": (connect_verbs.add_audio_args, connect_verbs.add_audio, True),   # Kura-AB3
     "logs": (connect_verbs.logs_args, connect_verbs.logs, True),               # P2.5
 }
 

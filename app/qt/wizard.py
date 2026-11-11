@@ -1997,6 +1997,9 @@ class OrderPage(_Page):
             self.later.add(Choice(key, S.LATER_CHOICES[key], S.LATER_TIPS[key], self.later, small=True))
         self.later.setMaximumWidth(_px(430))              # (narrower only in a window narrower than it)
         later.addWidget(self.later, 0, Qt.AlignmentFlag.AlignLeft)
+        self.later_line = _label("wizsub", "", self.controls, wrap=True)    # Fresh-U row 19: what the pick does
+        later.addWidget(self.later_line)
+        self.later.changed.connect(self._paint_later)
         rows.addLayout(later)
         self.box.addWidget(self.controls)
         self.box.addStretch(1)
@@ -2009,9 +2012,17 @@ class OrderPage(_Page):
         self._keep_touched = False
         self.keep.switch.set_quiet(self._keep_shown)
         self.later.choose(a.get("later") if a.get("later") in S.LATER_CHOICES else "leave")
+        self._paint_later()
         self._deck = a.get("deck") or None
         self._deck_key = None
         self._show()
+
+    def _paint_later(self, *_key):
+        """The line under *Cards for words not on your list*: what the chosen one does to those cards (Fresh-U row
+        19: the three said it only in their hovers)."""
+        text = S.LATER_LINES.get(self.later.value(), "")
+        if self.later_line.text() != text:
+            self.later_line.setText(text)
 
     def _deck_picked(self):
         self._deck = self.deck_box.currentText() or None

@@ -224,6 +224,10 @@ LATER_TIPS = {"leave": "Leaves them as they are, after the cards for words on yo
               "mark": "Tags them Surasura::later and flags them purple.\n• Undo: 順 → Restore",
               "aside": ("Suspends them and tags them Surasura::later.\nThey come back when the word is on your list.\n"
                         "• Undo: 順 → Restore")}
+# Fresh-U row 19: what the chosen one does to those cards, said under the three (not only in a hover; PROVISIONAL)
+LATER_LINES = {"leave": "Those cards stay as they are, after the ones for words on your list.",
+               "mark": "Those cards stay, tagged Surasura::later and flagged purple.",
+               "aside": "Those cards are suspended until their word comes onto your list."}
 OPEN_ANKI = "Open Anki when Surasura opens"
 OPEN_ANKI_LINE = "So the reviews from your phone count"
 OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone is read in."

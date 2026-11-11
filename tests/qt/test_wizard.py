@@ -845,6 +845,23 @@ def test_card_order_preselects_keep_in_order_page_twos_deck_and_leave_and_saves_
                                "junban_later_flag": False, "junban_later_suspend": True}]
 
 
+def test_fresh_u_the_card_order_page_says_what_the_chosen_later_choice_does_to_those_cards(make):
+    """Fresh-U row 19: *Leave them / Mark them / Set them aside* said what they do to the cards only in their hovers.
+    The line under the three says it for the chosen one, follows a pick (click or arrow), and follows a loaded answer."""
+    wiz, _shell, _api, _settings, _m = make()
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert page.later.value() == "leave" and page.later_line.text() == S.LATER_LINES["leave"]
+    QTest.mouseClick(page.later.choice("aside"), Qt.MouseButton.LeftButton)
+    assert page.later_line.text() == S.LATER_LINES["aside"] and "suspended" in page.later_line.text()
+    page.later.step(page.later.choice("aside"), -1)
+    assert page.later.value() == "mark" and page.later_line.text() == S.LATER_LINES["mark"]
+    page.load({"later": "aside"})
+    assert page.later_line.text() == S.LATER_LINES["aside"]
+    assert set(S.LATER_LINES) == set(S.LATER_CHOICES)
+
+
 def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):
     api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
     wiz, _shell, api, settings, _m = make(api=api)

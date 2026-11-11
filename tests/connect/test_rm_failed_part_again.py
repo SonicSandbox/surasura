@@ -1,4 +1,4 @@
-"""A tester's field report on 3.0.0 (2026-11-11, item 5): book parts Anki Miner failed on could not be mined again, every
+"""A tester's field report on 3.0.0 (item 5): book parts Anki Miner failed on could not be mined again, every
 press refused, and the journey still listed their words as unmined. Sonic's rule: nothing is silently refused — a
 failed part is offered again (*Try again*), and the words count only what's really on cards.
 

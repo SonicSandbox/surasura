@@ -86,7 +86,7 @@ def test_needs_yous_try_again_is_the_rows_own_ask_for_that_file(act, monkeypatch
     ny = win.needs_you
     assert ny.available("try_again")
     rec = {"needs": [{"id": 11, "kind": "mine-failed", "say": runner.MINE_FAILED_SAY.format(title="銀河鉄道の夜 第3章"),
-                      "item": 3, "title": None, "at": "2026-11-11T05:00:00Z", "seen_at": None}]}
+                      "item": 3, "title": None, "at": "2026-11-09T05:00:00Z", "seen_at": None}]}
     entry = next(e for e in service.entries(None, connect=rec) if e.kind == "mine-failed")
     assert entry.actions[0] == "try_again"
     ny.act("try_again", entry, None)

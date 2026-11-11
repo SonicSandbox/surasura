@@ -104,9 +104,10 @@ PARTIAL_NEED = "audiobook-partial"
 MINE_FAILED = "Anki Miner stopped twice while making its cards"
 MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
                    "it made are kept.")
-# … and when Anki itself refused the cards (`ALONE`, below): which words, and Anki's own words for why
-MINE_REFUSED_SAY = ("{title}: Anki wouldn't take the cards for {words} ({why}). Try again tries them once more; "
-                    "the cards it made are kept.")
+# … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
+                    "more; the cards it made are kept.")
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
@@ -1464,9 +1465,10 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
     refuses stay in doubt (`refused`: those words) — merged as one batch, the way `Steps.mine` merges a line-up's
     calls. Not every word sent: your *Stop* between two (`stopped`); a wait, a *Needs you* or a look-up ended at a
     press before a later word (`then`: the caller records the batch, counts no failure, then raises it); a skip or a
-    re-pick (the next batch meets it as itself). Every word is tried, a refusal after a refusal too: a deck or a note
-    type Anki Miner can't use is its setup check's (`anki_miner.preflight`, before each call: *Needs you*), never a
-    refusal of a card, so only cards Anki itself won't take come here."""
+    re-pick (the next batch meets it as itself). Every word is tried, a refusal after a refusal too (a give-up cut good
+    words, every *Try again* the same way: review r2 B2): a deck, a note type or fields Anki Miner can't use are its
+    setup check's before each call (`anki_miner.preflight`: *Needs you*). What still fails for every word (a video
+    ffmpeg can't read, a full disk) costs one run a word once, then the part fails as any (review r3 N2)."""
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []

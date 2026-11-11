@@ -233,6 +233,29 @@ def test_bring_back_n_removed_on_a_folders_line_puts_them_back_and_its_next_look
                       10)
 
 
+def test_bring_back_shows_though_the_store_was_busy_the_moment_its_removed_files_were_read(real, monkeypatch):
+    # Flake-P2 (tests/FLAKES.md): the read's pool thread opens its handle without a wait (busy_wait 0). A store busy
+    # that moment answered None, and the folder's *Bring back 4 removed* never came (until the trash moved again)
+    import traceback
+    src, before, got = _source_with("ja")
+    store, win, writer = real("ja", before=before)
+    ids = got["ids"]
+    win.moves._give(drag.Ticket("removed", (), ids), lambda t: writer.remove(ids, label=t))
+    _saved(win, writer)
+    real_probe, busy = ls._probe, []
+
+    def probe(db_path, busy_wait):
+        if not busy and any(f.name == "run" and f.filename.endswith("removed.py") for f in traceback.extract_stack()):
+            busy.append(db_path)
+            return "read-only", "busy"                                  # busy this once, as another write closes
+        return real_probe(db_path, busy_wait)
+    monkeypatch.setattr(ls, "_probe", probe)
+    folders = _folders(win)
+    line = folders.lines[got["root"]]
+    assert wait_until(lambda: not line.back.isHidden(), 10), "the busy moment waited out, then read"
+    assert busy and line.back.text() == strings.REMOVED_BRING_BACK.format(n=4)
+
+
 def test_a_folder_with_nothing_removed_shows_no_button_and_the_trash_button_opens_the_list(real):
     src, before, got = _source_with("ja", n=2)
     _store, win, _writer = real(before=before)
@@ -312,6 +335,23 @@ def test_A4B3_a_mass_removes_2500_entries_open_in_one_frame_and_build_on_as_the_
     bar.setValue(bar.maximum())                                         # scrolled to the end: the next ones
     assert wait_until(lambda: len(w.lines) >= 2 * removed.BUILT_AT_ONCE and w.settled(), 5)
     assert [w.lines[k].title.text() for k in w.order] == [e["title"] for e in entries[1:len(w.order) + 1]]
+
+
+def test_A4B3_with_no_room_below_the_window_the_answer_builds_its_30_and_no_more(real):
+    # Flake-P2 (tests/FLAKES.md): the first frame's two lines make the window grow; with no room below it the list
+    # scrolls at once, and the scroll bar's change, sent inside that resize before the slices were asked for, read a
+    # two-line list as near its end: 32 built (--all, train 25b)
+    _store, win, _writer = real("ja")
+    w = _open_removed(win)
+    area = w.screen().availableGeometry()
+    w.move(w.x(), area.bottom() - w.frameGeometry().height())          # its frame on the screen's bottom edge
+    settle()
+    w._show(_entries("ja", 2500))
+    assert wait_until(w.settled, 5)
+    assert len(w.lines) == removed.BUILT_AT_ONCE
+    bar = w.scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())                                         # scrolled to the end: still the next ones
+    assert wait_until(lambda: len(w.lines) >= 2 * removed.BUILT_AT_ONCE and w.settled(), 5)
 
 
 def test_A4B7_the_list_is_read_while_a_long_look_holds_the_looks_worker(real):

@@ -84,6 +84,14 @@ def read_store(shell, language, ask, then):
     def run():
         try:
             store = opener.handle()
+            if store is None and getattr(opener, "mode", None) == "store":
+                # A store only busy this moment (its handle opens without a wait): asked again here, off the window's
+                # thread, for as long as an open waits (§6.2) — never answered as unreadable (as the writer, LM11b)
+                from app.library_store import BUSY_AT_OPEN
+                deadline = time.monotonic() + BUSY_AT_OPEN
+                while store is None and getattr(opener, "mode", None) == "store" and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                    store = opener.handle()
             return None if store is None else ask(store)
         except Exception as e:
             print(f"Removed: the trash couldn't be read: {e!r}")
@@ -352,14 +360,14 @@ class RemovedWindow(windows.SecondaryWindow):
         self.lines = keep
         if order != self.order:
             self._place(order)
-        if made:
+        if len(self.order) < min(self.limit, len(self._want)):
+            self._more()                                  # (asked before `_grow`, as `_build_more` does: the scroll
+        if made:                                          # its resize sets off reads no list mid-build as near its end)
             for line in made:
                 line.show()
             self._chain(min(order.index(line.key) for line in made))
             self._enable(made)
             self._grow()
-        if len(self.order) < min(self.limit, len(self._want)):
-            self._more()
 
     def _line(self, entry):
         self.builds += 1

@@ -147,3 +147,17 @@ def test_a_chinese_run_file_with_word_audio_off_sends_the_word_audio_field_unmap
     assert MAPPING.fields["expression_audio"] == "ExpressionAudio", "the profile's own mapping is never changed"
     on = runfile.config(MAPPING, "3.12.0", ["bold-target", "sentence-rules-off"])
     assert on["anki_fields"]["expression_audio"] == "ExpressionAudio"
+
+
+def test_the_word_audio_row_shows_for_chinese_with_connect_on_only_and_is_off_by_default():
+    """Settings › Anki & mining: *Word audio from Google* (its one line names Google) — a Chinese learner's with
+    Connect on; never Japanese's (its word audio is Anki Miner's own); off as shipped."""
+    from app import settings_manager
+    from app.qt import settings_catalog as catalog
+    from app.qt import settings_strings
+    row = catalog.ROW["connect_zh_word_audio"]
+    assert row.keys == ("connect_zh_word_audio",) and row.section == "anki"
+    assert row.when({"connect_enabled": True}, "zh", set()) and not row.when({"connect_enabled": True}, "ja", set())
+    assert not row.when({"connect_enabled": False}, "zh", set())
+    assert "Google" in settings_strings.ROWS["connect_zh_word_audio"][1], "the one line says where the word goes"
+    assert settings_manager.DEFAULT_SETTINGS["connect_zh_word_audio"] is False

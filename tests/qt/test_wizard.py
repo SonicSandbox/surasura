@@ -1252,6 +1252,56 @@ def test_choice_86_a_new_surasura_deck_is_offered_first_and_named_as_new(make):
     assert page.ask_deck.itemText(0) == "Surasura" and page.ask_line.text() == S.MINER_ASK_DECK
 
 
+def test_zh_c_chinese_offers_anki_miner_note_with_its_page_then_maps_your_own_note_type_field_by_field(make):
+    """Zh-C (Sonic: "use his card although they may have their own so they can map it"): the Chinese note type ask
+    says Anki Miner Note's case and shows *Get Anki Miner Note…* while Anki lacks it; a note type of your own comes
+    back as a map — its first field is the word, each role a menu at the proposal — and the press hands the map back
+    with the note type; another note type picked hides the map (it was the other one's), never sent."""
+    from app.connect import miner_settings as MS
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Chinese cards go yet (note_type: not set).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.12.0", fix))
+    own = ["汉字", "拼音", "意思", "例句", "例句音频"]
+    note_ask = {"deck": None, "note_type": ["中文卡", "Basic"], "why": None, "get": MS.AM_NOTE_PAGE}
+    map_ask = {"deck": None, "note_type": ["中文卡", "Basic"], "why": "map", "note": "中文卡", "note_fields": own,
+               "roles": list(MS.MAPPED["zh"]), "map": dict.fromkeys(MS.MAPPED["zh"], "") | {"sentence": "例句"},
+               "problem": None}
+    pressed = []
+    answers = [("ask", note_ask), ("ask", map_ask), ("set-up", None)]
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return answers[len(pressed) - 1]
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner, data={"target_language": "zh"})
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert page.ask_line.text() == S.MINER_ASK_NOTE_ZH and not page.get_note.isHidden()
+    assert page.get_note.toolTip() == S.GET_AM_NOTE_TIP and page.map_part.isHidden()
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 2 and not wiz.setting_up)
+    assert pressed[1] == {"deck": None, "note_type": "中文卡"}
+    assert not page.map_part.isHidden() and page.get_note.isHidden() and page.map_word.text() == "汉字"
+    box = page.map_boxes["sentence"]
+    assert [box.itemText(i) for i in range(box.count())] == [S.MAP_NONE] + own[1:], "never the word's own field"
+    assert box.currentData() == "例句" and page.map_boxes["audio"].currentData() == ""
+    assert all(b.toolTip() for b in page.map_boxes.values()), "every menu has its tip (the Qt guide)"
+    page.map_boxes["audio"].setCurrentIndex(page.map_boxes["audio"].findData("例句音频"))
+    page.ask_note.setCurrentIndex(1)                       # Basic: the map was 中文卡's
+    assert page.map_part.isHidden() and "fields" not in page.chosen()
+    page.ask_note.setCurrentIndex(0)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 3 and not wiz.setting_up)
+    assert pressed[2]["note_type"] == "中文卡"
+    assert pressed[2]["fields"]["sentence"] == "例句" and pressed[2]["fields"]["audio"] == "例句音频"
+    assert pressed[2]["fields"]["expression_pinyin"] == "", "a role left at none goes as none"
+    assert wait_until(lambda: page.ask_part.isHidden()), "set up: nothing left to choose"
+
+
 def test_choice_86_back_and_next_on_what_you_know_keeps_the_new_deck_among_its_decks(make):
     """Review MUST (choice 86): the setup joined the new deck to the known-words decks — a Back to *What you know* and
     Next there writes its decks with it, never the list loaded when the wizard opened (which would drop it and turn

@@ -2082,6 +2082,9 @@ class NeedsYou(QObject):
     def _do_make_cards(self, entry, _line):
         self.hooks["make_cards"](entry)
 
+    def _do_try_again(self, entry, _line):             # Mattias #5: the rows' own ask (`mine_actions`)
+        self.hooks["try_again"](entry)
+
     # setup's first cards (SRC D1)
     def _do_first_cards(self, entry, _line):
         """*Make cards*: Connect on if it's off (as Settings › Anki's switch turns it on), then the first 20 of Current

@@ -426,17 +426,19 @@ def icon(p, kind, rect, colour, width=1.6):
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
                "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
                "asked": "waiting",                                     # R47: an ask Connect has read
-               "books": "waiting"}                                     # alpha 4 M1: waits for Anki Miner to read books
+               "books": "waiting",                                     # alpha 4 M1: waits for Anki Miner to read books
+               "retry": "mine"}                                        # Mattias #5: Anki Miner stopped on it: Try again
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
-ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
+ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media", "retry": "try-again"}
 HEADPHONES = "🎧 "                               # a5-2 (Hon): before an audiobook's title
 STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
 ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP}
-ASKS = ("mine-now", "mine-this")                    # the actions that ask Connect (round 8 row 45: they turn when pressed)
-_ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP"}
+ASKS = ("mine-now", "mine-this", "try-again")       # the actions that ask Connect (round 8 row 45: they turn when pressed)
+_ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP",
+                "try-again": "ROWS_TRY_AGAIN_TIP"}
 
 
 Ask = namedtuple("Ask", "id ids episode job", defaults=(None,))     # R47: `job`, the Connect job a Stop stops
@@ -515,12 +517,21 @@ def stone_tip(ep, state, leaves):
     return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
 
 
+def _failed(e):
+    """Mattias #5: is the episode one Anki Miner stopped on (its status *Try again*: `view_rows._connected`)?"""
+    return getattr(getattr(e, "status", None), "kind", None) == "retry"
+
+
 def asked_files(kind, episodes):
     """The files a status's button stands for: *Mine now* the unmined ones in the top waiting on nothing but their
     turn, *Mine this* every unmined one that can be mined, *No video* the unmined ones with none (never one being mined,
-    one in Anki, or one whose cards the learner deleted)."""
-    open_ = [e for e in episodes if not (e.cards or e.mining or getattr(e, "deleted", False))]
+    one in Anki, or one whose cards the learner deleted), *Try again* the ones Anki Miner stopped on. One Anki Miner
+    stopped on counts as unmined whatever it made (Mattias #5: the words it never made are on no card)."""
+    open_ = [e for e in episodes if not e.mining and (_failed(e) or not (e.cards or getattr(e, "deleted", False)))]
+    if kind == "retry":
+        return [e for e in open_ if _failed(e) and not e.missing]
     if kind == "waiting":                           # (an asked one below the line waits too: it goes first again)
+        open_ = [e for e in open_ if not _failed(e)]    # (one Anki Miner stopped on waits on no turn: its own button)
         return [e for e in open_ if e.in_top and not e.missing] or [e for e in open_ if not e.missing]
     if kind == "mine":
         return [e for e in open_ if not e.missing]
@@ -532,7 +543,7 @@ def asks_connect(name, word="video"):
     """Whether a status's button is an ask for Connect (refused while Connect is off): *Mine now* / *Mine this* on a
     video. *No video*'s *Link…* and a non-video item's *Mine this* (the bar says it waits: alpha 4 M1) need no
     Connect, so they work while it is off (P4.1 WF, review IK N2)."""
-    return name in ("mine-now", "mine-this") and word == "video"
+    return name in ASKS and word == "video"
 
 
 def action_of(status, episodes, off=None, word="video"):
@@ -555,7 +566,7 @@ def action_of(status, episodes, off=None, word="video"):
         tip = strings.ROWS_ACTION_OFF.format(tip=said, why=off)
     elif view_rows.names_click(status):
         tip = said                      # a wait on Anki or on the battery: `view_rows` names the click (M-3)
-    elif word != "video" and name != "no-media":
+    elif word != "video" and name not in ("no-media", "try-again"):
         tip = said                      # alpha 4 M1: no *Mine text* (Anki Miner's window): the bar says it waits
     else:
         words = getattr(strings, _ACTION_TIPS[name])
@@ -689,6 +700,10 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
         p.drawRoundedRect(r, radius, radius)
     elif status.kind == "mine_rest":
         p.setPen(QPen(style.qcolor(col["status-part-ring"]), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r, radius, radius)
+    elif status.kind == "retry":                    # Mattias #5: Anki Miner stopped on it — its warn ring
+        p.setPen(QPen(style.qcolor(col["warn"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
     elif status.kind in ("mine", "deleted", "no_subs"):

@@ -371,3 +371,21 @@ def test_a_busy_review_check_inside_the_re_checks_multi_pauses_as_busy_never_as_
             mods={ids[0]: 1}, since=0, on_busy=lambda: busy.append(1))
     assert (written, failures, left) == ([], [], [ids[0]]) and fake.writes == []
     assert busy == [1] and reviews == [], "never taken for a review"
+
+
+def test_writes_stopped_by_a_busy_anki_say_so_and_are_quietly_not_now(tmp_path, short_waits, monkeypatch):
+    # review 2 S1: the re-check met Anki busy before the first write (S1's sync just ran) — the run says Anki was busy,
+    # never "changed in Anki"; with nothing written the automatic step is quietly not now
+    from modules.junban import ankiconnect, reposition, spaced
+
+    def busy_writes(url, batches, gathered, progress=None, stop_if=None, mods=None, since=None, on_busy=None):
+        on_busy()
+        return [], [], [card_id for batch in batches for card_id, _due in batch]
+    monkeypatch.setattr(ankiconnect, "set_due_checked", busy_writes)
+    fake = _backlog(tmp_path)
+    with _patched(fake):
+        report = reposition.run(_auto(), refresh=False, job=spaced.Job(automatic=True))
+        assert report.get("anki_busy") is True and report.get("left"), report
+        assert "Anki was busy" in report["message"] and "changed in Anki" not in report["message"], report["message"]
+        assert auto.reorder(_auto())["outcome"] == "anki-busy"
+    assert fake.writes == []

@@ -265,3 +265,18 @@ def test_anki_busy_with_its_sync_is_anki_busy_in_plain_words(anki, monkeypatch):
     assert code == 3 and line["code"] == "anki-busy", line
     assert "busy" in line["message"] and "stopped answering" not in line["message"], line
     assert anki.fake.note_writes == []
+
+
+def test_connects_fill_meeting_anki_busy_mid_read_is_anki_busy(anki, monkeypatch):
+    # review 1 S4: the named fill's own read (notesInfo) refused while Anki syncs — `anki-busy`, never `failed`
+    from app import anki_connect
+    from modules.junban.tests.test_reposition import AnkiRefusal
+    monkeypatch.setattr(anki_connect, "BUSY_POLL_S", 0.0)
+    monkeypatch.setattr(anki_connect, "BUSY_WAIT_S", 0.0)
+    dispatch = anki.fake._dispatch
+    anki.fake._dispatch = lambda action, params: (AnkiRefusal("Collection lifecycle operation is active.")
+                                                  if action == "notesInfo" else dispatch(action, params))
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", TAG)
+    assert code == 3 and line["code"] == "anki-busy" and line.get("anki") == "busy", line
+    assert anki.fake.note_writes == []

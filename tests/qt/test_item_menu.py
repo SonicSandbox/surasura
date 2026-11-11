@@ -1200,6 +1200,8 @@ def test_mado_sm_a_submenus_entries_are_made_as_it_opens_never_with_the_menu(wor
     assert len(subs) >= 2 and all(act.menu().actions() == [] for act in subs), "nothing made with the menu"
     assert all(act.toolTip().strip() for act in subs)
     kinds = next(act.menu() for act in subs if act.text() == strings.ITEM_MENU["type"][0])
+    kinds.menuAction().hovered.emit()                    # its entry reached (mouse or keys): made before Qt places it
+    assert len(kinds.actions()) >= 12                    # (level with its entry: review R2-1)
     kinds.aboutToShow.emit()                             # as Qt opens it
     made = [x.text() for x in kinds.actions()]
     assert len(made) >= 12 and all(x.toolTip().strip() and _connected(x) for x in kinds.actions())

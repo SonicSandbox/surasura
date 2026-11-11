@@ -194,6 +194,7 @@ def test_a_generated_cover_writes_a_latin_title_as_one_short_line_and_a_japanese
     ("Akari:灯の細工職人", "Akari:灯の細工職人"),              # a romaji name before the kana stays
     ("とある科学の超電磁砲S", "とある科学の超電磁砲S"),        # one letter stays
     ("進撃 2nd Season", "進撃"),                              # (review N5: the digits before the run go too)
+    ("機動戦士ガンダム00 Second Season", "機動戦士ガンダム00"),   # (review R2-5: digits of the title's own stay)
     ("銀河鉄道の夜", "銀河鉄道の夜"),
 ])
 def test_fresh_u_a_vertical_cover_stops_before_a_latin_run_and_writes_vertical_forms(title, written):

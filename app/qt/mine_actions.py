@@ -51,7 +51,7 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import path_utils
-from app.qt import bridge, drag, item_menu, rows, strings
+from app.qt import bridge, drag, item_menu, rows, strings, windows
 from app.qt import press as qpress
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
@@ -376,7 +376,7 @@ class MineActions(QObject):
             self.win.say(why)
             return False
         moved = getattr(ep, "moved", None) or getattr(getattr(ep, "status", None), "moved", None)
-        where = os.path.dirname(moved or "")
+        where = os.path.dirname(moved) if moved else windows.content_folder()   # (Fresh-U row 11)
         folder = self.pick_folder(strings.FIND_FOLDER_TITLE.format(label=ep.label), where)
         if not folder:
             return False

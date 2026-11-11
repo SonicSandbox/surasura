@@ -884,16 +884,19 @@ def fill_later(sub, fill):
     """`sub`'s entries made by `fill()` only as it opens (its `aboutToShow`, which Qt sends before it sizes the
     submenu), never with its menu: Mado-SM (3.0.x), ⋯ opened at 250 % took 16.6–17.7 ms a press, most of it making the
     ~60 entries of submenus nobody opened (*Same show as…* lists every other show) and Qt taking them in at the
-    popup. A later `fill_later` replaces one not run yet; the kept menu's close drops it (`_empty_menu`)."""
+    popup. Made as its entry is reached (`hovered`: the mouse on it, the keyboard onto it — before Qt places the
+    submenu level with that entry, which it does before `aboutToShow`; review R2-1), else as it shows. A later
+    `fill_later` replaces one not run yet; the kept menu's close drops it (`_empty_menu`)."""
     sub.__dict__["fill"] = fill
     if not sub.__dict__.get("fills_on_show"):
         sub.__dict__["fills_on_show"] = True
+        sub.menuAction().hovered.connect(lambda m=sub: filled(m))
         sub.aboutToShow.connect(lambda m=sub: filled(m))
 
 
 def filled(sub):
-    """`sub` with its entries made (a `fill_later` still to run, run now: as it opens, and for a test or a screen
-    reader's look). -> `sub`."""
+    """`sub` with its entries made (a `fill_later` still to run, run now: as its entry is reached or it opens, and
+    for a test). -> `sub`."""
     fill = sub.__dict__.pop("fill", None)
     if fill is not None:
         fill()

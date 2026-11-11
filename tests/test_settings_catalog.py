@@ -1113,3 +1113,35 @@ def test_count_as_known_says_when_the_syncs_hidden_switch_counts_more_than_its_p
     assert catalog.help_line(row, agrees, "ja") == row.help                    # the switch agrees: nothing to say
     for odd in (None, "yes", 1):                                               # only a real True counts as on
         assert catalog.help_line(row, dict(marked, anki_sync_include_suspended=odd), "ja") == row.help
+
+
+def _every_string(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _every_string(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _every_string(item)
+
+
+def test_every_settings_path_a_line_names_starts_at_a_section_the_page_has():
+    """A line that sends the learner to "Settings › X" must name a section the Settings page shows: Docs-T found five
+    lines saying *Settings › Anki* after the section became *Anki & mining*, one *Settings › Library folders* (a row
+    under Content) and the tour's *Settings › Run things by themselves* (a row under Anki & mining) — each a place the
+    learner looks for and can't find (Mado-SM, 3.0.x)."""
+    from app.qt import strings, wizard_strings
+    sections = tuple(S.SECTIONS.values())
+    seen, wrong = 0, []
+    for table in (strings, S, wizard_strings):
+        for name, value in vars(table).items():
+            if name.startswith("_"):
+                continue
+            for line in _every_string(value):
+                for place in line.split("Settings › ")[1:]:
+                    seen += 1
+                    if not place.startswith(sections):
+                        wrong.append((table.__name__, name, place[:40]))
+    assert seen >= 15                      # the lines are still found (a change to the arrow would pass this silently)
+    assert wrong == []

@@ -101,6 +101,18 @@ LINEUP_PAIR = "lineup:"         # ledger meta: `lineup:<job id>` -> the pair a p
 PARTIAL_NEED = "audiobook-partial"
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
+# Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
+# asks first — ONE standing *Needs you* question a book (its first part's need: every part held by its words,
+# `feed.HELD`), *Pick its audiobook…* (the window pairs it: `Store.pick_audiobook_book`) · *Mine without audio*
+# (`actions.book_audiobook`) · *Dismiss* (mined as the book). Its record and answer live in the ledger's meta, by
+# language: `BOOK_ASKED<lang>:<item>` -> {key, epub} (the part it is asked by), `BOOK_SAID<lang>:<key>` -> the answer
+# (`book_key`: the EPUB's sha256, else its path). Never a book already paired, never once the speech model was
+# declined, never without Anki Miner's `sync`.
+BOOK_AUDIO_NEED = "book-audiobook"
+BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry the narrator's voice: pick it, or mine the "
+                  "book without audio.")
+BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
+NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -1015,7 +1027,14 @@ def _line_up(steps, ledger, lang, job, book):
             _keep_pair(ledger, job["id"], w.pair)
         if getattr(w, "restarted", False):
             _free_stopped(ledger, lang)
+        if lining_up(w.reason):
+            _book_answered(ledger, lang, book[1])     # paired and lining up now: the book asks no more
         raise
+    if got and got.get("book_ask"):
+        if _book_question(ledger, lang, got):
+            raise Wait(got["book_ask"])
+        return None
+    _book_answered(ledger, lang, book[1])
     if not got:
         return None
     if got.get("ask"):
@@ -1025,6 +1044,78 @@ def _line_up(steps, ledger, lang, job, book):
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     return got.get("lineup")
+
+
+def book_key(epub, sha256=None):
+    """Kura-AB2: a book's answer key — its EPUB's sha256 (the answer follows a moved or renamed book; a new edition is
+    asked again), else its path."""
+    from app import library_store
+    return f"sha256:{sha256}" if sha256 else f"path:{library_store.path_key(os.path.abspath(epub))}"
+
+
+def _meta(ledger, key):
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _json_or_none(text):
+    try:
+        got = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _book_question(ledger, lang, got):
+    """Kura-AB2: the book's one question (`Steps._book_audio`'s `got`: its words, the part it is asked by, its key and
+    EPUB) -> True while it holds the book (each part held by its words, looked at again at each look: an audiobook
+    paired since, by any door, lets it go); False — answered (*Mine without audio*), or its card dismissed (kept as an
+    answer, so a later part never asks again): mined as the book. A question about the same book asked by another part
+    before (its first part left the library, a new edition) goes, so one card stands for the book. Writes only what
+    changed (S19)."""
+    item, key, say, epub = got["item_id"], got["key"], got["book_ask"], os.path.abspath(got["epub"])
+    if _meta(ledger, f"{BOOK_SAID}{lang}:{key}"):
+        return False
+    record = json.dumps({"key": key, "epub": epub}, sort_keys=True, ensure_ascii=False)
+    lo = f"{BOOK_ASKED}{lang}:"
+    mine = f"{lo}{item}"
+    with ledger.transaction():
+        for meta_key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                                                   (lo, lo[:-1] + ";")).fetchall():
+            was = _json_or_none(value) or {}
+            if meta_key != mine and (was.get("key") == key or was.get("epub") == epub):
+                ledger.conn.execute("DELETE FROM meta WHERE key = ?", (meta_key,))
+                ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? "
+                                    "AND fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, int(meta_key[len(lo):])))
+        if _meta(ledger, mine) != record:
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mine, record))
+        if ledger.need(lang, BOOK_AUDIO_NEED, say, item_id=item, standing=True):
+            log.info("Connect: asks whether a book has its audiobook (%s, item %s)", lang, item)
+        elif ledger.conn.execute("SELECT 1 FROM needs WHERE language = ? AND kind = ? AND item_id = ? AND fixed_at IS "
+                                 "NULL AND dismissed_at IS NOT NULL", (lang, BOOK_AUDIO_NEED, item)).fetchone():
+            # *Dismiss*: you let it be — mined as the book, never held for good; kept, since the part whose job ends
+            # takes its needs with it and the next part would ask again
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                (f"{BOOK_SAID}{lang}:{key}", DISMISSED))
+            return False
+    return True
+
+
+def _book_answered(ledger, lang, epub):
+    """Kura-AB2: the book `epub` asks no more (an audiobook paired since — *Pick its audiobook…*, a look, Hon's own
+    question — or Anki Miner can't line it up now): its open question fixed, by itself; never the asking part's other
+    needs. Nothing open: the ledger read alone."""
+    open_ids = {n["item_id"] for n in ledger.needs(lang, listed=False) if n["kind"] == BOOK_AUDIO_NEED}
+    if not open_ids:
+        return
+    want = os.path.abspath(epub)
+    for item in sorted(open_ids):
+        rec = _json_or_none(_meta(ledger, f"{BOOK_ASKED}{lang}:{item}")) or {}
+        if rec.get("epub") == want:
+            with ledger.transaction():
+                ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                                    "fixed_at IS NULL", (_now(), lang, BOOK_AUDIO_NEED, item))
+            log.info("Connect: fixed by itself (%s, %s): item %s", lang, BOOK_AUDIO_NEED, item)
 
 
 def _pick(steps, ledger, lang, job, record=True):
@@ -2619,7 +2710,9 @@ class Steps:
             return None
         with self._open(lang) as store:
             ab = library.audiobook_of_book(store, epub)
-        if ab is None or not ab["key"] or ab["lineup"] == "kept":
+            if ab is None:
+                return self._book_audio(store, epub)
+        if not ab["key"] or ab["lineup"] == "kept":
             return None
         key = ab["key"]
         state = lineup.look(key)
@@ -2673,6 +2766,21 @@ class Steps:
         wait = _lining(LINING_UP_FILE.format(k=1, n=len(ab["files"])), key)
         wait.restarted = status == lineup.STOPPED
         raise wait
+
+    def _book_audio(self, store, epub):
+        """Kura-AB2: the book `epub`, no audiobook paired -> None (mined as the book: *Not now* to the speech model,
+        or it isn't in the library); else the one question for `runner._book_question`, which reads its answer in the
+        ledger: {"book_ask": BOOK_AUDIO_ASK, "item_id": its first part, "key": `book_key`, "epub"}. Hon's own question
+        about an audiobook for it (H-8) may stand beside it: *Pick its audiobook…* lists that audiobook first, and
+        either answer that pairs them lets the book go."""
+        from app.connect import library, lineup
+        if lineup.answer() == "no":
+            return None
+        book = library.book_of(store, epub)
+        if book is None:
+            return None
+        return {"book_ask": BOOK_AUDIO_ASK.format(title=book["title"]), "item_id": book["item"],
+                "key": book_key(epub, book["sha256"]), "epub": os.path.abspath(epub)}
 
     def _mark_line_up(self, lang, ab, status):
         """The store's mark on the audiobook's records (`Store.mark_audiobook_lineup`): nothing lined up — *Needs you*

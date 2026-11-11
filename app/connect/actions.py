@@ -20,6 +20,9 @@
   *Download it* (Anki Miner's own setup downloads it at Connect's next look; then every book paired with its audiobook
   is lined up by itself, and an audiobook's own subtitles are spot-checked) or *Not now* (their cards without sentence
   audio). The answer kept for good (`lineup.set_answer`), the question fixed, every episode it held queued again.
+- `book_audiobook(language, need_id)` (Kura-AB2, PROVISIONAL): *Mine without audio* on a book's *Do you have 「…」's
+  audiobook?* — kept for that book for good (the ledger's meta), the question fixed, every part it held queued
+  again.
 
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
@@ -74,6 +77,32 @@ def speech_model(language, need_id, yes, path=None):
                 ledger.set_state(job["id"], "queued")      # its reason cleared: picks anew, the answer read then
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = 'speech-model' AND "
                             "fixed_at IS NULL", (book._now(), language))
+    return True
+
+
+def book_audiobook(language, need_id, path=None):
+    """Kura-AB2 *Mine without audio* on *Do you have 「…」's audiobook?* -> True when the question was open (answered
+    now); False (nothing written) when there's no ledger or no such open question of this language. The answer kept
+    for the book for good (the ledger's meta, by the key its question was asked with: `runner.BOOK_ASKED` /
+    `BOOK_SAID`), the question fixed, every part it held queued again (its pick reads the answer then). *Pick its
+    audiobook…* needs nothing here: the pair is the store's, and the next look finds it (`runner._book_answered`)."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return False
+    from app.connect import runner
+    with book.Ledger(path) as ledger, ledger.transaction():
+        row = ledger.conn.execute("SELECT item_id, say FROM needs WHERE id = ? AND language = ? AND kind = ? AND "
+                                  "fixed_at IS NULL", (need_id, language, runner.BOOK_AUDIO_NEED)).fetchone()
+        asked = runner._json_or_none(runner._meta(ledger, f"{runner.BOOK_ASKED}{language}:{row[0]}")) \
+            if row is not None and row[0] is not None else None
+        if not asked or not asked.get("key"):
+            return False
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (f"{runner.BOOK_SAID}{language}:{asked['key']}", runner.NO_AUDIOBOOK))
+        for job in ledger.jobs(language, states=("waiting",)):
+            if job.get("reason") == row[1]:
+                ledger.set_state(job["id"], "queued")      # its reason cleared: picks anew, the answer read then
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
     return True
 
 

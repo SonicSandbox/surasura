@@ -13055,6 +13055,50 @@ def _store_library_books(self, item_id=None):
     return sorted(out, key=rank)
 
 
+def _store_book_audiobooks(self, item_id):
+    """Kura-AB2 *Pick its audiobook…* (a book about to be mined with none paired): the book part `item_id` is of ->
+    {epub, title, audiobooks: [{item_id, title, n (files), seconds}]} — the library's audiobooks with no book: one
+    Hon asks about for this very book (H-8) first, then those with no question open, the likeliest first for this book
+    (`audiobooks`' title levels), one told *No* about it or *It has no book* last, then by title; None when the item is
+    no live part of an EPUB. One read."""
+    from app import audiobooks
+    with self._reading():
+        origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN} AND instr(p.content_key, '#') > 0 "
+            f"ORDER BY p.content_key LIMIT 1", (item_id,))), None)
+        if origin is None or not _EPUB_PART.search(origin.get("origin") or ""):
+            return None
+        epub = origin["origin"].rsplit("#", 1)[0]
+        title = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                  (item_id,)).fetchone()
+        title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
+        lone, seen = [], set()
+        for _k, ab_id, rec in self._audiobook_rows():
+            ab = rec.get("audiobook") or {}
+            ask = ab.get("ask")
+            asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
+                path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
+            if ab_id in seen or ab.get("book") or (ask and not asked_here):
+                continue
+            seen.add(ab_id)
+            if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
+                lone.append((ab_id, ab))
+    answers = self.audiobook_answers() if lone else {}
+    book = audiobooks.Book(id=item_id, path=os.path.abspath(epub), sha256=origin.get("sha256"))
+    forms, _vols = audiobooks._forms([title, os.path.splitext(os.path.basename(epub))[0]])
+
+    def rank(entry):
+        ab_id, ab = entry
+        a_forms, _v = audiobooks._forms(list(ab.get("titles") or ()) + ([ab["title"]] if ab.get("title") else []))
+        no = ab.get("no_book") or answers.get(audiobooks.answer_key(audiobooks.from_record(ab), book)) is False
+        ask = ab.get("ask")
+        return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
+                search_fold(ab.get("title") or ""), ab_id)
+    return {"epub": os.path.abspath(epub), "title": title,
+            "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
+                            "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)]}
+
+
 def _store_pick_audiobook_book(self, item_id, epub, by="user"):
     """a5-2 *Find its book…*: the learner's pick — `epub` (a book of the library, by its EPUB's path) is the book this
     audiobook reads. Paired exactly as a *Yes* pairs (`pair_audiobook`: the records' `book`, the answer kept True, the
@@ -13468,6 +13512,7 @@ Store.audiobook_finds = _store_audiobook_finds
 Store.audiobook_hovers = _store_audiobook_hovers
 Store.library_books = _store_library_books
 Store.pick_audiobook_book = _store_pick_audiobook_book
+Store.book_audiobooks = _store_book_audiobooks
 Store._undo_audiobook_pick = _store_undo_audiobook_pick
 Store.audiobook_no_book = _store_audiobook_no_book
 Store.mark_audiobook_lineup = _store_mark_audiobook_lineup

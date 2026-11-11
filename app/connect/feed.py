@@ -53,7 +53,10 @@ MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, A
 # Michi-AB Stage B (AB-Q3): a book waiting while Anki Miner lines it up with its audiobook (`runner.lining_up`) — its
 # line is the stone's words (*Lining up its audiobook… file 2 of 6*), with *Stop* while it can be stopped
 LINING_UP = "lining_up"
-KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP)
+# Mattias's field report (3.0.0, #5): an item whose newest job ended failed (Anki Miner stopped twice on its batch),
+# no open job — `status`'s `failed`; its row offers *Try again* (`view_rows._connected`), whatever cards it made
+FAILED = "failed"
+KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP, FAILED)
 # A7N-3 (Sonic 2026-10-30): Connect's needs that are faults, nothing to decide — its own Generate failed. Red, never
 # amber: ス says it as a Generate you start does (the window, `shell._connect_fault`); its card stays on *Needs you*,
 # and an episode it holds is a plain wait (never HELD)
@@ -72,6 +75,7 @@ WORDS = {
     BATTERY: "Waiting: on battery",
     ASKED: "Asked: its cards come next",
     LINING_UP: "Lining up its audiobook",
+    FAILED: "Anki Miner stopped before its cards were made",
 }
 # *Mine anyway* on a pairing hato placed by its name only (`verdict: untimed`, 09-hato-layer v2 §1.2; hato's
 # wrong-episode finding): the warning W3.2's *Needs you* entry carries (row 4.1.9)
@@ -150,6 +154,12 @@ def build(record, language):
                               moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
                               title=job.get("title") or None,
                               writing_cards=writing_cards, since=job.get("since") if reason else None)
+    for failed in rec.get("failed") or ():     # Mattias #5: after the open jobs — a new try's stone is its own
+        item_id = failed.get("item")
+        if item_id is None or item_id in items:
+            continue
+        items[item_id] = Item(kind=FAILED, words=WORDS[FAILED], tip=failed.get("reason") or WORDS[FAILED],
+                              job=failed.get("job"), made=failed.get("made") or 0, total=failed.get("words") or 0)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")),
                 miner=miner_of((record or {}).get("stamp")))

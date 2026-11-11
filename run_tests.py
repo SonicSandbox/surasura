@@ -4,6 +4,7 @@ import subprocess
 import os
 import glob
 import shutil
+import threading
 import time
 import locale
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,7 +46,9 @@ def _core_files(project_root):
     """Every core test file (pytest's default pattern), as paths from the project root, in order."""
     files = []
     for dirpath, dirnames, filenames in os.walk(os.path.join(project_root, "tests")):
-        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__" and not d.startswith("."))
+        top = os.path.normcase(dirpath) == os.path.normcase(os.path.join(project_root, "tests"))
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__" and not d.startswith(".")
+                             and not (top and d == STRESS_DIR))           # the stress set: --stress only
         for name in sorted(filenames):
             if name.startswith("test_") and name.endswith(".py"):
                 files.append(os.path.relpath(os.path.join(dirpath, name), project_root).replace(os.sep, "/"))
@@ -111,6 +114,9 @@ def _shard_count(free_mb, cpus, idle=None):
     while shards < cap and CORE_PEAK_MB + SHARD_MB * shards <= free_mb - RESERVE_MB:   # what shards + 1 would need
         shards += 1
     return shards
+
+
+STRESS_DIR = "stress"
 
 
 def _read_times(project_root):
@@ -317,6 +323,129 @@ def run_all(project_root):
     return 1 if failed else 0
 
 
+# --- --stress, --stress-changed: the same tests again and again, the machine loaded ----------------------------- #
+# A flake is a test whose answer depends on the machine's timing (tests/FLAKES.md). `--stress [N]` runs the stress set
+# (tests/stress/: real concurrency, invariants only, never a timing) N times; `--stress-changed [BASE]` runs every test
+# file the branch changed since BASE (default origin/3.0-dev) STRESS_TIMES times in a row, each suite's files in their
+# own process, while two core shards run beside them as load — a lane's last check before READY
+# (_work/prompts/train-rule.md § 1). Either stops at the first red and prints it whole.
+
+STRESS_TIMES = 20
+LOAD_SHARDS = ("1/4", "3/4")             # the load beside --stress-changed: two quarters of the core suite, looped
+
+
+def _suite_of(path):
+    """The suite a test file belongs to (its own process): "tests", or "modules/<name>/tests"."""
+    parts = path.replace(os.sep, "/").split("/")
+    return "/".join(parts[:3]) if parts[0] == "modules" and len(parts) > 3 and parts[2] == "tests" else "tests"
+
+
+def _changed_test_files(project_root, base):
+    """The test files (test_*.py under tests/ or modules/*/tests/, still on disk) changed between BASE and HEAD, plus
+    those changed and not yet committed, in path order."""
+    names = set()
+    for args in (["diff", "--name-only", f"{base}...HEAD"], ["diff", "--name-only", "HEAD"]):
+        out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        names.update(line.strip() for line in _decode(out.stdout).splitlines() if line.strip())
+    return sorted(n for n in names
+                  if os.path.basename(n).startswith("test_") and n.endswith(".py")
+                  and (n.startswith("tests/") or (n.startswith("modules/") and "/tests/" in n))
+                  and os.path.isfile(os.path.join(project_root, n)))
+
+
+def _repeat(project_root, groups, times, env):
+    """Each (label, pytest args) group run `times` times in a row, one process each. -> (label, run, output) of the
+    first red, or None."""
+    for n in range(1, times + 1):
+        for label, args in groups:
+            result = subprocess.run([sys.executable, "-m", "pytest", *args, "-q", "-ra", "-p", "no:cacheprovider"],
+                                    cwd=project_root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            code = result.returncode
+            print(f"  {'PASS' if code == 0 else 'FAIL'}  {label} run {n}/{times}  {_last_line(_decode(result.stdout))}",
+                  flush=True)
+            if code != 0:
+                return label, n, (death(code) or f"exit code {code}") + "\n" + _decode(result.stdout)
+    return None
+
+
+def run_stress(project_root, times=1):
+    """`--stress [N]`: the stress set (tests/stress/), N times. 0 when every run passed."""
+    env = os.environ.copy()
+    env["SURASURA_STRESS"] = "1"
+    folder = os.path.join("tests", STRESS_DIR)
+    print(f"Stress set ({folder}), {times} time(s)", flush=True)
+    red = _repeat(project_root, [("stress", [folder])], times, env)
+    if red:
+        print(f"\n  [FAIL]  {red[0]}, run {red[1]}: {red[2]}")
+        return 1
+    print(f"\n  [PASS]  the stress set passed {times} time(s)")
+    return 0
+
+
+def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES):
+    """`--stress-changed [BASE]`: every test file changed since BASE, `times` times, beside two core shards. 0 when
+    every run passed (a branch that changed no test file passes at once, and says so)."""
+    files = _changed_test_files(project_root, base)
+    if not files:
+        print(f"No test file changed since {base}: nothing to repeat")
+        return 0
+    groups = {}
+    for path in files:
+        groups.setdefault(_suite_of(path), []).append(path)
+    print(f"{len(files)} changed test file(s) since {base}, {times} times each, beside core shards "
+          f"{' and '.join(LOAD_SHARDS)}:", flush=True)
+    for path in files:
+        print(f"  {path}")
+    def start(spec):
+        return subprocess.Popen([sys.executable, os.path.abspath(__file__), "--shard", spec], cwd=project_root,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    loads = {spec: start(spec) for spec in LOAD_SHARDS}      # started before the first repeat, ended after the last
+    stop = threading.Event()
+
+    def keep_loading():                                     # a shard that ends starts again; its result is no verdict
+        while not stop.wait(0.5):
+            for spec, proc in list(loads.items()):
+                if proc.poll() is not None:
+                    loads[spec] = start(spec)
+    keeper = threading.Thread(target=keep_loading, name="stress-load", daemon=True)
+    keeper.start()
+    try:
+        red = _repeat(project_root, sorted(groups.items()), times, os.environ.copy())
+    finally:
+        stop.set()
+        keeper.join(60)
+        for proc in loads.values():
+            _end_tree(proc)
+    if red:
+        print(f"\n  [FAIL]  {red[0]}, run {red[1]} of {times}: {red[2]}")
+        return 1
+    print(f"\n  [PASS]  every changed test file passed {times} times under load")
+    return 0
+
+
+def _end_tree(proc):
+    """End a load shard and every process it started (pytest's own children too)."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    else:
+        proc.kill()
+    try:
+        proc.wait(30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _value_after(args, flag):
+    """The value given after `flag` (`--flag V` or `--flag=V`), or None."""
+    for i, a in enumerate(args):
+        if a.startswith(flag + "="):
+            return a.split("=", 1)[1]
+        if a == flag and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            return args[i + 1]
+    return None
+
+
 def main():
     """
     Run the comprehensive test suite for Surasura.
@@ -324,9 +453,21 @@ def main():
     `python run_tests.py`        runs the core suite (tests/), as it always has.
     `python run_tests.py --all`  runs the core suite AND every module suite at the same time.
     `python run_tests.py --shard I/N`  runs shard I of the core suite split N ways (GitHub's PR tests).
+    `python run_tests.py --stress [N]`  runs the stress set (tests/stress/) N times (1).
+    `python run_tests.py --stress-changed [BASE]`  runs every test file changed since BASE (origin/3.0-dev) 20 times
+        under load (a lane's check before READY).
     """
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
+    args = sys.argv[1:]
+    for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev")),
+                      ("--stress", lambda v: run_stress(project_root, int(v) if v and v.isdigit() else 1))):
+        if flag in args or any(a.startswith(flag + "=") for a in args):
+            try:
+                sys.exit(run(_value_after(args, flag)))
+            except KeyboardInterrupt:
+                print("\nTest run cancelled via KeyboardInterrupt.")
+                sys.exit(130)
     if "--all" in sys.argv[1:]:
         try:
             sys.exit(run_all(project_root))

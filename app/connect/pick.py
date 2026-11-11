@@ -322,21 +322,38 @@ def card_front(token):
     return analyzer.tagger_text(token.written)[0]
 
 
+# The everyday reading of a front UniDic reads otherwise: 日本 is ニッポン in UniDic, にほん as people say it (and as
+# Anki Miner 3.11 reads it; the only place name where the two differed, Michi-RD 2026-11-09).
+EVERYDAY = {"日本": "にほん"}
+
+
 def front_reading(occurrence, key, language):
     """The reading the card front is said with on this line, in hiragana as Anki Miner writes readings — or None (Anki
-    Miner then reads it itself). A set phrase: its row's reading (the dictionary's, キガツク); a word: its occurrence's
-    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: やっぱ said so, never its
-    lemma's やはり; 言っ, いう), or the lemma's where the front is the lemma (行ける, いく); a joined word: the reading
-    the join gives it (日本人, にほんじん). Chinese keeps none."""
+    Miner then reads it itself). The reading of the front as the line writes it (Sonic, 2026-11-09: option A), by the
+    journey's own rule for a set phrase (`plan_rules.display_reading`: kana as written, kanji as the dictionary reads
+    them, so the card and the journey's Kana agree): from its row's reading (the dictionary's: キガツク; いい感じ is
+    いいかんじ, not its row's よいかんじ), never the tagger's kana (気に入る is きにいる, not キニハイル). A word written in
+    kana alone: itself (`plan_rules.kana_as_written`: それじゃあ, not its lemma's それじゃ; もん, not もの; not an iteration mark's
+    こゝろ, which keeps こころ). Any other word: its occurrence's
+    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: 言っ, いう), or the lemma's
+    where the front is the lemma (行ける, いく); a joined word: the reading the join gives it (日本人, にほんじん). A name
+    keeps its reading (立川, たちかわ); 日本 is にほん (`EVERYDAY`). Chinese keeps none."""
     if language != "ja":
         return None
-    from app import anki_match
+    from app import anki_match, plan_rules
+    if occurrence.front in EVERYDAY:
+        return EVERYDAY[occurrence.front]
     node = occurrence.token.node
     if not occurrence.phrase and node is None:
         return None
+    as_written = None if occurrence.phrase else plan_rules.kana_as_written(occurrence.front)
+    if as_written:
+        return anki_match.fold_kana(as_written)         # the line's own kana, voicing too (いつもどおり's どおり)
     by_lemma = occurrence.phrase or _by_lemma(occurrence.token)
     reading = key[1] if by_lemma else getattr(node.feature, "kanaBase", None)
     reading = reading if isinstance(reading, str) and reading not in ("", "*") else None
+    if reading and occurrence.phrase:
+        reading = plan_rules.display_reading(occurrence.front, occurrence.phrase.display, reading)
     return anki_match.fold_kana(reading) if reading else None
 
 

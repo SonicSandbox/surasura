@@ -141,7 +141,7 @@ def test_list_gives_the_list_in_its_order_with_each_rows_kind(generated):
     listed = h.answer(lines)
     assert code == 0 and 0 < len(listed["words"]) <= 5
     first = listed["words"][0]
-    assert set(first) == {"word", "orth", "reading", "score", "occurrences", "kind"}
+    assert set(first) == {"word", "orth", "reading", "kana", "score", "occurrences", "kind"}
     scores = [w["score"] for w in listed["words"]]
     assert scores == sorted(scores, reverse=True), "the list's own order: leverage"
     kinds = {w["word"]: w["kind"] for w in h.answer(h.run_cli("list")[1])["words"]}

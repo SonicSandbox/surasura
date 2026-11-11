@@ -25,6 +25,10 @@ from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # n
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
+# tests/stress/ (real concurrency, many iterations, invariants only) is opt-in: `python run_tests.py --stress` sets
+# SURASURA_STRESS; every other run — the default, --all's shards, GitHub's — leaves it out (tests/FLAKES.md).
+collect_ignore = [] if os.environ.get("SURASURA_STRESS") else ["stress"]
+
 
 def pytest_collection_modifyitems(items):
     skip_tk_tests(items)                    # GitHub's runner only: the Tk window tests run in the local --all

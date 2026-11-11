@@ -17,6 +17,12 @@ window of its own and runs the application's loop until it is safe to go on (Tru
     again* and *Quit*.
   * The folder ask (several 2.x installs, each named — the user picks, D11; an import made into another library; 2.x
     used here with no note naming its folder): a button per install, *Choose the old folder…*, *Start fresh*, *Quit*.
+  * **Windows won't let Surasura save to the library** (Controlled folder access, 3.0.1: `first_run.run`'s `blocked`
+    with reason `cfa`, `app/cfa.py`): one line and two ways out — *Move my library to C:\\Users\\<you>\\Surasura*
+    (`library_move.move` on a worker: copied, checked, switched; *Moving your library…* with its progress and
+    *Cancel*), then *Your library has moved* with *Open Surasura* and its one *Undo* (`library_move.undo`) — and
+    *Allow Surasura in Windows Security* (Windows Security's Ransomware protection page opened, both programs named),
+    *Try again* once allowed, *Quit*.
   * **Start over / Put back** (Fresh library 3.0.1, `first_run.PROFILE_MOVE`; the spec §6.3–6.5): on the restart's
     own start (`gate(app, move=True)`) the move runs before anything opens — *Setting your old Surasura aside…* only
     past QUIET_SHOW s; another Surasura program still running is waited for (*Waiting for … to close*, *Not now*). A
@@ -33,6 +39,7 @@ is the start, not an overlay); ✕ is *Quit*. Its strings are here (`strings.py`
 the application's (`style.apply`).
 """
 import os
+import sys
 import threading
 import time
 
@@ -40,8 +47,9 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, \
     QWidget
 
-from app import import_2x, theme
+from app import cfa, import_2x, library_move, path_utils, theme
 from app.qt import bridge, hud, style, tooltip
+from app.qt import press as qpress
 from app.services import first_run
 
 # --- start_gate: the strings (RS-7: short, what it does for the user; a tip holds anything longer) ------------------ #
@@ -130,6 +138,28 @@ MOVE_OPEN_TIP = "Open Surasura as it is."
 MOVE_SET_ASIDE = "Set it aside"
 MOVE_SET_ASIDE_TIP = ("Put the note aside and open Surasura.\n"
                       "• Its backups stay where they are, in each place's Backups folder.")
+# 3.0.1: Windows' Controlled folder access (the words of the move itself are `library_move`'s, the line `cfa`'s)
+CFA_MOVE = "Move my library to {target}"
+CFA_MOVE_TIP = ("Copy your library there, check every file, then use it from there.\n"
+                "• Your old folder is kept just as it was.\n"
+                "• Undo is offered once it's done.")
+CFA_ALLOW = "Allow Surasura in Windows Security"
+CFA_ALLOW_TIP = "Open Windows Security's Ransomware protection.\n• {steps}"
+CFA_ALLOWING = "{steps} Then press Try again."
+CFA_TRY_TIP = "Look again once Surasura is allowed.\n• No need to restart."
+LIB_MOVING = "Moving your library…"
+LIB_COUNT = "Copying and checking · {done:,} of {total:,} files"
+LIB_CANCEL_TIP = "Stop moving your library.\n• Nothing is changed: it stays where it is."
+LIB_MOVED_HEADING = "Your library has moved"
+LIB_DIDNT_HEADING = "Your library wasn't moved"
+LIB_UNDO = "Undo"
+LIB_UNDO_TIP = ("Use your library from its old folder again.\n"
+                "• The new copy is renamed and kept, never deleted.")
+LIB_OPEN = "Open Surasura"
+LIB_OPEN_TIP = "Open Surasura with your library in its new folder."
+LIB_SCREENS = ("cfa", "lib-moving", "lib-moved", "lib-didnt")
+# Their presses (app/qt/press.py, the Qt guide's *Every press reacts at once*): each screen is its own mark (NOWHERE)
+PRESS_MOVE, PRESS_UNDO, PRESS_OPEN = ("gate", "move-library"), ("gate", "undo-move"), ("gate", "open-moved")
 MOVE_SCREENS = ("move-moving", "move-waiting", "move-ask", "move-didnt", "move-rolled", "move-stuck",
                 "move-unreadable")
 
@@ -168,6 +198,9 @@ class Gate(QWidget):
         self.working = False
         self.importing = False                    # the last run was an import (the stopped screen's heading)
         self.quit_after = False
+        self.cfa = None                           # the refused library's facts (`first_run.blocked`'s `cfa`)
+        self.undoable = False                     # *Undo* offered (the move just done)
+        self.undo_words = None                    # what the last Undo said (shown on the screen after it)
         self._cancel = threading.Event()
         self._runs = 0
         self.screen = None
@@ -315,11 +348,51 @@ class Gate(QWidget):
             self.raise_()
             self.activateWindow()
 
+    def _target(self):
+        return (self.cfa or {}).get("target") or cfa.move_target()
+
+    def _lib_screen(self, name, message):
+        """Controlled folder access's screens (3.0.1): the refusal, the move under way, its answer."""
+        self.screen = name
+        heading = {"cfa": cfa.HEADING, "lib-moving": LIB_MOVING, "lib-moved": LIB_MOVED_HEADING,
+                   "lib-didnt": LIB_DIDNT_HEADING}[name]
+        self._set(self.heading, heading)
+        self._set(self.line, message)
+        busy = name == "lib-moving"
+        self._set(self.stage, STARTING if busy else None)
+        self.bar.setVisible(busy)
+        if busy:
+            self.bar.setRange(0, 0)
+        self._picks([])
+        steps = cfa.allow_steps()
+        self._word(self.choose_button, CFA_MOVE.format(target=self._target()), CFA_MOVE_TIP, "primary")
+        if name == "lib-moved":
+            self._word(self.fresh_button, LIB_UNDO, LIB_UNDO_TIP, None)
+            self._word(self.try_button, LIB_OPEN, LIB_OPEN_TIP, "primary")
+        else:
+            self._word(self.fresh_button, CFA_ALLOW, CFA_ALLOW_TIP.format(steps=steps), None)
+            self._word(self.try_button, TRY_AGAIN, CFA_TRY_TIP if name == "cfa" else TRY_AGAIN_TIP, None)
+        self._word(self.cancel_button, CANCEL, LIB_CANCEL_TIP, None)
+        shown = {"cfa": (self.choose_button, self.fresh_button, self.try_button, self.quit_button),
+                 "lib-moving": (self.cancel_button,),
+                 "lib-moved": (self.try_button, self.fresh_button) if self.undoable else (self.try_button,),
+                 "lib-didnt": (self.try_button, self.quit_button)}[name]
+        for b in (self.choose_button, self.fresh_button, self.try_button, self.cancel_button, self.quit_button):
+            b.setVisible(b in shown)
+            b.setEnabled(True)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
     def show_screen(self, name, message=None):
         """One of: working, preparing, missing, new, program, unfinished, lost, blocked, stopped, check, ask — its
-        words and its buttons; a Start over's own (`MOVE_SCREENS`)."""
+        words and its buttons; a Start over's own (`MOVE_SCREENS`); Controlled folder access's (`LIB_SCREENS`)."""
         if name in MOVE_SCREENS:
             self._move_screen(name, message)
+            return
+        if name in LIB_SCREENS:
+            self._lib_screen(name, message)
             return
         self.screen = name
         st = self.st or {}
@@ -361,6 +434,7 @@ class Gate(QWidget):
                  "new": (self.fresh_button, self.try_button, self.quit_button),
                  "lost": (self.choose_button, self.fresh_button, self.try_button, self.quit_button)}.get(
             name, (self.try_button, self.quit_button))
+        self._word(self.cancel_button, CANCEL, CANCEL_TIP, None)
         for b in (self.choose_button, self.fresh_button, self.try_button, self.cancel_button, self.quit_button):
             b.setVisible(b in shown)
             b.setEnabled(True)
@@ -370,6 +444,14 @@ class Gate(QWidget):
             self.activateWindow()
 
     def _progress(self, value):
+        if value and value[0] == "lib-move":
+            _kind, done, total = value
+            if not self.ended and self.screen == "lib-moving" and not self._cancel.is_set():
+                self._set(self.stage, LIB_COUNT.format(done=done, total=total))
+                if self.bar.maximum() != max(1, total):
+                    self.bar.setRange(0, max(1, total))
+                self.bar.setValue(min(done, total))
+            return
         if value and value[0] == "move-wait":
             if not self.ended and self.working:
                 self._waiting(value[1])
@@ -558,6 +640,12 @@ class Gate(QWidget):
         elif status == "cancelled":
             self.st = dict(self.st, state=first_run.IMPORT_UNFINISHED)
             self.show_screen("unfinished")
+        elif status == "blocked" and reason == "cfa":
+            self.cfa = result.get("cfa") or {}
+            self.show_screen("cfa", result["message"])
+            if self.undo_words:                   # just undone: what Undo did, under the refusal's line
+                self._set(self.stage, self.undo_words)
+                self.undo_words = None
         elif status == "blocked":
             self.show_screen("blocked", result["message"])
         elif reason == "library_missing":
@@ -576,12 +664,76 @@ class Gate(QWidget):
         else:
             self.show_screen("stopped", result["message"])
 
+    # --- Controlled folder access: *Move my library*, its Undo, *Allow* (3.0.1) ---------------------------------- #
+    def _move_library(self):
+        if self.working or qpress.live(self, PRESS_MOVE):
+            return                                # (pressed already: nothing of the running move is touched)
+        self.working = True
+        self.undoable = False
+        self._cancel = threading.Event()
+        self.show_screen("lib-moving")            # the press's mark: its own screen, painted before the work starts
+        relay = self.relay
+
+        def progress(done, total):
+            relay.call(("lib-move", done, total))
+        if qpress.run(None, PRESS_MOVE, library_move.move, self._target(), _throttled_files(progress),
+                      self._cancel.is_set, then=self._library_moved, failed=self._crashed, win=self,
+                      at=qpress.NOWHERE) is None:
+            self.working = False                  # (live already: the press under way answers)
+
+    def _library_moved(self, result):
+        self.working = False
+        if self.ended:
+            return
+        if self.quit_after:
+            self.finish(False)
+            return
+        if result.get("status") == "done":
+            _paths_moved()
+            self.undoable = library_move.can_undo() is not None
+            self.show_screen("lib-moved", result.get("words"))
+        else:
+            self.show_screen("lib-didnt", result.get("words"))
+
+    def _undo_library(self):
+        if self.working or not self.undoable:
+            return
+        self.working = True
+        self._looking()                           # the press's mark: LOOKING on the stage line, buttons held
+        if qpress.run(None, PRESS_UNDO, library_move.undo, then=self._library_undone, failed=self._crashed,
+                      win=self, at=qpress.NOWHERE) is None:
+            self.working = False
+
+    def _library_undone(self, result):
+        self.working = False
+        self.undoable = False
+        if self.ended:
+            return
+        if self.quit_after:                       # ✕ while it undid: quit, never open over the learner's ✕
+            _paths_moved()
+            self.finish(False)
+            return
+        _paths_moved()
+        if result.get("status") != "done":
+            self.show_screen("lib-didnt", result.get("words"))
+            return
+        self.undo_words = result.get("words")
+        self._after_move()                        # the old library again: the gate looks at it (CFA's screen again)
+
+    def _allow(self):
+        """Windows Security's Ransomware protection page, and the steps to allow both programs on the screen."""
+        cfa.open_settings()
+        self._set(self.stage, CFA_ALLOWING.format(steps=cfa.allow_steps()))
+
     def _crashed(self, info):
         self.working = False
         if self.ended:
             return
         if self.quit_after:
             self.finish(False)
+            return
+        if self.screen in LIB_SCREENS:
+            self.show_screen("lib-didnt", str(info[0]))
             return
         if self.screen in MOVE_SCREENS or (self.st or {}).get("state") == first_run.PROFILE_MOVE:
             from app import profile_reset
@@ -598,6 +750,12 @@ class Gate(QWidget):
             return
         if self.screen in MOVE_SCREENS:
             self._move_now()
+            return
+        if self.screen == "lib-moved":            # *Open Surasura*: the gate looks at the moved library and goes on
+            self.undoable = False
+            self._looking()                       # the press's mark: LOOKING on the stage line, buttons held
+            qpress.run(None, PRESS_OPEN, first_run.state, then=self._after_looked, failed=self._look_failed,
+                       win=self, at=qpress.NOWHERE)
             return
         self._looking()
         bridge.run_in_worker(first_run.state, then=self._looked_again, failed=self._look_failed)
@@ -627,6 +785,9 @@ class Gate(QWidget):
         if self.screen in MOVE_SCREENS:
             self._move_now()
             return
+        if self.screen == "cfa":
+            self._move_library()
+            return
         if self.working:
             return
         st = self.st or {}
@@ -655,6 +816,12 @@ class Gate(QWidget):
     def fresh(self):
         if self.screen in MOVE_SCREENS:
             self._move_other()
+            return
+        if self.screen == "cfa":
+            self._allow()
+            return
+        if self.screen == "lib-moved":
+            self._undo_library()
             return
         if not self.working:
             self._run(fresh=True)
@@ -709,6 +876,28 @@ class Gate(QWidget):
             return
         event.ignore()                            # ✕ is Quit (once a running import has stopped)
         self.quit()
+
+
+def _throttled_files(call):
+    """The move's `progress(done, total)` handed on at most every PROGRESS_EVERY s, and always its last file."""
+    last = {"t": 0.0}
+
+    def tick(done, total):
+        now = time.monotonic()
+        if done >= total or now - last["t"] >= PROGRESS_EVERY:
+            last["t"] = now
+            call(done, total)
+    return tick
+
+
+def _paths_moved():
+    """The library folder changed under this process (a move or its Undo, before anything opened it): library.json is
+    read again, and the two modules that keep `results` from their import follow it."""
+    path_utils.forget_library()
+    for name in ("app.analyzer", "app.static_html_generator"):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "RESULTS_DIR"):
+            module.RESULTS_DIR = path_utils.get_user_file("results")
 
 
 def gate(app, move=False):

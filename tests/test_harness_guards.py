@@ -515,7 +515,8 @@ def test_a_root_in_a_cycle_collected_on_a_worker_leaves_its_interpreter_to_the_m
         if was:
             gc.enable()
     assert _held(interp), "collected on the worker, the interpreter still held"
-    harness_guards._free_tk_interpreters()
+    harness_guards._free_worker_garbage()           # (each test's teardown: a worker's collection frees nothing; the
+    harness_guards._free_tk_interpreters()          #  main thread frees what it found, then lets the interpreter go)
     assert not _held(interp)
 
 

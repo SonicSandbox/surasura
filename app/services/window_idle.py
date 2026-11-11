@@ -9,6 +9,7 @@ by `app/qt/shell.py`), and a worker waits at the start of a step (`wait()`) whil
 `CAP_S`, so a window that never rests never stops the work. Without a window (the command line, the tests' services)
 the window is always idle: nothing waits. Qt-free.
 """
+import sys
 import threading
 import time
 
@@ -18,18 +19,31 @@ SPAN_S = 0.02                   # inside a step (`pause`): a window stretch youn
 _idle = threading.Event()
 _idle.set()
 _woke = [0.0]                   # when the window last woke from rest (perf_counter)
+_switch = [None, None]          # Python's lock hand-over while the window is awake, and at rest (`set_switch`)
+
+
+def set_switch(awake, at_rest):
+    """(The window's process, `shell.wire_idle`.) While the window is awake Python's lock changes hands every `awake`
+    seconds, and every `at_rest` once it goes back to wait; (None, None): never changed here (Mado-SP)."""
+    _switch[0], _switch[1] = awake, at_rest
 
 
 def busy():
-    """(The window's thread.) It woke: it has events to handle."""
+    """(The window's thread.) It woke: it has events to handle — and, in the window's process, the lock comes back to it
+    at once from a busy worker (`set_switch`)."""
     if _idle.is_set():
         _woke[0] = time.perf_counter()
         _idle.clear()
+        if _switch[0] is not None:
+            sys.setswitchinterval(_switch[0])
 
 
 def rest():
-    """(The window's thread.) It goes back to wait: the background may work."""
+    """(The window's thread.) It goes back to wait: the background may work, the lock handed over as before."""
+    was = _idle.is_set()
     _idle.set()
+    if not was and _switch[1] is not None:
+        sys.setswitchinterval(_switch[1])
 
 
 def wait(cap=None):

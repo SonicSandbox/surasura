@@ -234,8 +234,8 @@ def _free_tk_interpreters():
 def pytest_runtest_teardown(item, nextitem):
     yield
     _between_tests()
+    _free_worker_garbage()                  # (first: a Tk root a worker found lets its interpreter go now)
     _free_tk_interpreters()
-    _free_worker_garbage()
     _forget_ended_children(_CHILDREN)
 
 
@@ -636,9 +636,10 @@ _guard_qt_threads()
 # worker's too, and Qt says nothing (Qt 6.11: no warning, active timer or not); the process crashes later, natively,
 # in whatever test runs then. The app parents its objects or keeps them until the GUI thread deletes them (bridge's
 # `_pending`); a test's helpers needn't. So, as the Tk interpreters above: a collection on any thread but the main one
-# frees nothing — what it found is kept (gc.DEBUG_SAVEALL for that collection alone) until the main thread's next
-# collection, which frees it there (a test's own gc.collect() included), or each test's teardown: its live parentless
-# Qt objects deleted, then one collection.
+# deletes nothing: what it found is kept (gc.DEBUG_SAVEALL for that collection alone; CPython still runs its
+# finalizers and weakref callbacks there, but frees no object's memory, a Qt object's included) until the main thread
+# frees it — its next full collection (a test's own gc.collect()), or each test's teardown: the kept finds let go,
+# then one collection on the main thread (what is garbage still is freed there; what a Qt registry handed back lives).
 _WORKER_GARBAGE = []      # what workers' collections found, kept for the main thread
 _GC_ON_WORKER = {}        # thread id -> (the debug flags before, gc.garbage's length) while its collection runs
 
@@ -647,9 +648,10 @@ def _worker_gc(phase, info):
     try:
         me = threading.get_ident()
         if threading.current_thread() is threading.main_thread():
-            if phase == "start" and _WORKER_GARBAGE:
-                del _WORKER_GARBAGE[:]          # the main thread's own collection frees them, here (a test's
-            return                              # gc.collect() frees what a worker found before it)
+            if phase == "start" and _WORKER_GARBAGE and info.get("generation") == 2:
+                del _WORKER_GARBAGE[:]          # a full collection of the main thread's frees them, here (a test's
+            return                              # gc.collect() frees what a worker found before it); a young one
+            #                                     can't reach them (kept: the teardown's collection does)
         if phase == "start":
             _GC_ON_WORKER[me] = (gc.get_debug(), len(gc.garbage))
             gc.set_debug(_GC_ON_WORKER[me][0] | gc.DEBUG_SAVEALL)
@@ -666,50 +668,20 @@ def _worker_gc(phase, info):
         pass
 
 
-def _main_threads_qt_objects(objects):
-    sip, QObject, app = _QT_PARTS
-    if sip is None:
-        return []
-    home = app.instance().thread() if app is not None and app.instance() is not None else None
-    out = []
-    for o in objects:
-        if isinstance(o, QObject) and not sip.isdeleted(o) and sip.ispyowned(o) and o.parent() is None and                 (home is None or o.thread() is home):
-            out.append(o)
-    return out
-
-
 def _free_worker_garbage():
-    """On the main thread: what workers' collections found is freed here — its Qt objects deleted first (their
-    wrappers then hold nothing of Qt's), then one collection for the rest. -> how many objects were kept."""
+    """On the main thread: what workers' collections found is let go and one collection frees it here — never a Qt
+    object deleted by hand (one a Qt registry handed back to Python meanwhile is reachable again, and lives).
+    -> how many objects were kept."""
     if not _WORKER_GARBAGE or threading.current_thread() is not threading.main_thread():
         return 0
-    found = [o for batch in _WORKER_GARBAGE for o in batch]
+    count = sum(len(batch) for batch in _WORKER_GARBAGE)
     del _WORKER_GARBAGE[:]
-    for o in _main_threads_qt_objects(found):
-        try:
-            if not _QT_PARTS[0].isdeleted(o):
-                _QT_PARTS[0].delete(o)
-        except RuntimeError:
-            pass
-    count = len(found)
-    del found
     gc.collect()
     return count
 
 
-def _hold_worker_garbage():
-    try:
-        from PyQt6 import sip
-        from PyQt6.QtCore import QCoreApplication, QObject
-        _QT_PARTS[:] = [sip, QObject, QCoreApplication]
-    except ImportError:
-        pass
-    if _worker_gc not in gc.callbacks:
-        gc.callbacks.append(_worker_gc)
-
-
-_QT_PARTS = [None, None, None]
-_hold_worker_garbage()
+if _worker_gc not in gc.callbacks:
+    gc.callbacks.append(_worker_gc)
 
 
 def _claim_qt_warnings():

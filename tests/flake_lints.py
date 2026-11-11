@@ -150,7 +150,7 @@ def _parent_given(call):
 def app_qt_classes(root=ROOT):
     """The app's own classes that are (through any base) one of NON_WIDGET_QT: a parentless one is as much a hazard.
     In the app's code only: a test's helpers a worker's collection would free are held for the main thread by the
-    harness (tests/harness_guards.py `_qt_gc`)."""
+    harness (tests/harness_guards.py `_worker_gc`)."""
     bases = {}
     for path in app_files(root):
         if "class " in _text(root, path):

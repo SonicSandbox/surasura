@@ -105,6 +105,8 @@ def test_a_parentless_qt_object_a_workers_collection_frees_is_deleted_on_the_mai
     collected.join()
     assert not sip.isdeleted(child), "the worker's collection deleted a Qt object of the main thread"
     assert harness_guards._WORKER_GARBAGE, "kept for the main thread"
+    gc.collect(0)                                       # a young collection of the main thread's: still alive
+    assert not sip.isdeleted(child), "let go before the teardown: it would outlive it (round 2, B1)"
     assert harness_guards._free_worker_garbage() > 0     # (as each test's teardown does)
     assert sip.isdeleted(child) and harness_guards._WORKER_GARBAGE == []
 
@@ -121,24 +123,26 @@ def test_a_main_thread_collection_frees_as_ever(qapp):
     assert sip.isdeleted(child) and harness_guards._WORKER_GARBAGE == []
 
 
-def test_a_workers_collection_frees_nothing_until_the_main_thread_does(qapp):
-    # why: the same hold for a plain cycle (a Tk root's, a test's helpers): freed on the main thread, never lost
+def test_a_workers_collection_deletes_nothing_and_a_young_main_collection_keeps_it_for_the_teardown(qapp):
+    # why: the same hold for a plain cycle (a Tk root's, a test's helpers): kept (its memory never freed on the worker:
+    # finalizers still run there, CPython's way), past a young collection of the main thread's (it can't reach them),
+    # freed by the teardown's collection on the main thread
     import gc
-    import weakref
 
     class Cycle:
         pass
     a = Cycle()
     a.me = a
-    gone = []
-    weakref.finalize(a, gone.append, "freed")
+    kept = id(a)
     del a
     t = threading.Thread(target=gc.collect, name="worker-gc")
     t.start()
     t.join()
-    assert harness_guards._WORKER_GARBAGE                   # kept: not freed on the worker
-    harness_guards._free_worker_garbage()
-    assert gone == ["freed"] and harness_guards._WORKER_GARBAGE == []
+    assert any(id(o) == kept for batch in harness_guards._WORKER_GARBAGE for o in batch), "kept, not freed"
+    gc.collect(0)                                       # a young collection on the main thread: still kept
+    assert any(id(o) == kept for batch in harness_guards._WORKER_GARBAGE for o in batch)
+    assert harness_guards._free_worker_garbage() > 0    # (as each test's teardown does)
+    assert harness_guards._WORKER_GARBAGE == []
 
 
 def test_the_main_threads_own_collection_frees_what_a_worker_found(qapp):

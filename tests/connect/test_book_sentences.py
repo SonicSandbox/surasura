@@ -189,6 +189,25 @@ def test_a_videos_card_lines_never_read_the_length():
         assert pick.pick(read, tokens, "ja", lambda k: False, mode="unknown", sentence_length=lengths) == plain
 
 
+def test_a_videos_word_keeps_its_line_whatever_its_lines_lengths(tmp_path):
+    # why (mutant M6): a subtitle word said in a 3-character line, a long one and one within 10–50 — #372's own case —
+    # keeps the line the card-line rules give it (the first), the Length handed in or not
+    srt = tmp_path / "小説 - 01.ja.srt"
+    lines = ["小説。", "昨日の夕方に駅前の大きな本屋で見つけたあの古い小説は、思っていたよりもずっと面白くて、"
+             "気がついたら朝になるまで夜更かしをして読み続けてしまった。", "この小説はとても面白かった。"]
+    srt.write_text("".join(f"{n}\n00:00:{s:02d},000 --> 00:00:{s + 3:02d},000\n{t}\n\n"
+                           for n, (s, t) in enumerate(zip((1, 10, 20), lines), 1)), encoding="utf-8")
+    read = cues.read(str(srt), "ja")
+    tokens = cues.tokens(read, "ja")
+    key = next((t.lemma, t.reading) for t in tokens if t.surface == "小説")
+
+    def line(lengths):
+        got = pick.pick(read, tokens, "ja", lambda k: k != key, mode="list", listed={key: 0}, sentence_length=lengths)
+        return got["words"][0]["line_text"]
+    assert line(None) == "小説。"
+    assert line((10, 50, 100)) == "小説。" and line((0, 2, 0)) == "小説。"
+
+
 class _Picked(Exception):
     pass
 

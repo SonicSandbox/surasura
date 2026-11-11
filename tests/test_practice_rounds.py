@@ -262,3 +262,15 @@ def test_a_null_among_the_lines_is_not_kept_as_text():
     round_id = _saved("ja", JA_START)
     pr.save("ja", round_id, lines=[None, "【senpai】冒険だ。"])
     assert [x["text"] for x in pr.load("ja", round_id)["lines"]] == ["【senpai】冒険だ。"]
+
+
+def test_a_round_done_again_shows_its_words_with_the_reading_it_kept():
+    # review #2 (3.0.1): a round kept the reading of each word's shown spelling (いい感じ イイカンジ, beside its row's
+    # ヨイカンジ); done again, it shows the same — a round from before 3.0.1 has none, and goes with its reading
+    kept = {"words": [{"word": "良い感じ", "orth": "いい感じ", "reading": "ヨイカンジ", "kana": "イイカンジ",
+                       "lines": [{"line": "いい感じに仕上がったね。", "from": "ep02.srt"}]},
+                      {"word": "冒険", "orth": "冒険", "reading": "ボウケン", "lines": []},
+                      {"word": "散歩", "orth": "散歩", "reading": "サンポ", "kana": 7, "lines": []}]}
+    words = pr.words(kept)
+    assert words[0]["kana"] == "イイカンジ" and words[0]["reading"] == "ヨイカンジ"
+    assert "kana" not in words[1] and "kana" not in words[2]          # none kept, or not a string: left out

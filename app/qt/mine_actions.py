@@ -120,6 +120,7 @@ class MineActions(QObject):
         needs = getattr(win, "needs_you", None)
         if needs is not None:
             needs.hooks["make_cards"] = self._needs_make_cards
+            needs.hooks["try_again"] = self._needs_try_again      # Mattias #5
             needs.rewire()
         items = getattr(win, "items", None)
         if items is not None:                        # --- row 28 (Michi's row 24b ask): an episode's ⋯ offers *Mine now*
@@ -331,9 +332,9 @@ class MineActions(QObject):
                                     payload=lambda: self.find_folder(ep), writes=True)]
         if name == rows.STOP:                        # --- R47
             return [item_menu.Entry("ep-stop", strings.MINE_STOP_ENTRY, tip, True, payload=lambda: self.stop(ask))]
-        if name != "mine-now":
+        if name not in ("mine-now", "try-again"):       # (Mattias #5: *Try again* where its pill is *Try again*)
             return []
-        return [item_menu.Entry("ep-mine-now", strings.ROWS_ACTION_NAMES["mine-now"], tip, True,
+        return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
                                 payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)]
     # --- end row 28
 
@@ -411,6 +412,22 @@ class MineActions(QObject):
             service.answer(language, keys)
             return made
         needs._press("make_cards", entry, run, then=lambda made: needs._connect_done(_made_words(made)))   # (its arc)
+
+
+    def _needs_try_again(self, entry, _line=None):
+        """Mattias's field report (3.0.0, #5): *Try again* on a *Needs you* line that says Anki Miner stopped twice on a
+        part — the rows' own ask for that file (C2: one way to ask, `_ask`: its pill turns, its toast with Undo), so a
+        new try mines the words its cards don't hold yet. The line stays until that try goes through (fixed by itself)
+        or fails again (a new line, counted again: `runner._fail_mining`). Connect off: said in the bar, nothing asked;
+        another language's line (*Needs you* follows the window's): nothing asked, said."""
+        item_id = (entry.data or {}).get("item_id")
+        if item_id is None:
+            return None
+        needs = self.win.needs_you
+        if needs is not None and getattr(needs, "language", None) not in (None, getattr(self.win, "language", None)):
+            self.win.say(strings.MINE_NOTHING)
+            return None
+        return self._ask(strings.MINE_ASKED_ONE, (), [item_id])
 
 
 def _waits_line(ep):

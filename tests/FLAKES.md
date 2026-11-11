@@ -1,0 +1,62 @@
+# Flakes: the ledger
+
+A flake is a test whose answer depends on the machine's timing: green alone, red under load. The 3.0.0 release cut
+went red four times on four different such tests. Each one is found and fixed at its cause, test or code. A flake can
+be a real bug, so none is waved through with a longer timeout, a retry or a skip.
+
+## How to keep them away
+
+- **Wait on a condition, never on the clock.** `wait_until` (tests/qt/conftest.py) or `h.until`
+  (tests/services_helpers.py) instead of `time.sleep` and then an assert. A sleep is right only for a window in which
+  nothing may happen, or for a clock tick between two writes. `tests/flake_lints.py` lists each of those with its
+  reason.
+- **Dates relative to the run.** `time.time() + 86400`, never `"2027-01-01"`. The lint fails any date later than
+  today written into a test.
+- **No parentless Qt helper.** A test's timer is `qt_timer()` (tests/qt/conftest.py); any other Qt object that isn't
+  a widget gets a parent. The lint fails a bare `QTimer()` / `QObject()`, and in the app's code any of the app's own
+  Qt classes made without a parent. Behind it, the harness (tests/harness_guards.py) does two things. A worker
+  thread's garbage collection never deletes a Qt object of the main thread: it is held and deleted on the main thread
+  at the test's end, as Tk's interpreters are. And a test fails when Qt warns that one of its objects was used from
+  another thread.
+- **No new fixed-time Qt wait.** `QTest.qWait` then an assert is the same race as a sleep. The 128 already in the
+  test files are counted per file (`QWAITS_TO_REVIEW`). A new one fails, and a converted one lowers its file's count.
+- **Read a shared file the way the app does.** Use the same lock the writer holds. On Windows an open reader makes the
+  writer's `os.replace` fail.
+- **Real concurrency goes in `tests/stress/`.** These tests run many iterations and check only invariants (nothing
+  lost, nothing twice), never a timing: `python run_tests.py --stress [N]`.
+- **Before READY:** `python run_tests.py --stress-changed` runs every test file the branch changed 20 times, with two
+  core shards beside it as load.
+- **The same tests everywhere.** GitHub's runner runs the Tk window tests too. Only `SURASURA_SKIP_TK_TESTS=1` skips
+  them.
+
+## The ledger
+
+| Test | Cause | Fix | Date | Owner |
+| :-- | :-- | :-- | :-- | :-- |
+| tests/qt/test_ankiconnect_install_part.py (the cut's shard 1/8, exit 0xC0000005) | **Test (the class; the exact object not singled out).** Python-owned Qt objects in reference cycles were freed by whichever thread's collection ran, a worker's too. That deleted a Qt object off its own thread, and Qt says nothing when that happens. The test's parentless `QTimer()`s were such objects. Probe: of 78 such timers, 12 were freed off the main thread, and one plain run in twelve crashed. Other parentless test helpers (bridges, stand-ins) are the same class. The app parents its own objects or keeps them until the GUI thread deletes them (app/qt/bridge.py `_pending`). | A `qt_timer` fixture that deletes on the main thread, used at all ten places: 19 live parentless timers were left after teardown before it, 0 after. The harness's hold for the whole class: a worker's collection deletes nothing, and the main thread frees what it found. The lints. Under two core shards of load, with the fixture alone (before the hold): 0 crashes in 75 runs of the file and its neighbour. | 2026-11-10 | Flake-P |
+| modules/youtube_downloader/tests/test_qt_window.py `test_the_apps_quit_keeps_the_rest_for_the_next_start` (a 10 s wait ran out) | **Test, and a real app bug behind it.** The test polled the rest's record on the main thread outside its lock. On Windows the open file refused the worker's `os.replace` ("Access is denied"), and the run's record write failed. Under a 30 ms read: red 3/3. The app reads the record only under `_REST_LOCK`, but an outside reader (a virus scanner, a cloud client) can hold it the same way, and a transcript then dropped out of the record. | The test reads under the lock (`_rest`): green 3/3 under the probe. The app's write waits out a reader (`downloader_view._replace`: 5 tries, 0.1 s apart, as path_utils does), with a red-first test that holds the record open. | 2026-11-10 | Flake-P |
+| tests/test_sources_k5_pool.py `test_a_write_that_fails_cancels_the_parts_not_started_…` (`['1.part'] == []`) | **Test.** The pool's one worker can start the next part between the failure and the cancel. The code keeps its contract: its caller drops every `.part` on a failure (app/sources.py). | #339: the test records what started. `tests/stress/test_stress_k5_pool.py` checks the contract by many rounds. | 2026-11-10 | Minato; checked by Flake-P |
+| tests/qt/test_report_window.py `test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it` | **Test.** The 700-row stand-in screen sized the window nearly as tall as itself. Once Windows reported the frame, the window crossed from y=10 and was rightly moved up. | #340: a 1600-row stand-in screen. | 2026-11-10 | Minato; checked by Flake-P |
+| tests/test_update_state.py `test_the_update_check_reads_the_failed_version_from_update_state` | **Not a flake.** A fixed 2.5.1 read as older than the 3.0.0 stamp. It is a Tk test that GitHub's runner skipped, so no pull request ran it. | #338: it offers `__version__` + 1. The Tk tests now run on GitHub. | 2026-11-10 | Minato; Flake-P |
+| tests/test_no_subs.py (hato's retry dates) | **Test.** The fixed dates 2026-11-09 and 2026-11-10 passed (the cut's base red), and 2027-01-01 was the next one due to pass. | Dates relative to the run (c78e4f57, and this lane for 2027-01-01). The future-date lint. | 2026-11-10 | Kotoba-R / Flake-P |
+| tests/test_sources_scan.py `test_a_window_move_during_a_look_lands_within_the_budget` (R6, timed: 56 ms over the 50 ms budget) | **Test.** Only in R6's company: 52 timed tests in one process grew its heap, and a full collection of it (up to 197 ms there) inside one take-in pushed that hold over the budget. In R6's own list, the test as it was had its longest scan hold at 106.5 ms, with an 80.4 ms full collection inside; the others were 30 ms or less. The window's process keeps its long-lived objects out of the collector's sight (library_reader's `gc.freeze`); the test's didn't. | The timed form freezes the heap before the look, as the window's process does. In the same list, the longest scan hold was then 25.3 ms with no collection inside, green. | 2026-11-10 | Flake-P |
+| tests/test_sources_scan.py `test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_budget` (timed) | **Open.** It went red once in R6's own list on the H: SSD (not R6's C: baseline), and its output wasn't kept. It is the same company as the row above. | — | 2026-11-10 | open |
+| connect/test_status_record.py `test_stamp_is_equal_…_differs_after_a_need` | **Code.** Connect's status stamp was size + mtime, and two ledger writes in one 15.6 ms tick looked equal. | The wal-index header in the stamp (#286). | 2026-11-05 | Minato-Q |
+| connect/test_bs0a1k_stop_at_once.py | **Test.** Timed from the batch's start, so it counted the programs' starts. | Timed from the press (#286). | 2026-11-05 | Minato-Q |
+| qt/test_airing_finish.py `…the_mark_undone_then_the_answer_finishes_nothing` | **Test.** The stand-in writer's Undo wrote nothing back. | `MarkWriter` (#286). | 2026-11-05 | Minato-Q |
+| qt/test_drag.py `test_a8_a_mark_lets_go_…` | **Code.** The reader's view could reach the window before the writer's word. | A landed mark asks for a fresh view (#286). | 2026-11-05 | Minato-Q |
+| qt/test_settings_store.py (a GitHub shard died, exit 127 / 3) | **Open, not reproduced.** It died about 2 ms into a Qt test, with no faulthandler line. Likely the same class as the first row: test_settings_live.py, which runs just before it, left a parentless timer (now fixed). | Exits now say how the shard died (#286). | 2026-11-05 | open |
+| koe / junban / youtube `test_…_opens_without_tkinter` (exit 0xC0000005) | **Test.** The child script left its windows to Python's teardown. | Each child ends with `shell.quiet_exit` (#286). | 2026-11-05 | Minato-Q |
+| qt/test_settings_connect.py (star.json PermissionError) | **Test.** It read the file just after the writer's rename. | It waits until the file reads (#286). | 2026-11-05 | Minato-Q |
+| train 14's late `StoreRefused (I7)` line | **Test.** A fixture finished the wrong writer. | It finishes its own and checks the thread ended (#286). | 2026-11-05 | Minato-Q |
+| qt/test_journey_stones_trigger.py `…_option_off_a_mark_takes_the_generate_path…` (`counted` read early) | **Test.** `undone` waited for the notice, not for `on_counted`. | It waits until the writer's thread is back at its queue (d2d863b0). | 2026-10-24 | Michi |
+| test_services_moves_watched.py `test_W1_…_dragged_into_now_still_resyncs` (one resync short, GitHub) | **Open, not reproduced here.** The numbers' worker's `idle` is sound (`unfinished_tasks`), so `after_move` took a branch that doesn't resync. The suspect is the test's shared `seed.opener` handle. | — | 2026-10-23 | open (logic) |
+| test_replan_helper.py `test_the_helper_ends_with_its_window` (a `_warm` thread past its test) | **Open.** The `served` fixture doesn't join the thread. | — | 2026-10-20 | open (engine) |
+| qt/test_needs_you.py (the local-data guard at teardown, a different shard each time) | **Open.** An unnamed writer of `%TEMP%\surasura-test-bases-*` runs between tests. | — | 2026-10-20 | open (logic) |
+| qt/test_rows_string.py `…hover_repaints…while_the_springs_run` (GitHub) | **Open.** A slow runner merged the spring's frames into one. | — | 2026-10-15 | open (logic) |
+| qt/test_single_instance.py `…during_the_firsts_close…`, `…connects_just_as_the_first_closes…` (GitHub, found by the new guard) | **Test.** The stand-in second start claimed a `SingleInstance` made on the main thread from a Python thread, so Qt made its children across threads. The app claims only on the main thread (`shell.main`). | The stand-in makes, claims and releases its own on its own thread. | 2026-11-10 | Flake-P |
+| qt/test_arrivals.py `test_G2_IK3_a_tray_file_rested_on_a_group_joins_it…` | **Test.** A fixed rest (`JOIN_REST_MS + 150`), then an assert that the join happened. A loaded machine's rest timer fires later. | It waits for the join. | 2026-11-10 | Flake-P |
+| qt/test_arrivals_routing.py `…bell_live_an_idle_window_never_looks…` | **Test.** A fixed second, then "the old poll looked at least 5 times". | It waits for the five looks. | 2026-11-10 | Flake-P |
+| test_library_store_switch.py `test_journey_checks_asked_together_share_their_syncs` | **Test.** A 0.05 s head start: four checks started late made three walks, and four started early made one. | The first walk holds until all four are waiting for it. | 2026-11-10 | Flake-P |
+| 128 `QTest.qWait` calls in 23 test files | **Open, not yet reviewed one by one.** Each is either a window in which nothing may happen, or a race. | Counted per file (`tests/flake_lints.py` `QWAITS_TO_REVIEW`): no new one can come in. | 2026-11-10 | open (3.0.1 follow-up) |
+| qt/test_shell.py `test_no_stones_sheet_build_starts_before_the_first_frame_and_one_is_asked_right_after` (--all beside the stress gate) | **Test harness.** An earlier test's stones sheet build was still running at its teardown, and the teardown drops every answer, so that build never landed and its key stayed in `stones._BUILDING`. Every later ask for the sheet then joined it and started none. With builds slowed past the teardown's wait: red. In the app, answers are dropped only at the main window's close, as the process ends. | The Qt teardown forgets a build whose answer it dropped. Under the same probe: green. A two-test check in tests/qt/test_qt_thread_guard.py. | 2026-11-10 | Flake-P |

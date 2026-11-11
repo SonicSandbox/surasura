@@ -669,6 +669,57 @@ def test_no_connection_keeps_the_report_waiting_and_send_now_sends_the_same_one(
     assert wait_until(lambda: w.reports == [] and w.waiting_line.isHidden())
 
 
+def test_send_now_refused_again_says_so_anew_and_keeps_the_report_waiting(main, receiver):
+    # Mattias, 3.0.0 (2026-11-11): production's /report answered 404, and "Send now ... did nothing" — the refusal's
+    # line was word for word the one already showing (the status line repaints only on new words), and the press's arc
+    # lasts only as long as a 404's round trip. Each try that fails says so in words of its own; the zip stays.
+    receiver.answer = (404, b"Not found")
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    nonce = w.outbox.nonce
+    first = strings.REPORT_SEND_REFUSED.format(status=404)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == first, 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden())
+    lines = [first]
+    for tries in (2, 3):
+        w.send_now_button.click()
+        said = strings.REPORT_SEND_TRIED.format(n=tries, words=first)
+        assert wait_until(lambda: w.status.text() == said, 15)        # a line it hadn't shown: the press answered
+        lines.append(said)
+        assert wait_until(lambda: not w.waiting_line.isHidden() and w.send_now_button.isEnabled())
+    assert len(set(lines)) == 3 and len(receiver.got) == 3
+    assert {k.lower(): v for k, v in receiver.got[2]["headers"].items()}["x-report-nonce"] == nonce
+    assert len(core.listed()) == 1 and _send_state()[0].nonce == nonce     # the report and its zip both kept
+    receiver.answer = (201, {"id": "K3Q7PM"})
+    w.send_now_button.click()                                          # the receiver back: the same zip goes, once
+    assert wait_until(lambda: w.status.text() == "Sent. Your report is #K3Q7PM", 15)
+    assert wait_until(lambda: w.reports == [] and w.waiting_line.isHidden())
+
+
+def test_tries_count_per_zip_so_a_new_zips_first_refusal_says_the_plain_words(main, receiver):
+    # The count is the zip's (its nonce): a new zip after *Don't send* starts again, never "Tried 3 times".
+    receiver.answer = (404, b"Not found")
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    first = strings.REPORT_SEND_REFUSED.format(status=404)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == first, 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden() and w.send_now_button.isEnabled())
+    w.send_now_button.click()
+    assert wait_until(lambda: w.status.text() == strings.REPORT_SEND_TRIED.format(n=2, words=first), 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden() and w.dont_send_button.isEnabled())
+    w.dont_send_button.click()
+    assert wait_until(lambda: w.waiting_line.isHidden() and w.status.text() == strings.REPORT_DISCARDED)
+    _save(w, ZH_WHAT)                                                  # another report: another zip, another nonce
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 3, 15)
+    assert wait_until(lambda: w.status.text() == first, 15)
+
+
 def test_a_window_opened_with_a_report_waiting_sends_nothing_by_itself(main, receiver):
     from app import send_report
     w = _press(main)

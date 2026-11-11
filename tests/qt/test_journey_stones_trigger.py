@@ -8,10 +8,11 @@ halves (`analyzer.journey_is_current`, `analyzer.report_is_current`). The keeper
 and run by the test as the window would start it (part 1's `_generate`: the analyzer in its own process), then ended
 on the controller; the re-order host is a recorder (`_Opener`), so "Anki moved" is a host call.
 
-  D1  (PROVISIONAL) Finish acts after its Generate: with the option on, a Finish (and its Undo) never takes the stone's
+  D1  a Finish still asks its Generate (since Haya-FN, 2026-11-09, Anki's order no longer waits for it: the re-plan
+      verdict is the watched mark's, re-plan now): with the option on, a Finish (and its Undo) never takes the stone's
       path; a stone set before that Generate wakes the keeper, whose run is a full Generate (never a quiet re-render
-      first), with nothing sent to Anki and the re-plan verdict generate-first "reference" until it lands; a mark on a
-      Finished item asks the keeper once and runs nothing.
+      first); the Finish's Undo after it waits for its own Generate; a mark on a Finished item asks the keeper once
+      and runs nothing.
   D4  (the button half) after a mark with the option on the keeper is pending (the report half) until the quiet run,
       then not; a second press reopens and a second look runs nothing; the quiet run hands no new plan, so Anki isn't
       re-ordered for a stone. With the option off a mark takes the counting path only (no stone call beside it): one
@@ -121,6 +122,8 @@ def window(monkeypatch):
         w.close()
 
 
+SET_ASIDE = ("replan-now", ("files-removed", "reference-joined"))   # a counted file set aside (Haya-W, Haya-FN)
+
 def _verdict(root, language, store):
     """The re-order host's verdict on the plan the last Generate wrote, asked as it asks it (`replan_preview.Host`'s
     `_parts` and `_verdict`, the real functions): None current, ("replan-now", ...), ("generate-first", why)."""
@@ -134,29 +137,29 @@ def _journey_names(data):
     return set(_files(data) + [f["filename"] for f in data["completed_files"]])
 
 
-# --- D1 · Finish acts after its Generate (PROVISIONAL) -------------------------------------------------------------- #
+# --- D1 · a Finish still asks its Generate (Anki's order at once since Haya-FN) ---------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_d1_with_keep_studying_on_a_finish_waits_for_its_generate_and_a_stone_before_it_never_goes_first(
+def test_d1_with_keep_studying_on_a_finish_still_asks_its_generate_and_a_stone_before_it_never_goes_first(
         language, window, gate, fired, landed):
-    # why (D1, PROVISIONAL: a Finish acts after its Generate): a Finish moves what the journey counts, so Anki and the
-    # re-plan wait for its Generate. A stone set in between wakes the keeper through the trigger; that must never turn
-    # the Finish into a quiet re-render (its counts unanalysed, its stone drawn first) or into an early re-order
+    # why: a Finish moves what the journey counts, so its Generate still runs (Anki's order re-planned at once, the
+    # watched mark's rule: Haya-FN). A stone set in between wakes the keeper through the trigger; that must never turn
+    # the Finish into a quiet re-render (its counts unanalysed, its stone drawn first)
     store, ids, names, root, first = _kept_on(language)
     w = window(language)
     show_b = [ids[k] for k in ("B1", "B2", "B3")]
     w.writer.set_finished(show_b)
     w.saved(1)
     assert w.reasons == [] and w.counted == [], "a Finish is a tier move: never the stone's path"
-    assert _verdict(root, language, store) == ("generate-first", "reference"), "Finished is set aside: a Generate first"
+    assert _verdict(root, language, store) == SET_ASIDE, "Finished is set aside: re-planned at once, as a mark"
     assert w.keeper._is_pending() is True
     w.writer.set_watched([ids["A2"]])
     w.saved(2)
     assert w.reasons == ["stone"] and w.counted == [], "the stone: one look, the counting path never"
     assert fired.done(w.keeper)
     assert w.keeper.asked == 1 and h.until(lambda: w.launches.count() == 1, seconds=5), "one Generate asked"
-    assert w.host_calls() == [] and _replans(w.registry) == [], "nothing sent to Anki before the Generate"
-    assert _verdict(root, language, store) == ("generate-first", "reference"), "the stone moved no verdict"
+    assert w.host_calls() == [] and _replans(w.registry) == [], "the keeper's Generate is no re-order of its own"
+    assert _verdict(root, language, store) == SET_ASIDE, "the stone moved no verdict"
     finished, said = w.generate_asked(root, 1)
     assert REUSED not in said, "the keeper's run is the Finish's Generate, a re-analysis — never a quiet re-render"
     assert not {names[k] for k in ("B1", "B2", "B3")} & _journey_names(finished), "Show B left the journey"
@@ -172,7 +175,8 @@ def test_d1_a_mark_on_a_finished_item_runs_nothing_and_the_finishs_undo_waits_fo
         language, window, gate, fired):
     # why (D1): a stone on a Finished episode is in no journey (Finished is its own view): the trigger may look once
     # (Mado's PROVISIONAL: the writer knows no tiers), but the look finds both halves current and runs nothing. The
-    # Finish's Undo brings Show B back to what counts: like the Finish, a tier move that waits for its Generate
+    # Finish's Undo after its Generate brings Show B back to what counts: files its plan has no line for, a Generate
+    # first (as a watched mark's un-marking after its Generate)
     store, ids, names, root, first = _kept_on(language)
     w = window(language)
     show_b = [ids[k] for k in ("B1", "B2", "B3")]

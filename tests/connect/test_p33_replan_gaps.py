@@ -124,16 +124,17 @@ def test_a_file_gone_from_the_disk_keeps_its_place_and_needs_no_generate(lib):
     assert library_store.path_key(path) in {library_store.path_key(entry[0]) for entry in got.plan.files}
 
 
-def test_an_episode_graduated_since_the_plan_waits_for_its_generate_never_a_plan_read_error(lib):
-    # why (P3.3 B75, then W-1b): a plan file that left the counted tiers (graduated) joins the set-aside files — the run
-    # signature's "reference" part — so the re-plan waits for its Generate ("first"), as a watched mark does; never a
-    # KeyError read as "the plan couldn't be read"
+def test_an_episode_graduated_since_the_plan_re_plans_now_never_a_plan_read_error(lib):
+    # why (P3.3 B75, then W-1b, Haya-FN): a plan file that left the counted tiers (graduated) joins the set-aside files
+    # — the run signature's "reference" part — with the digest its plan line holds, so it re-plans at once ("after"),
+    # as a watched mark does; never a KeyError read as "the plan couldn't be read"
     root, store = lib
     item = store.ids("soon")[0]
     store.move([item], "graduated")
     got = _current(store)
-    assert got.verdict == ("generate-first", "reference") and got.generate == "first", (got.verdict, got.reason)
-    assert got.result is None, "nothing mined or ordered from the plan before the Generate"
+    assert got.verdict == ("replan-now", ("files-removed", "reference-joined")) and got.generate == "after", \
+        (got.verdict, got.reason)
+    assert got.result is not None and item not in got.result.sequence, "mined and ordered without it"
 
 
 def test_a_pin_or_a_new_store_during_junbans_write_counts_as_the_plan_moved(lib):

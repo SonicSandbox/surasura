@@ -20,7 +20,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
 
 from app import theme
-from app.qt import frame, motion, shell, strings
+from app.qt import frame, motion, rows, shell, strings
 from app.services import generate as G
 from app.services.jobs import JobRegistry
 from app.services.view_rows import Goal
@@ -495,6 +495,78 @@ def test_the_dock_greys_its_hand_once_and_blits_its_picture(dock):
     greys = [img.pixelColor(x, y) for x in range(0, img.width(), 3) for y in range(0, img.height(), 3)]
     opaque = [c for c in greys if c.alpha() > 250]
     assert opaque and all(abs(c.red() - c.green()) <= 3 and abs(c.green() - c.blue()) <= 3 for c in opaque)
+
+
+def _bar_as_one_picture(dock, dpr):
+    """The bar as it was drawn before Mado-SP (8bdaaccd's `_bar_picture`, kept here): one painter, base and line."""
+    import math
+    from PyQt6.QtCore import QRectF
+    from PyQt6.QtGui import QPainter, QPainterPath, QPixmap
+    from app.qt import shadow
+    F = theme.FRAME
+    pix = QPixmap(max(1, math.ceil(dock.width() * dpr)), max(1, math.ceil(dock.height() * dpr)))
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(rows.c("frame"))
+    q = QPainter(pix)
+    q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    bar = dock.bar_rect()
+    radius = F["goal-bar-radius"]
+    shadow.paint(q, bar, "goal-bar")
+    path = QPainterPath()
+    path.addRoundedRect(bar, radius, radius)
+    q.fillPath(path, rows.c("goal-bar"))
+    q.save()
+    q.setClipPath(path)
+    q.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    edge = max(1, round(dpr)) / dpr
+    q.fillRect(QRectF(bar.left(), bar.top(), bar.width(), edge), rows.c("goal-bar-edge"))
+    q.restore()
+    mid = bar.center().y()
+    x = bar.left() + 14
+    rows.icon(q, "box", QRectF(x, mid - 8.5, 17, 17), rows.c("ink-dim"))
+    x += 17 + 12
+    w, _cut = rows.TEXT.draw(q, x, mid, strings.GOAL_NAME, "goal-label", 200, rows.c("ink"), dpr=dpr)
+    x += w + 12
+    if dock.goal.covers:
+        hand, room = dock._hand_picture(dpr)
+        q.setOpacity(F["dock-cover-alpha"])
+        q.drawPixmap(QPointF(x - room, mid - hand.height() / dpr / 2), hand)
+        q.setOpacity(1.0)
+        x += hand.width() / dpr - 2 * room + 12
+    rows.TEXT.draw(q, x, mid, dock.goal.line, "row-sub", bar.right() - x - 14, rows.c("ink-dim"), dpr=dpr)
+    q.end()
+    return pix
+
+
+def test_a_new_count_for_goal_draws_its_line_over_the_kept_bar_the_same_picture_as_drawn_afresh(dock):
+    # Mado-SP: a press that sends a show to Goal changes the bar's line alone (*N titles · N files*); the stone, its
+    # shadow, the label and the hand are kept (`_bar_base`) and only the line is drawn again, on a copy — the picture
+    # the same, pixel for pixel, as one drawn from nothing for that goal
+    dock.repaint()
+    bases, hands = dock.bases, dock.hands
+    later = _goal(n=12, files=1234)._replace(line="12 titles · 1,234 files")
+    assert dock.set_goal(later)
+    dock.repaint()
+    assert dock.pictures == 2 and dock.bases == bases and dock.hands == hands      # the line alone drawn again
+    kept = dock._pix.toImage()
+    assert kept == _bar_as_one_picture(dock, dock.devicePixelRatioF()).toImage()     # as one painter drew it before
+    dock._base_key = dock._hand_key = None                                           # drawn afresh, the same goal
+    dock._key = None
+    dock.repaint()
+    assert dock.bases == bases + 1 and dock._pix.toImage() == kept
+    shorter = later._replace(files=9, line="12 titles · 9 files")      # a shorter line: nothing of the last one left
+    assert dock.set_goal(shorter)
+    dock.repaint()
+    assert dock.bases == bases + 1                                      # (the base itself never drawn on)
+    assert dock._pix.toImage() == _bar_as_one_picture(dock, dock.devicePixelRatioF()).toImage()
+    fewer = later._replace(covers=later.covers[:3], line="3 titles · 40 files")
+    assert dock.set_goal(fewer)                                                       # another hand: the base anew
+    dock.repaint()
+    assert dock.bases == bases + 2 and dock.hands == hands + 2
+    assert dock.set_goal(None) is True
+    dock.repaint()                                                                    # no goal: the frame alone
+    assert dock._pix.toImage().pixelColor(dock.width() // 2, dock.height() // 2) == rows.c("frame")
 
 
 def test_the_dock_paints_goals_bar_with_its_lift(dock):

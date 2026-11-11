@@ -333,7 +333,7 @@ def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch)
     before_hook, before_interval = sys.excepthook, sys.getswitchinterval()
     try:
         shell.prepare_process()
-        assert sys.getswitchinterval() == pytest.approx(0.001)
+        assert sys.getswitchinterval() == pytest.approx(0.001) == shell.SWITCH_INTERVAL_S
         assert sys.excepthook is shell._log_unhandled
     finally:
         sys.excepthook, _ = before_hook, sys.setswitchinterval(before_interval)
@@ -345,18 +345,28 @@ def test_the_window_process_tells_its_background_when_the_window_rests(qapp):
     (a slot running) the window is busy — a worker's step waits — and once the loop goes back to wait it is idle."""
     from PyQt6.QtCore import QTimer
     from PyQt6.QtTest import QTest
+    import sys
     from app.services import window_idle
     seen = []
+    before = sys.getswitchinterval()
     try:
         shell.wire_idle()
         shell.wire_idle()                                       # (once a process)
         assert len(shell._IDLE_WIRED) == 1
-        QTimer.singleShot(0, lambda: seen.append(window_idle.idle()))
+        QTimer.singleShot(0, lambda: seen.append((window_idle.idle(), sys.getswitchinterval())))
         QTest.qWait(30)
-        assert seen == [False]
+        # Mado-SP: inside the stretch Python's lock comes back to the window at once; at rest, every millisecond
+        assert seen == [(False, pytest.approx(0.00025))]
+        assert shell.AWAKE_SWITCH_INTERVAL_S < shell.SWITCH_INTERVAL_S
     finally:
-        shell.unwire_idle()
+        shell.unwire_idle()                                     # (its rest: every millisecond again)
+        rested = sys.getswitchinterval()
+        sys.setswitchinterval(before)
+    assert rested == pytest.approx(shell.SWITCH_INTERVAL_S)
     assert window_idle.idle() and shell._IDLE_WIRED == []
+    window_idle.busy()                                          # unwired: the window's process changes it no more
+    window_idle.rest()
+    assert sys.getswitchinterval() == pytest.approx(before)
 
 
 def test_quitting_flushes_settings_and_tells_the_jobs(qapp, monkeypatch):

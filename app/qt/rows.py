@@ -426,17 +426,19 @@ def icon(p, kind, rect, colour, width=1.6):
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
                "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
                "asked": "waiting",                                     # R47: an ask Connect has read
-               "books": "waiting"}                                     # alpha 4 M1: waits for Anki Miner to read books
+               "books": "waiting",                                     # alpha 4 M1: waits for Anki Miner to read books
+               "retry": "mine"}                                        # Mattias #5: Anki Miner stopped on it: Try again
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
-ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
+ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media", "retry": "try-again"}
 HEADPHONES = "🎧 "                               # a5-2 (Hon): before an audiobook's title
 STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
 ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP}
-ASKS = ("mine-now", "mine-this")                    # the actions that ask Connect (round 8 row 45: they turn when pressed)
-_ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP"}
+ASKS = ("mine-now", "mine-this", "try-again")       # the actions that ask Connect (round 8 row 45: they turn when pressed)
+_ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP",
+                "try-again": "ROWS_TRY_AGAIN_TIP"}
 
 
 Ask = namedtuple("Ask", "id ids episode job", defaults=(None,))     # R47: `job`, the Connect job a Stop stops
@@ -515,12 +517,21 @@ def stone_tip(ep, state, leaves):
     return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
 
 
+def _failed(e):
+    """Mattias #5: is the episode one Anki Miner stopped on (its status *Try again*: `view_rows._connected`)?"""
+    return getattr(getattr(e, "status", None), "kind", None) == "retry"
+
+
 def asked_files(kind, episodes):
     """The files a status's button stands for: *Mine now* the unmined ones in the top waiting on nothing but their
     turn, *Mine this* every unmined one that can be mined, *No video* the unmined ones with none (never one being mined,
-    one in Anki, or one whose cards the learner deleted)."""
-    open_ = [e for e in episodes if not (e.cards or e.mining or getattr(e, "deleted", False))]
+    one in Anki, or one whose cards the learner deleted), *Try again* the ones Anki Miner stopped on. One Anki Miner
+    stopped on counts as unmined whatever it made (Mattias #5: the words it never made are on no card)."""
+    open_ = [e for e in episodes if not e.mining and (_failed(e) or not (e.cards or getattr(e, "deleted", False)))]
+    if kind == "retry":
+        return [e for e in open_ if _failed(e) and not e.missing]
     if kind == "waiting":                           # (an asked one below the line waits too: it goes first again)
+        open_ = [e for e in open_ if not _failed(e)]    # (one Anki Miner stopped on waits on no turn: its own button)
         return [e for e in open_ if e.in_top and not e.missing] or [e for e in open_ if not e.missing]
     if kind == "mine":
         return [e for e in open_ if not e.missing]
@@ -532,7 +543,7 @@ def asks_connect(name, word="video"):
     """Whether a status's button is an ask for Connect (refused while Connect is off): *Mine now* / *Mine this* on a
     video. *No video*'s *Link…* and a non-video item's *Mine this* (the bar says it waits: alpha 4 M1) need no
     Connect, so they work while it is off (P4.1 WF, review IK N2)."""
-    return name in ("mine-now", "mine-this") and word == "video"
+    return name in ASKS and word == "video"
 
 
 def action_of(status, episodes, off=None, word="video"):
@@ -555,7 +566,7 @@ def action_of(status, episodes, off=None, word="video"):
         tip = strings.ROWS_ACTION_OFF.format(tip=said, why=off)
     elif view_rows.names_click(status):
         tip = said                      # a wait on Anki or on the battery: `view_rows` names the click (M-3)
-    elif word != "video" and name != "no-media":
+    elif word != "video" and name not in ("no-media", "try-again"):
         tip = said                      # alpha 4 M1: no *Mine text* (Anki Miner's window): the bar says it waits
     else:
         words = getattr(strings, _ACTION_TIPS[name])
@@ -689,6 +700,10 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
         p.drawRoundedRect(r, radius, radius)
     elif status.kind == "mine_rest":
         p.setPen(QPen(style.qcolor(col["status-part-ring"]), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r, radius, radius)
+    elif status.kind == "retry":                    # Mattias #5: Anki Miner stopped on it — its warn ring
+        p.setPen(QPen(style.qcolor(col["warn"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
     elif status.kind in ("mine", "deleted", "no_subs"):
@@ -1042,6 +1057,8 @@ class RowDelegate(QStyledItemDelegate):
         self._hints_look = None
         self._model = view.model()                   # the list's own model, set before its delegate (`RowsView`)
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
+        self.step = 1                                # every height a multiple of it: whole device px (`whole_step`,
+        self._h_step = None                          # kept by the view's `_follow_ratio`)
         self._h_unfolded = None                      # a8: the view's folds shown whole the heights were made for
         self._bytes = {"row": 0, "ep": 0}
         self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
@@ -1124,7 +1141,7 @@ class RowDelegate(QStyledItemDelegate):
         more is paid a few hundred times (W2.2 speed round 5: 1.4 ms of an opening's ~3.5)."""
         model = self._model
         if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look \
-                or self.view.unfolded is not self._h_unfolded:
+                or self.view.unfolded is not self._h_unfolded or self.step != self._h_step:
             self._heights_now(model)
         row = index.row()
         heights = self._heights
@@ -1134,7 +1151,8 @@ class RowDelegate(QStyledItemDelegate):
         """Every entry's height as `sizeHint` answers Qt (the same list, made again when stale): a row's place read from
         them asks Qt nothing (a `visualRect` asks the delegate again, one Python call a row)."""
         model = self._model
-        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look                 or self.view.unfolded is not self._h_unfolded:
+        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look \
+                or self.view.unfolded is not self._h_unfolded or self.step != self._h_step:
             self._heights_now(model)
         return self._heights
 
@@ -1147,11 +1165,13 @@ class RowDelegate(QStyledItemDelegate):
     def _heights_now(self, model):
         """Every entry's height, from the sizes kept by what decides them (`_shape`): a refresh makes every entry a new
         tuple and an arrival every row a new object (its number moved), yet only a shape not seen before is worked out
-        (`_size_hint`)."""
-        look = style.current()
-        if look != self._hints_look:                 # a new look: every height again
+        (`_size_hint`). Each height is a whole number of device pixels (Mado-SP): rows that came or went shift the rest
+        by whole device px, so Qt moves the pixels already drawn instead of painting the shifted rows again
+        (`_repaint_spliced`; at 250 % a 73 px row was 182.5 device px)."""
+        look, step = style.current(), self.step
+        if (look, step) != self._hints_look:         # a new look or screen ratio: every height again
             self._hints.clear()
-            self._hints_look = look
+            self._hints_look = (look, step)
         open_key, hints, shape, unfolded = model.open_key, self._hints, self._shape, self.view.unfolded
         out = []
         for entry in model.entries:
@@ -1159,10 +1179,10 @@ class RowDelegate(QStyledItemDelegate):
             key = shape(entry, is_open, unfolded)
             size = hints.get(key)
             if size is None:
-                size = hints[key] = self._size_hint(entry, is_open)
+                size = hints[key] = whole_height(self._size_hint(entry, is_open), step)
             out.append(size)
         self._heights, self._h_entries, self._h_open, self._h_look = out, model.entries, open_key, look
-        self._h_unfolded = unfolded
+        self._h_unfolded, self._h_step = unfolded, step
 
     @staticmethod
     def _shape(entry, is_open, unfolded=frozenset()):
@@ -2417,7 +2437,10 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             return QRect(rect.left(), rect.top(), rect.width(), rect.height() - rl("hero-below") - self._lines_h(lines))
         half = rl("gap") // 2
-        return QRect(rect.left(), rect.top() + half, rect.width(), rect.height() - self._lines_h(lines) - rl("gap"))
+        h = rect.height() - self._lines_h(lines) - rl("gap")
+        if abs(h - self._line_h()) < self.step:      # a closed row: its one line, never the px a whole step added or
+            h = self._line_h()                       # took (Mado-SP review R1: the lift's picture is the hover's)
+        return QRect(rect.left(), rect.top() + half, rect.width(), h)
 
     @staticmethod
     def paint_slot(p, r):
@@ -2948,11 +2971,18 @@ class RowDelegate(QStyledItemDelegate):
 
 def whole_step(dpr):
     """The smallest scroll step (logical px) whose device size is whole at this ratio: 1 at 100 / 200 %, 2 at 150 /
-    250 %, 4 at 125 / 175 % (review C-2)."""
+    250 %, 4 at 125 / 175 % (review C-2) — a row's height too (`whole_height`)."""
     for q in (1, 2, 3, 4):
         if abs(q * dpr - round(q * dpr)) < 1e-6:
             return q
     return 1
+
+
+def whole_height(size, step):
+    """`size` with its height at the nearest multiple of `step` (`whole_step`; a tie upward): whole device px."""
+    if step == 1:
+        return size
+    return QSize(size.width(), (size.height() + step // 2) // step * step)
 
 
 NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back", "fold")) | ACTION_NAMES   # buttons (W3.2 Q4:
@@ -3123,6 +3153,7 @@ class RowsView(QListView):
         self.tooltips = tooltips
         self.setModel(RowsModel(self))
         self.delegate = RowDelegate(self)
+        self.delegate.step = whole_step(self.viewport().devicePixelRatioF() or 1.0)     # (`_follow_ratio` after)
         self.setItemDelegate(self.delegate)
         self.setUniformItemSizes(False)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -3226,6 +3257,7 @@ class RowsView(QListView):
         qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
 
     def paintEvent(self, event):
+        self._follow_ratio()                         # (a ratio Qt didn't tell: this frame as laid out, the next snapped)
         p = QPainter(self.viewport())
         p.fillRect(event.rect(), c("bg"))
         p.end()
@@ -4003,6 +4035,7 @@ class RowsView(QListView):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._follow_ratio()                         # on its window's screen now: laid out before its first paint
         self._rest()
 
     def _range_changed(self, _lo, _hi):
@@ -4012,6 +4045,18 @@ class RowsView(QListView):
     def relayout(self):
         """A row changed height (opened, closed): lay the rows out again."""
         self.scheduleDelayedItemsLayout()
+
+    def _follow_ratio(self):
+        """The rows' heights follow the screen's ratio (`RowDelegate.step`: whole device px): read when the list is
+        shown, at Qt's `DevicePixelRatioChange` (`viewportEvent`; a window dragged to another monitor) and at each
+        paint (Qt tells no `changeEvent`). -> True when it changed: the rows laid out again, the screen repainted."""
+        step = whole_step(self.viewport().devicePixelRatioF() or 1.0)
+        if step == self.delegate.step:
+            return False
+        self.delegate.step = step
+        self.relayout()
+        self.viewport().update()
+        return True
 
     # open / close -------------------------------------------------------------------------------------------------- #
     def toggle(self, index):
@@ -4373,6 +4418,8 @@ class RowsView(QListView):
 
     def viewportEvent(self, event):
         from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self._follow_ratio()
         if event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate):
             # QAbstractItemView repaints its whole viewport here, yet no row paints the window's active state:
             # nothing visible changes (S19; review D-5). The focus ring follows focus in / out (`focusInEvent`).

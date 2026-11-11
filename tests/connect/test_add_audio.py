@@ -20,7 +20,7 @@ import pytest
 from app.connect import add_audio, fields, library, lineup
 from app.connect import sentence_audio as sa
 from app.connect.ledger import Ledger
-from tests.connect.test_lineup_own_subtitle import _job, _pair, _trust
+from tests.connect.test_lineup_own_subtitle import _pair, _trust
 from tests.connect.test_sentence_audio import FakeAnki
 from tests.test_audiobook_transcripts import _other_lines
 
@@ -414,3 +414,152 @@ def test_undo_takes_back_only_an_add_audio_and_anki_miner_absent_is_skipped(monk
     monkeypatch.setattr("app.cli.verbs._anki_miner_setup", lambda *a, **k: None)
     assert add_audio.act({"connect_enabled": True}, "ja", book=str(epub), confirm=True)["skipped"] == \
         "Anki Miner isn't installed: it cuts the clips."
+
+
+# --- review A1 round 2 (Opus adversary, delta d9e610ba..6e3dd3a2) ------------------------------------------------ #
+def _own_srt(tmp_path, lines):
+    """A subtitle of `lines` [(start, end, text)] and an audio file beside it, as `cut` sends them."""
+    srt = tmp_path / "own.srt"
+    srt.write_text("\n".join(f"{n}\n00:00:{int(a):02d},{int(a * 1000) % 1000:03d} --> "
+                             f"00:00:{int(z):02d},{int(z * 1000) % 1000:03d}\n{t}\n"
+                             for n, (a, z, t) in enumerate(lines, 1)), encoding="utf-8")
+    audio = tmp_path / "own.m4b"
+    audio.write_bytes(b"\x00" * 64)
+    return str(audio), str(srt)
+
+
+def test_two_cues_of_one_start_whose_texts_are_a_prefix_never_share_a_clip(fake_miner, tmp_path):
+    """r2 S1: 「そうか」 and 「そうか、わかった」 start together; Anki Miner's nearest line is the first's — the longer
+    cue's card gets nothing rather than half its sentence (its end is another line's)."""
+    audio, srt = _own_srt(tmp_path, [(10.0, 11.0, "そうか"), (10.0, 12.5, "そうか、わかった")])
+    short = lineup.Cue(audio, srt, 10.0, 11.0, lineup.clean("そうか"))
+    long_ = lineup.Cue(audio, srt, 10.0, 12.5, lineup.clean("そうか、わかった"))
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", {1: short, 2: long_}, str(tmp_path / "run"))
+    assert sorted(clips) == [1]
+
+
+def test_a_speaker_tag_anki_miner_drops_is_still_the_line_and_a_changed_reading_is_skipped(fake_miner, tmp_path):
+    """r2 S3: Anki Miner answers a line with its leading speaker tag removed — still that line; a line whose text it
+    changed mid-line (furigana in brackets) no longer holds the cue's — that card is skipped, never mismatched."""
+    audio, srt = _own_srt(tmp_path, [(2.0, 3.5, "（太郎）明日は早く出かけるよ"), (4.0, 5.5, "彼（かれ）は毎日冒険に出かけます")])
+    tagged = lineup.Cue(audio, srt, 2.0, 3.5, lineup.clean("（太郎）明日は早く出かけるよ"))
+    ruby = lineup.Cue(audio, srt, 4.0, 5.5, lineup.clean("彼（かれ）は毎日冒険に出かけます"))
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", {1: tagged, 2: ruby}, str(tmp_path / "run"))
+    assert sorted(clips) == [1]
+
+
+def test_nothing_cut_says_why_and_a_part_cut_names_why_the_rest_werent(book, fake_miner, tmp_path, monkeypatch):
+    """r2 S2: every run refused (the audio unreadable) is an error in Anki Miner's words, never *0 filled* unexplained;
+    a later call refused after some clips: the answer keeps its reason for the rest."""
+    from app.connect import anki_miner
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    real = anki_miner.api
+
+    def refused(miner, args, **kw):
+        job = lineup._read_json(args[1])
+        return {"ok": True, "runs": [{"run_id": e["run_id"], "ok": False, "error": "SOURCE_UNREADABLE",
+                                      "message": "The audio file can't be read."} for e in job["episodes"]]}
+    monkeypatch.setattr(anki_miner, "api", refused)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert "can't be read" in e.value.message
+    monkeypatch.setattr(add_audio, "CUT_LINES", 2)
+    calls, troubles = [], []
+
+    def refuse_second(miner, args, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise anki_miner.AnkiMinerError("timeout", "Anki Miner took too long.")
+        return real(miner, args, **kw)
+    monkeypatch.setattr(anki_miner, "api", refuse_second)
+    clips = add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run2"), troubles=troubles)
+    assert len(clips) == 2 and troubles == ["Anki Miner took too long."]
+
+
+def test_a_sentence_both_a_cue_and_inside_a_longer_cue_is_no_answer(book, monkeypatch):
+    """r2 N4: the card's sentence is a cue once and also said inside a longer line elsewhere — which moment is
+    unknown: unheard (B-14), even for a short sentence."""
+    real = lineup.cues
+
+    def also_inside(state):
+        found = real(state)
+        c = next(c for c in found if c.text == lineup.clean(book["lines"][1]))     # 冒険する — card 100
+        return found + [c._replace(start=500.0, end=503.0, text=lineup.clean("彼はもう一度冒険するつもりだ"))]
+    monkeypatch.setattr(lineup, "cues", also_inside)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert 100 not in got["can"] and 100 in got["unheard"]
+
+
+def test_square_brackets_that_are_not_furigana_stay_in_the_sentence():
+    """r2 N6: only Anki's kana furigana in brackets is dropped — メール[添付あり] keeps its words."""
+    assert add_audio._text(" 彼[かれ]はメール[添付あり]を送った") == "彼はメール[添付あり]を送った"
+
+
+def test_the_bold_sharing_the_words_kanji_is_its_form():
+    """r2 N7: a stray bold (an emphasis) never stands for the word; the bold sharing its kanji does."""
+    assert add_audio._form("<b>本当に</b>彼は<b>出</b>かけた", "出かける") == "出"
+    assert add_audio._form("<b>本当に</b>彼は出かけた", "行く") == "本当に"
+
+
+@pytest.mark.parametrize("raised, code", [("toonew", "needs-you"), ("reviewing", "anki-busy"),
+                                          ("busy", "busy"), ("anki", "anki-closed"), ("file", "failed")])
+def test_act_says_the_other_failures_in_plain_words_too(monkeypatch, tmp_path, raised, code):
+    """r2 gap: the ledger too new, you reviewing, the writer held, Anki closed — and a file's trouble named as a
+    file's (never as Connect's records)."""
+    from app import anki_connect, locks
+    from app.cli.contract import CliError
+    from app.connect.ledger import TooNew
+    _act_ready(monkeypatch, tmp_path)
+    errors = {"toonew": TooNew(99), "reviewing": sa.Reviewing(), "busy": locks.Busy("anki-writer"),
+              "anki": anki_connect.AnkiError("closed"), "file": PermissionError("media-1.json")}
+
+    def fails(*a, **k):
+        raise errors[raised]
+    monkeypatch.setattr(add_audio, "_add", fails)
+    with pytest.raises(CliError) as e:
+        add_audio.act({"connect_enabled": True}, "ja", book="x.epub", confirm=True)
+    assert e.value.code == code and e.value.message
+    if raised == "file":
+        assert "records" not in e.value.message
+
+
+def _act_book(book, fake_miner, monkeypatch, tmp_path):
+    """`act` on the fixture's book end to end: its steps, its Anki, the fake Anki Miner, Connect's folder in tmp."""
+    from app.connect import anki_miner, runner
+    owed = _act_ready(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner, "Steps", lambda settings: book["steps"])
+    monkeypatch.setattr(anki_miner, "find", lambda settings: fake_miner.path)
+    monkeypatch.setattr("app.cli.verbs._anki_miner_setup", lambda *a, **k: ({}, "p-surasura", MAPPING))
+    monkeypatch.setattr("app.cli.verbs._connect_folder", lambda: str(tmp_path / "connect"))
+    monkeypatch.setattr(sa, "AnkiConnectNotes", lambda url: book["anki"])
+    return owed
+
+
+def test_act_end_to_end_plans_then_fills_and_owes_the_sync(book, fake_miner, monkeypatch, tmp_path):
+    """The command line's sequence with a real book: the plan writes nothing; `--confirm` fills the five, owes the
+    sync, and leaves no run folder behind."""
+    owed = _act_book(book, fake_miner, monkeypatch, tmp_path)
+    plan = add_audio.act({"connect_enabled": True}, "ja", book=book["book"])
+    assert plan["confirm"] is False and plan["can"] == 5 and not owed
+    done = add_audio.act({"connect_enabled": True}, "ja", book=book["book"], confirm=True)
+    assert done["filled"] == 5 and done["not_cut"] == 0 and owed
+    assert not os.listdir(str(tmp_path / "connect" / "add-audio"))
+
+
+def test_act_end_to_end_a_write_stopped_part_way_names_its_undo(book, fake_miner, monkeypatch, tmp_path):
+    """r2 gap: the real `_add` → `fill` stopping part-way (Anki stops answering at the third card): the error names
+    the Undo, the sync is owed, the run folder is gone."""
+    from app import anki_connect
+    from app.cli.contract import CliError
+    owed = _act_book(book, fake_miner, monkeypatch, tmp_path)
+    real = book["anki"].update
+
+    def stops(nid, fields):
+        if nid == 102:
+            raise anki_connect.AnkiError("Anki stopped answering")
+        return real(nid, fields)
+    monkeypatch.setattr(book["anki"], "update", stops)
+    with pytest.raises(CliError) as e:
+        add_audio.act({"connect_enabled": True}, "ja", book=book["book"], confirm=True)
+    assert e.value.code == "anki-closed" and e.value.context["undo"] in e.value.message and owed
+    assert not os.listdir(str(tmp_path / "connect" / "add-audio"))

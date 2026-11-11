@@ -125,7 +125,9 @@ from operator import itemgetter
 # v23 a subtitle line shown again (the same text, its times touching the copy before: analyzer.shown_again,
 #    ENGINE_REVISION 40) is read once: a v22 blob holds its words two or three times — 3.0, so users rebuild once with
 #    v20–v22.
-SCHEMA_VERSION = 23
+# v24 an unknown word of two kanji or more is one word with the one-kanji pieces the tagger cut beside it (犍陀 + 多 =
+#    犍陀多, ENGINE_REVISION 42): a v23 blob holds the pieces — users rebuild once.
+SCHEMA_VERSION = 24
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

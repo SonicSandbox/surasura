@@ -20,7 +20,8 @@
   zip into the outbox (`app/send_report.py`) and shows **What goes** — every file and its size, the placeholders, the
   pictures at full width, the name or none, the sender code, how long it's kept — with *Send*, *Open the zip*,
   *Back*. Sent: "Sent. Your report is #ID", *Copy* and the invite (`settings_strings.DISCORD_URL`, a link opened in
-  the browser). Not sent: the zip waits (*Send now* · *Don't send*), never sent again by itself (Q4). The sender code
+  the browser). Not sent: the zip waits (*Send now* · *Don't send*), never sent again by itself (Q4);
+  a try failing again says so anew ("Tried n times. …", `_tried`). The sender code
   shows with *New code*; *Sent reports* lists this PC's copies. *Make a zip instead* (the Discord / GitHub path by
   hand) writes the scrubbed zip into Downloads or a folder picked and shows it selected in its folder; its done line
   offers the invite, *GitHub Issues works too* the quieter way.
@@ -532,6 +533,7 @@ class ReportWindow(SecondaryWindow):
         self.sending = False                                      # *Send report* under way (its save, then its zip)
         self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
         self.waiting = None                                       # a zip kept after a send that didn't go
+        self.tries = {}                                           # {a zip's nonce: its failed sends} (`_tried`)
         self.sent_id = None                                       # the last report sent (#ID), for Copy
         self.sent_opened = None                                   # the sent report its page shows (#ID, zip path)
         self.name_filled = False                                  # the remembered Discord name filled in (once)
@@ -1502,7 +1504,8 @@ class ReportWindow(SecondaryWindow):
         shell = self.shell
 
         def done(result):
-            words = _send_words(result)
+            words = self._tried(outbox.nonce, result.outcome not in (send_report.SENT, send_report.LIMIT),
+                                _send_words(result))
             if self.gone:                                          # Esc while it went: the main window says it
                 windows.say_in_bar(shell, words)
                 _count_again(shell)
@@ -1520,7 +1523,7 @@ class ReportWindow(SecondaryWindow):
             self.read_send()
 
         def broke(info):
-            words = strings.REPORT_SEND_FAILED.format(why=info[0])
+            words = self._tried(outbox.nonce, True, strings.REPORT_SEND_FAILED.format(why=info[0]))
             if self.gone:
                 windows.say_in_bar(shell, words)
                 return
@@ -1535,6 +1538,16 @@ class ReportWindow(SecondaryWindow):
                        busy=strings.REPORT_SENDING.format(size=core._mb(outbox.size)), then=done, failed=broke)
         if p is None:
             self._hold(False)
+
+    def _tried(self, nonce, failed, words):
+        """A send's words, told apart from the last try's: a zip's 2nd failed send on is "Tried n times. …" (Mattias,
+        3.0.0: *Send now* refused again left the very same line — the status line repaints only new words — so the
+        press looked like nothing). The day's limit (refused before any request) is no try."""
+        if not failed:
+            self.tries.pop(nonce, None)
+            return words
+        n = self.tries[nonce] = self.tries.get(nonce, 0) + 1
+        return words if n == 1 else strings.REPORT_SEND_TRIED.format(n=n, words=words)
 
     def dont_send(self):
         """*Don't send*: the waiting zip deleted; the saved reports stay on the list."""

@@ -13,8 +13,9 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   change; no store yet → no readout (the band names only).
 - **Connection (Anki):** the emerald and its word (S6) — from the automation's last sync, or from *Check*'s look
   (`anki_connect.probe`, loopback) — and *Check* (also the status service's refresh). **Connections:** hato installed
-  or not (its entry in the shared tools folder), jimaku *coming with hato*, AniList and More from Houseki *coming
-  later*; no buttons (logos: package PL).
+  or not (its entry in the shared tools folder) — not found, *Find hato…* (Michi-HD, PROVISIONAL): its folder picked,
+  then `tools_found.connect_hato` on a worker (hato opened once from there, so it connects itself), the bar saying how
+  it went —, jimaku *coming with hato*, AniList and More from Houseki *coming later*; no buttons (logos: package PL).
 - **App:** *Text size*: the page saves it and *Restart now to apply?* is asked — *Restart now* closes the window the
   quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
   (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
@@ -122,6 +123,12 @@ def read_hato():
     one look (`services.tools_found`, B2-7)."""
     from app.services import tools_found
     return tools_found.hato_version()
+
+
+def connect_hato(folder, settings):
+    """*Find hato…*: hato in `folder` connected (`tools_found.connect_hato`: up to 30 s) -> `Connected(version, why)`."""
+    from app.services import tools_found
+    return tools_found.connect_hato(folder, settings)
 
 
 def read_skipped(updates):
@@ -594,9 +601,14 @@ class Live(QObject):
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"door": door}
         elif row_id == "hato":
-            mark = sc.StatusMark(False, S.NOT_INSTALLED, tooltip=row.tip, name=row.label)
-            self._slot(row_id).layout().addWidget(mark)
-            self.parts[row_id] = {"mark": mark}
+            mark = sc.StatusMark(False, S.HATO_NOT_FOUND, tooltip=row.tip, name=row.label)
+            find = qpress.room(sc.Door(S.FIND_HATO, tooltip=S.FIND_HATO_TIP, name=S.FIND_HATO))
+            find.clicked.connect(lambda _c=False: self.find_hato())
+            find.setVisible(False)                      # until the look says hato isn't found
+            slot = self._slot(row_id).layout()
+            slot.addWidget(mark)
+            slot.addWidget(find)
+            self.parts[row_id] = {"mark": mark, "find": find}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
         elif row_id in COMING:
@@ -868,10 +880,35 @@ class Live(QObject):
         mark = self.parts.get("hato", {}).get("mark")
         if mark is None:
             return
-        words = S.NOT_INSTALLED if version is None else (S.INSTALLED.format(version=version) if version
-                                                          else S.INSTALLED_PLAIN)
+        words = S.HATO_NOT_FOUND if version is None else (S.INSTALLED.format(version=version) if version
+                                                           else S.INSTALLED_PLAIN)
         if mark.value() != (version is not None) or mark.words() != words:
             mark.set_value(version is not None, words)
+        find = self.parts["hato"]["find"]
+        if find.isHidden() == (version is None):
+            find.setVisible(version is None)
+
+    def find_hato(self):
+        """*Find hato…*: hato's folder picked (the system's dialog), then `connect_hato` on a worker, the button's arc
+        turning (*Opening hato so it can connect…* once it waits); the bar says how it went. Found: the row says its
+        version, and hato's rows show (`set_found`)."""
+        folder = self.pick_hato_folder()
+        if not folder:
+            return
+        self._press("hato", "find", connect_hato, os.path.normpath(folder), settings_service.thaw(self._settings()),
+                    busy=S.FIND_HATO_BUSY, then=self._hato_connected, failed=lambda _info: self.say(S.HATO_FIND_FAILED))
+
+    def pick_hato_folder(self):
+        return QFileDialog.getExistingDirectory(self.page, S.FIND_HATO_TITLE, "")
+
+    def _hato_connected(self, answer):
+        version, why = answer
+        if why is not None:
+            self.say(S.HATO_NOT_CONNECTED[why])
+            return
+        self._hato(version)
+        self.page.set_found("hato_found", True)
+        self.say(S.HATO_CONNECTED.format(version=version) if version else S.HATO_CONNECTED_PLAIN)
 
     # --- App ------------------------------------------------------------------------------------------------------- #
     def _text_size(self, size):

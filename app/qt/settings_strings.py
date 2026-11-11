@@ -27,7 +27,22 @@ NOT_CONNECTED = "not connected"
 CHECK = "Check"
 CHECK_TIP = "Checks AnkiConnect, the deck and the note type"
 INSTALLED = "installed · {version}"
-NOT_INSTALLED = "not installed"
+# Michi-HD (Mattias 2026-11-11; lean taken, PROVISIONAL): hato installed where Surasura can't see it — *Find hato…*
+HATO_NOT_FOUND = "not found"
+FIND_HATO = "Find hato…"
+FIND_HATO_TIP = ("hato is installed but Surasura can't see it: pick the folder you unpacked hato into.\n"
+                 "• hato opens once, so it can connect to Surasura")
+FIND_HATO_TITLE = "Where is hato?"
+FIND_HATO_BUSY = "Opening hato so it can connect…"
+HATO_CONNECTED = "hato {version} is connected"
+HATO_CONNECTED_PLAIN = "hato is connected"
+HATO_NOT_CONNECTED = {                       # `tools_found.connect_hato`'s why -> the bar's words
+    "not-hato": "No hato in that folder: pick the one with hato.exe in it",
+    "not-installed": "hato connects only to an installed Surasura, and this copy isn't installed",
+    "not-started": "hato couldn't be opened from that folder",
+    "no-answer": "hato opened but hasn't connected yet. Leave it open a minute, then press Find hato… again",
+}
+HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
 OPEN = "Open"
 LEVEL_AUTOMATIC = "Automatic"
 LEVEL_AUTOMATIC_TIP = "Surasura picks the level for you: the commonest one whose list holds at least {n} words"

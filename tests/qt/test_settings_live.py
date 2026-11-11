@@ -9,6 +9,7 @@ writes without a destination, or fails without saying why.
 
 Every read is a fake (`Fakes`) that records the thread it ran on; the settings service is P3's `Recorder`.
 """
+import os
 import threading
 from types import SimpleNamespace
 
@@ -162,14 +163,15 @@ class Shell:
         pass
 
 
-def make(fakes, data=None, language="ja", connect=None, text_size=True, skipped=None, size=(1100, 700)):
+def make(fakes, data=None, language="ja", connect=None, text_size=True, skipped=None, size=(1100, 700),
+         found=EVERYTHING):
     store = Recorder(dict({"target_language": language}, **(data or {})))
     if skipped is not None:
         store.file["skipped_version"] = skipped
     services = SimpleNamespace(settings=store, status=Status(connect), automation=None)
     services.updates = Updates(store)
     shell = Shell(services, text_size)
-    page = sp.SettingsPage(shell, language, found=EVERYTHING)
+    page = sp.SettingsPage(shell, language, found=found)
     page.resize(*size)
     page.show()
     assert wait_until(lambda: page.built, 20)
@@ -453,12 +455,99 @@ def test_connections_say_hato_installed_and_the_rest_coming_without_buttons(qapp
     assert page.live.parts["jimaku"]["hint"].text() == S.COMING_WITH_HATO
     assert page.live.parts["anilist"]["hint"].text() == S.COMING_LATER
     assert page.live.parts["more_from_houseki"]["hint"].text() == S.COMING_LATER
-    for row_id in ("hato", "jimaku", "anilist", "more_from_houseki"):
+    for row_id in ("jimaku", "anilist", "more_from_houseki"):
         assert page.custom_row(row_id).findChildren(sc.Door) == []
+    assert page.custom_row("hato").findChildren(sc.Door) == [page.live.parts["hato"]["find"]]
+    assert page.live.parts["hato"]["find"].isHidden()               # hato found: nothing to find
     fakes.hato = None
     page2, _store, _shell = make(fakes)
-    assert wait_until(lambda: page2.live.parts["hato"]["mark"].words() == S.NOT_INSTALLED)
+    assert wait_until(lambda: page2.live.parts["hato"]["mark"].words() == S.HATO_NOT_FOUND)
     assert not page2.live.parts["hato"]["mark"].value()
+    assert wait_until(lambda: not page2.live.parts["hato"]["find"].isHidden())     # Michi-HD: *Find hato…*
+
+
+# --- *Find hato…* (Michi-HD; Mattias 2026-11-11: hato unpacked on his D: drive, never seen) ---------------------------- #
+class Connector:
+    """`connect_hato` faked: each call kept with its thread; `answer` returned (an Exception raised); `gate` held."""
+
+    def __init__(self, monkeypatch, answer):
+        self.calls, self.answer, self.gate = [], answer, None
+        monkeypatch.setattr(live, "connect_hato", self)
+
+    def __call__(self, folder, settings):
+        self.calls.append((folder, threading.current_thread() is threading.main_thread()))
+        if self.gate is not None:
+            self.gate.wait(5)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def test_find_hato_connects_the_picked_folder_on_a_worker_and_the_row_says_its_version(qapp, fakes, monkeypatch):
+    from app.services import tools_found
+    fakes.hato = None
+    connector = Connector(monkeypatch, tools_found.Connected("1.2.0", None))
+    connector.gate = threading.Event()
+    page, store, shell = make(fakes, found=EVERYTHING - {"hato_found"})
+    find = page.live.parts["hato"]["find"]
+    assert wait_until(lambda: not find.isHidden())
+    page.live.pick_hato_folder = lambda: "D:/hato"
+    find.click()
+    assert qpress.live(shell, "settings:hato")                     # the arc turns at the press, before the worker
+    assert wait_until(lambda: connector.calls)
+    assert connector.calls == [(os.path.normpath("D:/hato"), False)]
+    connector.gate.set()
+    mark = page.live.parts["hato"]["mark"]
+    assert wait_until(lambda: mark.words() == "installed · 1.2.0") and mark.value()
+    assert find.isHidden()
+    assert shell.bar_line.lines[-1] == S.HATO_CONNECTED.format(version="1.2.0")
+    assert "hato_found" in page._ctx()                              # hato's rules line shows now (row 13)
+    assert store.calls == []                                        # nothing written to settings.json
+
+
+def test_find_hato_cancelled_starts_nothing(qapp, fakes, monkeypatch):
+    from app.services import tools_found
+    fakes.hato = None
+    connector = Connector(monkeypatch, tools_found.Connected("1.2.0", None))
+    page, store, shell = make(fakes)
+    assert wait_until(lambda: not page.live.parts["hato"]["find"].isHidden())
+    page.live.pick_hato_folder = lambda: ""
+    page.live.parts["hato"]["find"].click()
+    settle()
+    assert connector.calls == [] and not qpress.live(shell, "settings:hato")
+
+
+@pytest.mark.parametrize("why", ["not-hato", "not-installed", "not-started", "no-answer"])
+def test_find_hato_not_connected_says_why_and_the_row_stays_not_found(qapp, fakes, monkeypatch, why):
+    from app.services import tools_found
+    fakes.hato = None
+    Connector(monkeypatch, tools_found.Connected(None, why))
+    page, store, shell = make(fakes)
+    find = page.live.parts["hato"]["find"]
+    assert wait_until(lambda: not find.isHidden())
+    page.live.pick_hato_folder = lambda: "D:/動画"
+    find.click()
+    assert wait_until(lambda: shell.bar_line.lines and shell.bar_line.lines[-1] == S.HATO_NOT_CONNECTED[why])
+    assert page.live.parts["hato"]["mark"].words() == S.HATO_NOT_FOUND and not find.isHidden()
+    assert wait_until(lambda: not qpress.live(shell, "settings:hato"))      # pressable again
+
+
+def test_find_hato_that_fails_says_so_in_the_bar(qapp, fakes, monkeypatch):
+    fakes.hato = None
+    Connector(monkeypatch, PermissionError(13, "Access is denied"))
+    page, store, shell = make(fakes)
+    find = page.live.parts["hato"]["find"]
+    assert wait_until(lambda: not find.isHidden())
+    page.live.pick_hato_folder = lambda: "D:/hato"
+    find.click()
+    assert wait_until(lambda: shell.bar_line.lines and shell.bar_line.lines[-1] == S.HATO_FIND_FAILED)
+    assert not find.isHidden()
+
+
+def test_every_why_connect_hato_answers_has_words():
+    from app.services import tools_found
+    assert set(S.HATO_NOT_CONNECTED) == {tools_found.NOT_HATO, tools_found.NOT_INSTALLED, tools_found.NOT_STARTED,
+                                         tools_found.NO_ANSWER}
 
 
 # --- App: the update offer, the folders, the version ---------------------------------------------------------------- #

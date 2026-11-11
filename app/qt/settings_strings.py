@@ -108,6 +108,7 @@ CROSS = "✕"
 TICK = "✓"                                       # a multi-pick tablet's mark when lit (Q31: never a choice's vein)
 PICKED_NONE = "None picked"                       # a set of tablets with none picked, for screen readers
 STATUS_NAME = "{name}: {words}"                  # the status mark, for screen readers
+TOGGLE_STATE = {True: "On", False: "Off"}        # a switch's state, for screen readers (Fresh-U row 12)
 
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
 SECTIONS = {

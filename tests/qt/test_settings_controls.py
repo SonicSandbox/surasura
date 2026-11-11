@@ -196,6 +196,21 @@ def test_a_toggle_loads_without_a_signal_or_motion_and_space_toggles(clock):
     assert t.size().width() >= 40 and t.size().height() >= 22             # the lead's floor at Medium
 
 
+def test_fresh_u_a_toggle_tells_a_screen_reader_whether_it_is_on(clock):
+    """Fresh-U row 12: Windows' UI Automation showed every Settings switch as a plain group with no on/off. Its
+    accessible description is its state, *On* / *Off*, as made, set, clicked and keyed (beside its name)."""
+    from app.qt import settings_strings as S
+    t = shown(sc.Toggle(value=True, name="Make cards for me"))
+    assert t.accessibleName() == "Make cards for me" and t.accessibleDescription() == S.TOGGLE_STATE[True] == "On"
+    t.set_value(False)
+    assert t.accessibleDescription() == "Off"
+    key(t, Qt.Key.Key_Space)
+    assert t.value() is True and t.accessibleDescription() == "On"
+    click(t, t.rect().center())
+    assert t.value() is False and t.accessibleDescription() == "Off"
+    assert sc.Toggle().accessibleDescription() == "Off"
+
+
 def test_the_toggles_light_comes_up_faster_than_it_leaves(clock):
     t = shown(sc.Toggle())
     click(t, t.rect().center())

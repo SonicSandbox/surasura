@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu,
 
 from app import scrub, theme
 from app.qt import freeze, motion, style
-from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME, TICK
+from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME, TICK, TOGGLE_STATE
 
 
 M = theme.SETTINGS_MOTION
@@ -589,6 +589,12 @@ class Toggle(_Control):
         self._slide = self._glow = None
         self._pressed = False
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._say_state()
+
+    def _say_state(self):
+        """Its state for a screen reader (Fresh-U row 12: Windows' UI Automation showed a plain group with no on/off):
+        its description, *On* or *Off*, beside its name."""
+        self.setAccessibleDescription(TOGGLE_STATE[self._on])
 
     def value(self):
         return self._on
@@ -598,6 +604,7 @@ class Toggle(_Control):
         self._stop()
         self._on = bool(value)
         self._k = self._light = 1.0 if self._on else 0.0
+        self._say_state()
         self.update()
 
     def position(self):
@@ -615,6 +622,7 @@ class Toggle(_Control):
             return
         self._stop()
         self._on = not self._on
+        self._say_state()
         to = 1.0 if self._on else 0.0
         k0, l0 = self._k, self._light
 

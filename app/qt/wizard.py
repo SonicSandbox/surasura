@@ -2539,6 +2539,10 @@ class LevelPage(_Page):
         self.numbers = numbers
         self._paint()
 
+    def counted(self):
+        """The numbers are in (bands to show): not while counting, nor for a library with nothing in it."""
+        return bool((self.numbers or {}).get("bands"))
+
     def _auto_toggled(self, on):
         if on:
             self._band = None
@@ -2568,9 +2572,12 @@ class LevelPage(_Page):
 
     def _paint(self):
         n = self.numbers
-        _show(self.counting, n is None)
-        _show(self.numbers_part, n is not None)
-        if n is None:
+        counted = self.counted()
+        if not counted:                                   # Disc-T1: a library with nothing in it says so, never
+            _set_text(self.counting, S.NO_SHOWS if (n or {}).get("empty") else S.COUNTING)     # *Counting* for good
+        _show(self.counting, not counted)
+        _show(self.numbers_part, counted)
+        if not counted:
             return
         bands = list(n.get("bands") or [])
         band = self._band_now()
@@ -3949,14 +3956,20 @@ class SetupWizard(QWidget):
         seq, language = self._numbers_seq, self.language
         bridge.run_in_worker(self.api.level_numbers, thaw(self._settings()), language,
                              then=self.alive(lambda n: self._numbers(n, seq, language)),
-                             failed=lambda info: applog.log("wizard", f"level numbers: {info[0]}"))
+                             failed=self.alive(lambda info: self._numbers_failed(info, seq, language)))
 
     def _numbers(self, numbers, seq, language):
         if seq != self._numbers_seq or language != self.language:
             return
         self.pages[5].show_numbers(numbers)
-        if numbers is None:                               # still counting (or no shows yet): asked again while shown,
+        if not self.pages[5].counted():                   # still counting (or no shows yet): asked again while shown,
             self._count_later(seq)                        # each time twice as long after, and when the indexer ran
+
+    def _numbers_failed(self, info, seq, language):
+        """A count that raised: logged, and asked again as one not ready yet (Disc-T1: never *Counting* for good)."""
+        applog.log("wizard", f"level numbers: {info[0]}")
+        if seq == self._numbers_seq and language == self.language and not self.pages[5].counted():
+            self._count_later(seq)
 
     def later(self, ms, fn):
         QTimer.singleShot(ms, fn)
@@ -3980,7 +3993,7 @@ class SetupWizard(QWidget):
         if not self._gone and not sip.isdeleted(self):
             self._load_indexed(language)
         if (not self._gone and not sip.isdeleted(self) and self.page.id == "level" and language == self.language
-                and self.pages[5].numbers is None):
+                and not self.pages[5].counted()):
             self.read_numbers()
 
     def _generate(self, answers):

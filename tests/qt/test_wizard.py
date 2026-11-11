@@ -27,6 +27,7 @@ from app.qt import strings
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
+from app.services.setup_wizard import NOTHING_TO_COUNT as SW_NOTHING
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
 
@@ -1831,6 +1832,43 @@ def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make,
     waits[-1][1]()
     QApplication.processEvents()
     assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
+
+
+def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_again(make, monkeypatch):
+    """Disc-T1 (Mattias, 2026-11-10: "Counting your shows… didn't really get any feedback"): his library was empty
+    (a new incoming folder, the 2.5 shows left behind) and the page said *Counting your shows…* for good. Nothing to
+    count is said as that (`NO_SHOWS`); the page keeps asking, so shows that arrive meanwhile still bring numbers."""
+    waits = []
+    api = FakeApi(numbers=dict(SW_NOTHING))
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    page = wiz.page
+    assert wait_until(lambda: len(waits) == 1), "nothing to count: asked again"
+    assert not page.counting.isHidden() and page.counting.text() == S.NO_SHOWS and page.numbers_part.isHidden()
+    api.numbers = NUMBERS                                           # a show arrived
+    waits[-1][1]()
+    assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
+    assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
+    page.show_numbers(None)                                         # (counting again, as a language change starts it)
+    assert page.counting.text() == S.COUNTING
+
+
+def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):
+    """Disc-T1: a worker that raised was logged once and never asked again — *Counting your shows…* for good. It asks
+    again as a count not ready yet does."""
+    waits = []
+    api = FakeApi(numbers=None)
+
+    def broken(settings, language):
+        api.calls.append(("level_numbers", language))
+        raise OSError("the token store is busy")
+    monkeypatch.setattr(api, "level_numbers", broken)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    assert wait_until(lambda: len(waits) == 1), "a failed count is asked again"
+    assert wiz.page.counting.text() == S.COUNTING
 
 
 def test_counting_asks_again_when_the_indexer_ran(make, monkeypatch):

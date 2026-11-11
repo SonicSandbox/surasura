@@ -699,12 +699,44 @@ def first_cards(language, settings, data_dir=None):
     return ids
 
 
+NOTHING_TO_COUNT = {"empty": True}      # `level_numbers`' answer for a library holding nothing (Disc-T1)
+
+
+def _library_empty(language):
+    """True when the library store is there and holds no title page 3 lists (LISTED_TIERS); False with no store yet
+    or one that can't be read (the shows may still be coming: *Counting*). A read-only look, as `library_rows`'."""
+    from app import library_store
+    from app.path_utils import get_data_path, get_user_files_path
+    try:
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="reader")
+    except Exception:
+        return False
+    if store is None:
+        return False
+    try:
+        return store.conn.execute(f"SELECT 1 FROM items WHERE tier IN ({', '.join('?' * len(LISTED_TIERS))}) LIMIT 1",
+                                  LISTED_TIERS).fetchone() is None
+    except Exception:
+        return False
+    finally:
+        store.close()
+
+
 def level_numbers(settings, language):
     """(A worker.) The last page's numbers, from the Rarity slider's own recipe -> {"bands" [band keys, slider order],
     "chosen", "automatic", "auto_band" (the band Automatic picks: D13's rule, `word_selection.auto_band`), "words",
     "coverage" (0–100), "every_hours" (None when it can't be said) for the chosen band, and "numbers" {band: {"words",
-    "coverage", "every_hours"}} for every band}; None while nothing is counted yet (an empty library, the shows still
-    being read). `automatic` and the band are the page's preselects (`preselect`)."""
+    "coverage", "every_hours"}} for every band}; None while nothing is counted yet (the shows still being read);
+    NOTHING_TO_COUNT when nothing could be: a library with no show or book in it (Disc-T1: never *Counting* for good).
+    `automatic` and the band are the page's preselects (`preselect`)."""
+    numbers = _level_numbers(settings, language)
+    if numbers is None and _library_empty(language):
+        return dict(NOTHING_TO_COUNT)
+    return numbers
+
+
+def _level_numbers(settings, language):
     from app import analyzer, library_store, token_index, word_selection
     from app.path_utils import get_data_path, get_user_files_path
     from app.zh_script import effective

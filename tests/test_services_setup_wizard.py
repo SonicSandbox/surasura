@@ -445,9 +445,17 @@ def _index(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_shows(language):
-    assert SW.level_numbers({}, language) is None, "nothing counted: 'Counting your shows…'"
+    assert SW.level_numbers({}, language) is None, "no library store yet: 'Counting your shows…'"
+    from app import library_store
+    data_dir, user_files_dir = roots(language)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(user_files_dir, exist_ok=True)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    # Disc-T1 (Mattias, 2026-11-10): a library with nothing in it is never 'Counting your shows…' for good
+    assert SW.level_numbers({}, language) == SW.NOTHING_TO_COUNT, "an empty library: 'Add a show first'"
     assert not os.path.exists(token_index.store_path_for(language)), "never a store made just to look"
     h.seed_library(language)
+    assert library_store.sync_process(language) == library_store.EXIT_DONE     # found, as the window's sync finds them
     _index(language)
     settings = settings_manager.load_settings()
     numbers = SW.level_numbers(settings, language)

@@ -247,6 +247,27 @@ def stamp(path):
         return None
 
 
+WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
+
+
+def window_open():
+    """True while Anki Miner's own window is open: a marker in its home (`home()`) whose process still runs — every
+    window holds one for its lifetime, one started past its "already running" warning included (3.11's
+    `gui/app.py` `_hold_window_marker`). A marker a closed window left names a process gone; an older Anki Miner
+    without markers reads as closed. Never raises (a file read: a worker's)."""
+    from app import locks
+    try:
+        names = [e.name for e in os.scandir(home()) if e.is_file()]
+    except OSError:
+        return False
+    for name in names:
+        if name.startswith(WINDOW_MARKER) and name.endswith(".lock"):
+            pid = name[len(WINDOW_MARKER):-len(".lock")]
+            if pid.isdigit() and locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
+    return False
+
+
 def find(settings):
     """The path of Anki Miner's program, or None when it isn't installed (E7)."""
     chosen = str((settings or {}).get("connect_anki_miner_path") or "").strip()

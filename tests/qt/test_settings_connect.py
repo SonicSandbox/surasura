@@ -173,6 +173,8 @@ def world(monkeypatch, tmp_path):
         raise AssertionError("settings.json written directly: only the switch (faked here) or the service may")
     monkeypatch.setattr(settings_manager, "save_settings", no_save)
     monkeypatch.setattr(settings_manager, "save_keys", no_save)
+    monkeypatch.setenv("ANKI_MINER_HOME", str(tmp_path / "anki-miner-home"))   # never the real ~/.anki_miner: a
+    #                                                       window of Anki Miner open on this PC must not change a press
     w = SimpleNamespace(miner=miner_result("missing"), update=None, checked=[], reading=ado.Reading(20, DECK, "Default",
                         None), reads=[], writes=[], outcome=None, write_gate=None, opened=[], asked=[], file="",
                         bar=Bar(), events=[])
@@ -575,6 +577,36 @@ def test_open_anki_miners_hover_names_the_profile_connect_mines_with(world):
     assert wait_until(lambda: len(world.checked) == 4 and not rows.miner.checking, 5)
     assert rows.miner.open_miner.toolTip() == S.OPEN_MINER_TIP_PLAIN
     assert scn._open_tip(None) == S.OPEN_MINER_TIP_PLAIN and store.calls == []      # a hover, never a write
+
+
+def test_open_anki_miner_while_its_window_is_open_says_so_and_never_starts_a_second(world, tmp_path):
+    """Disc-T1 (Mattias, 2026-11-06: Anki Miner warned "an instance is already running"): Anki Miner's window holds
+    `instance.window-<pid>.lock` in its home for as long as it is open, and a second start asks *Quit* / *Continue
+    anyway* — the second copy its own warning says can corrupt its databases. *Open Anki Miner* looks first, on the
+    press's worker: a live window's marker -> the bar says it is open and nothing starts; a marker its closed window
+    left (a process gone) -> it opens as before."""
+    import subprocess
+    import sys
+    world.miner = miner_result("ready")
+    page, store, rows, _fake = make(world)
+    home = os.environ["ANKI_MINER_HOME"]
+    os.makedirs(home, exist_ok=True)
+    live = os.path.join(home, f"instance.window-{os.getpid()}.lock")        # a running process: this test's own
+    with open(live, "w", encoding="utf-8") as f:
+        f.write(f"{os.getpid()}\nAnkiMiner\nhost\n")
+    QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: S.MINER_ALREADY_OPEN in world.bar.lines, 5), world.bar.lines
+    assert world.opened == [], "a second Anki Miner never started"
+
+    gone_child = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone_child.wait()                                                   # a pid whose process has ended
+    os.remove(live)
+    with open(os.path.join(home, f"instance.window-{gone_child.pid}.lock"), "w", encoding="utf-8") as f:
+        f.write(f"{gone_child.pid}\nAnkiMiner\nhost\n")
+    QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5), "a closed window's leftover: it opens"
+    assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    assert store.calls == []
 
 
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):

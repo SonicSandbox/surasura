@@ -71,6 +71,9 @@ VERBS = {
 # verb answers `update-staged` (02 §7).
 ANSWER_WHILE_UPDATING = {"status", "logs", "--version"}
 
+# The verbs that write nothing in the library: no write check first (3.0.1, Controlled folder access; `blocked`).
+READS_ONLY = {"status", "list", "logs", "_selftest", "--version"}
+
 
 def _parser():
     common = argparse.ArgumentParser(add_help=False)
@@ -129,6 +132,26 @@ def _hold_running(kind):
         return False
 
 
+def _check_folder_access(verb):
+    """3.0.1 (Controlled folder access, app/cfa.py): a verb that writes the library, an installed library inside a
+    folder Windows protects while its ransomware protection is on — one write check there first; refused ->
+    `needs-you` (exit 4), the two ways out in words. Off, outside a protected folder, a source run: nothing is
+    written or checked. A check that fails for another reason is only logged: the verb says what went wrong itself."""
+    if verb in READS_ONLY:
+        return
+    from app import cfa, path_utils
+    try:
+        library = path_utils.installed_library()
+        if not library or not os.path.isdir(library) or not cfa.at_risk(library):
+            return
+        refused = cfa.probe(library)
+    except Exception:
+        contract.log.exception("the folder-access check didn't run")
+        return
+    if refused:
+        raise contract.blocked_by_windows(refused)
+
+
 def main(argv=None, out=None):
     """Run one call; returns its exit code. `out` replaces stdout (tests)."""
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -177,6 +200,7 @@ def main(argv=None, out=None):
             if args.version:
                 return _version(args)
             contract.check_token_stores()
+            _check_folder_access(verb)
             return VERBS[args.verb][1](args)
 
         return contract.run(verb, call, argv, progress=getattr(args, "progress", False))

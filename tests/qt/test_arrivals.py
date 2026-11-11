@@ -622,8 +622,8 @@ def test_G2_IK3_a_tray_file_rested_on_a_group_joins_it_with_one_add_to_group_toa
     move_global(win, to)
     settle()
     assert win.moves.running.target[0] == "list"                      # passing: a place in the list, as before
-    _rest()
-    assert win.moves.running.target == ("join", group.key)
+    assert wait_until(lambda: win.moves.running.target == ("join", group.key), 5)    # rested: it joins (waited
+    #   for, never a fixed rest then the assert: a loaded machine's rest timer fires later; tests/FLAKES.md)
     assert win.page_widgets["current"].list.join_label == strings.JOIN_GROUP_LABEL
     release_global(win, to)
     assert calls(writer) == [("add_to_group", [], {"piece_id": group.piece_id, "piece_ids": [], "item_ids": ids})]

@@ -879,10 +879,12 @@ def test_junbans_own_guards_hold(live, monkeypatch, guard):
     pytest.importorskip("modules.junban.auto")
     from modules.junban import ankiconnect as junban_anki
     from modules.junban import reposition
+    from app import anki_connect
     writes = []
     monkeypatch.setattr(junban_anki, "probe", lambda url, *a, **k: {"ok": True})
-    monkeypatch.setattr(junban_anki, "invoke", lambda action, url, timeout=None, **k: guard == "reviewing"
-                        if action == "guiReviewActive" else None)
+    answer = (lambda action, url, timeout=None, **k: guard == "reviewing" if action == "guiReviewActive" else None)
+    monkeypatch.setattr(junban_anki, "invoke", answer)
+    monkeypatch.setattr(anki_connect, "invoke", answer)      # #370: the review guard asks through `patient`
     monkeypatch.setattr(reposition, "run", lambda settings, **k: writes.append(settings.get("junban_deck")) or
                         {"ok": True, "written": 3, "message": "3 cards moved"})
     # W3.5 row 7: 順's own re-order runs only where the re-order host can't (Coverage) and to the deck recorded for

@@ -36,8 +36,9 @@ def _record(root):
 
 @pytest.mark.parametrize("text, refused", [
     (BOT, True), (BOT.replace("’", "'"), True), (TOO_MANY, True),
+    ("Anki Miner: YouTube asked to confirm that you are not a bot (the fetch was refused)", True),
     (AGE, False), (PRIVATE, False), ("", False), (None, False),
-], ids=["bot-curly", "bot-straight", "429", "age-check", "id-with-429", "empty", "none"])
+], ids=["bot-curly", "bot-straight", "429", "bot-reworded", "age-check", "id-with-429", "empty", "none"])
 def test_only_youtube_turning_the_computer_away_is_a_refusal(text, refused):
     # why: an age-restricted video is the video's own; holding every download for it would stop a day for nothing
     assert youtube_hold.refused(text) is refused

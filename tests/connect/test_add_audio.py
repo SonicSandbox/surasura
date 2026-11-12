@@ -628,3 +628,98 @@ def test_a_short_line_inside_a_card_said_over_several_cues_never_stands_for_it(b
     _made(book, 130, book["lines"][0] + book["lines"][8].replace("冒険", "<b>冒険</b>"), "冒険")
     got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
     assert got["can"][130].text == lineup.clean(book["lines"][8])
+
+
+# --- mutants by risk on the final code (33: 24 killed first; these kill the rest but C7) ------------------------- #
+def test_a_dictionary_form_not_in_the_sentence_never_holds_its_place(book):
+    """B6: no bold, the note's word in its dictionary form (有名だ: the sentence says 有名です) — the sentence alone
+    says where (its one long cue), never a word it doesn't hold."""
+    _made(book, 140, book["lines"][0] + book["lines"][8], "有名だ")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][140].text == lineup.clean(book["lines"][8])
+
+
+def test_a_kanji_written_as_an_entity_is_read_as_the_kanji(book):
+    """B9: 冒 written `&#20882;` in the sentence field is 冒 aloud."""
+    _made(book, 141, "彼は毎日&#20882;険に出かけます。", "冒険")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][141].text == lineup.clean(book["lines"][3])
+
+
+def test_a_sentence_said_over_two_cues_both_holding_its_word_is_no_answer(book):
+    """B10: 冒険 in both long cues of the card's sentence — which one is unknown: unheard (B-14)."""
+    _made(book, 142, book["lines"][3] + book["lines"][8], "冒険")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert 142 not in got["can"] and 142 in got["unheard"]
+
+
+def test_a_short_sentence_is_heard_only_as_its_own_cue(book):
+    """B12: 冒険家 (3 characters) is no cue of its own, only part of a longer line — never cut from that line."""
+    _made(book, 143, "冒険家。", "冒険家")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert 143 not in got["can"] and 143 in got["unheard"]
+
+
+def test_a_sentence_held_by_two_longer_lines_is_no_answer(book, monkeypatch):
+    """B13: 冒険に出かけます is said inside two longer lines of the book — which moment is unknown: unheard."""
+    real = lineup.cues
+
+    def again(state):
+        found = real(state)
+        return found + [found[0]._replace(start=600.0, end=603.0, text=lineup.clean("明日も冒険に出かけます"))]
+    monkeypatch.setattr(lineup, "cues", again)
+    _made(book, 144, "冒険に出かけます。", "冒険")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert 144 not in got["can"] and 144 in got["unheard"]
+
+
+def test_an_answer_of_another_start_with_the_same_words_is_never_the_cue(book, fake_miner, tmp_path, monkeypatch):
+    """C1: Anki Miner's answered line starts a second later (the same words said again, as long): not this cue."""
+    from app.connect import anki_miner
+    real = anki_miner.api
+
+    def later(miner, args, **kw):
+        verdict = real(miner, args, **kw)
+        for run in verdict.get("runs") or ():
+            path = os.path.join(str(tmp_path / "run"), run["run_id"], run["file"])
+            made = lineup._read_json(path)
+            made["lines"] = [dict(line, line_start=line["line_start"] + 1.0, start=line["start"] + 1.0,
+                                  end=line["end"] + 1.0) for line in made["lines"]]
+            lineup._write_json(path, made)
+        return verdict
+    monkeypatch.setattr(anki_miner, "api", later)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert add_audio.NOT_THE_LINES.format(n=5) in e.value.message
+
+
+def test_a_later_call_refused_with_nothing_cut_yet_is_that_calls_own_error(book, fake_miner, tmp_path, monkeypatch):
+    """C5: the first call cut nothing (every line past the audio's end), the second timed out — the error is the
+    timeout (Anki Miner's own kind), not a guess from the first call."""
+    from app.connect import anki_miner
+    monkeypatch.setattr(add_audio, "CUT_LINES", 2)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    fake_miner.plan(audio_seconds=0.5)
+    real, calls = anki_miner.api, []
+
+    def times_out(miner, args, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise anki_miner.AnkiMinerError("timeout", "Anki Miner took too long.")
+        return real(miner, args, **kw)
+    monkeypatch.setattr(anki_miner, "api", times_out)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+    assert e.value.kind == "timeout"
+
+
+def test_act_names_why_the_cards_not_cut_got_nothing(book, fake_miner, monkeypatch, tmp_path):
+    """C9: one line past the audio's end — the answer says 4 filled, 1 not cut, and why (that file's reason)."""
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    last = max(got["can"], key=lambda n: got["can"][n].start)
+    fake_miner.plan(audio_seconds=got["can"][last].start - 0.1)
+    done = add_audio.act({"connect_enabled": True}, "ja", book=book["book"], confirm=True)
+    assert done["filled"] == 4 and done["not_cut"] == 1
+    assert done["not_cut_why"].endswith(add_audio.NO_CLIP.format(n=1))

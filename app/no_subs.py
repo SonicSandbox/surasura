@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,16 +53,20 @@ VERDICT = "transcribed"             # the origin record's verdict (`Store.fill_t
 PROVIDER = "transcribe"
 TRANSCRIBE_TIMEOUT = 3 * 60 * 60.0  # one episode (a 24-minute one is ~6 min on a desktop CPU with large-v3: SPEC Q6)
 SETTING = "subs_with_hato"          # settings.json: the learner's one yes to hato (NS-2), off until given
+SETTING_ZH = "subs_with_hato_zh"    # Zh-H: the Chinese library's own yes (its card names other sites and keys)
 BATCH = 200                         # P2: videos a hato run is handed at most
 HATO_SILENT_S = 10 * 60.0           # P3: a hato run that says nothing this long is stopped
 OFFLINE_S = 60 * 60.0               # P4: after a hato run that failed as a whole, asked again this much later
 HATO_VERB = "find"                  # what hato's tools entry lists once it takes a list of waiting videos (WP1)
-# Zh-C (2026-11-12, Chinese end to end): the languages hato finds subtitles in. hato searches jimaku.cc, a site of
-# Japanese anime subtitles, and its ranking never tries a file tagged with another language and no Japanese (hato
-# 1.2 `rank.py`, "timing cannot tell a Chinese subtitle from a Japanese one") — so for a Chinese video it would put a
-# Japanese subtitle beside it, named as Chinese. A Chinese video is never handed to hato: its subtitle comes from
-# Anki Miner's speech model (*Make them from the audio*) or from the learner
+# Zh-C (2026-11-12, Chinese end to end): the languages hato finds subtitles in. hato up to 1.2 searches jimaku.cc, a
+# site of Japanese anime subtitles, and its ranking never tries a file tagged with another language and no Japanese
+# (hato 1.2 `rank.py`, "timing cannot tell a Chinese subtitle from a Japanese one") — so for a Chinese video it would
+# put a Japanese subtitle beside it, named as Chinese, and hand it over as Japanese. Such a hato is never handed one.
 HATO_LANGUAGES = ("ja",)
+# Zh-H (2026-11-12): hato 1.3.0 (Layer 20) finds Chinese subtitles — assrt.net, then OpenSubtitles, on the learner's
+# own keys, for a `--lang zh` run only — and hands them to the Chinese library. Its tools entry says so by its
+# `version` alone (09-hato-layer.md §7.9): from this one, Chinese videos go to it too
+HATO_ZH_SINCE = (1, 3, 0)
 JOB_KIND = "transcribe"             # the job registry's kind (`services.jobs.RESOURCES`)
 
 MAKING, NO_SPEECH, UNREADABLE, LOOKING, NOT_FOUND, MADE = ("making", "no-speech", "unreadable", "looking",
@@ -677,20 +682,38 @@ def hato_entry():
         return None
 
 
-def hato_finds(entry=None):
-    """hato's command line when its entry lists HATO_VERB (it takes a list of waiting videos: WP1, hato 1.1.x), else
-    None — today's hato lists only `pairings`: nothing is sent to it."""
+def setting(language):
+    """The settings.json key of the learner's yes to hato for `language`'s videos (NS-2): Japanese `SETTING` (as
+    since 3.0.1), Chinese `SETTING_ZH` (Zh-H: the Chinese card's own yes — another site, the learner's own keys)."""
+    return SETTING_ZH if language == "zh" else SETTING
+
+
+def hato_languages(entry):
+    """The languages this hato finds subtitles in -> a tuple: Japanese (`HATO_LANGUAGES`), and Chinese once its
+    entry's `version` is HATO_ZH_SINCE or later (§7.9). A version that doesn't read as numbers: Japanese only."""
+    version = entry.get("version") if isinstance(entry, dict) else None
+    got = re.match(r"(\d+)\.(\d+)\.(\d+)", version) if isinstance(version, str) else None
+    if got and tuple(int(n) for n in got.groups()) >= HATO_ZH_SINCE:
+        return HATO_LANGUAGES + ("zh",)
+    return HATO_LANGUAGES
+
+
+def hato_finds(entry=None, language="ja"):
+    """hato's command line when its entry lists HATO_VERB (it takes a list of waiting videos: WP1, hato 1.1.x) and it
+    finds subtitles in `language` (`hato_languages`), else None — a hato that lists only `pairings` is sent nothing."""
     entry = hato_entry() if entry is None else entry
     if not isinstance(entry, dict) or HATO_VERB not in (entry.get("verbs") or ()):
+        return None
+    if language not in hato_languages(entry):
         return None
     cli = entry.get("cli")
     return cli if isinstance(cli, str) and os.path.exists(cli) else None
 
 
 def hato_on(settings, language="ja"):
-    """Does Surasura hand hato its waiting videos: hato takes them (`hato_finds`), the learner said yes once (NS-2),
-    and hato finds subtitles in `language` (`HATO_LANGUAGES`: Japanese)?"""
-    return language in HATO_LANGUAGES and bool((settings or {}).get(SETTING)) and hato_finds() is not None
+    """Does Surasura hand hato `language`'s waiting videos: hato takes them in that language (`hato_finds`) and the
+    learner said yes once for that library (NS-2, `setting`)?"""
+    return bool((settings or {}).get(setting(language))) and hato_finds(language=language) is not None
 
 
 def hato_config(settings=None, run=None):
@@ -735,11 +758,11 @@ def due(store, language, now=None, away=()):
 def find(store, language, settings=None, stop=None, now=None, away=(), popen=None):
     """The due waiting videos handed to hato, per source folder, at most BATCH a run (P2), one run at a time. ->
     {"asked", "found", "not_found", "failed", "roots": {root id: its folder}} — the folders whose next look takes what
-    hato wrote beside their videos (K5); {"off": True} when hato isn't asked (no yes, a hato that takes no list, or a
-    language hato finds no subtitles in: `HATO_LANGUAGES`, Chinese);
+    hato wrote beside their videos (K5); {"off": True} when hato isn't asked (no yes for this library, a hato that
+    takes no list, or one that finds no subtitles in this language: `hato_languages`);
     {"busy": True} when one runs already. `popen`: the process starter (a test's)."""
     settings = settings if settings is not None else _settings()
-    cli = hato_finds() if settings.get(SETTING) and language in HATO_LANGUAGES else None
+    cli = hato_finds(language=language) if settings.get(setting(language)) else None
     if not cli:
         return {"off": True}
     if not _find_lock.acquire(blocking=False):

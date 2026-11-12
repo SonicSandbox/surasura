@@ -79,10 +79,10 @@ def _drop_folders():
 
 def registers(settings):
     """Does Surasura take hato's pairings (`surasura-cli register`)? While Connect's preview is on, or (Michi-NS, Q3:
-    finding subtitles is about the library, not cards) once the learner said yes to hato finding them
-    (`no_subs.SETTING`, spelled here: this module stays standard-library only)."""
+    finding subtitles is about the library, not cards) once the learner said yes to hato finding them, in either
+    library (`no_subs.SETTING` / `SETTING_ZH`, spelled here: this module stays standard-library only)."""
     settings = settings or {}
-    return bool(settings.get("connect_enabled") or settings.get("subs_with_hato"))
+    return bool(settings.get("connect_enabled") or settings.get("subs_with_hato") or settings.get("subs_with_hato_zh"))
 
 
 def entry(settings):

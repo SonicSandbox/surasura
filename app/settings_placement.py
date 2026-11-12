@@ -31,6 +31,7 @@ PLACED = {
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "subs_with_hato": "neither",             # Michi-NS: hato finds the waiting videos' subtitles, never a run
+    "subs_with_hato_zh": "neither",          # Zh-H: the same for the Chinese library's videos, never a run
     "open_video": "neither", "open_video_program": "neither",   # what ▶ opens a video with (Content): never a run
     "open_book": "neither", "open_book_program": "neither",     # what ▶ opens an EPUB with (Content): never a run
     "finish_cards": "neither",               # When you finish something (Content): its cards' choice, never a run

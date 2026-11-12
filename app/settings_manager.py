@@ -137,6 +137,9 @@ DEFAULT_SETTINGS = {
     # hands hato its videos with no subtitle (only once hato takes a list: its tools entry lists `find`), and lists
     # `register` for hato with Connect off too (Q3). Off by default. Never in a signature.
     "subs_with_hato": False,
+    # The Chinese library's own *Find them with hato* (Zh-H): its waiting videos go to hato once hato finds Chinese
+    # subtitles (1.3.0: assrt.net, then OpenSubtitles, on the learner's own keys). Off by default. Never in a signature.
+    "subs_with_hato_zh": False,
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.

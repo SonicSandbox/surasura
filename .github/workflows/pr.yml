@@ -76,7 +76,20 @@ jobs:
       - name: The folders the tests expect
         shell: bash
         run: mkdir -p data/ja data/zh "User Files"
+      - name: Crash dumps on (PROBE)
+        if: ${{ matrix.shard == 4 }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force D:\dumps | Out-Null
+          $k = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value 'D:\dumps' -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 5 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' -Name DontShowUI -Value 1 -PropertyType DWord -Force | Out-Null
+          Get-ItemProperty $k
       - name: Core suite, one shard
+        if: ${{ matrix.shard == 4 }}
         env:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
@@ -86,6 +99,13 @@ jobs:
         # tests/FLAKES.md; Tk's own start steadied as locally, tests/quiet_windows.py). Only SURASURA_SKIP_TK_TESTS=1
         # would skip them (tests/tk_on_github.py).
         run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+      - name: Upload the dumps (PROBE)
+        if: ${{ always() && matrix.shard == 4 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-dumps
+          path: D:\dumps
+          if-no-files-found: warn
 
   tests:
     # The one result of the core suite: passed only if every shard passed (a docs-only pull request skips both).

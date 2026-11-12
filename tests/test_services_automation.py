@@ -1304,7 +1304,10 @@ def test_sync_now_syncs_once_with_the_automatic_sync_off_and_ends_on_the_one_pat
     monkeypatch.setattr(auto.sync, "ended", lambda *a, **k: ended.append(a[1]) or real_ended(*a, **k))
     assert _asked(auto) == [None]
     _settle(auto, registry)
-    assert anki.syncs == [("ja", ("Mining",))] and ended == ["ja"]
+    # `ended` runs on the sync's own thread right after its job finishes (`AutoSync._sync`): the job no longer live
+    # is no proof it has run yet — wait for it (FLAKES.md; Haya-AB's --stress-changed, run 4/20)
+    assert h.until(lambda: ended == ["ja"], seconds=10), ended
+    assert anki.syncs == [("ja", ("Mining",))]
     jobs = [v for v in registry.snapshot() if v.kind == "anki-sync"]
     assert len(jobs) == 1 and not jobs[0].automatic, "the user's own sync, one job"
     state = auto.state()

@@ -707,6 +707,20 @@ class Ledger:
         args += (UNCARDABLE_AFTER,)
         return {(w, r) for w, r in self.conn.execute(query, args)}
 
+    def skipped_words(self, language, app=None):
+        """Michi-RM3: (word, reading) of every word you skipped in this language (*Skip this word* on a part whose
+        card Anki refused: outcome `skipped`, `actions.skip_refused`), in any part: a pick never sends one again. `app`:
+        only those skipped with that Anki Miner version (a new one may write the card Anki takes: asked once more);
+        None: every version's."""
+        query = ("SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id "
+                 "JOIN batches b ON b.job_id = o.job_id AND b.attempt = o.attempt "
+                 "WHERE j.language = ? AND o.outcome = 'skipped'")
+        args = (language,)
+        if app is not None:
+            query += " AND (b.anki_miner = ? OR b.anki_miner IS NULL)"     # (unknown: every version's, review N2)
+            args += (str(app),)
+        return {(w, r) for w, r in self.conn.execute(query, args)}
+
     def skipped_for(self, language, reason):
         """Is any job of the language `skipped` for `reason`?"""
         return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND state = 'skipped' AND reason = ? LIMIT 1",

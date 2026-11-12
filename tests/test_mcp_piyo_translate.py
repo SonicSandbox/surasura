@@ -191,3 +191,24 @@ def test_a_card_refused_twice_this_session_is_not_offered_again(anki):
         assert got["refused"] == {str(nid): ct.ONE_BOLD} and "refused twice" in got["next"]
     again = _data(_call_with(STATE, "surasura_cards_to_translate", {"limit": 1}))
     assert again["cards"][0]["id"] != nid
+
+
+
+def test_held_cards_are_never_reported_as_all_done_and_a_written_card_starts_fresh(anki):
+    """r3 S1: when only cards refused twice are left, the AI is told to stop and why — never "every card has a
+    translation"; r3 S2: a card written clears its count, so an Undo makes it a card like any."""
+    state = _state()
+    for nid in (1, 2, 3):
+        for _ in range(2):
+            _call_with(state, "surasura_write_translations", {"items": [{"id": nid, "translation": "no bold"}]})
+    got = _data(_call_with(state, "surasura_cards_to_translate", {}))
+    assert got["cards"] == [] and got["held"] == 3 and "Every card" not in got["next"] and "refused twice" in got["next"]
+    state.refused[1] = 1
+    _call_with(state, "surasura_write_translations", {"items": [{"id": 1, "translation": "The <b>lotus pond</b>."}]})
+    assert 1 not in state.refused
+
+
+def test_a_deck_with_no_such_cards_says_so(anki):
+    """r3 N4: a deck name that finds nothing is said, never "every card has a translation"."""
+    got = _data(_call("surasura_cards_to_translate", {"deck": "No such deck"}))
+    assert got["cards"] == [] and "No such deck" in got["next"] and "Every card" not in got["next"]

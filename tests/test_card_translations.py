@@ -500,3 +500,33 @@ def test_note_type_and_deck_names_are_literal_in_ankis_search():
     q = ct._query("Lapis_v2", "Hint", "Sentence", deck="Mining_JP*")
     assert '"note:Lapis\\_v2"' in q and '"deck:Mining\\_JP\\*"' in q
     assert '"Sentence:re:[ぁ-ゖァ-ヺ]"' in q, "never inside re:"
+
+
+# --- review r3 ------------------------------------------------------------------------------------------------- #
+def test_a_card_whose_sentence_starts_lines_before_its_anchor_keeps_its_own_lines(tmp_path):
+    """r3 B1: Connect's line expansion — the sentence runs over three cues, the anchor (line_start) the last one, 5 s
+    after the first: the card's place is all three, its neighbours the cues around them, never its own half."""
+    srt = tmp_path / "expanded.srt"
+    srt.write_text("1\n00:00:07,000 --> 00:00:09,000\nごんは、ひとりぼっちの小狐でした。\n\n"
+                   "2\n00:00:10,000 --> 00:00:12,000\n兵十は、\n\n3\n00:00:12,500 --> 00:00:15,000\nはりきり網を\n\n"
+                   "4\n00:00:15,200 --> 00:00:17,000\nゆすぶっていました。\n\n"
+                   "5\n00:00:18,000 --> 00:00:19,000\n村の方から、かんかん鐘が鳴ってきました。\n", encoding="utf-8")
+    src = _library(tmp_path, {1: (str(srt), 15.2, "兵十は、はりきり網をゆすぶっていました。")})
+    assert ct.context([1], "ja", 1, *src)[1] == (["ごんは、ひとりぼっちの小狐でした。"], ["村の方から、かんかん鐘が鳴ってきました。"])
+
+
+def test_a_back_that_only_tests_the_field_or_hides_it_in_a_comment_doesnt_show_it():
+    """r3 N1: {{^Hint}}none{{/Hint}} or <!-- {{Hint}} --> on the back: the translation would never be seen."""
+    for back in ("{{FrontSide}}{{^Hint}}none{{/Hint}}", "{{FrontSide}}<!-- {{Hint}} -->"):
+        assert ct.translation_field(LAPIS, {"C": {"Front": "{{Expression}}", "Back": back}}) is None, back
+    assert ct.translation_field(LAPIS, {"C": {"Front": "<!-- {{Hint}} -->", "Back": "{{Hint}}"}}) is None, \
+        "a front fails closed: a comment there still counts"
+
+
+def test_the_cards_held_back_are_counted_not_hidden():
+    """r3 S1: the skipped cards are said (`held`), never folded into "left" or into nothing."""
+    anki = _anki()
+    anki.put(1, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の糸"})
+    anki.put(2, "Lapis", {"Expression": "地獄", "Sentence": "地獄の底"})
+    got = ct.cards(anki, "ja", around=0, skip={1, 2})
+    assert got == {"cards": [], "left": 0, "held": 2}

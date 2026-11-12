@@ -451,6 +451,8 @@ def send_report_tool(what, learner_said="", expected=""):
 
 # --- card translations: the learner's AI translates their cards, Surasura checks and writes (app/card_translations) - #
 REFUSED_TWICE = 2               # a card refused this often this session isn't offered again (r2 #3: no endless loop)
+
+
 def _anki_url():
     from app import anki_connect
     from app.cli import verbs
@@ -503,7 +505,17 @@ def cards_tool(state, limit=10, deck="", source="", around=None, language=None):
         if trouble is None:
             raise
         raise trouble from None
+    held = got.pop("held", 0)
+    if held:                                # never "every card has one" while cards wait on the learner (r3 S1)
+        got["held"] = held
     if not got["cards"]:
+        if held:
+            return {"cards": [], "held": held, "left": got["left"],
+                    "next": f"Stop here: {held} cards were refused twice this session. Tell the learner they need a "
+                            "look in Anki (or a fresh try in a new chat)."}
+        if str(deck or "").strip() and not got["left"]:
+            return {"cards": [], "next": f"No card in a deck called {str(deck).strip()!r} wants a translation (check "
+                                         "the deck's name with the learner)."}
         if got["left"]:
             return {"cards": [], "left": got["left"],
                     "next": "Stop here: the next cards can't be offered (their sentences are too long, or were filled "
@@ -511,6 +523,8 @@ def cards_tool(state, limit=10, deck="", source="", around=None, language=None):
         return {"cards": [], "next": "Every card has a translation (or none has a sentence to translate)."}
     got["next"] = ("Translate each as this tool's description says, then call surasura_write_translations with "
                    "[{id, translation}]" + (f"; {got['left']} more wait after these." if got["left"] else "."))
+    if held:
+        got["next"] += f" {held} cards refused twice this session are left out: the learner needs to look at them."
     return got
 
 
@@ -548,6 +562,8 @@ def write_tool(state, items, into="en", language=None):
     out = {"written": len(got["written"]), "batch": got["undo"]}
     for n in got["refused"]:
         state.refused[n] = state.refused.get(n, 0) + 1
+    for n in got["written"]:
+        state.refused.pop(n, None)          # written: its count goes (an Undo makes it a card like any, r3 S2)
     if got["refused"]:
         out["refused"] = {str(n): why for n, why in sorted(got["refused"].items())}
         out["next"] = ("Fix the refused ones as each why says and send just those again, once; a card refused twice "

@@ -127,11 +127,13 @@ def _by_name(names, wanted):
     return next((lower[w.lower()] for w in wanted if w.lower() in lower), None)
 
 
-def _shows(field, templates, side):
-    """True when any card type's `side` template names `field` ({{Hint}}, {{#Hint}}, {{text:Hint}},
-    {{tts ja_JP voices=X:Hint}} …)."""
-    ref = re.compile(r"\{\{\s*[#^/]?\s*(?:[^{}:]+:\s*)*" + re.escape(field) + r"\s*\}\}", re.I)
-    return any(ref.search(str((sides or {}).get(side) or "")) for sides in (templates or {}).values())
+def _shows(field, templates, side, sections=True):
+    """True when any card type's `side` template names `field` ({{Hint}}, {{text:Hint}}, {{tts ja_JP voices=X:Hint}}
+    … and, with `sections`, {{#Hint}} / {{^Hint}}); outside an HTML comment unless `sections` (a front fails closed)."""
+    ref = re.compile(r"\{\{\s*" + ("[#^/]?" if sections else "") + r"\s*(?:[^{}:#^/][^{}:]*:\s*)*" + re.escape(field)
+                     + r"\s*\}\}", re.I)
+    texts = (str((sides or {}).get(side) or "") for sides in (templates or {}).values())
+    return any(ref.search(t if sections else re.sub(r"<!--.*?-->", "", t, flags=re.S)) for t in texts)
 
 
 def on_front(field, templates):
@@ -149,7 +151,7 @@ def translation_field(field_names, templates=None):
     if templates is not None and not templates:
         return None                             # its templates unread: never guessed (r2 #5)
     return next((f for f in named if f and (templates is None or (not on_front(f, templates)
-                                                                  and _shows(f, templates, "Back")))), None)
+                                                                  and _shows(f, templates, "Back", False)))), None)
 
 
 def in_language(sentence, language):
@@ -239,8 +241,11 @@ def cards(anki, language="ja", deck=None, limit=LIMIT, around=AROUND, only=None,
     if only is not None:
         keep = {int(n) for n in only}
         ids = [n for n in ids if n in keep]
+    held = 0
     if skip:
-        ids = [n for n in ids if n not in set(skip)]
+        skip = set(skip)
+        held = sum(1 for n in ids if n in skip)
+        ids = [n for n in ids if n not in skip]
     out, looked = [], 0
     for at in range(0, min(len(ids), SCAN), MOST):
         part = ids[at:at + MOST]
@@ -266,7 +271,10 @@ def cards(anki, language="ja", deck=None, limit=LIMIT, around=AROUND, only=None,
             got = lines.get(c["id"])
             if got:
                 c.update({k: v for k, v in zip(("before", "after"), got) if v})
-    return {"cards": out, "left": max(0, len(ids) - looked)}
+    got = {"cards": out, "left": max(0, len(ids) - looked)}
+    if held:
+        got["held"] = held
+    return got
 
 
 # --- the lines around a card's sentence ------------------------------------------------------------------------- #
@@ -342,7 +350,16 @@ def _place(lines, start, sentence, index=None):
     timed = any(s is not None for s, _t in lines)               # a book's cards are recorded at 0.0 (r2 #1)
     ms = float(start) * 1000 if start is not None and timed else None
     far = lambda i: abs(lines[i][0] - ms) if lines[i][0] is not None else 0     # noqa: E731
-    near = lambda i: ms is None or far(i) <= NEAR_S * 1000      # noqa: E731  (a subtitle's: by its time too, r2 #2)
+
+    def span(first, last):
+        """How far the card's time is from the lines first..last: 0 inside them (its anchor may be any of them, r3 B1)."""
+        lo, hi = lines[first][0], lines[last][0]
+        if lo is not None and hi is not None and lo <= ms <= hi:
+            return 0
+        return min(far(first), far(last))
+
+    def close(first, last):                     # a subtitle's match: by its time too (r2 #2)
+        return ms is None or span(first, last) <= NEAR_S * 1000
     keys, starts, joined = index or _index(lines)
     want = _key(sentence)
     if want:
@@ -356,20 +373,20 @@ def _place(lines, start, sentence, index=None):
             bounds = found == starts[first] and found + len(want) == starts[last] + len(keys[last])
             places.append((first, last, bounds))
         if ms is not None and places:
-            first, last, _b = min(places, key=lambda p: far(p[0]))
-            if near(first):
+            first, last, _b = min(places, key=lambda p: span(p[0], p[1]))
+            if close(first, last):
                 return first, last
         bound = [(f, l) for f, l, b in places if b]
         if ms is None and places:
             return bound[0] if len(bound) == 1 else None
         hits = [i for i, k in enumerate(keys) if len(k) >= 4 and k in want]
         if (hits and hits[-1] - hits[0] <= 3 and hits == list(range(hits[0], hits[-1] + 1))     # one run of lines
-                and near(hits[0])):
+                and close(hits[0], hits[-1])):
             return hits[0], hits[-1]
     if ms is not None:
-        near = [i for i, (s, _t) in enumerate(lines) if s is not None and abs(s - ms) <= 50]
-        if near:
-            return near[0], near[0]
+        at = [i for i, (s, _t) in enumerate(lines) if s is not None and abs(s - ms) <= 50]
+        if at:
+            return at[0], at[0]
     return None
 
 

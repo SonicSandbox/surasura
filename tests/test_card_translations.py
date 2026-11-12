@@ -285,3 +285,33 @@ def test_nothing_good_writes_nothing_and_another_paths_record_is_never_undone_he
     audio = sa.fill(anki, ledger, {1: str(clip)}, by="add-audio")
     assert ct.undo(anki, ledger, audio["id"])["refused"] == "nothing to undo"
     assert anki.value(1).startswith("[sound:"), "the audio stays"
+
+
+def test_a_long_sentences_translation_may_be_long_and_the_limit_follows_the_sentence(ledger):
+    """A long book sentence (the eval: 237 characters took 405-591 in English) passes up to 3 characters a sentence
+    character; a short line's answer stays under TEXT_MOST."""
+    lines = [t for _s, t in ct.lines_of(SPIDER, "ja")]
+    long_one = "".join(sorted(lines, key=len)[-2:])          # a card cut from a long passage (two sentences)
+    assert len(long_one) * ct.PER_CHAR > ct.TEXT_MOST + 50
+    anki = _anki()
+    anki.put(1, "Lapis", {"Expression": "x", "Sentence": long_one})
+    anki.put(2, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の糸"})
+    text = "The <b>Buddha</b> " + "walked on, " * ((ct.TEXT_MOST + 30) // 11)
+    assert ct.TEXT_MOST < len(text) < len(long_one) * ct.PER_CHAR
+    got = ct.write(anki, anki, ledger, [{"id": 1, "translation": text}, {"id": 2, "translation": text}], "ja")
+    assert got["written"] == [1] and got["refused"] == {2: ct.TOO_LONG.format(most=ct.TEXT_MOST)}
+
+
+def test_a_card_filled_between_the_search_and_the_read_is_not_offered():
+    """Anki's search says the field is empty; by the read it isn't (the learner typed one): never offered."""
+    anki = _anki()
+    anki.put(1, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の糸"})
+    anki.put(2, "Lapis", {"Expression": "地獄", "Sentence": "地獄の底"})
+    found = anki.find
+
+    def find_then_type(query):
+        got = found(query)
+        anki.notes_[2]["fields"]["Hint"]["value"] = "typed just now"
+        return got
+    anki.find = find_then_type
+    assert [c["id"] for c in ct.cards(anki, "ja", around=0)["cards"]] == [1]

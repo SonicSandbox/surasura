@@ -34,6 +34,7 @@ CALL_SITES = {
     "app/connect/kick.py": 3,
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
+    "app/diagnose.py": 1,             # Piyo's diagnose: reads the saved reports' folder (persistent_root, never made)
     "app/import_2x.py": 2,
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
     "app/instance_name.py": 1,

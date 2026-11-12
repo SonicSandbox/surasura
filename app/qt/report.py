@@ -465,6 +465,18 @@ def open_report(shell):
     return windows.show(shell, NAME, lambda s: _kept(s, pictures, scrubbed) or ReportWindow(s, pictures, scrubbed))
 
 
+PIYO_WHAT_MAX = 4000            # Piyo's words, at most (the server holds them to it first: app/cli/mcp_server.py)
+PIYO_EXPECTED_MAX = 1000
+
+
+def open_from_piyo(shell, what, expected=""):
+    """Piyo's *Send report* (the learner's AI asked, `app/instance_name.ask_window`): Report a problem opened as the bug
+    opens it, its pictures taken, with the AI's words in the form (`ReportWindow.fill_from_piyo`). -> the window."""
+    win = open_report(shell)
+    win.fill_from_piyo(what, expected)
+    return win
+
+
 def _kept(shell, pictures, scrubbed):
     """The report window kept built at its last close, as a fresh one opens (`ReportWindow.reopen`) — or None: none
     kept, gone with its main window, or the look changed since (a new one is made in the new look)."""
@@ -531,6 +543,7 @@ class ReportWindow(SecondaryWindow):
         self.dest = downloads()
         self.last_removed = None
         self.sending = False                                      # *Send report* under way (its save, then its zip)
+        self.from_piyo = False                                    # the form holds words Piyo handed over (`fill_from_piyo`)
         self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
         self.waiting = None                                       # a zip kept after a send that didn't go
         self.tries = {}                                           # {a zip's nonce: its failed sends} (`_tried`)
@@ -657,6 +670,7 @@ class ReportWindow(SecondaryWindow):
         #                                                     the window never grows as it lands — Mado-SO)
         self.opened_id = self.sent_opened = self.outbox = self.sent_id = self.last_removed = None
         self.sending = False
+        self.from_piyo = False
         self.goes_name_value = ""
         self.back()
         if self.pages.count() > 1:
@@ -1133,10 +1147,13 @@ class ReportWindow(SecondaryWindow):
         scrubbed = self.scrubbed and bool(images)
         sent = (self.what.toPlainText(), expected, self.pictures)
         where = _where(self.shell)
+        if self.from_piyo:                                         # (the report says it was written with Piyo)
+            where = strings.REPORT_FROM_PIYO_WHERE.format(where=where or strings.REPORT_WINDOW_NAME)
 
         def work():
             return core.save(what, expected, [png_bytes(i) for i in images], where=where, scrubbed=scrubbed)
         def saved(r):
+            self.from_piyo = False
             self._saved(r, sent)
             if then is not None:
                 then()
@@ -1208,6 +1225,20 @@ class ReportWindow(SecondaryWindow):
             b.clicked.connect(lambda _c=False, p=path, c=b: qpress.open(self, p, control=c))
             self.opened_pictures.addWidget(b)
         self.opened_pictures.addStretch(1)
+
+    def fill_from_piyo(self, what, expected=""):
+        """Piyo's *Send report*: the AI's words in the form — after any draft already there — for the learner to read,
+        change and send. Nothing is saved or sent here: *Send report* (What goes, then Send) is the learner's."""
+        if self.pages.currentIndex() != self.FORM:                # (What goes up: its unsent zip goes; the next Send
+            self.back()                                            # ... report carries these words too)
+        for box, words, most in ((self.what, what, PIYO_WHAT_MAX), (self.expected, expected, PIYO_EXPECTED_MAX)):
+            words = str(words or "").strip()[:most]
+            if words:
+                had = box.toPlainText().strip()
+                box.setPlainText(f"{had}\n\n{words}" if had else words)
+        self.from_piyo = True
+        self.say(strings.REPORT_FROM_PIYO)
+        self.what.setFocus()                                       # (never a button: a key typed meanwhile sends nothing)
 
     def add_note(self):
         text = self.note.toPlainText().strip()

@@ -1431,6 +1431,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_with_hato": ("Find them with hato", "hato looks for their subtitles on jimaku.cc by each show's title, with "
                                               "your jimaku key, and fits each one to its video. From then on it looks "
                                               "for every new video with no subtitle by itself"),
+    # Zh-H (PROVISIONAL): the Chinese library's card — hato 1.3's Chinese sites, on the learner's own keys
+    "find_with_hato_zh": ("Find them with hato", "hato looks for their subtitles on assrt.net, then OpenSubtitles, by "
+                                                 "each show's title, with your own free keys (hato's Settings), and "
+                                                 "fits each one to its video. From then on it looks for every new "
+                                                 "video with no subtitle by itself"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason

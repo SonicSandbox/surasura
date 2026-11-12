@@ -249,7 +249,7 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
-                     "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
+                     "make_from_audio", "find_with_hato", "find_with_hato_zh")     # Michi-NS: each a long ask
 
 
 class NeedsCards(QWidget):
@@ -2013,13 +2013,15 @@ class NeedsYou(QObject):
         self._press("make_from_audio", entry, lambda: make(registry, lang, ids, read_settings() or {}, title, install,
                                                            cancel), line=line, then=done, goes=False)
 
-    def _do_find_with_hato(self, entry, _line):
-        """*Find them with hato* (NS-2: the one press, the first time): the yes kept (`no_subs.SETTING`, through the
-        settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look — after it
-        the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+    def _do_find_with_hato(self, entry, _line, press="find_with_hato", language="ja"):
+        """*Find them with hato* (NS-2: the one press, the first time): its card's library's yes kept
+        (`no_subs.setting`: the action names the library — Zh-H — never the page's library of the moment, which a switch
+        changes before the old cards go), through the settings service; Surasura's tools entry written again (hato's
+        `register` listed: Q3), then a look — after it the waiting videos go to hato on the looks' own worker
+        (`SourceLooks._fill_tracks`)."""
         from app import no_subs
         settings = self.win.services.settings
-        settings.set({no_subs.SETTING: True})
+        settings.set({no_subs.setting(language): True})
         looks = getattr(self.win, "looks", None)
         read_settings = self.read_settings
 
@@ -2037,7 +2039,11 @@ class NeedsYou(QObject):
             if looks is not None and hasattr(looks, "asked"):
                 looks.asked(refreshed=True)
             self.refresh()
-        self._press("find_with_hato", entry, run, then=done, goes=False)
+        self._press(press, entry, run, then=done, goes=False)
+
+    def _do_find_with_hato_zh(self, entry, line):
+        """Zh-H: the Chinese library's *Find them with hato* (its own words; the same press)."""
+        self._do_find_with_hato(entry, line, press="find_with_hato_zh", language="zh")
 
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until

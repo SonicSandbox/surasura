@@ -4866,6 +4866,7 @@ def settings_signature(settings, language):
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "subs_with_hato",               # Michi-NS: hato finds the waiting videos' subtitles (NS-2), never a run
+        "subs_with_hato_zh",            # Zh-H: the same yes for the Chinese library, never a run
         "open_video", "open_video_program", "open_book", "open_book_program",   # what ▶ opens a file with: never a run
         "finish_cards",                 # When you finish something: its cards' choice (D14), never a run
         "practice_keep_rounds",         # A6: the practice server keeps its rounds, never a run

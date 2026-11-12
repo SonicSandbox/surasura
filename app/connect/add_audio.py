@@ -96,8 +96,12 @@ def place(sentence, form, found):
 
 
 def book_items(store, epub):
-    """The book's live parts in the library (origins `<epub>#<n>`) -> [item ids]."""
+    """The book's live parts in the library (origins `<epub>#<n>`; a split book's joined `.txt`: its parts, Kura-TX)
+    -> [item ids]."""
     from app import library_store
+    joined = store.joined_book(epub)
+    if joined is not None:
+        return sorted(joined["parts"])
     lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
     with store._reading():
         return sorted({r[0] for r in store.conn.execute(

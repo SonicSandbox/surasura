@@ -149,3 +149,51 @@ def test_a_record_that_cant_be_read_just_now_is_never_written_over(root, monkeyp
 def test_the_turn_is_one_for_every_install_of_this_user():
     # why (review 2): an installed copy and an alpha ask YouTube from one address
     assert youtube_hold.LOCK in locks.SHARED
+
+
+def _held_open(monkeypatch, times):
+    """The record's file refused `times` times (a scanner holding it), then read as usual."""
+    real, left = open, [times]
+
+    def held_open(path, *a, **k):
+        if str(path).endswith(youtube_hold.NAME) and left[0] > 0:
+            left[0] -= 1
+            raise PermissionError(13, "The process cannot access the file", str(path))
+        return real(path, *a, **k)
+    monkeypatch.setattr(youtube_hold, "open", held_open, raising=False)
+    return left
+
+
+def test_a_record_held_for_a_moment_is_read_again_and_a_hold_in_it_still_holds(root, monkeypatch):
+    # why (mutant H6): a scanner's moment must not lift a running hold
+    until = youtube_hold.hold()
+    _held_open(monkeypatch, 2)
+    assert youtube_hold.held() == until
+
+
+def test_a_record_that_stays_unreadable_is_never_written_over_at_a_turns_end(root, monkeypatch):
+    # why (mutant H6): {"last": …} written over it would lose the hold for good
+    youtube_hold.hold()
+    before = _record(root)
+    with monkeypatch.context() as m:
+        _held_open(m, 10 ** 6)
+        with youtube_hold.turn():
+            pass
+    assert _record(root) == before
+
+
+def test_the_gap_is_waited_before_the_lock_is_taken(root, monkeypatch):
+    # why (mutant H9): a program that just let go must not take the turn straight back from one already waiting
+    monkeypatch.setattr(youtube_hold, "GAP_S", 0.6)
+    with youtube_hold.turn():
+        pass                                    # (its end recorded now: the next waits GAP_S)
+    takes, real = [], locks.take
+
+    def take(*a, **k):
+        takes.append(time.monotonic())
+        return real(*a, **k)
+    monkeypatch.setattr(locks, "take", take)
+    started = time.monotonic()
+    with youtube_hold.turn():
+        pass
+    assert takes and takes[0] - started >= 0.45, "the lock was taken before the gap was over"

@@ -150,6 +150,10 @@ class FakeSteps:
     def pairing(self, lang, job):
         return (self.plan.get("pairings") or {}).get(str(job["item_id"]))
 
+    def heard(self, lang, job):
+        """Hato-SP: `heard` [item ids]: their text another tool made from the audio (`library.heard`)."""
+        return job["item_id"] in (self.plan.get("heard") or ())
+
     def video(self, lang, job):
         videos = self.plan.get("videos") or {}
         return videos.get(str(job["item_id"]), os.path.join(self.folder, f"episode-{job['item_id']}.mkv"))

@@ -243,7 +243,7 @@ def _label(text, name, parent, wrap=True):
 # round 8 row 45: the buttons whose press turns an arc (`app/qt/press.py`, `NeedsYou._press`) — a card's answers that
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
-ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
+ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "skip_words", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook")
@@ -809,6 +809,7 @@ class NeedsYou(QObject):
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
                               "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
                               "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
+                              "skip_words": _connect_callable("actions", "skip_refused"),     # Michi-RM3
                               "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
                               "add_audio_undo": _connect_callable("actions", "add_audio_undo")}
         self.cards = page.cards
@@ -1090,7 +1091,7 @@ class NeedsYou(QObject):
             return name in self.hooks
         if name in self.WRITES:
             return getattr(self.win, "moves", None) is not None
-        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
+        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki", "skip_words"):
             return self.connect_calls.get(name) is not None
         if name in ("get_speech_model", "no_speech_model"):
             return self.connect_calls.get("speech_model") is not None
@@ -1956,6 +1957,26 @@ class NeedsYou(QObject):
                 self._stays("mine_anyway", entry)
             self._connect_done(strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("mine_anyway", entry, run, then=done)
+
+    def _do_skip_words(self, entry, _line):
+        """Michi-RM3: *Skip this word* — those words left out for good (`actions.skip_refused`), the part's other cards
+        filled at Connect's next look (kicked); the card goes. Nothing to skip any more: said, the card stays."""
+        skip, kick, lang, read_settings = (self.connect_calls["skip_words"], self.connect_calls.get("kick"),
+                                           self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = skip(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("skip_words", entry)
+            self._connect_done(strings.NEEDS_SKIPPED if ok == "on" else strings.NEEDS_SKIPPED_OWES if ok
+                               else strings.NEEDS_SKIPPED_NOT)       # (review r2 N1: never "made next" untrue)
+        self._press("skip_words", entry, run, then=done)
 
     def _do_ask_hato(self, entry, _line):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings

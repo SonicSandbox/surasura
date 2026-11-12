@@ -654,10 +654,20 @@ class MinerCard(QWidget):
         self.check()
 
     def _open(self):
-        """*Open Anki Miner*: the program started on a worker (`press.open`), the button's arc turning meanwhile."""
+        """*Open Anki Miner*: the program started on a worker (`press.open`), the button's arc turning meanwhile —
+        unless its window is open already (Disc-T1: a second start asks Anki Miner's *already running* question, whose
+        *Continue anyway* risks its databases): looked for on that worker first, then said in the bar."""
         path = (self.state or {}).get("path")
         if path:
-            qpress.open(self.page.shell, path, control=self.open_miner,
+            from app.connect import anki_miner
+
+            def target():
+                return None if anki_miner.window_open() else path
+
+            def then(opened):
+                if opened is None:
+                    self.rows.say(S.MINER_ALREADY_OPEN)
+            qpress.open(self.page.shell, target, control=self.open_miner, key=f"open:{path}", then=then,
                         failed=lambda _info: self.rows.say(S.MINER_NOT_OPENED.format(path)))
 
 

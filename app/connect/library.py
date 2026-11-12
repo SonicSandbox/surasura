@@ -306,6 +306,26 @@ def pairing_of(store, item_id):
     return record
 
 
+def heard(store, item_id):
+    """Hato-SP: is one of the item's live origins — its own files, never another version of its episode (LM1b) nor
+    one whose original moved (D5) — a subtitle whose name says it was made from its video's audio
+    (`<video>.ja.from-audio.srt`, `episode_names.from_audio`)? hato's *Subtitles from the audio* writes that name, as
+    Surasura's own copy beside a video does. An item waiting on its video and filled by such a file later keeps the
+    video's origin row beside the subtitle's: every live origin is read, never only the one `pairing_of` returns."""
+    from app import library_store
+    from app.episode_names import from_audio
+    rows = store.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? AND {library_store._ORIGIN_ROW} AND "
+                              f"NOT {library_store._VERSION_ROW} AND NOT {library_store._MOVED_ROW}", (item_id,))
+    for (text,) in rows:
+        try:
+            origin = json.loads(text).get("origin")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(origin, str) and from_audio(origin):
+            return True
+    return False
+
+
 # D5 / MV-2 (PROVISIONAL): what the store knows of an episode's move, read beside its pairing — the store's alone, no
 # disk (`runner.moved_video` / `runner.video_left` look at the disk after, outside the store's reads). `root`: the path
 # of the source folder its origin was read from (its record's `root`), None for any other record; `was`: (path, size)

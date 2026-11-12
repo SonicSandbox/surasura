@@ -271,18 +271,116 @@ def test_a_cut_run_on_another_deck_is_never_taken_over_and_a_positions_only_job_
     assert undo.load("ja") == cut_snapshot
 
 
-def test_a_run_you_start_in_junban_still_waits_for_restore_after_a_cut_automatic_run(tmp_path):
-    """Only an automatic job goes on past a cut automatic run's snapshot. A run you start in 順's window finds it
-    unfinished and refuses, as I3 does, sending you to Restore (HY-11, as built): nothing is written and the cut run's
-    snapshot stays the way back."""
+def test_a_run_you_start_in_junban_takes_over_a_cut_automatic_run_and_one_restore_undoes_both(tmp_path):
+    """Disc-T1 (Mattias, 3.0.0: "Can't reorder with Junban" — "The last reorder did not finish… Press Undo the last
+    reorder first"; Sonic, Disc-T1: "yes to the Junban recovery one"; HY-11 before). AutoJunban's run after a
+    Generate is cut by Anki closing after its first suspend; the next automatic job, positions only, goes on and leaves
+    the cut snapshot unfinished — for good, as his did. A Reorder you start in 順 now takes it over and finishes the
+    job instead of being refused: the cut run's original positions and flags win, the suspends are both runs', and
+    one Undo — its question saying so — puts back how the deck was before either. 洗濯機, suspended by you, is never
+    touched."""
+    from modules.junban import junban_view
     fake = _backlog(tmp_path)
-    _cut(fake, "position")
-    cut_snapshot, writes = undo.load("ja"), list(fake.writes)
+    before = _queues(fake)
+    _cut(fake)
+    cut_cards = undo.load("ja")["cards"]
+    one, two = _card_of(fake, "冒険"), _card_of(fake, "散歩")
+    one["due"], two["due"] = two["due"], one["due"]                     # a move in Anki since: the job has work
+    with _patched(fake):
+        positions = auto.reorder(_auto(junban_auto_actions=False), list_current=True)
+    assert positions["outcome"] == "ran", positions
+    assert undo.load("ja")["complete"] is False, "his state: the cut run's snapshot left unfinished"
+
     with _patched(fake):
         report = reposition.run(_auto(), refresh=False)
-    assert report["ok"] is False and report["restore_first"] is True, report
-    assert "did not finish" in report["problems"][0], report["problems"]
-    assert fake.writes == writes and undo.load("ja") == cut_snapshot
+    assert report["ok"] is True and not report.get("restore_first"), report
+    assert [_card_of(fake, word)["queue"] for word in _OFF_THE_LIST] == [-1, -1, -1, -1], "the job finished"
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved.get("automatic") is not True, saved
+    assert saved["finished_automatic"] is True
+    assert {key: due for key, due in saved["cards"].items() if key in cut_cards} == cut_cards
+    assert saved["suspended"] == _ids(fake, _OFF_THE_LIST), "the cut run's suspends and this run's"
+    asked = junban_view.restore_question("ja", _auto())
+    assert asked["kind"] == "snapshot" and asked["both"] is True, asked
+
+    with _patched(fake):
+        restored = reposition.restore(_auto())
+    assert restored["ok"], restored["problems"]
+    assert _queues(fake) == before, "one Undo puts back both runs (the move since included)"
+    assert all("Surasura::later" not in _tags_of(fake, word) for word in _OFF_THE_LIST)
+    assert all(not fake.cards[card_id].get("flags") for card_id in _ids(fake, _OFF_THE_LIST))
+    yours = _card_of(fake, "洗濯機")["cardId"]
+    assert _card_of(fake, "洗濯機")["queue"] == -1 and not [ids for _a, ids in fake.suspend_calls if yours in ids]
+
+
+def test_a_run_you_start_with_nothing_left_to_do_still_finishes_a_cut_automatic_run(tmp_path):
+    """Disc-T1: an automatic run cut after its last position, then a positions-only job past it (today's baseline,
+    newer than the cut snapshot — Mattias's sequence), and your Reorder (its not-on-the-list actions off) finds every
+    card in place — nothing to write. It still ends the block, and Undo is still the way back from the cut run (the
+    adversary's MUST: never the newer baseline, which knows nothing of it): a snapshot of its own takes the cut run
+    over, newest, and its question says both."""
+    from modules.junban import junban_view
+    fake = _backlog(tmp_path)
+    before = _queues(fake)
+    pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
+    quiet = _auto(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["ok"]               # the deck in your order
+    path = undo.save(pairs, ["TheBank"], language="ja", automatic=True)     # then a run cut after its last position
+    with open(path, encoding="utf-8") as handle:
+        cut = json.load(handle)
+    cut["written_at"] = "2026-01-02T03:04:05"                           # earlier than the baseline after it
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(cut, handle)
+    now = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
+    assert undo.save_baseline(now, ["TheBank"], language="ja")[1], "the positions-only job's baseline, newer"
+    writes = list(fake.writes)
+    with _patched(fake):
+        report = reposition.run(quiet, refresh=False)
+    assert report["ok"] is True and not report.get("restore_first"), report
+    assert fake.writes == writes, "nothing written"
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["finished_automatic"] is True, saved
+    assert saved["written_at"] > cut["written_at"], "a snapshot of its own, newer than the baseline"
+    assert junban_view.restore_question("ja", quiet)["both"] is True
+    assert undo.restorable("ja", ["TheBank"]) == undo.load("ja"), "Undo is the take-over, never the baseline"
+    with _patched(fake):
+        again = reposition.run(quiet, refresh=False)
+    assert again["ok"] is True and not again.get("restore_first"), "never blocked again"
+    with _patched(fake):
+        restored = reposition.restore(quiet)
+    assert restored["ok"], restored["problems"]
+    assert _queues(fake) == before
+
+
+def test_a_take_over_cut_short_too_never_says_it_finished_anything(tmp_path):
+    """Disc-T1 (the adversary's SHOULD): your take-over run, cut in turn, leaves its snapshot unfinished but already
+    holding both runs' originals. Its Undo still puts back both (I3), but its question is the plain one — nothing was
+    finished — until a run completes it."""
+    from modules.junban import junban_view
+    _backlog(tmp_path)
+    undo.save([(1789712090000, 50)], ["TheBank"], language="ja", finished_automatic=True)
+    assert junban_view.restore_question("ja", _auto())["both"] is False
+    assert undo.mark_complete("ja")
+    assert junban_view.restore_question("ja", _auto())["both"] is True
+
+
+def test_a_run_you_start_never_takes_over_another_decks_cut_run(tmp_path):
+    """A cut automatic run's snapshot for another deck (順's deck changed since): taking it over would leave its own
+    deck's positions with no way back, so a run you start refuses, as I3 does, and nothing is written."""
+    fake = _backlog(tmp_path)
+    quiet = _auto(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["ok"]               # the deck in your order
+    writes = list(fake.writes)
+    undo.save([(1789712090000, 50)], ["Kanji"], language="ja", automatic=True)
+    cut_snapshot = undo.load("ja")
+    for settings in (_auto(), quiet):                       # with something to write, and with nothing (`_finish_cut`)
+        with _patched(fake):
+            report = reposition.run(settings, refresh=False)
+        assert report["ok"] is False and report["restore_first"] is True, report
+        assert "did not finish" in report["problems"][0], report["problems"]
+        assert fake.writes == writes and fake.suspend_calls == [] and undo.load("ja") == cut_snapshot
 
 
 @pytest.mark.parametrize("unfinished", ["2.5", "not-quite-true"])
@@ -318,7 +416,8 @@ def test_an_unfinished_connect_run_never_stops_an_automatic_job_which_takes_it_o
     automatic step, with actions or positions only, goes on past one of Connect's unfinished runs and takes it over in
     the window's snapshot (its cards' numbers from before it, its suspends), as row 7 takes over the window's own cut
     run; the run's file is marked taken over, so 順's Reorder is no longer refused. Before the takeover, that Reorder
-    asks for the Undo first."""
+    asks for the Undo first (Disc-T1 left this one as the lead ruled it: only a cut run of the window's own is yours
+    to take over)."""
     fake = _backlog(tmp_path)
     pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
     first = pairs[0][0]

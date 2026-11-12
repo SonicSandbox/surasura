@@ -222,7 +222,7 @@ def test_the_qt_files_the_window_never_uses_are_left_out_of_the_program(tmp_path
 def test_the_build_config_reads_and_carries_the_floors():
     config = package_app.load_build_config()
     assert config["modules"] == {"junban": True, "koe": False, "youtube_downloader": True, "reels": False,
-                                 "immersion_architect": False}
+                                 "immersion_architect": False, "irodori": True}   # Iro-AA: bundled, off at runtime
     assert config["python_min"] == "3.11.4" and config["sqlite_min"] == "3.51.3"
     assert config["upx"] is False
     assert config["qt_modules"] == ["QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg"]

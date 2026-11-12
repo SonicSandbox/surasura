@@ -27,6 +27,7 @@ from app.qt import strings
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
+from app.services.setup_wizard import NOTHING_TO_COUNT as SW_NOTHING
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
 
@@ -1252,6 +1253,56 @@ def test_choice_86_a_new_surasura_deck_is_offered_first_and_named_as_new(make):
     assert page.ask_deck.itemText(0) == "Surasura" and page.ask_line.text() == S.MINER_ASK_DECK
 
 
+def test_zh_c_chinese_offers_anki_miner_note_with_its_page_then_maps_your_own_note_type_field_by_field(make):
+    """Zh-C (Sonic: "use his card although they may have their own so they can map it"): the Chinese note type ask
+    says Anki Miner Note's case and shows *Get Anki Miner Note…* while Anki lacks it; a note type of your own comes
+    back as a map — its first field is the word, each role a menu at the proposal — and the press hands the map back
+    with the note type; another note type picked hides the map (it was the other one's), never sent."""
+    from app.connect import miner_settings as MS
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Chinese cards go yet (note_type: not set).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.12.0", fix))
+    own = ["汉字", "拼音", "意思", "例句", "例句音频"]
+    note_ask = {"deck": None, "note_type": ["中文卡", "Basic"], "why": None, "get": MS.AM_NOTE_PAGE}
+    map_ask = {"deck": None, "note_type": ["中文卡", "Basic"], "why": "map", "note": "中文卡", "note_fields": own,
+               "roles": list(MS.MAPPED["zh"]), "map": dict.fromkeys(MS.MAPPED["zh"], "") | {"sentence": "例句"},
+               "problem": None}
+    pressed = []
+    answers = [("ask", note_ask), ("ask", map_ask), ("set-up", None)]
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return answers[len(pressed) - 1]
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner, data={"target_language": "zh"})
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert page.ask_line.text() == S.MINER_ASK_NOTE_ZH and not page.get_note.isHidden()
+    assert page.get_note.toolTip() == S.GET_AM_NOTE_TIP and page.map_part.isHidden()
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 2 and not wiz.setting_up)
+    assert pressed[1] == {"deck": None, "note_type": "中文卡"}
+    assert not page.map_part.isHidden() and page.get_note.isHidden() and page.map_word.text() == "汉字"
+    box = page.map_boxes["sentence"]
+    assert [box.itemText(i) for i in range(box.count())] == [S.MAP_NONE] + own[1:], "never the word's own field"
+    assert box.currentData() == "例句" and page.map_boxes["audio"].currentData() == ""
+    assert all(b.toolTip() for b in page.map_boxes.values()), "every menu has its tip (the Qt guide)"
+    page.map_boxes["audio"].setCurrentIndex(page.map_boxes["audio"].findData("例句音频"))
+    page.ask_note.setCurrentIndex(1)                       # Basic: the map was 中文卡's
+    assert page.map_part.isHidden() and "fields" not in page.chosen()
+    page.ask_note.setCurrentIndex(0)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 3 and not wiz.setting_up)
+    assert pressed[2]["note_type"] == "中文卡"
+    assert pressed[2]["fields"]["sentence"] == "例句" and pressed[2]["fields"]["audio"] == "例句音频"
+    assert pressed[2]["fields"]["expression_pinyin"] == "", "a role left at none goes as none"
+    assert wait_until(lambda: page.ask_part.isHidden()), "set up: nothing left to choose"
+
+
 def test_choice_86_back_and_next_on_what_you_know_keeps_the_new_deck_among_its_decks(make):
     """Review MUST (choice 86): the setup joined the new deck to the known-words decks — a Back to *What you know* and
     Next there writes its decks with it, never the list loaded when the wizard opened (which would drop it and turn
@@ -1693,16 +1744,17 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
     assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
 
 
-def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its_own_line_back(make):
-    """Zh-S (2026-11-09): 3.0 makes cards in Japanese only (Connect parks every Chinese entry). Before, a Chinese learner
-    met the Japanese page's promise over a Chinese card picture, and the page-1 tip said "your cards in Chinese"."""
+def test_zh_s_the_cards_page_promises_chinese_cards_with_pinyin_and_japanese_gets_its_own_line_back(make):
+    """Zh-S (2026-11-09), then Zh-C: Connect makes Chinese cards now, so the Chinese cards page promises
+    them — the line, its audio, a picture and the word's pinyin — and page 1's tip says "your cards in Chinese"
+    again; never "Japanese only"."""
     wiz, *_ = make()
-    assert "Japanese only" not in wiz.pages[4].line.text()          # Japanese: the page as it was
+    assert "pinyin" not in wiz.pages[4].line.text()                  # Japanese: the page as it was
     wiz.pages[0].channel.choose("zh", user=True)
     wiz.next()
     assert wiz.language == "zh"
-    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "Japanese only" in S.CARDS_LINE_ZH
-    assert "your cards in Chinese" not in S.LANGUAGE_TIPS["zh"]
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "pinyin" in S.CARDS_LINE_ZH
+    assert "Japanese only" not in S.CARDS_LINE_ZH and "your cards in Chinese" in S.LANGUAGE_TIPS["zh"]
     while wiz.index:
         wiz.back()
     wiz.pages[0].channel.choose("ja", user=True)
@@ -1831,6 +1883,52 @@ def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make,
     waits[-1][1]()
     QApplication.processEvents()
     assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
+
+
+def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_again(make, monkeypatch):
+    """Disc-T1 (Mattias, 2026-11-10: "Counting your shows… didn't really get any feedback"): his library was empty
+    (a new incoming folder, the 2.5 shows left behind) and the page said *Counting your shows…* for good. Nothing to
+    count is said as that (`NO_SHOWS`); the page keeps asking, so shows that arrive meanwhile still bring numbers."""
+    waits = []
+    api = FakeApi(numbers=dict(SW_NOTHING))
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    page = wiz.page
+    assert wait_until(lambda: len(waits) == 1), "nothing to count: asked again"
+    assert not page.counting.isHidden() and page.counting.text() == S.NO_SHOWS and page.numbers_part.isHidden()
+    api.numbers = NUMBERS                                           # a show arrived, and the indexer read it
+    shell.bridge.indexed.emit("ja")
+    assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
+    assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
+    page.show_numbers(None)                                         # (counting again, as a language change starts it)
+    assert page.counting.text() == S.COUNTING
+    page.show_numbers({"empty": "arrivals"})                        # only New arrivals': sort one into Current
+    assert page.counting.text() == S.NO_SORTED and page.numbers_part.isHidden()
+    wiz.fetching = {"links": 2}                                     # YouTube's videos still coming: still counting
+    page.show_numbers(dict(SW_NOTHING))
+    assert page.counting.text() == S.COUNTING
+    asked = api.calls.count(("level_numbers", "ja"))
+    wiz._youtube_landed(0, 1, "")                                   # they came: counted at once, never after 30 s
+    assert wiz.fetching is None
+    assert wait_until(lambda: api.calls.count(("level_numbers", "ja")) == asked + 1)
+
+
+def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):
+    """Disc-T1: a worker that raised was logged once and never asked again — *Counting your shows…* for good. It asks
+    again as a count not ready yet does."""
+    waits = []
+    api = FakeApi(numbers=None)
+
+    def broken(settings, language):
+        api.calls.append(("level_numbers", language))
+        raise OSError("the token store is busy")
+    monkeypatch.setattr(api, "level_numbers", broken)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    assert wait_until(lambda: len(waits) == 1), "a failed count is asked again"
+    assert wiz.page.counting.text() == S.COUNTING
 
 
 def test_counting_asks_again_when_the_indexer_ran(make, monkeypatch):
@@ -2135,6 +2233,40 @@ def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(
     api.record = BEHIND
     page.anki_changed()
     assert wait_until(lambda: page.btn_behind.isVisible())
+
+
+class HeldBehindApi(BehindApi):
+    """Each look at the shows behind the deck held until the test lets it answer (`answers`, in the order asked)."""
+    def __init__(self, answers, **kw):
+        super().__init__(None, **kw)
+        self.answers, self.gates = list(answers), []
+
+    def backlog_shows(self, language, settings, deck):
+        gate = threading.Event()
+        self.gates.append(gate)
+        n = len(self.gates)
+        self.asked.append((language, deck))
+        gate.wait(10)
+        return self.answers[n - 1] if n <= len(self.answers) else None
+
+
+def test_michi_c_an_older_look_answering_late_never_undoes_a_newer_one(make):
+    """Disc-T1 (the stress gate's red: the test above, 1 in 4 under load): arriving on the page starts two looks for
+    the same deck (shown, then entered: looked at again). The older one answers with Anki closed; the newer one's
+    shows are what the page says, never dropped because the older answer cleared the look (both carry one key)."""
+    api = HeldBehindApi([None, BEHIND])
+    wiz, shell, api, settings, _m = make(api=api)
+    try:
+        go_to(wiz, "order")
+        page = wiz.page
+        assert wait_until(lambda: len(api.gates) == 2), len(api.gates)   # both out at once
+        api.gates[0].set()                                          # the older one: Anki closed, late
+        wait_until(lambda: False, 0.3)
+        api.gates[1].set()                                          # the newer one: the shows
+        assert wait_until(lambda: page.btn_behind.isVisible()), "the newer look's answer is shown"
+    finally:
+        for gate in api.gates:
+            gate.set()
 
 
 def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_browser(make):

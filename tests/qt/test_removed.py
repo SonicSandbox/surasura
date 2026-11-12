@@ -233,6 +233,56 @@ def test_bring_back_n_removed_on_a_folders_line_puts_them_back_and_its_next_look
                       10)
 
 
+def test_bring_back_shows_though_the_store_was_busy_the_moment_its_removed_files_were_read(real, monkeypatch):
+    # Flake-P2 (tests/FLAKES.md): the read's pool thread opens its handle without a wait (busy_wait 0). A store busy
+    # that moment answered None, and the folder's *Bring back 4 removed* never came (until the trash moved again)
+    import traceback
+    src, before, got = _source_with("ja")
+    store, win, writer = real("ja", before=before)
+    ids = got["ids"]
+    win.moves._give(drag.Ticket("removed", (), ids), lambda t: writer.remove(ids, label=t))
+    _saved(win, writer)
+    real_probe, busy = ls._probe, []
+
+    def probe(db_path, busy_wait):
+        if not busy and any(f.name == "run" and f.filename.endswith("removed.py") for f in traceback.extract_stack()):
+            busy.append(db_path)
+            return "read-only", "busy"                                  # busy this once, as another write closes
+        return real_probe(db_path, busy_wait)
+    monkeypatch.setattr(ls, "_probe", probe)
+    folders = _folders(win)
+    line = folders.lines[got["root"]]
+    assert wait_until(lambda: not line.back.isHidden(), 10), "the busy moment waited out, then read"
+    assert busy and line.back.text() == strings.REMOVED_BRING_BACK.format(n=4)
+
+
+class _Opener:
+    """A store opener whose looks answer `states` in turn (its last one kept): (mode, reason), as StoreOpener.state."""
+
+    def __init__(self, *states):
+        self.states, self.looks, self.handles = list(states), 0, 0
+
+    def check(self):
+        self.looks += 1
+
+    def state(self):
+        return self.states[min(self.looks, len(self.states)) - 1]
+
+    def handle(self):
+        self.handles += 1
+        return object() if self.state()[0] == "store" else None
+
+
+def test_a_busy_store_is_waited_out_on_the_pool_thread_and_a_damaged_one_answers_at_once():
+    # Flake-P2: the writer's rule (moves.Writer._store, LM11b): busy -> asked again; damaged or not a store -> None now
+    busy = _Opener(("read-only", "busy"), ("read-only", "busy"), ("store", None))
+    assert removed._when_busy(busy) is not None and busy.looks == 3
+    damaged = _Opener(("read-only", "damaged"))
+    t = time.monotonic()
+    assert removed._when_busy(damaged) is None and damaged.handles == 0 and time.monotonic() - t < 0.5
+    assert removed._when_busy(type("Bare", (), {"handle": lambda self: None})()) is None   # a stand-in: as given
+
+
 def test_a_folder_with_nothing_removed_shows_no_button_and_the_trash_button_opens_the_list(real):
     src, before, got = _source_with("ja", n=2)
     _store, win, _writer = real(before=before)
@@ -312,6 +362,23 @@ def test_A4B3_a_mass_removes_2500_entries_open_in_one_frame_and_build_on_as_the_
     bar.setValue(bar.maximum())                                         # scrolled to the end: the next ones
     assert wait_until(lambda: len(w.lines) >= 2 * removed.BUILT_AT_ONCE and w.settled(), 5)
     assert [w.lines[k].title.text() for k in w.order] == [e["title"] for e in entries[1:len(w.order) + 1]]
+
+
+def test_A4B3_with_no_room_below_the_window_the_answer_builds_its_30_and_no_more(real):
+    # Flake-P2 (tests/FLAKES.md): the first frame's two lines make the window grow; with no room below it the list
+    # scrolls at once, and the scroll bar's change, sent inside that resize before the slices were asked for, read a
+    # two-line list as near its end: 32 built (--all, train 25b)
+    _store, win, _writer = real("ja")
+    w = _open_removed(win)
+    area = w.screen().availableGeometry()
+    w.move(w.x(), area.bottom() - w.frameGeometry().height())          # its frame on the screen's bottom edge
+    settle()
+    w._show(_entries("ja", 2500))
+    assert wait_until(w.settled, 5)
+    assert len(w.lines) == removed.BUILT_AT_ONCE
+    bar = w.scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())                                         # scrolled to the end: still the next ones
+    assert wait_until(lambda: len(w.lines) >= 2 * removed.BUILT_AT_ONCE and w.settled(), 5)
 
 
 def test_A4B7_the_list_is_read_while_a_long_look_holds_the_looks_worker(real):

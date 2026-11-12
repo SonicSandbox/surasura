@@ -131,8 +131,9 @@ def test_every_part_waits_on_one_question_that_stays_seen_and_mine_without_audio
         assert feed.build(rec, "ja").items[12].kind == feed.HELD
     entry = [e for e in needs.entries(None, (), {"needs": rec["languages"]["ja"]["needs"]}, set())
              if e.kind == runner.BOOK_AUDIO_NEED]
-    assert entry and entry[0].actions == ("pick_audiobook", "no_audiobook", "dismiss") and entry[0].title == \
-        got["book_ask"]
+    # Iro-AA: *Make AI audio (beta)* between the two — the window shows it only while the AI voice's beta is on
+    assert entry and entry[0].actions == ("pick_audiobook", "ai_audio", "no_audiobook", "dismiss") and \
+        entry[0].title == got["book_ask"]
     assert actions.book_audiobook("ja", need["id"], path=ledger_path) is True
     with Ledger(ledger_path) as ledger:
         assert [ledger.job_by_id(j)["state"] for j in (a, b)] == ["queued", "queued"]

@@ -78,6 +78,7 @@ BOM, the 3.5.0 keys only (and, with refuse-sentence-keys, main's refusal of the 
 """
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -590,7 +591,8 @@ def _media(argv, plan):
             end = at
             while end < at + after and end + 1 < len(lines) and lines[end + 1][1] - lines[at][0] <= 30.0:
                 end += 1
-            text = "".join(t for _s, _e, t in lines[at:end + 1])
+            # as Anki Miner's _clean_line_text answers it: a leading speaker tag and mid-line kana in brackets out
+            text = re.sub(r"（[ぁ-ゖ]+）", "", re.sub(r"^（[^）]*）", "", "".join(t for _s, _e, t in lines[at:end + 1])))
             past = plan.get("audio_seconds") is not None and lines[at][0] > plan["audio_seconds"]
             if not past:                    # a line past the audio's end is cut into no clip (its `audio` null)
                 with open(os.path.join(out, f"{k}.mp3"), "w", encoding="utf-8") as f:

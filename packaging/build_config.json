@@ -5,7 +5,8 @@
     "koe": false,
     "youtube_downloader": true,
     "reels": false,
-    "immersion_architect": false
+    "immersion_architect": false,
+    "irodori": true
   },
   "data_name": "Surasura",
   "python_min": "3.11.4",

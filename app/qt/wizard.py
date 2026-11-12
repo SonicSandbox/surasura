@@ -42,7 +42,8 @@ from functools import lru_cache
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
+                             QLabel, QLayout,
                              QPlainTextEdit, QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import ankiconnect_addon, path_utils, scrub, settings_manager, theme
@@ -1987,6 +1988,7 @@ class OrderPage(_Page):
         rows.addLayout(behind)
         self._behind_key = None           # (language, deck) last looked at
         self._behind = None               # its offer record
+        self._behind_seq = 0              # the newest look (Disc-T1: an older one's late answer never applies)
         # --- end Michi-C
         rows.addWidget(style.separator(self.controls))
         later = QVBoxLayout()                            # the words above the three (beside them they were wider
@@ -2074,6 +2076,8 @@ class OrderPage(_Page):
         if not deck or key == self._behind_key:
             return
         self._behind_key, self._behind = key, None
+        self._behind_seq += 1
+        seq = self._behind_seq
         _set_text(self.behind_line, S.BEHIND_LOOKING)
         _show(self.behind_line, True)
         _show(self.btn_behind, False)
@@ -2083,7 +2087,7 @@ class OrderPage(_Page):
             return api.backlog_shows(language, settings, deck)
 
         def done(record):
-            if self._behind_key == key:
+            if self._behind_seq == seq and self._behind_key == key:     # (two looks for one deck: the newer one's)
                 self._behind = record
                 if record is None:
                     self._behind_key = None        # (Anki closed meanwhile: asked again when it answers)
@@ -2239,6 +2243,36 @@ class CardsPage(_Page):
         ask.addWidget(self.deck_row)
         self.note_row, self.ask_note = _choice_row(S.MINER_NOTE_TYPE, S.MINER_NOTE_TYPE_TIP, self.ask_part)
         ask.addWidget(self.note_row)
+        # Zh-C (Sonic: "use his card although they may have their own so they can map it"): Chinese offers Anki Miner
+        # Note first — its page when Anki lacks it — and a note type of your own is mapped here, field by field
+        self.get_note = qpress.room(_button(S.GET_AM_NOTE, S.GET_AM_NOTE_TIP, self._get_note, self.ask_part))
+        self.get_note_url = None
+        self.get_note.setVisible(False)
+        ask.addWidget(self.get_note, 0, Qt.AlignmentFlag.AlignLeft)
+        self.map_part = QWidget(self.ask_part)
+        grid = QGridLayout(self.map_part)
+        grid.setContentsMargins(0, _px(4), 0, 0)
+        grid.setHorizontalSpacing(_px(14))
+        grid.setVerticalSpacing(_px(4))
+        grid.addWidget(_label("wizlabel", S.MAP_ROLES["word"], self.map_part), 0, 0)
+        self.map_word = _label("wizsub", "", self.map_part)
+        self.map_word.setToolTip(S.MAP_WORD_TIP)
+        grid.addWidget(self.map_word, 0, 1)
+        self.map_boxes, self.map_note = {}, None
+        from app.connect import miner_settings          # standard library only
+        for i, role in enumerate(miner_settings.MAPPED["zh"], 1):
+            grid.addWidget(_label("wizlabel", S.MAP_ROLES.get(role, role), self.map_part), i, 0)
+            box = _Combo(self.map_part)
+            box.setToolTip(S.MAP_ROLE_TIPS.get(role, S.MAP_ROLE_TIP))
+            box.setAccessibleName(S.MAP_ROLES.get(role, role))
+            box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            box.setMinimumWidth(_px(150))
+            grid.addWidget(box, i, 1)
+            self.map_boxes[role] = box
+        grid.setColumnStretch(2, 1)
+        self.map_part.setVisible(False)
+        ask.addWidget(self.map_part)
+        self.ask_note.currentIndexChanged.connect(self._note_picked)
         self.ask_part.setVisible(False)
         words.addWidget(self.ask_part)
         words.addWidget(self.acts)
@@ -2437,25 +2471,60 @@ class CardsPage(_Page):
                                 else str(i), str(i))
                 box.setCurrentIndex(0)
             _show(row, bool(items))
+        mapping = asked.get("why") == "map"
         line = (S.MINER_ASK_FIELDS.format(note=asked.get("note") or "") if asked.get("why") == "fields"
+                else " ".join(filter(None, (S.MAP_PROBLEMS.get(asked.get("problem"), ""),
+                                            S.MINER_ASK_MAP.format(note=asked.get("note") or "")))) if mapping
                 else S.MINER_ASK_NEW_DECK if decks and new else S.MINER_ASK_DECK if decks
-                else S.MINER_ASK_NOTE if notes else "")
+                else S.MINER_ASK_NOTE_ZH if notes and asked.get("get") else S.MINER_ASK_NOTE if notes else "")
         _set_text(self.ask_line, line)
+        self.get_note_url = asked.get("get") if notes else None
+        _show(self.get_note, bool(self.get_note_url))
+        self._show_map(asked if mapping else None)
         _show(self.ask_part, bool(decks or notes))
+
+    def _show_map(self, asked):
+        """Zh-C: the note type's fields, each role's menu at the proposal (or the learner's map back), for `asked`'s
+        note type; None: hidden."""
+        self.map_note = (asked or {}).get("note")
+        if asked:
+            fields = [str(f) for f in asked.get("note_fields") or ()]
+            _set_text(self.map_word, fields[0] if fields else "")
+            for role, box in self.map_boxes.items():
+                box.clear()
+                box.addItem(S.MAP_NONE, "")
+                for f in fields[1:]:
+                    box.addItem(f, f)
+                at = box.findData(str((asked.get("map") or {}).get(role) or ""))
+                box.setCurrentIndex(max(at, 0))
+        _show(self.map_part, bool(asked))
+
+    def _note_picked(self, _index):
+        """Another note type picked while a map shows: the map was for the one asked (the next press asks again)."""
+        if self.map_note is not None:
+            _show(self.map_part, self.ask_note.currentData() == self.map_note)
+
+    def _get_note(self):
+        """*Get Anki Miner Note…*: its release page in the browser, on a worker (`press.open`)."""
+        if self.get_note_url:
+            qpress.open(self.wiz, self.get_note_url, control=self.get_note)
 
     def chosen(self):
         """What the learner picked in the asked rows -> {"deck", "note_type"} (None where not asked), or None."""
         if self.ask_part.isHidden():
             return None
-        return {"deck": self.ask_deck.currentData() or None if not self.deck_row.isHidden() else None,
-                "note_type": self.ask_note.currentData() or None if not self.note_row.isHidden() else None}
+        out = {"deck": self.ask_deck.currentData() or None if not self.deck_row.isHidden() else None,
+               "note_type": self.ask_note.currentData() or None if not self.note_row.isHidden() else None}
+        if not self.map_part.isHidden() and out["note_type"] == self.map_note:     # Zh-C: the learner's map
+            out["fields"] = {role: box.currentData() or "" for role, box in self.map_boxes.items()}
+        return out
 
     def _copy_path(self):
         QApplication.clipboard().setText(self.path_text)
         self.wiz.say(S.PATH_COPIED)
 
     def _say_language(self, language):
-        """3.0 makes cards in Japanese only (Connect parks a Chinese entry, `runner.CHINESE`): Chinese says so."""
+        """The cards' line, in the page's language (Chinese cards since Zh-C: their own line, with pinyin)."""
         _set_text(self.line, S.CARDS_LINE_ZH if language == "zh" else S.CARDS_LINE)
 
     def language_changed(self, language):
@@ -2539,6 +2608,10 @@ class LevelPage(_Page):
         self.numbers = numbers
         self._paint()
 
+    def counted(self):
+        """The numbers are in (bands to show): not while counting, nor for a library with nothing in it."""
+        return bool((self.numbers or {}).get("bands"))
+
     def _auto_toggled(self, on):
         if on:
             self._band = None
@@ -2568,9 +2641,13 @@ class LevelPage(_Page):
 
     def _paint(self):
         n = self.numbers
-        _show(self.counting, n is None)
-        _show(self.numbers_part, n is not None)
-        if n is None:
+        counted = self.counted()
+        if not counted:                                   # Disc-T1: nothing to count is said, never *Counting* for
+            empty = None if self.wiz.fetching is not None else (n or {}).get("empty")  # good (YouTube's videos coming:
+            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, S.COUNTING))  # still)
+        _show(self.counting, not counted)
+        _show(self.numbers_part, counted)
+        if not counted:
             return
         bands = list(n.get("bands") or [])
         band = self._band_now()
@@ -3475,6 +3552,8 @@ class SetupWizard(QWidget):
             else:                                         # nothing came in at all: the page again, with why
                 self._load = None
                 self._cover(None)
+        if self.page.id == "level" and not self.pages[5].counted():
+            self.read_numbers(fresh=True)                 # Disc-T1: the last page counts what came, at once
 
     def _added(self, _text=None):
         """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""
@@ -3949,14 +4028,20 @@ class SetupWizard(QWidget):
         seq, language = self._numbers_seq, self.language
         bridge.run_in_worker(self.api.level_numbers, thaw(self._settings()), language,
                              then=self.alive(lambda n: self._numbers(n, seq, language)),
-                             failed=lambda info: applog.log("wizard", f"level numbers: {info[0]}"))
+                             failed=self.alive(lambda info: self._numbers_failed(info, seq, language)))
 
     def _numbers(self, numbers, seq, language):
         if seq != self._numbers_seq or language != self.language:
             return
         self.pages[5].show_numbers(numbers)
-        if numbers is None:                               # still counting (or no shows yet): asked again while shown,
+        if not self.pages[5].counted():                   # still counting (or no shows yet): asked again while shown,
             self._count_later(seq)                        # each time twice as long after, and when the indexer ran
+
+    def _numbers_failed(self, info, seq, language):
+        """A count that raised: logged, and asked again as one not ready yet (Disc-T1: never *Counting* for good)."""
+        applog.log("wizard", f"level numbers: {info[0]}")
+        if seq == self._numbers_seq and language == self.language and not self.pages[5].counted():
+            self._count_later(seq)
 
     def later(self, ms, fn):
         QTimer.singleShot(ms, fn)
@@ -3980,7 +4065,7 @@ class SetupWizard(QWidget):
         if not self._gone and not sip.isdeleted(self):
             self._load_indexed(language)
         if (not self._gone and not sip.isdeleted(self) and self.page.id == "level" and language == self.language
-                and self.pages[5].numbers is None):
+                and not self.pages[5].counted()):
             self.read_numbers()
 
     def _generate(self, answers):

@@ -121,7 +121,7 @@ SECTIONS = {
 GROUPS = {
     "counts_as_known": "What counts as known", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
-    "houseki": "Houseki tools", "not_on_list": "Cards not on your list",
+    "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "beta": "Beta",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -224,6 +224,13 @@ ROWS = {
     "connect_send_grammar": ("Send grammar words", "Particles and endings get cards too",
                              "Grammar words (particles, endings) get cards too. Names follow Ignore names in Language "
                              "& Parsing", "grammar particles endings send"),
+    # Zh-C (PROVISIONAL words): the one line says where the word goes
+    "connect_zh_word_audio": ("Word audio from Google",
+                              "Sends each new card’s word to Google, which reads it aloud for the card",
+                              "Chinese cards can carry the word read aloud. Anki Miner gets it from Google’s "
+                              "text-to-speech, so each new card’s word is sent to Google. Off: cards have no word "
+                              "audio (the sentence’s own audio stays)", "word audio google text to speech tts "
+                              "pronunciation chinese"),
     "connect_open_anki": ("When Anki is closed", "New cards wait until you open Anki — or Surasura opens it for you",
                           "When you open Surasura and Anki is closed, Surasura can open it, so your phone's reviews "
                           "come in and your cards get made and ordered", "closed open anki start session"),
@@ -564,6 +571,10 @@ ROWS = {
     "auto_update_enabled": ("Update automatically", "One click for small releases",
                             "Offer one-click in-app updates for small releases. Big ones always download by hand",
                             "update automatic"),
+    # Iro-AA (PROVISIONAL words): the AI voice's beta
+    "ai_audio": ("AI audio for cards without audio", "An AI voice made on this computer reads the sentence of a card "
+                 "that has no sentence audio. Never over audio a card already has",
+                 "Try the AI voice (beta) for cards without sentence audio", "ai audio voice tts beta irodori sentence"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
     # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the
@@ -813,6 +824,7 @@ FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries, or its deck and note type: Surasura sets them "
                           "for you, on the setup's Anki Miner page.\n• Nothing to open in Anki Miner")
 MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"
+MINER_ALREADY_OPEN = "Anki Miner is already open."       # Disc-T1: its window's marker found (PROVISIONAL words)
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look at Anki Miner's setup again."
 STAR_LINE = "Like Anki Miner? Star it on GitHub ★"

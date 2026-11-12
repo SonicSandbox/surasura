@@ -68,6 +68,20 @@ FILTERS_OFF = {
 }
 
 
+# Zh-C (2026-11-12, CLAUDE.md §1): Anki Miner reads a Chinese card's word aloud with Google Translate's text-to-speech
+# by default (3.12.0 `languages/zh/audio.py`: the word goes to Google). Surasura asks for it only while
+# `connect_zh_word_audio` is on; Japanese keeps Anki Miner's own word audio (Google off there by its default)
+WORD_AUDIO_ROLE = "expression_audio"
+GOOGLE_WORD_AUDIO = {"zh": "connect_zh_word_audio"}
+
+
+def word_audio_on(settings, language):
+    """May this run's cards carry their word's audio? Always for a language whose word audio sends nothing to Google
+    (Japanese); Chinese only while `connect_zh_word_audio` is on (off by default)."""
+    key = GOOGLE_WORD_AUDIO.get(language)
+    return key is None or (settings or {}).get(key) is True
+
+
 class RunFileError(ValueError):
     """A run file Anki Miner would refuse: never written."""
 
@@ -86,12 +100,16 @@ def sends_sentence_keys(app, features=()):
     return version is not None and version[:2] <= (3, 6)
 
 
-def config(mapping, app, features=(), sentence_keys=None):
+def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
     """The run's `config`: every filter off, and the deck, note type and fields `mapping` names (fields.Mapping); the
     target bolded in its sentence where Anki Miner takes that (Z-5, 08-zero: sent per run; Junban and Backfill read
-    the bold, K56). `sentence_keys` overrides the version's rule (the caller's one retry without them)."""
+    the bold, K56). `sentence_keys` overrides the version's rule (the caller's one retry without them). `word_audio`
+    False (`word_audio_on`): the word-audio field sent unmapped — Anki Miner fetches a word's audio only into a mapped
+    one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C)."""
     out = dict(FILTERS_OFF)
     out.update(anki_deck_name=mapping.deck, anki_note_type=mapping.note_type, anki_fields=dict(mapping.fields))
+    if not word_audio:
+        out["anki_fields"][WORD_AUDIO_ROLE] = ""
     if sends_sentence_keys(app, features) if sentence_keys is None else sentence_keys:
         out.update(deduplicate_sentences=False, use_i_plus_one_filter=False)
     if BOLD_TARGET in (features or ()):
@@ -173,6 +191,16 @@ def word_requests(words, features=(), book=False):
     return out
 
 
+_CLOZE = re.compile(r"\{\{(c\d+::)", re.IGNORECASE)
+
+
+def no_cloze(text):
+    """Michi-RM3: text Surasura itself puts in a card (the Source's names) with an Anki cloze mark (`{{c1::`) broken
+    by a zero-width space — on a note type that isn't Cloze, Anki refuses the whole note for one (AnkiConnect's
+    *cannot create note for unknown reason*, proven on DevTest). Shown the same; anything else as it is."""
+    return _CLOZE.sub("{\u200b{\\1", text) if isinstance(text, str) else text
+
+
 def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False, names=None):
     """One episode of a run: its video and subtitle (absolute paths), the words, the job's tags, and the subtitle's
     offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269). `audio` (Z-16): `video`
@@ -188,9 +216,9 @@ def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=
     if names:
         folder, name = (str(n or "") for n in names)
         if name.strip():
-            out["episode_name_override"] = name
+            out["episode_name_override"] = no_cloze(name)
     if folder.strip():
-        out["series_name_override"] = folder
+        out["series_name_override"] = no_cloze(folder)
     return out
 
 

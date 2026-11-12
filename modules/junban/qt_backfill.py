@@ -246,6 +246,18 @@ class BackfillWindow(windows.SecondaryWindow):
                 self.btn_copy = self._button(S.BF_COPY_STYLE, S.BF_COPY_STYLE_TIP, self.on_copy_style)
                 row.addWidget(self.btn_copy)
             self.body.addLayout(row)
+        # Translations (Piyo-TR): how many cards have none, and the next step — counted on a worker, never an AI call
+        self.tr_sep = style.separator(self)
+        self.body.addWidget(self.tr_sep)
+        row = QHBoxLayout()
+        self.tr_line = self._label("", "windowline")
+        self.tr_line.setWordWrap(True)
+        row.addWidget(self.tr_line, 1)
+        self.btn_tr_copy = self._button(S.BF_TR_COPY, S.BF_TR_COPY_TIP, self.on_copy_translate)
+        row.addWidget(self.btn_tr_copy)
+        self.body.addLayout(row)
+        self.tr_count = None
+        self._show_translations(None)
         self.body.addWidget(style.separator(self))
 
         line = QHBoxLayout()
@@ -331,6 +343,7 @@ class BackfillWindow(windows.SecondaryWindow):
     def _on_deck(self, index):
         text = self.deck_box.itemText(index)
         self._on_choice(self.choices.but(deck="" if text == S.BF_ALL_DECKS else text))
+        self._count_translations()
 
     def _on_cards(self, value):
         self._on_choice(self.choices.but(cards=value))
@@ -540,6 +553,8 @@ class BackfillWindow(windows.SecondaryWindow):
             self._read_readiness()
         elif tag == "written":
             self._on_written(item[1])
+        elif tag == "translations":
+            self._show_translations(item[1])
 
     def _status(self, line):
         """A slow step's line on the summary, and its numbers on the bar (a worker's call)."""
@@ -575,9 +590,11 @@ class BackfillWindow(windows.SecondaryWindow):
             version = report.get("version")
             self._set_text(self.conn, S.BF_CONN_OK_VERSION.format(version=version) if version else S.BF_CONN_OK)
             self._set_decks(decks)
+            self._count_translations()
         else:
             self._set_text(self.conn, S.BF_CONN_NO)
             self._write(S.BF_START_ANKI)
+            self._show_translations(None)
         state = "ok" if self.connected else "bad"
         if self.conn.property("state") != state:
             self.conn.setProperty("state", state)
@@ -855,6 +872,34 @@ class BackfillWindow(windows.SecondaryWindow):
     def on_copy_style(self):
         QApplication.clipboard().setText(V.CARD_STYLE)
         self._write(S.BF_COPIED)
+
+    def on_copy_translate(self):
+        QApplication.clipboard().setText(S.BF_TR_PROMPT)
+        self._write(S.BF_TR_COPIED)
+
+    def _count_translations(self):
+        """How many cards in Backfill's deck have no translation (`card_translations.count`), on a worker."""
+        if not self.connected:
+            return
+        settings = self._engine()
+        bridge.run_in_worker(self._translations_worker, settings)
+
+    def _translations_worker(self, settings):
+        from app import card_translations
+        try:
+            n = card_translations.count(card_translations.AnkiReads(backfill._url(settings)),
+                                        backfill._deck(settings) or None)
+        except Exception:
+            n = None                            # Anki stopped answering: the line goes, nothing else says it
+        self.relay.call(("translations", n))
+
+    def _show_translations(self, n):
+        self.tr_count = n
+        shown = bool(n)
+        if shown:
+            self._set_text(self.tr_line, S.BF_TR_COUNT.format(n=n))
+        for w in (self.tr_sep, self.tr_line, self.btn_tr_copy):
+            w.setVisible(shown)
 
     def on_fields(self, fill):
         """Where one fill goes, per note type — its own small window, one at a time."""

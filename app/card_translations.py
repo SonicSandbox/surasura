@@ -61,8 +61,8 @@ HOW = ("Translate each card's sentence into natural, everyday English (or the le
        "another) as one line about as long as the original. Put the card's word, as its meaning in the translation, "
        "in <b>…</b> exactly once — never the Japanese or Chinese word itself. `before` and `after` are the lines said "
        "just before and after it: use them only to tell who or what the sentence is about (the subject, pronouns, "
-       "names, who is speaking, the tone), and never translate them. Names stay names (in the Latin alphabet). No "
-       "notes, no quotes around it, no other markup.")
+       "names, who is speaking, the tone), and never translate them. Names stay names (in the Latin alphabet). Keep "
+       "the sentence's own quotation marks; add no notes and no other markup.")
 
 # Why a translation is refused (`check`) or a card isn't written — each said to the learner's AI, which asks again
 EMPTY = "it's empty"

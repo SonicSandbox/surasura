@@ -1152,3 +1152,43 @@ def test_rebuild_paints_its_arc_before_the_build_is_asked(main, monkeypatch):
         ask = handed.at("rebuild_now")
         assert ask.shown and ask.painted >= 1 and win.btn_rebuild.isEnabled()
         assert wait_until(lambda: S.BF_REBUILD_DEFERRED in win.status.text() and not arc_turning(win.btn_rebuild))
+
+
+# --- translations: the count and the next step (Piyo-TR) --------------------------------------------------------- #
+def test_the_cards_with_no_translation_are_counted_on_a_worker_and_the_prompt_is_copied(main):
+    """Connected: the count (Backfill's deck) is read off the window's thread and said with the next step — Piyo, or
+    Mattias's add-on; Copy the prompt copies the message for the learner's AI. Backfill itself calls no AI."""
+    from app import card_translations
+    win = _open(main)
+    asked = []
+
+    def count(anki, deck=None):
+        asked.append((threading.current_thread() is threading.main_thread(), deck))
+        return 12
+    with mock.patch.object(card_translations, "count", count):
+        _connected(win, _anki())
+        assert wait_until(lambda: win.tr_count == 12)
+    assert asked == [(False, None)]
+    assert win.tr_line.isVisible() and win.tr_line.text() == S.BF_TR_COUNT.format(n=12)
+    assert "Piyo" in win.tr_line.text() and "Mattias" in win.tr_line.text()
+    win.btn_tr_copy.click()
+    assert QApplication.clipboard().text() == S.BF_TR_PROMPT
+    assert "surasura_cards_to_translate" in S.BF_TR_PROMPT and S.BF_TR_COPIED in win.status.text()
+
+
+def test_no_count_none_to_do_or_anki_gone_hides_the_line(main):
+    from app import card_translations
+    win = _open(main)
+    assert not win.tr_line.isVisible() and not win.btn_tr_copy.isVisible(), "unknown until Anki answers"
+    with mock.patch.object(card_translations, "count", lambda anki, deck=None: 0):
+        _connected(win, _anki())
+        assert wait_until(lambda: win.tr_count == 0)
+    assert not win.tr_line.isVisible()
+
+    def gone(anki, deck=None):
+        raise OSError("Anki stopped answering")
+    win.tr_count = "unset"
+    with mock.patch.object(card_translations, "count", gone):
+        _connected(win, _anki())
+        assert wait_until(lambda: win.tr_count is None)
+    assert not win.btn_tr_copy.isVisible()

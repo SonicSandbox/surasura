@@ -136,37 +136,40 @@ def run(cmd, timeout, should_stop=None, tick=None, stop_on=None):
 
 
 def _run_watching(cmd, timeout, should_stop, tick, stop_on):
+    """`run` with `stop_on`: the child's stderr into a file of its own, read (as bytes, decoded whole each look: a
+    character split between two looks is never garbled) through a handle of ours every POLL s."""
     fd, err_path = tempfile.mkstemp(prefix="surasura_ytdlp_", suffix=".err")
     os.close(fd)
     try:
-        with open(err_path, "w", encoding="utf-8") as err_out, open(err_path, encoding="utf-8", errors="replace") as said:
+        with open(err_path, "wb") as err_out, open(err_path, "rb") as said:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_out, stdin=subprocess.DEVNULL, text=True,
                                     encoding="utf-8", errors="replace", creationflags=no_window_flag())
             deadline = time.monotonic() + timeout
-            err = []
+            err = bytearray()
+
+            def text():
+                err.extend(said.read())
+                return err.decode("utf-8", errors="replace").replace("\r\n", "\n")
             while True:
                 try:
                     out, _none = proc.communicate(timeout=POLL)
-                    err.append(said.read())
-                    return subprocess.CompletedProcess(cmd, proc.returncode, out, "".join(err))
+                    return subprocess.CompletedProcess(cmd, proc.returncode, out, text())
                 except subprocess.TimeoutExpired:
-                    err.append(said.read())
-                    if stop_on("".join(err)):
-                        _end(proc)
-                        err.append(said.read())
-                        return subprocess.CompletedProcess(cmd, proc.returncode, "", "".join(err))
-                    if should_stop is not None and should_stop():
-                        _end(proc)
-                        raise Stopped()
-                    if time.monotonic() >= deadline:
-                        _end(proc)
-                        raise subprocess.TimeoutExpired(cmd, timeout)
-                    if tick is not None:
-                        try:
-                            tick()
-                        except BaseException:
+                    try:                                # (raised in this handler: the one below never sees it)
+                        if stop_on(text()):
                             _end(proc)
-                            raise
+                            return subprocess.CompletedProcess(cmd, proc.returncode, "", text())
+                        if should_stop is not None and should_stop():
+                            _end(proc)
+                            raise Stopped()
+                        if time.monotonic() >= deadline:
+                            _end(proc)
+                            raise subprocess.TimeoutExpired(cmd, timeout)
+                        if tick is not None:
+                            tick()
+                    except BaseException:
+                        _end(proc)
+                        raise
                 except BaseException:
                     _end(proc)
                     raise

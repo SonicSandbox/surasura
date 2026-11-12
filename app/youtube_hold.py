@@ -57,19 +57,21 @@ def _path():
     return os.path.join(path_utils.get_persistent_user_data_path(), NAME)
 
 
-def _read():
-    """The record -> a dict ({} when there is none, or it is broken), or None when it couldn't be read just now (a
-    scanner holding it): a writer then leaves it as it is, never writing over a hold it didn't see."""
-    try:
-        with open(_path(), encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return {}
-    except ValueError:
-        return {}
-    except OSError:
-        return None
-    return data if isinstance(data, dict) else {}
+def _read(tries=5):
+    """The record -> a dict ({} when there is none, or it is broken), or None when it couldn't be read (a scanner
+    holding it: read again `tries` times, 0.1 s apart, first): a writer then leaves it as it is, never writing over a
+    hold it didn't see."""
+    for attempt in range(tries):
+        try:
+            with open(_path(), encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, ValueError):
+            return {}
+        except OSError:
+            if attempt < tries - 1:
+                time.sleep(0.1)
+    return None
 
 
 def _write(data):
@@ -106,7 +108,7 @@ def hold(now=None):
     running = held(now)
     if running is not None:
         return running
-    data = _read() or {}                    # (unreadable just now: the hold matters more than the last call's time)
+    data = _read() or {}                    # (unreadable after its tries: the hold matters more than `last`)
     data.update(until=now + HOLD_S, since=now)
     _write(data)
     return now + HOLD_S
@@ -138,25 +140,43 @@ def _wait(seconds, should_stop):
         time.sleep(min(0.25, left))
 
 
+def _gap():
+    """The seconds still to wait since the last YouTube call ended (at most GAP_S: a clock set back never waits
+    longer)."""
+    last = _number((_read(1) or {}).get("last"))
+    return 0.0 if last is None else max(0.0, min(GAP_S, last + GAP_S - time.time()))
+
+
 @contextlib.contextmanager
-def turn(should_stop=None, verb="YouTube download"):
-    """One YouTube call: the `youtube` lock taken (waited for, asking `should_stop()` every quarter second ->
-    Stopped), then GAP_S since the last call ended waited out; the call's end recorded as it lets go."""
-    taken = None
+def turn(should_stop=None, verb="YouTube download", on_wait=None):
+    """One YouTube call: GAP_S since the last call ended waited out BEFORE the `youtube` lock is taken — so a
+    program that just let go doesn't win it straight back from one waiting — then taken (waited for, asking
+    `should_stop()` every quarter second -> Stopped; `on_wait(the holder's verb)` once, when another program holds
+    it), and the gap looked at again; the call's end recorded as it lets go."""
+    taken, said = None, False
     while True:
+        _wait(_gap(), should_stop)
         try:
             taken = locks.take(LOCK, verb)
-            break
         except locks.Busy:
             if locks.unopenable(LOCK):          # (a folder it can't write: no one holds it — the call goes)
                 break
+            if on_wait is not None and not said:
+                said = True
+                holder = locks.read_holder(LOCK) or {}
+                try:
+                    on_wait(str(holder.get("verb") or "another YouTube download"))
+                except Exception:
+                    pass
             _wait(locks.POLL, should_stop)
+            continue
         except OSError:
             break
+        if _gap() <= 0:
+            break
+        taken.release()                         # (another call ended meanwhile: its gap first)
+        taken = None
     try:
-        last = _number((_read() or {}).get("last"))
-        if last is not None:
-            _wait(max(0.0, min(GAP_S, last + GAP_S - time.time())), should_stop)
         yield
     finally:
         try:

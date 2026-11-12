@@ -398,7 +398,7 @@ class Held(Exception):
     """(Yt-B) YouTube's bot check holds every YouTube call (`app.youtube_hold`): no call made. Its str: the words."""
 
 
-_YOUTUBE_ARG = re.compile(r'(?:^|[/.])(?:youtube\.com|youtu\.be)/', re.I)
+_YOUTUBE_ARG = re.compile(r'(?:^|[/.])(?:youtube(?:-nocookie)?\.com|youtu\.be)(?::\d+)?/|^ytsearch\d*:', re.I)
 
 
 def _reaches_youtube(args):
@@ -416,7 +416,7 @@ def _run_ytdlp(args, timeout=1800, tick=None):
     if not _reaches_youtube(args):
         return ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), **extra)
     try:
-        with youtube_hold.turn(_stopping_now()):
+        with youtube_hold.turn(_stopping_now(), on_wait=getattr(tick, 'waiting', None)):
             until = youtube_hold.held()
             if until:
                 raise Held(youtube_hold.words(until))
@@ -481,6 +481,15 @@ def _watch(tmp, total, log, clock=time.monotonic):
             if total > 1:
                 log(f"  … {videos} of {total} videos read")
     tick.restart = restart
+    tick.waiting = lambda verb: log(f"  … waiting for {verb} to finish first (one YouTube download at a time)")
+    return tick
+
+
+def _saying(log):
+    """(Yt-B) A tick that only says a wait for the turn: a probe's (it has no progress of its own)."""
+    def tick():
+        return None
+    tick.waiting = lambda verb: log(f"  … waiting for {verb} to finish first (one YouTube download at a time)")
     return tick
 
 
@@ -492,7 +501,7 @@ def _probe(url, log, single=False, timeout=PROBE_S):
         youtube = site_of(url) == 'youtube'
         res = _run_ytdlp(['-J', '--flat-playlist', '--no-warnings', '--extractor-args', 'youtubetab:approximate_date']
                          + (SLEEP_REQUESTS if youtube else []) + (['--no-playlist'] if single else []) + [url],
-                         timeout=timeout)
+                         timeout=timeout, tick=_saying(log))
     except Held as e:
         log(f"  ! {e}")
         return None
@@ -503,7 +512,7 @@ def _probe(url, log, single=False, timeout=PROBE_S):
         log("Stopped.")
         return None
     except Exception as e:
-        log(f"  ! could not read {url}: {plain_reason(e)}")
+        log(f"  ! could not read {url}: {plain_reason(e, site_of(url) == 'youtube')}")
         return None
     if not res.stdout:
         log(f"  ! could not read {url}: {plain_reason(res.stderr, site_of(url) == 'youtube')}")
@@ -638,17 +647,20 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
                 '-o', os.path.join(tmp, '%(id)s.%(ext)s'),
             ] + (['--no-playlist'] if single else []) + archive + (
                 ['--playlist-reverse'] if site_urls and set(site_urls) <= set(reverse) else []) + list(site_urls)
+            limit = max(1800, 600 + 15 * total) if youtube else 1800     # (Yt-B: ~8-13 s a video with the waits)
             try:
-                res = _run_ytdlp(args, timeout=1800, tick=_watch(tmp, total, log))
-            except Held:                                    # (a hold another program began a moment ago)
-                _held(log, summary)
+                res = _run_ytdlp(args, timeout=limit, tick=_watch(tmp, total, log))
+            except Held as e:                               # (a hold another program began a moment ago)
+                if not _held(log, summary) and not summary.get('held'):
+                    summary['held'] = True
+                    log(f"  ! {e}")
                 continue
             except Stalled:
                 log(f"  ! {STALLED.format(minutes=STALL_S // 60)}")
                 summary['errors'] += 1
                 continue
             except subprocess.TimeoutExpired:               # (a playlist of hundreds: what came in is kept)
-                log(f"  ! {TIMED_OUT.format(minutes=1800 // 60)}")
+                log(f"  ! {TIMED_OUT.format(minutes=limit // 60)}")
                 summary['errors'] += 1
                 continue
             except ytdlp_manager.Stopped:                   # (A8B-11) asked to stop: said as a stop, never an error
@@ -845,8 +857,9 @@ def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=ti
             ]
             try:
                 res = _run_ytdlp(args, timeout=300)
-            except Held:
-                _held(log, summary)
+            except Held as e:
+                if not _held(log, summary):
+                    log(f"  ! {e}")
                 summary['stopped'] = True
                 summary['remaining'] = total - done
                 return summary

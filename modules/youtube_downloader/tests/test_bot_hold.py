@@ -44,6 +44,7 @@ def ytdlp(monkeypatch):
 
     def run(cmd, timeout, should_stop=None, tick=None, stop_on=None):
         box["calls"].append(cmd[1:])
+        box.setdefault("timeouts", []).append(timeout)
         return box["answer"](cmd[1:])
     monkeypatch.setattr(ytdlp_manager, "run", run)
     return box
@@ -239,3 +240,50 @@ def test_preview_says_the_hold_never_no_captions(tmp_path):
     txts, why = preview.fetch_here(VIDEO, VIDEO, "ja", str(tmp_path), extract=lambda *a, **k: None,
                                    ensure=lambda log: True)
     assert txts == [] and why == youtube_hold.words(youtube_hold.held())
+
+
+# --- round 2 ------------------------------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("args, youtube", [
+    (["-J", VIDEO], True), (["-J", "https://youtu.be/lecture0001"], True),
+    (["-J", "https://music.youtube.com/watch?v=lecture0001"], True),
+    (["-J", "https://www.youtube-nocookie.com/embed/lecture0001"], True),
+    (["-J", "https://www.youtube.com:443/watch?v=lecture0001"], True), (["-J", "ytsearch5:朝の散歩"], True),
+    (["-J", BILIBILI], False),
+    (["-o", "C:/Users/x/youtube.com/%(id)s.%(ext)s", "--sub-format", "vtt/best", BILIBILI], False),
+], ids=["watch", "short", "music", "nocookie", "port", "search", "bilibili", "a-path-is-no-link"])
+def test_a_youtube_call_is_told_by_its_own_links(args, youtube):
+    assert bool(core._reaches_youtube(args)) is youtube
+
+
+def test_a_wait_for_the_turn_is_said_with_who_holds_it(ytdlp, tmp_path):
+    # why (review r2 #1): behind Connect's video the window would look hung, saying nothing
+    import threading
+    from app import locks
+    ytdlp["answer"] = _video
+    other = locks.take(youtube_hold.LOCK, "Connect's video", owner=object())    # (as another program)
+    threading.Timer(0.8, other.release).start()
+    log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                          log.append, summary)
+    assert log.count("  … waiting for Connect's video to finish first (one YouTube download at a time)") == 1
+    assert summary["written"] == 1
+
+
+def test_a_long_playlists_time_grows_with_yt_dlps_waits(ytdlp, tmp_path):
+    # why (review r2 #4): ~8-13 s a video with the waits; 30 minutes would end a 200-video playlist half-way
+    ytdlp["answer"] = _video
+    summary = {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([PLAYLIST], str(tmp_path / "a"), core.LANGS["Japanese"], "Japanese", False, True,
+                          lambda _l: None, summary, counts={PLAYLIST: 300})
+    core._download_bucket([VIDEO], str(tmp_path / "b"), core.LANGS["Japanese"], "Japanese", False, True,
+                          lambda _l: None, summary)
+    assert ytdlp["timeouts"] == [600 + 15 * 300, 1800]
+
+
+def test_a_character_split_between_two_looks_is_never_garbled():
+    # why (review r2 #7): stderr read while the child writes it; a Japanese title's character can straddle two looks
+    import sys
+    child = ("import sys, time; e = sys.stderr.buffer; e.write('朝'.encode()[:2]); e.flush(); time.sleep(0.7); "
+             "e.write('朝'.encode()[2:] + b'\\n'); e.flush()")
+    res = ytdlp_manager.run([sys.executable, "-c", child], 60, stop_on=youtube_hold.refused)
+    assert res.stderr == "朝\n"

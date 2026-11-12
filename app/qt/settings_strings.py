@@ -813,6 +813,7 @@ FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries, or its deck and note type: Surasura sets them "
                           "for you, on the setup's Anki Miner page.\n• Nothing to open in Anki Miner")
 MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"
+MINER_ALREADY_OPEN = "Anki Miner is already open."       # Disc-T1: its window's marker found (PROVISIONAL words)
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look at Anki Miner's setup again."
 STAR_LINE = "Like Anki Miner? Star it on GitHub ★"

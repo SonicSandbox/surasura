@@ -413,6 +413,7 @@ class Job:
         self.front_ids = frozenset()
         self.kind = None
         self.stopped_for_review = False
+        self.anki_busy = False          # #370: Anki busy (its sync) stopped the writes part-way: the rest in `left`
         self.cards_out = False          # P4.1 L2: set by a caller that records (`pins.record`)
         self.put_back = []              # … and the run fills in the records its Put back restored
         self.put_back_owed = None       # … and what it left owed (TF fix 6: `reposition._put_back_owed`)

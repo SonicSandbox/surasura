@@ -1,4 +1,5 @@
 
+import ast
 import sys
 import subprocess
 import os
@@ -326,9 +327,14 @@ def run_all(project_root):
 # --- --stress, --stress-changed: the same tests again and again, the machine loaded ----------------------------- #
 # A flake is a test whose answer depends on the machine's timing (tests/FLAKES.md). `--stress [N]` runs the stress set
 # (tests/stress/: real concurrency, invariants only, never a timing) N times; `--stress-changed [BASE]` runs every test
-# file the branch changed since BASE (default origin/3.0-dev) STRESS_TIMES times in a row, each suite's files in their
-# own process, while two core shards run beside them as load — a lane's last check before READY
+# the branch changed since BASE (default origin/3.0-dev) STRESS_TIMES times in a row, each suite's tests in their own
+# process, while two core shards run beside them as load — a lane's last check before READY
 # (_work/prompts/train-rule.md § 1). Either stops at the first red and prints it whole.
+# The changed tests (Tool-T, 2026-11-12; whole files before, which held a slot for hours): by test function, from the
+# lines changed between BASE's merge-base and the working tree — a test whose own lines changed (added or edited), and
+# a test in a changed test file that uses a changed name: a helper, fixture or constant of its file (and whatever of
+# the file's uses one), or a function, method or constant of the app's code that the branch changed. A test file that
+# doesn't parse goes whole.
 
 STRESS_TIMES = 20
 LOAD_SHARDS = ("1/4", "3/4")             # the load beside --stress-changed: two quarters of the core suite, looped
@@ -347,10 +353,139 @@ def _changed_test_files(project_root, base):
     for args in (["diff", "--name-only", f"{base}...HEAD"], ["diff", "--name-only", "HEAD"]):
         out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         names.update(line.strip() for line in _decode(out.stdout).splitlines() if line.strip())
-    return sorted(n for n in names
-                  if os.path.basename(n).startswith("test_") and n.endswith(".py")
-                  and (n.startswith("tests/") or (n.startswith("modules/") and "/tests/" in n))
-                  and os.path.isfile(os.path.join(project_root, n)))
+    return sorted(n for n in names if _is_test_file(n) and os.path.isfile(os.path.join(project_root, n)))
+
+
+def _is_test_file(path):
+    """A test file: test_*.py under tests/ or modules/*/tests/ (a path from the project root, with /)."""
+    return (os.path.basename(path).startswith("test_") and path.endswith(".py")
+            and (path.startswith("tests/") or (path.startswith("modules/") and "/tests/" in path)))
+
+
+def _git_out(project_root, *args):
+    out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return _decode(out.stdout) if out.returncode == 0 else ""
+
+
+def _changed_lines(project_root, base):
+    """{path: the line numbers changed in the working tree's copy} between BASE's merge-base with HEAD and the working
+    tree (committed and not yet committed alike); a deletion marks the line before it (inside the definition it
+    was cut from, unless it was a whole one: its users changed too)."""
+    rev = _git_out(project_root, "merge-base", base, "HEAD").strip() or base
+    lines, path, before = {}, None, ""
+    for line in _git_out(project_root, "-c", "core.quotepath=false", "diff", "-U0", "--no-color", "--no-ext-diff", rev,
+                         "--").splitlines():
+        if line.startswith("+++ ") and before.startswith("--- "):   # (an added line "++ x" reads "+++ x": no header)
+            name = line[4:].strip()
+            path = name[2:] if name.startswith("b/") else None
+            if path:
+                lines.setdefault(path, set())
+        elif line.startswith("@@") and path:
+            new = line.split("+", 1)[1].split(" ", 1)[0]
+            start, _sep, count = new.partition(",")
+            start, count = int(start), int(count or 1)
+            lines[path].update(range(start, start + count) if count else (start,))
+        before = line
+    return lines
+
+
+def _defs(source):
+    """The top-level definitions of a Python source: (path, start, end, names it uses), path ("f",), ("C",) for a
+    class's own lines or ("C", "m") for its methods; a decorator's lines count as its definition's."""
+    out = []
+
+    def used(node):
+        names = set()
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name):
+                names.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                names.add(n.attr)
+            elif isinstance(n, ast.arg):
+                names.add(n.arg)                            # (a fixture is asked for by its parameter's name)
+        return names
+
+    def span(node):
+        return min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]), node.end_lineno
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.append(((node.name,), *span(node), used(node)))
+        elif isinstance(node, ast.ClassDef):
+            out.append(((node.name,), *span(node), used(node)))
+            out.extend(((node.name, m.name), *span(m), used(m)) for m in node.body
+                       if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                for n in ast.walk(target):
+                    if isinstance(n, ast.Name):
+                        out.append(((n.id,), node.lineno, node.end_lineno, used(node.value) if node.value else set()))
+    return out
+
+
+def _is_test(path):
+    return (len(path) == 1 and path[0].startswith("test")) or (len(path) == 2 and path[0].startswith("Test")
+                                                               and path[1].startswith("test"))
+
+
+def _touched(defs, changed):
+    """The definitions with a changed line; a line inside a method is the method's, not its class's."""
+    hit = set()
+    for path, start, end, _names in defs:
+        lines = {n for n in changed if start <= n <= end}
+        if not lines:
+            continue
+        if len(path) == 1:
+            methods = [(s, e) for p, s, e, _n in defs if len(p) == 2 and p[0] == path[0]]
+            lines = {n for n in lines if not any(s <= n <= e for s, e in methods)}
+        if lines:
+            hit.add(path)
+    return hit
+
+
+def _changed_tests(project_root, base):
+    """The tests changed since BASE (see above), as pytest node ids in path order -> (node ids, notes)."""
+    lines = _changed_lines(project_root, base)
+    app_names = set()
+    for path, changed in lines.items():                       # what the branch changed in the app's code
+        if not path.endswith(".py") or _is_test_file(path) or not os.path.isfile(os.path.join(project_root, path)):
+            continue
+        try:
+            defs = _defs(_read_source(project_root, path))
+        except SyntaxError:
+            continue
+        app_names.update(p[-1] for p in _touched(defs, changed) if not p[-1].startswith("__"))
+    ids, notes = [], []
+    for path in _changed_test_files(project_root, base):
+        try:
+            defs = _defs(_read_source(project_root, path))
+        except SyntaxError:
+            ids.append(path)
+            notes.append(f"{path}: doesn't parse, run whole")
+            continue
+        touched = _touched(defs, lines.get(path, set()))
+        names = {p[0] for p in touched if not _is_test(p)} | app_names   # (a helper class's method: the class)
+        grew = True
+        while grew:                                           # a helper that uses a changed name has changed too
+            grew = False
+            for p, _s, _e, used in defs:
+                if not _is_test(p) and p[0] not in names and used & names:
+                    names.add(p[0])
+                    grew = True
+        classes = {p[0] for p in touched if p[0].startswith("Test") and not _is_test(p)}   # a test class's own
+        # lines or one of its fixtures / helper methods: every test of the class
+        picked = [p for p, _s, _e, used in defs if _is_test(p) and (p in touched or used & names or p[0] in classes)]
+        if not picked:
+            notes.append(f"{path}: no test changed (its changed lines are outside every test and helper)")
+        ids.extend(path + "".join("::" + part for part in p) for p in dict.fromkeys(picked))
+    return ids, notes
+
+
+def _read_source(project_root, path):
+    with open(os.path.join(project_root, path), "rb") as f:
+        return f.read()
+
+
+ARGS_MAX = 20000                         # characters of node ids in one pytest command (Windows' line: 32,767)
 
 
 def _repeat(project_root, groups, times, env):
@@ -383,19 +518,28 @@ def run_stress(project_root, times=1):
 
 
 def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES):
-    """`--stress-changed [BASE]`: every test file changed since BASE, `times` times, beside two core shards. 0 when
-    every run passed (a branch that changed no test file passes at once, and says so)."""
-    files = _changed_test_files(project_root, base)
-    if not files:
-        print(f"No test file changed since {base}: nothing to repeat")
+    """`--stress-changed [BASE]`: every test changed since BASE, `times` times, beside two core shards. 0 when every
+    run passed (a branch that changed no test passes at once, and says so)."""
+    ids, notes = _changed_tests(project_root, base)
+    for note in notes:
+        print(f"  ({note})")
+    if not ids:
+        print(f"No test changed since {base}: nothing to repeat")
         return 0
-    groups = {}
-    for path in files:
-        groups.setdefault(_suite_of(path), []).append(path)
-    print(f"{len(files)} changed test file(s) since {base}, {times} times each, beside core shards "
+    groups, size = {}, {}
+    for node in ids:                                        # each suite's tests, split where a command would be long
+        suite = _suite_of(node.split("::", 1)[0])
+        part = size.get(suite, (1, 0))
+        if part[1] + len(node) > ARGS_MAX:
+            part = (part[0] + 1, 0)
+        size[suite] = (part[0], part[1] + len(node) + 1)
+        label = suite if part[0] == 1 else f"{suite} (part {part[0]})"
+        groups.setdefault(label, []).append(node)
+    files = len({node.split("::", 1)[0] for node in ids})
+    print(f"{len(ids)} changed test(s) in {files} file(s) since {base}, {times} times each, beside core shards "
           f"{' and '.join(LOAD_SHARDS)}:", flush=True)
-    for path in files:
-        print(f"  {path}")
+    for node in ids:
+        print(f"  {node}")
     def start(spec):
         return subprocess.Popen([sys.executable, os.path.abspath(__file__), "--shard", spec], cwd=project_root,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -454,8 +598,8 @@ def main():
     `python run_tests.py --all`  runs the core suite AND every module suite at the same time.
     `python run_tests.py --shard I/N`  runs shard I of the core suite split N ways (GitHub's PR tests).
     `python run_tests.py --stress [N]`  runs the stress set (tests/stress/) N times (1).
-    `python run_tests.py --stress-changed [BASE]`  runs every test file changed since BASE (origin/3.0-dev) 20 times
-        under load (a lane's check before READY).
+    `python run_tests.py --stress-changed [BASE]`  runs every test changed since BASE (origin/3.0-dev) 20 times
+        under load (a lane's check before READY): by test function, not whole files.
     """
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))

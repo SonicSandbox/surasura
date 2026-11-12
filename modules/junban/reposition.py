@@ -1595,7 +1595,7 @@ def _answer(reply, action):
     if not isinstance(reply, dict) or "result" not in reply or "error" not in reply:
         raise AnkiError(f"Unexpected reply shape from '{action}' — is this really AnkiConnect?", kind="protocol")
     if reply["error"] is not None:
-        raise AnkiError(f"Anki refused '{action}': {reply['error']}", kind="action")
+        raise anki_connect.refusal(action, reply["error"])
     return reply["result"]
 
 
@@ -2232,7 +2232,7 @@ def _write_spaced(url, stats, checks, job, settings, progress=None, map_read=Fal
         mods = {card_id: row.get("mod") for card_id, row in card_map.rows.items()}
         since = card_map.read_at - 1
     return ankiconnect.set_due_checked(url, batches, dict(current), progress=progress, stop_if=stop_if,
-                                       mods=mods, since=since)
+                                       mods=mods, since=since, on_busy=lambda: setattr(job, "anki_busy", True))
 
 
 def _restore_scope(settings):
@@ -2371,10 +2371,12 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                                     out_read=out_read)
     except (AnkiError, spaced.SpacedError) as e:
         # `anki_error`: Anki stopped answering mid-read (its kind) — the fast re-plan's job tries again (E3.1 review 3
-        # R2), where a refusal only the user can clear is said once.
+        # R2), where a refusal only the user can clear is said once. `anki_busy`: Anki busy with a collection operation
+        # (its sync, #370) — not now, quietly, for every automatic caller.
         return _report(False, "Junban did not make any changes.",
                        problems=[str(e)], warnings=checks["warnings"], decks=decks,
-                       **({"anki_error": e.kind} if isinstance(e, AnkiError) else {}))
+                       **({"anki_error": e.kind} if isinstance(e, AnkiError) else {}),
+                       **({"anki_busy": True} if anki_connect.is_busy(e) else {}))
 
     if stats.get("problems"):
         # M-W2-1 (review #2): the list couldn't be read — nothing written, and never ok (the caller tries again)
@@ -2646,7 +2648,10 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     if returned:
         message += (f" Back on your list: unsuspended {len(returned)} card{'' if len(returned) == 1 else 's'} "
                     "Junban had set aside.")
-    if left:
+    if left and job is not None and getattr(job, "anki_busy", False):
+        message += (f" Anki was busy (syncing, or another operation), so {len(left)} "
+                    f"card{'' if len(left) == 1 else 's'} wait for the next re-order.")
+    elif left:
         message += (f" {len(left)} card{'' if len(left) == 1 else 's'} changed in Anki while Junban "
                     "worked and wait for the next re-order.")
     kind = (stats.get("numbering") or {}).get("kind") if job is not None else None
@@ -2668,6 +2673,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                    **({"returned": returned, "run": run_id} if run_id is not None or returned else {}),
                    **({"left": list(left) + [c for c in out_owed if c not in set(left)],     # (TF fix 6)
                        "numbering": stats.get("numbering")} if job is not None else {}),
+                   **({"anki_busy": True} if job is not None and getattr(job, "anki_busy", False) else {}),
                    problems=([] if ok else
                              [reason for _id, reason in (list(failures) + note_failures)[:1]])
                    + ([record_problem] if record_problem else []))

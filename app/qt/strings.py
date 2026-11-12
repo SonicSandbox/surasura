@@ -104,6 +104,10 @@ ITEM_MENU = {
     "split": ("Split here…", "Make the episodes after this point a part of its own (one Undo joins them back)"),
     "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
     "cover": ("Change cover…", "Choose the picture it shows"),
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    "add-audio": ("Add the narrator's voice…", "{n} of its cards Connect made can get their sentence in the narrator's "
+                                               "voice: only an empty sentence-audio field is filled, nothing else on "
+                                               "the card changes. Undo takes it back"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
     # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
@@ -1399,6 +1403,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
     "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
                                          "card's sentence. Its audiobook, if you have it, sounds better"),
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    "add_audio": ("Add the narrator's voice", "Each of those cards gets its sentence in the narrator's voice: only an "
+                                              "empty sentence-audio field is filled, nothing else on the card changes, "
+                                              "your reviews stay as they are. Undo takes it back"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1546,6 +1554,14 @@ NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence aud
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
 NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
+NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
+NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
+                    "tries them again")
+NEEDS_AUDIO_RUNNING = "Connect is looking at 「{title}」's cards for the narrator's voice…"
+NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
+NEEDS_AUDIO_GONE = "Nothing to add there any more"
+NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
+NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"

@@ -349,3 +349,30 @@ def test_a_kick_that_fails_never_fails_the_writer_verb(monkeypatch):
     assert verbs._sync_pending({"connect_enabled": True}, 1_800_000_060.0) is None
     assert len(kicked) == 1
     assert verbs._sync_pending({"connect_enabled": True}, None) is None and len(kicked) == 1
+
+
+def test_junban_auto_meeting_anki_busy_with_its_sync_answers_anki_busy(deck, kicks, monkeypatch):
+    # #370: Anki busy with a collection operation past the patient wait — `anki-busy` in plain words, never `failed`
+    from app import anki_connect
+    from modules.junban.tests.test_reposition import AnkiRefusal
+    monkeypatch.setattr(anki_connect, "BUSY_POLL_S", 0.0)
+    monkeypatch.setattr(anki_connect, "BUSY_WAIT_S", 0.0)
+    anki, patched = deck(connect_enabled=False)
+    dispatch = anki.inner._dispatch
+    anki.inner._dispatch = lambda action, params: (AnkiRefusal("A collection operation is active.")
+                                                   if action == "guiReviewActive" else dispatch(action, params))
+    with patched:
+        code, line = h.call("junban", "--auto")
+    assert code == 3 and line["code"] == "anki-busy", line
+    assert "busy" in line["message"] and "reviewing" not in line["message"], line
+    assert anki.inner.writes == []
+
+
+def test_connect_waits_on_a_busy_anki_as_busy_never_as_a_review():
+    # review 1 S3: `anki-busy` with `anki: busy` (its sync) is "it's busy"; a review's `anki-busy` is still the review
+    from app.cli.contract import CliError
+    from app.connect import anki_session, runner
+    busy = runner._wait_or_needs(CliError("anki-busy", "Anki is busy (syncing, or another operation).", anki="busy"),
+                                 None)
+    review = runner._wait_or_needs(CliError("anki-busy", "You're reviewing in Anki."), None)
+    assert busy.reason == anki_session.BUSY and review.reason == runner.REVIEWING

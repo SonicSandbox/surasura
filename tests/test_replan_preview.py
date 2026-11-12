@@ -153,6 +153,13 @@ def _move_later_to_top(store):
     return item
 
 
+def _move_soon_to_top(store):
+    """A move in the Content Manager: Soon's last item to the top of NOW."""
+    item = _ids(store, "soon")[-1]
+    store.move([item], "now", before_id=_ids(store, "now")[0])
+    return item
+
+
 def _word_cards(fake, words):
     by_word = {}
     for card in fake.cards.values():
@@ -1027,11 +1034,11 @@ def _logged(fake, host, kind, force=False):
     return fake.requests[start:]
 
 
-def _start_again(store, moved):
-    """A second world in the same library: the moves taken back (the newest first, each to 6+ Months' end, where it
-    came from), and Junban's snapshot, baseline and ladder and the sync rule's session gone."""
+def _start_again(store, moved, home="goal"):
+    """A second world in the same library: the moves taken back (the newest first, each to its tier's end — 6+ Months'
+    by default — where it came from), and Junban's snapshot, baseline and ladder and the sync rule's session gone."""
     for item in reversed(moved):
-        store.move([item], "goal", after_id=_ids(store, "goal")[-1])
+        store.move([item], home, after_id=_ids(store, home)[-1])
     from app.path_utils import get_user_files_path
     for name in (undo.FILENAMES["reorder"], undo.FILENAMES["baseline"], undo.LADDER_FILENAME):
         path = os.path.join(get_user_files_path("ja"), name)
@@ -1053,9 +1060,9 @@ def _parked_read(request):
     return request.get("action") == "findCards" and " is:suspended " in f" {query} "
 
 
-def _three_jobs(root, store, fake_of, **settings):
-    """A catch-up (the ladder laid: every card once), then two moves (deltas) -> (each job's requests, the fake, the
-    items moved)."""
+def _three_jobs(root, store, fake_of, mover=None, **settings):
+    """A catch-up (the ladder laid: every card once), then two moves (deltas; `mover`, 6+ Months' last item to the top
+    by default) -> (each job's requests, the fake, the items moved)."""
     _settings_file(root, **settings)
     fake = fake_of(root)
     host, _ = _host()
@@ -1063,7 +1070,7 @@ def _three_jobs(root, store, fake_of, **settings):
     with _patched(fake):
         logs.append(_logged(fake, host, "catch-up", force=True))
         for _ in range(2):
-            moved.append(_move_later_to_top(store))
+            moved.append((mover or _move_later_to_top)(store))
             logs.append(_logged(fake, host, "move"))
     return logs, fake, moved
 
@@ -1163,9 +1170,11 @@ def test_on_3_0_a_move_after_the_actions_landed_sends_no_action_request_and_no_r
     both worlds keep the same cards in the queue.)"""
     root, store = lib
     over = dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True)
-    today, _fake, moved = _three_jobs(root, store, _acting_deck, **_positions_only(over))
-    _start_again(store, moved)
-    acting, fake, _moved = _three_jobs(root, store, _acting_deck, **over)
+    # Soon's files moved: each move must re-order the deck's 40 listed words (6+ Months' last two, context_test.txt
+    # among them, move none of them for the fixture learner since 2026-11-11, Hon-TR)
+    today, _fake, moved = _three_jobs(root, store, _acting_deck, mover=_move_soon_to_top, **_positions_only(over))
+    _start_again(store, moved, home="soon")
+    acting, fake, _moved = _three_jobs(root, store, _acting_deck, mover=_move_soon_to_top, **over)
     off_ids = _word_cards(fake, OFF)
     first = _kinds(acting[0], off_ids)
     assert "re-check" in first and "addTags" in first and "flag" in first, first

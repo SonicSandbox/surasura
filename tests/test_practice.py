@@ -166,7 +166,7 @@ def test_recent_terms_read_iso_and_millisecond_dates_and_skip_undated(tmp_path):
 
 
 def test_the_real_known_words_are_read_and_a_sync_mid_session_is_picked_up(ja_resources_dir):
-    """A learner-sized KnownWord.json (the fixture's 2,978 entries): read once; when a sync adds a word, the next check knows
+    """A learner-sized KnownWord.json (the fixture's 11,581 entries): read once; when a sync adds a word, the next check knows
     it without a new Checker."""
     folder = get_user_files_path("ja")
     os.makedirs(folder, exist_ok=True)

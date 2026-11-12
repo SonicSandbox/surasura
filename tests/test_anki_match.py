@@ -269,13 +269,14 @@ def test_the_kana_fold_is_japanese_only_and_leaves_kanji_words_alone(tmp_path):
 
 def test_the_real_golden_list_has_no_borrowed_one_character_key():
     """On the analyser's own output, with the Japanese rules on: every one-character key left is
-    some row's own word — the one-kanji rows (栗, 門, 林) included, each its own word."""
+    some row's own word — the one-kanji rows (暗, 報, 午) included, each its own word. (栗, 門, 林 until 2026-11-11: the
+    fixture known words, rebuilt then, know them.)"""
     with open(GOLDEN_LIST, encoding="utf-8-sig", newline="") as handle:
         lemmas = {anki_match.normalize_word(row.get("Word")) for row in csv.DictReader(handle)}
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert {"栗", "門", "林"} <= {key for key in rank_of if len(key) == 1}
+    assert {"暗", "報", "午"} <= {key for key in rank_of if len(key) == 1}
     assert rank_of["早川"] == rank_of["ハヤカワ"] == 5
 
 

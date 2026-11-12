@@ -431,3 +431,122 @@ def test_a_deck_name_with_quotes_and_backslashes_is_escaped():
     assert anki_connect.escape_query('TheBank "2026"') == 'TheBank \\"2026\\"'
     assert anki_connect.escape_query("語彙\\N5") == "語彙\\\\N5"
     assert anki_connect.escape_query("日本語::文法") == "日本語::文法"
+
+
+# --------------------------------------------------------------------------- #
+# Anki busy with a collection operation (#370, a 3.0.2 field report)
+# --------------------------------------------------------------------------- #
+# The newer AnkiConnect (its rewrite) refuses a request while Anki runs a collection operation — its AnkiWeb sync
+# (Surasura's own S1 / S3 too), Check Database, an import, AnkiConnect's own reads for another program, a card answered
+# in the reviewer — with one of these three replies, its error kind "busy". Anki is open and the request was fine.
+BUSY_REPLIES = ("A collection operation is active.", "Collection lifecycle operation is active.",
+                "Anki has an active collection operation.")
+
+
+def _busy(text=BUSY_REPLIES[0]):
+    return {"result": None, "error": text}
+
+
+def _in_turn(*replies):
+    """Answer each request with the next reply, whatever its action."""
+    queue = list(replies)
+    return lambda payload: queue.pop(0)
+
+
+@pytest.fixture
+def no_naps(monkeypatch):
+    """`patient`'s waits, recorded instead of slept."""
+    import time
+    import types
+    naps = []
+    monkeypatch.setattr(anki_connect, "time", types.SimpleNamespace(sleep=naps.append, monotonic=time.monotonic))
+    return naps
+
+
+@pytest.mark.parametrize("text", BUSY_REPLIES)
+def test_each_busy_reply_is_busy_and_still_an_action_refusal(text):
+    # kind stays "action": every caller that branches on the kind sees what it saw before
+    fake, patched = _run(_route(guiReviewActive=_busy(text)))
+    with patched, pytest.raises(AnkiError) as caught:
+        anki_connect.invoke("guiReviewActive", URL)
+    assert caught.value.kind == "action" and caught.value.busy and anki_connect.is_busy(caught.value)
+
+
+def test_a_real_refusal_and_anki_closed_are_not_busy_but_a_timeout_is():
+    fake, patched = _run(_route(guiReviewActive={"result": None, "error": "unsupported action"},
+                                deckNames=ConnectionRefusedError(10061, "refused"),
+                                findCards=urllib.error.URLError(socket.timeout("timed out"))))
+    with patched:
+        for action, busy in (("guiReviewActive", False), ("deckNames", False), ("findCards", True)):
+            with pytest.raises(AnkiError) as caught:
+                anki_connect.invoke(action, URL)
+            assert anki_connect.is_busy(caught.value) is busy, action
+    assert not anki_connect.is_busy(ValueError("not an AnkiError"))
+
+
+def test_patient_asks_again_while_anki_is_busy_then_answers(no_naps):
+    fake, patched = _run(_in_turn(_busy(), _busy(BUSY_REPLIES[1]), _ok(True)))
+    with patched:
+        assert anki_connect.patient("guiReviewActive", URL) is True
+    assert fake.actions == ["guiReviewActive"] * 3 and no_naps == [anki_connect.BUSY_POLL_S] * 2
+
+
+def test_patient_gives_up_with_the_busy_error_once_its_wait_is_over(no_naps, monkeypatch):
+    clock = iter([100.0, 100.0 + anki_connect.BUSY_WAIT_S - anki_connect.BUSY_POLL_S - 1,
+                  100.0 + anki_connect.BUSY_WAIT_S + 1])
+    monkeypatch.setattr(anki_connect.time, "monotonic", lambda: next(clock))     # the fixture's own namespace
+    fake, patched = _run(lambda payload: _busy())
+    with patched, pytest.raises(AnkiError) as caught:
+        anki_connect.patient("guiReviewActive", URL)
+    assert anki_connect.is_busy(caught.value) and len(fake.requests) == 2 and len(no_naps) == 1
+
+
+def test_patient_never_asks_again_after_a_real_refusal_or_anki_closed(no_naps):
+    for answer in ({"result": None, "error": "unsupported action"}, ConnectionRefusedError(10061, "refused")):
+        fake, patched = _run(lambda payload, answer=answer: answer)
+        with patched, pytest.raises(AnkiError):
+            anki_connect.patient("guiReviewActive", URL)
+        assert len(fake.requests) == 1
+    assert no_naps == []
+
+
+def test_patient_refuses_a_write_before_asking_anything():
+    # a write asked again could land twice: only a read waits out a busy Anki — refused even holding the write lock
+    fake, patched = _run(_route())
+    with patched, anki_connect.writer("a test writer"), pytest.raises(AnkiError) as caught:
+        anki_connect.patient("setSpecificValueOfCard", URL, card=1, keys=["due"], newValues=[3])
+    assert caught.value.kind == "refused" and fake.requests == []
+
+
+def test_reviewing_waits_out_a_busy_anki(no_naps):
+    # a card answered in the reviewer is itself a collection operation: busy is no proof you aren't reviewing
+    fake, patched = _run(_in_turn(_busy(), _ok(True)))
+    with patched:
+        assert anki_connect.reviewing(URL) is True
+    assert len(fake.requests) == 2
+
+
+def test_a_refusal_read_from_a_multi_slot_is_marked_busy_too():
+    error = anki_connect.refusal("findCards", BUSY_REPLIES[1])
+    assert str(error) == f"Anki refused 'findCards': {BUSY_REPLIES[1]}" and error.kind == "action" and error.busy
+    assert not anki_connect.refusal("findCards", "deck was not found: 語彙").busy
+    assert not anki_connect.refusal("findCards", None).busy
+
+
+def test_patient_stops_waiting_once_its_cancel_is_set(no_naps):
+    # review 1 S5: a window closing (its cancel) never waits out the rest of a busy Anki inside the writer's hold
+    import threading
+    cancel = threading.Event()
+    cancel.set()
+    fake, patched = _run(lambda payload: _busy())
+    with patched, pytest.raises(AnkiError) as caught:
+        anki_connect.patient("guiReviewActive", URL, cancel=cancel)
+    assert anki_connect.is_busy(caught.value) and len(fake.requests) == 1 and no_naps == []
+    assert "cancel" not in fake.requests[0]["params"], "never sent to Anki"
+
+
+def test_a_sync_refused_while_anki_is_busy_is_busy_never_failed():
+    # review 1 B2: S1 often meets Anki's own startup sync — asked again later, never "AnkiWeb: sync failed"
+    fake, patched = _run(_route(sync=_busy(BUSY_REPLIES[2])))
+    with patched, anki_connect.writer("a test sync"):
+        assert anki_connect.sync(URL) == "busy"

@@ -719,3 +719,18 @@ def test_a_backfill_restore_asked_about_one_fill_never_puts_back_another():
     assert not report["ok"] and report["problems"] == [reposition.RESTORE_CHANGED], report
     assert fake.notes[note["noteId"]]["fields"]["Patterns"]["value"] == "<div>〜を探検する</div>"
     assert undo.unfinished("ja", "backfill") == newer
+
+
+def test_the_automatic_run_meeting_anki_busy_with_its_sync_says_so_and_writes_nothing():
+    # #370: the newer AnkiConnect refuses every read while Anki syncs (its "lifecycle" refusal): the report says
+    # `anki_busy`, so the automatic step stays quiet (`auto._backfill_quietly`) and the next trigger fills
+    from modules.junban.tests.test_reposition import AnkiRefusal
+    fake = _fake(_lapis(0, "探検", "たんけん"))
+    dispatch = fake._dispatch
+    fake._dispatch = lambda action, params: (AnkiRefusal("Collection lifecycle operation is active.")
+                                             if action == "modelNames" else dispatch(action, params))
+    session = _Session()
+    with _patched(fake), mock.patch.object(backfill, "Session", lambda settings: session):
+        report = backfill.run_auto(_settings(junban_backfill_cards="all"))
+    assert not report["ok"] and report.get("anki_busy") is True, report
+    assert report["written"] == [] and fake.note_writes == []

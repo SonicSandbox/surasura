@@ -476,9 +476,10 @@ def test_the_changed_test_files_are_the_branchs_and_the_uncommitted_ones_still_o
         "modules/junban/tests", "tests", "tests"]
 
 
-def test_stress_changed_repeats_each_suites_files_in_its_own_process_beside_two_load_shards(monkeypatch, capsys):
-    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: [
-        "modules/junban/tests/test_c.py", "tests/qt/test_b.py", "tests/test_a.py"])
+def test_stress_changed_repeats_each_suites_tests_in_its_own_process_beside_two_load_shards(monkeypatch, capsys):
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda root, base: ([
+        "modules/junban/tests/test_c.py::test_one", "tests/qt/test_b.py::TestB::test_two", "tests/test_a.py::test_three"],
+        []))
     loads, runs, lock = [], [], threading.Lock()
 
     class Load:
@@ -495,12 +496,184 @@ def test_stress_changed_repeats_each_suites_files_in_its_own_process_beside_two_
     monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append(cmd[3:-4]) or
                         subprocess.CompletedProcess(cmd, 0, stdout=b"3 passed in 1.0s"))
     assert run_tests.run_stress_changed("root", "base", times=3) == 0
-    assert runs == [["modules/junban/tests/test_c.py"], ["tests/qt/test_b.py", "tests/test_a.py"]] * 3
+    assert runs == [["modules/junban/tests/test_c.py::test_one"],
+                    ["tests/qt/test_b.py::TestB::test_two", "tests/test_a.py::test_three"]] * 3
     assert sorted(loads) == [["--shard", "1/4"], ["--shard", "3/4"]] and len(ended) == 2, "the load ended with them"
     assert "passed 3 times under load" in capsys.readouterr().out
 
 
-def test_stress_changed_with_no_changed_test_file_passes_and_says_so(monkeypatch, capsys):
-    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: [])
+def test_stress_changed_with_no_changed_test_passes_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda root, base: ([], ["tests/test_a.py: no test changed"]))
     assert run_tests.run_stress_changed("root", "base") == 0
-    assert "No test file changed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No test changed" in out and "tests/test_a.py: no test changed" in out
+
+
+def test_stress_changed_splits_a_suites_tests_where_one_command_would_be_too_long(monkeypatch):
+    """Windows' command line holds 32,767 characters: hundreds of node ids go in more than one process per run."""
+    ids = [f"tests/test_a.py::test_{n:03d}_a_long_descriptive_name_as_this_repo_writes_them" for n in range(6)]
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda root, base: (ids, []))
+    monkeypatch.setattr(run_tests, "ARGS_MAX", 200)
+    monkeypatch.setattr(run_tests.subprocess, "Popen", lambda cmd, **k: type("P", (), {"poll": lambda self: None})())
+    monkeypatch.setattr(run_tests, "_end_tree", lambda proc: None)
+    runs = []
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append(cmd[3:-4]) or
+                        subprocess.CompletedProcess(cmd, 0, stdout=b"3 passed"))
+    assert run_tests.run_stress_changed("root", "base", times=1) == 0
+    assert [n for run in runs for n in run] == ids and len(runs) > 1
+    assert all(sum(len(n) + 1 for n in run) <= 200 for run in runs)
+
+
+# The changed tests by function (Tool-T, 2026-11-12): a lane's gate held a slot for hours when one edited line of a
+# 300-test file repeated all 300 tests 20 times.
+_TESTS_FILE = """import pytest
+from app import sources
+
+BUDGET = 0.05
+
+
+def _seed(store):
+    return store.add("いつか見た景色")
+
+
+def _seeded(store):
+    return _seed(store)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return tmp_path
+
+
+def test_unchanged_reads_a_line():
+    assert "雨が降る" != "雪が降る"
+
+
+def test_edited_body():
+    assert sources.scan is not None
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_with_a_changed_decorator(n):
+    assert n
+
+
+def test_uses_the_changed_helper_through_another(store):
+    assert _seeded(store)
+
+
+def test_uses_the_changed_budget():
+    assert BUDGET < 1
+
+
+def test_uses_the_changed_app_function():
+    assert sources.look_again
+
+
+class _Shelf:
+    def count(self):
+        return 3
+
+
+def test_counts_with_the_changed_helper_class():
+    assert _Shelf().count() == 3
+
+
+def test_counts_a_list_never_the_helper_classs_method():
+    assert ["本", "棚"].count("本") == 1
+
+
+class TestShelf:
+    def setup_method(self):
+        self.shelf = []
+
+    def test_one(self):
+        assert self.shelf == []
+
+    def test_two(self):
+        assert not self.shelf
+
+
+class TestOther:
+    def test_three(self):
+        assert True
+"""
+
+
+def _line_of(text, needle):
+    return text.splitlines().index(needle) + 1
+
+
+def test_the_changed_tests_are_by_function_never_the_whole_file(tmp_path, monkeypatch):
+    """Edited, added or decorated tests; tests that use a changed helper (also through another helper), helper class,
+    fixture or constant of their file, or a function the branch changed in the app; every test of a class whose own
+    fixture changed — and nothing else of the file (a helper class's changed method counts as the class: `.count` on
+    a list is not `_Shelf.count`)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_shelf.py").write_text(_TESTS_FILE, encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "sources.py").write_text("def scan():\n    return 1\n\n\ndef look_again():\n    return 2\n",
+                                                 encoding="utf-8")
+    t = _TESTS_FILE
+    changed = {_line_of(t, "def test_edited_body():"), _line_of(t, '@pytest.mark.parametrize("n", [1, 2])'),
+               _line_of(t, "def _seed(store):"), _line_of(t, "BUDGET = 0.05"),
+               _line_of(t, "    def setup_method(self):"), _line_of(t, "        return 3")}
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {
+        "tests/test_shelf.py": changed, "app/sources.py": {5}})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_shelf.py"])
+    ids, notes = run_tests._changed_tests(str(tmp_path), "base")
+    assert ids == ["tests/test_shelf.py::" + n for n in (
+        "test_edited_body", "test_with_a_changed_decorator", "test_uses_the_changed_helper_through_another",
+        "test_uses_the_changed_budget", "test_uses_the_changed_app_function",
+        "test_counts_with_the_changed_helper_class", "TestShelf::test_one",
+        "TestShelf::test_two")] and notes == []
+
+
+def test_a_test_file_changed_only_outside_its_tests_picks_none_and_says_so(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_shelf.py").write_text(_TESTS_FILE, encoding="utf-8")
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {"tests/test_shelf.py": {1, 2}})   # imports
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_shelf.py"])
+    ids, notes = run_tests._changed_tests(str(tmp_path), "base")
+    assert ids == [] and notes == ["tests/test_shelf.py: no test changed (its changed lines are outside every test "
+                                   "and helper)"]
+
+
+def test_a_test_file_that_doesnt_parse_goes_whole(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_half.py").write_text("def test_a(:\n    pass\n", encoding="utf-8")
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {"tests/test_half.py": {1}})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_half.py"])
+    assert run_tests._changed_tests(str(tmp_path), "base") == (["tests/test_half.py"],
+                                                               ["tests/test_half.py: doesn't parse, run whole"])
+
+
+def _git(root, *args):
+    subprocess.run(["git", "-c", "user.name=Tool-T", "-c", "user.email=tool-t@example.invalid", *args], cwd=root,
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def test_the_changed_tests_come_from_gits_diff_committed_and_not_yet(tmp_path):
+    """A real repository: the base's file, one test edited in a commit on the branch, one added and not committed, one
+    deleted line inside a third, a CRLF file and a Japanese line among them — each changed test once, no other."""
+    root = str(tmp_path)
+    _git(root, "init", "-q", "-b", "base")
+    _git(root, "config", "core.autocrlf", "true")                              # (as every copy here)
+    (tmp_path / "tests").mkdir()
+    head = "import time\n\n\n"
+    tests = ["def test_a():\n    assert '猫' != '犬'\n", "def test_b():\n    x = 1\n    y = 2\n    assert x < 3\n",
+             "def test_c():\n    assert True\n"]
+    (tmp_path / "tests" / "test_x.py").write_bytes((head + "\n\n".join(tests)).encode("utf-8"))
+    (tmp_path / "tests" / "test_crlf.py").write_bytes(b"def test_d():\r\n    assert 1\r\n\r\n\r\ndef test_e():\r\n"
+                                                      b"    assert 2\r\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "checkout", "-q", "-b", "lane")
+    tests[0] = "def test_a():\n    assert '猫' != '鳥'\n"                          # edited, committed
+    tests[1] = "def test_b():\n    x = 1\n    assert x < 3\n"                    # a line deleted, committed
+    (tmp_path / "tests" / "test_x.py").write_bytes((head + "\n\n".join(tests)).encode("utf-8"))
+    _git(root, "commit", "-q", "-am", "lane")
+    (tmp_path / "tests" / "test_crlf.py").write_bytes(b"def test_d():\r\n    assert 1\r\n\r\n\r\ndef test_e():\r\n"
+                                                      b"    assert 2\r\n\r\n\r\ndef test_f():\r\n    assert 3\r\n")
+    ids, notes = run_tests._changed_tests(root, "base")
+    assert ids == ["tests/test_crlf.py::test_f", "tests/test_x.py::test_a", "tests/test_x.py::test_b"], (ids, notes)

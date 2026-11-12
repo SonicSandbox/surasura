@@ -468,7 +468,9 @@ class _Said:
 @pytest.mark.parametrize("answer, says", [
     (_Said(b"hato 1.3.0\r\n"), True), (_Said(b"hato 1.4.0\n"), True), (_Said(b"hato 1.2.1\n"), False),
     (_Said(b"hato 1.3.0\n", code=1), False), (_Said(b""), False), (_Said(b"hato 1.3.0rc1\n"), False),
-    (_Said(b"tsubasa 1.3.0\n"), False), (_Said(None), False), (OSError("no such program"), False)])
+    (_Said(b"tsubasa 1.3.0\n"), False), (_Said(None), False), (OSError("no such program"), False),
+    # a hato that hangs on `--version`: its timeout is no OSError, and still never raises out (Zh-H mutant Y8)
+    (subprocess.TimeoutExpired(["hato-cli.exe", "--version"], 30), False)])
 def test_before_a_chinese_run_the_hato_program_itself_says_it_finds_chinese(answer, says):
     """Why (Zh-H, the adversary's MUST): hato's *Go back* to 1.2 leaves its tools entry naming 1.3.0 until the kept
     hato starts again (§7.1) — a Chinese run then would get jimaku's Japanese files named as Chinese. So the program

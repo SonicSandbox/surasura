@@ -165,6 +165,11 @@ class MineActions(QObject):
         text = strings.MINE_ASKED if len(videos) == len(ids) else strings.MINE_ASKED_VIDEOS
         return self._ask(text.format(title=row.title), (row.key,), videos)
 
+    def ask_items(self, text, ids):
+        """Kura-AB3 A2 r4: *Mine now* for store items no row in view stands for (a book's first part, from *Add the
+        narrator's voice*): the same ask, `text` its toast. -> the writer's number, or None."""
+        return self._ask(text, (), list(dict.fromkeys(ids)))
+
     def mine_ids(self, ids):
         """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
         tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so. Of those,

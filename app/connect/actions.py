@@ -41,6 +41,8 @@ from app.connect import ledger as book
 NOTHING_ADDED = "「{title}」: no card got the narrator's voice (each was filled or changed meanwhile)."
 NONE_TO_ADD = "「{title}」: no card can get the narrator's voice — {why}."
 NONE_WHY = ("{n} have sentence audio already", "{n} aren't said in its audiobook", "{n} are gone from Anki")
+LINE_UP_FIRST = ("「{title}」 is lined up with its audiobook first — its row shows how far, and the line here says "
+                 "so once it is; then the narrator's voice can be added.")
 PART_STOPPED = ("Some of 「{title}」's cards got the narrator's voice before this stopped ({why}). Undo takes them back; "
                 "adding again does the rest.")
 
@@ -218,7 +220,18 @@ def add_audio_book(language, epub, settings, path=None, title=None):
     from app.connect import add_audio as adding
     from app.connect import runner
     path = path or book.path()
+    from app.connect import undo as undoing
     title = title or os.path.splitext(os.path.basename(epub))[0]
+    if not (settings or {}).get("connect_enabled"):
+        return {"ok": False, "say": undoing.PREVIEW_OFF}
+    steps = runner.Steps(settings)
+    try:                                        # not lined up yet: its first part's *Mine now* lines it up (r4 B1)
+        if steps.lined_up(language, epub) is None and steps.lineable(language, epub):
+            first = steps.first_part(language, epub)
+            if first is not None:
+                return {"ok": False, "line_up": first, "title": title, "say": LINE_UP_FIRST.format(title=title)}
+    except (runner.Wait, runner.Needs):
+        pass                                    # (the library busy: `act` says it in its words)
     try:
         done = adding.act(settings, language, book=epub, confirm=True)
     except CliError as e:
@@ -290,7 +303,7 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
             notes = adding.made_notes(store, found[1])
             title = (library.book_of(store, found[0]) or {}).get("title") or \
                 os.path.splitext(os.path.basename(found[0]))[0]
-        if not notes or not steps.lined_up(language, found[0]):
+        if not notes or not (steps.lined_up(language, found[0]) or steps.lineable(language, found[0])):
             return None
         path = path or book.path()
         asked, seen = None, []

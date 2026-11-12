@@ -506,6 +506,17 @@ class NeedsCards(QWidget):
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
 def audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
+    """(See below.) A book not lined up yet (`line_up`: its first part) → that part's *Mine now* through the window's
+    own path (`MineActions.ask_items`: its row turns, its job lines the book up, seen and stoppable there)."""
+    got = got or {}
+    mine = getattr(getattr(win, "mine", None), "ask_items", None)
+    if got.get("line_up") is not None and mine is not None:
+        mine(got.get("say") or "", [got["line_up"]])
+        return
+    _audio_added(win, got, title, say, undo, lang, read_settings, failed)
+
+
+def _audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
     """Kura-AB3 A2: *Add the narrator's voice*'s answer (`actions.add_audio` / `add_audio_book`, from the book's line
     or its row's ⋯) shown: a toast with its *Undo* (`undo`, `actions.add_audio_undo`, on a worker) whenever something
     was written — a press stopped part-way too —, else its plain words in the bar (`say`)."""

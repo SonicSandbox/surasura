@@ -242,3 +242,15 @@ def test_no_entry_while_a_press_for_that_book_runs(row_offer):
     wait_until(lambda: False, 0.3)
     assert _entry(m) is None
     m.hide()
+
+
+def test_a_press_on_a_book_not_lined_up_asks_mine_now_on_its_first_part_through_the_windows_path(offer):
+    """r4: Connect answers "line it up first" — the window asks *Mine now* for that part (its own path: its row turns,
+    its job lines the book up, seen and stoppable there); the line stays."""
+    win, ny, entry, got, answers = offer
+    asked = []
+    win.mine = type("Mine", (), {"ask_items": lambda self, text, ids: asked.append((text, ids))})()
+    answers["add_audio"] = {"ok": False, "line_up": 42, "title": STAR, "say": "「x」 is lined up with its audiobook first"}
+    button(ny, entry.key, "add_audio").click()
+    assert wait_until(lambda: asked, 5)
+    assert asked == [("「x」 is lined up with its audiobook first", [42])]

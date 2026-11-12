@@ -12,7 +12,6 @@ Real data: the add-audio suite's book (a real EPUB, its M4B and `.srt` paired an
 text-only cards Connect made), the fake Anki Miner as a child, the writer's fake Anki.
 """
 import json
-import os
 
 import pytest
 
@@ -177,24 +176,29 @@ def test_connects_run_offers_it_with_an_empty_queue(book, tmp_path, monkeypatch)
         assert len(_offers(ledger)) == 1
 
 
-def test_a_book_not_lined_up_yet_is_asked_once_it_is(book, tmp_path, monkeypatch):  # noqa: F811
-    """Paired but not lined up (the speech model still downloading): nothing asked and nothing kept — the pass after
-    it lines up asks."""
+def test_a_book_not_lined_up_yet_is_offered_and_its_line_says_so_once_it_is(book, tmp_path,
+                                                                           monkeypatch):  # noqa: F811
+    """r4: paired, able to be lined up, not yet (the speech model still downloading): the line comes now, worded so
+    (its press lines it up first); once it is lined up the line's words say so and it counts again — still one line,
+    and a third look writes nothing."""
     path = _mined_out(book, tmp_path)
-    real, real_line_up = book["steps"].lined_up, book["steps"].line_up
-
-    def downloading(lang, job, epub):
-        raise runner.Wait(runner.LINING_UP_FILE.format(k=1, n=1))
+    real = book["steps"].lined_up
     monkeypatch.setattr(book["steps"], "lined_up", lambda lang, epub: None)
-    monkeypatch.setattr(book["steps"], "line_up", downloading)
+    title = book["steps"].made_before("ja", book["book"])[0]
     with Ledger(path) as ledger:
-        assert runner._add_audio_offers(book["steps"], ledger, "ja") is True        # lining up: look again
-        assert _offers(ledger) == [] and not ledger.conn.execute(
-            "SELECT 1 FROM meta WHERE key LIKE ?", (runner.ADD_AUDIO_ASKED + "%",)).fetchone()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [offer] = _offers(ledger)
+        assert offer["say"] == runner.ADD_AUDIO_WAIT.format(title=title)
+        ledger.conn.execute("UPDATE needs SET seen_at = 'x' WHERE id = ?", (offer["id"],))
         monkeypatch.setattr(book["steps"], "lined_up", real)
-        monkeypatch.setattr(book["steps"], "line_up", real_line_up)
-        assert runner._add_audio_offers(book["steps"], ledger, "ja") is False
-        assert len(_offers(ledger)) == 1
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [now] = _offers(ledger)
+        assert now["id"] == offer["id"] and now["say"] == runner.ADD_AUDIO_ASK.format(title=title)
+        assert now["seen_at"] is None, "counted again: it can be added now"
+        before = ledger.conn.execute("SELECT * FROM needs").fetchall(), ledger.conn.execute("SELECT * FROM meta").fetchall()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                ledger.conn.execute("SELECT * FROM meta").fetchall()) == before
 
 
 def test_a_busy_library_or_a_failing_look_never_stops_the_pass(book, tmp_path, monkeypatch):  # noqa: F811
@@ -293,7 +297,9 @@ def test_the_rows_offer_is_none_for_another_row_a_book_not_lined_up_or_connect_o
         from app.connect import add_audio
         parts = add_audio.book_items(store, book["book"])
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": False}, steps=book["steps"], path=path) is None
-    monkeypatch.setattr(book["steps"], "lined_up", lambda lang, epub: None)
+    monkeypatch.setattr(book["steps"], "lined_up", lambda lang, epub: None)       # not yet, but it can be: offered
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)["n"] == 8
+    monkeypatch.setattr(book["steps"], "lineable", lambda lang, epub: False)       # nor can it be: none
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
 
 
@@ -371,7 +377,8 @@ def test_the_seen_record_is_merged_never_replaced_and_cards_mined_since_are_neve
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
 
 
-def test_a_press_stopped_part_way_answers_its_undo_in_the_windows_words(book, tmp_path, monkeypatch):  # noqa: F811
+def test_a_press_stopped_part_way_answers_its_undo_in_the_windows_words(book, fake_miner, tmp_path,
+                                                                       monkeypatch):  # noqa: F811
     """Mutant A7: Anki stopped answering after some cards were written — the answer carries the Undo's id and plain
     words (never the command line's), and the book isn't marked looked at (the rest are offered again)."""
     from app.cli.contract import CliError
@@ -379,6 +386,7 @@ def test_a_press_stopped_part_way_answers_its_undo_in_the_windows_words(book, tm
 
     def stops(*a, **k):
         raise CliError("anki-closed", "x", undo="17-ab", why="Anki isn't open")
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
     monkeypatch.setattr(add_audio, "act", stops)
     got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=str(tmp_path / "ledger.sqlite"))
     assert got["ok"] is False and got["id"] == "17-ab" and "Undo takes them back" in got["say"]
@@ -403,77 +411,61 @@ def test_a_press_with_nothing_to_fill_still_ends_the_rows_offer(book, fake_miner
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
 
 
-# --- review A2 round 3 B1: a mined-out book nobody trusted is lined up by Connect's pass itself -------------------- #
-class _Looked(Exception):
-    """The run's first pause: it would look again."""
-
-
-def test_a_mined_out_book_not_lined_up_is_heard_by_the_pass_and_offered(book, tmp_path, monkeypatch,
-                                                                        fake_miner):  # noqa: F811
-    """No trust, no job: the pass gives the book its line-up's ordinary step — its own subtitle heard (the speech
-    model there, in time) — and offers its cards at once."""
+# --- review A2 round 4 B1: the pass starts nothing; the press lines a book up through its first part's Mine now -- #
+def test_a_mined_out_book_not_lined_up_starts_nothing_and_is_offered(book, tmp_path, monkeypatch,
+                                                                     fake_miner):  # noqa: F811
+    """No trust, no job: the pass never listens and never syncs (only a job does, seen and stoppable on its row) — and
+    the book's line comes all the same, worded for a book its press lines up first."""
     from tests.connect.test_lineup_own_subtitle import _trust
     _trust(monkeypatch, book, on=False)
     monkeypatch.setattr(anki_miner, "_SPEECH", {})   # (its answers are kept for a Connect run: never another test's)
     fake_miner.plan(speech={"installed": ["small"], "model": "small"})
-    path = _mined_out(book, tmp_path)
-    with Ledger(path) as ledger:
-        assert runner._add_audio_offers(book["steps"], ledger, "ja") is False
-        assert len(_offers(ledger)) == 1
-    assert "transcribe" in fake_miner.commands() and "sync" not in fake_miner.commands()
+    with Ledger(_mined_out(book, tmp_path)) as ledger:
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [offer] = _offers(ledger)
+        assert offer["say"] == runner.ADD_AUDIO_WAIT.format(title=book["steps"].made_before("ja", book["book"])[0])
+        assert [n["kind"] for n in ledger.needs("ja")] == [runner.ADD_AUDIO_NEED]
+    assert fake_miner.commands() == []
 
 
-def test_with_no_speech_model_the_pass_asks_its_one_question_and_offers_nothing_yet(book, tmp_path, monkeypatch,
-                                                                                   fake_miner):  # noqa: F811
+def test_the_press_on_a_book_not_lined_up_asks_its_first_parts_mine_now_and_writes_nothing(book, fake_miner,
+                                                                                           tmp_path,
+                                                                                           monkeypatch):  # noqa: F811
+    from tests.connect.test_lineup_own_subtitle import _trust
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
+    _trust(monkeypatch, book, on=False)
+    monkeypatch.setattr(anki_miner, "_SPEECH", {})
+    got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=str(tmp_path / "ledger.sqlite"))
+    first = book["steps"].first_part("ja", book["book"])
+    assert got["ok"] is False and got["line_up"] == first and first is not None
+    assert got["say"] == actions.LINE_UP_FIRST.format(title=got["title"])
+    assert not [c for c in book["anki"].calls if c[0] in ("store", "update", "tag")]
+    assert fake_miner.commands() == []
+
+
+def test_a_book_kept_together_or_never_found_in_its_audio_is_never_offered(book, tmp_path, monkeypatch):  # noqa: F811
+    """*Keep them together* (no sentence audio, as you said), or a sync that found nothing: no line, no ⋯ entry."""
+    from tests import connect_helpers as c
     from tests.connect.test_lineup_own_subtitle import _trust
     _trust(monkeypatch, book, on=False)
-    monkeypatch.setattr(anki_miner, "_SPEECH", {})   # (its answers are kept for a Connect run: never another test's)
-    fake_miner.plan(speech={"installed": [], "model": "small"})
+    with c.store("ja") as s:
+        assert s.mark_audiobook_lineup(book["item"], book["rec"]["book"]["key"], "none") is True
     path = _mined_out(book, tmp_path)
     with Ledger(path) as ledger:
-        assert runner._add_audio_offers(book["steps"], ledger, "ja") is False
+        runner._add_audio_offers(book["steps"], ledger, "ja")
         assert _offers(ledger) == []
-        assert [n["kind"] for n in ledger.needs("ja")] == [runner.SPEECH_NEED]
+    with book["steps"]._open("ja") as store:
+        from app.connect import add_audio
+        parts = add_audio.book_items(store, book["book"])
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
 
 
-def test_a_sync_the_pass_starts_keeps_the_run_looking_until_it_ends(book, tmp_path, monkeypatch,
-                                                                    fake_miner):  # noqa: F811
-    """Its own subtitle heard out of time: Anki Miner's sync starts (hours, a child of its own) — the run looks again
-    (its next look offers the cards once the sync is done), never ends leaving it unlooked at."""
-    from app.connect import lineup
-    from tests.connect.test_lineup_own_subtitle import _trust
-    from tests.test_audiobook_items import _lines
-    _trust(monkeypatch, book, on=False)
-    monkeypatch.setattr(anki_miner, "_SPEECH", {})   # (its answers are kept for a Connect run: never another test's)
-    other = "".join(_lines("ja")[20:23])
-    copy = os.path.join(book["data_dir"], *book["rec"]["transcript"]["rel"].split("/"))
-    places = lineup.samples(lineup.srt_cues(copy))
-    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, heard={p[2][:6]: other for p in places},
-                    sync={"files": {}, "report": {"grade": None}, "hold": 30.0})
-    path = _mined_out(book, tmp_path)
-    _quiet_run(book, monkeypatch)
-    monkeypatch.setattr(book["steps"], "settle", lambda: None)
-
-    def pause(_seconds):
-        raise _Looked()
-    try:
-        with Ledger(path) as ledger:
-            with pytest.raises(_Looked):
-                runner.run({}, ["ja"], steps=book["steps"], ledger=ledger, sleep=pause)
-            assert _offers(ledger) == []
-        assert lineup.running(book["rec"]["book"]["key"])
-    finally:
-        lineup.stop(book["rec"]["book"]["key"])
-
-
-def test_a_mined_out_book_with_no_cards_is_never_lined_up_for_this(book, tmp_path, monkeypatch,
-                                                                   fake_miner):  # noqa: F811
-    """Nothing Connect made from it: no listen, no sync for an offer (its cards will come with the narrator)."""
+def test_a_mined_out_book_with_no_cards_is_never_offered(book, tmp_path, monkeypatch, fake_miner):  # noqa: F811
+    """Nothing Connect made from it: no line (its cards will come with the narrator), nothing started."""
     from tests.connect.test_lineup_own_subtitle import _trust
     _trust(monkeypatch, book, on=False)
-    monkeypatch.setattr(anki_miner, "_SPEECH", {})   # (its answers are kept for a Connect run: never another test's)
-    fake_miner.plan(speech={"installed": ["small"], "model": "small"})
     monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("星屑", [], None))
     with Ledger(_mined_out(book, tmp_path)) as ledger:
-        assert runner._add_audio_offers(book["steps"], ledger, "ja") is False
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert _offers(ledger) == []
     assert fake_miner.commands() == []

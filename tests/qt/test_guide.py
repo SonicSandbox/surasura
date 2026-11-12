@@ -163,6 +163,7 @@ def test_show_me_washes_a_control_and_a_tab_with_nothing_in_it_says_so(world, no
     world.win.guide_show_me("control:report")
     assert washed == [world.win.report_button]              # (recorded: the freeze switch ends a real wash at once)
     assert world.win.tab_buttons["needs"].isHidden()                         # Needs you lists nothing here
+    world.win.show_tab("finished")                                           # (show_tab's own fallback is Current)
     before = world.win.current_tab()
     world.win.guide_show_me("tab:needs")
     assert wait_until(lambda: world.win.bar_line.accessibleDescription() == strings.GUIDE_NOT_HERE)
@@ -275,14 +276,22 @@ def test_the_star_keeps_its_room_while_hidden_so_the_header_never_shifts(world, 
 
 
 def test_a_panel_that_fits_shows_no_scroll_bar_and_folded_lines_are_quiet_and_lead_nowhere(world, notes):
+    # the shipped 3.0.4 notes: lines long enough to wrap — a body sized by its unwrapped hints showed a bar here
+    shipped = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                           guide.FOLDER, "3.0.4.json")
+    with open(shipped, encoding="utf-8") as src, open(os.path.join(guide.folder(), "3.0.4.json"), "w",
+                                                      encoding="utf-8") as dst:
+        dst.write(src.read())
+    world.win.services.settings.set({"connect_enabled": True})
     _looked(world, notes)
     panel = _open(world)
     for entry in panel.folds:
         entry[0].click()
     QApplication.processEvents()
     room = panel.parentWidget().height() - panel.geometry().top() - guide_ui.EDGE
-    if panel.height() < room:                                               # it fits: every line in view, no bar
-        assert panel.scroll.verticalScrollBar().maximum() == 0
+    assert panel.height() < room                                            # it fits (1280 × 800) …
+    assert panel.scroll.verticalScrollBar().maximum() == 0                  # … so every line in view, no bar
+    assert panel.body.height() == panel.scroll.viewport().height()
     for _fold, fixes, _shown in panel.folds:
         assert all(c.objectName() == "guidefix" and c.show_me is None for c in fixes)
     panel.close()

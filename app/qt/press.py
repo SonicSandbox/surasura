@@ -59,6 +59,7 @@ _painted = {}                   # Press -> (control or None, its mark or None: a
 _at = {}                        # Press -> what it marks on screen (`at`: a row, a widget, the bar's arc)
 _busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
 _due = {}                       # Press -> [its words, or None] until it has been live `moves.SAVING_AFTER_S` (IK-1)
+_going = {}                     # id -> a mark taken off, its Python half kept until its C++ object goes (`_let_go`)
 
 
 def room(control, end=False):
@@ -321,9 +322,21 @@ def _unmark(got):
         got.stop()
         return
     if not sip.isdeleted(got):
-        got.set_running(False)
-        got.hide()
-        got.deleteLater()
+        _let_go(got)
+
+
+def _let_go(mark):
+    """A press's spinner taken off: still, hidden and deleted later — its Python half (and its `_Follow`'s, under it)
+    kept until its C++ object goes. PyQt6's `deleteLater()` lets go of the parent's hold on the wrapper, and a mark is
+    in reference cycles (its `_Follow`'s place): a collection meanwhile freed its Python half while its C++ objects
+    still filtered the control's events, and one inside sip's call into `_Follow.eventFilter` crashed the process
+    (0xC0000005 after the install press, Qt-C; tests/FLAKES.md)."""
+    mark.set_running(False)
+    mark.hide()
+    key = id(mark)
+    _going[key] = mark
+    mark.destroyed.connect(lambda _o=None, k=key: _going.pop(k, None))
+    mark.deleteLater()
 
 
 def _restore(p, win):
@@ -506,9 +519,7 @@ class _WidgetMark:
     def off(self):
         s, self.spinner = self.spinner, None
         if s is not None and not sip.isdeleted(s):
-            s.set_running(False)
-            s.hide()
-            s.deleteLater()
+            _let_go(s)
 
 
 def widget_mark(widget):

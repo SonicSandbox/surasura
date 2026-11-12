@@ -1518,7 +1518,7 @@ NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB
 NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
 NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")
-NEEDS_AUDIO_RUNNING = "Adding the narrator's voice to 「{title}」's cards…"
+NEEDS_AUDIO_RUNNING = "Connect is looking at 「{title}」's cards for the narrator's voice…"
 NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"

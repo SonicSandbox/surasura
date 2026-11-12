@@ -469,3 +469,79 @@ def test_a_mined_out_book_with_no_cards_is_never_offered(book, tmp_path, monkeyp
         runner._add_audio_offers(book["steps"], ledger, "ja")
         assert _offers(ledger) == []
     assert fake_miner.commands() == []
+
+
+# --- review A2 round 5 --------------------------------------------------------------------------------------------- #
+def _waiting(book, monkeypatch):  # noqa: F811
+    """Not lined up yet (no trust, nothing heard): a part's job would line it up."""
+    from tests.connect.test_lineup_own_subtitle import _trust
+    _trust(monkeypatch, book, on=False)
+    monkeypatch.setattr(anki_miner, "_SPEECH", {})
+
+
+@pytest.mark.parametrize("why", ["poor sync", "speech no", "audio away", "no books"])
+def test_a_book_its_job_wouldnt_line_up_is_never_offered(book, tmp_path, monkeypatch, why):  # noqa: F811
+    """r5 S1: the cases where a part's job gives up quietly — a sync kept at grade C, *Not now* to the speech model,
+    the audio not on this computer, an Anki Miner that doesn't mine books — offer nothing (never a press that asks
+    *Mine now* for ever)."""
+    from app.connect import lineup
+    _waiting(book, monkeypatch)
+    key = book["rec"]["book"]["key"]
+    if why == "poor sync":
+        lineup.write(key, {"status": lineup.DONE, "grade": "C", "files": []})
+    elif why == "speech no":
+        lineup.set_answer(False)
+    elif why == "audio away":
+        monkeypatch.setattr(runner, "_on_disk", lambda path: not str(path).lower().endswith(".m4b"))
+    else:
+        monkeypatch.setattr(book["steps"], "mines", lambda lang, kind: kind != "books")
+    try:
+        assert book["steps"].lineable("ja", book["book"]) is False
+        with Ledger(_mined_out(book, tmp_path)) as ledger:
+            runner._add_audio_offers(book["steps"], ledger, "ja")
+            assert _offers(ledger) == []
+    finally:
+        lineup.clear_answer()
+
+
+def test_a_waiting_line_goes_once_the_book_cant_be_lined_up(book, tmp_path, monkeypatch):  # noqa: F811
+    """r5 S2: offered while it could be lined up; then *Keep them together* — the line goes (never "line it up" for
+    good) and isn't asked again."""
+    from tests import connect_helpers as c
+    _waiting(book, monkeypatch)
+    with Ledger(_mined_out(book, tmp_path)) as ledger:
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert len(_offers(ledger)) == 1
+        with c.store("ja") as s:
+            assert s.mark_audiobook_lineup(book["item"], book["rec"]["book"]["key"], "none") is True
+            assert s.audiobook_keep_together(book["item"], book["rec"]["book"]["key"]) is True
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert _offers(ledger) == []
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert _offers(ledger) == []
+
+
+def test_cards_made_while_it_waited_are_offered_and_a_jobs_line_up_says_so(book, tmp_path, monkeypatch):  # noqa: F811
+    """r5 S3 + the job's path: offered while waiting; a part mined meanwhile (as the book: text-only) adds its card;
+    then a part's job lines it up (`_line_up`) — the line says it is lined up now, and the record holds every card made
+    before, the new one too."""
+    from app.connect import add_audio, library
+    from tests.connect.test_lineup_own_subtitle import _trust
+    _waiting(book, monkeypatch)
+    path = _mined_out(book, tmp_path)
+    with Ledger(path) as ledger:
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [offer] = _offers(ledger)
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"])
+        library.record_batch(store, parts[0], {"meanwhile": [500]}, "2026-11-12T00:00:00Z")
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)["n"] == 9
+    _trust(monkeypatch, book)
+    with Ledger(path) as ledger:
+        assert runner._line_up(book["steps"], ledger, "ja", {"id": 1, "item_id": parts[0], "language": "ja",
+                                                             "asked_at": None}, (None, book["book"])) is not None
+        [now] = _offers(ledger)
+        title, _notes, sha = book["steps"].made_before("ja", book["book"])
+        assert now["id"] == offer["id"] and now["say"] == runner.ADD_AUDIO_ASK.format(title=title)
+        rec = json.loads(runner._meta(ledger, f"{runner.ADD_AUDIO_ASKED}ja:{runner.book_key(book['book'], sha)}"))
+        assert 500 in rec["notes"] and rec["stage"] == runner.ADD_AUDIO_LINED

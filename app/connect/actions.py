@@ -316,7 +316,8 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
         return None                                     # (Connect writing, a record unread: no entry this time)
     # the cards made before it lined up (the asked record's, else every one: not asked yet) — never those mined since,
     # which carry the narrator already (r2 B2) — less what a press looked at
-    before = set(_ids(json.dumps(asked["notes"]))) if asked and isinstance(asked.get("notes"), list) else set(notes)
+    frozen = asked and asked.get("stage") != runner.ADD_AUDIO_WAITING and isinstance(asked.get("notes"), list)
+    before = set(_ids(json.dumps(asked["notes"]))) if frozen else set(notes)
     rest = (before & set(notes)) - set(seen)
     if not rest:
         return None

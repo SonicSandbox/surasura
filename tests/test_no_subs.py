@@ -445,8 +445,8 @@ def test_the_languages_hato_finds_subtitles_in_are_read_from_its_version(version
 
 
 def _zh_rows(videos, retry_after):
-    """hato 1.3.0's NDJSON for a `--lang zh` run, as its real run printed it (Zh-H's connect_e2e, 2026-11-12: hato
-    1.3.0 from source on assrt.net's recorded answers, no network): a Chinese file found and timed for the first
+    """hato 1.3.0's NDJSON for a `--lang zh` run, as its real run printed it (Zh-H's connect_e2e, the 3.0 plan's
+    tracks/pipeline/work/zh-h/E2E.md: hato 1.3.0 from source on assrt.net's recorded answers, no network): a Chinese file found and timed for the first
     video, written beside it as `.zh.ass`; nothing for the second, with hato's own date."""
     return [{"type": "progress", "phase": "walking", "folders": 1},
             {"type": "video", "video": videos[0], "outcome": "CONFIDENT", "retry_after": None,
@@ -454,7 +454,7 @@ def _zh_rows(videos, retry_after):
              "jimaku_filename": "[Nekomoe kissaten] Sousou no Frieren - 01 [WebRip 1080p].chs.ass"},
             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": retry_after,
              "output_path": None, "jimaku_filename": None,
-             "reason": "No release on the entry places a file on episode 4. Will retry after 2026-11-13."},
+             "reason": f"No release on the entry places a file on episode 4. Will retry after {retry_after[:10]}."},
             {"type": "run", "videos": 2, "lang": "zh", "stopped": None}]
 
 

@@ -298,6 +298,7 @@ def _no_resource_names(monkeypatch):
     def names(language):
         raise AssertionError("the property test read its names from Test Resources")
     monkeypatch.setattr("tests.test_library_store_support.names", names)
+    monkeypatch.setattr(sys.modules[__name__], "names", names)              # this module's own import of it
 
 
 def test_property_1000_random_steps_over_100_more_names(monkeypatch):
@@ -320,7 +321,7 @@ def test_nudge_counts_a_goal_shows_new_episode_in_now_as_a_row(language):
     store = no_line(migrated(language, shows=2, episodes=2, loose=0, words=words))
     data_dir, _ = roots(language)
     show = next(p.rsplit("/", 1)[0] for p in paths(store, "goal") if p.count("/") == 2)   # rows in 6+ Months only
-    new =store.insert([touch(data_dir, f"{show}/{words[100]}_第03話.srt")], "goal").added[0]
+    new = store.insert([touch(data_dir, f"{show}/{words[100]}_第03話.srt")], "goal").added[0]
     now = store.ids("now")
     assert now[0] == new and paths(store, "now")[0].startswith("GoalContent/")       # Q4-9: the top of NOW
     below = now[1]

@@ -88,8 +88,8 @@ class Steps:
 class Miner:
     """Anki Miner's `render` and `media` answers, written where the real one writes them (API.md)."""
 
-    def __init__(self, sentence="ねえ、さっき<b>家庭教師</b>の話をしてたでしょう？"):
-        self.calls, self.sentence = [], sentence
+    def __init__(self, sentence="ねえ、さっき<b>家庭教師</b>の話をしてたでしょう？", extra=None):
+        self.calls, self.sentence, self.extra = [], sentence, extra or {}
 
     def __call__(self, path, args, timeout=None, look_up=None, **_kw):
         command, run_file = args
@@ -121,15 +121,15 @@ class Miner:
         row = {"word": word, "status": "rendered", "files": ["家庭教師_2000_1_def.mp3", "家庭教師_2000_1_def.webp"],
                "fields": {"Expression": word, "Sentence": self.sentence, "SentenceAudio": "[sound:家庭教師_2000_1_def.mp3]",
                           "Picture": '<img src="家庭教師_2000_1_def.webp">', "MiscInfo": "Kissaten ep02 00:41",
-                          "Hint": "", "MainDefinition": "a NEW definition"}}
+                          "Hint": "", "MainDefinition": "a NEW definition", **self.extra}}
         with open(os.path.join(folder, "render-1.json"), "w", encoding="utf-8") as f:
             json.dump({"words": [row]}, f, ensure_ascii=False)
         return {"ok": True, "runs": [{"run_id": episode["run_id"], "ok": True, "file": "render-1.json"}]}
 
 
-def session(anki, steps=None, miner=None):
+def session(anki, steps=None, miner=None, mapping=LAPIS):
     return swap.Session({}, steps=steps or Steps(), miner="AnkiMiner.exe", setup=lambda lang: (INFO, "p-surasura",
-                                                                                              LAPIS),
+                                                                                              mapping),
                         url=anki.url, api=miner or Miner())
 
 
@@ -313,6 +313,33 @@ def test_another_notes_id_is_never_rewritten(root, anki):
     assert not {"storeMediaFile", "updateNoteFields"} & set(anki.names()) and not os.path.exists(swap.undo_path("ja"))
 
 
+def test_a_card_of_another_note_type_with_the_word_is_never_rewritten(root, anki):
+    # the deck and the word match, but the note isn't the profile's note type (a learner's own card for the word, kept
+    # in the mining deck): refused inside the lock, before any write
+    s = session(anki)
+    line = _line(s, TARGET)
+    anki.notes[NOTE]["model"] = "Basic"
+    with pytest.raises(swap.SwapError) as e:
+        s.swap(NOTE, line["id"])
+    assert e.value.kind == "not-the-card"
+    assert not {"storeMediaFile", "updateNoteFields"} & set(anki.names()) and not os.path.exists(swap.undo_path("ja"))
+
+
+def test_the_translation_field_is_never_written_whatever_role_maps_to_it(root, anki):
+    # K18: his own note type keeps its translation in "Translation", and its profile sends the source there too:
+    # the swap writes the line's sentence side, never his translation (nor Hint, nor MiscInfo)
+    mapping = fields.from_export({"configured": True, "settings": {
+        "anki_deck_name": "DevTest", "anki_note_type": "Lapis",
+        "anki_fields": {"word": "Expression", "sentence": "Sentence", "picture": "Picture", "audio": "SentenceAudio",
+                        "source": "Translation", "sentence_translation": "Translation",
+                        "definition": "MainDefinition"}}})
+    anki.notes[NOTE]["fields"]["Translation"] = "Are you a tutor? What do you teach?"
+    s = session(anki, miner=Miner(extra={"Translation": "Kissaten ep02 00:41"}), mapping=mapping)
+    s.swap(NOTE, _line(s, TARGET)["id"])
+    note = anki.notes[NOTE]["fields"]
+    assert note["Translation"] == "Are you a tutor? What do you teach?" and note["Sentence"].startswith("ねえ")
+
+
 def test_the_line_already_on_the_card_is_refused_not_recorded(root, anki):
     s = session(anki)
     line = _line(s, TARGET)
@@ -400,7 +427,7 @@ def test_no_run_folder_or_file_is_left_behind(root, anki):
 def test_a_swapped_line_is_cut_by_connects_card_lines_rule(tmp_path):
     # Michi-SW2: a line swapped in is cut as a card mined from it would be (`pick.window`, card lines 2026-11-09) — a
     # line whose sentence began on the line before takes that line too (the first prototype's own rule never looked
-    # back, and counted cues where Anki Miner counts its own lines); a line that runs on by its grammar takes the next
+    # back, and counted cues where Anki Miner counts its own lines); a line with no closing mark takes the next
     path = tmp_path / "家庭教師の話.ja.srt"
     path.write_bytes("1\r\n00:00:01,000 --> 00:00:02,500\r\nねえ、さっき家庭教師の話をしてたけど\r\n\r\n"
                      "2\r\n00:00:02,600 --> 00:00:04,000\r\nあれって本当なの？\r\n\r\n"
@@ -408,12 +435,29 @@ def test_a_swapped_line_is_cut_by_connects_card_lines_rule(tmp_path):
     from app import cues
     from app.connect import pick
     read = cues.read(str(path), "ja")
-    assert swap.expansion(str(path), "ja", 2.6, 4.0) == tuple(pick.line_expansion(read, 1)) == (1, 0)
-    assert swap.expansion(str(path), "ja", 1.0, 4.0) == tuple(pick.line_expansion(read, 0)) == (0, 1)
-    assert swap.expansion(str(path), "ja", 5.0, 6.5) == (0, 0)
+    assert swap.expansion(str(path), "ja", 2.6) == tuple(pick.line_expansion(read, 1)) == (1, 0)
+    assert swap.expansion(str(path), "ja", 1.0) == tuple(pick.line_expansion(read, 0)) == (0, 1)
+    assert swap.expansion(str(path), "ja", 5.0) == (0, 0)
     with pytest.raises(swap.SwapError) as e:
-        swap.expansion(str(path), "ja", 3.0, 4.0)       # no line starts there any more: the subtitle changed
+        swap.expansion(str(path), "ja", 3.0)        # no line starts there any more: the subtitle changed
     assert e.value.kind == "gone"
+    # the episode read again once it changed (its lines are kept while it doesn't: review 2, one tagging a file)
+    path.write_bytes("1\r\n00:00:03,000 --> 00:00:04,000\r\nあれって本当なの？\r\n".encode("utf-8"))
+    os.utime(path, (1, 1))
+    assert swap.expansion(str(path), "ja", 3.0) == (0, 0)
+
+
+@pytest.mark.parametrize("shown, mine", [
+    ("家庭教師ですか。", True),                            # one sentence of the card's two-sentence line
+    ("何を教えているんですか？", True),
+    ("家庭教師ですか。何を教えているんですか？", True),     # the whole line
+    ("家庭教師ですか 。", True),                          # a subtitle's spaced phrase (the plan's have no spaces)
+    ("家庭教師", False),                                  # a piece of one of its sentences: another line (review 2)
+    ("ですか。", False),
+    ("ねえ、さっき家庭教師の話をしてたでしょう？", False),
+])
+def test_the_cards_own_line_is_one_of_its_sentences_whole(shown, mine):
+    assert swap.own_line(swap.plain("<b>家庭教師</b>ですか。何を教えているんですか？"), shown) is mine
 
 
 def test_an_old_list_id_is_refused(root, anki):

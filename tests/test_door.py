@@ -107,18 +107,29 @@ def test_two_one_time_pages_never_share_a_name(tmp_path):
         d.stop()
 
 
-def test_a_one_time_page_goes_after_its_life_and_the_rest_at_stop(tmp_path, monkeypatch):
+def test_a_one_time_page_loses_its_door_after_its_life_and_the_rest_at_stop(tmp_path, monkeypatch):
+    # review 2: a browser slower than LAUNCH_S (a cold laptop) still opens the report — without the door — never a
+    # missing file; the token is in no page once its life is over, nor after the window's quit
     d = door.Door({}, str(tmp_path)).start()
     monkeypatch.setattr(door, "LAUNCH_S", 0.05)
-    short = Path(d.launch_page(str(tmp_path), "r.html"))
+    short = Path(d.launch_page(str(tmp_path), "r.html", "file=a.srt"))
     monkeypatch.setattr(door, "LAUNCH_S", 600.0)
     long_ = Path(d.launch_page(str(tmp_path), "r.html"))
     deadline = time.monotonic() + 5
-    while short.exists() and time.monotonic() < deadline:
+    while d.token in short.read_text(encoding="utf-8") and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert not short.exists() and long_.exists()
+    assert _target(short) == "r.html#file=a.srt" and d.token in long_.read_text(encoding="utf-8")
     d.stop()
-    assert not long_.exists() and _holding(tmp_path, d.token) == []
+    assert _target(long_) == "r.html" and _holding(tmp_path, d.token) == []
+
+
+def test_a_stopped_door_writes_no_page(tmp_path):
+    # review 2: a press racing the quit never leaves a page holding a dead token (no timer runs after the exit)
+    d = door.start({}, str(tmp_path))
+    door.stop()
+    with pytest.raises(OSError):
+        d.launch_page(str(tmp_path), "r.html")
+    assert door.launch_page(str(tmp_path), "r.html") is None and list(tmp_path.iterdir()) == []
 
 
 def test_start_sweeps_an_earlier_windows_pages_and_nothing_else(tmp_path):
@@ -140,9 +151,9 @@ def test_an_earlier_doors_stop_leaves_the_later_doors_page(tmp_path):
     second = door.Door({}, str(tmp_path)).start()
     page = Path(second.launch_page(str(tmp_path), "r.html"))
     first.stop()
-    assert page.exists()
+    assert second.token in page.read_text(encoding="utf-8")
     second.stop()
-    assert not page.exists()
+    assert page.exists() and second.token not in page.read_text(encoding="utf-8")
 
 
 def test_with_no_door_open_there_is_no_one_time_page(tmp_path):
@@ -279,4 +290,4 @@ def test_start_replaces_the_doors_one_a_process(tmp_path):
         assert second.token in _target(Path(door.launch_page(str(tmp_path), "r.html")))
     finally:
         door.stop()
-    assert door.current() is None and list(tmp_path.iterdir()) == []
+    assert door.current() is None and _holding(tmp_path, second.token) == []

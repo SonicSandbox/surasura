@@ -45,6 +45,8 @@ SETUP_FOR_S = 15 * 60
 MEDIA_TIMEOUT = 120.0
 RENDER_TIMEOUT = 300.0
 _TAGS = re.compile(r"<[^>]+>")
+_ENDS = frozenset("。｡．.！？!?…‥")                # a sentence's closing marks (`pick._FINISHED`)
+LINES_KEPT = 8                                  # episodes whose lines are kept read (`expansion`)
 
 NO_MINER = "Swap needs Anki Miner 3.11 or later (Settings → Anki & mining)."
 ANKI_CLOSED = "Open Anki to swap this card's sentence."
@@ -81,6 +83,31 @@ def undo_path(lang):
 def plain(value):
     """A field's text as the page shows it: no tags, entities read."""
     return html.unescape(_TAGS.sub("", value or "")).strip()
+
+
+def _sentences(text):
+    """A line's sentences as the plan splits them (a cue's end counts as one: the analyzer closes it with 。), each
+    without its closing marks or spaces (a subtitle's spaced phrases: the plan's sentences have none)."""
+    out, cut = [], 0
+    text = "".join(text.split())
+    for i, ch in enumerate(text):
+        if ch in _ENDS:
+            if text[cut:i]:
+                out.append(text[cut:i])
+            cut = i + 1
+    if text[cut:]:
+        out.append(text[cut:])
+    return out
+
+
+def own_line(held, shown):
+    """Whether `shown` (a sentence of the plan) is the card's own line `held`, or one of its sentences — whole, never
+    a piece of one (家庭教師 isn't 家庭教師するんでしょ？'s)."""
+    if not held or not shown:
+        return False
+    mine = _sentences(shown)
+    have = _sentences(held)
+    return bool(mine) and (mine == have or (len(mine) == 1 and mine[0] in have))
 
 
 def line_id(path, start, text):
@@ -191,7 +218,7 @@ class Session:
             row = {"id": lid, "text": shown, "unknown": unknown, "show": shows.get(where, ""),
                    "episode": os.path.splitext(os.path.basename(str(where)))[0], "timed": start is not None,
                    "start": start, "end": end, "audio": audio,
-                   "now": bool(held) and shown in held}
+                   "now": own_line(held, shown)}
             with self._lock:
                 self.lines[lid] = dict(row, path=path, rel=str(where), lang=lang)
             rows.append(row)
@@ -267,7 +294,7 @@ class Session:
             raise held
         video, offset, pairing = held
         key = (pairing or {}).get("content_key") or (item or {}).get("rel_key") or f"item-{item_id}"
-        return key, video, offset, expansion(line["path"], lang, line["start"], line["end"])
+        return key, video, offset, expansion(line["path"], lang, line["start"])
 
     def _episode(self, lang, item_id, subtitle):
         from app.connect import fit_check
@@ -543,21 +570,43 @@ class Session:
         return {"now": plain(next(iter(record["old"].values()), ""))}
 
 
-def expansion(path, lang, start, end):
+_lines = {}                                     # (path, lang) -> ((mtime_ns, size), cues, pick.Lines)
+_lines_lock = threading.Lock()
+
+
+def _episode_lines(path, lang):
+    """The episode's cues and their `pick.Lines` (its words tagged once), kept while the file is unchanged."""
+    from app import cues
+    from app.connect import pick
+    st = os.stat(path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    with _lines_lock:
+        kept = _lines.get((path, lang))
+    if kept is not None and kept[0] == stamp:
+        return kept[1], kept[2]
+    read = cues.read(path, lang)
+    lines = pick.Lines(read, language=lang)
+    with _lines_lock:
+        _lines[(path, lang)] = (stamp, read, lines)
+        while len(_lines) > LINES_KEPT:
+            _lines.pop(next(iter(_lines)))
+    return read, lines
+
+
+def expansion(path, lang, start):
     """(before, after): the lines Anki Miner adds to the line starting at `start` (s) — Connect's own card-lines rule
     (`pick.window`, card lines 2026-11-09: the sentence by its grammar, the 8 s cap, counted in Anki Miner's lines), so
     a line swapped in is cut as a card mined from it would be (Michi-SW2; before, Swap's own copy of the old rule)."""
-    from app import cues
     from app.connect import pick
     try:
-        read = cues.read(path, lang)
+        read, lines = _episode_lines(path, lang)
     except OSError:
         raise SwapError(GONE, "gone") from None
     start_ms = int(round(start * 1000))
     at = next((i for i, c in enumerate(read) if c.start == start_ms), None)
     if at is None:
         raise SwapError(GONE, "gone")
-    before, after, _cut, _ms = pick.window(read, at, pick.Lines(read, language=lang))
+    before, after, _cut, _ms = pick.window(read, at, lines)
     return before, after
 
 

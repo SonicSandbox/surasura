@@ -8,8 +8,9 @@ runs (Sonic, 2026-10-28: one page -> app layer, never one channel per button; th
   port is refused (a web page can't reach it through a name that points here: DNS rebinding).
 - **One token a session, handed only to the page the window opens** (review 1's #4, Michi-SW2: before, a file any
   local page could read with a `<script>` tag held it): *Your journey* opens the report through a one-time page
-  (`launch_page`: `results/door-secret-<random>.html`, its name unguessable, removed after LAUNCH_S or at stop) that
-  replaces itself with the report at `#door=<port>.<token>`; the report takes it out of its address at once and keeps
+  (`launch_page`: `results/door-secret-<random>.html`, its name unguessable) that replaces itself with the report at
+  `#door=<port>.<token>`; after LAUNCH_S or at stop it is written again without the door (a browser slower than that
+  still opens the report: review 2), and swept at the next start; the report takes it out of its address at once and keeps
   it for that tab (`sessionStorage`). A report opened any other way (by hand, from Junban) has no door and says so.
   Every call carries the token (`hmac.compare_digest`); a call from a web page (an `Origin` other than `null`, a file
   page's) is refused before its token is read.
@@ -145,7 +146,7 @@ class Door:
         self.on_error = on_error or (lambda _path, _e: None)
         self.port = None
         self._server = self._thread = None
-        self._pages = set()                         # this door's one-time pages still on disk
+        self._pages = {}                            # this door's one-time pages still holding its token: path -> fragment
         self._pages_lock = threading.Lock()
 
     def token_ok(self, token):
@@ -179,35 +180,48 @@ class Door:
 
     def launch_page(self, folder, report, rest=""):
         """A one-time page in `folder` that opens `report` (a name in that folder) at `#door=<port>.<token>` (then
-        `&<rest>`, the report's own fragment: `file=<name>`) -> its path. Removed after LAUNCH_S, and at stop."""
-        target = "%s#door=%d.%s%s" % (report, self.port, self.token, "&" + rest if rest else "")
+        `&<rest>`, the report's own fragment: `file=<name>`) -> its path. After LAUNCH_S, and at stop, written again
+        without the door. OSError on a door already stopped (a press racing the quit: no page holds a dead token)."""
+        fragment = "%s#door=%d.%s%s" % (report, self.port, self.token, "&" + rest if rest else "")
         path = os.path.join(folder, "%s-%s.html" % (PREFIX, secrets.token_hex(16)))
         os.makedirs(folder, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write('<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title><body style="background:#1e1e1e">'
-                    '<script>location.replace(%s);</script>\n' % json.dumps(target).replace("</", "<\\/"))
         with self._pages_lock:
-            self._pages.add(path)
-        timer = threading.Timer(LAUNCH_S, self._drop, (path,))
+            if self._server is None:
+                raise OSError("the door is closed")
+            _page(path, fragment)
+            self._pages[path] = "%s#%s" % (report, rest) if rest else report
+        timer = threading.Timer(LAUNCH_S, self._retire, (path,))
         timer.daemon = True
         timer.start()
         return path
 
-    def _drop(self, path):
+    def _retire(self, path):
+        """The page's door taken out: it still opens the report (a browser that reads it late), never the token."""
         with self._pages_lock:
-            self._pages.discard(path)
-        _remove(path)
+            plain = self._pages.pop(path, None)
+            if plain is not None:
+                try:
+                    _page(path, plain)
+                except OSError:
+                    _remove(path)
 
     def stop(self):
-        if self._server is None:
+        with self._pages_lock:                      # (closed and listed at once: no page slips in between)
+            server, self._server = self._server, None
+            pages = list(self._pages)
+        if server is None:
             return
-        with self._pages_lock:
-            pages, self._pages = self._pages, set()
         for path in pages:
-            _remove(path)
-        self._server.shutdown()
-        self._server.server_close()
-        self._server = None
+            self._retire(path)
+        server.shutdown()
+        server.server_close()
+
+
+def _page(path, target):
+    """A page that replaces itself with `target` (a name in its folder, with its fragment)."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title><body style="background:#1e1e1e">'
+                '<script>location.replace(%s);</script>\n' % json.dumps(target).replace("</", "<\\/"))
 
 
 def _remove(path):

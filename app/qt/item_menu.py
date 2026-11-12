@@ -865,7 +865,10 @@ class ItemActions(QObject):
 
         def failed(info):
             self._audio_running.discard(epub)
-            self.win.say(strings.NEEDS_AUDIO_GONE)
+            ny = getattr(self.win, "needs_you", None)
+            if ny is not None:
+                ny.refresh()
+            self.win.say(strings.NEEDS_AUDIO_FAILED)          # (r3: never "nothing to add" after a failure)
         bridge.run_in_worker(run, then=done, failed=failed)
 
     def _offer_skip(self, row, m):

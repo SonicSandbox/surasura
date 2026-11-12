@@ -1519,6 +1519,7 @@ NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"   
 NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")
 NEEDS_AUDIO_RUNNING = "Adding the narrator's voice to 「{title}」's cards…"
+NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
 NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"

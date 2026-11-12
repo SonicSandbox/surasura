@@ -4,7 +4,9 @@ the waiting line and its *Cancel*; the done line's *Open Anki* (Anki on Connect'
 install state for every part on screen; *Copy code* always there under it. And the work it costs (S19, Sonic
 2026-11-05: redraw waste caught at build time): one view painted per change, nothing painted for a press that changes
 nothing. The route itself is `tests/connect/test_ankiconnect_install.py`'s: here it is a stand-in."""
+import contextlib
 import threading
+import types
 
 import pytest
 from PyQt6.QtCore import QEvent, QObject, QTimer
@@ -76,8 +78,12 @@ class Counter(QObject):
         return False
 
 
-@pytest.fixture
-def part(qapp, monkeypatch, qt_timer):
+def _install_threads():
+    return [t for t in threading.enumerate() if t.name == "ankiconnect-install" and t.is_alive()]
+
+
+@contextlib.contextmanager
+def _part(monkeypatch, qt_timer):
     """A host with the part (the install offered: `can-install`), its look a stand-in, the sheet a stand-in."""
     monkeypatch.setattr(addon_steps, "_STATE", None)     # a fresh install state per test
     looks = {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 260902}
@@ -101,11 +107,48 @@ def part(qapp, monkeypatch, qt_timer):
         made.append(steps)
         return steps
     host.show()
-    yield type("P", (), {"make": staticmethod(make), "looks": looks, "asked": asked, "sheet": sheet,
-                         "route": route, "checked": checked, "host": host})
-    route.go.set()
-    host.close()
-    host.deleteLater()
+    got = types.SimpleNamespace(make=make, looks=looks, asked=asked, sheet=sheet, route=route, checked=checked,
+                                host=host)
+    try:
+        yield got
+    finally:
+        _let_go(got)
+
+
+def _let_go(got):
+    got.route.go.set()
+    _end(got.host)
+
+
+def _end(host):
+    """Everything a test made ends here, on the window's thread, while its stand-ins still stand (#386's GitHub
+    crash, tests/FLAKES.md): the route's thread joined (its route let go first); the end it queued and the look that
+    end starts delivered; its `deleteLater`s run; the host — Python's, no parent: left to `deleteLater` and a yielded
+    class's cycle, a collection's timing deleted it, in a later test — deleted now; the test's install state, the
+    application's child (one a test, each with its timer and relays, else), deleted now."""
+    from PyQt6 import sip
+    for thread in _install_threads():
+        thread.join(5)
+    st = addon_steps._STATE
+    if st is not None and not sip.isdeleted(st):
+        wait_until(lambda: sip.isdeleted(st) or (not st.looking and st.phase not in (addon_steps.RUNNING,
+                                                                                     addon_steps.WAITING)))
+    for _ in range(3):
+        QApplication.processEvents()
+    # a `deleteLater` of the test's (its parts, its own windows) runs now: processEvents never runs one — left, it ran in
+    # a later test's event loop, after this test's state was gone
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    if not sip.isdeleted(host):
+        host.close()
+        sip.delete(host)
+    if st is not None and not sip.isdeleted(st):
+        sip.delete(st)
+
+
+@pytest.fixture
+def part(qapp, monkeypatch, qt_timer):
+    with _part(monkeypatch, qt_timer) as got:
+        yield got
 
 
 def _settle():
@@ -433,5 +476,28 @@ def test_the_real_route_under_the_real_part_installs_once_anki_closes(qapp, tmp_
             assert json.load(f) == T.META
         assert not os.path.exists(os.path.join(str(base), I.ANKI_STAGING))
     finally:
-        host.close()
-        host.deleteLater()
+        _end(host)
+
+
+def test_a_part_leaves_nothing_of_its_own_alive_for_the_next_test(qapp, monkeypatch, qt_timer):
+    """#386's GitHub crash (0xC0000005 ×5 at the next test, never here alone; tests/FLAKES.md): what a test made — the
+    route's thread, its end and the look that end starts, the part's host (Python-owned, no parent), the test's
+    install state (the application's child) — outlived it and ended in a later test, when a collection's timing or
+    the next test's stand-ins said. Every one ends at the test's own end, on the window's thread."""
+    from PyQt6 import sip
+    with _part(monkeypatch, qt_timer) as got:
+        steps = got.make()
+        steps.want(True)
+        assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+        steps.install.click()
+        got.sheet.answer(True)
+        assert wait_until(lambda: addon_steps.holding())        # the route runs on its own thread
+        st, host = addon_steps._STATE, got.host
+        assert _install_threads()
+    assert not _install_threads(), "the route's thread ended with its test"
+    assert sip.isdeleted(host), "the host deleted at its test's end, on the window's thread"
+    assert sip.isdeleted(st), "the test's install state deleted with it (never one per test left to the application)"
+    looks = len(got.asked)
+    for _ in range(20):
+        QApplication.processEvents()
+    assert len(got.asked) == looks, "nothing of the test's state looks after its end"

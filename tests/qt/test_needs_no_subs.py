@@ -148,3 +148,28 @@ def test_yes_to_the_model_installs_it_then_makes_them(world, subs):
     assert wait_until(lambda: got["made"], 5)
     assert got["made"][0][2] is True, "the model first, after the yes"
     assert wait_until(lambda: strings.NEEDS_SUBS_MADE.format(n=2) in said, 5)
+
+
+@pytest.mark.parametrize("language, action, site", [("ja", "find_with_hato", "jimaku.cc"),
+                                                     ("zh", "find_with_hato_zh", "assrt.net")])
+def test_find_them_with_hato_keeps_its_own_librarys_yes_with_its_own_words(world, subs, monkeypatch, language, action,
+                                                                           site):
+    """Why (Zh-H; PROVISIONAL words): the Chinese library's card says where hato looks for Chinese subtitles
+    (assrt.net, then OpenSubtitles, with the learner's own keys) and its press keeps the Chinese library's own yes — a
+    Japanese yes never sends Chinese titles anywhere, nor the other way round. The Japanese card is as before."""
+    from app import no_subs
+    monkeypatch.setattr(service, "no_subs_offer", lambda view, settings: {"make": False, "hato": True})
+    real = service._no_subs_entry
+    monkeypatch.setattr(service, "_no_subs_entry",
+                        lambda view, offer, seen: real(view._replace(language=language), offer, seen))
+    seed, win, writer, ny = world()
+    ny.language = language
+    entry = entry_of(ny, service.NO_SUBS)
+    assert entry.actions == (action,)
+    b = button(ny, entry.key, action)
+    assert b is not None and b.text() == "Find them with hato" and site in b.toolTip()
+    assert ("jimaku" in b.toolTip()) is (language == "ja")
+    b.click()
+    mine, other = no_subs.setting(language), no_subs.setting("ja" if language == "zh" else "zh")
+    assert wait_until(lambda: win.services.settings.get().get(mine) is True, 5)
+    assert not win.services.settings.get().get(other)

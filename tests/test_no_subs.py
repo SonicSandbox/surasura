@@ -436,15 +436,17 @@ def test_the_languages_hato_finds_subtitles_in_are_read_from_its_version(version
 
 
 def _zh_rows(videos, retry_after):
-    """hato 1.3.0's NDJSON for a `--lang zh` run, as its real run printed it (Zh-H's connect_e2e: assrt.net's recorded
-    answers): a Chinese file found and timed for the first video, nothing for the second."""
-    return [{"type": "progress", "phase": "searching", "done": 0, "total": 2},
+    """hato 1.3.0's NDJSON for a `--lang zh` run, as its real run printed it (Zh-H's connect_e2e, 2026-11-12: hato
+    1.3.0 from source on assrt.net's recorded answers, no network): a Chinese file found and timed for the first
+    video, written beside it as `.zh.ass`; nothing for the second, with hato's own date."""
+    return [{"type": "progress", "phase": "walking", "folders": 1},
             {"type": "video", "video": videos[0], "outcome": "CONFIDENT", "retry_after": None,
-             "output_path": os.path.splitext(videos[0])[0] + ".zh.ass",
+             "output_path": os.path.splitext(videos[0])[0] + ".zh.ass", "reason": "",
              "jimaku_filename": "[Nekomoe kissaten] Sousou no Frieren - 01 [WebRip 1080p].chs.ass"},
             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": retry_after,
-             "output_path": None, "reason": "no Chinese subtitle for this episode on assrt.net or OpenSubtitles"},
-            {"type": "run", "videos": 2}]
+             "output_path": None, "jimaku_filename": None,
+             "reason": "No release on the entry places a file on episode 4. Will retry after 2026-11-13."},
+            {"type": "run", "videos": 2, "lang": "zh", "stopped": None}]
 
 
 def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_path):
@@ -475,6 +477,46 @@ def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_
         assert no_subs.note(rel, "zh")[0] == no_subs.NOT_FOUND and no_subs.note(rel, "ja") is None
         assert os.path.exists(no_subs.state_path("zh")) and not os.path.exists(no_subs.state_path("ja"))
         assert no_subs.due(store, "zh", now=now) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_hatos_chinese_file_fills_the_waiting_video_in_place_with_only_the_chinese_yes(tmp_path):
+    """Why (Zh-H, read back): what hato 1.3.0 hands over for a Chinese video — its real pairing record (assrt.net's
+    file, `language` zh, no jimaku entry; tests/Test Resources/connect/pairing_v1_zh_hato_1_3.json), its copy in the
+    Chinese drop folder — is registered with only the Chinese library's yes (Connect off: Q3), and fills the waiting
+    video's own item in place; the copy hato also wrote beside the video makes no second item at the next look."""
+    from app.cli import connect_verbs
+    from app.connect import videos as connect_videos
+    store, data_dir, src, root, (video,) = _library("zh", names=("01",))
+    try:
+        (waiting_id,) = [i for i, _r, a in _items(store) if a == "waiting"]
+        before = len(_items(store))
+        stem = os.path.splitext(os.path.basename(video))[0]
+        with open(os.path.join(RES, "zh", "night_market.srt"), "rb") as f:
+            found = f.read()
+        drop = os.path.join(data_dir, *ls.HATO_FOLDER.split("/"), _SHOW["zh"], stem + ".zh.srt")
+        beside = os.path.join(os.path.dirname(video), stem + ".zh.srt")
+        for path in (drop, beside):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(found)
+        with open(os.path.join(RES, "connect", "pairing_v1_zh_hato_1_3.json"), encoding="utf-8") as f:
+            record = json.load(f)
+        import hashlib
+        record.update({"content_key": connect_videos.content_key(video), "video_path": os.path.abspath(video),
+                       "video_size": os.path.getsize(video), "subtitle_path": beside, "library_path": drop,
+                       "subtitle_sha256": hashlib.sha256(found).hexdigest(),
+                       "show": {"episode": 1, "movie": False, "season": None, "title": _SHOW["zh"]}})
+        assert connect_verbs.register_record(record, "zh", wait=10.0, loaded={})["landed"] == "skipped"
+        answer = connect_verbs.register_record(record, "zh", wait=10.0, loaded={no_subs.SETTING_ZH: True})
+        assert answer["file_id"] == waiting_id and answer["landed"] != "skipped", answer
+        got = {i: (r, a) for i, r, a in _items(store)}
+        assert len(got) == before and got[waiting_id][1] == "available"
+        pairing = library.pairing_of(store, waiting_id)
+        assert pairing["language"] == "zh" and pairing["subtitle_source"]["provider"] == "assrt"
+        _look(store, "zh", root)
+        assert len(_items(store)) == before and _waiting(store) == 0, "hato's copy beside the video: no second item"
     finally:
         store.__exit__(None, None, None)
 

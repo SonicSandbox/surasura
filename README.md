@@ -99,7 +99,7 @@ then PyInstaller, into `dist/Surasura/`; `--zip` also makes `dist/Surasura_v<ver
 ## ⚠️ Known limits
 
 - Windows only. The installer isn't signed: *More info → Run anyway*.
-- Cards are made in Japanese only; Chinese works everywhere else.
+- Chinese cards need Anki Miner 3.12 or later (Connect offers it).
 - Anki must be open for cards to be made and ordered.
 - Very large libraries (20,000+ files) can hitch for a moment as a new episode comes in.
 

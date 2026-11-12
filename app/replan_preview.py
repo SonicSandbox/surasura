@@ -683,7 +683,7 @@ class Host:
             anki_sync_rule.closed_seen()
             self._tell(CLOSED, gives_up=True)
             return False
-        if anki_connect.reviewing(url):
+        if anki_connect.reviewing(url, self._cancel):
             self._tell(REVIEWING)
             self._retry(kind)
             return False
@@ -826,6 +826,10 @@ class Host:
         if report.get("restore_first"):
             self._tell(RESTORE_FIRST, in_junban=True)   # only you can clear it, in 順: said, not retried
             return report
+        if report.get("anki_busy") and not report.get("written"):    # (before `anki_error`, a busy report's too)
+            self._tell(NOT_ANSWERING)                # Anki busy with a collection operation (its sync, #370): again
+            self._retry(kind)                        # shortly, never "Anki not re-ordered: Anki refused …"
+            return report
         if not report.get("ok"):
             written = len(report.get("written") or [])
             problems = report.get("problems") or ["it could not finish"]
@@ -878,6 +882,8 @@ class Host:
             line = f"Anki: {rest:,} cards moved · tomorrow's {n} already in place"
         if report.get("left") and anki_connect_reviewing(job):
             line += " · the rest after your review"
+        elif report.get("left") and report.get("anki_busy"):
+            line += f" · {len(report['left'])} after Anki's busy moment"      # #370: its sync, Check Database
         elif report.get("left"):
             line += f" · {len(report['left'])} changed in Anki meanwhile, placed next"
         # --- P4.1 L2 (TF fix 10, IK #6): cards taken out or put back are named — never "up to date" alone ---

@@ -163,8 +163,10 @@ def test_show_me_washes_a_control_and_a_tab_with_nothing_in_it_says_so(world, no
     world.win.guide_show_me("control:report")
     assert washed == [world.win.report_button]              # (recorded: the freeze switch ends a real wash at once)
     assert world.win.tab_buttons["needs"].isHidden()                         # Needs you lists nothing here
+    before = world.win.current_tab()
     world.win.guide_show_me("tab:needs")
     assert wait_until(lambda: world.win.bar_line.accessibleDescription() == strings.GUIDE_NOT_HERE)
+    assert world.win.current_tab() == before                                 # a hidden tab is never opened
     world.win.guide_show_me("tab:finished")
     assert world.win.current_tab() == "finished" and washed[-1] is world.win.tab_buttons["finished"]
     world.win.guide_show_me("control:nope")
@@ -270,3 +272,17 @@ def test_setup_running_is_a_new_pc_and_the_star_doesnt_glow(world, notes):
 
 def test_the_star_keeps_its_room_while_hidden_so_the_header_never_shifts(world, notes):
     assert world.d.guide.isHidden() and world.d.guide.sizePolicy().retainSizeWhenHidden()
+
+
+def test_a_panel_that_fits_shows_no_scroll_bar_and_folded_lines_are_quiet_and_lead_nowhere(world, notes):
+    _looked(world, notes)
+    panel = _open(world)
+    for entry in panel.folds:
+        entry[0].click()
+    QApplication.processEvents()
+    room = panel.parentWidget().height() - panel.geometry().top() - guide_ui.EDGE
+    if panel.height() < room:                                               # it fits: every line in view, no bar
+        assert panel.scroll.verticalScrollBar().maximum() == 0
+    for _fold, fixes, _shown in panel.folds:
+        assert all(c.objectName() == "guidefix" and c.show_me is None for c in fixes)
+    panel.close()

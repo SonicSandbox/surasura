@@ -413,6 +413,18 @@ def run_integrated(scale, out_dir):
         entry[0].click()
     settle(20)
     panel = d.guide_panel.geometry()
+    d.guide_panel.hide()                                          # the GUI thread's cost of a new answer and a place
+    t0 = time.perf_counter()
+    d.guide_panel._build()
+    d.guide_panel.place()
+    build_ms = (time.perf_counter() - t0) * 1000
+    print(json.dumps({"scale": scale, "guide_build_ms": round(build_ms, 2), "cards": len(d.guide_panel.cards)}),
+          flush=True)
+    d.guide.click()
+    settle(20)
+    for entry in d.guide_panel.folds:
+        entry[0].click()
+    settle(20)
     shot("guide-panel", ([] if d.guide_panel.isVisible() else ["the guide's panel did not open"]) +
          ([] if win.centralWidget().rect().contains(panel) else [f"the guide's panel {panel} leaves the window"]) +
          ([] if not d.guide.glow else ["the ✦ still glows with its panel open"]))

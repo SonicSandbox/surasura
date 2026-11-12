@@ -94,11 +94,11 @@ class GuideButton(QToolButton):
 
 
 class _Card(QWidget):
-    """One item: its one plain line and, when it is something to try, *Show me*. A fix is a line alone (folded)."""
+    """One item: its one plain line and, when it is something to try, *Show me*. A folded one is a quiet line alone."""
 
-    def __init__(self, item, on_show, parent=None):
+    def __init__(self, item, on_show, parent=None, folded=False):
         super().__init__(parent)
-        self.setObjectName("guidefix" if item.kind == "fix" else "guidecard")
+        self.setObjectName("guidefix" if folded else "guidecard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.item = item
         f = theme.text_factor(style.current()[1])
@@ -112,7 +112,7 @@ class _Card(QWidget):
         self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         row.addWidget(self.text, 1)
         self.show_me = None
-        if item.where:
+        if item.where and not folded:
             b = QPushButton(strings.GUIDE_SHOW_ME, self)
             b.setObjectName("guideshow")
             b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
@@ -152,7 +152,7 @@ class GuidePanel(motion.Overlay):
         box.addWidget(self.heading)
         self.scroll = QScrollArea(self)
         self.scroll.setObjectName("guidescroll")
-        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidgetResizable(False)              # (sized here, by its wrapped lines: `place`)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFocusPolicy(Qt.FocusPolicy.TabFocus)     # (its arrows and Page keys read every line)
@@ -222,7 +222,7 @@ class GuidePanel(motion.Overlay):
                 col.addWidget(fold, 0, Qt.AlignmentFlag.AlignLeft)
                 fixes = []
                 for item in shown.fixes:
-                    card = _Card(item, self._show, body)
+                    card = _Card(item, self._show, body, folded=True)
                     card.setVisible(False)
                     self.cards.append(card)
                     fixes.append(card)
@@ -267,32 +267,54 @@ class GuidePanel(motion.Overlay):
     # --- opening, closing ------------------------------------------------------------------------------------------ #
     def place(self):
         """Under the ✦, its right edge on the ✦'s, kept inside the window; as tall as its content up to the window's
-        room, then it scrolls."""
+        room, then it scrolls. The body is sized here to its lines wrapped at its width (a scroll area sizing it by
+        its hints showed a bar where none was needed): the bar only when the content passes the room."""
         p = self.parentWidget()
         self.ensurePolished()
         width = min(round(theme.size("tray", style.current()[1])), max(1, p.width() - 2 * EDGE))
         lay = self.layout()
         m = lay.contentsMargins()
-        inner = width - m.left() - m.right()
-        want = 0
-        if self.body is not None:
-            self.body.setFixedWidth(max(1, inner - self.scroll.verticalScrollBar().sizeHint().width()))
-            self.body.layout().activate()
-            want = self.body.layout().totalHeightForWidth(self.body.width()) \
-                if self.body.layout().hasHeightForWidth() else self.body.sizeHint().height()
-            self.body.setMinimumWidth(0)
-            self.body.setMaximumWidth(16777215)
+        inner = max(1, width - m.left() - m.right())
         b = self.button
         at = b.mapTo(p, b.rect().bottomRight())
         top = at.y() + 6
         head = self.heading.sizeHint().height() + lay.spacing() + m.top() + m.bottom()
         room = max(1, p.height() - top - EDGE)
-        height = min(head + want + 2, room)
+        body_w, want = inner, 0
+        if self.body is not None:
+            want = self._content_height(inner)
+            if head + want > room:                         # it scrolls: the bar takes its width from the lines
+                body_w = max(1, inner - self.scroll.verticalScrollBar().sizeHint().width())
+                want = self._content_height(body_w)
+            self.body.resize(body_w, want)
+        height = min(head + want, room)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if head + want > room
+                                               else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFixedHeight(max(1, height - head))
         x = max(EDGE, min(at.x() - width, p.width() - width - EDGE))
         geometry = QRect(x, top, width, height)
         if geometry != self.geometry():
             self.setGeometry(geometry)
+
+    def _content_height(self, width):
+        """The body's height at `width`: each shown row's own height for that width, its lines wrapped as they will
+        be."""
+        col = self.body.layout()
+        m = col.contentsMargins()
+        width = max(1, width - m.left() - m.right())
+        total, shown = m.top() + m.bottom(), 0
+        for n in range(col.count()):
+            entry = col.itemAt(n)
+            w = entry.widget()
+            if w is not None:
+                if w.isHidden():
+                    continue
+                w.ensurePolished()
+                total += w.heightForWidth(width) if w.hasHeightForWidth() else w.sizeHint().height()
+                shown += 1
+            elif entry.spacerItem() is not None:
+                total += entry.spacerItem().sizeHint().height()
+        return total + col.spacing() * max(0, shown - 1)
 
     def open(self):
         self.place()

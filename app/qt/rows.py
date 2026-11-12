@@ -433,12 +433,16 @@ STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mi
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
 ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media", "retry": "try-again"}
+# Michi-NT (Mattias #XP44T6): a *Not timed* status (a *Waiting* pill with those words: listed in Needs you, or that
+# entry dismissed) is *Check again* — its timing checked anew now (`mine_actions.check_again`), never an ask
+CHECK = "check-again"
 HEADPHONES = "🎧 "                               # a5-2 (Hon): before an audiobook's title
 STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
-ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP}
-ASKS = ("mine-now", "mine-this", "try-again")       # the actions that ask Connect (round 8 row 45: they turn when pressed)
+ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP, CHECK}
+ASKS = ("mine-now", "mine-this", "try-again", CHECK)    # the actions that ask Connect (round 8 row 45: they turn when
+#                                                         pressed)
 _ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP",
-                "try-again": "ROWS_TRY_AGAIN_TIP"}
+                "try-again": "ROWS_TRY_AGAIN_TIP", CHECK: "ROWS_CHECK_AGAIN_TIP"}
 
 
 Ask = namedtuple("Ask", "id ids episode job", defaults=(None,))     # R47: `job`, the Connect job a Stop stops
@@ -522,6 +526,11 @@ def _failed(e):
     return getattr(getattr(e, "status", None), "kind", None) == "retry"
 
 
+def _not_timed(status):
+    """Michi-NT: is `status` *Not timed* (`view_rows._connected`'s, listed or dismissed)?"""
+    return getattr(status, "kind", None) == "waiting" and getattr(status, "label", None) ==         view_rows.STRINGS["not_timed"]
+
+
 def asked_files(kind, episodes):
     """The files a status's button stands for: *Mine now* the unmined ones in the top waiting on nothing but their
     turn, *Mine this* every unmined one that can be mined, *No video* the unmined ones with none (never one being mined,
@@ -550,15 +559,16 @@ def action_of(status, episodes, off=None, word="video"):
     """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
     click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens (an ask only:
     `asks_connect`). `word`: the row's media word — a non-video item's button asks nothing (alpha 4 M1: the bar says it waits).
-    Not a button: ("status", its tip, None) — *Not timed* too (its way on is *Mine anyway* in Needs you), so its tip
-    names the wait, never a click. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
+    Not a button: ("status", its tip, None). *Not timed* is *Check again* (Michi-NT) on the files it says it of. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
     as amended by Sonic 2026-10-22, M-3 A): its tip, worded by `view_rows`, already says what the click does."""
     if status.kind == "mining":
         return _stop_of(status, episodes, off)
     name = ACTIONS.get(status.kind)
-    if status.kind == "waiting" and status.label == view_rows.STRINGS["not_timed"]:
-        name = None
-    files = asked_files(status.kind, episodes) if name is not None else ()
+    if _not_timed(status):
+        name = CHECK
+        files = [e for e in episodes if not e.mining and _not_timed(e.status)]
+    else:
+        files = asked_files(status.kind, episodes) if name is not None else ()
     said = status_tip(status)
     if not files:
         return "status", said, None
@@ -3145,6 +3155,7 @@ class RowsView(QListView):
     find_folder_requested = pyqtSignal(object, object)      # MV-2: (the Row, the Episode) — *Find its folder…*
     # --- end P4.1 L2
     stop_requested = pyqtSignal(object, object)    # --- R47: (the Row, the Ask: its file, its job) a Mining pill's Stop
+    check_requested = pyqtSignal(object, object)   # --- Michi-NT: (the Row, the Ask: its files) *Not timed*'s Check again
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -4624,6 +4635,9 @@ class RowsView(QListView):
         if self.connect_off and asks_connect(name, getattr(row, "media_word", "video")):    # P4.1 WF: asks only
             if self.tooltips is not None:
                 self.tooltips.request(self.viewport(), rect, tip)
+            return
+        if name == CHECK:                               # Michi-NT: its timing checked anew
+            self.check_requested.emit(row, ask)
             return
         if name != "no-media":
             self.mine_requested.emit(row, ask.ids)

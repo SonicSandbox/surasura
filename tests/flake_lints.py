@@ -273,6 +273,8 @@ SLEEPS_ALLOWED = {
     ("modules/youtube_downloader/tests/test_qt_window.py",
      "test_with_download_covers_off_nothing_is_asked_and_no_picture_shows"): NEGATIVE,
     ("modules/youtube_downloader/tests/test_qt_window.py", "test_nothing_recorded_starts_nothing"): NEGATIVE,
+    ("modules/youtube_downloader/tests/test_qt_window.py",      # Yt-B: no second run of the rest while held
+     "test_youtubes_bot_check_mid_run_hands_over_what_came_and_never_runs_again_at_once"): NEGATIVE,
     ("tests/qt/test_arrivals.py",
      "test_IK_10_answers_are_kept_by_item_plan_and_known_words_and_a_change_asks_again"): TICK,
     ("tests/qt/test_arrivals.py", "test_a_failed_estimate_shows_nothing_and_isnt_asked_again"): NEGATIVE,

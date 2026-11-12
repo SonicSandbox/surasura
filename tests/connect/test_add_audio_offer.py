@@ -217,7 +217,7 @@ def test_two_books_offered_each_press_fills_its_own(book, fake_miner, tmp_path, 
     path = str(tmp_path / "ledger.sqlite")
     with Ledger(path) as ledger:
         ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (
-            f"{runner.ADD_AUDIO_ASKED}ja:path:other", json.dumps({"epub": "D:/Books/other.epub", "item": 77,
+            f"{runner.ADD_AUDIO_ASKED}ja:zzz:other", json.dumps({"epub": "D:/Books/other.epub", "item": 77,
                                                                   "title": "other"})))
         ledger.need("ja", runner.ADD_AUDIO_NEED, "other", item_id=77, standing=True)
         _lined(book, ledger)
@@ -363,3 +363,17 @@ def test_the_seen_record_is_merged_never_replaced_and_cards_mined_since_are_neve
     got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)
     assert got["ok"] is False and "sentence audio already" in got["say"]
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
+
+
+def test_a_press_stopped_part_way_answers_its_undo_in_the_windows_words(book, tmp_path, monkeypatch):  # noqa: F811
+    """Mutant A7: Anki stopped answering after some cards were written — the answer carries the Undo's id and plain
+    words (never the command line's), and the book isn't marked looked at (the rest are offered again)."""
+    from app.cli.contract import CliError
+    from app.connect import add_audio
+
+    def stops(*a, **k):
+        raise CliError("anki-closed", "x", undo="17-ab", why="Anki isn't open")
+    monkeypatch.setattr(add_audio, "act", stops)
+    got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=str(tmp_path / "ledger.sqlite"))
+    assert got["ok"] is False and got["id"] == "17-ab" and "Undo takes them back" in got["say"]
+    assert "surasura-cli" not in got["say"] and "Anki isn't open" in got["say"]

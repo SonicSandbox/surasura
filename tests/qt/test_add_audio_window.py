@@ -121,6 +121,8 @@ def row_offer(qapp):
             return answer[name]
         return call
     win.items.add_audio_offer, win.items.add_audio_book, win.items.add_audio_undo = rec("offer"), rec("book"), rec("undo")
+    answer["kick"] = None
+    win.items.kick = rec("kick")
     row = rows_of(win)[4]
     yield win, row, got, answer, (lambda: win.items.menu(row, win.mapToGlobal(QPoint(300, 300))))
     win.close()
@@ -170,3 +172,62 @@ def test_the_rows_press_says_so_at_once_runs_on_a_worker_and_its_toast_undoes_it
     next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
     assert wait_until(lambda: [g for g in got if g[0] == "undo"], 5)
     assert [g[1][1] for g in got if g[0] == "undo"] == ["19-ef"]
+
+
+def test_a_press_that_couldnt_can_be_pressed_again(offer):
+    """Mutant Q1: a "couldn't" leaves the line — pressed again at once, it asks Connect again."""
+    win, ny, entry, got, answers = offer
+    answers["add_audio"] = {"ok": False, "say": "You're reviewing in Anki. Add audio again when you're done."}
+    button(ny, entry.key, "add_audio").click()
+    assert wait_until(lambda: len([g for g in got if g[0] == "add_audio"]) == 1, 5)
+    assert wait_until(lambda: button(ny, entry.key, "add_audio") is not None and
+                      button(ny, entry.key, "add_audio").isEnabled(), 5)
+    button(ny, entry.key, "add_audio").click()
+    assert wait_until(lambda: len([g for g in got if g[0] == "add_audio"]) == 2, 5)
+
+
+def test_an_earlier_menus_late_answer_never_lands_in_a_newer_menu(row_offer):
+    """Mutant I2: ⋯ opened on the book, closed, opened again on another row whose answer is "nothing" — the first
+    ask's answer, coming late, adds nothing to the menu open now."""
+    win, row, got, answer, open_menu = row_offer
+    gate, first = threading.Event(), []
+
+    def slow(*args):
+        if not first:
+            first.append(1)
+            gate.wait(5)
+            return answer["offer_first"]
+        return None
+    answer["offer_first"] = answer["offer"]
+    win.items.add_audio_offer = slow
+    m = open_menu()
+    m.hide()
+    m = open_menu()                                     # (the same kept menu, open again)
+    gate.set()
+    wait_until(lambda: False, 0.5)
+    assert _entry(m) is None
+    m.hide()
+
+
+def test_the_rows_press_kicks_connect_and_a_second_press_meanwhile_runs_nothing(row_offer):
+    """r2 S3 / N9: the press owes Anki's sync (Connect kicked, on the worker); pressed again while it runs, nothing
+    more is asked of Connect."""
+    win, _row, got, answer, open_menu = row_offer
+    gate = threading.Event()
+    real = win.items.add_audio_book
+
+    def slow(*args):
+        gate.wait(5)
+        return real(*args)
+    win.items.add_audio_book = slow
+    m = open_menu()
+    assert wait_until(lambda: _entry(m) is not None, 5)
+    offer = dict(answer["offer"])
+    win.items.add_audio(offer)
+    win.items.add_audio(offer)                          # pressed again while the first runs
+    gate.set()
+    assert wait_until(lambda: [g for g in got if g[0] == "kick"], 5)
+    wait_until(lambda: False, 0.3)
+    assert len([g for g in got if g[0] == "book"]) == 1
+    assert all(on_worker for name, _a, on_worker in got if name == "kick")
+    m.hide()

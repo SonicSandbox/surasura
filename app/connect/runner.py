@@ -63,6 +63,7 @@ import shutil
 import time
 from types import SimpleNamespace
 
+from app import youtube_hold
 from app.connect import fit_check, inbox, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, STOPPED_REASON,
@@ -2694,7 +2695,8 @@ class Steps:
             raise
         except online.Trouble as t:
             if t.standing:
-                if t.say in online.HELD:    # offline, a bot check, no room: no other fetch this run (review r2 S1)
+                if t.say in online.HELD or youtube_hold.is_words(t.say):    # offline, a bot check (its hold,
+                    # Yt-B), no room: no other fetch this run (review r2 S1)
                     self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
                 raise Needs(online.KIND, t.say, standing=True) from None
             raise own(t.say) from None

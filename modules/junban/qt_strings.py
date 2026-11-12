@@ -249,6 +249,20 @@ BF_COPY_STYLE = "Copy card style"
 BF_COPY_STYLE_TIP = ("Style these lines on another note type.\n"
                      "• In Anki: Tools › Manage Note Types › Cards › Styling — paste at the end.")
 BF_COPIED = "Copied. In Anki: Tools › Manage Note Types › Cards › Styling — paste at the end."
+# Translations (Piyo-TR, PROVISIONAL): Backfill only counts them and says the next step — it never calls an AI itself
+BF_TR_COUNT = ("{n} cards have no translation. Your own AI can translate them through Piyo (Settings › Connections); "
+               "Mattias's Sentence Translate add-on for Anki does it with an API key or a model on your computer.")
+BF_TR_COPY = "Copy the prompt"
+BF_TR_COPY_TIP = ("A message for your AI app, once Piyo is set up in it: it translates these cards, and Surasura checks\n"
+                  "each one and writes it only into an empty translation field (one Undo a batch).")
+BF_TR_PROMPT = ("Translate my Anki cards that have no translation yet, with Surasura's Piyo: call "
+                "surasura_cards_to_translate, translate them as it says, send them with surasura_write_translations, "
+                "and go on 10 at a time until none are left or it says to stop. Tell me how many you wrote.")
+BF_TR_PROMPT_DECK = ("Translate my Anki cards in the deck {deck} that have no translation yet, with Surasura's Piyo: "
+                     "call surasura_cards_to_translate with deck {deck}, translate them as it says, send them with "
+                     "surasura_write_translations, and go on 10 at a time until none are left or it says to stop. "
+                     "Tell me how many you wrote.")       # {deck}: the name as JSON, its own quotes escaped (r2 #7)
+BF_TR_COPIED ="Copied. Paste it into your AI app (Claude, Codex…) where Piyo is set up."
 BF_GET_DATA = "Get data…"
 BF_GET_DATA_TIP = "Get パターン data: download Surasura's, or import yours."
 BF_REBUILD = "Rebuild from my library"

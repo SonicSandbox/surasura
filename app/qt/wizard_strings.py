@@ -137,6 +137,12 @@ PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB:
 PICK_FILE_TITLE = "Choose a file"
 PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
+# Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook chosen as a file
+FILE_AUDIOBOOK = ("{name} is an audiobook: Surasura reads it in its folder, then asks which book it is. Choose its "
+                  "folder.")
+FILE_AUDIOBOOK_PLAIN = "{name} is an audiobook: Surasura reads it in its folder, then asks which book it is."
+AUDIOBOOK_ITS_FOLDER_TIP = ("Read the audiobook's whole folder, as Choose a folder… does:\n"
+                            "• It joins its book, or Surasura asks which book it is")
 # alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
 VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
 VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."

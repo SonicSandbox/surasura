@@ -12964,7 +12964,10 @@ def _store_answer_audiobook(self, item_id, yes, key=None):
 def _store_audiobook_finds(self):
     """a5-2 (Sonic 2026-10-28: after a *No*, "offer that they find the book"): [{item_id, title, files, seconds,
     said_no}] — an audiobook item alone (no book, no question open) whose learner said *No* and never *It has no
-    book*: *Needs you* offers *Find its book…* · *It has no book*. One an item."""
+    book*: *Needs you* offers *Find its book…* · *It has no book*. One an item. Kantan-B3 (PROVISIONAL; Mattias,
+    2026-11-12: one brought in alone sat as *Audio only* and nothing asked for its book): an audiobook alone nobody
+    answered about yet is offered the same at once (`said_no` None) — never one *Separate them* placed (`separated`:
+    you said where it belongs), nor one whose transcript beside it is its text (alone, read as a subtitle is)."""
     out, seen = [], set()
     with self._reading():
         for _k, item_id, rec in self._audiobook_rows():
@@ -12972,11 +12975,14 @@ def _store_audiobook_finds(self):
             if item_id in seen:
                 continue
             seen.add(item_id)
-            if ab.get("said_no") and not ab.get("no_book") and not ab.get("book") and not ab.get("ask") and \
-                    self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
-                out.append({"item_id": item_id, "title": ab.get("title") or "", "files": list(ab.get("files") or ()),
-                            "seconds": ab.get("seconds"),
-                            "said_no": ab["said_no"] if isinstance(ab["said_no"], str) else ""})
+            said = ab.get("said_no")
+            if ab.get("no_book") or ab.get("book") or ab.get("ask") or \
+                    (not said and (ab.get("separated") or ab.get("transcript"))) or \
+                    not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+                continue
+            out.append({"item_id": item_id, "title": ab.get("title") or "", "files": list(ab.get("files") or ()),
+                        "seconds": ab.get("seconds"),
+                        "said_no": (said if isinstance(said, str) else "") if said else None})
     return out
 
 
@@ -13241,7 +13247,7 @@ def _store_audiobook_separate(self, item_id, key=None, by="user"):
         said[book["key"]] = False
         self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         for content_key, _i, rec in rows:
-            one = dict(rec.get("audiobook") or {}, book=None, ask=None)
+            one = dict(rec.get("audiobook") or {}, book=None, ask=None, separated=True)   # Kantan-B3: no Find card
             self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                               (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), content_key))
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (new, item_id))
@@ -13279,6 +13285,8 @@ def _store_undo_audiobook_pick(self, cmd, change):
         ab = dict(now, book=was.get("book"), ask=was.get("ask"))
         if was.get("said_no"):
             ab["said_no"] = was["said_no"]
+        if not was.get("separated"):        # (Kantan-B3: *Separate them*'s mark goes with its Undo)
+            ab.pop("separated", None)
         back.append((json.dumps(dict(rec, audiobook=ab), sort_keys=True, ensure_ascii=False), content_key))
     if not back:
         return self._skipped(cmd, 1), []

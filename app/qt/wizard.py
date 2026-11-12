@@ -1664,11 +1664,13 @@ class ShowsPage(_Page):
         if not text:
             self.offer_folder(None)
 
-    def offer_folder(self, folder):
-        """(Alpha 8) *Choose its folder* beside the line saying a video's subtitle wasn't found (None: hidden)."""
+    def offer_folder(self, folder, tip=None):
+        """(Alpha 8) *Choose its folder* beside the line saying a video's subtitle wasn't found (None: hidden). `tip`
+        (Kantan-B3): an audiobook's words, else the video's."""
         self._its_folder = folder
         if folder:
             self.btn_its_folder.setAccessibleName(S.VIDEO_ITS_FOLDER_NAME.format(folder=folder))
+            self.btn_its_folder.setToolTip(tip or S.VIDEO_ITS_FOLDER_TIP)
         _show(self.btn_its_folder, bool(folder))
 
     def _paint_folders(self):
@@ -3353,18 +3355,26 @@ class SetupWizard(QWidget):
             return
         page = self.pages[2]
         start = os.path.dirname(page.files[-1]) if page.files else os.path.expanduser("~")
-        refused, videos = [], []
+        from app import audiobooks
+        refused, videos, audio = [], [], None
         page.offer_folder(None)
+        offers = self.can_add("folder") and self.can_read_folders()
         for path in self.pick_files_dialog(S.PICK_FILE_TITLE, start) or ():
             path = os.path.normpath(path)
             if path_utils.file_kind(path) is not None:
                 page.add_file(path)
             elif _is_video(path):
                 videos.append(path)                       # alpha 8 (A8P-L6): its subtitle looked for beside it
+            elif audiobooks.is_audio(path):               # Kantan-B3: an audiobook, read in its folder — never "only"
+                refused.append((S.FILE_AUDIOBOOK if offers else S.FILE_AUDIOBOOK_PLAIN).format(
+                    name=os.path.basename(path)))
+                audio = audio or os.path.dirname(path)
             else:
                 refused.append(S.FILE_NOT_READ.format(name=os.path.basename(path)))
         if refused:
             page.refuse("\n".join(refused))
+        if audio and offers:
+            page.offer_folder(audio, S.AUDIOBOOK_ITS_FOLDER_TIP)
         if videos:
             self._subtitles_of(videos, refused)
 

@@ -96,6 +96,7 @@ CACHE_VERSION = 4               # 2: a folder's subtitle folders are listed with
                                 # 4: a folder link is followed, and each root keeps its folders' notes (`notes`)
                                 # alone (LF-1), never one guessed from what it holds
 EPUB = BOOK_EXTENSIONS[0]                       # (path_utils.file_kind's book)
+AUDIO_MARKS = ("said_no", "no_book", "separated", "transcript")   # an audiobook's marks a move keeps
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)
@@ -1613,7 +1614,7 @@ class _Look:
                 f["item_id"] = heard_at[ls.path_key(f.pop("rel"))]
                 old = records.get(f["item_id"]) or {}        # its records kept alike (`pair_audiobook`'s rule)
                 f["audiobook"].update(book=old.get("book"), ask=old.get("ask"),
-                                      **{m: old[m] for m in ("said_no", "no_book", "transcript") if old.get(m)})
+                                      **{m: old[m] for m in AUDIO_MARKS if old.get(m)})
             gone = [(i, k) for i, k in by_sizes.get(tuple(ab.sizes), ())
                     if not self._origin_away(k) and not os.path.exists(self._origin_path(k))]
             if len({i for i, _k in gone}) == 1:              # moved or renamed: the same item (its answer kept too)
@@ -1621,7 +1622,7 @@ class _Look:
                 f["moved_from"] = [k[len(ls.SOURCE_KEY):] for _i, k in gone]
                 old = records.get(gone[0][0]) or {}          # as it was paired (or asked, or alone): a move changes none
                 f["audiobook"].update(book=old.get("book"), ask=old.get("ask"),     # and the learner's word on it
-                                      **{m: old[m] for m in ("said_no", "no_book", "transcript") if old.get(m)})
+                                      **{m: old[m] for m in AUDIO_MARKS if old.get(m)})
                 f.pop("rel", None)
             self.out["found"] += 1
             batch.append(f)
@@ -1875,7 +1876,7 @@ class _Look:
         rec = audiobooks.record(ab, pair if not isinstance(pair, dict) else None)
         if isinstance(pair, dict):                           # as it was paired, and the learner's word on it
             rec.update(book=pair.get("book"), ask=pair.get("ask"),
-                       **{m: pair[m] for m in ("said_no", "no_book", "transcript") if pair.get(m)})
+                       **{m: pair[m] for m in AUDIO_MARKS if pair.get(m)})
         f = {"origin": ab.files[0], "size": st.st_size, "mtime_ns": st.st_mtime_ns, "show": show, "sha256": key,
              "audiobook": rec}
         if item_id is not None:

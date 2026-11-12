@@ -131,6 +131,48 @@ def walk_folder(folder):
     return out
 
 
+AUDIO_DEPTH = 3                                          # how deep a dropped folder is looked into for audio
+
+
+def audiobook_folders(paths):
+    """(A worker: it lists folders.) Kantan-B3 (Mattias, 2026-11-12: an audiobook dropped in alone was *left out*, "has
+    to be srt then I guess"): the audiobooks among `paths` (an Explorer drop, + Add's *Files…*) — an audio file
+    (`audiobooks.is_audio`) is its folder's; a folder holding audio, in it or up to `AUDIO_DEPTH` folders inside (a
+    disc's, a title's), is one itself -> ([(folder, name)] in order, the rest in order). `name`: what the card calls
+    it — the one file picked from that folder, else its folder's name. Nothing read but names."""
+    from app import audiobooks
+    from app import library_store as ls
+    found, rest = {}, []
+    for p in paths:
+        p = os.path.normpath(p)
+        if os.path.isdir(p):
+            if not _holds_audio(p):
+                rest.append(p)
+                continue
+            found.setdefault(ls.path_key(p), [p, [], True])[2] = True
+        elif audiobooks.is_audio(p):
+            folder = os.path.dirname(p)
+            found.setdefault(ls.path_key(folder), [folder, [], False])[1].append(os.path.basename(p))
+        else:
+            rest.append(p)
+    return [(folder, names[0] if len(names) == 1 and not whole else os.path.basename(folder) or folder)
+            for folder, names, whole in found.values()], rest
+
+
+def _holds_audio(folder):
+    from app import audiobooks
+    top = os.path.normpath(folder).count(os.sep)
+    try:
+        for where, dirs, files in os.walk(folder):
+            if any(audiobooks.is_audio(f) for f in files):
+                return True
+            if os.path.normpath(where).count(os.sep) - top >= AUDIO_DEPTH:
+                dirs[:] = []
+    except OSError:
+        return False
+    return False
+
+
 def safe_title(title):
     """A pasted text's file name from its title: no character Windows refuses, at most `TITLE_MAX` long, never a
     device's name (*con*, *NUL*, *com1* …: `_` before it, N2)."""
@@ -149,6 +191,11 @@ def write_pasted(title, text, folder=None):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     return path
+
+
+def _audio_name(path):
+    from app import audiobooks
+    return audiobooks.is_audio(path)
 
 
 def pick_files(parent):
@@ -171,6 +218,7 @@ class Adder(QObject):
         super().__init__(shell)
         self.shell = shell
         self.card = None                                  # the paste card open, if any
+        self.question = None                              # Kantan-B3: an audiobook's card open, if any
 
     def _moves(self):
         return getattr(self.shell, "moves", None)
@@ -211,7 +259,9 @@ class Adder(QObject):
         """`name`'s action. `first`: a folder read by setup's own first look (Current, SRC-1) — setup's page 3; + Add
         outside setup never (D6: a show never shown waits in New arrivals)."""
         if name == "files":
-            self.add_files(pick_files(self.shell))
+            paths = pick_files(self.shell)
+            if not any(_audio_name(p) for p in paths) or not self.audiobooks_apart(paths, self.add_files):
+                self.add_files(paths)
         elif name == "folder":
             self.read_folder(pick_folder(self.shell), first=first)
         elif name == "paste":
@@ -261,6 +311,46 @@ class Adder(QObject):
         qpress.run(None, ("add-folder", os.path.normpath(folder)), walk_folder, folder, then=walked,   # marked now
                    failed=lambda info: windows.say_in_bar(self.shell, strings.ADD_FOLDER_FAILED.format(
                        name=name, why=info[0])), win=self.shell)
+
+    # --- Kantan-B3: an audiobook brought in alone (PROVISIONAL words) ------------------------------------------ #
+    def audiobooks_apart(self, paths, rest_to):
+        """An Explorer drop or *Files…* that may hold an audiobook: listed on a worker (`audiobook_folders`); the rest
+        handed to `rest_to(paths)` as before (a subtitle added, a video named as left out), the audiobooks' folders
+        asked about (`ask_audiobooks`). -> False without the looks (a 2.x library: nothing reads a folder where it is),
+        the caller going on as before."""
+        if getattr(self.shell, "looks", None) is None:
+            return False
+        paths = list(paths)
+
+        def listed(found):
+            folders, rest = found
+            if rest:
+                rest_to(rest)
+            if folders:
+                self.ask_audiobooks(folders)
+        bridge.run_in_worker(lambda: audiobook_folders(paths), then=listed, failed=lambda _info: rest_to(paths))
+        return True
+
+    def ask_audiobooks(self, found):
+        """[(folder, name)]: one card names the audiobook(s) and the folder(s) its yes reads where they are (+ Add's *A
+        folder…*: nothing moved; its look pairs a book it finds, else *Needs you* asks which book it is). No, Esc or a
+        click outside: nothing read."""
+        n = len(found)
+        folders = [f for f, _name in found]
+        where = ", ".join(f"「{os.path.basename(f) or f}」" for f in folders[:3]) + (" …" if n > 3 else "")
+
+        def answered(yes):
+            self.question = None
+            if yes:
+                for folder in folders:
+                    self.read_folder(folder)
+        self.question = confirm.ask(
+            self.shell, strings.AUDIOBOOK_IN_TITLE.format(name=found[0][1]) if n == 1 else
+            strings.AUDIOBOOK_IN_TITLE_N.format(n=n), (strings.AUDIOBOOK_IN_BODY if n == 1 else
+                                                       strings.AUDIOBOOK_IN_BODY_N).format(folders=where),
+            strings.AUDIOBOOK_IN_YES if n == 1 else strings.AUDIOBOOK_IN_YES_N.format(n=n),
+            strings.AUDIOBOOK_IN_YES_TIP, on_answer=answered)
+        return self.question
 
     # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #
     def read_folder(self, folder, first=False):

@@ -1281,8 +1281,19 @@ ADD_ITEMS = {
 ADD_DROP_LINE = "Or drop files anywhere in your list"
 ADD_PICK_FILES = "Add files to your library"
 ADD_PICK_FOLDER = "Add a folder to your library"
-ADD_PICK_FILTER = "Subtitles and text (*.srt *.ass *.ssa *.txt *.md);;All files (*)"
+ADD_PICK_FILTER = ("Subtitles, texts and audiobooks (*.srt *.ass *.ssa *.txt *.md *.m4b *.mp3 *.m4a *.aac *.ogg *.opus "
+                   "*.flac *.wav);;All files (*)")         # Kantan-B3: audiobooks.AUDIO_EXTENSIONS shown too
 ADD_NOTHING = "Nothing to add in {name}: no subtitle or text files"
+# Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook dropped or picked alone
+AUDIOBOOK_IN_TITLE = "「{name}」 is an audiobook"
+AUDIOBOOK_IN_TITLE_N = "{n} audiobooks"
+AUDIOBOOK_IN_BODY = ("Surasura reads it where it is, in {folders}, and looks there again for new files. Then it joins "
+                     "its book, or Needs you asks which book it is.")
+AUDIOBOOK_IN_BODY_N = ("Surasura reads them where they are, in {folders}, and looks there again for new files. Then "
+                       "each joins its book, or Needs you asks which book it is.")
+AUDIOBOOK_IN_YES = "Read its folder"
+AUDIOBOOK_IN_YES_N = "Read {n} folders"
+AUDIOBOOK_IN_YES_TIP = "As + Add → A folder… does: nothing is moved"
 ADD_FOLDER_FAILED = "{name} couldn't be read: {why}"
 PASTE_NAME = "Paste text"
 PASTE_HEADING = "Paste text"

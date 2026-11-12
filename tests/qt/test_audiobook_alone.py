@@ -251,6 +251,7 @@ def test_setup_names_an_audiobook_and_offers_its_folder(qapp, tmp_path):
     shell = T.FakeShell(T.FakeSettings({}))
     wiz = W.SetupWizard(shell, parent=shell.centralWidget(), api=T.FakeApi(), miner=T.FakeMiner(T.miner_look("missing")))
     wiz.can_add = lambda name: True
+    wiz.api.read_folders = lambda *_a, **_k: None                # (the services read folders: its folder offered)
     try:
         T.go_to(wiz, "shows")
         folder, mp3s = _audiobook(tmp_path)
@@ -267,6 +268,12 @@ def test_setup_names_an_audiobook_and_offers_its_folder(qapp, tmp_path):
         wiz.pick_files_dialog = lambda title, start: [os.path.join(str(tmp_path), "第1話.mkv")]
         page.offer_folder(str(tmp_path))                          # a video's offer after it: the video's own tip back
         assert page.btn_its_folder.toolTip() == WS.VIDEO_ITS_FOLDER_TIP
+        wiz.api.read_folders = None                               # no folder read where it is: said, nothing offered
+        page.refuse(None)
+        wiz.pick_files_dialog = lambda title, start: [mp3s[1]]
+        wiz.pick_files()
+        assert page.refused_line.text() == WS.FILE_AUDIOBOOK_PLAIN.format(name="02.mp3")
+        assert page.btn_its_folder.isHidden()
     finally:
         wiz.close()
         shell.close()

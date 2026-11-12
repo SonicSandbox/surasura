@@ -2124,6 +2124,8 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
         box = arr[words.top() - rect.top():words.bottom() - rect.top() + 1,
                   words.left() - rect.left():words.right() - rect.left() + 1]
         ground = box[0, 0]
+        # R55-B's look kept for the *Link…* words (lead, 2026-11-12; PROVISIONAL, Sonic to confirm): plain muted text,
+        # no frame, no triangle, nothing button-shaped — only the hover says a press opens *Link…*
         for edge in (box[0], box[-1], box[:, 0], box[:, -1]):            # no frame, dashed or whole, on any side
             assert not (edge != ground).any(axis=-1).any()
         assert not (box[:, :13] != ground).any(), "no triangle where the trillion stood"

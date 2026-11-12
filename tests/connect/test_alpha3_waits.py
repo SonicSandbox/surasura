@@ -416,7 +416,8 @@ def test_the_next_look_words_name_connects_own_pause():
 
 @pytest.mark.parametrize("lang", ["zh"])
 def test_chinese_episodes_say_why_they_wait_and_how_many(running, lang):
-    """A8: what Connect really writes for Chinese today (E24): every episode waits with *Chinese cards come later*."""
+    """A8: what a 3.0.x Connect wrote for Chinese (E24; Zh-C mines them since): its wait still reads plainly until
+    the next start picks the episodes up."""
     ids = _items(lang)
     with Ledger() as ledger:
         for item in ids[:4]:

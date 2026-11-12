@@ -50,12 +50,16 @@ def test_one_placement_goes_end_to_end_and_every_step_is_recorded(tmp_path, ledg
     assert ledger.batches(job["id"])[0]["state"] == "done" and ledger.batches(job["id"])[0]["anki_miner"] == "3.7.0"
 
 
-def test_chinese_waits_until_anki_miner_makes_chinese_cards(tmp_path, ledger):
-    steps, summary = _run(tmp_path, ledger, {"line": {"zh": [1]}, "queue": {"zh": [1]}}, languages=("zh",))
-    job = ledger.jobs("zh")[0]
-    assert (job["state"], job["reason"]) == ("waiting", runner.CHINESE)
-    assert not any(e[0] in ("prepare", "pick", "mine") for e in steps.log), "nothing of Chinese is mined"
-    assert summary["looks"] == 1, "Chinese waits for the next start: no look every 2 minutes for it"
+def test_chinese_goes_end_to_end_like_japanese_since_anki_miner_3_12(tmp_path, ledger):
+    """Zh-C: Connect makes Chinese cards — the same steps, Chinese words (夜市, 牛肉面: the night-market
+    vlog's), never parked behind *Chinese cards come later* again."""
+    words = {"1": [("夜市", ""), ("牛肉面", "")]}
+    steps, summary = _run(tmp_path, ledger, {"line": {"zh": [1]}, "queue": {"zh": [1]}, "words": words},
+                          languages=("zh",))
+    assert summary["languages"]["zh"]["done"] == [1] and _states(ledger, "zh") == {1: "done"}
+    assert [e[0] for e in steps.log if e[0] in ("prepare", "pick", "mine")] == ["prepare", "pick", "mine"]
+    made = {o["word"]: o["outcome"] for o in ledger.outcomes(ledger.jobs("zh")[0]["id"])}
+    assert made == {"夜市": "made", "牛肉面": "made"}
 
 
 def test_a_burst_of_twenty_runs_in_top_20_order_with_one_prepare(tmp_path, ledger):

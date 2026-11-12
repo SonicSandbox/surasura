@@ -618,7 +618,8 @@ def no_subs_offer(view, settings):
     try:
         from app import no_subs
         make = no_subs.can_make(settings) is not None
-        hato = not (settings or {}).get(no_subs.SETTING) and no_subs.hato_finds() is not None
+        hato = (getattr(view, "language", "ja") in no_subs.HATO_LANGUAGES      # Zh-C: hato's subtitles are Japanese
+                and not (settings or {}).get(no_subs.SETTING) and no_subs.hato_finds() is not None)
     except Exception:
         return None
     return {"make": make, "hato": hato} if make or hato else None

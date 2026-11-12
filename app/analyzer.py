@@ -4876,6 +4876,7 @@ def settings_signature(settings, language):
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run
+        "connect_zh_word_audio",        # Zh-C: Chinese cards' word audio from Google, never what a run counts
         # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
         "anki_sync_delay_min",
         # Optional-module switches that change what the app SHOWS, never what a run computes.

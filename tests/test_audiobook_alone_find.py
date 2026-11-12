@@ -106,6 +106,42 @@ def test_separate_them_never_brings_the_card_you_said_where_it_belongs():
         store.__exit__(None, None, None)
 
 
+def test_a_book_picked_from_the_card_pairs_and_its_undo_brings_the_card_back():
+    """*Find its book…*'s pick (a book in the library) pairs as a *Yes* does; its Undo leaves the audiobook alone and
+    unanswered again — the card comes back (never a mark left behind that hides it)."""
+    store, root, src, item = _lone()
+    try:
+        _epub(os.path.join(src, "Books", "坊っちゃん.epub"), "坊っちゃん", "ja", repeat=21)   # no title like it
+        _look(store, "ja", root, full=True)
+        assert [f["item_id"] for f in _finds(store)] == [item["id"]]
+        epub = next(b["epub"] for b in store.library_books() if b["title"] == "坊っちゃん")
+        change = store.pick_audiobook_book(item["id"], epub)
+        assert change is not None and _record(store, item["id"])["book"] is not None and _finds(store) == []
+        store.undo(change)
+        rec = _record(store, item["id"])
+        assert rec["book"] is None and "placed" not in rec
+        assert [f["item_id"] for f in _finds(store)] == [item["id"]]
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_a_yes_whose_book_was_removed_meanwhile_is_never_asked_about_again():
+    """The learner answered *Yes*; the book was gone by then (R2): the audiobook stays alone, and that answer stands —
+    no card asks him which book it is."""
+    from tests.test_audiobook_items import _book_items, _unsure
+    store, _data_dir, src = _unsure("ja")
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        item = _audio_items(store)[0]
+        key = _record(store, item["id"])["ask"]["key"]
+        store.remove([r[0] for r in _book_items(store, NEKO)[1] if r[0] != item["id"]])
+        assert store.answer_audiobook(item["id"], True, key=key)
+        assert _record(store, item["id"])["placed"] is True and _finds(store) == []
+        _look(store, "ja", root, full=True)
+        assert _finds(store) == []
+
+
 def test_an_audiobook_alone_with_its_transcript_is_read_as_it_and_never_asked_about():
     store, _data_dir, src, _m4b_path, _srt = _alone_with_transcript("ja", STAR)
     with store:

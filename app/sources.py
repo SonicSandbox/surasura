@@ -96,7 +96,7 @@ CACHE_VERSION = 4               # 2: a folder's subtitle folders are listed with
                                 # 4: a folder link is followed, and each root keeps its folders' notes (`notes`)
                                 # alone (LF-1), never one guessed from what it holds
 EPUB = BOOK_EXTENSIONS[0]                       # (path_utils.file_kind's book)
-AUDIO_MARKS = ("said_no", "no_book", "separated", "transcript")   # an audiobook's marks a move keeps
+AUDIO_MARKS = ("said_no", "no_book", "placed", "transcript")   # an audiobook's marks a move keeps
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)

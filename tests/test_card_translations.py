@@ -553,11 +553,11 @@ def test_of_two_close_places_the_nearer_one_to_the_cards_time_wins(tmp_path):
 
 
 def test_a_card_time_inside_a_long_span_counts_as_on_it(tmp_path):
-    """Mutant X8: the sentence runs over three cues from 0 s to 6 s and the card's line starts on the middle one (3 s):
-    its place is the whole span (its time inside it), never the middle cue alone."""
-    srt = _srt(tmp_path / "span.srt", [(0.0, "ごんは、"), (3.0, "ひとりぼっちの"), (6.0, "小狐でした。"),
-                                       (9.0, "村の方から、鐘が鳴ってきました。")])
-    src = _library(tmp_path, {2: (srt, 3.0, "ごんは、ひとりぼっちの小狐でした。")})
+    """Mutant X8: the sentence runs over three cues from 0 s to 8 s and the card's line starts on the middle one (4 s),
+    each end further than NEAR_S from it: its place is the whole span (its time inside it), never the middle cue."""
+    srt = _srt(tmp_path / "span.srt", [(0.0, "ごんは、"), (4.0, "ひとりぼっちの"), (8.0, "小狐でした。"),
+                                       (11.0, "村の方から、鐘が鳴ってきました。")])
+    src = _library(tmp_path, {2: (srt, 4.0, "ごんは、ひとりぼっちの小狐でした。")})
     assert ct.context([2], "ja", 1, *src)[2] == ([], ["村の方から、鐘が鳴ってきました。"])
 
 

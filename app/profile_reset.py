@@ -75,6 +75,7 @@ WHAT = {"user_files": "your known words and lists", "data": "your library's copi
         "window_cache": "the window's own files", "window_pending": "the window's own files",
         "needs_seen": "the window's own files", "settings_import": "your settings", "staging": "Anki Miner's setup",
         "junban_backlog_shows": "順's files", "youtube_rest": "YouTube's list", "airing": "the airing dates",
+        "ai_audio_queue": "the cards waiting for AI audio", "ai_audio_runs": "the AI audio's Undo list",
         "report_send": "Send report's name and code", "unlisted": "a file of Surasura's"}
 
 

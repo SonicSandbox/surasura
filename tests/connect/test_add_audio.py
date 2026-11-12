@@ -619,3 +619,12 @@ def test_an_answered_line_without_its_times_is_never_taken_for_the_cue(book, fak
     got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
     with pytest.raises(anki_miner.AnkiMinerError):
         add_audio.cut(fake_miner.path, "ja", "p-surasura", got["can"], str(tmp_path / "run"))
+
+
+def test_a_short_line_inside_a_card_said_over_several_cues_never_stands_for_it(book):
+    """Mutant B4 (survived): a card whose sentence is said over two cues — a short one (冒険だ, under MIN_CHARS: too
+    little to be sure of, and said anywhere) and a long one — is placed on the long one holding its word; the short
+    one is never a rival that leaves the card unheard, nor its answer."""
+    _made(book, 130, book["lines"][0] + book["lines"][8].replace("冒険", "<b>冒険</b>"), "冒険")
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert got["can"][130].text == lineup.clean(book["lines"][8])

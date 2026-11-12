@@ -25,7 +25,7 @@ from app.connect import anki_miner, fit_check, library
 from app.services import needs as service
 from app.services import view_rows
 from tests.test_library_store_support import LANGUAGES
-from tests.test_sources_scan import _drive, _empty, _fresh_module_state, _look, _tree, _video, _waiting  # noqa: F401
+from tests.test_sources_scan import _drive, _empty, _fresh_module_state, _look, _text, _tree, _video, _waiting, _write  # noqa: F401
 
 FAKE = os.path.join(os.path.dirname(__file__), "connect", "fake_anki_miner.py")
 RES = os.path.join(os.path.dirname(__file__), "Test Resources")
@@ -649,6 +649,78 @@ def test_connect_mines_a_made_subtitle_with_its_tag_and_no_other_episode(tmp_pat
             track = ledger.queue("ja", 2, "user", None, store_id="store-1")
         assert runner._pick(steps, ledger, "ja", ledger.job_by_id(made)).get("from_audio") is True
         assert "from_audio" not in runner._pick(steps, ledger, "ja", ledger.job_by_id(track))
+
+
+def test_connect_tags_an_origin_the_store_says_was_heard_and_never_another_record(tmp_path):
+    """Why: Hato-SP — the tag rides on the store's answer (`Steps.heard`), asked only for a source folder's origin
+    (`producer` "source"): hato's own record for an episode is hato's text (a jimaku file), never one made from audio."""
+    from app.connect import runner
+    from app.connect.ledger import Ledger
+    from tests.connect.fake_steps import FakeSteps
+    plan = {"queue": {"ja": [1, 2, 3]}, "line": {"ja": [1, 2, 3]}, "heard": [1, 3],
+            "pairings": {"1": {"producer": "source"}, "2": {"producer": "source"}, "3": {"schema": 1, "verdict": "timed"}}}
+    steps = FakeSteps(str(tmp_path), plan)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        with ledger.transaction():
+            jobs = [ledger.queue("ja", n, "user", None, store_id="store-1") for n in (1, 2, 3)]
+        got = [runner._pick(steps, ledger, "ja", ledger.job_by_id(j)).get("from_audio") for j in jobs]
+    assert got == [True, None, None]
+
+
+def _heard_library(language, before_first_look, also_plain=False):
+    """A source folder: one video and hato's `<video>.<lang>.from-audio.srt` beside it — written before the first look,
+    or after it (the video waited, K5, and the next look fills the item in place). `also_plain`: a person's
+    `<video>.<lang>.srt` there too, from the start."""
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    video = _video(os.path.join(src, _SHOW[language], f"[Grp] {_SHOW[language]} - 05 (1080p).mkv"),
+                   body=b"\x1a\x45\xdf\xa3 matroska 05")
+    made = no_subs.beside_path(video, language)
+    if also_plain:
+        _write(os.path.splitext(video)[0] + f".{language}.srt", _text(language, 5))
+    if before_first_look:
+        _write(made, _HEARD[language])                                  # settled, as a finished file is
+    store.__enter__()
+    root = store.add_source(src)
+    _look(store, language, root, first=True)
+    if not before_first_look:
+        assert _waiting(store) == 1
+        _write(made, _HEARD[language])
+        _look(store, language, root, full=True)
+    return store, video, made
+
+
+@pytest.mark.parametrize("before_first_look", [True, False], ids=["there-first", "after-the-video-waited"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_from_audio_subtitle_hato_made_is_read_as_its_episode_and_heard(language, before_first_look):
+    """Why: Hato-SP end to end on the store — a video whose only subtitle is hato's `<video>.<lang>.from-audio.srt`:
+    the look takes it as that video's episode (one item, available, never waiting) and the store says its text was
+    made from the audio, whether the file was there first or filled a waiting item later (then the item's pairing is
+    still the VIDEO's origin row: the review's case). Nothing is written beside the video (S3)."""
+    store, video, made = _heard_library(language, before_first_look)
+    try:
+        (item_id, _rel, availability), = _items(store)
+        assert availability == "available" and _waiting(store) == 0
+        record = library.pairing_of(store, item_id)
+        assert record["producer"] == "source" and "verdict" not in record
+        if not before_first_look:       # the item's pairing is its video's row: why every live origin is read
+            assert record["origin"] == os.path.abspath(video)
+        assert library.heard(store, item_id) is True
+        assert sorted(os.listdir(os.path.dirname(video))) == sorted([os.path.basename(video), os.path.basename(made)])
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_a_persons_subtitle_beside_hatos_made_one_is_the_text_and_nothing_is_heard():
+    """Why: Hato-SP — with a real subtitle there too, the look reads the person's file (`subtitle_rank`: a re-timer's
+    mark after a plain one) and keeps hato's as another version of the episode: no card of it says *from audio*."""
+    store, video, made = _heard_library("ja", True, also_plain=True)
+    try:
+        (item_id, rel, _a), = _items(store)
+        assert not rel.endswith(".from-audio.srt")
+        assert library.heard(store, item_id) is False
+    finally:
+        store.__exit__(None, None, None)
 
 
 def test_a_film_with_no_episode_number_stays_one_item_after_the_next_look(fake):

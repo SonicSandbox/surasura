@@ -371,6 +371,7 @@ COUNTING = "Counting your shows…"
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
 DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."
+NO_SORTED = "Your shows wait in New arrivals: sort one into Current, and the numbers show here."  # Disc-T1, PROVISIONAL
 # a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
 MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."
 MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."

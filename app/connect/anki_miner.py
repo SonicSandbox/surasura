@@ -247,6 +247,43 @@ def stamp(path):
         return None
 
 
+WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
+
+
+def window_open():
+    """True while Anki Miner's own window is open: a marker in its home (`home()`) still held — every window holds one
+    for its lifetime, one started past its "already running" warning included (3.11's `gui/app.py`
+    `_hold_window_marker`). On Windows a held QLockFile is open with reads shared only, so opening it to write is
+    refused while its window lives and allowed once it has gone (a killed window's marker naming a pid Windows gave
+    another program reads as closed, never "open" for good) and its pid must still run (a refused open alone is also a
+    read-only leftover's); elsewhere the pid in its name must still run. An older
+    Anki Miner without markers reads as closed. Never raises (a file read: a worker's)."""
+    from app import locks
+    try:
+        names = [e.name for e in os.scandir(home()) if e.is_file()]
+    except OSError:
+        return False
+    for name in names:
+        if not (name.startswith(WINDOW_MARKER) and name.endswith(".lock")):
+            continue
+        pid = name[len(WINDOW_MARKER):-len(".lock")]
+        if not pid.isdigit():
+            continue
+        if sys.platform != "win32":
+            if locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
+            continue
+        try:
+            with open(os.path.join(home(), name), "r+b"):
+                pass                                    # not held: its window has gone
+        except PermissionError:                         # held — or a read-only / refused leftover: its pid says which
+            if locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def find(settings):
     """The path of Anki Miner's program, or None when it isn't installed (E7)."""
     chosen = str((settings or {}).get("connect_anki_miner_path") or "").strip()

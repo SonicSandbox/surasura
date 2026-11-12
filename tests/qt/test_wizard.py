@@ -27,6 +27,7 @@ from app.qt import strings
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
+from app.services.setup_wizard import NOTHING_TO_COUNT as SW_NOTHING
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
 
@@ -1884,6 +1885,52 @@ def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make,
     assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
 
 
+def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_again(make, monkeypatch):
+    """Disc-T1 (Mattias, 2026-11-10: "Counting your shows… didn't really get any feedback"): his library was empty
+    (a new incoming folder, the 2.5 shows left behind) and the page said *Counting your shows…* for good. Nothing to
+    count is said as that (`NO_SHOWS`); the page keeps asking, so shows that arrive meanwhile still bring numbers."""
+    waits = []
+    api = FakeApi(numbers=dict(SW_NOTHING))
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    page = wiz.page
+    assert wait_until(lambda: len(waits) == 1), "nothing to count: asked again"
+    assert not page.counting.isHidden() and page.counting.text() == S.NO_SHOWS and page.numbers_part.isHidden()
+    api.numbers = NUMBERS                                           # a show arrived, and the indexer read it
+    shell.bridge.indexed.emit("ja")
+    assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
+    assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
+    page.show_numbers(None)                                         # (counting again, as a language change starts it)
+    assert page.counting.text() == S.COUNTING
+    page.show_numbers({"empty": "arrivals"})                        # only New arrivals': sort one into Current
+    assert page.counting.text() == S.NO_SORTED and page.numbers_part.isHidden()
+    wiz.fetching = {"links": 2}                                     # YouTube's videos still coming: still counting
+    page.show_numbers(dict(SW_NOTHING))
+    assert page.counting.text() == S.COUNTING
+    asked = api.calls.count(("level_numbers", "ja"))
+    wiz._youtube_landed(0, 1, "")                                   # they came: counted at once, never after 30 s
+    assert wiz.fetching is None
+    assert wait_until(lambda: api.calls.count(("level_numbers", "ja")) == asked + 1)
+
+
+def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):
+    """Disc-T1: a worker that raised was logged once and never asked again — *Counting your shows…* for good. It asks
+    again as a count not ready yet does."""
+    waits = []
+    api = FakeApi(numbers=None)
+
+    def broken(settings, language):
+        api.calls.append(("level_numbers", language))
+        raise OSError("the token store is busy")
+    monkeypatch.setattr(api, "level_numbers", broken)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    assert wait_until(lambda: len(waits) == 1), "a failed count is asked again"
+    assert wiz.page.counting.text() == S.COUNTING
+
+
 def test_counting_asks_again_when_the_indexer_ran(make, monkeypatch):
     api = FakeApi(numbers=None)
     wiz, shell, *_ = make(api=api)
@@ -2186,6 +2233,40 @@ def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(
     api.record = BEHIND
     page.anki_changed()
     assert wait_until(lambda: page.btn_behind.isVisible())
+
+
+class HeldBehindApi(BehindApi):
+    """Each look at the shows behind the deck held until the test lets it answer (`answers`, in the order asked)."""
+    def __init__(self, answers, **kw):
+        super().__init__(None, **kw)
+        self.answers, self.gates = list(answers), []
+
+    def backlog_shows(self, language, settings, deck):
+        gate = threading.Event()
+        self.gates.append(gate)
+        n = len(self.gates)
+        self.asked.append((language, deck))
+        gate.wait(10)
+        return self.answers[n - 1] if n <= len(self.answers) else None
+
+
+def test_michi_c_an_older_look_answering_late_never_undoes_a_newer_one(make):
+    """Disc-T1 (the stress gate's red: the test above, 1 in 4 under load): arriving on the page starts two looks for
+    the same deck (shown, then entered: looked at again). The older one answers with Anki closed; the newer one's
+    shows are what the page says, never dropped because the older answer cleared the look (both carry one key)."""
+    api = HeldBehindApi([None, BEHIND])
+    wiz, shell, api, settings, _m = make(api=api)
+    try:
+        go_to(wiz, "order")
+        page = wiz.page
+        assert wait_until(lambda: len(api.gates) == 2), len(api.gates)   # both out at once
+        api.gates[0].set()                                          # the older one: Anki closed, late
+        wait_until(lambda: False, 0.3)
+        api.gates[1].set()                                          # the newer one: the shows
+        assert wait_until(lambda: page.btn_behind.isVisible()), "the newer look's answer is shown"
+    finally:
+        for gate in api.gates:
+            gate.set()
 
 
 def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_browser(make):

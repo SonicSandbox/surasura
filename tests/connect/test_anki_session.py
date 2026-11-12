@@ -559,3 +559,33 @@ def test_the_windows_look_never_waits_for_another_writer(anki, clock, monkeypatc
     assert anki_session.at_window(ON)["anki"] == "open"
     assert anki_session.at_window(ON, opening=True)["anki"] == "open"
     assert seen == [0.0, 0.0]
+
+
+def test_anki_busy_with_a_collection_operation_is_busy_never_unusable(anki, clock, monkeypatch):
+    # #370: the newer AnkiConnect's busy refusal is Anki open and working (its sync, Check Database) — Connect waits
+    original = anki.answer
+    refused = set()
+    anki.answer = lambda action, params: ((None, "A collection operation is active.") if action in refused
+                                          else original(action, params))
+    refused.add("getActiveProfile")
+    assert anki_session.waiting(URL, ON) == "Waiting for Anki: it's busy."
+    refused.add("requestPermission")
+    assert anki_session.look(URL) == "busy"
+    refused.clear()
+    assert anki_session.look(URL) == "open"
+
+
+def test_a_sync_meeting_anki_busy_is_tried_again_never_failed(anki, clock):
+    # review 1 B2: S1 meets Anki's own sync (the newer AnkiConnect's busy refusal): the session stays due, nothing
+    # failed; once Anki is free the next look syncs
+    original = anki.answer
+    busy = [True]
+    anki.answer = lambda action, params: ((None, "Anki has an active collection operation.")
+                                          if action == "sync" and busy[0] else original(action, params))
+    anki_session.begin(URL, ON)
+    state = anki_sync_rule.read_state()
+    assert anki.syncs == 0 and state.get("session_due") is True and state.get("sync") != "failed", state
+    assert anki_sync_rule.status(ON) != "AnkiWeb: sync failed"
+    busy[0] = False
+    anki_session.begin(URL, ON)
+    assert anki.syncs == 1

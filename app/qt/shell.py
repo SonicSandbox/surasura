@@ -1366,6 +1366,7 @@ class _Duties:
         self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
+        self.guide = self.guide_panel = None                      # the feature guide: the ✦ and its panel
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
         self.previews_busy = self.previews_again = False           # W3.1b: the pop's numbers, one read at a time,
         self.previews_dirty = True                                 # and only when what they read moved
@@ -1785,6 +1786,7 @@ class ShellWindow(QMainWindow):
         store catches up (no flash back)."""
         if getattr(view, "language", self.language) != self.language:
             return                                  # W3.2 P0: a view of the language left, queued before the switch
+        self._guide_view = view                     # the feature guide's *for you* reads its kinds (on a worker)
         moves = getattr(self, "moves", None)
         if moves is not None:
             view = moves.view_in(view)
@@ -2709,6 +2711,18 @@ class ShellWindow(QMainWindow):
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_dot)       # a9.1: its dot beside it
         header_row.insertWidget(header_row.indexOf(self.report_button), d.help)          # ? before the bug
         # --- end W3.2 Q3
+        # --- the feature guide (Hoshi-S, 2026-11-12): the ✦ just left of the ?, shown once a look (a worker's, after
+        # the start) finds something to show; its panel a pop under it (Esc, Back, a press elsewhere close it)
+        from app.qt import guide as guide_ui
+        d.guide = guide_ui.GuideButton(self.header)
+        d.guide.setVisible(False)
+        d.guide_panel = guide_ui.GuidePanel(self.centralWidget(), d.guide)
+        d.guide.clicked.connect(lambda _c=False: d.guide_panel.toggle())
+        d.guide_panel.opened.connect(self._guide_opened)
+        d.guide_panel.show_me.connect(self.guide_show_me)
+        self.register_overlay(d.guide_panel)
+        header_row.insertWidget(header_row.indexOf(d.help), d.guide)
+        # --- end the feature guide
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
         # Settings; the level chip gave way to the ▾); the update chip in the status line's slot while it applies
@@ -2778,6 +2792,75 @@ class ShellWindow(QMainWindow):
         self._read_level()
         from app.qt import windows
         windows.resume_youtube(self)
+        from app.qt import guide as guide_ui                # the feature guide: its first look, once the start settles
+        QTimer.singleShot(guide_ui.FIRST_LOOK_MS, self._guide_look)
+
+    # --- the feature guide (Hoshi-S, 2026-11-12; app/services/guide.py, app/qt/guide.py) ------------------------- #
+    def _guide_look(self, seen=False):
+        """What the ✦'s panel shows and whether it glows, read on a worker (`guide.look`: the notes, this PC's state,
+        each check a stat or one small read). `seen`: the panel opened — this version's notes are marked seen first."""
+        d = self.duties
+        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
+            return
+        from app.services import guide as guide_service
+        language, settings, view = self.language, self.services.settings, getattr(self, "_guide_view", None)
+
+        def job():
+            lines = []
+            if seen:
+                guide_service.mark_seen()
+            return guide_service.look(language, settings.get(), view, log=lines.append), lines
+        bridge.run_in_worker(job, then=self._guide_got,
+                             failed=lambda info: applog.log("guide", f"look: {info[1]}"))
+
+    def _guide_got(self, answer):
+        look, lines = answer
+        for line in lines:
+            applog.log("guide", line)
+        d = self.duties
+        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
+            return
+        d.guide_panel.set_look(look)
+        d.guide.setVisible(d.guide_panel.has_news())
+        d.guide.set_glow(look.glow and not d.guide_panel.isVisible())
+
+    def _guide_opened(self):
+        """The panel opened: the glow ends at once; the seen mark and a fresh look go to a worker."""
+        self.duties.guide.set_glow(False)
+        self._guide_look(seen=True)
+
+    def _guide_control(self, name):
+        """The header's or the bar's control `name` (`guide.CONTROLS`), or None."""
+        d = self.duties
+        return {"search": getattr(self, "search", None), "add": getattr(self, "add_stone", None),
+                "level": d and d.level, "journey": d and d.journey_button,
+                "arrivals": getattr(self, "arrivals_inset", None), "known": getattr(self, "known", None),
+                "circles": getattr(self, "phase", None), "report": getattr(self, "report_button", None),
+                "help": d and d.help}.get(name)
+
+    def guide_show_me(self, where):
+        """*Show me* (the panel closed already): go to `where` and light it — a Settings row as Settings reveals one,
+        a help card opened, a tab or a control washed as a decision's place is (`motion.wash`). A place not on screen
+        now (a tab with nothing in it, a control not shown): the bar says so."""
+        kind, _sep, name = str(where).partition(":")
+        if kind == "settings":
+            self.open_setting(name)
+            return
+        if kind == "help":
+            self.open_help(name)
+            return
+        widget = None
+        if kind == "tab":
+            widget = self.tab_buttons.get(name)
+            if widget is not None and not widget.isHidden():
+                self.show_tab(name)
+        elif kind == "control":
+            widget = self._guide_control(name)
+        if widget is None or sip.isdeleted(widget) or not widget.isVisible():
+            self.say(strings.GUIDE_NOT_HERE)
+            return
+        motion.wash(widget, theme.RADII["icon-button"])
+    # --- end the feature guide -------------------------------------------------------------------------------- #
 
     def changeEvent(self, event):
         super().changeEvent(event)

@@ -1,0 +1,339 @@
+"""The feature guide's window parts (Hoshi-S, Sonic 2026-11-12, part of the launch; spec: the 3.0 planning folder,
+`tracks/window/work/feature-guide-2026-11-12/SPEC.md`, every learner-visible choice PROVISIONAL). The rules are Qt-free
+(`app/services/guide.py`); this paints what it says.
+
+- **The ✦** (`GuideButton`) in the header, just left of the ?: the header's own button look; while something is unseen
+  it carries the theme's glow (`theme.GLOW`'s ring on the accent wash) and a small iris dot — painted once, **still**
+  (no loop on the clock: S19, a laptop's battery). The glow goes the moment the panel opens.
+- **The panel** (`GuidePanel`): a pop under the ✦ (the level ▾'s way: slate navy, its lit top edge; Esc, Back, a press
+  elsewhere and the ✦ again close it), the tray's width, scrolling inside past the window's height. Each release that
+  shows (`guide.Look`): its name and date, *For you*, *Everyone*, and the fixes folded into one line. An item with a
+  place has **Show me** (`show_me`, its `where`: the shell goes there and washes it).
+- **Built when the look changes, never on an open** (R5): `set_look` rebuilds only for a new answer; an open with the
+  same answer makes no widget. Nothing here reads a file: the shell asks the service on a worker.
+"""
+from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
+                             QVBoxLayout, QWidget)
+
+from app import theme
+from app.qt import motion, shadow, strings, style
+from app.qt.frame import _Away, _iris
+
+EDGE = 8                            # px the panel keeps from the window's edges
+FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
+
+
+def release_name(release):
+    """'Surasura 3.0.4 · 12 Nov' (the date as the notes give it, `YYYY-MM-DD`; an odd one is left out)."""
+    try:
+        _y, m, d = (int(p) for p in release.date.split("-"))
+        when = f"{d} {strings.GUIDE_MONTHS[m - 1]}"
+    except (ValueError, IndexError, AttributeError):
+        when = ""
+    name = strings.GUIDE_RELEASE.format(version=release.version, date=when)
+    return name if when else name.rsplit(" · ", 1)[0]
+
+
+class GuideButton(QToolButton):
+    """The header's ✦. `set_glow(on)` -> True when it changed (a repaint only then)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("headguide")
+        self.setText(strings.GUIDE_MARK)
+        self.setToolTip(strings.GUIDE_TIP)
+        self.setAccessibleName(strings.GUIDE_NAME)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.glow = False
+        self.paints = 0
+
+    def set_glow(self, on):
+        on = bool(on)
+        if on == self.glow:
+            return False
+        self.glow = on
+        self.setAccessibleName(strings.GUIDE_GLOW_NAME if on else strings.GUIDE_NAME)
+        self.setProperty("glow", "true" if on else "false")
+        self.style().unpolish(self)                         # (the ✦ in full ink while it glows: the sheet's rule)
+        self.style().polish(self)
+        self.update()
+        return True
+
+    def paintEvent(self, event):
+        self.paints += 1
+        if not self.glow:
+            return super().paintEvent(event)
+        c = style.colours()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = theme.RADII["icon-button"]
+        path = QPainterPath()
+        path.addRoundedRect(r, radius, radius)
+        p.fillPath(path, style.qcolor(c["accent-wash"]))
+        ring = theme.GLOW.get(style.current()[0], theme.GLOW[theme.DEFAULT_THEME])[0]
+        p.setPen(QPen(style.qcolor(ring), 1.0))
+        p.drawPath(path)
+        p.end()
+        super().paintEvent(event)                          # the ✦ itself, the header's look (its focus ring too)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        f = theme.text_factor(style.current()[1])
+        side = 6 * f
+        dot = QRectF(self.width() - side - 3, 3, side, side)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_iris(dot.left(), dot.right()))
+        p.drawEllipse(dot)
+        p.end()
+
+
+class _Card(QWidget):
+    """One item: its kind, its title and line, and *Show me* when it has a place."""
+
+    def __init__(self, item, mine, on_show, parent=None):
+        super().__init__(parent)
+        self.setObjectName("guidecard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("mine", "true" if mine else "false")
+        self.item = item
+        f = theme.text_factor(style.current()[1])
+        row = QHBoxLayout(self)
+        row.setContentsMargins(round(12 * f), round(10 * f), round(10 * f), round(10 * f))
+        row.setSpacing(round(10 * f))
+        kind = QLabel(strings.GUIDE_KINDS[item.kind], self)
+        kind.setObjectName("guidekind")
+        kind.setProperty("kind", item.kind)
+        row.addWidget(kind, 0, Qt.AlignmentFlag.AlignTop)
+        words = QVBoxLayout()
+        words.setSpacing(round(2 * f))
+        self.title = QLabel(item.title, self)
+        self.title.setObjectName("guidetitle")
+        self.line = QLabel(item.line, self)
+        self.line.setObjectName("guideline")
+        for label in (self.title, self.line):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+            words.addWidget(label)
+        row.addLayout(words, 1)
+        self.show_me = None
+        if item.where:
+            b = QPushButton(strings.GUIDE_SHOW_ME, self)
+            b.setObjectName("guideshow")
+            b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
+            b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(title=item.title))
+            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.setAutoDefault(False)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, w=item.where: on_show(w))
+            row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+            self.show_me = b
+        self.setAccessibleName(strings.GUIDE_CARD_NAME.format(kind=strings.GUIDE_KINDS[item.kind], title=item.title,
+                                                              line=item.line))
+
+
+class GuidePanel(motion.Overlay):
+    """The ✦'s panel. `set_look(look)` paints a `guide.Look`; `show_me` carries a place (`where`) to the shell, which
+    closes nothing itself — the panel closes first. `opened` tells the shell the panel opened (the glow ends, the look
+    is asked again on a worker)."""
+    how = "pop"
+    shadow_name = "menu"
+    focus = True
+    show_me = pyqtSignal(str)
+    opened = pyqtSignal()
+
+    def __init__(self, parent, button):
+        super().__init__(parent)
+        self.button = button
+        self.setObjectName("guidepanel")
+        self.setAccessibleName(strings.GUIDE_PANEL_NAME)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        f = self._f = theme.text_factor(style.current()[1])
+        box = QVBoxLayout(self)
+        box.setContentsMargins(round(14 * f), round(12 * f), round(14 * f), round(14 * f))
+        box.setSpacing(round(8 * f))
+        self.heading = QLabel(strings.GUIDE_HEADING, self)
+        self.heading.setObjectName("popheading")
+        box.addWidget(self.heading)
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("guidescroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        box.addWidget(self.scroll, 1)
+        self.body = None
+        self.look = None                    # the guide.Look shown
+        self.cards = []
+        self.folds = []                     # (button, [fix cards], n)
+        self.builds = 0                     # the body made (tests: once per new look, never per open)
+        self.shadow = shadow.Follower(self, self.shadow_name)
+        self._away = _Away(self)
+        parent.installEventFilter(self)
+        self.hide()
+
+    # --- what it shows --------------------------------------------------------------------------------------------- #
+    def set_look(self, look):
+        """Paint `look` (a `guide.Look`). The same releases again change nothing (S19: the glow alone isn't the
+        panel's). -> True when rebuilt."""
+        same = self.look is not None and look is not None and look.releases == self.look.releases
+        self.look = look
+        if same:
+            return False
+        self._build()
+        if self.isVisible():
+            self.place()
+        return True
+
+    def has_news(self):
+        return bool(self.look is not None and self.look.releases)
+
+    def _build(self):
+        f = self._f
+        body = QWidget()
+        body.setObjectName("guidebody")
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, round(2 * f), 0)
+        col.setSpacing(round(6 * f))
+        self.cards, self.folds = [], []
+        for shown in (self.look.releases if self.look else ()):
+            col.addWidget(self._label("guidever", release_name(shown.release), body))
+            for heading, items, mine in ((strings.GUIDE_FOR_YOU, shown.for_you, True),
+                                         (strings.GUIDE_EVERYONE, shown.everyone, False)):
+                if not items:
+                    continue
+                col.addWidget(self._label("guidegroup", heading, body))
+                for item in items:
+                    card = _Card(item, mine, self._show, body)
+                    self.cards.append(card)
+                    col.addWidget(card)
+            if shown.fixes:
+                fold = QPushButton("", body)
+                fold.setObjectName("guidefold")
+                fold.setProperty("kind", "link")
+                fold.setToolTip(strings.GUIDE_FIXES_TIP)
+                fold.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                fold.setAutoDefault(False)
+                fold.setCursor(Qt.CursorShape.PointingHandCursor)
+                col.addWidget(fold, 0, Qt.AlignmentFlag.AlignLeft)
+                fixes = []
+                for item in shown.fixes:
+                    card = _Card(item, False, self._show, body)
+                    card.setVisible(False)
+                    self.cards.append(card)
+                    fixes.append(card)
+                    col.addWidget(card)
+                entry = [fold, fixes, False]
+                self.folds.append(entry)
+                fold.clicked.connect(lambda _c=False, e=entry: self._fold(e))
+                self._fold_words(entry)
+        col.addStretch(1)
+        old, self.body = self.body, body
+        self.scroll.setWidget(body)                        # (the old body is the scroll area's to delete)
+        self.builds += 1
+        del old
+
+    def _label(self, name, text, parent):
+        label = QLabel(text, parent)
+        label.setObjectName(name)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        return label
+
+    def _fold_words(self, entry):
+        fold, fixes, open_ = entry
+        n = len(fixes)
+        if open_:
+            words = strings.GUIDE_FIXES_OPEN_ONE if n == 1 else strings.GUIDE_FIXES_OPEN.format(n=n)
+        else:
+            words = strings.GUIDE_FIXES_ONE if n == 1 else strings.GUIDE_FIXES.format(n=n)
+        fold.setText(words)
+        fold.setAccessibleName(words)
+
+    def _fold(self, entry):
+        entry[2] = not entry[2]
+        for card in entry[1]:
+            card.setVisible(entry[2])
+        self._fold_words(entry)
+        self.place()
+
+    def _show(self, where):
+        self.close()
+        self.show_me.emit(where)
+
+    # --- opening, closing ------------------------------------------------------------------------------------------ #
+    def place(self):
+        """Under the ✦, its right edge on the ✦'s, kept inside the window; as tall as its content up to the window's
+        room, then it scrolls."""
+        p = self.parentWidget()
+        self.ensurePolished()
+        width = min(round(theme.size("tray", style.current()[1])), max(1, p.width() - 2 * EDGE))
+        lay = self.layout()
+        m = lay.contentsMargins()
+        inner = width - m.left() - m.right()
+        want = 0
+        if self.body is not None:
+            self.body.setFixedWidth(max(1, inner - self.scroll.verticalScrollBar().sizeHint().width()))
+            self.body.layout().activate()
+            want = self.body.layout().totalHeightForWidth(self.body.width()) \
+                if self.body.layout().hasHeightForWidth() else self.body.sizeHint().height()
+            self.body.setMinimumWidth(0)
+            self.body.setMaximumWidth(16777215)
+        b = self.button
+        at = b.mapTo(p, b.rect().bottomRight())
+        top = at.y() + 6
+        head = self.heading.sizeHint().height() + lay.spacing() + m.top() + m.bottom()
+        room = max(1, p.height() - top - EDGE)
+        height = min(head + want + 2, room)
+        self.scroll.setFixedHeight(max(1, height - head))
+        x = max(EDGE, min(at.x() - width, p.width() - width - EDGE))
+        geometry = QRect(x, top, width, height)
+        if geometry != self.geometry():
+            self.setGeometry(geometry)
+
+    def open(self):
+        self.place()
+        return super().open()
+
+    def toggle(self):
+        if self.isVisible() or motion.opening_of(self) is not None:
+            self.close()
+        else:
+            self.open()
+
+    def focusNextPrevChild(self, next_):
+        """Tab and Shift+Tab go round the panel's own buttons (the window behind keeps its order)."""
+        ring = [b for b in self.findChildren(QPushButton) if b.isVisible() and b.isEnabled()]
+        if not ring:
+            return True
+        now = QApplication.focusWidget()
+        i = ring.index(now) if now in ring else -1
+        target = ring[(i + (1 if next_ else -1)) % len(ring)]
+        target.setFocus(Qt.FocusReason.TabFocusReason)
+        self.scroll.ensureWidgetVisible(target)
+        return True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QApplication.instance().installEventFilter(self._away)
+        self.opened.emit()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        QApplication.instance().removeEventFilter(self._away)
+
+    def eventFilter(self, obj, event):
+        if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
+            self.place()
+        return False
+
+    def sizeHint(self):
+        return QSize(round(theme.size("tray", style.current()[1])), super().sizeHint().height())
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        style.paint_overlay(p, self.rect(), theme.RADII["tray"])
+        p.end()

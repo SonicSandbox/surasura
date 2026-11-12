@@ -1,0 +1,30 @@
+{
+  "version": "3.0.3",
+  "date": "2026-11-11",
+  "items": [
+    {"id": "skip-word", "kind": "new", "title": "Skip a word Anki won't take",
+     "line": "Needs you names the word and why; Skip this word makes the rest of the part's cards.",
+     "for": ["miner"], "where": "tab:needs"},
+    {"id": "retimed-seen", "kind": "tweak", "title": "A subtitle you re-timed is seen",
+     "line": "Not timed? Fix it beside its video, then Check again on its row.",
+     "for": ["shows", "miner"], "where": "tab:needs"},
+    {"id": "closes-with-you", "kind": "tweak", "title": "It closes when you do",
+     "line": "Surasura's helpers close with it; what was waiting picks up next time.",
+     "for": ["everyone"]},
+    {"id": "hato-from-audio", "kind": "tweak", "title": "Ready for hato's subtitles from the audio",
+     "line": "A subtitle hato makes from an episode's audio is read as that episode's.",
+     "for": ["hato"]},
+    {"id": "miner-twice", "kind": "fix", "title": "Anki Miner opens once",
+     "line": "Open Anki Miner says it's already open instead of starting a second copy.",
+     "for": ["miner"], "where": "settings:anki_miner"},
+    {"id": "empty-setup", "kind": "fix", "title": "Setup on an empty library says what to add",
+     "line": "Add a show first, or sort one out of New arrivals into Current.",
+     "for": ["everyone"]},
+    {"id": "bring-back", "kind": "fix", "title": "Removed's Bring back is always there",
+     "line": "Shown once the library answers, even while it's busy.",
+     "for": ["everyone"]},
+    {"id": "report-short-screen", "kind": "fix", "title": "Report a problem fits a short screen",
+     "line": "It stays on the screen, and scrolls.",
+     "for": ["everyone"], "where": "control:report"}
+  ]
+}

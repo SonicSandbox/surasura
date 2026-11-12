@@ -402,6 +402,21 @@ def run_integrated(scale, out_dir):
     settle(30)
     shot("pop", () if d.pop.isVisible() else ["the level's pop did not open"])
     d.pop.hide()
+    # the feature guide (Hoshi-S): the ✦ glowing beside the ?, then its panel open with its fixes unfolded (the shipped
+    # notes, copied with the assets: this version's)
+    win._guide_look()
+    until(lambda: d.guide_panel.look is not None and d.guide.isVisible())
+    shot("guide-glow", () if d.guide.glow else ["the ✦ isn't glowing before its first open"])
+    d.guide.click()
+    settle(30)
+    for entry in d.guide_panel.folds:
+        entry[0].click()
+    settle(20)
+    panel = d.guide_panel.geometry()
+    shot("guide-panel", ([] if d.guide_panel.isVisible() else ["the guide's panel did not open"]) +
+         ([] if win.centralWidget().rect().contains(panel) else [f"the guide's panel {panel} leaves the window"]) +
+         ([] if not d.guide.glow else ["the ✦ still glows with its panel open"]))
+    d.guide_panel.hide()
     win.dock.begin_drag("current")
     settle(30)
     win.dock.hover("goal")

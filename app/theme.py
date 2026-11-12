@@ -131,6 +131,8 @@ MIXES = {
     "watched-chip-fill": ("mock.html :375", ("mix", "accent", 20, "bg", None)),
     "watched-chip-border": ("mock.html :375", ("mix", "accent", 45, "line", None)),
     "needs-row-border": ("mock.html :548", ("mix", "line", 60, "transparent", None)),
+    # the feature guide (Hoshi-S, 2026-11-12): a *tweak*'s pill, the second accent's breath (as `status-in` is ok's)
+    "guide-tweak": ("feature guide: a tweak's pill", ("mix", "accent-2", 14, "transparent", None)),
 }
 
 # Opaque versions of the alpha mixes, laid on the ground they show on.

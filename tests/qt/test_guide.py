@@ -1,0 +1,181 @@
+"""The feature guide in the window (Hoshi-S, Sonic 2026-11-12, part of the launch; spec: the 3.0 planning folder,
+`tracks/window/work/feature-guide-2026-11-12/SPEC.md`): the ✦ beside the ?, its glow, its panel and *Show me*.
+
+What a wrong answer would cost a learner: a ✦ that glows after every start (a nag) or never goes out; a panel that
+reads files on the window's thread (a stutter as it opens); Esc closing the window instead of the panel; their own
+kind of item buried; *Show me* going nowhere, or silently doing nothing.
+"""
+import json
+import os
+import threading
+
+import pytest
+
+pytest.importorskip("PyQt6")
+from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtWidgets import QApplication
+
+from app.qt import guide as guide_ui, motion, strings
+from app.services import guide
+from tests.qt.conftest import wait_until
+from tests.qt.test_jobs_bar import world  # noqa: F401  (`world`: the fixture — a window with its duties)
+
+NOTES = {"version": "3.0.4", "date": "2026-11-12", "items": [
+    {"id": "zh-cards", "kind": "new", "title": "中国語のカード", "line": "Connect makes Chinese cards too.",
+     "for": ["zh", "miner"], "where": "settings:connect_enabled"},
+    {"id": "piyo-help", "kind": "new", "title": "Piyo に聞く", "line": "Ask Piyo about Surasura.", "for": ["piyo"]},
+    {"id": "skip-word", "kind": "tweak", "title": "単語をスキップ", "line": "Skip a word Anki won't take.",
+     "for": ["miner"], "where": "tab:needs"},
+    {"id": "report", "kind": "fix", "title": "報告", "line": "Report fits a short screen.", "for": ["everyone"],
+     "where": "control:report"},
+    {"id": "words-split", "kind": "fix", "title": "という", "line": "Words split more truly.", "for": ["everyone"]}]}
+
+
+@pytest.fixture
+def notes(tmp_path, monkeypatch):
+    """The notes in a folder of the test's, this window's version 3.0.4, and the looks counted by thread."""
+    folder = tmp_path / "whats_new"
+    folder.mkdir()
+    (folder / "3.0.4.json").write_text(json.dumps(NOTES, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(guide, "folder", lambda: str(folder))
+    monkeypatch.setattr(guide, "current_version", lambda: "3.0.4")
+    threads = []
+    real = guide.look
+
+    def look(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return real(*args, **kwargs)
+    monkeypatch.setattr(guide, "look", look)
+    return threads
+
+
+def _looked(world, notes, n=1):
+    world.win._guide_look()
+    assert wait_until(lambda: len(notes) >= n and world.d.guide_panel.look is not None)
+
+
+def test_the_star_waits_for_a_look_then_sits_just_left_of_the_question_mark_glowing(world, notes):
+    g = world.d.guide
+    assert g.isHidden()                                                     # nothing read yet: no ✦
+    _looked(world, notes)
+    assert wait_until(lambda: g.isVisible() and g.glow)
+    row = world.win.header.layout()
+    assert row.indexOf(g) == row.indexOf(world.d.help) - 1
+    assert g.toolTip() == strings.GUIDE_TIP and g.accessibleName() == strings.GUIDE_GLOW_NAME
+    assert all(t is not threading.main_thread() for t in notes)            # the files read on a worker
+
+
+def test_opening_ends_the_glow_at_once_marks_it_seen_and_the_next_start_has_no_glow(world, notes):
+    _looked(world, notes)
+    g, panel = world.d.guide, world.d.guide_panel
+    g.click()
+    assert wait_until(panel.isVisible) and not g.glow                       # at once, before any worker answers
+    assert wait_until(lambda: guide.read_state().get("seen") == "3.0.4")
+    panel.close()
+    world.win._guide_look()                                                 # the next start's look
+    assert wait_until(lambda: len(notes) >= 3)
+    QApplication.processEvents()
+    assert not g.glow and g.isVisible()                                     # seen: no glow, still there to read
+
+
+def test_an_open_with_the_same_answer_builds_nothing_again(world, notes):
+    _looked(world, notes)
+    panel = world.d.guide_panel
+    assert panel.builds == 1
+    for _ in range(2):
+        count = len(notes)
+        world.d.guide.click()
+        assert wait_until(lambda: panel.isVisible() and len(notes) > count)
+        QApplication.processEvents()
+        panel.close()
+    assert panel.builds == 1                                                 # the same answer: nothing rebuilt (S19)
+
+
+def test_for_you_comes_first_and_the_fixes_not_for_you_fold_into_one_line(world, notes):
+    world.win.services.settings.set({"connect_enabled": True})
+    _looked(world, notes)
+    panel = world.d.guide_panel
+    world.d.guide.click()
+    assert wait_until(panel.isVisible)
+    mine = [c.item.id for c in panel.cards if c.property("mine") == "true"]
+    assert mine == ["zh-cards", "skip-word"]                                 # Connect on: the miner's items lead
+    (fold, fixes, _open), = panel.folds
+    assert [c.item.id for c in fixes] == ["report", "words-split"] and not any(c.isVisibleTo(panel) for c in fixes)
+    assert fold.text() == strings.GUIDE_FIXES.format(n=2) and fold.toolTip()
+    fold.click()
+    assert all(c.isVisibleTo(panel) for c in fixes) and fold.text() == strings.GUIDE_FIXES_OPEN.format(n=2)
+    for card in panel.cards:
+        assert (card.show_me is not None) == bool(card.item.where)
+        if card.show_me is not None:
+            assert card.show_me.toolTip() and card.show_me.accessibleName()
+    panel.close()
+
+
+def test_esc_closes_the_panel_and_never_the_window(world, notes):
+    _looked(world, notes)
+    world.d.guide.click()
+    panel = world.d.guide_panel
+    assert wait_until(panel.isVisible)
+    QApplication.sendEvent(panel, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert wait_until(lambda: not panel.isVisible())
+    assert world.win.isVisible()
+
+
+def test_the_panel_stays_inside_a_short_window_and_scrolls(world, notes):
+    _looked(world, notes)
+    world.win.resize(1000, 620)                                              # the window's least size
+    world.d.guide.click()
+    panel = world.d.guide_panel
+    assert wait_until(panel.isVisible)
+    for entry in panel.folds:
+        if not entry[2]:
+            entry[0].click()
+    parent = panel.parentWidget()
+    assert panel.geometry().bottom() <= parent.height() and panel.geometry().right() <= parent.width()
+    assert panel.geometry().left() >= 0
+    panel.close()
+
+
+def test_show_me_reveals_a_setting(world, notes, monkeypatch):
+    asked = []
+    monkeypatch.setattr(world.win, "open_setting", lambda target: asked.append(target))
+    _looked(world, notes)
+    world.d.guide.click()
+    panel = world.d.guide_panel
+    assert wait_until(panel.isVisible)
+    card = next(c for c in panel.cards if c.item.id == "zh-cards")
+    card.show_me.click()
+    assert asked == ["connect_enabled"] and not panel.isVisible()
+
+
+def test_show_me_washes_a_control_and_a_tab_with_nothing_in_it_says_so(world, notes, monkeypatch):
+    washed = []
+    monkeypatch.setattr(motion, "wash", lambda widget, radius=0.0, ms=None: washed.append(widget))
+    world.win.guide_show_me("control:report")
+    assert washed == [world.win.report_button]              # (recorded: the freeze switch ends a real wash at once)
+    assert world.win.tab_buttons["needs"].isHidden()                         # Needs you lists nothing here
+    world.win.guide_show_me("tab:needs")
+    assert wait_until(lambda: world.win.bar_line.accessibleDescription() == strings.GUIDE_NOT_HERE)
+    world.win.guide_show_me("tab:finished")
+    assert world.win.current_tab() == "finished" and washed[-1] is world.win.tab_buttons["finished"]
+    world.win.guide_show_me("control:nope")
+    assert len(washed) == 2
+
+
+def test_the_glow_is_painted_still_with_no_motion_on_the_clock(world, notes):
+    _looked(world, notes)
+    g = world.d.guide
+    assert wait_until(lambda: g.glow)
+    QApplication.processEvents()
+    before = g.paints
+    for _ in range(5):
+        QApplication.processEvents()
+    assert g.paints == before                                                # nothing repaints it while it rests
+    assert not motion.clock()._timer.isActive()                              # and nothing runs on the clock for it
+
+
+def test_release_name_says_the_version_and_its_day():
+    rel = guide.Release("3.0.4", "2026-11-12", ())
+    assert guide_ui.release_name(rel) == "Surasura 3.0.4 · 12 Nov"
+    assert guide_ui.release_name(guide.Release("3.0.4", "", ())) == "Surasura 3.0.4"

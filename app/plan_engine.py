@@ -1329,7 +1329,7 @@ class Engine:
         `contexts`' setup: one shared walk is a follow-up, SWAP-PROTO.md.)"""
         plan = self.plan
         h = plan.header
-        if h.get("format") != 3 or not plan.picks:
+        if h.get("format") not in (3, 4) or not plan.picks:
             return None
         files, finished = plan.files, plan.finished
         n_files = len(files)

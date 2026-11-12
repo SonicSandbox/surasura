@@ -1,11 +1,16 @@
 """The journey's door (app/door.py; ⇄ Swap's first route, the 3.0 plan's tracks/pipeline/work/swap/SWAP-PROTO.md): a
 loopback server only the journey page's own file can call. What a wrong answer would cost: any web page in the
 learner's browser reaching his Anki through it (a missing token or origin check, a DNS-rebound name), a file outside
-the preview folder served by name, a route's crash taking the window down or leaking its text, or a door file left
-behind that names a dead port (the page would think the app is open)."""
+the preview folder served by name, a route's crash taking the window down or leaking its text, or the token in a file
+any other local page could read (review 1's #4: the token goes only to the page the window opens, through a one-time
+page whose name can't be guessed and which goes within LAUNCH_S)."""
 import http.client
 import json
 import os
+import re
+import time
+
+from pathlib import Path
 
 import pytest
 
@@ -57,24 +62,131 @@ def _post(d, route, body, **kw):
     return status, headers, json.loads(data.decode("utf-8"))
 
 
-def test_door_js_names_the_port_and_token_and_goes_at_stop(tmp_path):
-    d = door.Door({}, str(tmp_path / "results")).start()
-    path = tmp_path / "results" / door.FILE
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith("/*") and "window.SURASURA_DOOR = " in text
-    named = json.loads(text.split("window.SURASURA_DOOR = ", 1)[1].rstrip().rstrip(";"))
-    assert named == {"port": d.port, "token": d.token, "version": door.VERSION}
+def _target(page):
+    """The address a one-time page replaces itself with."""
+    found = re.search(r"location\.replace\((\"[^\"]*\")\)", page.read_text(encoding="utf-8"))
+    return json.loads(found.group(1))
+
+
+def _holding(folder, token):
+    return [p.name for p in folder.rglob("*") if p.is_file() and token in p.read_text(encoding="utf-8", errors="ignore")]
+
+
+def test_an_open_door_leaves_no_file_holding_its_token(tmp_path):
+    # review 1's #4: a file at a known name holding the token is readable by any local page with a <script> tag
+    results = tmp_path / "results"
+    d = door.Door({}, str(results)).start()
+    try:
+        assert d.port and _holding(tmp_path, d.token) == []
+    finally:
+        d.stop()
+
+
+def test_the_one_time_page_opens_the_report_with_the_door_in_its_address_and_a_secrets_name(tmp_path):
+    from app import report
+    results = tmp_path / "results"
+    d = door.Door({}, str(results)).start()
+    try:
+        page = Path(d.launch_page(str(results), "reading_list_static.html", "file=%E5%AE%B6.srt"))
+        assert page.parent == results and re.fullmatch(door.PREFIX + r"-[0-9a-f]{32}\.html", page.name)
+        assert _target(page) == f"reading_list_static.html#door={d.port}.{d.token}&file=%E5%AE%B6.srt"
+        assert _target(Path(d.launch_page(str(results), "reading_list_static.html"))) == \
+            f"reading_list_static.html#door={d.port}.{d.token}"
+        assert report.is_secret(page.name), "Send report zips results/: a page holding the token is never taken"
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", d.token), "the page's reader takes these characters only"
+    finally:
+        d.stop()
+
+
+def test_two_one_time_pages_never_share_a_name(tmp_path):
+    d = door.Door({}, str(tmp_path)).start()
+    try:
+        names = {d.launch_page(str(tmp_path), "r.html") for _ in range(20)}
+        assert len(names) == 20
+    finally:
+        d.stop()
+
+
+def test_a_one_time_page_goes_after_its_life_and_the_rest_at_stop(tmp_path, monkeypatch):
+    d = door.Door({}, str(tmp_path)).start()
+    monkeypatch.setattr(door, "LAUNCH_S", 0.05)
+    short = Path(d.launch_page(str(tmp_path), "r.html"))
+    monkeypatch.setattr(door, "LAUNCH_S", 600.0)
+    long_ = Path(d.launch_page(str(tmp_path), "r.html"))
+    deadline = time.monotonic() + 5
+    while short.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not short.exists() and long_.exists()
     d.stop()
-    assert not path.exists()
+    assert not long_.exists() and _holding(tmp_path, d.token) == []
 
 
-def test_a_later_doors_file_is_left_by_the_earlier_ones_stop(tmp_path):
-    # two windows (a restart's overlap): the first to stop must not delete the file naming the one still open
+def test_start_sweeps_an_earlier_windows_pages_and_nothing_else(tmp_path):
+    # a killed window leaves its page (a dead token); the first prototype's door-secret.js too
+    (tmp_path / "door-secret-0123456789abcdef0123456789abcdef.html").write_text("old", encoding="utf-8")
+    (tmp_path / "door-secret.js").write_text("old", encoding="utf-8")
+    (tmp_path / "reading_list_static.html").write_text("the report", encoding="utf-8")
+    (tmp_path / "journey_open.html").write_text("the episode page", encoding="utf-8")
+    d = door.Door({}, str(tmp_path)).start()
+    try:
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["journey_open.html", "reading_list_static.html"]
+    finally:
+        d.stop()
+
+
+def test_an_earlier_doors_stop_leaves_the_later_doors_page(tmp_path):
+    # two doors in a restart's overlap: the first to stop removes its own pages only
     first = door.Door({}, str(tmp_path)).start()
     second = door.Door({}, str(tmp_path)).start()
+    page = Path(second.launch_page(str(tmp_path), "r.html"))
     first.stop()
-    assert second.token in (tmp_path / door.FILE).read_text(encoding="utf-8")
+    assert page.exists()
     second.stop()
+    assert not page.exists()
+
+
+def test_with_no_door_open_there_is_no_one_time_page(tmp_path):
+    door.stop()
+    assert door.current() is None and door.launch_page(str(tmp_path), "r.html") is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_window_opens_the_report_through_the_doors_page_and_without_one_as_before(tmp_path, monkeypatch):
+    # static_html_generator.open_report (Your journey ↗, the ⋯'s See it in your journey): the door's page while a door
+    # is open in this process, the report's own file= after the door; none open, today's way (the report, or
+    # journey_open.html for one file)
+    from app import static_html_generator as gen
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / gen.REPORT_NAME).write_text("<html></html>", encoding="utf-8")
+    opened = []
+    monkeypatch.setattr(gen, "get_user_file", lambda name: str(results))
+    monkeypatch.setattr(gen.webbrowser, "open", opened.append)
+    door.stop()
+    assert gen.open_report() is True and opened[-1] == f"file://{results / gen.REPORT_NAME}"
+    d = door.start({}, str(results))
+    try:
+        assert gen.open_report() is True
+        page = Path(opened[-1][len("file://"):])
+        assert page.name.startswith(door.PREFIX) and _target(page) == f"{gen.REPORT_NAME}#door={d.port}.{d.token}"
+        assert gen.open_report(file="家庭教師 01.srt") is True
+        page = Path(opened[-1][len("file://"):])
+        assert _target(page) == f"{gen.REPORT_NAME}#door={d.port}.{d.token}&file=%E5%AE%B6%E5%BA%AD%E6%95%99%E5%B8%AB%2001.srt"
+        assert not (results / gen.OPEN_ON_NAME).exists()
+    finally:
+        door.stop()
+    assert gen.open_report(file="家庭教師 01.srt") is True and opened[-1] == f"file://{results / gen.OPEN_ON_NAME}"
+    assert _holding(tmp_path, d.token) == []
+
+
+def test_the_page_takes_the_door_out_of_its_address_before_reading_its_own_fragment():
+    # the template's reader runs before `file=` / `search=` are read, and nothing reads a door file any more
+    from app.path_utils import get_resource
+    with open(get_resource(os.path.join("templates", "web_app.html")), encoding="utf-8") as f:
+        page = f.read()
+    reader = page.index("const SURASURA_DOOR = (function")
+    assert reader < page.index("function fileFromHash()") and reader < page.index("async function rsFromHash()")
+    assert "door-secret" not in page and "history.replaceState" in page[reader:reader + 1200]
 
 
 def test_a_call_with_the_token_from_a_file_page_reaches_its_route(opened):
@@ -156,20 +268,15 @@ def test_a_preflight_is_refused(opened):
 
 def test_it_listens_on_loopback_only(opened):
     assert opened._server.server_address[0] == "127.0.0.1"
-    assert os.path.basename(opened._path()) == door.FILE
-
-
-def test_send_report_leaves_the_doors_file_out():
-    # results/ goes into Send report's zip; the door's file holds the session's token, so it is named as a secret
-    from app import report
-    assert report.is_secret(door.FILE)
 
 
 def test_start_replaces_the_doors_one_a_process(tmp_path):
     first = door.start({}, str(tmp_path))
+    page = Path(door.launch_page(str(tmp_path), "r.html"))
     second = door.start({}, str(tmp_path))
     try:
-        assert first._server is None and second.token in (tmp_path / door.FILE).read_text(encoding="utf-8")
+        assert first._server is None and door.current() is second and not page.exists()
+        assert second.token in _target(Path(door.launch_page(str(tmp_path), "r.html")))
     finally:
         door.stop()
-    assert not (tmp_path / door.FILE).exists()
+    assert door.current() is None and list(tmp_path.iterdir()) == []

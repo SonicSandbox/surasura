@@ -181,6 +181,7 @@ class Session:
         data = get_data_path(lang)
         shows = self.shows(lang, [where for _s, where, _u, _a in found])
         rows = []
+        held = plain(card["now"]) if card else ""     # (a line of two sentences: the card holds both, the plan one)
         for shown, where, unknown, audio in found:
             path = where if os.path.isabs(where) else os.path.join(data, *str(where).split("/"))
             start = end = None
@@ -190,7 +191,7 @@ class Session:
             row = {"id": lid, "text": shown, "unknown": unknown, "show": shows.get(where, ""),
                    "episode": os.path.splitext(os.path.basename(str(where)))[0], "timed": start is not None,
                    "start": start, "end": end, "audio": audio,
-                   "now": bool(card) and plain(card["now"]) == shown}
+                   "now": bool(held) and shown in held}
             with self._lock:
                 self.lines[lid] = dict(row, path=path, rel=str(where), lang=lang)
             rows.append(row)
@@ -399,11 +400,11 @@ class Session:
             self._check_card(now, mapping, word)
             fields = now.get("fields") or {}
             old = {f: (fields.get(f) or {}).get("value") or "" for f in new}
-            if old == new:
-                raise SwapError(SAME, "same")
+            if old == new or plain(old.get(mapping.sentence)) == plain(new.get(mapping.sentence)):
+                raise SwapError(SAME, "same")       # (its own line again: only the media's names would change)
             record = {"id": f"{int(time.time() * 1000)}-{note_id}", "note": int(note_id), "at": time.time(),
                       "word": word, "line": {k: line[k] for k in ("rel", "start", "end", "text")}, "old": old,
-                      "new": new, "tagged": TAG not in (now.get("tags") or ()), "undone": False}
+                      "new": new, "tagged": not _has_tag(now, TAG), "undone": False}
             _record(lang, record)                   # before Anki's first write: Undo always has the old values
             applied = False
             try:
@@ -425,7 +426,7 @@ class Session:
 
     def _check_card(self, note, mapping, word):
         """The note is this word's card in the mining deck, of the profile's note type (review 5: an id from an old
-        page, or from anything else that read the door's file, never rewrites another note)."""
+        page, or from anything else that got the door's token, never rewrites another note)."""
         from app import anki_connect
         fields = note.get("fields") or {}
         if note.get("modelName") != mapping.note_type or \
@@ -543,22 +544,26 @@ class Session:
 
 
 def expansion(path, lang, start, end):
-    """(before, after): the lines a card cut from the line starting at `start` (s) holds to reach `end` (s) — the
-    sentence's own span (sim.py's rule, research/03 § 2d step 10), at most `pick.SIDE` after."""
+    """(before, after): the lines Anki Miner adds to the line starting at `start` (s) — Connect's own card-lines rule
+    (`pick.window`, card lines 2026-11-09: the sentence by its grammar, the 8 s cap, counted in Anki Miner's lines), so
+    a line swapped in is cut as a card mined from it would be (Michi-SW2; before, Swap's own copy of the old rule)."""
     from app import cues
     from app.connect import pick
     try:
         read = cues.read(path, lang)
     except OSError:
         raise SwapError(GONE, "gone") from None
-    start_ms, end_ms = int(round(start * 1000)), int(round((end or start) * 1000))
+    start_ms = int(round(start * 1000))
     at = next((i for i, c in enumerate(read) if c.start == start_ms), None)
     if at is None:
         raise SwapError(GONE, "gone")
-    after = 0
-    while after < pick.SIDE and at + after + 1 < len(read) and read[at + after].end < end_ms:
-        after += 1
-    return 0, after
+    before, after, _cut, _ms = pick.window(read, at, pick.Lines(read, language=lang))
+    return before, after
+
+
+def _has_tag(note, tag):
+    """Anki's tags compare without case: it keeps a tag's first spelling (Surasura::swapped)."""
+    return tag.lower() in {t.lower() for t in note.get("tags") or ()}
 
 
 def _records(lang):

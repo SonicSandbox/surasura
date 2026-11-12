@@ -1644,6 +1644,25 @@
     </div>
 
     <script>
+        // ⇄ Swap's door (app/door.py; 3.1 prototype): the window opens this page through a one-time page that hands it
+        // the door's port and this session's token in the address (`#door=<port>.<token>`, then the page's own
+        // `file=…`). Taken out of the address before anything reads it (never left in the bar or the history) and kept
+        // for this tab only, so a reload keeps it. Opened any other way: no door, and ⇄ says so.
+        const SURASURA_DOOR = (function () {
+            let door = null;
+            const m = /^#door=(\d+)\.([A-Za-z0-9_-]+)(?:&(.*))?$/.exec(location.hash);
+            if (m) {
+                door = { port: Number(m[1]), token: m[2] };
+                const rest = m[3] ? '#' + m[3] : '';
+                try { history.replaceState(null, '', location.href.split('#')[0] + rest); }
+                catch (e) { location.replace(rest || '#'); }
+                try { sessionStorage.setItem('surasura-door', JSON.stringify(door)); } catch (e) {}
+            } else {
+                try { door = JSON.parse(sessionStorage.getItem('surasura-door') || 'null'); } catch (e) {}
+            }
+            return door && door.port && door.token ? door : null;
+        })();
+
         // --- Efficient Chunked Rendering Helper ---
         async function renderChunked(container, items, createFn, chunkSize = 25) {
             let index = 0;
@@ -3384,52 +3403,40 @@
 
         // Seconds -> '12:03' (or '1:02:03'). Used for the subtitle cue a sentence sits in.
         // --- ⇄ Swap (3.1 prototype; app/door.py + app/connect/swap.py) ---
-        // The page asks the window's door only on a press: `door-secret.js` beside this file (written while Surasura is
-        // open) names its port and this session's token. No file, or no answer: the panel says so, lists this
-        // page's own sentences, and ▶ / Swap stay off — the page never waits on the app to open.
-        const SWAP = { door: null };
+        // The page asks the window's door only on a press, at the address and token the window opened it with
+        // (`SURASURA_DOOR`, read as the page loads). No door, or no answer: the panel says so, lists this page's own
+        // sentences, and ▶ / Swap stay off — the page never waits on the app to open.
+        const SWAP = { door: SURASURA_DOOR };
 
         function swapLang() {
             return (typeof globalLanguage !== 'undefined' && globalLanguage) ? globalLanguage : 'ja';
         }
 
-        function doorScript(fresh) {
-            return new Promise(resolve => {
-                if (SWAP.door && !fresh) return resolve(SWAP.door);
-                const old = document.getElementById('surasura-door');
-                if (old) old.remove();
-                window.SURASURA_DOOR = undefined;
-                const s = document.createElement('script');
-                s.id = 'surasura-door';
-                s.src = 'door-secret.js?' + Date.now();
-                s.onload = () => { SWAP.door = window.SURASURA_DOOR || null; resolve(SWAP.door); };
-                s.onerror = () => { SWAP.door = null; resolve(null); };
-                document.head.appendChild(s);
-            });
+        // One call through the door -> its JSON answer, or {ok: false, offline: true, why}: 'unopened' (this page
+        // wasn't opened from Surasura, or Surasura was opened again since: an old token), 'closed' (no answer).
+        async function doorCall(route, body, ms) {
+            const door = SWAP.door;
+            if (!door) return { ok: false, offline: true, why: 'unopened' };
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), ms || 8000);
+            try {
+                const r = await fetch(`http://127.0.0.1:${door.port}/v1/${route}`, {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' }, signal: ctl.signal,
+                    body: JSON.stringify(Object.assign({ token: door.token, lang: swapLang() }, body || {})) });
+                if (r.status === 403) return { ok: false, offline: true, why: 'unopened' };
+                return await r.json();
+            } catch (e) {
+                return { ok: false, offline: e.name !== 'AbortError', why: 'closed',
+                         error: e.name === 'AbortError' ? 'Surasura took too long to answer.' : undefined };
+            } finally {
+                clearTimeout(timer);
+            }
         }
 
-        // One call through the door -> its JSON answer, or {ok: false, offline: true}. A refused or unanswered call
-        // reads the door's file again once (the window restarted: a new port and token).
-        async function doorCall(route, body, ms) {
-            for (const fresh of [false, true]) {
-                const door = await doorScript(fresh);
-                if (!door) return { ok: false, offline: true };
-                const ctl = new AbortController();
-                const timer = setTimeout(() => ctl.abort(), ms || 8000);
-                try {
-                    const r = await fetch(`http://127.0.0.1:${door.port}/v1/${route}`, {
-                        method: 'POST', headers: { 'Content-Type': 'text/plain' }, signal: ctl.signal,
-                        body: JSON.stringify(Object.assign({ token: door.token, lang: swapLang() }, body || {})) });
-                    if (r.status === 403 && !fresh) continue;
-                    return await r.json();
-                } catch (e) {
-                    if (!fresh && e.name !== 'AbortError') continue;
-                    return { ok: false, offline: e.name !== 'AbortError',
-                             error: e.name === 'AbortError' ? 'Surasura took too long to answer.' : undefined };
-                } finally {
-                    clearTimeout(timer);
-                }
-            }
+        // A press that found no door: in plain words, by why.
+        function doorGone(ans, closed) {
+            return ans.why === 'unopened' ? 'Surasura was opened again since: open your journey from it once more.'
+                                          : closed;
         }
 
         function doorClip(name) {
@@ -3446,7 +3453,8 @@
                     const n = k.slice(8), row = table ? table[data['Src ' + n]] : null;
                     const where = row ? String(row[3] || row[0] || '') : '';
                     const parts = where.split('/');
-                    return { id: null, text: data[k], unknown: null, timed: data['At ' + n] !== undefined,
+                    // (the report carries a time for the first sentence only: another's is unknown, never "text only")
+                    return { id: null, text: data[k], unknown: null, timed: data['At ' + n] !== undefined ? true : null,
                              show: parts.length > 1 ? parts[parts.length - 2] : '',
                              episode: (parts[parts.length - 1] || '').replace(/\.[^.]+$/, '') };
                 });
@@ -3466,6 +3474,7 @@
             doorCall('swap/candidates', { word: data.Word, reading: data.Reading || '' }, 90000).then(ans => {
                 st.looking = false;
                 st.connected = !ans.offline;
+                st.why = ans.why;
                 if (ans.ok) {
                     st.lines = ans.candidates;
                     st.note = ans.note;
@@ -3484,16 +3493,19 @@
             const on = st.connected === true, ready = on && st.note;
             const conn = st.connected === null ? '<span class="swap-conn">Asking Surasura…</span>'
                 : (on ? '<span class="swap-conn on">Connected to Surasura</span>'
-                      : '<span class="swap-conn off">Surasura isn&#39;t open</span>');
+                      : (st.why === 'unopened' ? '<span class="swap-conn off">Not opened from Surasura</span>'
+                                               : '<span class="swap-conn off">Surasura isn&#39;t open</span>'));
             let note = '';
-            if (st.connected === false) note = "Open Surasura to hear a line or swap it in. These are this page's own sentences.";
+            if (st.connected === false) note = (st.why === 'unopened'
+                ? "Open your journey from Surasura (Your journey ↗) to hear a line or swap it in."
+                : "Open Surasura to hear a line or swap it in.") + " These are this page's own sentences.";
             else if (on && !st.note && st.anki) note = escapeHtml(st.anki);
             else if (st.looking) note = "Looking through your library for this word's other sentences…";
             const meta = l => {
                 const bits = [l.show, l.episode].filter(Boolean).map(escapeHtml);
                 if (l.unknown === 0) bits.push('<span class="swap-unk u0" title="Every other word in it is known by then">i+1</span>');
                 else if (l.unknown) bits.push(`<span class="swap-unk">${l.unknown} unknown</span>`);
-                if (!l.timed) bits.push('text only');
+                if (l.timed === false) bits.push('text only');
                 return bits.join(' · ');
             };
             const rows = st.lines.map((l, i) => {
@@ -3551,9 +3563,10 @@
                                : await doorCall('swap/preview', { id: l.id }, 150000);
             b.classList.remove('busy');
             if (!ans.ok) {
-                st.msg = ans.offline ? 'Surasura closed: open it to hear a line.' : (ans.error || "That line couldn't be cut.");
+                st.msg = ans.offline ? doorGone(ans, 'Surasura closed: open it to hear a line.')
+                                     : (ans.error || "That line couldn't be cut.");
                 st.msgKind = 'err';
-                if (ans.offline) st.connected = false;
+                if (ans.offline) { st.connected = false; st.why = ans.why; }
                 return renderSwap(panel, st);
             }
             const fresh = !l.clip;
@@ -3574,7 +3587,7 @@
             const ans = await doorCall('swap/do', { note: st.note, id: l.id }, 330000);
             st.busy = false;
             if (!ans.ok) {
-                st.msg = ans.offline ? 'Surasura closed before the swap: nothing changed.' : ans.error;
+                st.msg = ans.offline ? doorGone(ans, 'Surasura closed before the swap: nothing changed.') : ans.error;
                 st.msgKind = 'err';
                 return renderSwap(panel, st);
             }
@@ -3589,7 +3602,7 @@
         async function swapUndo(panel, st) {
             const ans = await doorCall('swap/undo', { undo: st.undo.id }, 30000);
             if (!ans.ok) {
-                const msg = ans.offline ? 'Surasura closed: open it to undo.' : ans.error;
+                const msg = ans.offline ? doorGone(ans, 'Surasura closed: open it to undo.') : ans.error;
                 panel.querySelector('.swap-foot').insertAdjacentHTML('beforeend', `<span class="swap-msg err">${escapeHtml(msg)}</span>`);
                 return;
             }

@@ -6,16 +6,19 @@ runs (Sonic, 2026-10-28: one page -> app layer, never one channel per button; th
 
 - **Loopback only:** bound to 127.0.0.1 on a port the system picks; a request whose `Host` isn't that address and
   port is refused (a web page can't reach it through a name that points here: DNS rebinding).
-- **One token a session:** `results/door-secret.js`, written beside the report while the door is open, holds the port and
-  a random token; the page reads it with a `<script>` tag, which a file page may do and a web page can't. Every call
-  carries the token (`hmac.compare_digest`); a call from a web page (an `Origin` other than `null`, a file page's)
-  is refused before its token is read.
+- **One token a session, handed only to the page the window opens** (review 1's #4, Michi-SW2: before, a file any
+  local page could read with a `<script>` tag held it): *Your journey* opens the report through a one-time page
+  (`launch_page`: `results/door-secret-<random>.html`, its name unguessable, removed after LAUNCH_S or at stop) that
+  replaces itself with the report at `#door=<port>.<token>`; the report takes it out of its address at once and keeps
+  it for that tab (`sessionStorage`). A report opened any other way (by hand, from Junban) has no door and says so.
+  Every call carries the token (`hmac.compare_digest`); a call from a web page (an `Origin` other than `null`, a file
+  page's) is refused before its token is read.
 - **Simple requests only:** `POST /v1/<route>` with a `text/plain` JSON body (no custom header, so no CORS
   preflight); `GET /v1/clip/<name>?t=<token>` for an `<audio>` / `<img>` the page shows. Bodies over 64 KB are refused.
 - The route's answer is JSON; a route that raises answers `{"ok": false, "error": <its plain words>}`.
 
-Standard library only. `start(routes)` from the window after its first frame, `stop()` at quit (the file removed,
-only while it is still this door's).
+Standard library only. `start(routes)` from the window after its first frame (an earlier window's one-time pages
+swept), `stop()` at quit (this door's pages removed).
 """
 import hmac
 import json
@@ -27,8 +30,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 HOST = "127.0.0.1"
-# Named as a secret, so Send report's scrub leaves it out (`report.SECRET_NAMES`: *secret*): it holds the token
-FILE = "door-secret.js"
+# The one-time page's name is a secret's, so Send report's scrub leaves it out (`report.SECRET_NAMES`: *secret*): it
+# holds the token. Every `door-secret*` in the folder is swept at start (a killed window's; the first prototype's .js)
+PREFIX = "door-secret"
+LAUNCH_S = 120.0                # the one-time page's life: a cold browser start on the laptop has read it long before
 VERSION = 1
 MAX_BODY = 64 * 1024
 CLIP_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\.(mp3|ogg|m4a|opus|wav|jpg|jpeg|png|webp|gif|avif)")
@@ -140,6 +145,8 @@ class Door:
         self.on_error = on_error or (lambda _path, _e: None)
         self.port = None
         self._server = self._thread = None
+        self._pages = set()                         # this door's one-time pages still on disk
+        self._pages_lock = threading.Lock()
 
     def token_ok(self, token):
         return isinstance(token, str) and hmac.compare_digest(token.encode("utf-8"), self.token.encode("utf-8"))
@@ -157,40 +164,77 @@ class Door:
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, name="journey-door", daemon=True)
         self._thread.start()
-        self._write()
+        self._sweep()
         return self
 
-    def _path(self):
-        return os.path.join(self.folder, FILE)
+    def _sweep(self):
+        """An earlier window's one-time pages (a killed window leaves its own): each holds a dead token."""
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith(PREFIX):
+                _remove(os.path.join(self.folder, name))
 
-    def _text(self):
-        return ("/* Surasura's door for the journey page while the window is open (app/door.py). */\n"
-                "window.SURASURA_DOOR = %s;\n" % json.dumps({"port": self.port, "token": self.token,
-                                                            "version": VERSION}))
+    def launch_page(self, folder, report, rest=""):
+        """A one-time page in `folder` that opens `report` (a name in that folder) at `#door=<port>.<token>` (then
+        `&<rest>`, the report's own fragment: `file=<name>`) -> its path. Removed after LAUNCH_S, and at stop."""
+        target = "%s#door=%d.%s%s" % (report, self.port, self.token, "&" + rest if rest else "")
+        path = os.path.join(folder, "%s-%s.html" % (PREFIX, secrets.token_hex(16)))
+        os.makedirs(folder, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title><body style="background:#1e1e1e">'
+                    '<script>location.replace(%s);</script>\n' % json.dumps(target).replace("</", "<\\/"))
+        with self._pages_lock:
+            self._pages.add(path)
+        timer = threading.Timer(LAUNCH_S, self._drop, (path,))
+        timer.daemon = True
+        timer.start()
+        return path
 
-    def _write(self):
-        os.makedirs(self.folder, exist_ok=True)
-        tmp = self._path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(self._text())
-        os.replace(tmp, self._path())
+    def _drop(self, path):
+        with self._pages_lock:
+            self._pages.discard(path)
+        _remove(path)
 
     def stop(self):
         if self._server is None:
             return
-        try:
-            with open(self._path(), encoding="utf-8") as f:
-                ours = self.token in f.read()
-            if ours:                                # (another window's door since: its file stays)
-                os.remove(self._path())
-        except OSError:
-            pass
+        with self._pages_lock:
+            pages, self._pages = self._pages, set()
+        for path in pages:
+            _remove(path)
         self._server.shutdown()
         self._server.server_close()
         self._server = None
 
 
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 _door = None
+
+
+def current():
+    """The door open in this process, or None (a Junban window, a 2.x one, a test)."""
+    return _door
+
+
+def launch_page(folder, report, rest=""):
+    """The open door's one-time page for `report` (`Door.launch_page`), or None: no door here, or it can't be
+    written (the report then opens as it is, without the door)."""
+    d = _door
+    if d is None or d.port is None:
+        return None
+    try:
+        return d.launch_page(folder, report, rest)
+    except OSError:
+        return None
 
 
 def start(routes, folder, clips=None, on_error=None):

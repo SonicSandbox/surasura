@@ -401,9 +401,13 @@ class Held(Exception):
 _YOUTUBE_ARG = re.compile(r'(?:^|[/.])(?:youtube(?:-nocookie)?\.com|youtu\.be)(?::\d+)?/|^ytsearch\d*:', re.I)
 
 
+_PATH_FLAGS = ('-o', '--output', '--download-archive', '--cookies', '--config-locations')   # (their values: paths)
+
+
 def _reaches_youtube(args):
-    """(Yt-B) Does this yt-dlp call ask YouTube — one of its links YouTube's?"""
-    return any(not a.startswith('-') and _YOUTUBE_ARG.search(a) for a in args)
+    """(Yt-B) Does this yt-dlp call ask YouTube — one of its links YouTube's (a path given to a flag never counts)?"""
+    return any(not a.startswith('-') and (i == 0 or args[i - 1] not in _PATH_FLAGS) and _YOUTUBE_ARG.search(a)
+               for i, a in enumerate(args))
 
 
 def _run_ytdlp(args, timeout=1800, tick=None):

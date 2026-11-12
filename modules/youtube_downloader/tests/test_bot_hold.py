@@ -115,9 +115,9 @@ def test_a_hold_begun_elsewhere_while_waiting_is_met_before_the_call(ytdlp, tmp_
     """Connect's fetch refused while the window waited its turn: the window's call is never made."""
     real = youtube_hold.turn
 
-    def turn(should_stop=None, verb="YouTube download"):
+    def turn(should_stop=None, verb="YouTube download", **kw):
         youtube_hold.hold()                     # (another program's refusal, just before this one's turn)
-        return real(should_stop, verb)
+        return real(should_stop, verb, **kw)
     monkeypatch.setattr(youtube_hold, "turn", turn)
     log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
     core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
@@ -198,7 +198,9 @@ def test_a_bilibili_tv_rate_limit_is_never_said_as_youtubes_hold():
 def test_the_stall_clock_starts_once_the_turn_came(tmp_path):
     # why (review 1): six minutes waiting behind Connect's video must not read as YouTube not answering
     now = [0.0]
-    tick = core._watch(str(tmp_path), 3, lambda _l: None, clock=lambda: now[0])
+    run = tmp_path / "run"                                  # (the call's own folder: empty, as yt-dlp's starts)
+    run.mkdir()
+    tick = core._watch(str(run), 3, lambda _l: None, clock=lambda: now[0])
     now[0] = core.FIRST_S + 60
     tick.restart()
     now[0] += core.FIRST_S - 1

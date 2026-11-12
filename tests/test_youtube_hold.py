@@ -138,10 +138,10 @@ def test_a_record_that_cant_be_read_just_now_is_never_written_over(root, monkeyp
     # why (review 2): a scanner holding the file as a turn ends would have written {"last": …} over the hold
     until = youtube_hold.hold()
     before = _record(root)
-    monkeypatch.setattr(youtube_hold, "_read", lambda: None)
-    with youtube_hold.turn():
-        pass
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(youtube_hold, "_read", lambda tries=5: None)
+        with youtube_hold.turn():
+            pass
     assert _record(root) == before and youtube_hold.held() == until
 
 

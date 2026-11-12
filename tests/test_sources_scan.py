@@ -12,6 +12,7 @@ are his alone. So every scan here runs through `_look`, which proves both source
 beside the test's data folder) byte-identical before and after. Every test uses real Japanese or Chinese subtitles and
 texts from tests/Test Resources/, made-up show names, and a few bytes as a fake video.
 """
+import gc
 import hashlib
 import json
 import os
@@ -68,7 +69,7 @@ def _text(language, n, extra=""):
 def _book_text(language):
     """A loose `.txt` worth reading (T2-B4: BOOK_MIN_CHARS characters of the script or more): the app's own sample."""
     path = os.path.join(os.path.dirname(RESOURCES), os.pardir, "samples", language, "HighPriority",
-                        "H_priority_sample_1.txt")
+                        {"ja": "蜘蛛の糸（芥川龍之介）.txt", "zh": "孔乙己（鲁迅）.txt"}[language])
     with open(path, encoding="utf-8-sig") as f:
         return f.read()
 
@@ -2423,12 +2424,20 @@ def test_a_window_move_during_a_look_lands_within_the_budget(monkeypatch):
                     n += 1
                     done.wait(0.02)
         thread = threading.Thread(target=mover, name="mover")
+        if BENCH:
+            # The window's process keeps its long-lived objects out of the collector's sight (library_reader's
+            # `gc.freeze`, on in `shell.main`); this test's process held the 20,000 seeded origins in sight, so a full
+            # collection (18–49 ms here) inside one take-in passed the budget (the 3.0.0 cut's R6: 56 ms; FLAKES.md).
+            gc.collect()
+            gc.freeze()
         thread.start()
         try:
             result = sources.scan(store, language, root)
         finally:
             done.set()
             thread.join()
+            if BENCH:
+                gc.unfreeze()
         assert result["added"] == shows * per
         assert errors == [] and moves, errors
         scan = holds.of(threading.current_thread().name)

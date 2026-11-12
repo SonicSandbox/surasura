@@ -268,7 +268,9 @@ def child_env(scale, extra):
     for k in ("QT_QPA_PLATFORM", "SURASURA_FREEZE_MOTION", "QT_SCALE_FACTOR"):
         env.pop(k, None)
     if scale:
-        env["QT_SCALE_FACTOR"] = f"{scale / 100 / system_scale():.6f}"
+        env["QT_SCALE_FACTOR"] = repr(scale / 100 / system_scale())     # (whole digits: 250 % on a 150 % desktop is
+        #                                       2.5 exactly, as on a learner's; six decimals gave 2.5000005, where Qt
+        #                                       never moves pixels: `QBackingStore.scroll` takes whole device pixels)
     env.update(extra)
     return env
 

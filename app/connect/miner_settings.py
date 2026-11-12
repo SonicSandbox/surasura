@@ -7,7 +7,8 @@ from Surasura's own settings or from Anki, never guessed from a name alone:
 
 - **the deck** (`deck_for`): the deck Junban keeps in order for this language (`replan_preview.recorded_deck`), else
   Junban's deck when it is one of this language's known-words decks — each only when Anki has it; never a deck only
-  because it is the one known-words deck (it may be a premade course: reviews, alpha 5), which is asked, chosen first;
+  because it is the one known-words deck (it may be a premade course: reviews, alpha 5), which is asked, a new deck
+  of Surasura's own first and chosen (choice 86: `NEW_DECKS`), the known-words deck next;
 - **the note type** (`note_type_for`): the one most of that deck's newest notes use, when Backfill's note languages
   name none other for this language; else the one Backfill's note languages name for it;
 - **the fields** (`fields_for`): Anki Miner's own rule, the word in the note type's first field; every other role keeps
@@ -46,6 +47,12 @@ NAMES = {
 # Those note types read their pitch categories as romaji (Anki Miner's presets set it with them; its default is "jp")
 ROMAJI_PITCH = frozenset(("PitchCategories", "pitchCategories"))
 RECENT_NOTES = 50               # the deck's newest notes whose note type is counted (`AnkiReads.deck_note_type`)
+# Choice 86 (Sonic, 2026-11-09: "Offer a surasura deck is ok. Both options good"): the deck asked while the language
+# has at most one known-words deck (often a premade course, Kaishi 1.5k), a deck of Surasura's own is offered first —
+# made in Anki when the press takes it (`anki_miner_setup._make_deck`) — so one quick press never sends mined cards
+# into a course; the known-words deck still follows it — and it stays first once joined to the known-words decks (an
+# Anki Miner reset asks again). One per language: a deck's cards count for one language.
+NEW_DECKS = {"ja": "Surasura", "zh": "Surasura Chinese"}
 
 
 class AnkiReads:
@@ -81,6 +88,11 @@ class AnkiReads:
 
 def _known_decks(settings, language):
     return [str(d) for d in ((settings or {}).get("anki_sync_decks") or {}).get(language) or () if str(d).strip()]
+
+
+def new_deck(language):
+    """Choice 86's deck of Surasura's own for `language`'s mined cards (`NEW_DECKS`)."""
+    return NEW_DECKS.get(language, NEW_DECKS["ja"])
 
 
 def deck_for(settings, language, decks):
@@ -147,8 +159,9 @@ def plan(settings, language, current, failed, anki, chosen=None):
     that aren't ok (only those are set: `SETTINGS_ITEMS`); `anki`: `AnkiReads`; `chosen`: {"deck", "note_type"} the
     learner picked in Surasura's window. `values`: Anki Miner's settings keys to write ({} when none is wrong).
     `asked`: {"deck": [choices] | None, "note_type": [choices] | None, "why": None | "fields", "values": {...}} —
-    each list with Surasura's own first (this language's known-words decks; the note types Backfill names), None when
-    it isn't asked; one at a time, the deck first (its notes most often name the note type); the note types offered are
+    each list with Surasura's own first (`new_deck` while the language has at most one known-words deck, `"new"`
+    naming it while Anki lacks it, else None; then this language's known-words decks; the note types Backfill names),
+    None when it isn't asked; one at a time, the deck first (its notes most often name the note type); the note types offered are
     only those Anki Miner can fill (`fields_for`: [] when Anki has none); "fields": `asked["note"]` has no sentence
     field; `values`: what is already decided (the deck chosen), written meanwhile so it is never asked again (the
     DevTest drill, run 1). Raises `anki_connect.AnkiError` when Anki doesn't answer."""
@@ -162,8 +175,11 @@ def plan(settings, language, current, failed, anki, chosen=None):
         deck = chosen.get("deck") if chosen.get("deck") in decks else deck_for(settings, language, decks)
         if deck is None:            # the note type waits for it: most often the deck's own notes name it
             known = [d for d in _known_decks(settings, language) if d in decks]
-            return "ask", {"deck": known + [d for d in decks if d not in known], "note_type": None, "why": None,
-                           "values": values}
+            named, new = _known_decks(settings, language), new_deck(language)      # choice 86: first while the
+            first = [new] if len(named) <= 1 or new in named else []           # course is the one, or once joined
+            return "ask", {"deck": first + [d for d in known + [d for d in decks if d not in known] if d not in first],
+                           "new": first[0] if first and first[0] not in decks else None, "note_type": None,
+                           "why": None, "values": values}
         values["anki_deck_name"] = deck
     if not failed & {"note_type", "fields"}:
         return "write", values

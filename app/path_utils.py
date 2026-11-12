@@ -137,6 +137,12 @@ def installed_library():
     return _LIBRARY[key]
 
 
+def forget_library():
+    """Read library.json again on the next ask (`installed_library`): *Move my library* (app/library_move.py) and its
+    Undo rewrite it while this process runs (the start gate's, before anything opened the library)."""
+    _LIBRARY.clear()
+
+
 def library_available():
     """False only for an installed program whose library folder isn't there (a NAS or OneDrive folder offline, a
     drive unplugged — or a new install's first start, before the window makes it after its write check, D12): then
@@ -855,6 +861,7 @@ PARTS = (
     ("local", "installs.lock", "installs_note", STAYS, STAYS),
     ("local", "first_run.json*", "first_run_note", STAYS, STAYS),
     ("local", "import.json", "import_note", STAYS, STAYS),
+    ("local", "library_move.json", "library_move_note", STAYS, STAYS),   # 3.0.1: *Move my library*'s record (Undo)
     ("local", "locks", "locks", STAYS, STAYS),
     ("local", UPDATE_DIRNAME, "update", STAYS, STAYS),
     ("local", "tools", "tools", STAYS, STAYS),

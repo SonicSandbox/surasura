@@ -25,7 +25,7 @@ from app.connect import library as connect_library
 from app.services import needs, view_rows
 from tests.test_audiobooks import _m4b, _mp3
 from tests.test_library_store_support import RESOURCES
-from tests.test_sources_scan import _drive, _empty, _look
+from tests.test_sources_scan import _book_text, _drive, _empty, _look, _write
 
 NEKO, GINGA, SAIYU = "吾輩は猫である", "銀河鉄道の夜", "西游记"
 
@@ -565,6 +565,93 @@ def test_a_paired_audiobook_never_moves_the_soon_line():
         item = _audio_items(store)[0]
         after = {r[0]: r[1] for r in _book_items(store, NEKO)[1]}
         assert {i: after[i] for i in before} == before and after[item["id"]] == "now"
+
+
+# why: the original report (Michi's review, 2026-11-02; re-checked at 3.0-dev by Kura-AB, 2026-11-09): with a book and
+# its waiting audiobook in NOW, a title sent to Soon jumped straight back to the end of Current — "the top of Soon"
+# counted the audiobook as a row of NOW, the line didn't, so the slot sat above the row the line then took up.
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+@pytest.mark.parametrize("how", ("set_tier", "move"))
+def test_a_title_sent_to_soon_beside_a_book_and_its_waiting_audiobook_stays_in_soon(language, title, how):
+    """Current: two loose texts, the book's parts and its audiobook (waiting) in NOW, the Soon line after the book's
+    last part, one more text in Soon. ⋯ Soon (`set_tier`) or the Soon well (`move`, no anchor) on the first text: it
+    lands at Soon's top and Soon's text goes up; the book and its audiobook stay together in NOW."""
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    _epub(os.path.join(src, "Books", f"{title}.epub"), title, language)
+    _audio_folder(os.path.join(src, "Books", title), title, _fit(language))
+    loose = [os.path.join(src, f"t{n}", f"t{n}.txt") for n in range(3)]
+    for n, path in enumerate(loose):
+        _write(path, _book_text(language) + f"\n{n}\n")                           # a text worth reading, each its own
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        by = {os.path.basename(store.item(i)["rel_path"]): i for (i,) in
+              store.conn.execute("SELECT id FROM items WHERE tier = 'now' AND source_type != 'audio'")}
+        first, second, last = (by[os.path.basename(p)] for p in loose)
+        _work, rows = _book_items(store, title)
+        audio = [r[0] for r in rows if r[3] == "audio"][0]
+        store.move([first, second], "now", before_id=rows[0][0])                # the two texts, then the book
+        store.move([last], "now", after_id=audio)                                # one text after the audiobook ...
+        texts = len(rows)                                                        # (the book's parts, + 2, - its audio)
+        store.set_soon_line(texts + 1)                                           # ... and the line puts it in Soon
+        assert store.item(last)["tier"] == "soon" and store.item(audio)["tier"] == "now"
+        getattr(store, how)([first], "soon")
+        assert store.item(first)["tier"] == "soon"
+        assert store.item(last)["tier"] == "now"                                 # the line took Soon's text up
+        assert {r[1] for r in _book_items(store, title)[1]} == {"now"}           # the book and its audiobook stay
+        soon = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id")]
+        assert soon[0] == first
+
+
+def _book_and_texts(language, title, n=4):
+    """`n` loose texts and the book's parts with its waiting audiobook, found in one look: (store, parts, audio,
+    texts); everything in NOW (the line at 25)."""
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    _epub(os.path.join(src, "Books", f"{title}.epub"), title, language)
+    _audio_folder(os.path.join(src, "Books", title), title, _fit(language))
+    for k in range(n):
+        _write(os.path.join(src, f"t{k}", f"t{k}.txt"), _book_text(language) + f"\n{k}\n")
+    root = store.add_source(src)
+    _look(store, language, root, first=True)
+    work, rows = _book_items(store, title)
+    parts = [r[0] for r in rows if r[3] != "audio"]
+    audio = [r[0] for r in rows if r[3] == "audio"][0]
+    texts = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE tier = 'now' AND work_id IS NOT ? "
+                                              "ORDER BY ord, id", (work,))]
+    assert len(texts) == n and store.item(audio)["availability"] == "waiting"
+    return store, parts, audio, texts
+
+
+# why: a waiting row placed in the same command as the row before it belongs to that row (the adversary's r2 H-1): the
+# line taking the book up must take its audiobook too, never leave it alone below the line
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+@pytest.mark.parametrize("how", ("set_tier", "move"))
+def test_a_book_sent_from_goal_to_soon_and_taken_up_by_the_line_keeps_its_audiobook(language, title, how):
+    """The book and its audiobook in Goal, Current short of the line by the book's parts: sent to Soon, the line takes
+    the book up into NOW — and its audiobook with it."""
+    store, parts, audio, texts = _book_and_texts(language, title)
+    with store:
+        store.move(parts + [audio], "goal")
+        store.set_soon_line(len(texts) + len(parts))
+        getattr(store, how)(parts + [audio], "soon")
+        assert {store.item(i)["tier"] for i in parts + [audio]} == {"now"}
+
+
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+def test_a_book_dropped_just_below_the_line_and_taken_back_up_keeps_its_audiobook(language, title):
+    """Current = texts, the book, its audiobook | one text: the book's row dropped before Soon's first row, the line
+    takes the book back up — and its audiobook with it, right after its last part."""
+    store, parts, audio, texts = _book_and_texts(language, title)
+    with store:
+        store.move(parts + [audio], "now", after_id=texts[-2])
+        store.move([texts[-1]], "now", after_id=audio)
+        store.set_soon_line(len(texts) - 1 + len(parts))
+        assert store.item(texts[-1])["tier"] == "soon"
+        store.move(parts + [audio], "soon", before_id=texts[-1])
+        now = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord, id")]
+        assert now[-len(parts) - 1:] == parts + [audio] and store.item(texts[-1])["tier"] == "soon"
 
 
 def test_a_yes_never_puts_the_audiobook_in_finished():

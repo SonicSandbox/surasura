@@ -160,10 +160,9 @@ def test_with_the_bell_live_an_idle_window_never_looks_every_tenth_of_a_second(r
     poll = library_reader.LibraryReader(moves_module.store_opener("ja"), "ja").start()   # no watch: the old poll
     try:
         assert wait_until(lambda: poll.view() is not None, 10)
-        time.sleep(0.3)
         start = poll.looks
-        time.sleep(1.0)
-        assert poll.looks - start >= 5                 # what the bell saves
+        assert wait_until(lambda: poll.looks - start >= 5, 10)       # what the bell saves: the poll keeps looking
+        #   (waited for: a fixed second then a count raced a loaded machine; tests/FLAKES.md)
     finally:
         poll.stop()
     goal = lib.store.ids("goal")

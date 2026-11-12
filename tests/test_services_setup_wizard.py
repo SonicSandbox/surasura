@@ -425,6 +425,12 @@ def test_samples_go_into_an_empty_library_once_and_are_synced_into_the_store(lan
         pytest.skip("no bundled samples for this language in this checkout")
     rows = SW.library_rows({}, language)
     assert len(rows) >= 2, "the samples are in the store, beside the show that was there"
+    # Hon-SM: public-domain texts under their own titles (the author's name in the file's （） is no part of it), read
+    # as books by the store's guess (never "1 episode"), each a copy in Surasura's own folder (no tier path shown)
+    book = {"ja": "蜘蛛の糸", "zh": "孔乙己"}[language]
+    by_name = {r["name"]: r for r in rows}
+    assert book in by_name and by_name[book]["kind"] == "reading" and by_name[book]["ours"] is True
+    assert all(r["ours"] for r in rows), "every file here is in the data folder"
     assert SW.add_samples(language) == 0
     with pytest.raises(ValueError):
         SW.add_samples("fr")
@@ -439,9 +445,17 @@ def _index(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_shows(language):
-    assert SW.level_numbers({}, language) is None, "nothing counted: 'Counting your shows…'"
+    assert SW.level_numbers({}, language) is None, "no library store yet: 'Counting your shows…'"
+    from app import library_store
+    data_dir, user_files_dir = roots(language)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(user_files_dir, exist_ok=True)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    # Disc-T1 (Mattias, 2026-11-10): a library with nothing in it is never 'Counting your shows…' for good
+    assert SW.level_numbers({}, language) == SW.NOTHING_TO_COUNT, "an empty library: 'Add a show first'"
     assert not os.path.exists(token_index.store_path_for(language)), "never a store made just to look"
     h.seed_library(language)
+    assert library_store.sync_process(language) == library_store.EXIT_DONE     # found, as the window's sync finds them
     _index(language)
     settings = settings_manager.load_settings()
     numbers = SW.level_numbers(settings, language)
@@ -469,6 +483,34 @@ def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_s
     manual = SW.level_numbers(again, language)
     assert manual["automatic"] is False and manual["chosen"] == "rare" and manual["words"] == previews["rare"][
         "word_count"], "Set up again with a band of your own: that band"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_library_of_only_new_arrivals_is_nothing_to_count_never_counting_for_good(language):
+    """Disc-T1 (the adversary's MUST): Setup's read puts every folder in New arrivals, and *Done* on the sort screen
+    leaves them there — kept, never counted (`token_index`), so the count has nothing to read. That is said
+    (ONLY_ARRIVALS), never *Counting your shows…* for good; one title in Current brings the numbers back."""
+    from app import library_store
+    h.seed_library(language)
+    data_dir, user_files_dir = roots(language)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        ids = [i for (i,) in store.conn.execute("SELECT id FROM items")]
+        assert ids, "the seeded shows are in the store"
+        assert store.set_tier(ids, "arrivals") is not None              # as Setup's read leaves them
+    finally:
+        store.close()
+    _index(language)
+    assert SW.level_numbers(settings_manager.load_settings(), language) == SW.ONLY_ARRIVALS
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.set_tier(ids[:1], "now") is not None
+    finally:
+        store.close()
+    _index(language)
+    numbers = SW.level_numbers(settings_manager.load_settings(), language)
+    assert numbers is not None and numbers.get("bands"), "a title in Current: counted"
 
 
 # --- the Content Manager and Generate --------------------------------------------------------------------------- #
@@ -744,3 +786,37 @@ def test_finish_later_then_back_shows_what_was_saved_not_the_recommended_choice(
     SW.save(service, "shows", {"covers": True}, language)          # Set up again: no more marks
     assert service.flush(10)
     assert h.read_settings()["setup_passed"] == ["language", "shows"]
+
+
+# --- Fresh-U row 2 (2026-11-10): *Start fresh* and Card order's switch ------------------------------------------------ #
+@pytest.mark.parametrize("settings, how, shown, want", [
+    ({}, "fresh", True, False),                                     # a new profile that started fresh: off
+    ({"setup_passed": ["language", "known"]}, "fresh", True, False),   # … after *Finish later* too (still new)
+    ({}, "anki", True, True), ({}, "import", True, True),           # every other way keeps the preselect
+    ({}, "anki", False, False),
+    ({"onboarding_completed": True}, "fresh", True, True),          # *Set up again*: what the settings say
+    ({"onboarding_completed": True, "setup_seen": ""}, "fresh", True, True),   # an upgrade's *Keep what came over*
+], ids=["new-fresh", "new-fresh-passed", "new-anki", "new-import", "new-anki-off", "set-up-again", "upgrade"])
+def test_fresh_u_start_fresh_turns_card_orders_switch_off_only_on_a_new_profile(settings, how, shown, want):
+    # A fresh start never moves the cards of a deck already there; an upgrader's third way is *Keep what came over*
+    # (their words came over: the recommended on stays), and *Set up again* shows the consent as it is
+    assert SW.keeps_order(settings, how, shown) is want
+
+
+def test_fresh_u_new_cards_counts_the_decks_cards_with_junbans_own_query_and_never_raises(monkeypatch):
+    # The page names how many cards the switch moves: 順's one query (unsuspended new cards, never a filtered deck's),
+    # on the loopback address; no deck, 順 absent or Anki not answering -> None (the page then says nothing)
+    from app import anki_connect
+    junban = pytest.importorskip("modules.junban.ankiconnect")
+    asked = []
+    monkeypatch.setattr(anki_connect, "find_cards", lambda url, query: asked.append((url, query)) or [11, 12, 13])
+    assert SW.new_cards({}, "日本語::Mining") == 3
+    assert asked == [(anki_connect.address({}), junban.new_card_query("日本語::Mining"))]
+    assert SW.new_cards({}, None) is None and SW.new_cards({}, "") is None and len(asked) == 1
+
+    def refuse(url, query):
+        raise anki_connect.AnkiError("Anki isn't open")
+    monkeypatch.setattr(anki_connect, "find_cards", refuse)
+    assert SW.new_cards({}, "日本語::Mining") is None
+    monkeypatch.setitem(sys.modules, "modules.junban.ankiconnect", None)      # 順 not in this Surasura
+    assert SW.new_cards({}, "日本語::Mining") is None

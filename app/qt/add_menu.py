@@ -320,6 +320,8 @@ class Adder(QObject):
             text = line.format(name=name, added=result["added"])
         else:
             text = strings.SOURCES_READ_NOTHING.format(name=name)
+        if not refused and result.get("reachable", True) and not answer.get("later"):
+            text += strings.sources_short(result.get("short"), windows.language_of(self.shell))   # Fresh-U row 4
         say = getattr(self.shell, "say", None)
         if say is not None:
             say(text)

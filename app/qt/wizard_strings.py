@@ -61,7 +61,8 @@ LANGUAGE_HINT = "← → to choose · Enter to go on"
 LANGUAGE_GLYPHS = {"ja": "日本語", "zh": "中文"}
 LANGUAGE_WORDS = {"ja": "Japanese", "zh": "Chinese"}
 LANGUAGE_TIPS = {"ja": "Japanese: your list, your example sentences and your cards in Japanese.",
-                 "zh": "Chinese: your list, your example sentences and your cards in Chinese."}
+                 "zh": "Chinese: your list and your example sentences in Chinese. Cards are made in Japanese only "
+                       "for now."}
 LANGUAGE_CHOICE_NAME = "Language"
 
 # --- 2 · what you know ------------------------------------------------------------------------------------------------ #
@@ -102,7 +103,7 @@ KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n•
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
 SAMPLES = "Try it with samples first"
-SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few sample files into your library"
+SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few short texts into your library, free to share: public-domain classics and a café dialogue"
 SAMPLES_ADDED_LINE = "Added {n:,} samples: they show here in a moment."     # (W3.2 Q3: page 3 takes + Add's actions)
 SAMPLES_NONE = "Samples go into an empty library only: yours has files already."
 ROWS_NAME = "What's in your library"
@@ -110,6 +111,7 @@ ROW_COUNT = {"shows": ("1 episode", "{n:,} episodes"), "reading": ("a book", "a 
              "videos": ("1 video", "{n:,} videos")}
 ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
+ROW_LINE_OURS = "{count} · copied into Surasura"          # a copy in its own data folder: never HighPriority (Hon-SM)
 ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
 COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "
@@ -211,6 +213,8 @@ KEEP_ORDER = "Let Surasura keep them in order by itself"
 KEEP_ORDER_LINE = "After each new list and each move; never while you review"
 KEEP_ORDER_TIP = ("Puts your new cards in the order you'll meet the words, and tags the cards it moves Surasura.\n"
                   "• Undo: 順 → Restore")
+# Fresh-U row 2: with the switch on, what it moves (the chosen deck's new cards, counted on a worker)
+KEEP_ORDER_MOVES = ("It moves the 1 new card in {deck}.", "It moves the {n:,} new cards in {deck}.")
 DECK = "New cards are in"
 DECK_PICK_TIP = "The deck your new cards are in: the one Surasura keeps in order."
 LATER = "Cards for words not on your list"
@@ -241,6 +245,7 @@ BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. T
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"
 CARDS_LINE = "From the episode you're watching: the line, its audio and a picture."
+CARDS_LINE_ZH = "Surasura makes cards in Japanese only for now: Chinese cards come later. You can skip this step."
 CARDS_PICTURE_NAME = "A line from an episode becomes an Anki card with its audio and a picture"
 CARDS_LINE_SAMPLE = {"ja": ("この店のラーメンは本当に絶品だ", "ぜっぴん", "絶品"),
                      "zh": ("这家店的拉面真是绝品", "juépǐn", "绝品")}
@@ -257,6 +262,8 @@ STAR_ASK = "Like Anki Miner?"
 STAR_LINK = "Star it on GitHub"
 STAR_TIP = "Anki Miner is free and made by one person: a star on GitHub helps.\n• Opens its page in your browser"
 MINER_UPDATE_FIRST = "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
+MINER_UPDATE_FIRST_HAVE = ("You have Anki Miner {version}: 3.7 or newer needs no setup here. Update it and press Check "
+                           "again.")                      # Fresh-U row 8: the version found, named
 MINER_BY_HAND = "Or keep this Anki Miner and make its profile by hand:"
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the file's path, to paste into Anki Miner's file chooser."
@@ -293,6 +300,10 @@ MINER_NOTE_TYPE = "Note type"
 MINER_NOTE_TYPE_TIP = ("The kind of card Anki Miner makes (Lapis, Kiku…). Surasura sets it in Anki Miner for you, "
                        "with its fields.")
 MINER_ASK_DECK = "Which deck should Anki Miner put your new cards in? Choose it, then press Finish its setup again."
+# Choice 86 (Sonic, 2026-11-09): a deck of Surasura's own offered first (`miner_settings.NEW_DECKS`), made on the press
+MINER_NEW_DECK = "{deck} (a new deck)"
+MINER_ASK_NEW_DECK = ("Which deck should Anki Miner put your new cards in? A new deck keeps them apart from a course "
+                      "deck. Choose it, then press Finish its setup again.")
 MINER_ASK_NOTE = ("Which note type should Anki Miner make your cards with? Choose it, then press Finish its setup "
                   "again.")
 MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't make your cards with it. Choose another "
@@ -332,6 +343,7 @@ COUNTING = "Counting your shows…"
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
 DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."
+NO_SORTED = "Your shows wait in New arrivals: sort one into Current, and the numbers show here."  # Disc-T1, PROVISIONAL
 # a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
 MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."
 MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."

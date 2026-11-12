@@ -462,10 +462,44 @@ def _ledger_bytes():
                 "SELECT job_id, outcome, COUNT(*) FROM outcomes GROUP BY job_id, outcome ORDER BY job_id DESC")]
         except sqlite3.Error:
             pass
-        out["meta"] = dict(conn.execute("SELECT key, value FROM meta"))
+        from app.connect.runner import ALONE
+        meta = dict(conn.execute("SELECT key, value FROM meta"))
+        out["meta"] = {k: v for k, v in meta.items() if not k.startswith(ALONE)}
+        out["refused"] = _refused(conn, meta, ALONE)
     finally:
         conn.close()
     return _json_bytes(out)
+
+
+def _refused(conn, meta, prefix):
+    """Mattias #5 (Michi-RM2): for each failed job, the words Connect sent alone that Anki Miner still couldn't make,
+    with Anki Miner's reason (`runner._alone`'s record) -> [{"job_id", "words", "said"}], the newest first; a job
+    whose refused words were all made after all, or whose record can't be read, is left out. Only the word — never
+    its reading, its sentence, the job's other words."""
+    out = []
+    for key, value in meta.items():
+        if not key.startswith(prefix) or not key[len(prefix):].isdigit():
+            continue
+        try:
+            record = json.loads(value)
+            words = [str(w) for w in record.get("words") or ()]
+            said = record.get("said")
+        except (ValueError, AttributeError, TypeError):
+            continue
+        try:
+            job = int(key[len(prefix):])
+            state = (conn.execute("SELECT state FROM jobs WHERE id = ?", (job,)).fetchone() or [None])[0]
+        except (ValueError, sqlite3.Error):
+            continue
+        try:
+            made = {r[0] for r in conn.execute("SELECT word FROM outcomes WHERE job_id = ? AND outcome = 'made'",
+                                               (job,))}
+        except sqlite3.Error:
+            made = set()
+        left = [w for w in words if w not in made]
+        if state == "failed" and left:
+            out.append({"job_id": job, "words": left, "said": said if isinstance(said, str) else None})
+    return sorted(out, key=lambda r: -r["job_id"])
 
 
 def _connect_status_bytes():
@@ -474,13 +508,25 @@ def _connect_status_bytes():
     return _json_bytes(scrub(status.read()))
 
 
+WORD_MAX = 40                   # a refused word kept in a run's result: longer is no word (a line): counted instead
+
+
 def _scrubbed_json(path):
-    """A JSON file (Anki Miner's run result) read and scrubbed: its states and counts, never a word or a sentence."""
+    """A JSON file (Anki Miner's run result) read and scrubbed: its states and counts, never a sentence. A failed run
+    of one word — Connect's word-at-a-time try after Anki refused a card (Mattias #5, Michi-RM2) — keeps that row's
+    `word` and `status` (nothing else of it): which word Anki Miner couldn't make, beside its `message`."""
     try:
         data = json.loads(_read_shared(path).decode("utf-8-sig"))
     except (OSError, ValueError) as e:
         return _json_bytes({"unreadable": type(e).__name__})
-    return _json_bytes(scrub(data))
+    out = scrub(data)
+    if isinstance(data, dict) and data.get("outcome") == "failed":
+        rows = data.get("words")
+        row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+        word, status = (row.get("word"), row.get("status")) if isinstance(row, dict) else (None, None)
+        if isinstance(word, str) and 0 < len(word) <= WORD_MAX and (status is None or isinstance(status, str)):
+            out["words"] = [{"word": word, "status": status}]
+    return _json_bytes(out)
 
 
 def _anki_bytes(language):

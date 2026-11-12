@@ -115,6 +115,13 @@ def _per_test_window_state(request, monkeypatch):
     qt_bridge = sys.modules.get("app.qt.bridge")
     if qt_bridge is not None:
         qt_bridge.wait_for_workers(10000)
+    # A stones sheet whose build was under way when the answers were dropped never lands: forgotten, or every later
+    # test's ask for it joined that build and started none (a loaded pool past the wait above: test_shell's S1 test;
+    # tests/FLAKES.md). The app drops its answers only at its main window's close, as the process ends.
+    stones = sys.modules.get("app.qt.stones")
+    if stones is not None:
+        for key in [k for k in stones._BUILDING if k not in stones._DEFERRED]:
+            stones._BUILDING.pop(key, None)
     # A test's own filters and helpers parented to the app: only objects of classes written in Python (a test's or the
     # window's). Qt parents its own objects to the app as it goes (an input device on the first click, …); deleting
     # one of those corrupts Qt and crashes a later test (seen: a window made 80 tests on died in its constructor).
@@ -191,6 +198,26 @@ def needs_in(win, timeout=60.0):
     return ok
 
 
+@pytest.fixture
+def qt_timer(qapp):
+    """A QTimer of the test's own: `qt_timer()` makes one, stopped and deleted on the main thread at the test's end. A
+    stand-in tick is never a bare `QTimer()` left to Python: a parentless Qt object in a reference cycle is destroyed
+    by whichever thread's collection frees it — a worker's too, and a Qt object deleted off its own thread crashed the
+    3.0.0 cut's shard 1/8 (Windows fatal 0xC0000005 in tests/qt/test_ankiconnect_install_part.py; tests/FLAKES.md)."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer
+    made = []
+
+    def make():
+        made.append(QTimer())
+        return made[-1]
+    yield make
+    for timer in made:
+        if not sip.isdeleted(timer):
+            timer.stop()
+            sip.delete(timer)
+
+
 def wait_until(predicate, timeout=5.0):
     """Run the event loop until `predicate()` is true (or the time is up). -> its last answer."""
     import time
@@ -205,13 +232,15 @@ def wait_until(predicate, timeout=5.0):
     return predicate()
 
 
-def own_folder_answers(monkeypatch, tmp_path, name):
-    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
-    what each press asked it."""
+def own_folder_answers(monkeypatch, tmp_path, name, how=None):
+    """a7: `own_folder.read` (and `read_how`, *Open its folder*'s, saying `how` it was reached: choice 24) answering
+    with a real folder (a non-ASCII path, as the user keeps shows) and recording what each press asked it."""
     from app.services import own_folder
     there = tmp_path / "ユーザーの棚" / name
     there.mkdir(parents=True)
     asked = []
     monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
                         asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
+    monkeypatch.setattr(own_folder, "read_how", lambda opener, data, ids=(), rels=(), folders=():
+                        (asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there), how))
     return str(there), asked

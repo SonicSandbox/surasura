@@ -12,7 +12,8 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
   Without a pairing (a subtitle you added), a video named like the subtitle (`beside`'s names) anywhere in them.
 - **Only what changed** (S19): the index is kept in `<local data>/connect/videos-<lang>.json`, each folder with its
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
-  time a video is missing — never while every video is where its pairing says.
+  time a video is missing — never while every video is where its pairing says — and again when your folders change
+  while the run waits (a videos kick: `runner.Steps._videos_again`, Michi-VF).
 - **A share whose folder times don't move** (a NAS, a FAT drive; P3.1 row 3.1.7): a video still not found is looked
   for once more, once a run — the folders whose time didn't move listed again, at most RELIST_MAX entries in all (a
   folder with more than are left keeps what it had, and the rest goes on to the next); a second miss in the run lists

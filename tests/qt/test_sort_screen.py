@@ -27,7 +27,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PyQt6.QtGui import QImage, QKeyEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
@@ -628,10 +628,17 @@ def test_undo_after_start_over_puts_the_sorting_back_and_then_each_choice_undoes
     assert calls(writer, "undo") == [("undo", [], {"change": reset})]
     assert [e["name"] for e in screen.history] == ["now", "soon", "finished"]
     settle()
+    landed = screen.set_groups
+
+    def late(groups):                       # a slow runner: the library's view lands 0.3 s after the writer's undo
+        QTimer.singleShot(300, lambda: landed(groups))
+    screen.set_groups = late
     press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert wait_until(lambda: len(calls(writer, "undo")) == 2, 5)
     assert calls(writer, "undo")[1][2]["change"] is writer.saved[2], "then the last choice, by its own change"
-    assert wait_until(lambda: screen.top_arrival().key == placed[2].key, 5)
+    # a saved choice's title is back once the library's view after its undo lands (none on top until then), as
+    # `test_undo_brings_the_last_title_back_on_top…` waits for it; only an unsaved one is back at once
+    assert wait_until(lambda: screen.top_arrival() is not None and screen.top_arrival().key == placed[2].key, 5)
 
 
 def test_ignored_titles_come_back_with_start_over_and_its_undo_ignores_them_again(world):
@@ -850,6 +857,26 @@ def _arrival(i, n=3):
                   title=f"夜空の灯 第{i}期", media_word="episodes", group="new", cover_title=f"夜空の灯 {i}",
                   folder=f"Anime\\夜空の灯 {i}", line=f"Ep 1–{n}", parts=(), episodes=())
     return view_rows.Arrival(**fields)
+
+
+def test_the_top_titles_count_is_worded_as_new_arrivals_words_it_by_its_media():
+    """Mado-SB (the release shots, F1): the pad's line said "12 video" / "31 EPUB" — the play verb's word, never
+    pluralised. Its count is New arrivals' and Goal's (`arr_units` by the media): a show's episodes, a book's parts, a
+    channel's videos; one file singular; thousands grouped; a title with no media read as a show (`MEDIA_WORD`'s None)."""
+    def line(media, n):
+        a = _arrival(1, n)._replace(media=media, media_word=view_rows.MEDIA_WORD.get(media, "video"), line=None,
+                                    folder=None)
+        return sort_screen._sub_line(a)
+    assert line("anime", 12) == "12 episodes"
+    assert line("book", 31) == "31 parts"
+    assert line("lightnovel", 1) == "1 part"
+    assert line("youtube", 3) == "3 videos"
+    assert line("podcast", 2) == "2 episodes"
+    assert line("audiobook", 48) == "48 parts"
+    assert line(None, 1) == "1 episode"
+    assert line("drama", 1234) == "1,234 episodes"
+    a = _arrival(2, 12)._replace(media="anime", media_word="video")
+    assert sort_screen._sub_line(a) == "12 episodes · Ep 1–12 · Anime\夜空の灯 2"   # the range and K7's folder kept
 
 
 class _Moves:

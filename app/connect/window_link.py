@@ -7,6 +7,11 @@ mining (*Mine now*, *Mine this*, *Mine it too*) — one look, and Connect kicked
   Connect starting) uses nothing up: the next change tries again. Running, Connect reads the log and the asks again
   before it exits, so no process is started — but its pause is woken (`kick.wake`), once per newest event or ask,
   so a *Mine now* is read within seconds, never at its 2-minute look (laptop round 7 #42).
+- **A video linked** (*Link…*, *Needs you*'s *Link these*: the writer's `link_video`, `op` LINKED; Michi-VF, Mattias
+  3.0.0): the link is no placement and no ask, so the rule above sees nothing unread — yet the episode waits on *No
+  video*, parked until Connect's next start. So a committed link always kicks for videos (`kick.kick(videos=True)`):
+  started when Connect isn't running, else its pause woken with the videos mark (`kick.wake(videos=True)`), which lets
+  the jobs parked on their video go again at its next look (`runner._woken`), within seconds.
 - **A worker's call**, never the window's thread: two read-only looks (the library file and the ledger, `mode=ro`,
   never made) and at most one process started. Qt- and Tk-free: the Qt window (W-A2's after-commit hook) and the Tk
   row both hold one.
@@ -19,6 +24,7 @@ import sqlite3
 
 # What `after_change` answers: Connect started, or why not
 KICKED, OFF, RUNNING, NOTHING, REFUSED = "kicked", "off", "running", "nothing", "refused"
+LINKED = "link_video"      # the writer's op for a video linked to an episode (`moves.Writer.link_video`)
 
 
 def unread(language, reader="connect"):
@@ -92,11 +98,11 @@ class Link:
     def _language(self):
         return self.language() if callable(self.language) else self.language
 
-    def after_change(self, running=None, language=None):
+    def after_change(self, running=None, language=None, op=None):
         """On a worker, after the window's change committed -> KICKED, OFF, RUNNING, NOTHING or REFUSED (a kick that
         didn't start: tried again at the next change). `running`: whether Connect runs, when the caller already
         looked (the Tk row's stamp); else its lock is looked at. `language`: the one the caller looked at, else the
-        window's now."""
+        window's now. `op`: the writer's op (LINKED: a video linked — kicked for videos whatever is unread)."""
         settings = self.settings_get() or {}
         if not _on(settings):
             return OFF
@@ -104,6 +110,8 @@ class Link:
             from app.connect import kick
             running = (self._running or kick.running)()
         language = language or self._language()
+        if op == LINKED:
+            return self._linked(settings, running)
         if running:
             # it reads the log and the asks again before it exits; something new wakes its pause (#42), once
             newest = (self._unread or unread)(language)
@@ -127,3 +135,14 @@ class Link:
             return REFUSED
         self.kicked = (language, newest)
         return KICKED
+
+    def _linked(self, settings, running):
+        """A video linked: Connect woken for videos when it runs, else started (`kick.kick(videos=True)`: its first
+        look tries the episode) -> RUNNING, KICKED or REFUSED. Never remembered as `kicked` / `woken`: each link is its
+        own press, and a wake no one read (Connect exiting) is no reason to skip a later one."""
+        from app.connect import kick
+        if running:
+            (self._wake or kick.wake)(videos=True)
+            return RUNNING
+        started = (self._kick or kick.kick)(settings, videos=True)
+        return KICKED if started else REFUSED

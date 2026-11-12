@@ -13,8 +13,10 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   change; no store yet → no readout (the band names only).
 - **Connection (Anki):** the emerald and its word (S6) — from the automation's last sync, or from *Check*'s look
   (`anki_connect.probe`, loopback) — and *Check* (also the status service's refresh). **Connections:** hato installed
-  or not (its entry in the shared tools folder), jimaku *coming with hato*, AniList and More from Houseki *coming
-  later*; no buttons (logos: package PL).
+  or not (its entry in the shared tools folder) — not found, *Find hato…* (Michi-HD, PROVISIONAL): its folder picked,
+  `tools_found.open_hato` on a worker (hato opened once from there, so it connects itself), then its entry looked at
+  every `CONNECT_EVERY_S` on a worker up to `CONNECT_WAIT_S`, the press live throughout; the bar says how it went.
+  jimaku *coming with hato*, AniList and More from Houseki *coming later*; no buttons (logos: package PL).
 - **App:** *Text size*: the page saves it and *Restart now to apply?* is asked — *Restart now* closes the window the
   quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
   (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
@@ -32,6 +34,7 @@ What the bar says goes to the shell's bottom bar (`windows.say_in_bar`); a page 
 help line.
 """
 import os
+import time
 
 from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
@@ -122,6 +125,18 @@ def read_hato():
     one look (`services.tools_found`, B2-7)."""
     from app.services import tools_found
     return tools_found.hato_version()
+
+
+def open_hato(folder, settings):
+    """*Find hato…*: hato in `folder` started so it connects (`tools_found.open_hato`) -> (its folder, an answer now)."""
+    from app.services import tools_found
+    return tools_found.open_hato(folder, settings)
+
+
+def hato_seen(place):
+    """The opened hato's entry, one look (`tools_found.hato_seen`) -> `Connected` or None."""
+    from app.services import tools_found
+    return tools_found.hato_seen(place)
 
 
 def read_skipped(updates):
@@ -258,7 +273,11 @@ def setup_lines(settings, language, facts):
         fills = [S.FILLS.get(f, f) for f in (value("junban_backfill_fills") or [])]
         filled = (S.SETUP_FILLED.format(fills=" + ".join(fills), how=S.SETUP_FILLED_AUTO if value(
             "junban_auto_backfill") else S.SETUP_FILLED_HAND) if fills else S.SETUP_NOTHING_FILLED)
-        lines["setup_cards"] = S.SEP.join((S.SETUP_ORDER.get(value("junban_order"), ""), filled)).strip(" ·")
+        # Fresh-U row 2: the order's words only while 順 keeps the cards in order by itself — else it says off
+        from app.services import setup_wizard
+        order = (S.SETUP_ORDER.get(value("junban_order"), "") if setup_wizard.kept_in_order(settings, language)
+                 else S.SETUP_ORDER_OFF)
+        lines["setup_cards"] = S.SEP.join((order, filled)).strip(" ·")
     return lines
 
 
@@ -474,6 +493,8 @@ class Live(QObject):
         self._level = {"busy": False, "again": False, "asked": 0}
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
+        self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
+        self._hato_follow = None          # (hato's folder, until when its entry is looked at)
         page.row_built.connect(self._built)
         page.language_set.connect(self._language)
         b = page.bridge
@@ -590,9 +611,14 @@ class Live(QObject):
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"door": door}
         elif row_id == "hato":
-            mark = sc.StatusMark(False, S.NOT_INSTALLED, tooltip=row.tip, name=row.label)
-            self._slot(row_id).layout().addWidget(mark)
-            self.parts[row_id] = {"mark": mark}
+            mark = sc.StatusMark(False, S.HATO_NOT_FOUND, tooltip=row.tip, name=row.label)
+            find = qpress.room(sc.Door(S.FIND_HATO, tooltip=S.FIND_HATO_TIP, name=S.FIND_HATO))
+            find.clicked.connect(lambda _c=False: self.find_hato())
+            find.setVisible(False)                      # until the look says hato isn't found
+            slot = self._slot(row_id).layout()
+            slot.addWidget(mark)
+            slot.addWidget(find)
+            self.parts[row_id] = {"mark": mark, "find": find}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
         elif row_id in COMING:
@@ -864,10 +890,97 @@ class Live(QObject):
         mark = self.parts.get("hato", {}).get("mark")
         if mark is None:
             return
-        words = S.NOT_INSTALLED if version is None else (S.INSTALLED.format(version=version) if version
-                                                          else S.INSTALLED_PLAIN)
+        words = S.HATO_NOT_FOUND if version is None else (S.INSTALLED.format(version=version) if version
+                                                           else S.INSTALLED_PLAIN)
         if mark.value() != (version is not None) or mark.words() != words:
             mark.set_value(version is not None, words)
+        find = self.parts["hato"]["find"]
+        if find.isHidden() == (version is None):
+            find.setVisible(version is None)
+
+    def find_hato(self):
+        """*Find hato…*: hato's folder picked (the system's dialog; never while a press of it is live), `open_hato` on a
+        worker, then — hato started — its entry looked at every `CONNECT_EVERY_S` (one file read on a worker each, so
+        the quit never waits on a long one) until it names hato or `CONNECT_WAIT_S` pass; the button's arc turns
+        throughout (*Opening hato so it can connect…* once it waits). The bar says how it went; found: the row says
+        its version and hato's rows show (`set_found`)."""
+        if qpress.live(self.shell, "settings:hato"):
+            return
+        folder = self.pick_hato_folder()
+        if not folder or not self._alive():
+            return
+        p = qpress.begin(self.parts["hato"]["find"], "settings:hato", busy=S.FIND_HATO_BUSY, win=self.shell)
+        if p is None:
+            return
+        self._finding = p
+        self._hato_run(open_hato, os.path.normpath(folder), settings_service.thaw(self._settings()),
+                       then=self._hato_opened)
+
+    def pick_hato_folder(self):
+        return QFileDialog.getExistingDirectory(self.page, S.FIND_HATO_TITLE, "")
+
+    def _hato_opened(self, answer):
+        place, now = answer
+        if now is not None:
+            self._hato_done(now)
+            return
+        from app.services import tools_found
+        self._hato_follow = (place, time.monotonic() + tools_found.CONNECT_WAIT_S)
+        self._hato_next()
+
+    def _hato_next(self):
+        from PyQt6.QtCore import QTimer
+        from app.services import tools_found
+        QTimer.singleShot(round(tools_found.CONNECT_EVERY_S * 1000), self._hato_look)
+
+    def _hato_look(self):
+        if not self._alive():
+            qpress.end(self._finding, self.shell)           # the page gone mid-follow: its press ends too
+            return
+        self._hato_run(hato_seen, self._hato_follow[0], then=self._hato_looked)
+
+    def _hato_run(self, fn, *args, then):
+        """`_run` for *Find hato…*'s steps: the page gone when a step answers, its press ends there (`_run` would drop
+        the answer and leave the press live); a step that fails ends it failed, said in the bar."""
+        def done(answer):
+            if self._alive():
+                then(answer)
+            else:
+                qpress.end(self._finding, self.shell)
+
+        def fault(info):
+            applog.log("settings", f"Find hato: {info[1]}")
+            if self._alive():
+                self._hato_failed(info)
+            else:
+                qpress.end(self._finding, self.shell, failed=True)
+        return bridge.run_in_worker(fn, *args, then=done, failed=fault)
+
+    def _hato_looked(self, seen):
+        from app.services import tools_found
+        if seen is not None and seen.why is None:
+            self._hato_done(seen)
+        elif time.monotonic() < self._hato_follow[1]:
+            self._hato_next()
+        else:                                           # time's up: another copy's entry counts, as found
+            self._hato_done(seen if seen is not None else tools_found.Connected(None, tools_found.NO_ANSWER))
+
+    def _hato_failed(self, info):
+        qpress.end(self._finding, self.shell, failed=True, why=info[0] if info else None)
+        self.say(S.HATO_FIND_FAILED)
+
+    def _hato_done(self, answer):
+        version, why = answer
+        qpress.end(self._finding, self.shell, failed=version is None)
+        if version is None:
+            self.say(S.HATO_NOT_CONNECTED[why])
+            return
+        self._hato(version)
+        self.page.set_found("hato_found", True)
+        if why is not None:
+            self.say(S.HATO_NOT_CONNECTED[why])
+        else:
+            self.say(S.HATO_CONNECTED.format(version=version) if version else S.HATO_CONNECTED_PLAIN)
 
     # --- App ------------------------------------------------------------------------------------------------------- #
     def _text_size(self, size):

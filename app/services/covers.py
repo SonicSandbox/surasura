@@ -16,7 +16,8 @@ decodes an image for the screen (Q6 does, off the window's thread).
   2. else an EPUB of its own — the one its parts were read from (an origin `<book>.epub#3`, whichever door: a look,
      Extract, + Add) — then one beside its files (the one its folder's source marker names first): the book's own
      cover — the OPF
-     manifest's `cover-image` item, else its `<meta name="cover">`, else an image item named *cover* — copied ONCE into
+     manifest's `cover-image` item, else its `<meta name="cover">` (an id, or a file), else the picture on its guide's
+     cover page, else an image item named *cover*; the first that is a whole picture (`epub_cover`) — copied ONCE into
      the covers cache (`path_utils.get_covers_cache_path()`; its name a hash of the language, the work, the EPUB's
      path, size and time — never the user's path; a changed book is a new name): `set_cover(work, "file", ref=<the
      EPUB's path>, path="cache:<name>")`.
@@ -48,10 +49,12 @@ decodes an image for the screen (Q6 does, off the window's thread).
   or None (the generated cover). A disk cover read in place changes with its file: the decoder keys on its stat.
 """
 import hashlib
+import itertools
 import json
 import os
 import posixpath
 import zipfile
+import zlib
 from collections import namedtuple
 from urllib.parse import unquote
 from xml.etree import ElementTree
@@ -64,6 +67,11 @@ ART_EXTS = (".jpg", ".jpeg", ".png")
 EPUB_EXT = ".epub"
 MAX_IMAGE = 25 << 20            # bytes: a cover past this isn't one (and is never read whole)
 MAX_OPF = 4 << 20               # bytes: an EPUB's package file past this isn't read
+COVER_TRIES = 8                 # a book's cover answers looked at, at most (a crafted book can't make a scan read it all)
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"RIFF")    # what `image_ext` knows, by its start
+_BROKEN = (OSError, KeyError, ValueError, RuntimeError, NotImplementedError, EOFError, zlib.error, zipfile.BadZipFile,
+           ElementTree.ParseError)         # a broken book (a bad zip, its compression, its XML): no cover, never a crash
 USER_COVERS = "covers"          # User Files/<lang>/covers/
 _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (a cloud file)
 _REPLACEABLE = (None, "generated")              # a cover the scan may write over (unlocked)
@@ -316,19 +324,33 @@ def epubs_beside(data_dir, rel_paths):
 
 def epub_cover(path):
     """An EPUB's own cover, read from the book as it is (the zip's package file, not the whole book): (bytes, ext), or
-    None — no cover, a placeholder (never read), a broken book or image."""
+    None — no cover, a placeholder (never read), a broken book or image. The book's answers (`_cover_members`) are
+    tried best first, at most `COVER_TRIES`, each looked at by its first bytes before it is read whole."""
     if not on_disk(path):
         return None
     try:
         with zipfile.ZipFile(path) as z:
-            name = _cover_member(z)
-            if name is None:
-                return None
-            info = z.getinfo(name)
-            if info.file_size > MAX_IMAGE:
-                return None
-            data = z.read(info)
-    except (OSError, KeyError, ValueError, RuntimeError, zipfile.BadZipFile, ElementTree.ParseError, EOFError):
+            for name in itertools.islice(_cover_members(z), COVER_TRIES):
+                got = _member_image(z, name)
+                if got is not None:
+                    return got
+    except _BROKEN:
+        return None
+    return None
+
+
+def _member_image(z, name):
+    """(bytes, ext) of the zip member `name` when it holds a whole picture, else None (not there, too big, broken)."""
+    try:
+        info = z.getinfo(name)
+        if info.file_size > MAX_IMAGE:
+            return None
+        with z.open(info) as f:
+            head = f.read(16)
+            if not head.startswith(_MAGIC):
+                return None                         # not a picture: never decompressed whole
+            data = head + f.read()
+    except _BROKEN:
         return None
     ext = image_ext(data)
     return (data, ext) if ext else None
@@ -338,27 +360,72 @@ def _local(tag):
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
-def _cover_member(z):
-    """The zip member holding the book's cover: the manifest's `cover-image` item (EPUB 3), its `<meta name="cover">`
-    item (EPUB 2), else an image item whose id or file is named *cover*."""
+def _member(base, href):
+    """The zip member an href names from the member `base` (the package file, a page) — relative to it, or from the
+    book's top when it starts with '/' — or None: one climbing out of the book."""
+    href = unquote(href.split("#", 1)[0]).replace("\\", "/")
+    member = posixpath.normpath(href.lstrip("/") if href.startswith("/") else
+                                posixpath.join(posixpath.dirname(base), href))
+    return None if member.startswith("../") or member in (".", "..") else member
+
+
+def _page_picture(z, page):
+    """The picture a cover page shows (EPUB 2's guide): its first `<img src>` or SVG `<image href>`, as a zip member —
+    or None (no such page, too big, not XML, broken, no picture)."""
+    try:
+        if z.getinfo(page).file_size > MAX_OPF:
+            return None
+        root = ElementTree.fromstring(z.read(page))
+    except _BROKEN:
+        return None
+    for e in root.iter():
+        if _local(e.tag) == "img":
+            href = e.get("src")
+        elif _local(e.tag) == "image":              # SVG's: xlink:href (SVG 1.1) or href (SVG 2)
+            href = next((v for k, v in e.attrib.items() if _local(k) == "href"), None)
+        else:
+            continue
+        if href:
+            return _member(page, href)
+    return None
+
+
+def _cover_members(z):
+    """(A generator.) The zip members that may hold the book's cover, best first, each once: the manifest's
+    `cover-image` item (EPUB 3), its `<meta name="cover">` item (EPUB 2: by its id, or the file some tools name
+    there), the guide's cover (EPUB 2's `<reference type="cover">`: a picture, or the page showing one — read only when
+    the answers before it gave none), else an image item whose id or file is named *cover*. (Each is kept by itself,
+    never `a or b`: an ElementTree item has no children, so it is falsy — 3.0.0 passed over every item it found.)"""
     container = ElementTree.fromstring(z.read("META-INF/container.xml"))
     opf = next((e.get("full-path") for e in container.iter() if _local(e.tag) == "rootfile" and e.get("full-path")),
                None)
     if opf is None or z.getinfo(opf).file_size > MAX_OPF:
-        return None
+        return
     package = ElementTree.fromstring(z.read(opf))
-    items = [e for e in package.iter() if _local(e.tag) == "item" and e.get("href")]
-    images = [e for e in items if (e.get("media-type") or "").startswith("image/")]
+    images = [e for e in package.iter() if _local(e.tag) == "item" and e.get("href")
+              and (e.get("media-type") or "").startswith("image/")]
+    pictures = {_member(opf, e.get("href")) for e in images}
     meta = next((e.get("content") for e in package.iter()
                  if _local(e.tag) == "meta" and e.get("name") == "cover" and e.get("content")), None)
-    pick = (next((e for e in images if "cover-image" in (e.get("properties") or "").split()), None)
-            or next((e for e in images if e.get("id") == meta), None)
-            or next((e for e in images if "cover" in (e.get("id") or "").lower()
-                     or "cover" in posixpath.basename(e.get("href")).lower()), None))
-    if pick is None:
-        return None
-    member = posixpath.normpath(posixpath.join(posixpath.dirname(opf), unquote(pick.get("href"))))
-    return None if member.startswith("../") else member
+    seen = {None}
+
+    def fresh(members):
+        for member in members:
+            if member not in seen:
+                seen.add(member)
+                yield member
+    yield from fresh(_member(opf, e.get("href")) for e in images
+                     if "cover-image" in (e.get("properties") or "").split())
+    yield from fresh(_member(opf, e.get("href")) for e in images if meta is not None and meta in (e.get("id"),
+                                                                                                  e.get("href")))
+    for ref in package.iter():
+        if _local(ref.tag) == "reference" and (ref.get("type") or "").lower() == "cover" and ref.get("href"):
+            page = _member(opf, ref.get("href"))
+            if page is not None:
+                yield from fresh([page if page in pictures or page.lower().endswith(IMAGE_EXTS)
+                                  else _page_picture(z, page)])
+    yield from fresh(_member(opf, e.get("href")) for e in images if "cover" in (e.get("id") or "").lower()
+                     or "cover" in posixpath.basename(e.get("href")).lower())
 
 
 # --- the cache and the user's covers ----------------------------------------------------------------------------- #
@@ -367,7 +434,8 @@ def _digest(*parts):
 
 
 def _cache_stem(language, work_id, source, size, mtime_ns):
-    return _digest("epub", language, work_id, source, size, mtime_ns)[:32]
+    return _digest("epub-2", language, work_id, source, size, mtime_ns)[:32]   # -2 (3.0.2): every book's cover
+    #   read once again, its package's own answers first (3.0.0 could have kept a back cover named *cover*)
 
 
 def _cached(stem):

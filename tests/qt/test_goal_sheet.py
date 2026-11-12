@@ -557,3 +557,18 @@ def test_open_its_folder_opens_the_titles_own_folder(world, monkeypatch, tmp_pat
     sheet.pick(show, "folder")
     assert wait_until(lambda: opened == [there], 5)
     assert asked == [(tuple(show.item_ids), (), (show.folder,))] and calls(writer) == []
+
+
+def test_open_folder_says_when_the_titles_own_folder_is_gone(world, monkeypatch, tmp_path):
+    """Choice 24 (Sonic, 2026-11-09): the drive the title came from unplugged, Surasura's copy opens — and one line
+    says so."""
+    seed, win, writer = world()
+    sheet = open_sheet(win)
+    opened = []
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    show = two_part(win)
+    there, _asked = _own_folder_answers(monkeypatch, tmp_path, show.title, how="copy")
+    sheet.pick(show, "folder")
+    assert wait_until(lambda: opened == [there], 5)
+    assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["copy"], 3) and calls(writer) == []

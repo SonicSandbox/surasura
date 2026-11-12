@@ -6,6 +6,7 @@ already covers what went wrong; a tester's notes lost or the list emptied by a z
 tip or no name; the window's thread waiting on the disk; the zip's folder not opened.
 """
 import os
+import threading
 import zipfile
 
 import pytest
@@ -668,6 +669,57 @@ def test_no_connection_keeps_the_report_waiting_and_send_now_sends_the_same_one(
     assert wait_until(lambda: w.reports == [] and w.waiting_line.isHidden())
 
 
+def test_send_now_refused_again_says_so_anew_and_keeps_the_report_waiting(main, receiver):
+    # Mattias, 3.0.0 (2026-11-11): production's /report answered 404, and "Send now ... did nothing" — the refusal's
+    # line was word for word the one already showing (the status line repaints only on new words), and the press's arc
+    # lasts only as long as a 404's round trip. Each try that fails says so in words of its own; the zip stays.
+    receiver.answer = (404, b"Not found")
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    nonce = w.outbox.nonce
+    first = strings.REPORT_SEND_REFUSED.format(status=404)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == first, 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden())
+    lines = [first]
+    for tries in (2, 3):
+        w.send_now_button.click()
+        said = strings.REPORT_SEND_TRIED.format(n=tries, words=first)
+        assert wait_until(lambda: w.status.text() == said, 15)        # a line it hadn't shown: the press answered
+        lines.append(said)
+        assert wait_until(lambda: not w.waiting_line.isHidden() and w.send_now_button.isEnabled())
+    assert len(set(lines)) == 3 and len(receiver.got) == 3
+    assert {k.lower(): v for k, v in receiver.got[2]["headers"].items()}["x-report-nonce"] == nonce
+    assert len(core.listed()) == 1 and _send_state()[0].nonce == nonce     # the report and its zip both kept
+    receiver.answer = (201, {"id": "K3Q7PM"})
+    w.send_now_button.click()                                          # the receiver back: the same zip goes, once
+    assert wait_until(lambda: w.status.text() == "Sent. Your report is #K3Q7PM", 15)
+    assert wait_until(lambda: w.reports == [] and w.waiting_line.isHidden())
+
+
+def test_tries_count_per_zip_so_a_new_zips_first_refusal_says_the_plain_words(main, receiver):
+    # The count is the zip's (its nonce): a new zip after *Don't send* starts again, never "Tried 3 times".
+    receiver.answer = (404, b"Not found")
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    first = strings.REPORT_SEND_REFUSED.format(status=404)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == first, 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden() and w.send_now_button.isEnabled())
+    w.send_now_button.click()
+    assert wait_until(lambda: w.status.text() == strings.REPORT_SEND_TRIED.format(n=2, words=first), 15)
+    assert wait_until(lambda: not w.waiting_line.isHidden() and w.dont_send_button.isEnabled())
+    w.dont_send_button.click()
+    assert wait_until(lambda: w.waiting_line.isHidden() and w.status.text() == strings.REPORT_DISCARDED)
+    _save(w, ZH_WHAT)                                                  # another report: another zip, another nonce
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 3, 15)
+    assert wait_until(lambda: w.status.text() == first, 15)
+
+
 def test_a_window_opened_with_a_report_waiting_sends_nothing_by_itself(main, receiver):
     from app import send_report
     w = _press(main)
@@ -876,12 +928,9 @@ def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(ma
     assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
     gate.set()
     assert wait_until(lambda: made, 15)                                # the zip was made after the close
-    for _ in range(50):
-        QApplication.processEvents()
-    for t in threading.enumerate():
-        if t.name == "report-discard":
-            t.join(5)
-    assert _outbox_empty()
+    # its delete waited on, not a count of loop turns: the pool's answer that starts it can come later (GitHub,
+    # Flake-P2, tests/FLAKES.md)
+    assert wait_until(_outbox_empty, 10), "the zip made after the close is deleted"
     w = _press(main)
     assert wait_until(lambda: w.sender_line.text() != "")
     assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1
@@ -1441,3 +1490,121 @@ def test_kept_with_nothing_saved_a_report_saved_since_takes_the_empty_line_away(
     assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
     assert w.status.text() == "" and w.status.isHidden()
     _close(w)
+
+
+# --- Fresh-U row 3 (2026-11-10): no grey button without its reason; never past the screen ------------------------------ #
+def test_fresh_u_show_me_works_straight_after_typing_saving_the_draft_first(main):
+    # A new user typed what happened and pressed *Show me what's in it*: it waited, grey, for *Save to my list* (only a
+    # hover said so). Now it lights up with the words, says in its tip that they are saved first, and shows the plan
+    # with the typed report in it
+    w = _press(main)
+    assert not w.show_button.isEnabled() and w.show_button.toolTip() == strings.REPORT_SHOW_NONE_TIP
+    w.what.setPlainText(JA_WHAT)
+    assert w.show_button.isEnabled() and w.zip_button.isEnabled() and w.send_button.isEnabled()
+    assert w.show_button.toolTip() == strings.REPORT_SHOW_SAVES_TIP
+    assert w.zip_button.toolTip() == strings.REPORT_ZIP_SAVES_TIP
+    w.show_button.click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert wait_until(lambda: w.reports and len(w.reports) == 1)
+    assert core.listed()[0].what == JA_WHAT and w.what.toPlainText() == ""
+    assert f"reports/{core.listed()[0].id}/report.txt" in w.contents.toPlainText()
+    assert w.show_button.toolTip() == strings.REPORT_SHOW_TIP          # saved: the plain tip again
+
+
+def test_fresh_u_make_a_zip_straight_after_typing_saves_it_and_zips_it_with_the_ones_saved_before(main, sent, tmp_path):
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.what.setPlainText(JA_WHAT)
+    w.expected.setPlainText("Finishedに残ると思った")
+    w.dest = str(tmp_path / "zips")
+    w.zip_button.click()
+    assert wait_until(lambda: w.reports == [] and sent)
+    made = [n for n in os.listdir(tmp_path / "zips") if n.endswith(".zip")]
+    with zipfile.ZipFile(tmp_path / "zips" / made[0]) as z:
+        texts = [z.read(n).decode("utf-8") for n in z.namelist() if n.endswith("/report.txt")]
+    assert len(texts) == 2 and any(JA_WHAT in t for t in texts) and any(ZH_WHAT in t for t in texts)
+
+
+def test_fresh_u_words_typed_during_shows_save_stay_on_the_form_and_are_never_saved_twice(main, monkeypatch):
+    # The adversary's S7: typed while *Show me*'s save ran, the form kept the new words (as Send's save does) — the
+    # plan must follow without saving again (it saved them as a second report holding the first one's words too)
+    w = _press(main)
+    real_save = core.save
+    gate = threading.Event()
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real_save(*a, **k)
+    monkeypatch.setattr(core, "save", slow)
+    w.what.setPlainText(JA_WHAT)
+    w.show_button.click()
+    w.what.setPlainText(JA_WHAT + "\nもう一つ：Soonに戻った")              # typed meanwhile
+    w.make_zip()                                                       # a second press meanwhile: says why, does nothing
+    assert w.status.text() == strings.REPORT_ZIP_BUSY
+    gate.set()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
+    assert [r.what for r in core.listed()] == [JA_WHAT]
+    assert w.what.toPlainText().endswith("Soonに戻った")                 # kept for the learner, not saved
+
+
+def test_fresh_u_with_nothing_typed_or_saved_the_grey_buttons_reason_is_in_plain_sight(main):
+    # Every button of the row grey, and the window's own line (never only a hover) says what lights them
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY) and w.status.isVisibleTo(w)
+    assert "write what happened" in strings.REPORT_EMPTY
+    assert not any(b.isEnabled() for b in (w.save_button, w.show_button, w.zip_button, w.send_button))
+    w.what.setPlainText("   ")                                         # blanks are not words
+    assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
+
+
+def test_fresh_u_a_short_screen_gets_a_window_that_fits_and_scrolls_to_the_privacy_line(main, monkeypatch):
+    # 1,224 px on a 1080p screen put the privacy line and *New code* below the screen's edge: the window now asks for
+    # no more than the screen's available height (less its frame) and its body scrolls; the line is reachable
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 420))
+    w = _press(main)
+    assert w.body_scroll is not None and w.promise.parent() is not w
+    assert w.sizeHint().height() <= 420 and w.height() <= 420
+    assert w.body_scroll.verticalScrollBar().maximum() > 0             # taller than the room: it scrolls inside
+    w.body_scroll.ensureWidgetVisible(w.promise)
+    QApplication.processEvents()
+    top = w.promise.mapTo(w.body_scroll.viewport(), QPoint(0, 0)).y()
+    assert 0 <= top and top + w.promise.height() <= w.body_scroll.viewport().height()
+
+
+def test_a_status_line_that_appears_after_the_window_is_sized_keeps_it_inside_a_short_screen(main, monkeypatch):
+    # The stress gate's red (train 27, round 20/20: 442 > 420): on a loaded machine the reports' line ('Nothing saved
+    # yet…') can land after the window was first laid out with its status line hidden. The body's room had been
+    # worked out without that line, the scroll area kept that height, and the window grew by the line past the
+    # screen. A line shown (or gone) works the body's room out again
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 420))
+    w = _press(main)
+    line = w.status.text()
+    assert line                                                       # the reports' line, said
+    for _ in range(3):                                                # (each turn a chance at the old order)
+        w.say("")                                                   # as if it had not landed yet:
+        w.body_scroll.updateGeometry()                                # (the body's content landing meanwhile)
+        w.layout().activate()                                         # the window laid out without it
+        w.resize(w.width(), w.sizeHint().height())
+        w.layout().activate()
+        w.say(line)                                                   # ... and then it lands
+        w.layout().activate()
+        assert w.sizeHint().height() <= 420 and w.minimumSizeHint().height() <= 420 and w.height() <= 420
+    assert w.body_scroll.verticalScrollBar().maximum() > 0
+
+
+def test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it(main, monkeypatch):
+    from PyQt6.QtCore import QRect
+    # A stand-in screen taller than the window can be (its height, title bar included, is the real screen's room at
+    # most): 700 rows let a window that tall cross the bottom from y=10 once Windows reported its frame — a race the
+    # 3.0.0 cut's --all met. Only the move to y=1500 crosses it here.
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 1600))
+    w = _press(main)
+    w.move(40, 1500)
+    windows.onto_screen(w)
+    assert w.frameGeometry().bottom() <= 1599 and w.x() == 40 and w.y() < 1500
+    w.move(40, 10)
+    windows.onto_screen(w)                                             # on the screen already: never moved
+    assert w.pos() == QPoint(40, 10)

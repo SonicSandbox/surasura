@@ -3,8 +3,9 @@
 
 Since W-1b a Finish — a drop on Finished or ⋯'s *Move to Finished* —, the Finish toast's *Leave its new cards out of
 your order*, a Finished row's *Put back* and its *Leave its new cards out* / *Put them back in the order*, and their
-Undo write the store at once, but Anki moves only when the re-order host has re-ordered for that write, after the
-Generate it starts. Sonic's doctrine is that every press reacts at once: the press is painted before the writer has
+Undo write the store at once, but Anki moves only when the re-order host has re-ordered for that write — in its next
+job for a finish of files the plan counted (Haya-FN, 2026-11-09: the watched mark's rule), after the Generate it starts
+otherwise (a Put back after its Generate, a file the plan never counted). Sonic's doctrine is that every press reacts at once: the press is painted before the writer has
 the command (the bar's arc when the row has left the list, the row's ⋯ when it stays), and it stays live until the
 store records that re-order (`planned_order_version` / `planned_pins_version` reach the change's `landed` versions).
 It also ends when the host leaves the re-order to the user, saying the host's own words (Anki closed), when the
@@ -478,7 +479,7 @@ def test_f2_an_undo_pressed_before_its_finish_was_saved_keeps_the_mark_until_the
     assert wait_until(lambda: not p[0].live(), 5)
 
 
-def test_fp1_the_bars_arc_says_on_hover_that_anki_moves_after_the_generate(window):
+def test_fp1_the_bars_arc_says_on_hover_that_anki_moves_once_its_order_is_ready(window):
     """FP-1 lean (b), PROVISIONAL: no words in the bar while it waits; a hover on the arc says what it waits for."""
     store, win, writer = window()
     finish_one(win)

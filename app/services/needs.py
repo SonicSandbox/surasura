@@ -132,12 +132,18 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
          BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
-WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
+WIRED_LATER = frozenset(("make_cards", "try_again"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
-                   "mine-failed": ("open_logs",), "error": ("open_logs",),
+                   # Mattias #5: a part Anki Miner stopped on twice — *Try again* (the rows' own ask, `mine_actions`)
+                   "mine-failed": ("try_again", "open_logs"), "error": ("open_logs",),
+                   # Michi-RM3: words Anki refused alone — *Skip this word* first (`connect.actions.skip_refused`)
+                   "mine-refused": ("skip_words", "try_again"),
                    # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
-                   "speech-model": ("get_speech_model", "no_speech_model")}
+                   "speech-model": ("get_speech_model", "no_speech_model"),
+                   # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
+                   # · *Mine without audio*
+                   "book-audiobook": ("pick_audiobook", "no_audiobook")}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -264,7 +270,8 @@ STRINGS = {
 # kinds whose cards share a reason (3+ of one: one line over them, `_reason_lines`), and its words
 REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_offline", FAILURE: "reason_failure",
            "not-timed": "reason_not_timed", "no-pairing": "reason_no_pairing",
-           "repick": "reason_cards", "mine-failed": "reason_cards", "error": "reason_cards", GAP: "reason_gap"}
+           "repick": "reason_cards", "mine-failed": "reason_cards", "mine-refused": "reason_cards", "error": "reason_cards",
+           GAP: "reason_gap"}
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
 NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE))   # (Michi-U: the rows' tip points here)

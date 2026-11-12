@@ -31,8 +31,8 @@ SAMPLES = os.path.join(os.path.dirname(HERE), "samples")
 
 # Real text per language: (file name, the resource it is copied from)
 TEXTS = {
-    "ja": [("H_priority_sample_1.txt", os.path.join(SAMPLES, "ja", "HighPriority", "H_priority_sample_1.txt")),
-           ("H_priority_sample_2.srt", os.path.join(SAMPLES, "ja", "HighPriority", "H_priority_sample_2.srt")),
+    "ja": [("蜘蛛の糸（芥川龍之介）.txt", os.path.join(SAMPLES, "ja", "HighPriority", "蜘蛛の糸（芥川龍之介）.txt")),
+           ("喫茶店の朝.srt", os.path.join(SAMPLES, "ja", "HighPriority", "喫茶店の朝.srt")),
            ("context_test.txt", os.path.join(RESOURCES, "ja", "context_test.txt")),
            ("phrases_sample.srt", os.path.join(RESOURCES, "ja", "phrases_sample.srt"))],
     "zh": [("chinese_text_1.txt", os.path.join(RESOURCES, "zh", "chinese_text_1.txt")),

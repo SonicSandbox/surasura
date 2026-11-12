@@ -35,7 +35,7 @@ from tests.test_replan_preview import _deck, _settings_file, lib  # noqa: E402,F
 
 RES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources")
 EPISODE = "placed_episode.srt"
-BOUND = ("門", "モン")                       # listed (RP-2's novels); in the episode only in 二門 (a counter: a piece)
+BOUND = ("門", "モン")                       # listed (RP-2's café episode); in the episode only in 二門 (a counter: a piece)
 ON_THE_LIST = ("気が付く", "キガツク")         # a set phrase the list holds already
 NEWLY = {("文化祭", "ブンカサイ"), ("腑に落ちる", "フニオチル")}   # listed once the episode is counted
 

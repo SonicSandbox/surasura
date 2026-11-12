@@ -20,6 +20,12 @@ from app import analyzer, path_utils
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL = os.path.join(ROOT, "tests", "Test Resources", "ja", "expected_output.csv")
+def _first(path):
+    """The real list's first row (Word, Reading): a pin on the list's head, never on one sample's word."""
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        row = next(csv.DictReader(f))
+    return row["Word"], row["Reading"]
+
 PYTHON_DEFAULT = 131072
 
 
@@ -56,7 +62,7 @@ def test_the_shared_reader_reads_the_whole_list_with_and_without_its_header(tmp_
     path, rows = _write_big_list(str(tmp_path))
     with open(path, encoding="utf-8-sig", newline="") as f:
         got = list(path_utils.list_reader(f))
-    assert len(got) == len(rows) and got[0]["Word"] == "うう" and got[0]["Sources"] == rows[0]["Sources"]
+    assert len(got) == len(rows) and got[0]["Word"] == _first(REAL)[0] and got[0]["Sources"] == rows[0]["Sources"]
     with open(path, encoding="utf-8-sig", newline="") as f:
         assert sum(1 for _ in path_utils.list_reader(f, header=False)) == len(rows) + 1
 
@@ -67,7 +73,7 @@ def test_new_arrivals_ranks_by_the_big_list(monkeypatch, tmp_path):
     _path, rows = _write_big_list(str(tmp_path))
     monkeypatch.setattr(analyzer, "RESULTS_DIR", str(tmp_path))
     got = arrivals_worker.Worker._listed(SimpleNamespace(), None)
-    assert got[("うう", "ウウ")] == 0 and len(got) == len({(r["Word"], r["Reading"]) for r in rows})
+    assert got[_first(REAL)] == 0 and len(got) == len({(r["Word"], r["Reading"]) for r in rows})
 
 
 @pytest.mark.parametrize("module", ["app.services.journey", "app.replan_preview"])
@@ -76,7 +82,7 @@ def test_the_shadow_check_reads_both_big_lists(monkeypatch, tmp_path, module):
     _write_big_list(str(tmp_path / "results"))
     monkeypatch.setattr(path_utils, "get_user_file", lambda rel: str(tmp_path / rel))
     lists = importlib.import_module(module)._lists()
-    assert lists["priority"] and lists["progressive"] and lists["priority"][0]["Word"] == "うう"
+    assert lists["priority"] and lists["progressive"] and lists["priority"][0]["Word"] == _first(REAL)[0]
 
 
 def test_connects_verbs_read_and_count_the_big_list(tmp_path):
@@ -89,7 +95,7 @@ def test_connects_verbs_read_and_count_the_big_list(tmp_path):
 def test_junbans_index_and_the_exports_read_the_big_list(tmp_path):
     from app import anki_match, exports
     path, rows = _write_big_list(str(tmp_path))
-    assert "うう" in anki_match.build_index(path, language="ja").rank_of
+    assert _first(REAL)[0] in anki_match.build_index(path, language="ja").rank_of
     assert exports.csv_has_data_rows(path) is True
     assert exports._count("csv", path) == len(rows)
 
@@ -99,10 +105,10 @@ def test_backfill_and_the_youtube_preview_read_the_big_list(monkeypatch, tmp_pat
     preview = pytest.importorskip("modules.youtube_downloader.preview")
     path, _rows = _write_big_list(str(tmp_path))
     rank_of, words, _orths = backfill.list_index(path)
-    assert rank_of and words[0] == ("うう", "ウウ")
+    assert rank_of and words[0] == _first(REAL)
     monkeypatch.setattr(preview, "library_contexts_path", lambda: path)
     by_lr, _by_lemma = preview.load_library_contexts()
-    assert ("うう", "ウウ") in by_lr
+    assert _first(REAL) in by_lr
 
 
 def test_no_list_reader_goes_around_the_shared_one():

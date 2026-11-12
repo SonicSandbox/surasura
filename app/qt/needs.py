@@ -243,11 +243,11 @@ def _label(text, name, parent, wrap=True):
 # round 8 row 45: the buttons whose press turns an arc (`app/qt/press.py`, `NeedsYou._press`) — a card's answers that
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
-ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
+ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "skip_words", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them")
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook")
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
 
@@ -622,6 +622,25 @@ def _default_books(opener, item_id):
                 pass
 
 
+def _default_audiobooks(opener, item_id):
+    """Kura-AB2 *Pick its audiobook…*: the book part `item_id`'s book and the library's audiobooks with no book,
+    likeliest first (`Store.book_audiobooks`), through a store handle of this worker's own (closed after)."""
+    if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+        return None
+    try:
+        store = opener.handle()
+        if store is None or not hasattr(store, "book_audiobooks"):
+            return None
+        return store.book_audiobooks(item_id)
+    finally:
+        close = getattr(opener, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def _held_book(books, path):
     """(A worker.) *An EPUB on your computer…*: the library's book that IS this file — its path, else its bytes (sha256)
     — or None."""
@@ -723,6 +742,7 @@ class NeedsYou(QObject):
         self.read_connect = service.read_connect
         self.read_asks = lambda: _default_asks(opener)
         self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
+        self.read_audiobooks = lambda item_id: _default_audiobooks(opener, item_id)   # Kura-AB2
         # Michi-NS: *Make them from the audio*'s two steps, each on a worker (tests replace them)
         self.subs_ready = _subs_ready
         self.make_subs = lambda *args: _default_make(opener, *args)
@@ -746,7 +766,9 @@ class NeedsYou(QObject):
                               "save_logs": _connect_callable("status", "save_logs"),
                               "kick": _connect_callable("kick", "kick"),
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
-                              "speech_model": _connect_callable("actions", "speech_model")}   # Michi-AB Stage B
+                              "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
+                              "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
+                              "skip_words": _connect_callable("actions", "skip_refused")}     # Michi-RM3
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -1026,10 +1048,14 @@ class NeedsYou(QObject):
             return name in self.hooks
         if name in self.WRITES:
             return getattr(self.win, "moves", None) is not None
-        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
+        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki", "skip_words"):
             return self.connect_calls.get(name) is not None
         if name in ("get_speech_model", "no_speech_model"):
             return self.connect_calls.get("speech_model") is not None
+        if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
+            return self.connect_calls.get("book_audiobook") is not None
+        if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
+            return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
@@ -1478,6 +1504,81 @@ class NeedsYou(QObject):
                 is not None:
             self._say(strings.NEEDS_SEPARATED)
 
+    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — pick it, or mine without audio
+    def _do_pick_audiobook(self, entry, _line):
+        """*Pick its audiobook…*: the library's audiobooks with no book, read on a worker (its arc turns meanwhile),
+        then a menu under the button — the likeliest first (`BOOKS_SHOWN`), then *A folder on your computer…*. A pick
+        pairs them as *Find its book…* does (`pick_audiobook`, its toast's Undo); Connect, kicked, lines them up and
+        the card goes by itself at its next look."""
+        item_id = entry.data.get("item_id")
+        self._press("pick_audiobook", entry, self.read_audiobooks, item_id,
+                    then=lambda got: self._audiobooks_menu(entry, got), goes=False)
+
+    def _audiobooks_menu(self, entry, got):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QAction
+        from app.qt import drag
+        if not self._alive():
+            return
+        self._stays("pick_audiobook", entry)
+        if not got:                                  # the book left the library meanwhile: nothing to pair it with
+            self._say(strings.NEEDS_AUDIOBOOK_GONE)
+            return
+        m = drag.list_menu(self.cards, entry.title)
+        for ab in (got.get("audiobooks") or [])[:BOOKS_SHOWN]:
+            act = QAction(strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]), m)
+            act.triggered.connect(lambda _c=False, ab=ab: self._pick_audiobook(entry, ab["item_id"], got["epub"],
+                                                                               got["title"]))
+            m.addAction(act)
+        if got.get("audiobooks"):
+            m.addSeparator()
+        act = QAction(strings.NEEDS_AUDIOBOOK_FOLDER, m)
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
+        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"]))
+        m.addAction(act)
+        self.last_menu = m
+        control = self._control("pick_audiobook", entry)
+        if control is not None and control.isVisible():
+            m.popup(control.mapToGlobal(QPoint(0, control.height())))
+        return m
+
+    def _pick_audiobook(self, entry, audio_id, epub, title):
+        writer, kick, read_settings = self.win.services.writer, self.connect_calls.get("kick"), self.read_settings
+
+        def told(_ticket, event):                    # saved: Connect lines them up at once, not at its next look
+            if event == "saved" and kick is not None:
+                bridge.run_in_worker(lambda: kick(read_settings() or {}))
+        self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
+                   lambda t: writer.pick_audiobook(audio_id, epub, label=t), told=told)
+
+    def _audiobook_folder(self, title):
+        """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,
+        `Adder.read_folder`); its look pairs the audiobook by itself when it is sure, else asks, else it is listed
+        here for the pick."""
+        adder = getattr(self.win, "adder", None)
+        if adder is None:
+            return
+        folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), "")
+        if folder and adder.read_folder(folder):
+            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
+
+    def _do_no_audiobook(self, entry, _line):
+        answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),
+                                             self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = answer(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("no_audiobook", entry)
+            self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press("no_audiobook", entry, run, then=done)
+
     # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
     def _do_get_speech_model(self, entry, _line):
         self._speech_model(entry, True)
@@ -1788,6 +1889,26 @@ class NeedsYou(QObject):
             self._connect_done(strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("mine_anyway", entry, run, then=done)
 
+    def _do_skip_words(self, entry, _line):
+        """Michi-RM3: *Skip this word* — those words left out for good (`actions.skip_refused`), the part's other cards
+        filled at Connect's next look (kicked); the card goes. Nothing to skip any more: said, the card stays."""
+        skip, kick, lang, read_settings = (self.connect_calls["skip_words"], self.connect_calls.get("kick"),
+                                           self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = skip(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("skip_words", entry)
+            self._connect_done(strings.NEEDS_SKIPPED if ok == "on" else strings.NEEDS_SKIPPED_OWES if ok
+                               else strings.NEEDS_SKIPPED_NOT)       # (review r2 N1: never "made next" untrue)
+        self._press("skip_words", entry, run, then=done)
+
     def _do_ask_hato(self, entry, _line):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
         self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
@@ -1981,6 +2102,9 @@ class NeedsYou(QObject):
     # P4.1's (hidden until hooked)
     def _do_make_cards(self, entry, _line):
         self.hooks["make_cards"](entry)
+
+    def _do_try_again(self, entry, _line):             # Mattias #5: the rows' own ask (`mine_actions`)
+        self.hooks["try_again"](entry)
 
     # setup's first cards (SRC D1)
     def _do_first_cards(self, entry, _line):

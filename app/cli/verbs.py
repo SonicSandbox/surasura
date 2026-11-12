@@ -181,6 +181,19 @@ def _count(text):
     return value
 
 
+def shown_kana(row):
+    """The reading of a list row's shown spelling (`Orth`), beside its `reading` (the row's own, its identity): the
+    Generate's `Kana` for a set phrase written otherwise than its row (いい感じ イイカンジ beside ヨイカンジ, the
+    journey's), a spelling in kana alone as written (`plan_rules.kana_as_written`, as Connect's card reads it: もん モン
+    beside 物's モノ), else the row's reading. Results from before the `Kana` column: a phrase spelled with kanji keeps
+    its row's reading. No reading (Chinese): ""."""
+    from app import plan_rules
+    reading = row.get("Reading", "")
+    if row.get("Kana"):
+        return row["Kana"]
+    return (reading and plan_rules.kana_as_written(row.get("Orth") or row.get("Word", ""))) or reading
+
+
 def _kinds(lang):
     """word -> kind for the rows that aren't plain words: phrase (a set phrase's row), compound (a word made of
     words), one_kanji (Japanese, one character). The tables the run itself reads; Chinese keeps every word a word."""
@@ -277,7 +290,8 @@ def list_words(args):
         if key in seen:                     # the journey meets a word once; a file's rows are its own
             continue
         seen.add(key)
-        word = {"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1], "score": _int(row.get("Score")),
+        word = {"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1], "kana": shown_kana(row),
+                "score": _int(row.get("Score")),
                 "occurrences": _int(row.get("Occurrences", row.get("Occurrences (Global)"))),
                 "kind": kind(key[0])}
         if args.file is not None:
@@ -365,7 +379,7 @@ def _file_encounter(args, loaded, lang):
         if args.limit is not None and len(words) >= args.limit:
             break
         row, cue = listed[key], read[o.cue]
-        words.append({"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1],
+        words.append({"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1], "kana": shown_kana(row),
                       "score": _int(row.get("Score")), "occurrences": _int(row.get("Occurrences")),
                       "kind": kind(key[0]), "file_order": len(words) + 1, "file_occurrences": uses[key],
                       "start": cues.seconds(cue.start), "end": cues.seconds(cue.end),

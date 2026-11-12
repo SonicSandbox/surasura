@@ -27,6 +27,7 @@ from app.qt import strings
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
+from app.services.setup_wizard import NOTHING_TO_COUNT as SW_NOTHING
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
 
@@ -807,6 +808,21 @@ def test_a_rows_kind_names_its_count_a_book_in_parts_and_files_without_a_title(m
     assert r"3 videos · E:\Videos\Clips" in texts and r"2 files · E:\Downloads" in texts
 
 
+def test_a_row_copied_into_surasuras_own_folder_says_so_never_its_tier_folder(make):
+    # Hon-SM (Fresh-U's top finding): the samples showed "…\data\ja\HighPriority" beside each, 2.x's folder name; a
+    # title whose copy is in Surasura's own data folder (`ours`) says it was copied in, a folder read in place its path
+    rows = [{"name": "蜘蛛の糸", "count": 1, "folder": r"C:\Surasura\data\ja\HighPriority", "ours": True,
+             "kind": "reading"},
+            {"name": "星空ダイナー", "count": 12, "folder": r"E:\Shows\Hoshizora Diner", "ours": False, "kind": "shows"}]
+    wiz, *_ = make(api=FakeApi(rows=rows))
+    go_to(wiz, "shows")
+    page = wiz.page
+    assert wait_until(lambda: page.row_paints == 1)
+    texts = [w.text().replace("\u200b", "") for w in page.rows_part.findChildren(W.QLabel)]
+    assert S.ROW_LINE_OURS.format(count="a book") in texts and r"12 episodes · E:\Shows\Hoshizora Diner" in texts
+    assert not any("HighPriority" in t for t in texts)
+
+
 def test_an_empty_library_shows_no_rows(make):
     wiz, *_ = make(api=FakeApi(rows=[]))
     go_to(wiz, "shows")
@@ -893,13 +909,12 @@ def test_copy_code_puts_ankiconnects_code_on_the_clipboard_and_says_copied_at_on
     assert wiz.say_line.accessibleName() != A.COPIED_LINE and wiz.say_line.isHidden()
 
 
-def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch):
+def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch, qt_timer):
     # Mado-A: the closed part's watch rides the shell's poll; each light look runs on a worker, one at a time; the
     # first one that finds AnkiConnect answering runs Check again's look, which opens the page's decks
-    from PyQt6.QtCore import QTimer
     from app import ankiconnect_addon as A
     from app.qt import addon_steps
-    tick = QTimer()
+    tick = qt_timer()
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
@@ -934,13 +949,12 @@ def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_i
     assert len(asked) == n                                # Anki is in: the part is gone, the watch asks nothing
 
 
-def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch):
+def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch, qt_timer):
     # A8A-1: the commonest first run — Anki closed (no steps), then opened without AnkiConnect: the light look sees the
     # Anki process (the last look saw none) and the full look shows Copy code and the steps, no press
-    from PyQt6.QtCore import QTimer
     from app import ankiconnect_addon as A
     from app.qt import addon_steps
-    tick = QTimer()
+    tick = qt_timer()
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     seen = []
@@ -1201,6 +1215,77 @@ def test_A4M1_2b_a_deck_surasura_cant_tell_is_asked_on_the_page_and_the_choice_g
     page.show_ask({"deck": ["日本語::Mining"], "note_type": None})
     page.show_look(miner.answer)
     assert page.ask_part.isHidden(), "a ready Anki Miner shows no choice"
+
+
+def test_choice_86_a_new_surasura_deck_is_offered_first_and_named_as_new(make):
+    """Choice 86 (Sonic, 2026-11-09): the learner's one deck is Kaishi 1.5k, a course — the menu opens on a new deck of
+    Surasura's own, named as new (Anki lacks it yet), Kaishi next; the press hands the deck's own name, never its
+    label; Kaishi still taken when chosen."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    asked = {"deck": ["Surasura", "日本語::Kaishi 1.5k", "Default"], "new": "Surasura", "note_type": None, "why": None}
+    pressed = []
+    answers = [("ask", asked), ("ask", asked), ("set-up", None)]
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return answers[len(pressed) - 1]
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert [page.ask_deck.itemText(i) for i in range(page.ask_deck.count())] == [
+        S.MINER_NEW_DECK.format(deck="Surasura"), "日本語::Kaishi 1.5k", "Default"]
+    assert page.ask_deck.currentIndex() == 0 and page.ask_line.text() == S.MINER_ASK_NEW_DECK
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 2 and not wiz.setting_up)
+    assert pressed[1] == {"deck": "Surasura", "note_type": None}, "the deck's name, never its menu label"
+    page.ask_deck.setCurrentIndex(1)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 3 and not wiz.setting_up)
+    assert pressed[2] == {"deck": "日本語::Kaishi 1.5k", "note_type": None}, "the course deck still offered"
+    page.show_ask(dict(asked, new=None))                  # Anki has a "Surasura" deck already: no "new" on it
+    assert page.ask_deck.itemText(0) == "Surasura" and page.ask_line.text() == S.MINER_ASK_DECK
+
+
+def test_choice_86_back_and_next_on_what_you_know_keeps_the_new_deck_among_its_decks(make):
+    """Review MUST (choice 86): the setup joined the new deck to the known-words decks — a Back to *What you know* and
+    Next there writes its decks with it, never the list loaded when the wizard opened (which would drop it and turn
+    the automatic sync on again)."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    pressed = []
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return ("set-up", " Surasura made the deck “Surasura” in Anki. Its cards count as words you know.")
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, shell, api, settings, _m = make(miner=miner)
+    go_to(wiz, "cards")
+    known = wiz.pages[1].chosen_decks()
+    assert known, "the known page reads decks from Anki"
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    page.show_ask({"deck": ["Surasura"] + known, "new": "Surasura", "note_type": None, "why": None})
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 1 and not wiz.setting_up)
+    assert wiz.pages[1].chosen_decks() == known + ["Surasura"]
+    while W.PAGES[wiz.index] != "known":
+        wiz.back()
+    settings.calls.clear()
+    wiz.next()
+    assert [c["anki_sync_decks"]["ja"] for c in settings.calls if "anki_sync_decks" in c] == [known + ["Surasura"]]
+    assert not any("anki_sync_auto" in c for c in settings.calls), "the same decks: the sync's switch left as it is"
+    assert wiz.pages[1].answers()["decks"] == known + ["Surasura"]
+    wiz.pages[1].keep_deck("Surasura")                              # once is enough: never twice
+    assert wiz.pages[1].chosen_decks() == known + ["Surasura"]
 
 
 def test_A4M1_2b_a_choice_asked_for_one_language_never_shows_after_a_switch_to_the_other(make):
@@ -1609,6 +1694,30 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
     assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
 
 
+def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its_own_line_back(make):
+    """Zh-S (2026-11-09): 3.0 makes cards in Japanese only (Connect parks every Chinese entry). Before, a Chinese learner
+    met the Japanese page's promise over a Chinese card picture, and the page-1 tip said "your cards in Chinese"."""
+    wiz, *_ = make()
+    assert "Japanese only" not in wiz.pages[4].line.text()          # Japanese: the page as it was
+    wiz.pages[0].channel.choose("zh", user=True)
+    wiz.next()
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "Japanese only" in S.CARDS_LINE_ZH
+    assert "your cards in Chinese" not in S.LANGUAGE_TIPS["zh"]
+    while wiz.index:
+        wiz.back()
+    wiz.pages[0].channel.choose("ja", user=True)
+    wiz.next()
+    assert wiz.pages[4].line.text() == S.CARDS_LINE                 # switched back: the Japanese line again
+
+
+def test_zh_s_a_wizard_that_opens_in_chinese_says_it_on_the_cards_page_at_once(make):
+    """Zh-S review R1: *Set up again* in Chinese builds the page in Chinese — no switch to tell it."""
+    wiz, *_ = make(data={"target_language": "zh"})
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH
+
+
 def test_a_second_pass_through_what_you_know_syncs_again_only_for_other_decks(make):
     wiz, _shell, api, *_ = make()
     wiz.next()
@@ -1723,6 +1832,52 @@ def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make,
     waits[-1][1]()
     QApplication.processEvents()
     assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
+
+
+def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_again(make, monkeypatch):
+    """Disc-T1 (Mattias, 2026-11-10: "Counting your shows… didn't really get any feedback"): his library was empty
+    (a new incoming folder, the 2.5 shows left behind) and the page said *Counting your shows…* for good. Nothing to
+    count is said as that (`NO_SHOWS`); the page keeps asking, so shows that arrive meanwhile still bring numbers."""
+    waits = []
+    api = FakeApi(numbers=dict(SW_NOTHING))
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    page = wiz.page
+    assert wait_until(lambda: len(waits) == 1), "nothing to count: asked again"
+    assert not page.counting.isHidden() and page.counting.text() == S.NO_SHOWS and page.numbers_part.isHidden()
+    api.numbers = NUMBERS                                           # a show arrived, and the indexer read it
+    shell.bridge.indexed.emit("ja")
+    assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
+    assert [page.big[k].text() for k in ("words", "coverage", "every")] == ["812", "96%", "3 h"]
+    page.show_numbers(None)                                         # (counting again, as a language change starts it)
+    assert page.counting.text() == S.COUNTING
+    page.show_numbers({"empty": "arrivals"})                        # only New arrivals': sort one into Current
+    assert page.counting.text() == S.NO_SORTED and page.numbers_part.isHidden()
+    wiz.fetching = {"links": 2}                                     # YouTube's videos still coming: still counting
+    page.show_numbers(dict(SW_NOTHING))
+    assert page.counting.text() == S.COUNTING
+    asked = api.calls.count(("level_numbers", "ja"))
+    wiz._youtube_landed(0, 1, "")                                   # they came: counted at once, never after 30 s
+    assert wiz.fetching is None
+    assert wait_until(lambda: api.calls.count(("level_numbers", "ja")) == asked + 1)
+
+
+def test_a_count_that_failed_asks_again_never_counting_for_good(make, monkeypatch):
+    """Disc-T1: a worker that raised was logged once and never asked again — *Counting your shows…* for good. It asks
+    again as a count not ready yet does."""
+    waits = []
+    api = FakeApi(numbers=None)
+
+    def broken(settings, language):
+        api.calls.append(("level_numbers", language))
+        raise OSError("the token store is busy")
+    monkeypatch.setattr(api, "level_numbers", broken)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    go_to(wiz, "level")
+    assert wait_until(lambda: len(waits) == 1), "a failed count is asked again"
+    assert wiz.page.counting.text() == S.COUNTING
 
 
 def test_counting_asks_again_when_the_indexer_ran(make, monkeypatch):
@@ -2029,6 +2184,40 @@ def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(
     assert wait_until(lambda: page.btn_behind.isVisible())
 
 
+class HeldBehindApi(BehindApi):
+    """Each look at the shows behind the deck held until the test lets it answer (`answers`, in the order asked)."""
+    def __init__(self, answers, **kw):
+        super().__init__(None, **kw)
+        self.answers, self.gates = list(answers), []
+
+    def backlog_shows(self, language, settings, deck):
+        gate = threading.Event()
+        self.gates.append(gate)
+        n = len(self.gates)
+        self.asked.append((language, deck))
+        gate.wait(10)
+        return self.answers[n - 1] if n <= len(self.answers) else None
+
+
+def test_michi_c_an_older_look_answering_late_never_undoes_a_newer_one(make):
+    """Disc-T1 (the stress gate's red: the test above, 1 in 4 under load): arriving on the page starts two looks for
+    the same deck (shown, then entered: looked at again). The older one answers with Anki closed; the newer one's
+    shows are what the page says, never dropped because the older answer cleared the look (both carry one key)."""
+    api = HeldBehindApi([None, BEHIND])
+    wiz, shell, api, settings, _m = make(api=api)
+    try:
+        go_to(wiz, "order")
+        page = wiz.page
+        assert wait_until(lambda: len(api.gates) == 2), len(api.gates)   # both out at once
+        api.gates[0].set()                                          # the older one: Anki closed, late
+        wait_until(lambda: False, 0.3)
+        api.gates[1].set()                                          # the newer one: the shows
+        assert wait_until(lambda: page.btn_behind.isVisible()), "the newer look's answer is shown"
+    finally:
+        for gate in api.gates:
+            gate.set()
+
+
 def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_browser(make):
     """3.0: *Questions? Join us on Discord* — one link on the last page, hover-tipped, the invite opened on a worker
     (a link the browser opens, never a call of the app's); nothing written."""
@@ -2286,3 +2475,99 @@ def test_a_video_and_a_subtitle_picked_together_each_say_their_own(make, tmp_pat
     assert wait_until(lambda: S.VIDEO_NO_SUBTITLE_PLAIN.format(name="Episode 08.mkv") in page.refused_line.text())
     assert page.files == [os.path.normpath(str(folder / "Episode 01.ja.srt"))]
     assert S.FILE_NOT_READ.format(name="表紙.png") in page.refused_line.text()
+
+
+# --- Fresh-U row 2 (2026-11-10): *Start fresh*, then Card order ---------------------------------------------------------- #
+class FreshApi(FakeApi):
+    """The service's own rule for page 4's switch (`setup_wizard.keeps_order`), and the deck's new cards counted."""
+
+    def __init__(self, counts=None, **kw):
+        super().__init__(**kw)
+        self.counts, self.counted = dict(counts or {}), []
+
+    def keeps_order(self, settings, how, shown):
+        from app.services import setup_wizard
+        return setup_wizard.keeps_order(settings, how, shown)
+
+    def new_cards(self, settings, deck):
+        self.counted.append(deck)
+        return self.counts.get(deck)
+
+
+def _known_way(wiz, way):
+    go_to(wiz, "known")
+    wait_until(lambda: not wiz._anki_looking, 2.0)
+    QTest.mouseClick(wiz.page.channel.choice(way), Qt.MouseButton.LeftButton)
+
+
+def test_fresh_u_start_fresh_leaves_card_orders_switch_off_unrecommended_and_saves_it_off(make):
+    # A learner who said "start fresh" never has the cards already in Anki moved after the first Generate: the switch
+    # comes up off (no *Recommended* beside it, no line of what it would move) and *Next* saves the consent off
+    api = FreshApi(counts={"日本語::Mining": 334})
+    wiz, _shell, api, settings, _m = make(api=api)
+    _known_way(wiz, "fresh")
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert not page.keep.switch.isChecked() and page.keep.rec.isHidden()
+    assert wait_until(lambda: page._moves_n == 334, 2.0) and page.moves_line.isHidden()
+    settings.calls.clear()
+    wiz.next()
+    assert settings.calls[0]["junban_auto_actions"] is False
+
+
+def test_fresh_u_turned_on_after_start_fresh_it_names_the_deck_and_how_many_new_cards_it_moves(make):
+    # On, the page says what it does to the cards already there: the chosen deck by name and its new cards' count, read
+    # again for another deck; turned by hand, page 2's way never turns it back
+    api = FreshApi(counts={"日本語::Mining": 334, "Core 2k": 1})
+    wiz, _shell, api, settings, _m = make(api=api)
+    _known_way(wiz, "fresh")
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page._moves_n == 334, 2.0) and page.moves_line.isHidden()   # (counted, off: unsaid)
+    QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
+    assert page.keep.switch.isChecked() and page.moves_line.isVisible()
+    assert page.moves_line.text() == "It moves the 334 new cards in 日本語::Mining."
+    page.deck_box.setCurrentIndex(page.deck_box.findText("Core 2k"))
+    page.deck_box.activated.emit(page.deck_box.currentIndex())
+    assert wait_until(lambda: page.moves_line.text() == "It moves the 1 new card in Core 2k.", 2.0)
+    page.entered()                                                # shown again: the learner's own choice stays
+    assert page.keep.switch.isChecked()
+    QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
+    assert page.moves_line.isHidden()                             # off: nothing moves, nothing said
+
+
+def test_fresh_u_from_anki_keeps_the_recommended_on_and_back_to_from_anki_turns_it_on_again(make):
+    # The rule is Start fresh's only: From Anki keeps the draft's on (with the count), and a learner who went back
+    # from Start fresh to From Anki gets the recommended on again (the switch was never touched)
+    api = FreshApi(counts={"日本語::Mining": 2140})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page.moves_line.isVisible(), 2.0)
+    assert page.keep.switch.isChecked() and not page.keep.rec.isHidden()
+    assert page.moves_line.text() == "It moves the 2,140 new cards in 日本語::Mining."
+    while wiz.page.id != "known":
+        wiz.back()
+    QTest.mouseClick(wiz.page.channel.choice("fresh"), Qt.MouseButton.LeftButton)
+    go_to(wiz, "order")
+    assert not wiz.page.keep.switch.isChecked() and wiz.page.moves_line.isHidden()
+    while wiz.page.id != "known":
+        wiz.back()
+    QTest.mouseClick(wiz.page.channel.choice("anki"), Qt.MouseButton.LeftButton)
+    go_to(wiz, "order")
+    assert wiz.page.keep.switch.isChecked() and not wiz.page.keep.rec.isHidden()
+
+
+def test_fresh_u_an_unknown_count_says_nothing_and_an_api_without_the_rule_keeps_the_preselect(make):
+    # Anki not answering the count (None): no line, never a wrong number; a stand-in without the rule (an older
+    # contract) shows the preselect as before
+    api = FreshApi(counts={})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    assert wait_until(lambda: api.counted and wiz.page._moves_key is None, 2.0)   # (None: asked again later)
+    assert wiz.page.keep.switch.isChecked() and wiz.page.moves_line.isHidden()
+    wiz2, _s2, _a2, _set2, _m2 = make()
+    _known_way(wiz2, "fresh")
+    go_to(wiz2, "order")
+    assert wiz2.page.keep.switch.isChecked()

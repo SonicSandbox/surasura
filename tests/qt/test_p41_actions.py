@@ -14,6 +14,7 @@ What a wrong answer would cost a learner:
   * an ask that commits but never wakes Connect, so its cards wait for the next unrelated move.
 """
 import os
+import time
 
 import pytest
 
@@ -386,13 +387,54 @@ def test_needs_you_make_their_cards_is_connects_ordinary_work_in_the_gaps_langua
 def test_the_after_commit_hook_looks_once_per_commit_and_never_stops_the_writer(monkeypatch):
     from app.connect import window_link
     looked = []
-    monkeypatch.setattr(window_link.Link, "after_change", lambda self, *a, **k: looked.append(self.language))
+    monkeypatch.setattr(window_link.Link, "after_change",
+                        lambda self, *a, **k: looked.append((self.language, k.get("op"))))
     hook = shell.connect_after_commit("ja", _NoSettings())       # W1's hook: the one kept at the L2 merge
     hook(object(), "ask_mining")
     hook(object(), "move")
-    assert looked == ["ja", "ja"]
+    hook(object(), "link_video")
+    assert looked == [("ja", "ask_mining"), ("ja", "move"), ("ja", window_link.LINKED)], "the writer's op handed on"
     monkeypatch.setattr(window_link.Link, "after_change", lambda self, *a, **k: 1 / 0)
     moves.Writer._call(None, hook, object(), "undo")           # a look that fails: the writer prints it, never raises
+
+
+class _On:
+    def get(self):
+        return {"connect_enabled": True}
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["connect-running", "connect-not-running"])
+def test_a_video_linked_through_the_real_writer_has_connect_look_for_videos_again(monkeypatch, running):
+    # why (Michi-VF, Mattias 3.0.0): four episodes' videos picked by hand (*Link…*) stayed *No video* all run — the
+    # link is no placement and no ask, so the hook neither woke the Connect running for other episodes nor started
+    # one. Through the real writer and store: a running Connect gets the videos mark (its parked jobs go again);
+    # none running, one is started for videos
+    from app.connect import kick, library, link, runner
+    from tests import connect_helpers as c
+    c.library()
+    with c.store() as s:
+        library.switch_on(s)
+        item = s.ids("now")[0]
+    started = []
+    monkeypatch.setattr(kick, "running", lambda: running)
+    monkeypatch.setattr(kick, "kick", lambda settings, **kw: started.append(kw) or object())
+    steps = runner.Steps({})                                     # the running Connect's own look at its mark
+    writer = moves.Writer(moves.store_opener("ja"), "ja", journal_file=moves.journal_path("ja"),
+                          words=strings.MOVE_WORDS, retry=0.05, after_commit=shell.connect_after_commit("ja", _On()))
+    writer.start()
+    try:
+        video = c.video("[NanakoRaws] Re Zero kara Hajimeru Isekai Seikatsu S4 - 12 (AT-X TV 1080p HEVC AAC).mkv")
+        writer.link_video(item, video, label="linked")
+        if running:
+            assert wait_until(lambda: (kick.wake_stamp() or "").endswith("-" + kick.VIDEOS), 10)
+            assert steps.kicked() == kick.VIDEOS and started == []
+        else:
+            assert wait_until(lambda: started, 10)
+            assert started == [{"videos": True}] and steps.kicked() is False
+        with c.store() as s:
+            assert link.PRODUCER == (library.pairing_of(s, item) or {}).get("producer"), "the link itself was written"
+    finally:
+        writer.finish(time.monotonic() + 5)
 
 
 def test_library_for_hangs_the_kick_on_the_writer(qapp, monkeypatch):
@@ -439,8 +481,8 @@ def _ep(st, n=5):
 
 def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
     """WF fix 3 (adversary S2 / IK S1), as amended by Sonic 2026-10-22 (laptop round 5, M-3 A): *Not timed* is a warn
-    *Waiting* with no *Mine now* (its way on is *Mine anyway* in Needs you) — its tip the wait's own, never "Click to
-    mine it now". A wait on the battery or on Anki is *Mine now* as every *Waiting* is: on battery the press is the
+    *Waiting* with no *Mine now* (its way on is *Mine anyway* in Needs you) — never "Click to mine it now"; since
+    Michi-NT (Mattias #XP44T6) its button is *Check again* (`tests/qt/test_nt_check_again.py`). A wait on the battery or on Anki is *Mine now* as every *Waiting* is: on battery the press is the
     yes for that one episode, waiting for Anki it goes first once Anki answers, and the tip says which. A *Waiting* for
     its turn stays the *Mine now* button."""
     from app.connect import runner
@@ -450,7 +492,7 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
                                                1, 0, 0), "video")
     assert (st.kind, st.tone) == ("waiting", "warn")
     name, tip, ask = rows.action_of(st, (_ep(st),))
-    assert (name, ask) == ("status", None) and tip == st.tip and "Click to mine it now" not in tip
+    assert name == rows.CHECK and ask.ids == (5,) and "Click to mine it now" not in tip
     for kind, reason, says in ((feed.ANKI, runner.ANKI_CLOSED, "goes first once Anki answers"),
                                (feed.BATTERY, runner.ON_BATTERY, "mine this one now, on battery")):
         st = view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
@@ -692,8 +734,9 @@ def test_row28_a_grey_waiting_episodes_menu_offers_mine_now_and_it_asks_for_that
 def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
     """IK-1: one rule with the pill — the episode's ⋯ offers *Mine now* exactly when `rows.action_of` says "mine-now"
     for that episode, whatever the stone's status (a grey *Waiting*, a wait on Anki or on the battery, …): asked of the
-    rule itself, so a change to what the rule offers needs no change here. *Not timed*, a file in Anki, one being mined
-    and no status at all are fixed cases: nothing to ask, no entry, nothing asked."""
+    rule itself, so a change to what the rule offers needs no change here. A file in Anki, one being mined and no
+    status at all are fixed cases: nothing to ask, no entry, nothing asked; *Not timed* offers *Check again* alone
+    (Michi-NT), never *Mine now*."""
     from app.connect import runner
     from app.services import view_rows
     _seed, win, writer = act()
@@ -710,7 +753,9 @@ def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
                                                       "not timed to its video", 1, 0, 0), "video")
     in_anki = _ep(view_rows.Status("in_anki", "In Anki", "Its cards are in Anki", "ok"))._replace(cards=4)
     mining = _ep(view_rows.Status("mining", "Mining", "Being mined now", "accent"))._replace(mining=True)
-    for ep in (_ep(not_timed), in_anki, mining, _ep(None)):
+    assert [e.name for e in win.mine.episode_entries(row, _ep(not_timed))] == ["ep-" + rows.CHECK]
+    assert _mine_now(win.items.episode_entries(row, _ep(not_timed))) == []
+    for ep in (in_anki, mining, _ep(None)):
         assert win.mine.episode_entries(row, ep) == [], ep.status
         assert _mine_now(win.items.episode_entries(row, ep)) == [], ep.status
     assert asks(writer) == []

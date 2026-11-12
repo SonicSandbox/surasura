@@ -77,7 +77,7 @@ class Counter(QObject):
 
 
 @pytest.fixture
-def part(qapp, monkeypatch):
+def part(qapp, monkeypatch, qt_timer):
     """A host with the part (the install offered: `can-install`), its look a stand-in, the sheet a stand-in."""
     monkeypatch.setattr(addon_steps, "_STATE", None)     # a fresh install state per test
     looks = {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 260902}
@@ -96,7 +96,7 @@ def part(qapp, monkeypatch):
     def make(url=True):
         steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, host), "wizsub", None, host,
                                        url=(lambda: URL) if url else None, checked=lambda: checked.append(1),
-                                       timer=QTimer())
+                                       timer=qt_timer())
         host.layout().addWidget(steps)
         made.append(steps)
         return steps
@@ -291,10 +291,10 @@ def test_work_one_view_painted_per_change_and_none_for_an_answer_that_changes_no
     assert steps.paints == paints + 4                      # running, waiting, running, installed: four views
 
 
-def test_a_custom_address_is_said_on_the_done_line(part, monkeypatch):
+def test_a_custom_address_is_said_on_the_done_line(part, monkeypatch, qt_timer):
     part.route.go.set()
     steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, part.host), "wizsub", None, part.host,
-                                   url=lambda: "http://127.0.0.1:9999", checked=lambda: None, timer=QTimer())
+                                   url=lambda: "http://127.0.0.1:9999", checked=lambda: None, timer=qt_timer())
     part.host.layout().addWidget(steps)
     steps.want(True)
     assert wait_until(lambda: steps.install is not None and steps.install.isVisible())

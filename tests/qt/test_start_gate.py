@@ -466,3 +466,173 @@ def test_enter_on_the_welcome_step_presses_the_button_the_keyboard_is_on(qapp, m
     QTest.keyClick(g, Qt.Key.Key_Return)
     assert wait_until(lambda: g.ended)
     assert g.result is False and fake.calls == []
+
+
+# --- 3.0.1: Windows' Controlled folder access — Move my library, Undo, Allow -----------------------------------------
+
+def _cfa_result(library):
+    from app import cfa
+    out = {"status": "blocked", "reason": "cfa", "message": cfa.words(library), "import": None, "graduated": None}
+    out["cfa"] = {"library": library, "target": os.path.join(os.environ["USERPROFILE"], "Surasura"),
+                  "programs": cfa.programs()}
+    return out
+
+
+def _cfa_gate(qapp, monkeypatch):
+    library = os.path.join(os.environ["USERPROFILE"], "Documents", "Surasura")
+    monkeypatch.setattr(first_run, "run", FakeRun(_cfa_result(library)))
+    g = _gate(qapp, _st(first_run.READY, library=library, cfa=True))
+    assert wait_until(lambda: g.screen == "cfa")
+    return g, library
+
+
+def test_a_library_windows_blocks_says_so_with_both_ways_out(qapp, monkeypatch):
+    from app import cfa
+    g, library = _cfa_gate(qapp, monkeypatch)
+    target = os.path.join(os.environ["USERPROFILE"], "Surasura")
+    assert g.isVisible() and not g.ended
+    assert g.heading.text() == cfa.HEADING and g.line.text() == cfa.words(library)
+    assert _visible_buttons(g) == {start_gate.CFA_MOVE.format(target=target), start_gate.CFA_ALLOW,
+                                   start_gate.TRY_AGAIN, start_gate.QUIT}
+    assert "surasura-cli.exe" in g.fresh_button.toolTip() and "old folder is kept" in g.choose_button.toolTip()
+    assert problems(g)[0] == []
+
+
+def test_allow_opens_windows_security_and_says_what_to_do_there(qapp, monkeypatch):
+    from app import cfa
+    opened = []
+    monkeypatch.setattr(cfa, "open_settings", lambda: opened.append(True) or True)
+    g, _library = _cfa_gate(qapp, monkeypatch)
+    g.fresh_button.click()
+    assert opened == [True] and not g.ended
+    assert "Surasura.exe" in g.stage.text() and "surasura-cli.exe" in g.stage.text() and "Try again" in g.stage.text()
+
+
+def test_move_my_library_moves_then_offers_open_and_one_undo(qapp, monkeypatch):
+    from app import library_move
+    calls = []
+
+    def fake_move(target, progress=None, cancel=None):
+        calls.append(target)
+        progress(3, 3)
+        return {"status": "done", "reason": None, "words": "Your library is now in X.", "old": "o", "new": target}
+    monkeypatch.setattr(library_move, "move", fake_move)
+    monkeypatch.setattr(library_move, "can_undo", lambda: {"from": "o", "to": "n"})
+    g, _library = _cfa_gate(qapp, monkeypatch)
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-moved")
+    assert calls == [os.path.join(os.environ["USERPROFILE"], "Surasura")]
+    assert g.heading.text() == start_gate.LIB_MOVED_HEADING and g.line.text() == "Your library is now in X."
+    assert _visible_buttons(g) == {start_gate.LIB_OPEN, start_gate.LIB_UNDO}
+    assert problems(g)[0] == []
+    monkeypatch.setattr(first_run, "state", lambda: _st(first_run.READY))       # the moved library: ready
+    g.try_button.click()                                                          # *Open Surasura*
+    assert wait_until(lambda: g.ended) and g.result is True
+
+
+def test_undo_goes_back_to_the_old_folder_and_the_refusal_again(qapp, monkeypatch):
+    from app import library_move
+    monkeypatch.setattr(library_move, "move", lambda target, progress=None, cancel=None: {
+        "status": "done", "reason": None, "words": "moved", "old": "o", "new": target})
+    monkeypatch.setattr(library_move, "can_undo", lambda: {"from": "o", "to": "n"})
+    undone = []
+    monkeypatch.setattr(library_move, "undo", lambda: undone.append(True) or {
+        "status": "done", "reason": None, "words": "Your library is back in o.", "aside": "n (moved back)"})
+    g, library = _cfa_gate(qapp, monkeypatch)
+    monkeypatch.setattr(first_run, "state", lambda: _st(first_run.READY, library=library, cfa=True))
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-moved")
+    g.fresh_button.click()                                                        # *Undo*
+    assert wait_until(lambda: bool(undone) and g.screen == "cfa")
+    assert g.stage.text() == "Your library is back in o." and not g.ended
+
+
+def test_a_move_that_didnt_run_says_why_and_try_again_looks_again(qapp, monkeypatch):
+    from app import library_move
+    monkeypatch.setattr(library_move, "move", lambda target, progress=None, cancel=None: {
+        "status": "refused", "reason": "not_empty", "words": "X already holds files."})
+    g, library = _cfa_gate(qapp, monkeypatch)
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-didnt")
+    assert g.heading.text() == start_gate.LIB_DIDNT_HEADING and g.line.text() == "X already holds files."
+    assert _visible_buttons(g) == {start_gate.TRY_AGAIN, start_gate.QUIT}
+    monkeypatch.setattr(first_run, "state", lambda: _st(first_run.READY, library=library, cfa=True))
+    g.try_button.click()
+    assert wait_until(lambda: g.screen == "cfa")
+
+
+def test_cancel_stops_the_move_and_quit_while_moving_waits_for_it(qapp, monkeypatch):
+    from app import library_move
+    started = threading.Event()
+
+    def slow(target, progress=None, cancel=None):
+        started.set()
+        deadline = time.monotonic() + 5
+        while not cancel() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return {"status": "cancelled", "reason": "cancelled", "words": "Stopped. Nothing was moved."}
+    monkeypatch.setattr(library_move, "move", slow)
+    g, _library = _cfa_gate(qapp, monkeypatch)
+    g.choose_button.click()
+    assert wait_until(lambda: started.is_set() and g.screen == "lib-moving")
+    assert _visible_buttons(g) == {start_gate.CANCEL}
+    assert g.cancel_button.toolTip() == start_gate.LIB_CANCEL_TIP
+    g.cancel_button.click()
+    assert wait_until(lambda: g.screen == "lib-didnt") and g.line.text() == "Stopped. Nothing was moved."
+    started.clear()
+    g.show_screen("cfa", "…")
+    g.choose_button.click()
+    assert wait_until(lambda: started.is_set())
+    g.quit()                                     # (✕ while it copies: it stops between files, then quits)
+    assert wait_until(lambda: g.ended) and g.result is False
+
+
+def test_the_real_move_through_the_gate_opens_surasura_on_the_new_library(qapp, monkeypatch, tmp_path):
+    # End to end: an installed library in Documents, Controlled folder access on and refusing Surasura there (fakes
+    # of Defender's switch and of Windows' refusal only) — the real first_run, the real move.
+    from app import cfa, library_move
+    from tests.test_cfa import fake_registry, refuse_inside
+    from tests.test_library_move import _tree, installed
+    documents = os.path.join(os.environ["USERPROFILE"], "Documents")
+    old = os.path.join(documents, "Surasura")
+    os.makedirs(os.path.join(old, "User Files", "ja"))
+    with open(os.path.join(old, "User Files", "ja", "KnownWord.json"), "w", encoding="utf-8") as f:
+        f.write('{"words": [{"dictForm": "勉強", "knownStatus": "KNOWN"}]}')
+    installed(monkeypatch, old, tmp_path)
+    fake_registry(monkeypatch, switch=1, documents=documents)
+    refuse_inside(monkeypatch, documents)
+    first_run.record(old)
+    before = _tree(old)
+    g = _gate(qapp, first_run.state())
+    assert wait_until(lambda: g.screen == "cfa")
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-moved"), g.line.text()
+    new = os.path.join(os.environ["USERPROFILE"], "Surasura")
+    assert path_utils.installed_library() == new and _tree(new) == before and _tree(old) == before
+    assert start_gate.LIB_UNDO in _visible_buttons(g)
+    g.try_button.click()                                                          # *Open Surasura*
+    assert wait_until(lambda: g.ended) and g.result is True
+    assert not cfa.at_risk(new) and library_move.read_record()["to"] == new
+
+
+def test_quit_while_undoing_quits_and_never_opens_surasura(qapp, monkeypatch):
+    # (delta review N2) ✕ pressed while Undo runs: Undo finishes, then the gate quits — the old library, ready again,
+    # is never opened over the learner's ✕.
+    from app import library_move
+    go = threading.Event()
+    monkeypatch.setattr(library_move, "move", lambda target, progress=None, cancel=None: {
+        "status": "done", "reason": None, "words": "moved", "old": "o", "new": target})
+    monkeypatch.setattr(library_move, "can_undo", lambda: {"from": "o", "to": "n"})
+
+    def slow_undo():
+        go.wait(5)
+        return {"status": "done", "reason": None, "words": "back", "aside": "n (moved back)"}
+    monkeypatch.setattr(library_move, "undo", slow_undo)
+    g, _library = _cfa_gate(qapp, monkeypatch)
+    monkeypatch.setattr(first_run, "state", lambda: _st(first_run.READY))
+    g.choose_button.click()
+    assert wait_until(lambda: g.screen == "lib-moved")
+    g.fresh_button.click()                                                        # *Undo*
+    g.quit()
+    go.set()
+    assert wait_until(lambda: g.ended) and g.result is False

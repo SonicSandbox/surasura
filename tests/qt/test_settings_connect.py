@@ -173,6 +173,8 @@ def world(monkeypatch, tmp_path):
         raise AssertionError("settings.json written directly: only the switch (faked here) or the service may")
     monkeypatch.setattr(settings_manager, "save_settings", no_save)
     monkeypatch.setattr(settings_manager, "save_keys", no_save)
+    monkeypatch.setenv("ANKI_MINER_HOME", str(tmp_path / "anki-miner-home"))   # never the real ~/.anki_miner: a
+    #                                                       window of Anki Miner open on this PC must not change a press
     w = SimpleNamespace(miner=miner_result("missing"), update=None, checked=[], reading=ado.Reading(20, DECK, "Default",
                         None), reads=[], writes=[], outcome=None, write_gate=None, opened=[], asked=[], file="",
                         bar=Bar(), events=[])
@@ -548,6 +550,81 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     QTest.mouseClick(card.open_miner, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5)   # (empty until the worker opens it)
+
+
+def test_open_anki_miners_hover_names_the_profile_connect_mines_with(world):
+    """Choice 87 (Sonic, 2026-11-09: "say so in hover"): a learner who changes the audio in Anki Miner's window, in
+    another profile, sees nothing change — the hover names the profile Connect makes cards with, as the card's check
+    found it (Surasura's own; from 3.7, with the setting left as it is and no Surasura profile, your usual one — the
+    review's MUST: never "Surasura" then), drawn again by each check; no profile found yet: none named."""
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile="surasura-1", profile_name="Surasura")
+    page, store, rows, _fake = make(world)
+    tip = rows.miner.open_miner.toolTip()
+    assert tip == S.OPEN_MINER_TIP.format(profile="Surasura") and "another profile's don't apply" in tip
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile="p-1", profile_name="練習用 (Japanese)")     # your usual one, 3.7+
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 2 and not rows.miner.checking, 5)
+    assert "“練習用 (Japanese)” profile" in rows.miner.open_miner.toolTip()
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile=None, profile_name=None)       # none marked: the window's own settings
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 3 and not rows.miner.checking, 5)
+    assert rows.miner.open_miner.toolTip() == S.OPEN_MINER_TIP_CURRENT
+    world.miner = miner_result("setup")                                    # a profile still to make: none named
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 4 and not rows.miner.checking, 5)
+    assert rows.miner.open_miner.toolTip() == S.OPEN_MINER_TIP_PLAIN
+    assert scn._open_tip(None) == S.OPEN_MINER_TIP_PLAIN and store.calls == []      # a hover, never a write
+
+
+def test_open_anki_miner_while_its_window_is_open_says_so_and_never_starts_a_second(world, tmp_path):
+    """Disc-T1 (Mattias, 2026-11-06: Anki Miner warned "an instance is already running"): Anki Miner's window holds
+    `instance.window-<pid>.lock` in its home for as long as it is open, and a second start asks *Quit* / *Continue
+    anyway* — the second copy its own warning says can corrupt its databases. *Open Anki Miner* looks first, on the
+    press's worker: a live window's marker (held, as Anki Miner holds it: a QLockFile) -> the bar says it is open and
+    nothing starts; a marker a killed window left -> it opens as before, even when Windows has given its pid to another
+    running program (the adversary's pid reuse: never "already open" for good)."""
+    import subprocess
+    import sys
+    from PyQt6.QtCore import QLockFile
+    world.miner = miner_result("ready")
+    page, store, rows, _fake = make(world)
+    home = os.environ["ANKI_MINER_HOME"]
+    os.makedirs(home, exist_ok=True)
+    window = QLockFile(os.path.join(home, f"instance.window-{os.getpid()}.lock"))
+    assert window.tryLock(0)                                            # Anki Miner's window, open
+    QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: S.MINER_ALREADY_OPEN in world.bar.lines, 5), world.bar.lines
+    assert world.opened == [], "a second Anki Miner never started"
+    window.unlock()                                                     # its window closed: the marker gone
+
+    gone_child = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone_child.wait()                                                   # a pid whose process has ended
+    pid = os.getpid() if sys.platform == "win32" else gone_child.pid   # Windows: a running pid, the file not held
+    with open(os.path.join(home, f"instance.window-{pid}.lock"), "w", encoding="utf-8") as f:
+        f.write(f"{pid}\nAnkiMiner\nhost\n")                           # a killed window's leftover
+    QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5), "a closed window's leftover: it opens"
+    assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    # the opener ran on the press's worker; the press ends after, on the window's thread: a click while it is still
+    # live does nothing (`press.begin`) — wait for it, as a second press would find it (GitHub core 1/4, train 27)
+    assert wait_until(lambda: not qpress.live(page.shell, f"open:{rows.miner.state['path']}"), 5)
+    for name in os.listdir(home):
+        os.remove(os.path.join(home, name))
+    stuck = os.path.join(home, f"instance.window-{gone_child.pid}.lock")   # a read-only leftover (round 2): refused
+    with open(stuck, "w", encoding="utf-8") as f:                          # to write, but its process is gone
+        f.write(f"{gone_child.pid}\nAnkiMiner\nhost\n")
+    os.chmod(stuck, 0o444)
+    try:
+        opened = len(world.opened)
+        QTest.mouseClick(rows.miner.open_miner, Qt.MouseButton.LeftButton)
+        assert wait_until(lambda: len(world.opened) == opened + 1, 5), "a read-only leftover: it opens"
+        assert world.bar.lines.count(S.MINER_ALREADY_OPEN) == 1
+    finally:
+        os.chmod(stuck, 0o666)
+    assert store.calls == []
 
 
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):

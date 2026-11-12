@@ -27,7 +27,24 @@ NOT_CONNECTED = "not connected"
 CHECK = "Check"
 CHECK_TIP = "Checks AnkiConnect, the deck and the note type"
 INSTALLED = "installed · {version}"
-NOT_INSTALLED = "not installed"
+# Michi-HD (Mattias 2026-11-11; lean taken, PROVISIONAL): hato installed where Surasura can't see it — *Find hato…*
+HATO_NOT_FOUND = "not found"
+FIND_HATO = "Find hato…"
+FIND_HATO_TIP = ("Already have hato? Pick the folder you unpacked it into.\n"
+                 "• hato opens once, so it can connect to Surasura")
+FIND_HATO_TITLE = "Where is hato?"
+FIND_HATO_BUSY = "Opening hato so it can connect…"
+HATO_CONNECTED = "hato {version} is connected"
+HATO_CONNECTED_PLAIN = "hato is connected"
+HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_seen`'s why -> the bar's words
+    "not-hato": "No hato in that folder: pick the folder you unpacked hato into",
+    "not-installed": "hato connects only to an installed Surasura, and this copy isn't installed",
+    "not-started": "hato couldn't be opened from that folder",
+    "no-answer": "hato opened but didn't connect. If hato was open already, quit it from its tray icon, then press "
+                 "Find hato… again (hato 1.1 or later connects to Surasura)",
+    "another-hato": "Another copy of hato was open already, so Surasura uses that one",
+}
+HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
 OPEN = "Open"
 LEVEL_AUTOMATIC = "Automatic"
 LEVEL_AUTOMATIC_TIP = "Surasura picks the level for you: the commonest one whose list holds at least {n} words"
@@ -653,6 +670,7 @@ SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
 SETUP_ORDER = {"content": "ordered as you’ll meet them", "priority": "ordered by leverage"}
 SETUP_NOT_ORDERED = "not reordered"
+SETUP_ORDER_OFF = "kept in order by itself: off"                # Fresh-U row 2: 順 on, its automatic order off
 SETUP_FILLED = "{fills} filled {how}"
 SETUP_FILLED_AUTO = "automatically"
 SETUP_FILLED_HAND = "by hand"
@@ -745,7 +763,7 @@ PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
 PRACTICE_THEN = ("Then, to start a round:\n"
                  "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
                  "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
-                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "short story, quiz) · from what (soon: the next words on your journey, top: your list's top words, "
                  "mix). Type / and it's listed as /surasura:practice (MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
                  "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
@@ -758,7 +776,7 @@ HELP_MARK_CARD = "{text}\n• Click: its help card"         # a row's ? whose ar
 HELP_TOUR_DOOR = "Show me what runs by itself"
 HELP_TOUR_DOOR_TIP = "A short tour of what Surasura does by itself, one card each, with a Try it where one is safe"
 PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
-                   "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
+                   "words, your next words, lines from your library, what you kept from past rounds) goes to "
                    "that AI's company, as anything you type there does. Nothing else leaves.")
 PRACTICE_STARTER = "Copy a starter message"
 PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
@@ -778,14 +796,24 @@ BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where.
 BROWSE_MINER_TITLE = "Where is Anki Miner?"
 BROWSE_MINER_FILTER = "Anki Miner (AnkiMiner.exe);;Programs (*.exe);;All files (*)"
 OPEN_MINER = "Open Anki Miner"
-# A4M1-2 (lean taken, PROVISIONAL): its own window, for its own settings — Surasura never needs it opened
+# A4M1-2 (lean taken, PROVISIONAL): its own window, for its own settings — Surasura never needs it opened. Choice 87
+# (Sonic, 2026-11-09: "say so in hover"): the profile Connect mines with, as the card's check found it
+# (`setup.checks`' `anki_miner.profile_name`; `choose_profile`: the setting's, else your usual one), named once checked
+OPEN_MINER_TIP_PLAIN = ("Start Anki Miner's own window, for its own settings.\n"
+                        "• Surasura never needs it open: Connect runs Anki Miner by itself")
 OPEN_MINER_TIP = ("Start Anki Miner's own window, for its own settings.\n"
+                  "• Connect makes cards with its “{profile}” profile: change that profile's settings — another "
+                  "profile's don't apply\n"
                   "• Surasura never needs it open: Connect runs Anki Miner by itself")
+OPEN_MINER_TIP_CURRENT = ("Start Anki Miner's own window, for its own settings.\n"
+                          "• Connect makes cards with the settings its window shows\n"
+                          "• Surasura never needs it open: Connect runs Anki Miner by itself")
 FINISH_MINER_SETUP = "Finish its setup…"
 FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and press Finish its setup again."
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries, or its deck and note type: Surasura sets them "
                           "for you, on the setup's Anki Miner page.\n• Nothing to open in Anki Miner")
 MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"
+MINER_ALREADY_OPEN = "Anki Miner is already open."       # Disc-T1: its window's marker found (PROVISIONAL words)
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look at Anki Miner's setup again."
 STAR_LINE = "Like Anki Miner? Star it on GitHub ★"

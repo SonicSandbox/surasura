@@ -274,11 +274,20 @@ def _why(hold, entry, eps):
     return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
 
 
-def offer_text(verdict, row):
-    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why."""
+def offer_text(verdict, row, left=False):
+    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why. One file: *Watched
+    it*, never *All 1 watched* (Fresh-U row 5). `left`: W-1's first mark that moved the list (once per library) — the
+    words say its words left the list, so the next rows' counts rising is explained (the watched file's words now count
+    where they come next)."""
+    n = all_n(row)
     if len(verdict) > 1:
-        return strings.DONE_ALL_WHY.format(n=all_n(row), why=verdict[1])
-    return strings.DONE_ALL.format(n=all_n(row))
+        text = (strings.DONE_ALL_ONE_WHY.format(why=verdict[1]) if n == 1 else
+                strings.DONE_ALL_WHY.format(n=n, why=verdict[1]))
+    else:
+        text = strings.DONE_ALL_ONE if n == 1 else strings.DONE_ALL.format(n=n)
+    if left and text.endswith(strings.DONE_ASK):
+        text = text[:-len(strings.DONE_ASK)] + strings.DONE_ASK_LEFT
+    return text
 
 
 def all_n(row):
@@ -2155,7 +2164,8 @@ class DragController(QObject):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
         something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
         itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
-        lands (Anki moves after the Generate it starts: the bar's arc — the row has left this list)."""
+        lands (Anki moves in the host's next job, as for a watched mark — Haya-FN; the Generate runs after: the bar's
+        arc — the row has left this list)."""
         how = self.finish_how()
         template = text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED)
         if how == "out":
@@ -2555,8 +2565,10 @@ class DragController(QObject):
     # Kura's W-1b (PROVISIONAL, the lead + Sonic: "Finish acts after its Generate; pending shown at once"): Finish (a
     # drop on Finished, the toast's *Leave its new cards out of your order*), Finished's *Put back* and *Leave its new
     # cards out* / *Put them back in the order*, and their Undo (the toast's, Ctrl+Z's, one asked before the change was
-    # saved) write the store at once while Anki moves only once the host re-orders for that write — after the Generate
-    # it starts. Sonic's doctrine, every press reacts at once: one press per command, painted before the writer has it
+    # saved) write the store at once while Anki moves only once the host re-orders for that write — in its next job for
+    # a finish of files the plan counted (Haya-FN: the watched mark's rule, `plan_engine._only_joined`), after the
+    # Generate it starts otherwise (a Put back, a file the plan never counted). Sonic's doctrine, every press reacts at
+    # once: one press per command, painted before the writer has it
     # (`_anki_begin`), live until the store records that re-order (`planned_order_version` / `planned_pins_version`
     # reach the change's `landed` versions, told by the reader — never a store read here). One rule ends it otherwise
     # (`_anki_end`): the line the host leaves it with — a line that gives up (`replan_preview.GivesUp`: Anki closed, a
@@ -2858,12 +2870,18 @@ class DragController(QObject):
             self._by_itself(row, verdict)
             return
         if verdict is not None:                      # ("offer", ...): today's *finished with it?*
-            ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
+            keep = getattr(view, "keep_watched", False)     # Fresh-U row 5: W-1's first mark says it here too
+            hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
+            ticket = Ticket(offer_text(verdict, row, left=hint is not None), (row.key,), tuple(ids))
             if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
+            buttons = [(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))]
+            if hint is not None:                     # (W-1's own way to keep them: the hint's button rides along)
+                self._seen(hint)
+                buttons.append((strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                lambda: self.win.open_setting("keep_watched")))
             self._ask_again(view, row, verdict)
-            self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
-                                          lambda: self.to_finished(row))])
+            self._toast(ticket, buttons=buttons)
             return
         shown = None
         if getattr(row, "group", False):             # LM11b G5: one show of a group all watched, the rest not yet —

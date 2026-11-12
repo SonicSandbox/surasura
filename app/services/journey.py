@@ -35,10 +35,11 @@ Generate. `JourneyKeeper` (one per window and language) runs that Generate by it
   results' redraw marker), nothing is asked. A reader (`want`: *Journey ↗*, an export, the YouTube preview) skips the
   quiet time. Everything else that can move a word across the list's cut-off Generates after the quiet time as
   before: the known words, the word lists, a setting or the level, a new file, a file that left the
-  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`, a watched mark's
-  `reference-watched` — Anki's order already re-planned, Haya-W: the cut-off is a share of the
-  library's tokens and the words under it are not in the plan; the set-aside files are the name tables' evidence — the
-  engine can't tell whether a word crosses, so it never guesses), no plan or one the engine stands aside from.
+  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`, a watched mark's or a finish's
+  `reference-joined`, a finished title's ranks `finished` — Anki's order already re-planned, Haya-W / Haya-FN: the
+  cut-off is a share of the library's tokens and the words under it are not in the plan; the set-aside files are the
+  name tables' evidence — the engine can't tell whether a word crosses, so it never guesses), no plan or one the
+  engine stands aside from.
 - `close()` (the window closes, or its language changes) leaves nothing: no timer, its own run withdrawn, no listener.
 
 Nothing here waits on the caller's thread: `changed`, `marked` and `close` only arm or cancel a timer (`changed` and
@@ -593,9 +594,9 @@ class JourneyKeeper:
 
 
 # --- shadow mode (E1.1 05 §3; the comparison as 2.x's replan_preview makes it) --------------------------------------- #
-PRIORITY_COLUMNS = ("Word", "Reading", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
+PRIORITY_COLUMNS = ("Word", "Reading", "Kana", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier")
-PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Score", "Occurrences (Global)",
+PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Kana", "Score", "Occurrences (Global)",
                        "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
                        "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier")
 

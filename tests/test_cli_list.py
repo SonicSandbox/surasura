@@ -11,7 +11,7 @@ from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OTHER_SHOW = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_2.srt")
+OTHER_SHOW = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "喫茶店の朝.srt")
 
 
 @pytest.fixture
@@ -34,6 +34,9 @@ def test_a_subtitles_list_words_in_the_order_said_with_their_times(generated):
     assert all(w["file_occurrences"] >= 1 for w in result["words"])
     # in the library's only subtitle, the journey meets some of its words here first
     assert any(w["new"] for w in result["words"])
+    # each word also says the reading of its shown spelling (`kana`), its row's `reading` kept as its identity
+    assert all(w["kana"] for w in result["words"])
+    assert all(w["kana"] == w["reading"] for w in result["words"] if w["orth"] == w["word"])
     code, lines = h.run_cli("list", "--file", path, "--order", "encounter", "--limit", "2")
     assert [w["word"] for w in h.answer(lines)["words"]] == [w["word"] for w in result["words"][:2]]
 
@@ -82,3 +85,17 @@ def test_a_list_a_generate_left_unfinished_is_busy_try_later_never_bad_data(gene
         f.write(kept)
     code, lines = h.run_cli("list")
     assert code == 0 and h.answer(lines)["words"], "the stamp back: the list reads again"
+
+
+def test_a_rows_shown_kana_is_its_shown_spellings_reading_and_old_results_still_answer():
+    from app.cli import verbs
+    # the Generate's Kana (a phrase the library writes otherwise than its row); a kana spelling read as written; a
+    # kanji spelling: its row's reading; results from before the Kana column: the same, a phrase keeps its row's
+    assert verbs.shown_kana({"Word": "良い感じ", "Orth": "いい感じ", "Reading": "ヨイカンジ", "Kana": "イイカンジ"}) == "イイカンジ"
+    assert verbs.shown_kana({"Word": "物", "Orth": "もん", "Reading": "モノ", "Kana": ""}) == "モン"
+    assert verbs.shown_kana({"Word": "冒険", "Orth": "冒険", "Reading": "ボウケン", "Kana": ""}) == "ボウケン"
+    assert verbs.shown_kana({"Word": "良い感じ", "Orth": "いい感じ", "Reading": "ヨイカンジ"}) == "ヨイカンジ"
+    assert verbs.shown_kana({"Word": "冒険", "Reading": "ボウケン"}) == "ボウケン"
+    assert verbs.shown_kana({"Word": "夜市", "Orth": "夜市", "Reading": ""}) == ""        # Chinese: no reading
+    assert verbs.shown_kana({"Word": "通り", "Orth": "どおり", "Reading": "トオリ"}) == "ドオリ"  # as Connect's card
+    assert verbs.shown_kana({"Word": "心", "Orth": "こゝろ", "Reading": "ココロ"}) == "ココロ"   # ゝ: no sound

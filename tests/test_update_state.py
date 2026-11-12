@@ -115,8 +115,12 @@ def test_an_unwritable_state_never_raises(monkeypatch, tmp_path):
 
 def test_the_update_check_reads_the_failed_version_from_update_state(dashboard, monkeypatch):
     import app.main as main
-    updater.record_failed_version("2.5.1")
-    info = UpdateInfo(version="2.5.1", update_type="app", sha256="ab" * 32, app_package_url="x")
+    from app import __version__
+    # An update newer than this build, whatever its version (a fixed "2.5.1" read as older once 3.0.0 was stamped).
+    major, minor, patch = (int(x) for x in __version__.split(".")[:3])
+    newer = f"{major}.{minor}.{patch + 1}"
+    updater.record_failed_version(newer)
+    info = UpdateInfo(version=newer, update_type="app", sha256="ab" * 32, app_package_url="x")
     monkeypatch.setattr(main, "get_update_info", lambda: info)
     monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
     dashboard._current_settings = {"auto_update_enabled": True, "skipped_version": ""}

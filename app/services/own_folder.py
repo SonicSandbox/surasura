@@ -11,6 +11,10 @@ The first of these that exists:
 4. the stored copy's folder in the library, else the nearest existing folder above it inside the library;
 5. the library itself.
 
+`read_how` also says how it was reached (Sonic, 2026-11-09, choice 24: "yes" — the press says when its folder is
+gone): None (its own folder: 1, 2, or 4 for an item with no originals; nothing named to climb from), "up" (a folder
+above the one it was in: 3, or 4 and 5 climbed), "copy" (its originals gone, the stored copy's own folder: 4).
+
 The originals are the store's live origin records (`Store.origins(items=…)`: never another version's, never one whose
 file moved on). An item with none (Surasura 2's, a sample) is its stored copy: 4. Relinking a gone copy (Needs you's
 *Choose file…* for a file gone, *Choose a folder…*) is not this: the store takes only a file inside the library
@@ -45,13 +49,18 @@ def _nearest(folder, stop=None):
 def library_side(data_dir, rels=(), folders=()):
     """4 and 5 alone: the first stored copy's folder (`rels`: files; `folders`: folders — both data-folder relative), or
     the nearest one above it inside the library, else the library."""
+    return _library_side(data_dir, rels, folders)[0]
+
+
+def _library_side(data_dir, rels=(), folders=()):
+    """`library_side` -> (folder, how): "own" (a stored copy's own folder), "up" (one above it), None (none named)."""
     wanted = [os.path.dirname(os.path.join(data_dir, *rel.split("/"))) for rel in rels if rel]
     wanted += [os.path.join(data_dir, *[p for p in folder.split("/") if p]) for folder in folders if folder]
     for folder in wanted:
         found = _nearest(folder, stop=data_dir)
         if found:
-            return found
-    return data_dir
+            return found, "up" if found != folder else "own"
+    return data_dir, "up" if wanted else None
 
 
 def originals(store, ids):
@@ -85,23 +94,34 @@ def _roots(store, origins):
 def find(store, data_dir, ids=(), rels=(), folders=()):
     """The folder to open for items `ids` (their stored copies: `rels` files, `folders` folders, data-folder relative):
     the module's rule. Each folder is looked at once, however many parts share it (a slow or offline share: A7S-4)."""
+    return find_how(store, data_dir, ids, rels, folders)[0]
+
+
+def find_how(store, data_dir, ids=(), rels=(), folders=()):
+    """`find` -> (folder, how): how is None, "up" or "copy" (the module's docstring)."""
     origins = originals(store, ids)
     own = [os.path.dirname(o.origin) for o in origins]           # `dirname` takes a part's `#<n>` off with its name
     beside = own + [os.path.dirname(o.video_path) for o in origins if isinstance(o.video_path, str) and o.video_path]
     for folder in dict.fromkeys(f for f in beside if f):
         if _isdir(folder):
-            return folder
+            return folder, None
     roots = _roots(store, origins)
     for folder, root in dict.fromkeys((f, roots.get(o.root)) for f, o in zip(own, origins) if f):
         found = _nearest(os.path.dirname(folder), stop=root) if root else None
         if found:
-            return found
-    return library_side(data_dir, rels, folders)
+            return found, "up"
+    found, how = _library_side(data_dir, rels, folders)
+    return found, "copy" if how == "own" and own else None if how == "own" else how
 
 
 def read(opener, data_dir, ids=(), rels=(), folders=()):
     """(A worker.) `find` through a store handle of this worker's own (the library's opener, closed after — as Needs
     you's reads are); no store to read: the library's side."""
+    return read_how(opener, data_dir, ids, rels, folders)[0]
+
+
+def read_how(opener, data_dir, ids=(), rels=(), folders=()):
+    """(A worker.) `read` -> (folder, how), `find_how`'s: *Open its folder* says when its folder is gone."""
     store = None
     if opener is not None and getattr(opener, "mode", None) == "store" and hasattr(opener, "handle"):
         try:
@@ -109,7 +129,7 @@ def read(opener, data_dir, ids=(), rels=(), folders=()):
         except Exception as e:                      # noqa: BLE001
             print(f"Open its folder: the library couldn't be opened: {e!r}")
     try:
-        return find(store, data_dir, ids, rels, folders)
+        return find_how(store, data_dir, ids, rels, folders)
     finally:
         close = getattr(opener, "close", None) if store is not None else None
         if close is not None:

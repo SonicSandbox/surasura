@@ -24,7 +24,22 @@ PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "single_probe.p
 
 
 def _claim_in_thread(instance, args, result):
+    """A second start that hands over (it only connects: a local socket of its own thread's)."""
     t = threading.Thread(target=lambda: result.append(instance.claim(args, wait=5)), daemon=True)
+    t.start()
+    return t
+
+
+def _second_start(args, result, done):
+    """A second start, as another program would be: its own SingleInstance, made, claimed and released on a thread
+    of its own (a Qt object used from a thread not its own warns, and the harness fails the test: tests/FLAKES.md).
+    `result` gets (claimed, outcome); it releases once `done` is set."""
+    def run():
+        second = single.SingleInstance()
+        result.append((second.claim(args, wait=5), second.outcome))
+        done.wait(10)
+        second.release()
+    t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
 
@@ -94,14 +109,15 @@ def test_a_start_during_the_firsts_close_becomes_the_first(qapp):
     first = single.SingleInstance()
     assert first.claim([])
     first.stop_listening()                                  # the window is closing: no hand-over to it now
-    second, result = single.SingleInstance(), []
-    t = _claim_in_thread(second, [], result)
+    result, done = [], threading.Event()
+    t = _second_start([], result, done)
     time.sleep(0.4)
-    assert t.is_alive()                                     # it waits for the lock, it doesn't give up or hand over
+    assert result == []                                     # it waits for the lock, it doesn't give up or hand over
     first.release()                                         # the first has quit
+    assert wait_until(lambda: result, 10)
+    done.set()
     assert wait_until(lambda: not t.is_alive(), 10)
-    assert result == [True] and second.outcome == "first"
-    second.release()
+    assert result == [(True, "first")]
 
 
 def test_a_start_that_connects_just_as_the_first_closes_becomes_the_first(qapp):
@@ -109,15 +125,16 @@ def test_a_start_that_connects_just_as_the_first_closes_becomes_the_first(qapp):
     # never gets `ok` — it must go on waiting for the lock, not give up and leave the user with no window.
     first = single.SingleInstance()
     assert first.claim([])
-    second, result = single.SingleInstance(), []
-    t = _claim_in_thread(second, [], result)
+    result, done = [], threading.Event()
+    t = _second_start([], result, done)
     assert wait_until(lambda: bool(first._clients), 5)      # accepted and greeted, its arguments not yet answered
     first.stop_listening()                                  # the window starts closing
     time.sleep(1.0)
     first.release()                                         # ... and quits
+    assert wait_until(lambda: result, 10)
+    done.set()
     assert wait_until(lambda: not t.is_alive(), 10)
-    assert result == [True] and second.outcome == "first"
-    second.release()
+    assert result == [(True, "first")]
 
 
 def test_a_first_that_says_hello_but_never_ok_is_not_handed_over_to(qapp):

@@ -62,6 +62,9 @@ FIN_UNPINNED = "{title}: done with its cards"
 FIN_CARDS_OUT = "{title}: its new cards are out of your order"
 FIN_CARDS_IN = "{title}: its new cards are back in your order"
 FIN_NO_FOLDER = "{title}'s folder isn't there any more"
+# Choice 24 (Sonic, 2026-11-09: "yes"): *Open its folder* opened another folder, its own gone (`own_folder.read_how`)
+FOLDER_GONE = {"up": "That folder is gone: opened the one above it",
+               "copy": "That folder is gone: opened Surasura's copy of it"}
 WHATIF_NAME = "What if you added {title} back"
 WHATIF_HEADING = "WHAT IF I ADDED IT BACK?"
 WHATIF_LINE = "At the top of Current it would bring {n} new words · {pct} known"
@@ -225,6 +228,8 @@ ROWS_UP_NEXT = "UP NEXT"
 ROWS_SOURCE = {"hato": "Hato", "youtube": "YouTube", "anilist": "AniList"}
 ROWS_HERO_STATS = "{pct}% known · {n} new words"
 ROWS_HERO_STATS_NONE = "not analysed yet"
+ROWS_HERO_WATCHED = "✓ Watched it · finished with it? Press Done"   # Fresh-U row 5: every file watched, still here
+ROWS_HERO_WATCHED_MIX = "✓ Watched it"                               # … hato's mix never finishes (G3.2)
 ROWS_VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 ROWS_NO_MEDIA_BUTTON = "No {word}"
 ROWS_ONLINE_BUTTON = "Online"
@@ -467,6 +472,19 @@ ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder or link its video
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link…"}
+# Mattias's field report (3.0.0, #5; PROVISIONAL words): a file Anki Miner stopped on twice — asked again (C2's one ask)
+ROWS_ACTION_NAMES["try-again"] = "Try again"
+ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
+                      False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
+# Michi-NT (Mattias #XP44T6; PROVISIONAL words): a *Not timed* pill checks its timing again — its subtitle, or the same
+# subtitle re-timed beside its video (where tsubasa writes one it fixed)
+ROWS_ACTION_NAMES["check-again"] = "Check again"
+ROWS_CHECK_AGAIN_TIP = {True: "{tip}\n• Click to check its timing again: a subtitle you re-timed beside its video "
+                              "counts too",
+                        False: "{tip}\n• Click to check the timing of its {n} episodes again: a subtitle you re-timed "
+                               "beside its video counts too"}
+CHECK_AGAIN_NOTHING = "Nothing to check again: its episode isn't waiting on its timing any more."
+CHECK_AGAIN_FAILED = "Its timing couldn't be checked again: {why}"
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -659,7 +677,8 @@ DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagg
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
 ANKI_WAIT_GENERATE_STOPPED = "Generate was stopped, so Anki wasn't changed"     # ... a Generate stopped from the bar
-ANKI_WAIT_TIP = "Anki moves after this Generate"     # finish-pending FP-1 (PROVISIONAL, lean b): the bar's arc, hovered
+ANKI_WAIT_TIP = "Anki moves once its new order is ready"   # FP-1 (PROVISIONAL): the bar's arc, hovered — a finish
+# moves Anki in seconds (Haya-FN), a Put back after its Generate waits for one: words true for both
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"
@@ -689,6 +708,10 @@ STAR_ASK_STAR_TIP = "Opens Surasura's GitHub page in your browser"
 STAR_ASK_NOT_NOW = "Not now"
 STAR_ASK_NOT_NOW_TIP = "Closes this; it isn't asked again"
 DONE_ALL = "✓ All {n} watched — finished with it?"
+DONE_ALL_ONE = "✓ Watched it — finished with it?"                 # Fresh-U row 5: one file, never "All 1 watched"
+DONE_ALL_ONE_WHY = "✓ Watched it · {why} — finished with it?"
+DONE_ASK = " — finished with it?"                                 # … every offer ends so; W-1's first mark says why
+DONE_ASK_LEFT = " — its words left your list. Finished with it?"  # … the next rows' counts rise
 # 3.0.1 item 5 (AA-3, PROVISIONAL): why AniList held a show back from finishing by itself
 DONE_ALL_WHY = "✓ All {n} watched · {why} — finished with it?"
 DONE_WHY_AIRING = "Still airing (AniList)"
@@ -1217,7 +1240,8 @@ DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit f
 # --- W3.2 Q3: search your library (app/qt/search.py) and + Add (app/qt/add_menu.py) ----------------------------------- #
 SEARCH_PLACEHOLDER = "Search your library"
 SEARCH_NAME = "Search your library"
-SEARCH_TIP = "Search your library: a title by its kana, kanji or romaji name\n• / or Ctrl+K · Esc clears, then closes"
+SEARCH_TIP = ("Search your library: a title by its name (kana, kanji or romaji; Chinese in either script)\n"
+              "• / or Ctrl+K · Esc clears, then closes")
 SEARCH_KEY = "/"
 SEARCH_RESULTS_NAME = "What your library holds for “{query}”"
 SEARCH_NONE = "Nothing in your library matches “{query}”"
@@ -1286,6 +1310,26 @@ SOURCES_READ_LATER = "Reading {name} where it is: its first look comes with the 
 SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
 SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
 SOURCES_REFUSED = "{name} can't be read where it is: {reason}"
+# Fresh-U row 4: a folder's loose .txt / .md under the length of a book (`sources.BOOK_MIN_CHARS`) left out — said once,
+# after the look's own words
+SOURCES_SHORT = (" · 1 short text left out — under {chars:,} characters of {language}",
+                 " · {n:,} short texts left out — under {chars:,} characters of {language}")
+
+
+def sources_short(n, language="ja"):
+    """The look's tail for `n` short texts left out ("" for none); the rule counts `language`'s own characters (kana and
+    kanji, or hanzi: `sources._BOOK_SCRIPT`)."""
+    from app import sources
+    n = int(n or 0)
+    if n <= 0:
+        return ""
+    return (SOURCES_SHORT[0] if n == 1 else SOURCES_SHORT[1]).format(
+        n=n, chars=sources.BOOK_MIN_CHARS, language=SHORT_LANGUAGES.get(language, SHORT_LANGUAGES["ja"]))
+
+
+SHORT_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
+
+
 SOURCES_NO_LIBRARY = "your library isn't open"
 SOURCES_BUSY = "{name} wasn't added yet: " + STORE_BUSY_NOW          # P-1: nothing written, nothing copied in
 SOURCES_FROM = "from {name}"
@@ -1329,11 +1373,21 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_together": ("Keep them together", "Listen alongside: the book's cards come without sentence audio, and "
                                             "Surasura doesn't try to line them up again"),
     "separate_them": ("Separate them", "The audiobook becomes its own title again. Undo takes it back"),
+    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired
+    "pick_audiobook": ("Pick its audiobook…", "Pick it from your library's audiobooks, or a folder on your computer: "
+                                             "the book's cards then come with the narrator's sentence audio. Undo "
+                                             "takes it back"),
+    "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
+                                           "this book again"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    # Mattias's field report (3.0.0, #5; PROVISIONAL words)
+    "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
+    # Michi-RM3 (PROVISIONAL words)
+    "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
@@ -1463,6 +1517,14 @@ NEEDS_SPEECH_YES = "Anki Miner downloads its speech model, then lines up your au
 NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
+NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
+NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
+NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
+                              "name says so, else pick it here")
+NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
+NEEDS_AUDIOBOOK_READING = "Reading {name}: once its audiobook is in your library, it joins the book or is listed here"
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"
@@ -1472,6 +1534,9 @@ NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, t
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
+NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
+NEEDS_SKIPPED_OWES = "Skipped: its other words still wait, Try again on its row tries them"     # (PROVISIONAL)
 NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"
@@ -1533,7 +1598,8 @@ COVER_NONE_FOUND = "No cover found on AniList for {title}"
 COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
 COVER_FETCHING = "Fetching the cover for {title}…"
 COVER_LOOKUP_BROKE = "The cover lookup for {title} stopped with an error: {why}"
-COVER_PASTE_NOT_A_LINK = "Copy an AniList, TMDB or YouTube link first, then choose Paste a link"
+COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList, TMDB or YouTube link. For a book's cover, save the "
+                          "picture, then use Choose an image…")
 COVER_PASTE_WHY = {
     "off": "Download covers is off in Settings → Connections, so nothing was looked up or fetched",
     "no_key": "TMDB covers aren't available yet: copy an AniList or YouTube link instead",
@@ -1583,7 +1649,7 @@ REPORT_LIST_NAME = "Your saved reports"
 REPORT_ROW = "{when}   {what}{notes}"
 REPORT_ROW_NOTES = "   · {n} note(s)"
 REPORT_ROW_BUTTON_NAME = "{action}: {what}"                      # a row's Open / Remove, named with its report
-REPORT_EMPTY = "Nothing saved yet"
+REPORT_EMPTY = "Nothing saved yet: write what happened above to make a report"   # Fresh-U row 3: why they're grey
 REPORT_READ_FAILED = "Your saved reports couldn't be read: {why}"
 REPORT_OPEN = "Open"
 REPORT_OPEN_TIP = "See this report, its picture and its notes, and add a note"
@@ -1619,13 +1685,16 @@ REPORT_RESULTS_TIP = ("Your last Generate's lists and journey (the results folde
                       "subtitles and books")
 REPORT_SHOW = "Show me what's in it"
 REPORT_SHOW_TIP = "List every file the zip will hold, and what's left out"
+REPORT_SHOW_SAVES_TIP = REPORT_SHOW_TIP + "\n• What you've typed is saved to your list first"
+REPORT_SHOW_NONE_TIP = "Show me what's in it: write what happened first"
 REPORT_CONTENTS_HEADING = "What the zip will hold"
 REPORT_CONTENTS_TIP = "Every file the zip will hold, its size, and what's left out and why"
 REPORT_ZIP = "Make a zip instead"
 REPORT_ZIP_TIP = ("Put every saved report, with what Sonic needs to look into it, in one zip on this PC, and show it "
                   "in its folder: to post it on Discord or GitHub Issues yourself.\n• Your Windows name is taken out "
                   "of it too; look it over before you post it")
-REPORT_ZIP_NONE_TIP = "Make a zip instead: save a report to your list first"
+REPORT_ZIP_NONE_TIP = "Make a zip instead: write what happened first"
+REPORT_ZIP_SAVES_TIP = REPORT_ZIP_TIP + "\n• What you've typed is saved to your list first"
 REPORT_ZIPPED = "Made {name} in {folder}. Post it on Discord or GitHub Issues"
 REPORT_ZIPPED_CHECK = ("Made {name} in {folder}. {n} file(s) may still hold your Windows name: look them over (its "
                        "MANIFEST.txt names them) before you post it")
@@ -1688,6 +1757,7 @@ REPORT_SEND_PAUSED = "Sending is paused for now: make a zip instead and post it 
 REPORT_SEND_REFUSED = "Not sent: the report wasn't taken ({status}). It's kept: make a zip instead and post it on Discord"
 REPORT_SEND_UNSAFE = "Surasura couldn't make this report safe to send. Make a zip instead and look it over"
 REPORT_SEND_FAILED = "The report couldn't be sent: {why}"
+REPORT_SEND_TRIED = "Tried {n} times. {words}"      # a send that failed again (Mattias 3.0.0: a same line looked like nothing)
 REPORT_WAITING = "1 report waiting to send"
 REPORT_SEND_NOW = "Send now"
 REPORT_SEND_NOW_TIP = "Send the report that's waiting (the same one: Sonic gets it once)"

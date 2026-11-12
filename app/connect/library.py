@@ -135,6 +135,37 @@ def audiobook_of_book(store, epub):
     return None
 
 
+def book_of(store, epub):
+    """Kura-AB2: the book `epub` as the library holds it -> {item (its first part's id: the one the book's question is
+    asked by, so every part asks the same one), sha256 (the EPUB's, from its parts' records: the answer survives a
+    move), title (its title's — its file's when the title holds another book too, `Store.library_books`' rule)}; None
+    when no live part of it is in the library. One range read of the pairings."""
+    from app import library_store
+    if not epub:
+        return None
+    lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
+    with store._reading():
+        rows = store.conn.execute(
+            f"SELECT p.item_id, p.pairing FROM pairings p JOIN items i ON i.id = p.item_id WHERE p.content_key >= ? "
+            f"AND p.content_key < ? AND {library_store._LIVE_ORIGIN} ORDER BY p.item_id", (lo, lo[:-1] + "$")).fetchall()
+        if not rows:
+            return None
+        title = store.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                   (rows[0][0],)).fetchone()
+        if title and store.conn.execute(
+                f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND "
+                f"{library_store._LIVE_ORIGIN} AND instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND "
+                f"p.content_key < ?) AND lower(p.content_key) LIKE '%.epub#%' LIMIT 1",
+                (title[1], lo, lo[:-1] + "$")).fetchone():
+            title = None                        # two books in one title: this one named by its file
+    try:
+        sha = json.loads(rows[0][1]).get("sha256")
+    except (ValueError, AttributeError):
+        sha = None
+    return {"item": rows[0][0], "sha256": sha if isinstance(sha, str) and sha else None,
+            "title": (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]}
+
+
 def book_parts(store, epub):
     """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
     `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read
@@ -249,6 +280,26 @@ def pairing_of(store, item_id):
     if isinstance(record, dict) and row[0].startswith(library_store.SOURCE_KEY):
         record = {k: v for k, v in record.items() if k not in library_store.SOURCE_STATS}
     return record
+
+
+def heard(store, item_id):
+    """Hato-SP: is one of the item's live origins — its own files, never another version of its episode (LM1b) nor
+    one whose original moved (D5) — a subtitle whose name says it was made from its video's audio
+    (`<video>.ja.from-audio.srt`, `episode_names.from_audio`)? hato's *Subtitles from the audio* writes that name, as
+    Surasura's own copy beside a video does. An item waiting on its video and filled by such a file later keeps the
+    video's origin row beside the subtitle's: every live origin is read, never only the one `pairing_of` returns."""
+    from app import library_store
+    from app.episode_names import from_audio
+    rows = store.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? AND {library_store._ORIGIN_ROW} AND "
+                              f"NOT {library_store._VERSION_ROW} AND NOT {library_store._MOVED_ROW}", (item_id,))
+    for (text,) in rows:
+        try:
+            origin = json.loads(text).get("origin")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(origin, str) and from_audio(origin):
+            return True
+    return False
 
 
 # D5 / MV-2 (PROVISIONAL): what the store knows of an episode's move, read beside its pairing — the store's alone, no

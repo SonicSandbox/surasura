@@ -21,11 +21,11 @@ from tests.test_library_store_support import LANGUAGES, entry, roots, write_mani
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCES = {
-    "ja": ["samples/ja/HighPriority/H_priority_sample_1.txt", "samples/ja/HighPriority/H_priority_sample_2.srt",
-           "samples/ja/LowPriority/L_priority_sample_1.txt", "samples/ja/LowPriority/L_priority_sample_2.txt",
+    "ja": ["samples/ja/HighPriority/蜘蛛の糸（芥川龍之介）.txt", "samples/ja/HighPriority/喫茶店の朝.srt",
+           "samples/ja/LowPriority/注文の多い料理店（宮沢賢治）.txt", "samples/ja/LowPriority/ごん狐（新美南吉）.txt",
            "tests/Test Resources/ja/library_episode.ass", "tests/Test Resources/ja/phrases_sample.srt"],
-    "zh": ["samples/zh/HighPriority/H_priority_sample_1.txt", "samples/zh/HighPriority/H_priority_sample_2.txt",
-           "samples/zh/LowPriority/L_priority_sample_1.txt", "samples/zh/LowPriority/L_priority_sample_2.txt",
+    "zh": ["samples/zh/HighPriority/孔乙己（鲁迅）.txt", "samples/zh/HighPriority/从百草园到三味书屋（鲁迅）.txt",
+           "samples/zh/LowPriority/故乡（鲁迅）.txt", "samples/zh/LowPriority/风筝（鲁迅）.txt",
            "tests/Test Resources/zh/chinese_text_1.txt", "tests/Test Resources/zh/night_market.srt"],
 }
 

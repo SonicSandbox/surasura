@@ -145,6 +145,39 @@ def test_on_windows_the_counters_read_and_a_busy_spin_shows_as_gui_cpu():
     assert between["gui_ms"] > 10 and 0.0 <= between["idle_share"] <= 1.0 and between["res_ms"] > 0
 
 
+@pytest.mark.skipif(hud.sys.platform != "win32", reason="Windows' counters")
+def test_the_counters_keep_pythons_lock_while_a_worker_spins_so_the_hud_never_waits_on_itself():
+    # Mado-SP: each counter read was a ctypes call that let Python's lock go, and taking it back behind a busy worker
+    # waited a switch interval — four reads a tick stretched the HUD's 2 ms tick by 4–9 ms while the writer ran, a
+    # wait no window without the HUD has. Kept through the call: 200 samples (800 reads) beside a spinning worker take
+    # a few ms, never one switch interval a read
+    import threading
+    c = hud.Counters(calibrate=False)
+    assert c.ok
+    stop, spinning = threading.Event(), threading.Event()
+
+    def spin():
+        n = 0
+        spinning.set()
+        while not stop.is_set():
+            n += 1
+    t = threading.Thread(target=spin, daemon=True)
+    was = hud.sys.getswitchinterval()
+    hud.sys.setswitchinterval(0.001)
+    t.start()
+    try:
+        assert spinning.wait(5)                        # the worker is spinning before the first read (no head-start sleep)
+        t0 = time.perf_counter()
+        for _ in range(200):
+            assert c.sample() is not None
+        took = time.perf_counter() - t0
+    finally:
+        stop.set()
+        t.join()
+        hud.sys.setswitchinterval(was)
+    assert took < 0.2                                  # let go each read: >= 800 switch intervals (0.8 s)
+
+
 def test_the_collector_watch_finds_a_collection_in_a_gap():
     w = hud.GcWatch()
     w.events = [(1.000, 1.008, 2, True), (2.000, 2.001, 0, False)]

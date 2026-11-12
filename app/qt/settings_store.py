@@ -24,9 +24,10 @@ into the slots the page leaves for them (`custom_row`).
   Connect's watermarks, so nothing that arrived while it was off is mined; anything else does nothing there. Connect's
   own switch (`settings_connect`) needs none: `switch.turn_on` sets the watermarks before its save.
 - **`kick_on_release(before, changes)`** (laptop try rows 9 and 42): a setting that lets waiting episodes go —
-  *Trust my subtitles' timing* turned on (P-LF-9), or *Keep up to N cards waiting* changed — kicks Connect (`kick.kick`,
-  on a worker): started if it isn't running, woken if it is (its wake mark), so the episodes waiting as *Not timed* or
-  at the cap are tried again now, never at its next start or its 2-minute look.
+  *Trust my subtitles' timing* turned on (P-LF-9), *Keep up to N cards waiting* changed, or *More video folders*
+  changed (Michi-VF: kicked for videos) — kicks Connect (`kick.kick`, on a worker): started if it isn't running, woken
+  if it is (its wake mark), so the episodes waiting as *Not timed*, at the cap or on *No video* are tried again now,
+  never at its next start or its 2-minute look.
 
 GUI_Design_Guidelines_Qt: the page's controls (no new rules), a tooltip on every field and button.
 """
@@ -67,14 +68,39 @@ def resume_connect(before, changes):
 
 
 RELEASE_KEYS = ("connect_backlog_cap",)      # changed at all: Connect looks again (a cap read live, laptop round 7 #42)
+VIDEO_KEYS = ("connect_video_folders",)      # changed: Connect looks for the waiting episodes' videos again (Michi-VF)
 
 
 def releases(before, changes):
-    """Does this write let episodes Connect holds go? `connect_trust_timing` off -> on, or a RELEASE_KEYS value changed."""
+    """Does this write let episodes Connect holds go? `connect_trust_timing` off -> on, a RELEASE_KEYS value changed,
+    or a video folder added (`_finds_videos`)."""
     before = before or {}
     if changes.get("connect_trust_timing") is True and before.get("connect_trust_timing") is not True:
         return True
-    return any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS)
+    if any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS):
+        return True
+    return _finds_videos(before, changes)
+
+
+def _folders(value, lang):
+    """The folders a `connect_video_folders` value names for `lang` (a list is every language's, or {lang: list})."""
+    if isinstance(value, dict):
+        value = value.get(lang)
+    return set(value) if isinstance(value, list) else set()
+
+
+def _finds_videos(before, changes):
+    """Does this write add a folder Connect looks in for videos (*More video folders*)? Then the kick says so
+    (`kick.kick(videos=True)`): a running Connect lets the episodes parked on *No video* go again and reads the
+    folders again (`runner.Steps._videos_again`) — a plain wake leaves them parked until its next start. A folder
+    taken away finds nothing: no kick."""
+    before = before or {}
+    for key in (k for k in VIDEO_KEYS if k in changes):
+        now, was = changes[key], before.get(key)
+        langs = {"ja", "zh"} | set(now if isinstance(now, dict) else ()) | set(was if isinstance(was, dict) else ())
+        if any(_folders(now, lang) - _folders(was, lang) for lang in langs):
+            return True
+    return False
 
 
 def kick_on_release(before, changes, store=None, win=None):
@@ -92,21 +118,24 @@ def kick_on_release(before, changes, store=None, win=None):
         settings_service.put(after, key, value)
     def failed(info):
         applog.log("settings", f"Connect's start: {info[0]}")
-    if win is None or qpress.run(None, "settings:connect_release", _kick, after, store, failed=failed, win=win) is None:
-        bridge.run_in_worker(_kick, after, store, failed=failed)     # (one already turning: this one kicks too)
+    videos = _finds_videos(before, changes)
+    if win is None or qpress.run(None, "settings:connect_release", _kick, after, store, videos, failed=failed,
+                                 win=win) is None:
+        bridge.run_in_worker(_kick, after, store, videos, failed=failed)    # (one already turning: this one kicks too)
     return True
 
 
 FLUSH_S = 10            # the longest the start waits for the switch's write (another program holding the lock)
 
 
-def _kick(settings, store=None):
-    """(A worker.) Connect kicked for the episodes the write releases, after the write landed."""
+def _kick(settings, store=None, videos=False):
+    """(A worker.) Connect kicked for the episodes the write releases, after the write landed; `videos`: for their
+    videos too (a video folder changed)."""
     from app.connect import kick
     flush = getattr(store, "flush", None)
     if flush is not None and not flush(FLUSH_S):
         applog.log("settings", "A setting for Connect: its write hadn't landed; Connect is kicked anyway")
-    return kick.kick(settings)
+    return kick.kick(settings, videos=True) if videos else kick.kick(settings)
 
 
 def _turned_on(before, after):

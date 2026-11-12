@@ -412,8 +412,9 @@ class Services:
         """(Its own thread.) The look (`at_window`), its line to the bar (`anki_session.told`, the 2.x dashboard's
         words), then the known-words sync — at the window's start the one start sync, forced, after the session's sync
         whatever it found (`Automation.started(session=True)` armed none, IK-2); at a focus with Anki open, forced only
-        when the session's sync brought your phone's reviews in — and, synced, Connect kicked to see what waits, on the
-        settings as they are now (IK-5; the Tk `_connect_session`'s order). A quit ends the wait for the Anki it
+        when the session's sync brought your phone's reviews in — and, synced (or at the window's start, whatever the
+        look found: Haya-CL), Connect kicked to see what waits, on the settings as they are now (IK-5; the Tk
+        `_connect_session`'s order). A quit ends the wait for the Anki it
         started at its next look, never starts Anki or a sync after it (`cancel`), and nothing follows it."""
         job = self._session_job(opening)
         try:
@@ -435,7 +436,10 @@ class Services:
                 self.automation.session_began(owed)
             elif (done or {}).get("anki") == "open":
                 self.automation.session_began(sync == "synced")
-            if sync == "synced":
+            if sync == "synced" or opening:
+                # Haya-CL: at the window's start always — a Connect that ended with no window open (its waits kept in
+                # the ledger: the cap, Anki closed, you reviewing) is started again whatever this look found; it
+                # waits out its looks while this window is open. At a focus, only after a sync, as before
                 now = self._session_settings()
                 if now is not None:
                     from app.connect import kick
@@ -3963,13 +3967,14 @@ def _wake_on_feed(feed, reader):
 def connect_after_commit(language, settings):
     """The window's writer's `after_commit(change, op)` (W-A2, row 4.1.6's rule): after every write the store
     committed — a move into the top 20, an ask (*Mine now*, *Mine this*, *Mine it too*), a line moved — one look on
-    the writer's thread (`window_link.Link.after_change`: read-only), and Connect kicked when it has something unread.
-    One `Link` per writer: it remembers what it kicked for."""
+    the writer's thread (`window_link.Link.after_change`: read-only), and Connect kicked when it has something unread
+    — or, after a video linked (`op` `link_video`, Michi-VF), kicked for videos. One `Link` per writer: it remembers
+    what it kicked for."""
     from app.connect import window_link
     link = window_link.Link(language, lambda: settings_service.thaw(settings.get()))
 
-    def after_commit(_change, _op):
-        link.after_change()
+    def after_commit(_change, op):
+        link.after_change(op=op)
     after_commit.link = link
     return after_commit
 # --- end P4.1 L2
@@ -3997,13 +4002,20 @@ def _log_unhandled(kind, value, tb):
 
 
 # Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
-# hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps a step's wait under the budget (W2.1 review A3).
+# hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps one wait under the budget (W2.1 review A3).
 SWITCH_INTERVAL_S = 0.001
+# While the window is awake, finer (Mado-SP, 2026-11-10): a stretch takes the lock again at every event (the app filter,
+# each slot, each delegate paint), and beside the writer's numbers following a move (4–9 ms of Python) ⋯ → Goal's
+# stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
+# asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
+# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`)
+AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 
 def prepare_process():
     """The window process's own settings: an exception escaping a slot is logged, never fatal (PyQt6 aborts
-    otherwise); Python's lock changes hands every millisecond."""
+    otherwise); Python's lock changes hands every millisecond (`SWITCH_INTERVAL_S`; finer while the window is awake,
+    `wire_idle`)."""
     sys.excepthook = _log_unhandled
     sys.setswitchinterval(SWITCH_INTERVAL_S)
     wire_idle()
@@ -4015,11 +4027,13 @@ _IDLE_WIRED = []
 def wire_idle():
     """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
     idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
-    step only while the window rests, so a press's stretch never takes turns at Python's lock with them)."""
+    step only while the window rests, so a press's stretch never takes turns at Python's lock with them), and while it
+    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`)."""
     from PyQt6.QtCore import QAbstractEventDispatcher
     d = QAbstractEventDispatcher.instance()
     if d is None or any(x is d for x in _IDLE_WIRED):
         return
+    window_idle.set_switch(AWAKE_SWITCH_INTERVAL_S, SWITCH_INTERVAL_S)
     d.awake.connect(window_idle.busy)
     d.aboutToBlock.connect(window_idle.rest)
     _IDLE_WIRED.append(d)
@@ -4035,6 +4049,7 @@ def unwire_idle():
             except (TypeError, RuntimeError):
                 pass
     window_idle.rest()
+    window_idle.set_switch(None, None)
 
 
 def connect_instance(window, instance):

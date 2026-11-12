@@ -67,14 +67,14 @@ class Opener:
 def world(qapp):
     made = []
 
-    def make(writable=True):
-        seed = window_seed.build()
+    def make(writable=True, files=window_seed.SMALL, size=(1280, 900)):
+        seed = window_seed.build(files)
         arrival_work = next(r["work_id"] for r in seed.items if r["tier"] == "arrivals")
         store = real_store(seed, titles={arrival_work: [ARRIVAL_ROMAJI]})
         store.close()
         writer = Writer(seed.library, apply=False)
         writer.writable = writable
-        win, services = open_window(qapp, seed, writer)
+        win, services = open_window(qapp, seed, writer, size=size)
         page = win.page_widgets["current"]
         win.search.searcher = S.Searcher(Opener(seed.language), lambda: page.view_model)
         made.append((win, services))
@@ -190,6 +190,48 @@ def test_A2_85_the_results_animate_in_once_then_hold_while_typing(world):
     assert results.opens == 1
     results = ask(win, "星降")
     assert results.opens == 1 and results.fills >= 2                # refilled in place, never opened again
+
+
+
+def test_a_refill_in_place_is_as_tall_as_every_row_it_shows_at_mattiass_size(world):
+    """Mattias (3.0.0, report 20261111-061454): typing a Goal title showed the groups' names but none of its shows. A
+    refill in place made its new rows on the open overlay, where Qt shows them only on the next turn of the event loop:
+    the overlay was measured with only the rows kept from the last fill, so it was cut to a group name or two. Typed
+    letter by letter, as a hand does, at his window (2560 × 1369) on a library of his size (~2,300 files, Goal ≈ 80 %),
+    for a title that is only in Goal: after every answer the overlay is as tall as what it holds (up to its cap), and
+    every row it shows is in view."""
+    seed, win, _writer = world(files=2300, size=(2560, 1369))
+    elsewhere = {r["work_id"] for r in seed.items if r["tier"] != "goal"}
+    title = next(w["title"] for w in seed.works if w["id"] not in elsewhere and len(w["title"]) >= 4
+                 and any(r["work_id"] == w["id"] for r in seed.items))
+    for n in range(1, len(title) + 1):
+        results = ask(win, title[:n])
+        QApplication.processEvents()                       # (what the next turn of the loop shows, measured after)
+        assert results.hits, title[:n]
+        view = results.scroll.viewport()
+        cap = round(results.parentWidget().height() * 0.7)
+        margins = results.layout().contentsMargins()
+        room = min(results.body.sizeHint().height(), cap - margins.top() - margins.bottom() - 2)
+        assert view.height() >= room - 2, (title[:n], view.height(), results.body.sizeHint().height())
+        first = results.hits[0]
+        top = first.mapTo(view, QPoint(0, 0)).y()
+        assert first.isVisible() and 0 <= top and top + first.height() <= view.height(), (title[:n], top)
+    assert any(r.hit.group == "goal" and r.hit.title == title for r in results.hits)
+
+
+
+def test_typing_on_past_every_match_shows_nothing_found_in_view(world):
+    """The same refill in place, to a line it makes anew: typed on past the last match, *nothing found* was made on the
+    open overlay and measured before it showed — an empty overlay, the words cut away."""
+    seed, win, _writer = world()
+    ask(win, "星")
+    results = ask(win, "星存在しない題名")
+    QApplication.processEvents()
+    none = next(w for w in results.body.findChildren(search_ui.QLabel) if w.objectName() == "searchnone"
+                and w.isVisible())
+    view = results.scroll.viewport()
+    top = none.mapTo(view, QPoint(0, 0)).y()
+    assert 0 <= top and top + none.height() <= view.height(), (top, none.height(), view.height())
 
 
 # --- what a hit does --------------------------------------------------------------------------------------------- #

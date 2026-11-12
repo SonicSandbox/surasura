@@ -123,8 +123,8 @@ def test_confirm_asked_again_after_no_is_built_once_and_no_widget_is_made(second
 
 def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_change(main):
     """Typing in the report's *What happened* box: the first letter into an empty box repaints the box and the
-    Save and Send buttons it enables, nothing else of the form; the next letter changes no button, so only the box
-    repaints."""
+    buttons it enables — Save, Send, and (Fresh-U row 3: they save the draft first) Show me and Make a zip — nothing
+    else of the form; the next letter changes no button, so only the box repaints."""
     w = _press(main)
     assert QTest.qWaitForWindowExposed(w)
     wc.settle()
@@ -140,10 +140,10 @@ def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_chan
         assert w.save_button.isEnabled(), m.report()
         assert m.painted > 0, m.report()
         assert m.painted_in(w.save_button) > 0, m.report()           # (the part that changed did repaint)
-        assert w.send_button.isEnabled(), m.report()
-        # where: every px painted lies on the box or the two buttons (by area, not bounding rects: the form's ground
+        assert w.send_button.isEnabled() and w.show_button.isEnabled() and w.zip_button.isEnabled(), m.report()
+        # where: every px painted lies on the box or the buttons (by area, not bounding rects: the form's ground
         # repaints the region under them, whose bounding rect spans the form)
-        parts = [wc.rect_in_window(b) for b in (w.what, w.save_button, w.send_button)]
+        parts = [wc.rect_in_window(b) for b in (w.what, w.save_button, w.send_button, w.show_button, w.zip_button)]
         assert m.union <= sum(m.union_in(r) for r in parts), m.report()
         with wc.measure(w) as m2:
             QTest.keyClicks(w.what, "y")

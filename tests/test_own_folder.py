@@ -70,6 +70,22 @@ def test_a_books_part_opens_the_folder_its_epub_is_in(shelf):
     assert os.path.normcase(F.find(shelf.store, shelf.data_dir, ids, rels)) == os.path.normcase(os.path.dirname(path))
 
 
+def test_how_says_when_the_folder_that_opens_isnt_its_own(shelf):
+    """Choice 24 (Sonic, 2026-11-09): a renamed show's folder opens the one above it, and `find_how` says "up" so the
+    press can say so (the learner never thinks the library still points there); its own folder there: None."""
+    title = TITLES[shelf.language][1]
+    folder = episodes(os.path.join(shelf.drive, *SHELF[shelf.language], title), title, shelf.language)
+    shelf.read(shelf.drive)
+    ids, rels = _ids_rels(shelf, title)
+    found, how = F.find_how(shelf.store, shelf.data_dir, ids, rels)
+    assert (os.path.normcase(found), how) == (os.path.normcase(folder), None)
+    os.rename(folder, folder + " (old)")                         # the user renamed the show's folder
+    found, how = F.find_how(shelf.store, shelf.data_dir, ids, rels)
+    assert (os.path.normcase(found), how) == (os.path.normcase(os.path.dirname(folder)), "up")
+    assert F.find(shelf.store, shelf.data_dir, ids, rels) == found          # `find` is `find_how`'s folder
+    assert F.read_how(Opener(shelf.store), shelf.data_dir, ids, rels) == (found, "up")
+
+
 def test_read_opens_its_own_handle_and_closes_it(shelf):
     title = TITLES[shelf.language][0]
     folder = episodes(os.path.join(shelf.drive, title), title, shelf.language)
@@ -135,6 +151,22 @@ def test_an_unplugged_drive_falls_back_to_the_stored_copy(tmp_path):
     data, copy = _library(tmp_path, "Library/月影の旅人/第01話.srt")
     store = Store(_origin(3, f"{free}:\\アニメ\\月影の旅人\\第01話.srt"))
     assert F.find(store, data, [3], ["Library/月影の旅人/第01話.srt"]) == copy
+
+
+def test_how_an_unplugged_drive_opens_the_copy_and_an_item_with_no_original_climbs(tmp_path):
+    """Choice 24: its originals gone, the stored copy's own folder is "copy"; an item with no original (Surasura 2's)
+    at its copy is its own (None), its copy gone and the folder above opened "up", nothing named to climb from None."""
+    free = next((c for c in reversed(string.ascii_uppercase) if not os.path.exists(f"{c}:\\")), None)
+    data, copy = _library(tmp_path, "Library/月影の旅人/第01話.srt")
+    if os.name == "nt" and free is not None:
+        store = Store(_origin(3, f"{free}:\\アニメ\\月影の旅人\\第01話.srt"))
+        assert F.find_how(store, data, [3], ["Library/月影の旅人/第01話.srt"]) == (copy, "copy")
+    assert F.find_how(Store(), data, [1], ["Library/月影の旅人/第01話.srt"]) == (copy, None)
+    shutil.rmtree(copy)
+    assert F.find_how(Store(), data, [1], ["Library/月影の旅人/第01話.srt"]) == (os.path.join(data, "Library"), "up")
+    assert F.find_how(Store(), data, [1]) == (data, None)
+    if os.name == "nt" and free is not None:                     # originals gone, no stored copy named: the library
+        assert F.find_how(store, data, [3]) == (data, None)      # opens, never called "Surasura's copy" (review)
 
 
 def test_an_item_with_no_original_is_its_stored_copy_and_a_gone_copy_never_climbs_out_of_the_library(tmp_path):

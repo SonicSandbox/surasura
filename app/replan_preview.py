@@ -529,7 +529,7 @@ class Host:
     def _parts(self, settings, store):
         """The run signature's parts for the library as it stands (stats every file: on this worker only). A missing
         item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`); the set-aside
-        files are its "reference" part (W-1; a watched mark re-plans at once, Haya-W: `plan_engine._only_watched`)."""
+        files are its "reference" part (W-1; a watched mark or a finish re-plans at once, Haya-W / Haya-FN: `plan_engine._only_joined`)."""
         from app import analyzer, run_args
         schedule = store.schedule(with_aside=True)
         found = analyzer.resolve_found_files(self.language, verbose=False, schedule=schedule, missing=True)
@@ -1103,8 +1103,8 @@ def helper_processes():
 # A Host in the window's own process (the suites' IN_PROCESS_ENV; a helper that couldn't start): its job's Python
 # shares the window's interpreter lock, which Python hands between threads every 5 ms by default — the window's thread
 # waited up to that long behind a job step (R6's timer probe: 5–6 ms against 5). While one runs there, the lock changes
-# hands every 1 ms, as in the 3.0 window's own process (`app.qt.shell.SWITCH_INTERVAL_S`); the last one's stop puts
-# back what was set before.
+# hands every 1 ms at most (the 3.0 window's own process sets a finer one, `app.qt.shell.SWITCH_INTERVAL_S`); the last
+# one's stop puts back what was set before.
 WINDOW_SWITCH_S = 0.001
 _SHARING = {"hosts": 0, "was": None}
 _SHARING_LOCK = threading.Lock()
@@ -1496,9 +1496,9 @@ def helper_main(argv=None):
 
 # --- shadow mode's comparison ------------------------------------------------------------------------------------- #
 
-PRIORITY_COLUMNS = ("Word", "Reading", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
+PRIORITY_COLUMNS = ("Word", "Reading", "Kana", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier")
-PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Score", "Occurrences (Global)",
+PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Kana", "Score", "Occurrences (Global)",
                        "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
                        "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier")
 

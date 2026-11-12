@@ -112,8 +112,8 @@ jobs:
           New-Item -ItemType Directory -Force D:\dumps | Out-Null
           $py = (Get-Command python).Source
           $files = (python -c "import run_tests; print(' '.join(run_tests._shard_of('.', '4/4')))").Trim()
-          $args = @('-accepteula', '-mp', '-e', '-x', 'D:\dumps', $py, '-m', 'pytest') + $files.Split(' ') + @('-v', '-ra', '-p', 'no:cacheprovider')
-          & D:\pd\procdump64.exe @args
+          $pa = @('-accepteula', '-mp', '-e', '-x', 'D:\dumps', $py, '-m', 'pytest') + $files.Split(' ') + @('-v', '-ra', '-p', 'no:cacheprovider')
+          & D:\pd\procdump64.exe @pa
           Get-ChildItem D:\dumps
       - name: Upload the dumps (PROBE)
         if: ${{ always() && matrix.shard == 4 }}

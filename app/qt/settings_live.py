@@ -36,7 +36,7 @@ help line.
 import os
 import time
 
-from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
@@ -125,6 +125,13 @@ def read_hato():
     one look (`services.tools_found`, B2-7)."""
     from app.services import tools_found
     return tools_found.hato_version()
+
+
+def read_piyo(language):
+    """Kantan-B2 (AUDIT A4, finding 10): Piyo's newest kept round, (when, how many words) or None
+    (`practice_rounds.last_round`: one folder listing and a small read)."""
+    from app import practice_rounds
+    return practice_rounds.last_round(language)
 
 
 def open_hato(folder, settings):
@@ -495,6 +502,7 @@ class Live(QObject):
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
         self._hato_follow = None          # (hato's folder, until when its entry is looked at)
+        self._piyo_window = None          # Kantan-B2: the window whose activation reads Piyo's last round again
         page.row_built.connect(self._built)
         page.language_set.connect(self._language)
         b = page.bridge
@@ -504,6 +512,7 @@ class Live(QObject):
         b.library_changed.connect(lambda _view: self._read_level())
         b.indexed.connect(lambda _language: self._read_level())
         b.update_changed.connect(lambda _state: self._read_skipped())
+        page.installEventFilter(self)               # Kantan-B2: Piyo's last round read again as Settings shows
         page.takes["text_size"] = self._text_size
         page.takes["app_motion"] = self._motion
         self._read_known()
@@ -706,7 +715,16 @@ class Live(QObject):
             line.addStretch(1)
             words.addSpacing(6)                                           # apart from the row's help line
             words.addLayout(line)
-            self.parts["practice_then"] = {"then": then, "starter": starter}
+            # Kantan-B2 (AUDIT A4): under it, the last round — read on a worker as the row is built and on a language
+            # change (`_read_piyo`); hidden until the read answers
+            last = QLabel(view)
+            last.setObjectName("settingshelp")
+            last.setTextFormat(Qt.TextFormat.PlainText)
+            last.setToolTip(S.PIYO_ROUND_TIP)
+            last.setVisible(False)
+            words.addWidget(last)
+            self.parts["practice_then"] = {"then": then, "starter": starter, "round": last}
+            self._read_piyo()
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -732,6 +750,7 @@ class Live(QObject):
         self.facts.update(known=None, band=None, auto=False, previews=None)
         self._read_known()
         self._read_level()
+        self._read_piyo()
         self._paint_setup()
 
     def _status(self, snap):
@@ -787,6 +806,43 @@ class Live(QObject):
             self.facts["sync"] = sync
             self._paint_anki()
         self._paint_setup()
+
+    # --- Piyo's last round (Kantan-B2, AUDIT A4) ------------------------------------------------------------------- #
+    def eventFilter(self, obj, event):
+        """Settings shown, or its window back in front while it shows (a round played in the AI meanwhile): Piyo's
+        last round read again (the same worker read; the row repaints only if its words moved)."""
+        kind = event.type()
+        if kind == QEvent.Type.Show and obj is self.page:
+            self._read_piyo()
+        elif kind == QEvent.Type.WindowActivate and self._alive() and self.page.isVisible():
+            self._read_piyo()
+        return False
+
+    def _read_piyo(self):
+        if "round" not in self.parts.get("practice_then", {}):
+            return                                        # (its row not built yet: read when it is)
+        if self._piyo_window is None and self.page.window() is not self.page:
+            self._piyo_window = self.page.window()
+            self._piyo_window.installEventFilter(self)     # (its activation: back from the AI app)
+        language = self.page.language
+        self._run(read_piyo, language, then=lambda answer, lang=language: self._piyo(lang, answer))
+
+    def _piyo(self, language, answer):
+        line = self.parts.get("practice_then", {}).get("round")
+        if line is None or language != self.page.language:
+            return
+        from app import practice_rounds
+        from app.services import causes
+        if answer is None:
+            text = S.PIYO_NO_ROUND if practice_rounds.keeps(self._settings()) else S.PIYO_NOT_KEPT
+        else:
+            when, n = answer
+            date = causes.when(when.timestamp())                  # the window's one time rule
+            text = S.PIYO_LAST_ROUND_ONE.format(date=date) if n == 1 else S.PIYO_LAST_ROUND.format(date=date, n=n)
+        if line.text() != text:
+            line.setText(text)
+        if line.isHidden():
+            line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
     def _read_level(self):

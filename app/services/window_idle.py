@@ -9,12 +9,14 @@ by `app/qt/shell.py`), and a worker waits at the start of a step (`wait()`) whil
 `CAP_S`, so a window that never rests never stops the work. Without a window (the command line, the tests' services)
 the window is always idle: nothing waits. Qt-free.
 
-A save holds Python's lock at once too (F13's leftover, Kura-F13 2026-11-12): a store save gives the lock up at each of
-its ~70 SQLite steps and waited for it back a whole switch interval each time a busy thread ran Python — a look's pass
-over 20,000 origins made a ~3 ms move save in 0.1–0.5 s. While a save holds the store's write lock
-(`library_store.Store._writing`: `save_began` / `save_ended`, in any process) the lock comes back to it at once; the
-last save's end puts back the window's own hand-over, or what was set before. Only for the save's few milliseconds:
-under 1 ms two busy threads take turns at every step (Mado-SP: 3.5× as long), so never for a whole look.
+The hand-over has one owner, here: the window's own (awake / at rest), and finer ones held while something runs
+(`hold` / `let_go`) — the finest in force wins, and the last one let go puts back the window's own, else what was set
+before the first (someone's own setting since stays theirs). A save holds `SAVE_SWITCH_S` while it holds the store's
+write lock (F13's leftover, Kura-F13 2026-11-12: a save gives the lock up at each of its ~70 SQLite steps and the
+commit's ring, and waited for it back a whole interval each time a busy thread ran Python — a look's pass over 20,000
+origins made a ~3 ms move save in 0.1–0.5 s); a re-order host in the window's own process holds 1 ms while it lives
+(`replan_preview`). A save's hold lasts only its few milliseconds: under 1 ms two busy threads take turns at every step
+(Mado-SP: 3.5× as long), so never for a whole look, nor while a save waits for the lock.
 """
 import sys
 import threading
@@ -28,9 +30,9 @@ _idle.set()
 _woke = [0.0]                   # when the window last woke from rest (perf_counter)
 _switch = [None, None]          # Python's lock hand-over while the window is awake, and at rest (`set_switch`)
 SAVE_SWITCH_S = 0.00025         # while a save holds the store's write lock: the lock comes back to it at once
-_saves = {"n": 0, "was": None, "rested": False}   # saves under way here; the hand-over before the first, when it
-                                                # was lowered; the window rested meanwhile (its rest's setting waits)
-_SWITCH_LOCK = threading.Lock() # the hand-over is set by one at a time: the window's busy / rest, a save's start / end
+_holds = []                     # finer hand-overs held while something runs (`hold`): a save's, a re-order host's
+_handed = {"before": None, "set": None}   # (no window wired) the hand-over under the holds, and the last one set here
+_SWITCH_LOCK = threading.Lock() # the hand-over is set by one at a time: the window's busy / rest, a hold, a let-go
 
 
 def set_switch(awake, at_rest):
@@ -47,52 +49,48 @@ def busy():
         with _SWITCH_LOCK:
             _idle.clear()
             if _switch[0] is not None:
-                sys.setswitchinterval(_switch[0])
+                _hand_over()
 
 
 def rest():
-    """(The window's thread.) It goes back to wait: the background may work, the lock handed over as before — once no
-    save is under way (`save_ended` puts it back then)."""
+    """(The window's thread.) It goes back to wait: the background may work, the lock handed over as before (a hold
+    still in force keeps its finer one, `hold`)."""
     with _SWITCH_LOCK:
         was = _idle.is_set()
         _idle.set()
         if not was and _switch[1] is not None:
-            if _saves["n"]:
-                _saves["rested"] = True
-            else:
-                sys.setswitchinterval(_switch[1])
+            _hand_over()
 
 
-def save_began():
-    """(Any thread: a store save taking the write lock, `Store._writing`.) Until the last save ends, Python's lock
-    comes back to a save at once from a busy thread (`SAVE_SWITCH_S`); a finer hand-over already set stays."""
+def hold(interval):
+    """(Any thread, while something runs: a save under the store's write lock, `Store._writing`.) Python's lock changes
+    hands every `interval` at most until it is let go (`let_go`, once per hold); a finer one in force stays."""
     with _SWITCH_LOCK:
-        if not _saves["n"]:
-            was = sys.getswitchinterval()
-            if was > SAVE_SWITCH_S:
-                sys.setswitchinterval(SAVE_SWITCH_S)
-                _saves["was"] = was
-        _saves["n"] += 1
+        _holds.append(interval)
+        _hand_over()
 
 
-def save_ended():
-    """(The save's thread, its write lock let go.) The last one puts back what it lowered, or a rest it held back: in
-    the window's process the window's own hand-over (awake or at rest, `set_switch`, as its busy / rest would), else
-    the one before the first save, unless someone set their own since."""
+def let_go(interval):
+    """(The holder.) Its hold ends; the last one's end puts back the window's own hand-over (awake or at rest, as its
+    busy / rest would), else the one before the first hold, or someone's own set since."""
     with _SWITCH_LOCK:
-        if _saves["n"] <= 0:
-            return
-        _saves["n"] -= 1
-        if _saves["n"]:
-            return
-        was, rested = _saves["was"], _saves["rested"]
-        _saves["was"], _saves["rested"] = None, False
-        own = _switch[1] if _idle.is_set() else _switch[0]
-        if own is not None:
-            if was is not None or rested:
-                sys.setswitchinterval(own)
-        elif was is not None and sys.getswitchinterval() == SAVE_SWITCH_S:
-            sys.setswitchinterval(was)
+        if interval in _holds:
+            _holds.remove(interval)
+            _hand_over()
+
+
+def _hand_over():
+    """(Under `_SWITCH_LOCK`.) The finest of the window's own (else the one in force before the holds) and the holds."""
+    now = sys.getswitchinterval()
+    own = _switch[1] if _idle.is_set() else _switch[0]
+    if own is None:
+        if _handed["set"] is None or now != _handed["set"]:
+            _handed["before"] = now                 # (none of ours in force, or someone set their own since: theirs)
+        own = _handed["before"]
+    want = min([own, *_holds])
+    if want != now:
+        sys.setswitchinterval(want)
+    _handed["set"] = want if _holds else None
 
 
 def wait(cap=None):

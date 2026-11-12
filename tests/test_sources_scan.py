@@ -2706,6 +2706,8 @@ def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_
                 spun.append((s0, time.perf_counter()))
             return real_new(look, *args)
         monkeypatch.setattr(sources._Look, "_new", new_after_a_long_pass)
+        was = sys.getswitchinterval()
+        sys.setswitchinterval(0.005)                         # (Python's default, whatever an earlier test left)
         thread = threading.Thread(target=mover, name="mover")
         thread.start()
         try:
@@ -2714,6 +2716,7 @@ def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_
         finally:
             done.set()
             thread.join()
+            sys.setswitchinterval(was)
         assert result["added"] == 1 and spun
         s0, s1 = spun[0]
         during = [saved - t0 for t0, saved in moves if t0 < s1 and saved > s0]
@@ -2721,13 +2724,13 @@ def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_
         assert max(during) <= (MOVE_BUDGET if BENCH else 4 * MOVE_BUDGET), sorted(during)[-5:]
 
 
-
 def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_lets_it_go_whatever_ends_it(monkeypatch):
-    """F13's leftover: the save's whole outer write — the damaged check, the lock, the commit and the commit's ring
-    (eight bell slots opened through ctypes, each one giving up Python's lock: a hold that ended before the ring left
-    a move during a look at ~60 ms) — gets Python's lock back at once; a nested command is the same save. Every way
-    out lets it go — a commit, a command that raises, a damaged store refused, a lock not got — or the process would
-    hand its lock over at once for good and two busy threads would take turns at every step (Mado-SP: 3.5x as long)."""
+    """F13's leftover: the save's outer write from its lock taken — the commit and the commit's ring (eight bell slots
+    opened through ctypes, each one giving up Python's lock: a hold that ended before the ring left a move during a
+    look at ~60 ms) — gets Python's lock back at once; a nested command is the same save; never while it waits for the
+    lock (up to 5 s: the whole process would take turns at every step meanwhile). Every way out lets it go — a commit,
+    a command that raises, a damaged store refused, a lock not got — or the process would hand its lock over at once
+    for good and two busy threads would take turns at every step (Mado-SP: 3.5x as long)."""
     from app.services import window_idle
     language = "ja"
     store, _data_dir = _empty(language)
@@ -2741,22 +2744,23 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_let
             with store._writing():
                 assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
                 with store._writing():                    # (a command inside a command: one save)
-                    assert window_idle._saves["n"] == 1
+                    assert window_idle._holds == [window_idle.SAVE_SWITCH_S]
             assert seen == [window_idle.SAVE_SWITCH_S]    # (its ring inside the hold)
-            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._saves["n"] == 0
+            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
             with pytest.raises(ValueError):
                 with store._writing():
                     raise ValueError("a command's own error")
-            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._saves["n"] == 0
+            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
 
             def busy(_wait):
+                assert window_idle._holds == []                    # (never held while it waits for the lock)
                 raise ls.StoreBusy("the library is busy; try again")
             with monkeypatch.context() as patched:
                 patched.setattr(store._wlock, "acquire", busy)
                 with pytest.raises(ls.StoreBusy):
                     with store._writing():
                         pass
-            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._saves["n"] == 0
+            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
             ls.mark_damaged(store.db_path, "a test's damaged store")
             try:
                 with pytest.raises(ls.StoreReadOnly):
@@ -2764,11 +2768,12 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_let
                         pass
             finally:
                 os.remove(ls.damaged_marker(store.db_path))
-            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._saves["n"] == 0
+            assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
     finally:
-        while window_idle._saves["n"]:
-            window_idle.save_ended()
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
         sys.setswitchinterval(was)
+
 
 def test_the_releases_already_in_are_a_folders_own_never_its_subfolders():
     """S7 is per folder: worked out from the origins whose keys start with the folder's (F13), a subfolder's release

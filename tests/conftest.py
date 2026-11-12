@@ -122,19 +122,18 @@ def _no_gui_update_check(monkeypatch):
 @pytest.fixture(autouse=True)
 def _switch_interval_put_back():
     """A re-order host in this process lowers Python's switch interval while it lives (`replan_preview`'s
-    `_share_the_window`); a test that never stops its host would leave the rest of the run at 1 ms, timed bounds
-    included. Each test ends with no host counted, and the interval a host it left behind lowered put back, as the
-    host's own stop would (`_leave_the_window`). A test's own interval is its own: the harness guards' gap probe sets
-    1 µs for the 200 tests after it, and putting 5 ms back there let its busy watcher hold the lock 5 ms at every
-    release (its nested run 8 s → past its 300 s timeout)."""
+    `_share_the_window`, a hold of `window_idle`'s); a test that never stops its host would leave the rest of the run at
+    1 ms, timed bounds included. Each test ends with no hold left, and the interval a host it left behind lowered put
+    back, as the host's own stop would (`_leave_the_window`). A test's own interval is its own: the harness guards' gap
+    probe sets 1 µs for the 200 tests after it, and putting 5 ms back there let its busy watcher hold the lock 5 ms at
+    every release (its nested run 8 s → past its 300 s timeout)."""
     yield
-    preview = sys.modules.get("app.replan_preview")
-    if preview is not None:
-        with preview._SHARING_LOCK:
-            left, was = preview._SHARING["hosts"], preview._SHARING["was"]
-            preview._SHARING.update(hosts=0, was=None)
-        if left and was is not None and sys.getswitchinterval() == preview.WINDOW_SWITCH_S:
-            sys.setswitchinterval(was)
+    idle = sys.modules.get("app.services.window_idle")      # (the hand-over's one owner: a host holds it there)
+    if idle is not None:
+        with idle._SWITCH_LOCK:
+            left = list(idle._holds)
+        for interval in left:
+            idle.let_go(interval)
 
 
 @pytest.fixture(autouse=True)

@@ -121,71 +121,109 @@ def test_while_the_window_is_awake_pythons_lock_comes_back_to_it_at_once_and_at_
 
 
 def test_a_save_gets_pythons_lock_at_once_till_the_last_one_ends_then_the_hand_over_before_comes_back():
-    """F13's leftover: while a store save holds the write lock (`save_began` … `save_ended`, `Store._writing`), the
-    lock comes back to it at once; saves on two threads overlap, so only the last one's end puts back what was set
-    before — the first one's would leave the other's SQLite steps waiting a whole interval each again. A finer
-    hand-over already set (the harness's 1 µs probe) is never coarsened, and is left as it was."""
+    """F13's leftover: while a store save holds the write lock (`hold` … `let_go`, `Store._writing`), the lock comes
+    back to it at once; saves on two threads overlap, so only the last one's end puts back what was set before — the
+    first one's would leave the other's SQLite steps waiting a whole interval each again. A finer hand-over already
+    set (the harness's 1 µs probe) is never coarsened, and is left as it was."""
     import sys
     was = sys.getswitchinterval()
     try:
         sys.setswitchinterval(0.005)
-        window_idle.save_began()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
-        window_idle.save_began()                        # (a second thread's save, inside the first)
-        window_idle.save_ended()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)                        # (a second thread's save, inside the first)
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S     # (one still under way)
-        window_idle.save_ended()
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.005)
-        window_idle.save_ended()                        # (an end with none under way: nothing)
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)    # (a let-go with no hold: nothing)
         assert sys.getswitchinterval() == pytest.approx(0.005)
         sys.setswitchinterval(0.000001)
-        window_idle.save_began()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.000001)
-        window_idle.save_ended()
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.000001)
         sys.setswitchinterval(0.005)
-        window_idle.save_began()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)
         sys.setswitchinterval(0.002)                    # (someone's own setting inside the save: it stays)
-        window_idle.save_ended()
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.002)
     finally:
-        while window_idle._saves["n"]:
-            window_idle.save_ended()
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
         sys.setswitchinterval(was)
 
 
 def test_a_save_under_way_keeps_the_fine_hand_over_through_the_windows_rest_and_its_end_puts_back_the_windows():
     """In the window's process the window sets its own hand-over at each wake and rest (`set_switch`): a rest in the
-    middle of a save would put back 1 ms under it, so it waits for the save's end; that end puts back the window's
-    own — 1 ms at rest, its finer one while it is awake — never the value from before the save."""
+    middle of a save would put back 1 ms under it, so the finer of the two holds till the save's end; that end puts
+    back the window's own — 1 ms at rest, its finer one while it is awake — never the value from before the save."""
     import sys
     was = sys.getswitchinterval()
     try:
         window_idle.set_switch(0.0002, 0.001)
         sys.setswitchinterval(0.001)
-        window_idle.save_began()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
         window_idle.busy()                              # (the window woke while the save went on: its finer one)
         assert sys.getswitchinterval() == pytest.approx(0.0002)
-        window_idle.rest()                              # (and rested: held back till the save's end)
-        assert sys.getswitchinterval() == pytest.approx(0.0002)
-        window_idle.save_ended()
+        window_idle.rest()                              # (and rested: the save's own until it ends)
+        assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.001)          # (at rest: the window's at-rest one)
-        window_idle.save_began()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)
         window_idle.busy()                              # (awake when the save ends: the window's awake one)
-        window_idle.save_ended()
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.0002)
         window_idle.rest()
         assert sys.getswitchinterval() == pytest.approx(0.001)
         window_idle.busy()                              # (a save begun while the window is awake lowers nothing —
-        window_idle.save_began()                        # finer already — but the rest it held back is still put
-        window_idle.rest()                              # back at its end)
-        assert sys.getswitchinterval() == pytest.approx(0.0002)
-        window_idle.save_ended()
+        window_idle.hold(window_idle.SAVE_SWITCH_S)     # finer already — and a rest during it keeps the save's,
+        window_idle.rest()                              # till its end)
+        assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.001)
     finally:
         window_idle.set_switch(None, None)
         window_idle.rest()
-        while window_idle._saves["n"]:
-            window_idle.save_ended()
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
+        sys.setswitchinterval(was)
+
+
+def test_a_save_and_a_re_order_host_hold_the_hand_over_together_and_neither_end_undoes_the_other():
+    """One owner (the adversary's three cases): a host in the window's own process holds 1 ms while it lives
+    (`replan_preview._share_the_window`), a save 0.25 ms. Before, each put back what it saw at its own start: a host
+    started inside a save lived at 5 ms after the save's end; a save inside a host left the process at 1 ms for good;
+    in the window's process a save + host left 0.25 ms. Now the finest in force wins and the last end puts back."""
+    import sys
+    from app import replan_preview
+    was = sys.getswitchinterval()
+    host_s, save_s = replan_preview.WINDOW_SWITCH_S, window_idle.SAVE_SWITCH_S
+    try:
+        sys.setswitchinterval(0.005)
+        replan_preview._share_the_window()                       # A: host on, save on, host off, save off
+        window_idle.hold(save_s)
+        assert sys.getswitchinterval() == save_s
+        replan_preview._leave_the_window()
+        assert sys.getswitchinterval() == save_s
+        window_idle.let_go(save_s)
+        assert sys.getswitchinterval() == pytest.approx(0.005)
+        window_idle.hold(save_s)                                 # B: save on, host on, save off: the host keeps 1 ms
+        replan_preview._share_the_window()
+        window_idle.let_go(save_s)
+        assert sys.getswitchinterval() == pytest.approx(host_s)
+        replan_preview._leave_the_window()
+        assert sys.getswitchinterval() == pytest.approx(0.005)
+        window_idle.set_switch(0.00025, 0.001)                   # C: the window's process, at rest
+        sys.setswitchinterval(0.001)
+        window_idle.hold(save_s)
+        replan_preview._share_the_window()
+        window_idle.let_go(save_s)
+        replan_preview._leave_the_window()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+    finally:
+        window_idle.set_switch(None, None)
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
         sys.setswitchinterval(was)

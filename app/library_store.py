@@ -2065,11 +2065,11 @@ class Store:
             finally:
                 self._depth -= 1
             return
-        window_idle.save_began()                 # F13: Python's lock comes back to this save at once (G1),
-        try:                                     # its commit's ring and Connect's export timer included
-            if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
-                raise StoreReadOnly("the library store is damaged and needs Repair")
-            self._wlock.acquire(wait)
+        if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
+            raise StoreReadOnly("the library store is damaged and needs Repair")
+        self._wlock.acquire(wait)
+        window_idle.hold(window_idle.SAVE_SWITCH_S)   # F13: Python's lock back to this save at once (G1), its ring
+        try:                                     # and Connect's export timer too; never while it waits for the lock
             committed = wrote = False
             try:
                 changes = self.conn.total_changes
@@ -2117,7 +2117,7 @@ class Store:
                 except Exception:                    # a committed write never fails for its trigger
                     pass
         finally:
-            window_idle.save_ended()
+            window_idle.let_go(window_idle.SAVE_SWITCH_S)
 
     def checkpoint(self, wait=LOCK_TIMEOUT):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""

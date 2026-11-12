@@ -1339,7 +1339,9 @@ class LoadRun(QObject):
             self.index()
 
     def _chores(self):
-        return getattr(self.shell, "chores", None)
+        """The window's chores — its services' (Kantan-B1: `shell.chores` is no attribute of the window, so this step
+        was passed by in the app and setup never said *Reading the words*)."""
+        return getattr(getattr(self.shell, "services", None), "chores", None)
 
     def index(self):
         """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log (only

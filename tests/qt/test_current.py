@@ -131,6 +131,23 @@ def test_the_hero_is_the_first_row_and_its_play_says_where_it_opens(seeded):
         "Up next: " + hero.title)
 
 
+def test_up_nexts_percent_says_what_it_counts_and_a_click_on_it_still_opens_the_card(seeded):
+    """Kantan-A's walk (AUDIT B1, Sonic ✅): Up next said *37% known* beside the footer's *0 known*. The number is the
+    analyzer's coverage — the words you know AND those with nothing to learn (one-character grammar words: の, は, を…
+    are ~34% of 蜘蛛の糸's tokens) — so its label says so, and its hover explains; the % still opens the card on a click."""
+    seed, win = seeded()
+    lst = current(win)
+    _kind, hero, _lines = lst.model().entries[0]
+    nxt = hero.episodes[hero.next_index]
+    pct = part(lst, 0, "pct")
+    assert len(pct) == 1 and pct[0][2] == strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct))
+    assert strings.ROWS_HERO_KNOWN.format(pct=37) == "37% of its words you'd know, grammar words included · "
+    journey = part(lst, 0, "journey")
+    assert not journey or not pct[0][1].intersects(journey[0][1])        # the link keeps its own place
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=pct[0][1].center())
+    assert wait_until(lambda: lst.model().open_key == hero.key)
+
+
 def test_a_click_on_a_row_opens_its_episodes_and_a_second_closes_it(seeded):
     """A2 #4: a click on a row opens its episodes (8)."""
     seed, win = seeded()

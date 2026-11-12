@@ -20,6 +20,9 @@ A YouTube title in the library is only its transcript (the downloader's `.txt` a
   on the disk, an Anki Miner without `fetch`, YouTube offline or asking to prove you're no bot) once for the language;
   a video's own (private, removed, age-restricted, members only, live, too long, no captions in the language) once
   for its episode.
+- **YouTube's bot check** (Yt-B, `app/youtube_hold.py`): a fetch takes its turn — one YouTube call at a time on the
+  computer, the downloader's too, a little apart — and none is asked for while a hold runs; the first refusal ("not a
+  bot", HTTP 429) holds every YouTube call for a day, said with when it ends.
 
 bilibili.tv (`SITES`) is told plainly, never fetched: Anki Miner's `fetch` takes YouTube links only (`files.py`
 `_fetch_episode`), and bilibili.tv's picture and sound come apart, which only an ffmpeg joins — Surasura ships none
@@ -36,6 +39,7 @@ import re
 import shutil
 import time
 
+from app import youtube_hold
 from app.connect import stopping
 
 log = logging.getLogger("surasura-cli")
@@ -76,7 +80,7 @@ HELD = (OFFLINE, BOT, NO_ROOM)
 # language's trouble (`Trouble.standing`)
 _SAYS = (
     (re.compile(r"age[- ]restrict|confirm your age|inappropriate for some users", re.I), AGE, False),
-    (re.compile(r"not a bot|confirm you.?re not", re.I), BOT, True),
+    (youtube_hold.REFUSED, BOT, True),             # (Yt-B: HTTP 429 too; said as the hold, `fetch`)
     (re.compile(r"update yt.?dlp|downloadable format|requested format", re.I), STALE, True),
     (re.compile(r"ffmpeg", re.I), NO_FFMPEG, True),
     (re.compile(r"private video|video is private|\bprivate\b", re.I), PRIVATE, False),
@@ -238,6 +242,9 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
     `should_end()` true, asked every UPDATE_EVERY polls: an update staged, ended within a few seconds, its folder left for the caller's `drop`), and AnkiMinerError for a call
     with no verdict (absent, crashed, timeout). `on_progress(percent)`: the download's own percent, as it goes."""
     from app.connect import anki_miner
+    until = youtube_hold.held()
+    if until:                               # (Yt-B) YouTube's bot check holds every YouTube call: nothing asked
+        raise Trouble(youtube_hold.words(until), standing=True)
     if not room():
         raise Trouble(NO_ROOM, standing=True)
     rid = run_id(job_id)
@@ -262,14 +269,44 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
             if progress and progress.get("stage") == 2 and progress.get("total"):
                 on_progress(max(0, min(99, int(100 * progress["done"] / progress["total"]))))
         return None
+
+    def given_up():
+        return stopping.pressed() or (should_end is not None and should_end())
     try:
-        verdict = anki_miner.api(exe, ["fetch", path], timeout=FETCH_TIMEOUT, on_poll=poll, look_up=True,
-                                 env=env if env is not None else child_env())
+        with youtube_hold.turn(given_up, "Connect's video"):   # (Yt-B) one YouTube call at a time, a little apart
+            until = youtube_hold.held()
+            if until:                       # (begun by another program while this one waited its turn)
+                raise Trouble(youtube_hold.words(until), standing=True)
+            verdict = anki_miner.api(exe, ["fetch", path], timeout=FETCH_TIMEOUT, on_poll=poll, look_up=True,
+                                     env=env if env is not None else child_env())
+            if youtube_hold.refused(_failure(verdict, rid)):
+                youtube_hold.hold()
+    except youtube_hold.Stopped:
+        raise stopping.Stopped() from None
     finally:
         try:
             os.remove(path)
         except OSError:
             pass
+    try:
+        return _verdict(verdict, rid, language)
+    except Trouble as t:
+        until = youtube_hold.held()
+        if t.say == BOT and until:          # the bot check said as the hold it began, with when it ends
+            raise Trouble(youtube_hold.words(until), standing=True) from None
+        raise
+
+
+def _failure(verdict, rid):
+    """What a fetch's failure says (the whole call's, or the run's) -> its text; "" for a run that made its files."""
+    run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == rid), None)
+    if run is None:
+        return f"{verdict.get('error') or ''} {verdict.get('message') or ''}"
+    return "" if run.get("ok") else f"{run.get('error') or ''} {run.get('message') or ''}"
+
+
+def _verdict(verdict, rid, language):
+    """Anki Miner's answer to a fetch -> (video, subtitle), or raises its Trouble / `stopping.Stopped`."""
     run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == rid), None)
     if run is None:                         # the whole call refused: no yt-dlp or ffmpeg, a link it doesn't take
         code, message = verdict.get("error"), verdict.get("message") or ""

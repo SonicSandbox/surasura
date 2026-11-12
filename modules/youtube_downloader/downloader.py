@@ -31,6 +31,8 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 
+from app import youtube_hold
+
 from . import ytdlp_manager
 
 # Alpha 8 (Sonic's try: Download seemed to hang): a probe gets this long; a download that writes nothing new this long
@@ -103,8 +105,9 @@ RATE_LIMITED = "YouTube is turning requests away for now (too many, or its bot c
 def plain_reason(message):
     """yt-dlp's error, in plain words where it is a known one; else its own first 200 characters."""
     text = str(message or '').strip()
-    if _looks_rate_limited(text.replace('\u2019', "'")):
-        return RATE_LIMITED
+    if _looks_rate_limited(text):
+        until = youtube_hold.held()                  # (Yt-B) the hold it began, with when YouTube is asked again
+        return youtube_hold.words(until) if until else RATE_LIMITED
     for needles, plain in _PLAIN:
         if any(n in text for n in needles):
             return plain
@@ -121,7 +124,7 @@ def transient(problem):
     turning requests away or slow to answer, a stalled download or one past its time? (A private or deleted video, or
     no captions, stays so.)"""
     text = str(problem or '')
-    return (text.endswith(_PLAIN[0][1]) or text.endswith(RATE_LIMITED) or
+    return (text.endswith(_PLAIN[0][1]) or text.endswith(RATE_LIMITED) or youtube_hold.is_words(text) or
             any(words.split('{', 1)[0] in text for words in (STALLED, SLOW, TIMED_OUT)))
 
 
@@ -390,11 +393,46 @@ def _stopping_now():
     return getattr(_STOP, "check", None)
 
 
-def _run_ytdlp(args, timeout=1800, tick=None):
+class Held(Exception):
+    """(Yt-B) YouTube's bot check holds every YouTube call (`app.youtube_hold`): no call made. Its str: the words."""
+
+
+def _run_ytdlp(args, timeout=1800, tick=None, youtube=False):
+    """One yt-dlp call. `youtube` (a call that reaches YouTube): one at a time on the computer and a little apart
+    (`youtube_hold.turn`), never made while a hold runs (Held), and a refusal in its output holds every YouTube call
+    for a day (Yt-B)."""
     cmd = [ytdlp_manager.get_ytdlp_path()] + args
-    if tick is None:
-        return ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now())
-    return ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), tick=tick)
+    extra = {} if tick is None else {"tick": tick}
+    if not youtube:
+        return ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), **extra)
+    try:
+        with youtube_hold.turn(_stopping_now()):
+            until = youtube_hold.held()
+            if until:
+                raise Held(youtube_hold.words(until))
+            res = ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), **extra)
+            if youtube_hold.refused(getattr(res, 'stderr', '')):
+                youtube_hold.hold()
+            return res
+    except youtube_hold.Stopped:
+        raise ytdlp_manager.Stopped() from None
+
+
+# (Yt-B) yt-dlp's own pacing (its `-t sleep` preset's request and caption waits): between a YouTube call's page
+# requests, and before each video's captions when one call reads several
+SLEEP_REQUESTS = ['--sleep-requests', '0.75']
+SLEEP_CAPTIONS = ['--sleep-subtitles', '5']
+
+
+def _held(log, summary):
+    """(Yt-B) Does YouTube's bot check hold every YouTube call now? Said once a run (`summary['held']`)."""
+    until = youtube_hold.held()
+    if until is None:
+        return False
+    if not summary.get('held'):
+        summary['held'] = True
+        log(f"  ! {youtube_hold.words(until)}")
+    return True
 
 
 class Stalled(Exception):
@@ -433,8 +471,13 @@ def _probe(url, log, single=False, timeout=PROBE_S):
     names a video is read as that video, never its playlist."""
     try:
         # (Mado-Q) each playlist entry's rough date ("3 weeks ago"), which tells its order: `series_order`
+        youtube = site_of(url) == 'youtube'
         res = _run_ytdlp(['-J', '--flat-playlist', '--no-warnings', '--extractor-args', 'youtubetab:approximate_date']
-                         + (['--no-playlist'] if single else []) + [url], timeout=timeout)
+                         + (SLEEP_REQUESTS if youtube else []) + (['--no-playlist'] if single else []) + [url],
+                         timeout=timeout, youtube=youtube)
+    except Held as e:
+        log(f"  ! {e}")
+        return None
     except subprocess.TimeoutExpired:
         log(f"  ! could not read {url}: {SLOW.format(seconds=timeout)}")
         return None
@@ -566,15 +609,22 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
         for site, site_urls in by_site.items():
             if should_stop is not None and should_stop():
                 break
-            args = ['--skip-download'] + _subtitle_args(site, spec) + [
+            youtube = site == 'youtube'
+            if youtube and _held(log, summary):
+                continue
+            total = sum((counts or {}).get(u, 1) for u in site_urls)
+            pace = (SLEEP_REQUESTS + (SLEEP_CAPTIONS if total > 1 else [])) if youtube else []
+            args = ['--skip-download'] + _subtitle_args(site, spec) + pace + [
                 '--write-info-json', '--no-write-playlist-metafiles',   # (a playlist's own info.json was a video read)
                 '--ignore-errors', '--no-warnings', '--quiet',
                 '-o', os.path.join(tmp, '%(id)s.%(ext)s'),
             ] + (['--no-playlist'] if single else []) + archive + (
                 ['--playlist-reverse'] if site_urls and set(site_urls) <= set(reverse) else []) + list(site_urls)
-            total = sum((counts or {}).get(u, 1) for u in site_urls)
             try:
-                res = _run_ytdlp(args, timeout=1800, tick=_watch(tmp, total, log))
+                res = _run_ytdlp(args, timeout=1800, tick=_watch(tmp, total, log), youtube=youtube)
+            except Held:                                    # (a hold another program began a moment ago)
+                _held(log, summary)
+                continue
             except Stalled:
                 log(f"  ! {STALLED.format(minutes=STALL_S // 60)}")
                 summary['errors'] += 1
@@ -716,14 +766,10 @@ BATCH_PAUSE = 20.0         # seconds of rest between batches
 REQUEST_PAUSE = 1.5        # seconds between individual videos
 MAX_CONSECUTIVE_ERRORS = 5  # give up rather than keep hammering a wall
 
-# yt-dlp surfaces throttling in its stderr; these mean "stop", not "try the next one".
-_RATE_LIMIT_MARKERS = ('429', 'too many requests', 'rate limit',
-                       "confirm you're not a bot", 'sign in to confirm')
-
-
+# yt-dlp surfaces throttling in its stderr: these mean "stop", not "try the next one" — `youtube_hold.refused`'s words
+# (Yt-B: "Sign in to confirm your age" is a video's age check, never YouTube turning the computer away).
 def _looks_rate_limited(text):
-    low = (text or '').lower()
-    return any(marker in low for marker in _RATE_LIMIT_MARKERS)
+    return youtube_hold.refused(text)
 
 
 def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=time.sleep):
@@ -757,6 +803,10 @@ def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=ti
             summary['remaining'] = total - done
             log(f"\nStopped — {summary['remaining']} left. Run it again to pick up where this left off.")
             return summary
+        if _held(log, summary):                      # (Yt-B) YouTube's bot check: no video asked for until it ends
+            summary['stopped'] = True
+            summary['remaining'] = total - done
+            return summary
         if done and done % BATCH_SIZE == 0:
             log(f"  … {done}/{total} done, pausing {BATCH_PAUSE:.0f}s to stay under YouTube's limits")
             sleep(BATCH_PAUSE)
@@ -774,7 +824,12 @@ def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=ti
                 f'https://www.youtube.com/watch?v={vid}',
             ]
             try:
-                res = _run_ytdlp(args, timeout=300)
+                res = _run_ytdlp(args, timeout=300, youtube=True)
+            except Held:
+                _held(log, summary)
+                summary['stopped'] = True
+                summary['remaining'] = total - done
+                return summary
             except Exception as e:
                 log(f"  ! {name}: {e}")
                 summary['errors'] += 1
@@ -793,8 +848,9 @@ def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=ti
             if _looks_rate_limited(getattr(res, 'stderr', '') or ''):
                 summary['stopped'] = True
                 summary['remaining'] = total - done
-                log(f"\nYouTube is rate-limiting us — stopping with {summary['remaining']} left. "
-                    f"Wait a while and run it again; everything done so far is saved.")
+                until = youtube_hold.held()
+                log(f"\n{youtube_hold.words(until) if until else 'YouTube is rate-limiting us.'} "
+                    f"Stopped with {summary['remaining']} left; everything done so far is saved.")
                 return summary
             consecutive_errors = 0
 
@@ -1013,6 +1069,8 @@ def extract(urls, processed_dir, lang=DEFAULT_LANG, keep_timestamps=False,
         if stopped():
             log("Stopped.")
             return summary
+        if site_of(u) == 'youtube' and _held(log, summary):     # (Yt-B) said once; bilibili.tv links go on
+            continue
         probe_results.append((u, _probe_first(u, log) if first_only else _probe(u, log)))
     places, turned = {}, {}                         # (Mado-Q) each playlist video's place, kept in its sidecar
     root = os.path.dirname(os.path.abspath(processed_dir))

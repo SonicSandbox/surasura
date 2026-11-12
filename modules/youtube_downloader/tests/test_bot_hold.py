@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Yt-B (Sonic 2026-11-12: "will this hit from my own network and then will I have issues in the future with too many
+requests?"): the downloader asks YouTube one call at a time, with yt-dlp's own waits between a playlist's videos, and
+the first "are you a bot" (or HTTP 429) holds every YouTube call for a day — said once, with when it tries again —
+while bilibili.tv goes on.
+
+What a wrong answer costs a learner: their own address asked again and again after YouTube turned it away (the block
+lasts longer), a playlist read with no wait at all, or an age-restricted video taken for the bot check (a day of
+nothing, for a video's own age check). yt-dlp is faked at `ytdlp_manager.run` with its own recorded words, so the real
+`_run_ytdlp` (the turn, the hold) runs; never the network.
+"""
+import json
+import os
+import time
+
+import pytest
+
+from app import youtube_hold
+from modules.youtube_downloader import downloader as core
+from modules.youtube_downloader import ytdlp_manager
+
+VIDEO = "https://www.youtube.com/watch?v=lecture0001"
+OTHER = "https://www.youtube.com/watch?v=lecture0002"
+PLAYLIST = "https://www.youtube.com/playlist?list=PLsamplepodcast0000000000000000001"
+BILIBILI = "https://www.bilibili.tv/en/video/2041234567"
+BOT = ("ERROR: [youtube] lecture0001: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies "
+       "for the authentication.")
+AGE = ("ERROR: [youtube] lecture0001: Sign in to confirm your age. This video may be inappropriate for some users. "
+       "Use --cookies-from-browser or --cookies for the authentication.")
+VTT = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n朝の散歩のすすめ\n\n00:00:03.000 --> 00:00:05.000\nまずは近所を歩いてみよう\n"
+
+
+class Res:
+    def __init__(self, stdout="", stderr=""):
+        self.stdout, self.stderr, self.returncode = stdout, stderr, 0
+
+
+@pytest.fixture
+def ytdlp(monkeypatch):
+    """yt-dlp faked one level below `_run_ytdlp`: each call's args recorded, its answer from `box["answer"](args)`."""
+    monkeypatch.setattr(youtube_hold, "GAP_S", 0.0)
+    box = {"calls": [], "answer": lambda args: Res()}
+    monkeypatch.setattr(ytdlp_manager, "get_ytdlp_path", lambda: "yt-dlp.exe")
+
+    def run(cmd, timeout, should_stop=None, tick=None):
+        box["calls"].append(cmd[1:])
+        return box["answer"](cmd[1:])
+    monkeypatch.setattr(ytdlp_manager, "run", run)
+    return box
+
+
+def _video(args, vid="lecture0001", title="朝の散歩のすすめ"):
+    tmp = os.path.dirname(args[args.index("-o") + 1])
+    with open(os.path.join(tmp, f"{vid}.info.json"), "w", encoding="utf-8") as f:
+        json.dump({"id": vid, "title": title, "channel": "hanashi radio", "webpage_url": f"https://youtu.be/{vid}",
+                   "subtitles": {"ja": [{"ext": "vtt"}]}, "automatic_captions": {}}, f, ensure_ascii=False)
+    with open(os.path.join(tmp, f"{vid}.ja.vtt"), "w", encoding="utf-8") as f:
+        f.write(VTT)
+    return Res()
+
+
+def _probe_answer(args):
+    if "-J" in args:
+        url = args[-1]
+        return Res(stdout=json.dumps({"id": core.video_id(url) or "2041234567", "title": "朝の散歩のすすめ",
+                                      "channel": "hanashi radio", "webpage_url": url}))
+    return _video(args)
+
+
+# --- the bug: an age check was the bot check ---------------------------------------------------------------------- #
+def test_an_age_restricted_video_is_said_as_one_and_holds_nothing(ytdlp, tmp_path):
+    # why: the marker "sign in to confirm" matched "Sign in to confirm your age": a day of nothing for one video
+    assert core.plain_reason(AGE) == "the video is age-restricted: YouTube needs a sign-in"
+    ytdlp["answer"] = lambda args: Res(stderr=AGE)
+    log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                          log.append, summary)
+    assert log == ["  ! video lecture0001: the video is age-restricted: YouTube needs a sign-in"]
+    assert youtube_hold.held() is None
+
+
+# --- the hold -------------------------------------------------------------------------------------------------------- #
+def test_a_refusal_holds_every_youtube_call_and_says_when_it_tries_again(ytdlp, tmp_path):
+    """The first video's bot check: said with the hold's end; the next run asks YouTube nothing at all."""
+    ytdlp["answer"] = lambda args: Res(stderr=BOT) if "-J" not in args else _probe_answer(args)
+    out = tmp_path / "Processed"
+    log = []
+    core.extract([VIDEO], str(out), log=log.append)
+    until = youtube_hold.held()
+    assert until and abs(until - time.time() - youtube_hold.HOLD_S) < 60
+    said = youtube_hold.words(until)
+    assert f"  ! video lecture0001: {said}" in log and "tomorrow at" in said
+    asked = len(ytdlp["calls"])
+    log2 = []
+    summary = core.extract([OTHER, PLAYLIST], str(out), log=log2.append)
+    assert len(ytdlp["calls"]) == asked, "no YouTube call while the hold runs"
+    assert log2.count(f"  ! {said}") == 1, "said once a run, never once per link"
+    assert summary["held"] and not summary["errors"]
+
+
+def test_a_bilibili_tv_link_is_never_held(ytdlp, tmp_path):
+    # why: the hold is YouTube's answer to this computer; bilibili.tv is another site
+    youtube_hold.hold()
+    ytdlp["answer"] = _probe_answer
+    log = []
+    core.extract([VIDEO, BILIBILI], str(tmp_path / "Processed"), log=log.append)
+    assert [c[-1] for c in ytdlp["calls"] if "-J" in c] == [BILIBILI]
+    assert not any("--sleep-requests" in c for c in ytdlp["calls"]), "no YouTube pacing on bilibili.tv's calls"
+
+
+def test_a_hold_begun_elsewhere_while_waiting_is_met_before_the_call(ytdlp, tmp_path, monkeypatch):
+    """Connect's fetch refused while the window waited its turn: the window's call is never made."""
+    real = youtube_hold.turn
+
+    def turn(should_stop=None, verb="YouTube download"):
+        youtube_hold.hold()                     # (another program's refusal, just before this one's turn)
+        return real(should_stop, verb)
+    monkeypatch.setattr(youtube_hold, "turn", turn)
+    log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                          log.append, summary)
+    assert ytdlp["calls"] == []
+    assert log == [f"  ! {youtube_hold.words(youtube_hold.held())}"] and summary["errors"] == 0
+
+
+def test_the_held_line_is_a_passing_problem_so_a_playlists_rest_is_kept():
+    youtube_hold.hold()
+    assert core.transient("could not read x: " + youtube_hold.words(youtube_hold.held()))
+
+
+# --- pacing ---------------------------------------------------------------------------------------------------------- #
+def test_a_playlist_waits_between_its_videos_and_a_single_video_only_between_requests(ytdlp, tmp_path):
+    # why: yt-dlp's own advice (its `-t sleep` preset): ~5 s between videos keeps a guest under ~300 videos an hour
+    ytdlp["answer"] = _video
+    summary = {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([PLAYLIST], str(tmp_path / "a"), core.LANGS["Japanese"], "Japanese", False, True,
+                          lambda _l: None, summary, counts={PLAYLIST: 12})
+    core._download_bucket([VIDEO], str(tmp_path / "b"), core.LANGS["Japanese"], "Japanese", False, True,
+                          lambda _l: None, summary)
+    many, one = ytdlp["calls"]
+    assert many[many.index("--sleep-subtitles") + 1] == "5" and many[many.index("--sleep-requests") + 1] == "0.75"
+    assert "--sleep-subtitles" not in one and "--sleep-requests" in one, "setup's first video never waits 5 s"
+    assert summary["written"] == 2
+
+
+def test_a_stop_while_waiting_for_the_turn_is_a_stop_never_an_error(ytdlp, tmp_path):
+    # why: another program's half-hour playlist never holds the window's Cancel
+    from app import locks
+    other = locks.take(youtube_hold.LOCK, "Connect's video", owner=object())    # (as another program)
+    try:
+        log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
+        with core.stopping(lambda: True):
+            core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                                  log.append, summary)
+        assert log == ["Stopped."] and summary["errors"] == 0 and ytdlp["calls"] == []
+    finally:
+        other.release()
+    ytdlp["answer"] = _video
+    core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                          log.append, summary)
+    assert summary["written"] == 1, "the turn let go: the next call goes"
+
+
+# --- the cue backfill ------------------------------------------------------------------------------------------------ #
+def _transcripts(root, n):
+    folder = os.path.join(root, "Processed")
+    os.makedirs(folder, exist_ok=True)
+    for i in range(n):
+        with open(os.path.join(folder, f"hanashi radio - 朝の散歩 {i} [lecture000{i}].txt"), "w",
+                  encoding="utf-8") as f:
+            f.write("朝の散歩のすすめ\nhanashi radio | 2026-10-14 | 12:34\n\n今日は写真の話をします。\n")
+
+
+def test_the_backfill_stops_at_a_refusal_and_never_starts_while_held(ytdlp, tmp_path):
+    _transcripts(str(tmp_path), 3)
+    ytdlp["answer"] = lambda args: Res(stderr=BOT)
+    log = []
+    summary = core.backfill_cues(str(tmp_path), log=log.append, sleep=lambda s: None)
+    assert len(ytdlp["calls"]) == 1 and summary["stopped"] and summary["remaining"] == 3
+    assert youtube_hold.words(youtube_hold.held()) in log[-1]
+    log = []
+    summary = core.backfill_cues(str(tmp_path), log=log.append, sleep=lambda s: None)
+    assert len(ytdlp["calls"]) == 1, "nothing asked while the hold runs"
+    assert summary["stopped"] and summary["remaining"] == 3

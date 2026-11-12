@@ -78,6 +78,7 @@ Undo) and is greyed with the store's reason while it can't be written (E4); noth
 window's thread.
 """
 import os
+import threading
 from collections import namedtuple
 
 from PyQt6 import sip
@@ -351,6 +352,7 @@ class ItemActions(QObject):
         self.add_audio_undo = _connect_call("add_audio_undo")
         self.kick = _connect_call("kick", module="kick")
         self._audio_ask = 0
+        self._audio_relay = None                     # made at the first ask, kept: an open makes no object (C4)
         self._audio_running = set()                  # the books a press is adding to now (never offered meanwhile)
         # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
         self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
@@ -824,14 +826,27 @@ class ItemActions(QObject):
         if offer is None or self.add_audio_book is None or self.add_audio_undo is None or not book_row(row):
             return False                             # (a row of no book's part asks nothing: an open makes nothing)
         ask, ids, lang, read = self._audio_ask, drag.ids_of(row), self.language, self._settings
-        fill = getattr(m, "fills", None)
+        self._audio_menu = (ask, m, getattr(m, "fills", None))
+        if self._audio_relay is None:
+            self._audio_relay = bridge.Relay(self)
+            self._audio_relay.said.connect(self._audio_found)
+        relay = self._audio_relay
 
-        def found(got):
-            if (got and got.get("epub") not in self._audio_running and ask == self._audio_ask and
-                    self.last_menu is m and not sip.isdeleted(m) and m.isVisible() and getattr(m, "fills", None) == fill):
-                self.add_audio_entry(m, got)
-        bridge.run_in_worker(lambda: offer(lang, ids, read()), then=found)
+        def ask_connect():                           # a plain thread, the kept relay: nothing made, nothing deleted
+            try:
+                relay.call((ask, offer(lang, ids, read())))
+            except Exception:
+                relay.call((ask, None))              # (no entry this time; Connect's own log says why)
+        threading.Thread(target=ask_connect, name="add-audio-offer", daemon=True).start()
         return True
+
+    def _audio_found(self, said):
+        """The offer's answer, on the window's thread: added only while the menu it was asked for is still open."""
+        ask, got = said
+        now, m, fill = getattr(self, "_audio_menu", (None, None, None))
+        if (got and got.get("epub") not in self._audio_running and ask == self._audio_ask == now and
+                self.last_menu is m and not sip.isdeleted(m) and m.isVisible() and getattr(m, "fills", None) == fill):
+            self.add_audio_entry(m, got)
 
     def add_audio_entry(self, m, got):
         """*Add the narrator's voice…* in `m`, before *Open its folder*: its tip names how many cards. -> the action."""

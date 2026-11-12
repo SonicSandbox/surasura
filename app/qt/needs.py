@@ -2013,13 +2013,15 @@ class NeedsYou(QObject):
         self._press("make_from_audio", entry, lambda: make(registry, lang, ids, read_settings() or {}, title, install,
                                                            cancel), line=line, then=done, goes=False)
 
-    def _do_find_with_hato(self, entry, _line, press="find_with_hato"):
-        """*Find them with hato* (NS-2: the one press, the first time): this library's yes kept (`no_subs.setting`,
-        through the settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look
-        — after it the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+    def _do_find_with_hato(self, entry, _line, press="find_with_hato", language="ja"):
+        """*Find them with hato* (NS-2: the one press, the first time): its card's library's yes kept
+        (`no_subs.setting`: the action names the library — Zh-H — never the page's library of the moment, which a switch
+        changes before the old cards go), through the settings service; Surasura's tools entry written again (hato's
+        `register` listed: Q3), then a look — after it the waiting videos go to hato on the looks' own worker
+        (`SourceLooks._fill_tracks`)."""
         from app import no_subs
         settings = self.win.services.settings
-        settings.set({no_subs.setting(self.language): True})
+        settings.set({no_subs.setting(language): True})
         looks = getattr(self.win, "looks", None)
         read_settings = self.read_settings
 
@@ -2041,7 +2043,7 @@ class NeedsYou(QObject):
 
     def _do_find_with_hato_zh(self, entry, line):
         """Zh-H: the Chinese library's *Find them with hato* (its own words; the same press)."""
-        self._do_find_with_hato(entry, line, press="find_with_hato_zh")
+        self._do_find_with_hato(entry, line, press="find_with_hato_zh", language="zh")
 
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until

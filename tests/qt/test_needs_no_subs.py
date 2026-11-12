@@ -156,20 +156,28 @@ def test_find_them_with_hato_keeps_its_own_librarys_yes_with_its_own_words(world
                                                                            site):
     """Why (Zh-H; PROVISIONAL words): the Chinese library's card says where hato looks for Chinese subtitles
     (assrt.net, then OpenSubtitles, with the learner's own keys) and its press keeps the Chinese library's own yes — a
-    Japanese yes never sends Chinese titles anywhere, nor the other way round. The Japanese card is as before."""
+    Japanese yes never sends Chinese titles anywhere, nor the other way round — even pressed in the moment a library
+    switch has changed the page's library before the old cards went (the adversary's SHOULD); its arc on that card's
+    own button. The Japanese card is as before."""
     from app import no_subs
+    from app.qt import press as qpress
+    controls = []
+    real_run = qpress.run
+    monkeypatch.setattr(qpress, "run", lambda control, key, *a, **k: controls.append(control) or
+                        real_run(control, key, *a, **k))
     monkeypatch.setattr(service, "no_subs_offer", lambda view, settings: {"make": False, "hato": True})
     real = service._no_subs_entry
     monkeypatch.setattr(service, "_no_subs_entry",
                         lambda view, offer, seen: real(view._replace(language=language), offer, seen))
     seed, win, writer, ny = world()
-    ny.language = language
     entry = entry_of(ny, service.NO_SUBS)
+    ny.language = "zh" if language == "ja" else "ja"         # a switch under way: the page is the other library's
     assert entry.actions == (action,)
     b = button(ny, entry.key, action)
     assert b is not None and b.text() == "Find them with hato" and site in b.toolTip()
     assert ("jimaku" in b.toolTip()) is (language == "ja")
     b.click()
+    assert wait_until(lambda: controls, 5) and controls[0] is b, "the arc on the card's own button"
     mine, other = no_subs.setting(language), no_subs.setting("ja" if language == "zh" else "zh")
     assert wait_until(lambda: win.services.settings.get().get(mine) is True, 5)
     assert not win.services.settings.get().get(other)

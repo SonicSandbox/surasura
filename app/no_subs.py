@@ -65,8 +65,11 @@ HATO_VERB = "find"                  # what hato's tools entry lists once it take
 HATO_LANGUAGES = ("ja",)
 # Zh-H (2026-11-12): hato 1.3.0 (Layer 20) finds Chinese subtitles — assrt.net, then OpenSubtitles, on the learner's
 # own keys, for a `--lang zh` run only — and hands them to the Chinese library. Its tools entry says so by its
-# `version` alone (09-hato-layer.md §7.9): from this one, Chinese videos go to it too
+# `version` alone (09-hato-layer.md §7.9): from this one, Chinese videos go to it too — and since hato's *Go back* to
+# 1.2 leaves the entry naming 1.3 until the kept hato starts again (§7.1), the program itself is asked first
+# (`<cli> --version`, §3's quick verb, trusted over the file) before every Chinese run
 HATO_ZH_SINCE = (1, 3, 0)
+_VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")       # hato's own one shape (`update.parse_version`): X.Y.Z
 JOB_KIND = "transcribe"             # the job registry's kind (`services.jobs.RESOURCES`)
 
 MAKING, NO_SPEECH, UNREADABLE, LOOKING, NOT_FOUND, MADE = ("making", "no-speech", "unreadable", "looking",
@@ -192,7 +195,10 @@ def note(rel_path, language=None):
     for lang in ([language] if language else ("ja", "zh")):
         got = _notes(lang).get(rel_path)
         if got and _live(got):
-            return (got[0], got[1]) if got[0] == NOT_FOUND else got[0]
+            if got[0] != NOT_FOUND:
+                return got[0]
+            # Zh-H: a Chinese NOT_FOUND says so (its row names hato's Chinese sites, never jimaku): (NOT_FOUND, date, "zh")
+            return (got[0], got[1]) + (("zh",) if lang == "zh" else ())
     return None
 
 
@@ -692,10 +698,27 @@ def hato_languages(entry):
     """The languages this hato finds subtitles in -> a tuple: Japanese (`HATO_LANGUAGES`), and Chinese once its
     entry's `version` is HATO_ZH_SINCE or later (§7.9). A version that doesn't read as numbers: Japanese only."""
     version = entry.get("version") if isinstance(entry, dict) else None
-    got = re.match(r"(\d+)\.(\d+)\.(\d+)", version) if isinstance(version, str) else None
-    if got and tuple(int(n) for n in got.groups()) >= HATO_ZH_SINCE:
-        return HATO_LANGUAGES + ("zh",)
-    return HATO_LANGUAGES
+    return HATO_LANGUAGES + ("zh",) if _finds_zh(version) else HATO_LANGUAGES
+
+
+def _finds_zh(version):
+    """Does `version` (exactly X.Y.Z, hato's one shape: a `1.3.0rc1` or `v1.3.0` is not one) name a hato that finds
+    Chinese subtitles (HATO_ZH_SINCE or later)?"""
+    got = _VERSION.fullmatch(version) if isinstance(version, str) else None
+    return bool(got) and tuple(int(n) for n in got.groups()) >= HATO_ZH_SINCE
+
+
+def hato_says_zh(cli, run=None):
+    """Zh-H: does the hato program at `cli` itself say it finds Chinese subtitles (`<cli> --version` -> `hato X.Y.Z`,
+    HATO_ZH_SINCE or later)? Asked before each Chinese run: its entry can still name a 1.3 that *Go back* replaced
+    (§7.1). No answer, another shape or an older version: False — no Chinese video is handed to it. Never raises."""
+    try:
+        done = (run or subprocess.run)([cli, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, timeout=30, creationflags=_NO_WINDOW)
+        words = (done.stdout or b"").decode("utf-8", "replace").strip().split()
+        return done.returncode == 0 and len(words) == 2 and words[0] == "hato" and _finds_zh(words[1])
+    except Exception:
+        return False
 
 
 def hato_finds(entry=None, language="ja"):
@@ -778,6 +801,8 @@ def _find(store, language, cli, stop, now, away, popen):
     todo = due(store, language, now, away)
     if not todo:
         return out
+    if language == "zh" and not hato_says_zh(cli):      # Zh-H: the program, not only its entry (§7.9)
+        return {"off": True}
     roots = {r["id"]: r["path"] for r in store.sources(counts=False)}
     by_root = {}
     for v in todo:

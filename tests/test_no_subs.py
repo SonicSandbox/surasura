@@ -303,6 +303,13 @@ def test_the_rows_say_what_is_happening_to_their_subtitle():
     st, _m = view_rows.status_of([_shim((no_subs.NOT_FOUND, "2026-11-03"), id=1),
                                   _shim((no_subs.NOT_FOUND, "2026-11-09"), id=2)], "video", None)
     assert st.label == "Not on jimaku yet · looks again 3 Nov"
+    # Zh-H: a Chinese NOT_FOUND names hato's Chinese sites, never jimaku (PROVISIONAL words); Japanese as above
+    st, _m = view_rows.status_of([_shim((no_subs.NOT_FOUND, "2026-11-03", "zh"), id=1),
+                                  _shim((no_subs.NOT_FOUND, "2026-11-09", "zh"), id=2)], "video", None)
+    assert st.label == "Not found online yet · looks again 3 Nov" and "jimaku" not in st.label + st.tip
+    assert "assrt.net" in st.tip and "OpenSubtitles" in st.tip
+    assert view_rows.STRINGS["arr_" + view_rows.SUBS_KEYS[view_rows.subs_said(
+        [_shim((no_subs.NOT_FOUND, "2026-11-03", "zh"))])[0]]] == "not found online yet · looks again {date}"
     st, _m = view_rows.status_of([_shim(no_subs.NO_SPEECH, id=1), _shim(None, id=2)], "video", None)
     assert st.label == "No subtitles yet · 2", "a mix says the plain words"
     st, _m = view_rows.status_of([_shim(None)], "video", None)
@@ -425,12 +432,14 @@ def test_a_chinese_video_is_never_handed_to_hato_whose_subtitles_are_japanese(tm
 
 @pytest.mark.parametrize("version, languages", [
     ("1.1.1", ("ja",)), ("1.2.1", ("ja",)), ("1.3.0", ("ja", "zh")), ("1.4.0", ("ja", "zh")),
-    ("1.10.0", ("ja", "zh")), ("2.0.0", ("ja", "zh")), ("1.3.0rc1", ("ja", "zh")),
+    ("1.10.0", ("ja", "zh")), ("2.0.0", ("ja", "zh")), ("1.3.0rc1", ("ja",)), ("1.3.0.dev0", ("ja",)),
+    (" 1.3.0", ("ja",)), ("\uff11.\uff13.\uff10", ("ja",)),
     ("1.3", ("ja",)), ("", ("ja",)), (None, ("ja",)), (130, ("ja",)), ("v1.3.0", ("ja",))])
 def test_the_languages_hato_finds_subtitles_in_are_read_from_its_version(version, languages):
     """Why (Zh-H, 09-hato-layer.md §7.9): hato's tools entry says it finds Chinese subtitles only by its `version`
-    (1.3.0, Layer 20) — compared as numbers (1.10 is after 1.3), and anything that doesn't read as three numbers is a
-    hato that finds Japanese only: a Chinese video is never handed to a hato that would put a Japanese file beside it."""
+    (1.3.0, Layer 20) — compared as numbers (1.10 is after 1.3), in hato's own one shape (exactly X.Y.Z, ASCII digits:
+    its `update.parse_version`); anything else is a hato that finds Japanese only: a Chinese video is never handed to a
+    hato that would put a Japanese file beside it."""
     assert no_subs.hato_languages({"version": version}) == languages
     assert no_subs.hato_languages(None) == ("ja",)
 
@@ -449,7 +458,34 @@ def _zh_rows(videos, retry_after):
             {"type": "run", "videos": 2, "lang": "zh", "stopped": None}]
 
 
-def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_path):
+class _Said:
+    """`subprocess.run`'s answer for `hato_says_zh`: its stdout and exit code."""
+
+    def __init__(self, out, code=0):
+        self.stdout, self.returncode = out, code
+
+
+@pytest.mark.parametrize("answer, says", [
+    (_Said(b"hato 1.3.0\r\n"), True), (_Said(b"hato 1.4.0\n"), True), (_Said(b"hato 1.2.1\n"), False),
+    (_Said(b"hato 1.3.0\n", code=1), False), (_Said(b""), False), (_Said(b"hato 1.3.0rc1\n"), False),
+    (_Said(b"tsubasa 1.3.0\n"), False), (_Said(None), False), (OSError("no such program"), False)])
+def test_before_a_chinese_run_the_hato_program_itself_says_it_finds_chinese(answer, says):
+    """Why (Zh-H, the adversary's MUST): hato's *Go back* to 1.2 leaves its tools entry naming 1.3.0 until the kept
+    hato starts again (§7.1) — a Chinese run then would get jimaku's Japanese files named as Chinese. So the program
+    is asked (`<cli> --version`, §3's quick verb, trusted over the file): only `hato X.Y.Z` at 1.3.0 or later says
+    yes; no answer, another program, a failed call, another shape or an older version say no. Never raises."""
+    asked = []
+
+    def run(command, **kw):
+        asked.append(command)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    assert no_subs.hato_says_zh("C:/hato/hato-cli.exe", run=run) is says
+    assert asked == [["C:/hato/hato-cli.exe", "--version"]]
+
+
+def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_path, monkeypatch):
     """Why (Zh-H): hato 1.3.0 finds Chinese subtitles (assrt.net, then OpenSubtitles, on the learner's own keys). The
     Chinese library has its own yes — the Japanese card's yes named jimaku.cc and its key, so it never sends Chinese
     titles anywhere. With the Chinese yes, the waiting Chinese videos go to hato as a `--lang zh` run, and what it
@@ -462,6 +498,8 @@ def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_
     now = time.time()
     retry_after = datetime.datetime.fromtimestamp(now + 86400, datetime.timezone.utc).isoformat()
     lines = _zh_rows([os.path.abspath(v) for v in videos], retry_after)
+    says = []
+    monkeypatch.setattr(no_subs, "hato_says_zh", lambda c, run=None: says.append(c) or True)
     try:
         assert no_subs.find(store, "zh", {no_subs.SETTING: True}, now=now,
                             popen=lambda c, **k: _Proc(lines, calls, c)) == {"off": True}
@@ -470,13 +508,39 @@ def test_a_chinese_video_goes_to_hato_1_3_once_the_chinese_library_said_yes(tmp_
         out = no_subs.find(store, "zh", {no_subs.SETTING_ZH: True}, now=now,
                            popen=lambda c, **k: _Proc(lines, calls, c))
         assert (out["asked"], out["found"], out["not_found"], out["failed"]) == (2, 1, 1, 0)
-        assert out["roots"] == {root: src}
+        assert out["roots"] == {root: src} and says == [cli], "the program asked once, before the run"
         (command,) = calls
         assert command[:2] == [cli, src] and command[-2:] == ["--lang", "zh"]
         rel = [r for _i, r, _a in _items(store)][1]
-        assert no_subs.note(rel, "zh")[0] == no_subs.NOT_FOUND and no_subs.note(rel, "ja") is None
+        tomorrow = time.strftime("%Y-%m-%d", time.localtime(datetime.datetime.fromisoformat(retry_after).timestamp()))
+        assert no_subs.note(rel, "zh") == (no_subs.NOT_FOUND, tomorrow, "zh") and no_subs.note(rel, "ja") is None
+        assert no_subs.note(rel) == (no_subs.NOT_FOUND, tomorrow, "zh"), "either library's: the Chinese one says so"
         assert os.path.exists(no_subs.state_path("zh")) and not os.path.exists(no_subs.state_path("ja"))
         assert no_subs.due(store, "zh", now=now) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_a_hato_gone_back_to_1_2_under_an_entry_naming_1_3_is_handed_no_chinese_video(tmp_path):
+    """Why (Zh-H, the adversary's MUST): after *Go back* the entry still names 1.3.0 while the program is 1.2.1 —
+    the program's own answer wins: nothing is started, nothing waits (no failed-run hour), Japanese is not asked it."""
+    store, data_dir, src, root, (video,) = _library("zh")
+    cli = os.path.join(str(tmp_path), "hato-cli.cmd")
+    with open(cli, "w", encoding="ascii") as f:
+        f.write("@echo hato 1.2.1\r\n" if sys.platform == "win32" else "")
+    if sys.platform != "win32":
+        os.remove(cli)
+        cli = str(tmp_path / "hato-cli")
+        with open(cli, "w", encoding="ascii") as f:
+            f.write("#!/bin/sh\necho hato 1.2.1\n")
+        os.chmod(cli, 0o755)
+    _hato(["pairings", "find"], cli, version="1.3.0")
+    calls = []
+    try:
+        assert not no_subs.hato_says_zh(cli), "the program says 1.2.1"
+        out = no_subs.find(store, "zh", {no_subs.SETTING_ZH: True}, popen=lambda c, **k: _Proc([], calls, c))
+        assert out == {"off": True} and calls == []
+        assert len(no_subs.due(store, "zh")) == 1, "no failed-run wait: asked again once the program is 1.3"
     finally:
         store.__exit__(None, None, None)
 
@@ -509,6 +573,8 @@ def test_hatos_chinese_file_fills_the_waiting_video_in_place_with_only_the_chine
                        "subtitle_sha256": hashlib.sha256(found).hexdigest(),
                        "show": {"episode": 1, "movie": False, "season": None, "title": _SHOW["zh"]}})
         assert connect_verbs.register_record(record, "zh", wait=10.0, loaded={})["landed"] == "skipped"
+        assert connect_verbs.register_record(record, "zh", wait=10.0, loaded={no_subs.SETTING: True})["landed"] == \
+            "skipped", "the Japanese yes takes no Chinese file"
         answer = connect_verbs.register_record(record, "zh", wait=10.0, loaded={no_subs.SETTING_ZH: True})
         assert answer["file_id"] == waiting_id and answer["landed"] != "skipped", answer
         got = {i: (r, a) for i, r, a in _items(store)}
@@ -630,7 +696,11 @@ def test_register_is_listed_for_hato_once_the_learner_said_yes_with_connect_off(
     file over through `register` too when its `write_beside_video` is off)."""
     assert not tools_entry.registers({})
     assert tools_entry.registers({no_subs.SETTING: True})
-    assert tools_entry.registers({no_subs.SETTING_ZH: True})
+    assert tools_entry.registers({no_subs.SETTING_ZH: True}), "the verb is listed on either library's yes"
+    # Zh-H (the adversary's SHOULD): a pairing is taken only on its own library's yes (or Connect on)
+    assert tools_entry.registers({no_subs.SETTING: True}, "ja") and not tools_entry.registers({no_subs.SETTING: True}, "zh")
+    assert tools_entry.registers({no_subs.SETTING_ZH: True}, "zh") and not tools_entry.registers({no_subs.SETTING_ZH: True}, "ja")
+    assert tools_entry.registers({"connect_enabled": True}, "zh") and tools_entry.registers({"connect_enabled": True}, "ja")
     assert tools_entry.registers({"connect_enabled": True})
 
 

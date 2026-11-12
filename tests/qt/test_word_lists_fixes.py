@@ -30,7 +30,7 @@ HANG = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 @pytest.fixture
 def known_file(ja_resources_dir):
-    """The Migaku-shaped export (11,581 entries, 18 IGNORED: the Ignore list's "known words file" rows)."""
+    """The Migaku-shaped export (11,582 entries, 18 IGNORED: the Ignore list's "known words file" rows)."""
     dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), dst)

@@ -18,7 +18,7 @@ from app.services import word_lists
 
 @pytest.fixture
 def known_file(ja_resources_dir):
-    """The Migaku-shaped export (11,581 entries, 18 IGNORED) as this language's KnownWord.json."""
+    """The Migaku-shaped export (11,582 entries, 18 IGNORED) as this language's KnownWord.json."""
     import shutil
     dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
     os.makedirs(os.path.dirname(dst), exist_ok=True)

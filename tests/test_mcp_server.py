@@ -64,19 +64,21 @@ def _data(result):
     return json.loads(result.content[0].text)
 
 
-def test_the_ai_app_sees_four_read_only_tools_one_that_keeps_rounds_and_the_practice_prompt():
+def test_the_ai_app_sees_the_read_only_tools_one_that_keeps_rounds_one_that_asks_the_window_and_the_prompt():
     async def calls(client):
         return await client.list_tools(), await client.list_prompts()
     tools, prompts = _run(_state(), calls)
     names = [t.name for t in tools.tools]
     assert names == ["surasura_practice_start", "surasura_check_text", "surasura_words", "surasura_rounds",
-                     "surasura_save_round"]
+                     "surasura_save_round", "surasura_help_topics", "surasura_help", "surasura_help_search",
+                     "surasura_diagnose", "surasura_send_report"]
+    acts = ("surasura_save_round", "surasura_send_report")   # Surasura's own round file; Report a problem's window
     for tool in tools.tools:
         a = tool.annotations
-        assert a.read_only_hint is (tool.name != "surasura_save_round")    # the one write: Surasura's own round file
+        assert a.read_only_hint is (tool.name not in acts)
         assert a.destructive_hint is False and a.open_world_hint is False
         # every read gives the same answer again but the round's start: each call is a new round_id
-        assert a.idempotent_hint is (tool.name not in ("surasura_practice_start", "surasura_save_round"))
+        assert a.idempotent_hint is (tool.name not in ("surasura_practice_start",) + acts)
     (prompt,) = prompts.prompts
     assert prompt.name == "practice" and [a.name for a in prompt.arguments] == ["words", "role", "kind", "source"]
 

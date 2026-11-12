@@ -27,9 +27,11 @@ PLACED = {
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
+    "connect_zh_word_audio": "neither",      # Word audio from Google (Zh-C): a Chinese card's word audio, never a run
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "subs_with_hato": "neither",             # Michi-NS: hato finds the waiting videos' subtitles, never a run
+    "subs_with_hato_zh": "neither",          # Zh-H: the same for the Chinese library's videos, never a run
     "open_video": "neither", "open_video_program": "neither",   # what ▶ opens a video with (Content): never a run
     "open_book": "neither", "open_book_program": "neither",     # what ▶ opens an EPUB with (Content): never a run
     "finish_cards": "neither",               # When you finish something (Content): its cards' choice, never a run
@@ -85,11 +87,13 @@ PLACED = {
                                             # the fast re-plan's preview (E1.1 04 §1): 2.x's runs read it for the plan
                                             # file (3.0 writes the plan always), which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
+    "enable_irodori": "neither", "irodori_voice": "neither",      # Iro-AA: the AI voice's beta writes Anki, no run
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.
 OWNERS = (("junban_", "modules.junban"), ("enable_junban", "modules.junban"), ("koe_", "modules.koe"),
           ("enable_koe", "modules.koe"), ("reels_", "modules.reels"), ("enable_reels", "modules.reels"),
-          ("enable_youtube_", "modules.youtube_downloader"), ("youtube_", "modules.youtube_downloader"))
+          ("enable_youtube_", "modules.youtube_downloader"), ("youtube_", "modules.youtube_downloader"),
+          ("irodori_", "modules.irodori"), ("enable_irodori", "modules.irodori"))
 
 
 def _installed(path):

@@ -285,7 +285,7 @@ def test_a_book_entering_the_line_is_no_open_job_and_is_mined_by_itself_once_ank
     book = _jobs(text, lang)[-1]
     assert (book["state"], book["reason"]) == ("skipped", runner.BOOKS_WAIT)
     assert text not in out["waiting"] and out["needs"] == [], "no wait and no Needs-you line for the book"
-    mined = [episode] if lang == "ja" else []     # Connect makes no Chinese cards in 3.0 ("Chinese cards come later")
+    mined = [episode]                             # Chinese too, since Zh-C (Anki Miner 3.12's Chinese)
     assert _mined(steps) == mined, "the episode as before; the book never reaches Anki Miner"
     with Ledger() as ledger:
         assert text not in [j["item_id"] for j in ledger.open_jobs(lang)], "the book is no open job"
@@ -592,16 +592,17 @@ def test_connect_off_queues_nothing_for_an_ask(tmp_path):
     assert _jobs(below) == [] and steps.anki.words() == []
 
 
-def test_a_chinese_ask_waits_for_chinese_cards(tmp_path):
-    _library("zh")
-    with c.store("zh") as s:
-        below = s.ids("now")[-1]
+def test_a_chinese_ask_is_mined_like_a_japanese_one(tmp_path):
+    """Zh-C: *Mine this* on a Chinese episode makes its cards — no *Chinese cards come later* any more."""
+    ids, kinds = _library("zh")
+    below = _srt(ids, kinds)[-1]                        # the night-market vlog's subtitle: an episode
     _ask([below], "zh")
-    steps = _steps(tmp_path, {}, lang="zh")
+    steps = _steps(tmp_path, {below: [("夜市", ""), ("牛肉面", "")]}, lang="zh")
     out = _run(steps, "zh")
     job = _jobs(below, "zh")[0]
-    assert (job["kind"], job["state"], job["reason"]) == (ASKED, "waiting", runner.CHINESE)
-    assert out["languages"]["zh"]["waiting"] == {below: runner.CHINESE} and steps.anki.words() == []
+    assert set(steps.anki.words()) == {"夜市", "牛肉面"}
+    assert job["kind"] == ASKED and job["reason"] != runner.CHINESE
+    assert below not in out["languages"]["zh"]["waiting"] and _mined(steps) == [below]
 
 
 def test_an_unread_ask_is_pending_until_the_inbox_takes_it():

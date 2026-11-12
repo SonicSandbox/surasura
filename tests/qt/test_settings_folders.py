@@ -185,9 +185,11 @@ def test_add_a_folder_opens_at_the_folder_added_last_else_the_videos_folder(wind
     # his shows are (the newest folder being read: a stopped one is passed over), else his Videos folder (Qt's own
     # answer, never looked at on the window's thread: the dialog falls back by itself when it isn't there).
     from PyQt6.QtCore import QStandardPaths
-    looks = ActingLooks([_src(1, ANIME, 412), _src(3, DRAMA, 30), _src(2, OLD, 5), _src(4, r"F:\映画", 1, on=False)])
+    # (review: the newest one on a share that is down is passed over too — the native dialog would stall on it)
+    looks = ActingLooks([_src(1, ANIME, 412), _src(3, DRAMA, 30), _src(2, OLD, 5), _src(4, r"F:\映画", 1, on=False),
+                         _src(5, r"\\nas\アニメ", 7, reachable=False)])
     win, page, row, folders = _open(window, looks)
-    assert wait_until(lambda: len(folders.lines) == 3, 10)
+    assert wait_until(lambda: len(folders.lines) == 4, 10)
     asked = _starts(monkeypatch)
     row.add.click()
     folders.add.click()

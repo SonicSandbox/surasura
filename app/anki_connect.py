@@ -52,6 +52,7 @@ two above. Every caller reads one address, `address(settings)`.
 
 import json
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -102,7 +103,8 @@ class AnkiError(Exception):
 
     kind: 'offline'  — nothing is listening, or it timed out (Anki closed, or no profile loaded)
           'protocol' — something answered, but not in AnkiConnect's shape
-          'action'   — AnkiConnect answered and refused the request
+          'action'   — AnkiConnect answered and refused the request (`busy`: only because Anki is busy with a
+                       collection operation — `BUSY_REPLIES`, `is_busy`)
           'refused'  — this module declined to send it (FORBIDDEN_ACTIONS, not loopback, or a write
                        action from a thread not holding the Anki-write lock)
     """
@@ -110,6 +112,7 @@ class AnkiError(Exception):
     def __init__(self, message, kind="action"):
         super().__init__(message)
         self.kind = kind
+        self.busy = False
 
 
 def is_loopback(url):
@@ -226,11 +229,13 @@ def waiting_line(holder):
     return f"Waiting for {verb} to finish writing to Anki…"
 
 
-def reviewing(url):
+def reviewing(url, cancel=None):
     """Is the user reviewing in Anki now (`guiReviewActive`)? False when Anki doesn't answer, or the
-    address can't be used: the writer's own first read then says why it can't go on. Never raises."""
+    address can't be used: the writer's own first read then says why it can't go on. Never raises.
+    Anki busy with a collection operation is waited out first (`patient`, until `cancel` is set): a card answered in
+    the reviewer is one."""
     try:
-        return invoke("guiReviewActive", url, timeout=5) is True
+        return patient("guiReviewActive", url, timeout=5, cancel=cancel) is True
     except Exception:
         return False
 
@@ -254,7 +259,7 @@ def take_writer(verb, url, wait=0.0, cancel=None, on_wait=None, changed=None):
     try:
         problem = None
         if held.waited:
-            problem = REVIEWING if reviewing(url) else (CHANGED if changed is not None and changed() else None)
+            problem = REVIEWING if reviewing(url, cancel) else (CHANGED if changed is not None and changed() else None)
         if problem is None and cancel is not None and cancel.is_set():
             problem = CLOSED
     except BaseException:
@@ -264,6 +269,51 @@ def take_writer(verb, url, wait=0.0, cancel=None, on_wait=None, changed=None):
         held.release()
         return None, problem
     return held, None
+
+
+# --------------------------------------------------------------------------- #
+# Anki busy with a collection operation (#370, a 3.0.2 field report)
+# --------------------------------------------------------------------------- #
+# The newer AnkiConnect (its rewrite) refuses a request with one of these while Anki runs a collection operation: an
+# AnkiWeb sync (Surasura's own S1 / S3 too), Check Database, an import, a card answered in the reviewer, AnkiConnect's
+# own reads for another program. Anki is open and the request was fine: it clears by itself. The older AnkiConnect
+# never says so — it answers late (`timed_out`).
+BUSY_REPLIES = ("a collection operation is active", "collection lifecycle operation is active",
+                "anki has an active collection operation")
+BUSY_WAIT_S = 20.0              # how long `patient` waits for one to finish
+BUSY_POLL_S = 2.0               # how often it asks again meanwhile
+
+
+def refusal(action, error):
+    """The AnkiError for AnkiConnect refusing `action` with `error` (a reply's, or a `multi` slot's): kind "action",
+    marked `busy` when the refusal is only Anki busy with a collection operation (`BUSY_REPLIES`)."""
+    refused = AnkiError(f"Anki refused '{action}': {error}", kind="action")
+    refused.busy = any(reply in str(error).casefold() for reply in BUSY_REPLIES)
+    return refused
+
+
+def is_busy(error):
+    """Is `error` Anki open but busy — a collection operation under way (`busy`), or no answer in time
+    (`timed_out`)? A wait that clears by itself: not now, never a failure to show."""
+    return bool(getattr(error, "busy", False) or getattr(error, "timed_out", False))
+
+
+def patient(action, url, timeout=5, cancel=None, **params):
+    """`invoke` for a read, asked again every BUSY_POLL_S while Anki is busy with a collection operation, for about
+    BUSY_WAIT_S (never once the next ask would pass it, nor once `cancel` is set) -> its result. Still busy after that:
+    that AnkiError (`is_busy`); any other at once. A write is refused before anything is sent: asked again, it could
+    land twice."""
+    write = _write_in(action, params)
+    if write:
+        raise AnkiError(f"'{write}' changes Anki, so it is never asked again.", kind="refused")
+    deadline = time.monotonic() + BUSY_WAIT_S
+    while True:
+        try:
+            return invoke(action, url, timeout=timeout, **params)
+        except AnkiError as e:
+            if not e.busy or time.monotonic() + BUSY_POLL_S >= deadline or (cancel is not None and cancel.is_set()):
+                raise
+        time.sleep(BUSY_POLL_S)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,7 +361,8 @@ SYNC_NEEDS_FULL = "Sync status"
 def sync(url, timeout=120):
     """Ask Anki to sync the open profile with AnkiWeb (the module docstring's one exception; the caller is the
     sync rule, `app/anki_sync_rule.py`) -> "synced", "not-signed-in" (the profile has no AnkiWeb login),
-    "full-sync" (AnkiWeb wants a full sync: the user's choice, never waited on) or "failed: <why>". Sent only
+    "full-sync" (AnkiWeb wants a full sync: the user's choice, never waited on), "busy" (Anki busy with a collection
+    operation — its own sync, Check Database: asked again later, never a failure) or "failed: <why>". Sent only
     while holding the Anki-write lock; raises AnkiError only for that refusal and a URL that isn't loopback."""
     _loopback_only(url)
     _writer_held("sync")
@@ -323,6 +374,8 @@ def sync(url, timeout=120):
             return "not-signed-in"
         if e.kind == "action" and SYNC_NEEDS_FULL in text:
             return "full-sync"
+        if e.busy:
+            return "busy"
         if e.kind == "refused":
             raise
         return f"failed: {text}"
@@ -370,7 +423,7 @@ def _send(action, url, timeout, params):
         raise AnkiError(f"Unexpected reply shape from '{action}' — is this really AnkiConnect?",
                         kind="protocol")
     if reply["error"] is not None:
-        raise AnkiError(f"Anki refused '{action}': {reply['error']}", kind="action")
+        raise refusal(action, reply["error"])
     return reply["result"]
 
 

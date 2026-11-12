@@ -429,3 +429,37 @@ def test_a_sound_tag_or_a_cloze_is_refused_and_line_breaks_become_one_line():
     assert ct.check("The <b>spider</b> [sound:x.mp3]", "ja") == (None, ct.MARKUP)
     assert ct.check("The {{c1::<b>spider</b>}}", "ja") == (None, ct.MARKUP)
     assert ct.check("The <b>spider</b>\nspun a thread.", "ja") == ("The <b>spider</b> spun a thread.", None)
+
+
+def test_every_read_cards_makes_goes_through_without_the_write_lock():
+    """The DevTest drill found it: `modelTemplates` was refused as a write (off READ_ACTIONS). Every action the read
+    adapter sends is a read the client lets through with no lock held."""
+    import json as _json
+    from unittest import mock
+    from app import anki_connect
+    sent = []
+
+    class _Reply:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=None):
+        action = _json.loads(req.data)["action"]
+        sent.append(action)
+        result = {"modelNames": ["Lapis"], "modelFieldNames": LAPIS, "modelTemplates": {}, "findNotes": [],
+                  "notesInfo": []}[action]
+        return _Reply(_json.dumps({"result": result, "error": None}).encode())
+    with mock.patch("urllib.request.urlopen", urlopen):
+        reads = ct.AnkiReads(anki_connect.DEFAULT_URL)
+        assert ct.cards(reads, "ja", around=0) == {"cards": [], "left": 0}
+    assert {"modelNames", "modelFieldNames", "modelTemplates", "findNotes"} <= set(sent)
+    assert set(sent) <= anki_connect.READ_ACTIONS

@@ -273,7 +273,7 @@ def test_a_cut_run_on_another_deck_is_never_taken_over_and_a_positions_only_job_
 
 def test_a_run_you_start_in_junban_takes_over_a_cut_automatic_run_and_one_restore_undoes_both(tmp_path):
     """Disc-T1 (Mattias, 3.0.0: "Can't reorder with Junban" — "The last reorder did not finish… Press Undo the last
-    reorder first"; Sonic 2026-11-12: "yes to the Junban recovery one"; HY-11 before). AutoJunban's run after a
+    reorder first"; Sonic, Disc-T1: "yes to the Junban recovery one"; HY-11 before). AutoJunban's run after a
     Generate is cut by Anki closing after its first suspend; the next automatic job, positions only, goes on and leaves
     the cut snapshot unfinished — for good, as his did. A Reorder you start in 順 now takes it over and finishes the
     job instead of being refused: the cut run's original positions and flags win, the suspends are both runs', and

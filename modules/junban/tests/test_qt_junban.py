@@ -648,7 +648,7 @@ def test_restore_names_what_it_restores_enter_is_no_and_no_writes_nothing(main, 
 
 
 def test_the_undo_of_a_reorder_that_finished_a_cut_automatic_one_says_it_puts_back_both(main, engine, monkeypatch):
-    """Disc-T1 (Sonic 2026-11-12): a Reorder you started took over an automatic one cut short; its Undo puts back both,
+    """Disc-T1 (Sonic's yes): a Reorder you started took over an automatic one cut short; its Undo puts back both,
     and its own question says so (PROVISIONAL words)."""
     monkeypatch.setattr(undo, "unfinished", lambda language, kind: None)
     monkeypatch.setattr(undo, "restorable", lambda language, scope: {"written_at": "2026-10-14T11:00:00",

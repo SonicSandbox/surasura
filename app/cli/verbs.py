@@ -1337,7 +1337,10 @@ def pick(args):
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
+                          # parts (never on the command line): no card from a line inside one
+                          unsure=getattr(args, "unsure", None) or ())
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

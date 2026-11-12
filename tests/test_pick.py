@@ -424,3 +424,69 @@ def test_a_grammar_expressions_row_follows_send_grammar_a_set_phrase_always_goes
     off = pick.pick(read, tokens, "ja", _known(), mode="list", listed=listed, phrase_set=loaded, send_grammar=False)
     assert [w["word"] for w in off["words"]] == [gut.word]
     assert [(n["word"], n["reason"]) for n in off["not_offered"]] == [(may.word, "grammar")]
+
+
+# --------------------------------------------------------------------------- #
+# A line where a cut file's timing is unsure (Tsu-U: tsubasa 0.1.12's `undetermined`)
+# --------------------------------------------------------------------------- #
+def _cut_episode(tmp_path):
+    """Lines of a broadcast episode re-timed in two parts: the scene before the opening song, a line tsubasa can't
+    place on either side of the cut (it starts inside the span, 70-160 s), and the scene after."""
+    return _srt(tmp_path, [
+        (60.0, 63.4, "当たり前の配慮が住みよい世界を作るんだ。"),
+        (63.5, 65.8, "ご高説ありがとう。"),
+        (100.0, 104.0, "この船は魔法使いしか乗れないよ。"),
+        (161.0, 164.6, "魔法使いの証しを持たない者は通せないよ。"),
+        (165.0, 167.5, "ここは遊び場じゃないぞ！"),
+    ])
+
+
+def test_a_word_said_only_where_a_cuts_timing_is_unsure_waits(tmp_path):
+    """Based on Mattias's report (Tsubasa-sync #2): a card cut from a line inside tsubasa's undetermined span played
+    the next scene. The word said nowhere else isn't sent — its own reason, so it waits for another episode."""
+    read, tokens = _read(_cut_episode(tmp_path))
+    chosen = pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=[(70.0, 160.0)])
+    reasons = {n["word"]: n["reason"] for n in chosen["not_offered"]}
+    assert reasons.get("船") == "unsure", reasons
+    assert "船" not in _by_word(chosen)
+    assert pick.REASONS["unsure"]
+    # every card is cut from a line outside the span
+    assert all(not 70.0 < w["line_start"] < 160.0 for w in chosen["words"]), chosen["words"]
+
+
+def test_a_word_said_again_outside_the_span_takes_that_line(tmp_path):
+    read, tokens = _read(_cut_episode(tmp_path))
+    known = lambda key: key[0] != "魔法使い"                # noqa: E731 — the one new word: its two lines tie
+    plain = _by_word(pick.pick(read, tokens, "ja", known, mode="unknown"))
+    assert plain["魔法使い"]["line_start"] == pytest.approx(100.0)       # its first line, without the span
+    sent = _by_word(pick.pick(read, tokens, "ja", known, mode="unknown", unsure=[(70.0, 160.0)]))
+    assert sent["魔法使い"]["line_start"] == pytest.approx(161.0)
+
+
+def test_no_span_and_a_span_with_no_line_in_it_change_nothing(tmp_path):
+    """tsubasa 0.1.12 places most breaks in the silence between two lines: a span there holds no line, and every
+    card is the one it would be without it (an uncut file has no span at all)."""
+    read, tokens = _read(_cut_episode(tmp_path))
+    plain = pick.pick(read, tokens, "ja", _known(), mode="unknown")
+    assert pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=[(66.0, 99.5)]) == plain
+    assert pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=()) == plain
+    # a line starting exactly on an edge is surely on its side: the span's edges are a line's end and a line's start
+    assert pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=[(65.8, 100.0)]) == plain
+
+
+def test_a_card_holding_a_line_inside_the_span_is_not_cut(tmp_path):
+    """A card holds its line and the lines its expansion adds (IS:268): one of those inside the span makes the clip
+    unsure too, so the word takes a card whose lines are all outside — or waits."""
+    path = _srt(tmp_path, [
+        (60.0, 61.6, "図書館の"),                       # runs on: the card adds the next line
+        (61.7, 64.5, "延長用紙を出してください。"),
+        (161.0, 164.0, "図書館は九時に閉まります。"),
+    ])
+    read, tokens = _read(path)
+    known = lambda key: key[0] != "図書館"                   # noqa: E731
+    plain = pick.pick(read, tokens, "ja", known, mode="unknown")
+    first = _by_word(plain)["図書館"]
+    assert first["line_start"] == pytest.approx(60.0) and first["line_expansion"] == [0, 1], first
+    # the span starts after the card's own line, before the line its expansion adds
+    sent = _by_word(pick.pick(read, tokens, "ja", known, mode="unknown", unsure=[(61.65, 160.0)]))
+    assert sent["図書館"]["line_start"] == pytest.approx(161.0)

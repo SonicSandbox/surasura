@@ -228,7 +228,10 @@ def part_way(why):
 RETIME_EXTENSIONS = (".srt", ".ass", ".ssa")     # what tsubasa writes back in its own format (place.EXTENSIONS)
 # tsubasa's re-timed copy: its path, and the cues it dropped (in a stretch the video doesn't hold, or before its
 # start: its answer's `dropped_in_gap` + `dropped_before_zero` — a cut broadcast's own)
-Retimed = namedtuple("Retimed", "path dropped")
+Retimed = namedtuple("Retimed", "path dropped undetermined")
+# `undetermined` (Tsu-U, tsubasa 0.1.12's field; based on Mattias's Tsubasa-sync #2): [(lo, hi)] in the video's
+# seconds — per cut, the stretch it lies somewhere inside; a line starting inside one may sit on the wrong side of it,
+# so no card is cut from it (`pick.pick`'s `unsure`). Empty from a tsubasa before 0.1.12.
 
 
 def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
@@ -260,7 +263,21 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     if not os.path.normcase(os.path.realpath(path)).startswith(root) or not os.path.isfile(path):
         return None                 # never a file outside the job's own folder
     dropped = [answer.get(k) for k in ("dropped_in_gap", "dropped_before_zero")]
-    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0))
+    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0),
+                   undetermined(answer))
+
+
+def undetermined(answer):
+    """tsubasa's `undetermined` spans in its answer -> [(lo, hi)] seconds; anything not a pair of numbers, lo <= hi,
+    left out (never a guess at what it meant)."""
+    spans = answer.get("undetermined") if isinstance(answer, dict) else None
+    out = []
+    for span in spans if isinstance(spans, list) else ():
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            lo, hi = (_number(v) for v in span)
+            if lo is not None and hi is not None and lo <= hi:
+                out.append((lo, hi))
+    return out
 
 
 def _media(path):

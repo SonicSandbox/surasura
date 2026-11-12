@@ -98,7 +98,7 @@ def test_retime_writes_only_under_its_folder_never_a_dry_run_and_records_nothing
     out.mkdir(parents=True)
     (out / "stale.srt").write_text("left from before", encoding="utf-8")
     made = fit_check.retime("video.mkv", copy, str(out))
-    assert made == (os.path.join(str(out), "Show", "ep01.ja.srt"), 0) and os.path.isfile(made.path)
+    assert made == (os.path.join(str(out), "Show", "ep01.ja.srt"), 0, []) and os.path.isfile(made.path)
     [command] = ts.calls
     assert command[:4] == ["tsubasa", "--pair", "video.mkv", copy] and "--dry-run" not in command
     assert "--no-results" in command and command[command.index("--out") + 1] == str(out)

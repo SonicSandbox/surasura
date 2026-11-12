@@ -29,12 +29,11 @@ from tests.connect.test_nt2_retime import Tsubasa, _steps, library   # noqa: F40
 # --- fit_check.retime: the spans tsubasa answered ------------------------------------------------------------- #
 
 def _answer(**kw):
-    return dict({"outcome": "CONFIDENT", "segments": [[272.5, 0.407], [None, -9.78]]}, **kw)
+    return dict({"outcome": "CONFIDENT", "segments": [[272.5, 0.25], [None, -9.75]]}, **kw)   # a -10 s jump
 
 
 @pytest.mark.parametrize("given, kept", [
-    ([[228.4, 322.2]], [(228.4, 322.2)]),
-    ([[60.0, 70.5], [700.0, 712.25]], [(60.0, 70.5), (700.0, 712.25)]),
+    ([[228.4, 322.2]], [(228.4, 322.2), (218.4, 312.2)]),          # the span, and the span moved by the jump
     (None, []),                                          # tsubasa 0.1.11: no such field
     ([], []),
     ([[228.4]], []), ([["a", "b"]], []), ([[300.0, 200.0]], []), ("228.4-322.2", []), ([[True, 3.0]], []),
@@ -44,7 +43,20 @@ def test_retime_keeps_the_spans_tsubasa_answered_and_nothing_malformed(tmp_path,
     _data, full = library
     Tsubasa(monkeypatch, answer=_answer(**({} if given is None else {"undetermined": given})))
     made = fit_check.retime("video.mkv", full, str(tmp_path / "out"))
-    assert made is not None and made.undetermined == kept
+    assert made is not None and made.undetermined == pytest.approx(kept)
+
+
+def test_each_span_is_also_kept_moved_by_its_cuts_jump():
+    """Tsu-U review: a line given the other part's offset is written at the span moved by the jump — on a +40 s jump
+    a subtitle line at 101 s, given +40, is written at 141 s, outside tsubasa's 98-115 s. Both stretches are unsure."""
+    answer = {"segments": [[98.0, 0.0], [None, 40.0]], "undetermined": [[98.0, 115.0]]}
+    assert fit_check.unsure_in_written(answer) == [(98.0, 115.0), (138.0, 155.0)]
+    three = {"segments": [[98.0, 0.0], [500.0, 40.0], [None, 30.0]], "undetermined": [[98.0, 115.0], [480.0, 520.0]]}
+    assert fit_check.unsure_in_written(three) == [(98.0, 115.0), (138.0, 155.0), (480.0, 520.0), (470.0, 510.0)]
+    # segments that don't line up with the spans: the spans alone, never a guess
+    assert fit_check.unsure_in_written({"segments": [[98.0, 0.0]], "undetermined": [[98.0, 115.0]]}) == [
+        (98.0, 115.0)]
+    assert fit_check.unsure_in_written({"undetermined": [[98.0, 115.0]]}) == [(98.0, 115.0)]
 
 
 # --- Steps: kept with the job, read back for the very copy ------------------------------------------------------ #
@@ -54,7 +66,7 @@ def test_the_spans_of_a_retime_are_kept_with_its_job_for_that_copy(tmp_path, mon
     Tsubasa(monkeypatch, answer=_answer(undetermined=[[228.4, 322.2]]))
     steps = _steps(tmp_path, monkeypatch)
     assert steps.retime("ja", {"id": 7}, "video.mkv", full) is True
-    assert steps.unsure({"id": 7}, full) == [(228.4, 322.2)]
+    assert steps.unsure({"id": 7}, full) == pytest.approx([(228.4, 322.2), (218.4, 312.2)])
     assert steps.unsure({"id": 8}, full) == [], "another job's pick never reads them"
     assert steps.unsure({"id": 7}, full + ".other") == [], "only the copy tsubasa re-timed"
 
@@ -116,7 +128,7 @@ def test_steps_pick_hands_the_spans_to_the_pick(tmp_path, monkeypatch, library):
     monkeypatch.setattr(steps, "_open", lambda lang: _Store())
     steps.pick("ja", {"id": 7, "item_id": 1}, "video.mkv", subtitle=full)
     steps.pick("ja", {"id": 9, "item_id": 1}, "video.mkv", subtitle=full)
-    assert seen == [[(228.4, 322.2)], []]
+    assert seen[0] == pytest.approx([(228.4, 322.2), (218.4, 312.2)]) and seen[1] == []
 
 
 # --- verbs.pick: the spans reach the choosing ------------------------------------------------------------------ #

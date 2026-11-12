@@ -94,6 +94,11 @@ REASONS = {
 }
 
 
+# Tsu-U review: a span's edges are a line's end and a line's start as tsubasa computed them, unrounded; the written
+# file keeps ms (.srt) or cs (.ass), so the line on an edge can land a few ms inside. Within this of an edge: outside.
+UNSURE_EDGE_S = 0.01
+
+
 def finished(text):
     """Does a subtitle line end its sentence: in 。？！…, or in a closing bracket or quote (IS:262)?"""
     text = (text or "").rstrip()
@@ -499,11 +504,11 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
-    spans = [(float(lo), float(hi)) for lo, hi in unsure or ()]
+    spans = [(float(lo) + UNSURE_EDGE_S, float(hi) - UNSURE_EDGE_S) for lo, hi in unsure or ()]
 
     def timed(o):
         """Is every line a card cut from `o` holds outside tsubasa's undetermined spans? An edge is not inside: a span
-        runs from a line's end to a line's start (tsubasa 0.1.12)."""
+        runs from a line's end to a line's start (tsubasa 0.1.12), give or take the file's own rounding."""
         return not any(lo < seconds(cues[c].start) < hi for c in span(o.cue) for lo, hi in spans)
 
     candidates = []

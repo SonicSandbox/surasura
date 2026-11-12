@@ -490,3 +490,15 @@ def test_a_card_holding_a_line_inside_the_span_is_not_cut(tmp_path):
     # the span starts after the card's own line, before the line its expansion adds
     sent = _by_word(pick.pick(read, tokens, "ja", known, mode="unknown", unsure=[(61.65, 160.0)]))
     assert sent["図書館"]["line_start"] == pytest.approx(161.0)
+
+
+def test_the_line_on_a_spans_edge_is_outside_after_the_files_rounding(tmp_path):
+    """Tsu-U review: the span's edges are a line's end and start as tsubasa computed them, unrounded; the written
+    .srt keeps ms, so the first line after the cut can land half a ms inside. Within 10 ms of an edge: outside."""
+    read, tokens = _read(_cut_episode(tmp_path))
+    plain = pick.pick(read, tokens, "ja", _known(), mode="unknown")
+    # the lines at 65.8 (an end) and 100.0 (a start) on edges unrounded by a hair
+    assert pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=[(65.7996, 100.0005)]) == plain
+    # 11 ms inside is inside
+    held = pick.pick(read, tokens, "ja", _known(), mode="unknown", unsure=[(65.8, 100.011)])
+    assert {n["word"]: n["reason"] for n in held["not_offered"]}.get("船") == "unsure"

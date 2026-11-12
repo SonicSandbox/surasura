@@ -38,7 +38,7 @@ CALL_SITES = {
     "app/import_2x.py": 2,
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
     "app/instance_name.py": 1,
-    "app/library_store.py": 3,
+    "app/library_store.py": 4,
     "app/locks.py": 8,
     "app/path_utils.py": 19,
     "app/profile_reset.py": 1,
@@ -108,7 +108,7 @@ def _part_of(path, parts=None):
 
 def _writers():
     """(what writes it, its path, a folder?) — each from the code's own path function under the test root."""
-    from app import report, send_report, telemetry, updater
+    from app import library_store, report, send_report, telemetry, updater
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
@@ -126,6 +126,7 @@ def _writers():
         ("the speech model's progress", os.path.join(anki_miner.setup_folder(), anki_miner.PROGRESS), False),
         ("the line-up's heartbeat", os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT), False),
         ("Connect's line-ups", lineup.root(), True),
+        ("a split book's joined text (Kura-TX)", library_store.joined_book_path("ja", "0123456789abcdef"), False),
         ("the folder-time cache", os.path.join(ledger.folder(), "sources_ja.json"), False),
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),
         ("the airing cache", airing.cache_path("ja"), False),

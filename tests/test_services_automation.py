@@ -911,10 +911,12 @@ def test_junbans_own_guards_hold(live, monkeypatch, guard):
     pytest.importorskip("modules.junban.auto")
     from modules.junban import ankiconnect as junban_anki
     from modules.junban import reposition
+    from app import anki_connect
     writes = []
     monkeypatch.setattr(junban_anki, "probe", lambda url, *a, **k: {"ok": True})
-    monkeypatch.setattr(junban_anki, "invoke", lambda action, url, timeout=None, **k: guard == "reviewing"
-                        if action == "guiReviewActive" else None)
+    answer = (lambda action, url, timeout=None, **k: guard == "reviewing" if action == "guiReviewActive" else None)
+    monkeypatch.setattr(junban_anki, "invoke", answer)
+    monkeypatch.setattr(anki_connect, "invoke", answer)      # #370: the review guard asks through `patient`
     monkeypatch.setattr(reposition, "run", lambda settings, **k: writes.append(settings.get("junban_deck")) or
                         {"ok": True, "written": 3, "message": "3 cards moved"})
     # W3.5 row 7: 順's own re-order runs only where the re-order host can't (Coverage) and to the deck recorded for
@@ -1334,7 +1336,10 @@ def test_sync_now_syncs_once_with_the_automatic_sync_off_and_ends_on_the_one_pat
     monkeypatch.setattr(auto.sync, "ended", lambda *a, **k: ended.append(a[1]) or real_ended(*a, **k))
     assert _asked(auto) == [None]
     _settle(auto, registry)
-    assert anki.syncs == [("ja", ("Mining",))] and ended == ["ja"]
+    # `ended` runs on the sync's own thread right after its job finishes (`AutoSync._sync`): the job no longer live
+    # is no proof it has run yet — wait for it (FLAKES.md; Haya-AB's --stress-changed, run 4/20)
+    assert h.until(lambda: ended == ["ja"], seconds=10), ended
+    assert anki.syncs == [("ja", ("Mining",))]
     jobs = [v for v in registry.snapshot() if v.kind == "anki-sync"]
     assert len(jobs) == 1 and not jobs[0].automatic, "the user's own sync, one job"
     state = auto.state()

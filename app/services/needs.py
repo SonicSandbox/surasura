@@ -147,7 +147,9 @@ CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "
                    # · *Mine without audio*
                    # Iro-AA (PROVISIONAL): *Make AI audio (beta)* between them, shown only while the AI voice's beta
                    # is on and installed (`NeedsYou.has`)
-                   "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook")}
+                   "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook"),
+                   # Kura-AB3 A2 (PROVISIONAL): a book lined up — its earlier text-only cards get the narrator's voice
+                   "book-add-audio": ("add_audio",)}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 

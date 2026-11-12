@@ -76,8 +76,8 @@ def test_a_count_that_fails_never_stops_the_mine(book, tmp_path, monkeypatch):  
         assert _lined(book, ledger) is not None and _offers(ledger) == []
 
 
-def test_the_press_fills_that_books_cards_and_the_line_goes_and_its_undo_takes_them_back(book, fake_miner, tmp_path,
-                                                                                           monkeypatch):  # noqa: F811
+def test_the_press_fills_that_books_cards_and_the_line_goes_and_its_undo_takes_them_back(
+        book, fake_miner, tmp_path, monkeypatch):  # noqa: F811
     owed = _act_book(book, fake_miner, monkeypatch, tmp_path)
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         _lined(book, ledger)

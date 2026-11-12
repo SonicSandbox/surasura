@@ -1370,6 +1370,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                              "takes it back"),
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    "add_audio": ("Add the narrator's voice", "Each of those cards gets its sentence in the narrator's voice: only an "
+                                              "empty sentence-audio field is filled, nothing else on the card changes, "
+                                              "your reviews stay as they are. Undo takes it back"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1507,6 +1511,13 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
+NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): add "
+                    "again later")
+NEEDS_AUDIO_NONE = "「{title}」's cards all have their sentence audio already"
+NEEDS_AUDIO_GONE = "Nothing to add there any more"
+NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
+NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"

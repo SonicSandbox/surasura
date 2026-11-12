@@ -141,7 +141,10 @@ CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "
                    "speech-model": ("get_speech_model", "no_speech_model"),
                    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
                    # · *Mine without audio*
-                   "book-audiobook": ("pick_audiobook", "no_audiobook")}
+                   # (Iro-AA's *Make AI audio (beta)* slots in as a third, with the beta on: `make_ai_audio`)
+                   "book-audiobook": ("pick_audiobook", "no_audiobook"),
+                   # Kura-AB3 A2 (PROVISIONAL): a book lined up — its earlier text-only cards get the narrator's voice
+                   "book-add-audio": ("add_audio",)}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 

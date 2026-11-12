@@ -249,7 +249,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
-                     "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
+                     "make_from_audio", "find_with_hato",                          # Michi-NS: each a long ask
+                     "add_audio")                                                  # Kura-AB3 A2: Anki written
 
 
 class NeedsCards(QWidget):
@@ -767,7 +768,9 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick"),
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
                               "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
-                              "book_audiobook": _connect_callable("actions", "book_audiobook")}     # Kura-AB2
+                              "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
+                              "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
+                              "add_audio_undo": _connect_callable("actions", "add_audio_undo")}
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -1053,6 +1056,9 @@ class NeedsYou(QObject):
             return self.connect_calls.get("speech_model") is not None
         if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
             return self.connect_calls.get("book_audiobook") is not None
+        if name == "add_audio":                      # Kura-AB3 A2: Connect's, its Undo too
+            return self.connect_calls.get("add_audio") is not None and \
+                self.connect_calls.get("add_audio_undo") is not None
         if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
@@ -1577,6 +1583,46 @@ class NeedsYou(QObject):
                 self._stays("no_audiobook", entry)
             self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("no_audiobook", entry, run, then=done)
+
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up after some of its cards were made — the narrator's voice on them
+    def _do_add_audio(self, entry, _line):
+        """*Add the narrator's voice*: `actions.add_audio` on a worker (the arc turns meanwhile: Anki Miner cuts the
+        clips, Anki's empty sentence-audio fields are filled under the one writer), then a toast with its *Undo* (the
+        record's own: `actions.add_audio_undo`, on a worker too). A "couldn't" leaves the line, pressed again it asks
+        again."""
+        add, lang, read_settings = self.connect_calls["add_audio"], self.language, self.read_settings
+        need_id = entry.data["need_id"]
+
+        def done(got):
+            got = got or {}
+            if not got.get("ok"):
+                self._stays("add_audio", entry)
+                self._connect_done(got.get("say") or strings.NEEDS_AUDIO_GONE)
+                return
+            title, n = got.get("title") or entry.title, got.get("filled") or 0
+            if not n:
+                self._connect_done(strings.NEEDS_AUDIO_NONE.format(title=title))
+                return
+            text = (strings.NEEDS_AUDIO_SOME.format(n=n, title=title, m=got["not_cut"], why=got["why"])
+                    if got.get("not_cut") and got.get("why") else strings.NEEDS_AUDIO_ADDED.format(n=n, title=title))
+            self.refresh()
+            if self._alive():
+                self.win.toasts.show(text, undo=lambda rid=got.get("id"): self._add_audio_undo(rid))
+        self._press("add_audio", entry, lambda: add(lang, need_id, read_settings() or {}), then=done)
+
+    def _add_audio_undo(self, record_id):
+        undo, lang, read_settings = self.connect_calls["add_audio_undo"], self.language, self.read_settings
+
+        def done(got):
+            got = got or {}
+            if not got.get("ok"):
+                self._say(got.get("say") or strings.NEEDS_AUDIO_GONE)
+            elif got.get("kept"):
+                self._say(strings.NEEDS_AUDIO_UNDONE_KEPT.format(n=got["emptied"], k=got["kept"]))
+            else:
+                self._say(strings.NEEDS_AUDIO_UNDONE.format(n=got["emptied"]))
+        if record_id:
+            bridge.run_in_worker(lambda: undo(lang, record_id, read_settings() or {}), then=done, failed=self._failed)
 
     # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
     def _do_get_speech_model(self, entry, _line):

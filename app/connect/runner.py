@@ -121,6 +121,14 @@ BOOK_AUDIO_NEED = "book-audiobook"
 BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry the narrator's voice: pick it, or mine the "
                   "book without audio.")
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
+# Kura-AB3 A2 (PROVISIONAL, spec `tracks/pipeline/work/AB3/add-audio-spec.md` L2): once a book first lines up with its
+# audiobook, the cards Connect made from it before — text-only — are offered the narrator's voice: ONE standing *Needs
+# you* line a book (on the audiobook's item, as AB-Q4's line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub,
+# item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`).
+ADD_AUDIO_NEED = "book-add-audio"
+ADD_AUDIO_ASK = ("「{title}」: {n} of its cards were made before its audiobook was lined up — add the narrator's voice "
+                 "to them?")
+ADD_AUDIO_ASKED = "add_audio_asked:"
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
 # length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
@@ -1078,7 +1086,33 @@ def _line_up(steps, ledger, lang, job, book):
         raise Wait(got["ask"], look=False)
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
+    if got.get("lineup") and got.get("item_id") is not None:
+        _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
     return got.get("lineup")
+
+
+def _add_audio_offer(steps, ledger, lang, epub, item):
+    """Kura-AB3 A2: the book `epub` lined up — its cards Connect made before (the store's made words of its parts)
+    offered the narrator's voice once (ADD_AUDIO_NEED on the audiobook's `item`). Asked once a book, whatever the count:
+    a look after the first reads the ledger alone (S19). Never fails the mine."""
+    key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub)}"
+    if _meta(ledger, key) is not None:
+        return
+    made = getattr(steps, "made_before", None)
+    try:
+        got = made(lang, epub) if made is not None else None
+    except Exception as e:                      # the offer is a nicety: the mine goes on
+        log.info("Connect: couldn't count a book's earlier cards (%s): %s", lang, e)
+        return
+    if got is None:
+        return
+    title, n = got
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": os.path.abspath(epub), "item": item, "title": title}, sort_keys=True, ensure_ascii=False)))
+        if n and ledger.need(lang, ADD_AUDIO_NEED, ADD_AUDIO_ASK.format(title=title, n=n), item_id=item,
+                             standing=True):
+            log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
 
 
 def book_key(epub, sha256=None):
@@ -3003,6 +3037,14 @@ class Steps:
             lineup.stop(ab["key"])
             lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
+
+    def made_before(self, lang, epub):
+        """Kura-AB3 A2: (the book's title, how many notes Connect made from its parts so far) — the store read only."""
+        from app.connect import add_audio, library
+        with self._open(lang) as store:
+            notes = add_audio.made_notes(store, add_audio.book_items(store, epub))
+            book = library.book_of(store, epub)
+        return (book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], len(notes)
 
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its

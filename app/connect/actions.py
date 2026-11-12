@@ -23,6 +23,11 @@
 - `book_audiobook(language, need_id)` (Kura-AB2, PROVISIONAL): *Mine without audio* on a book's *Do you have 「…」's
   audiobook?* — kept for that book for good (the ledger's meta), the question fixed, every part it held queued
   again.
+- `add_audio(language, need_id, settings)` / `add_audio_undo(language, record_id, settings)` (Kura-AB3 A2,
+  PROVISIONAL): *Add the narrator's voice* on a book's *「…」: N of its cards were made before its audiobook was lined
+  up* — `add_audio.act` with `--confirm`'s sequence (only empty sentence-audio fields, one Undo record, Anki's sync
+  owed) for the book its line names; the line fixed once there's nothing left to add. Not a short write: Anki's
+  cards are written on the worker (the writer's lock; never while you review). Its toast's *Undo* is `add_audio_undo`.
 
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
@@ -172,3 +177,54 @@ def _store_id(language):
         return None
     finally:
         conn.close()
+
+
+def add_audio(language, need_id, settings, path=None):
+    """Kura-AB3 A2: *Add the narrator's voice* -> {"ok": True, "filled", "id" (its Undo), "title", "not_cut", "why"}
+    or {"ok": False, "say": plain words} (the line stays, pressed again it asks again). Nothing open (fixed, another
+    language's, no ledger): {"ok": False, "say": None}."""
+    from app.cli.contract import CliError
+    from app.connect import add_audio as adding
+    from app.connect import runner
+    path = path or book.path()
+    if not os.path.exists(path):
+        return {"ok": False, "say": None}
+    with book.Ledger(path) as ledger:
+        row = ledger.conn.execute("SELECT item_id FROM needs WHERE id = ? AND language = ? AND kind = ? AND "
+                                  "fixed_at IS NULL", (need_id, language, runner.ADD_AUDIO_NEED)).fetchone()
+        asked = None
+        if row is not None:
+            for _key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?", (
+                    f"{runner.ADD_AUDIO_ASKED}{language}:", f"{runner.ADD_AUDIO_ASKED}{language};")):
+                got = runner._json_or_none(value) or {}
+                if got.get("item") == row[0]:
+                    asked = got
+    if not asked or not asked.get("epub"):
+        return {"ok": False, "say": None}
+    try:
+        done = adding.act(settings, language, book=asked["epub"], confirm=True)
+    except CliError as e:
+        return {"ok": False, "say": e.message}
+    if done.get("skipped"):
+        return {"ok": False, "say": done["skipped"]}
+    if done.get("filled") or not done.get("can"):           # done, or nothing left to add: the line goes
+        with book.Ledger(path) as ledger:
+            ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ? AND fixed_at IS NULL",
+                                (book._now(), need_id))
+    return {"ok": bool(done.get("filled")) or not done.get("can"), "filled": done.get("filled") or 0,
+            "id": done.get("id"), "title": asked.get("title") or done.get("book"), "not_cut": done.get("not_cut", 0),
+            "why": done.get("not_cut_why"), "say": None}
+
+
+def add_audio_undo(language, record_id, settings):
+    """Kura-AB3 A2: the toast's *Undo* of `add_audio` -> {"ok", "emptied" (how many), "kept" (how many: edited since,
+    gone), "say"}."""
+    from app.cli.contract import CliError
+    from app.connect import add_audio as adding
+    try:
+        done = adding.act(settings, language, undo_id=record_id)
+    except CliError as e:
+        return {"ok": False, "say": e.message, "emptied": 0, "kept": 0}
+    if done.get("skipped") or done.get("refused"):
+        return {"ok": False, "say": done.get("skipped") or None, "emptied": 0, "kept": 0}
+    return {"ok": True, "emptied": len(done.get("emptied") or ()), "kept": len(done.get("kept") or {}), "say": None}

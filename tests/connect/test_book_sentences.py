@@ -208,6 +208,27 @@ def test_a_videos_word_keeps_its_line_whatever_its_lines_lengths(tmp_path):
     assert line((10, 50, 100)) == "小説。" and line((0, 2, 0)) == "小説。"
 
 
+def test_a_videos_line_with_a_lone_quote_mark_goes_as_the_subtitle_writes_it(tmp_path):
+    # why (mutant M15): a video's line is named by its time; its text is the subtitle's own, never a book's trim
+    srt = tmp_path / "小説 - 02.ja.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:03,000\n「この小説はとても面白かった。\n\n", encoding="utf-8")
+    read = cues.read(str(srt), "ja")
+    words = pick.pick(read, cues.tokens(read, "ja"), "ja", lambda k: False, mode="unknown")["words"]
+    assert words and {w["line_text"] for w in words} == {"「この小説はとても面白かった。"}
+
+
+def test_the_length_counts_the_sentence_the_card_shows_not_its_dropped_mark(tmp_path):
+    # why (mutant M17): 「空だ。 is 4 characters as split, 3 as the card shows it; with a Length of up to 3 it is
+    # inside, before the earlier 51-character sentence
+    book = tmp_path / "空.txt"
+    book.write_text("　空には、もう細い月が、うらうらと靡いた霞の中に、まるで爪の痕かと思ふ程、かすかに白く浮んでゐるのです。\n"
+                    "　「空だ。きれいだ。」\n", encoding="utf-8")
+    read, tokens = cues.reading(str(book), "ja")
+    key = next((t.lemma, t.reading) for t in tokens if t.surface == "空")
+    got = pick.pick(read, tokens, "ja", lambda k: k != key, mode="list", listed={key: 0}, sentence_length=(0, 3, 0))
+    assert got["words"][0]["line_text"] == "空だ。"
+
+
 class _Picked(Exception):
     pass
 

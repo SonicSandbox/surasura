@@ -45,6 +45,7 @@ def ytdlp(monkeypatch):
     def run(cmd, timeout, should_stop=None, tick=None, stop_on=None):
         box["calls"].append(cmd[1:])
         box.setdefault("timeouts", []).append(timeout)
+        box.setdefault("stop_on", []).append(stop_on)
         return box["answer"](cmd[1:])
     monkeypatch.setattr(ytdlp_manager, "run", run)
     return box
@@ -289,3 +290,10 @@ def test_a_character_split_between_two_looks_is_never_garbled():
              "e.write('朝'.encode()[2:] + b'\\n'); e.flush()")
     res = ytdlp_manager.run([sys.executable, "-c", child], 60, stop_on=youtube_hold.refused)
     assert res.stderr == "朝\n"
+
+
+def test_only_a_youtube_call_is_ended_at_its_first_refusal(ytdlp):
+    # why (mutant D3): without stop_on, --ignore-errors asks YouTube for every video left after the bot check
+    core._run_ytdlp(["--skip-download", VIDEO], timeout=5)
+    core._run_ytdlp(["--skip-download", BILIBILI], timeout=5)
+    assert ytdlp["stop_on"] == [youtube_hold.refused, None]

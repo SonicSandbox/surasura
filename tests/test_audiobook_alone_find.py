@@ -1,0 +1,125 @@
+"""An audiobook brought in alone is asked about at once (Kantan-B3; Mattias in #testers, 2026-11-12: an audiobook with
+no book in the library sat as *Audio only* and nothing asked which book it reads — he went looking for a subtitle file).
+Words PROVISIONAL; the rule this file holds:
+
+  * an audiobook alone (no book, no question open) that nobody answered about yet gets *Needs you*'s one card at once:
+    *「…」 is an audiobook. Which book is it?* — *Find its book…* · *It has no book* (a5-2's card, its own words);
+  * never for one the learner placed: *It has no book*, *Separate them* (you said where it belongs), paired, asked;
+  * never for one whose transcript beside it is its text (alone with a transcript, it is read as a subtitle is);
+  * after a *No*, a5-2's words are kept (*Not 「…」, you said*).
+
+Real files built on disk (tests/test_audiobook_items' builders: an EPUB of real Japanese, MP3s and an M4B with real
+tags and lengths), looked at by the real look.
+"""
+import os
+
+from app.services import needs
+from tests.test_audiobook_items import GINGA, NEKO, _audio_folder, _audio_items, _epub, _record, _settle
+from tests.test_audiobook_transcripts import _alone as _alone_with_transcript
+from tests.test_audiobook_transcripts import STAR
+from tests.test_audiobooks import _m4b
+from tests.test_sources_scan import _drive, _empty, _look
+
+
+def _finds(store):
+    return [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_FIND]
+
+
+def _entry(store):
+    [entry] = [e for e in needs.entries(None, asks=needs.asks_of(store)) if e.kind == needs.AUDIOBOOK_FIND]
+    return entry
+
+
+def _lone(language="ja"):
+    """GINGA's audiobook (three MP3s, 50 minutes) read where it is, with no book anywhere -> (store, root, src, item)."""
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    _audio_folder(os.path.join(src, "Audiobooks", GINGA), GINGA, 3000)
+    store.__enter__()
+    root = store.add_source(src)
+    _look(store, language, root, first=True)
+    [item] = _audio_items(store)
+    return store, root, src, item
+
+
+def test_an_audiobook_alone_is_asked_which_book_it_is_at_once():
+    store, _root, _src, item = _lone()
+    try:
+        [find] = _finds(store)
+        assert find["item_id"] == item["id"] and find["said_no"] is None
+        entry = _entry(store)
+        assert entry.title == f"「{GINGA}」 is an audiobook. Which book is it?"
+        assert entry.actions == ("find_book", "no_book") and entry.data["item_id"] == item["id"]
+        assert entry.say.startswith("3 files (01.mp3 … 03.mp3)") and "you said" not in entry.say
+        for text in (entry.title, entry.say):                     # never a hint that a subtitle file is needed
+            assert "subtitle" not in text.lower() and "srt" not in text.lower()
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_an_m4b_alone_is_asked_about_too():
+    store, _data_dir = _empty("ja")
+    src = _drive("driveA")
+    _settle(_m4b(os.path.join(src, "Downloads", f"{GINGA}.m4b"), 3600, tags={"album": GINGA}))
+    with store:
+        _look(store, "ja", store.add_source(src), first=True)
+        assert [f["title"] for f in _finds(store)] == [GINGA]
+
+
+def test_it_has_no_book_ends_the_card_for_good():
+    store, root, _src, item = _lone()
+    try:
+        assert store.audiobook_no_book(item["id"])
+        assert _finds(store) == []
+        _look(store, "ja", root, full=True)
+        assert _finds(store) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_its_book_found_ends_the_card_and_a_book_arriving_later_pairs_it_as_before():
+    store, root, src, item = _lone()
+    try:
+        _epub(os.path.join(src, "Books", f"{GINGA}.epub"), GINGA, "ja", repeat=6)
+        _look(store, "ja", root, full=True)
+        rec = _record(store, item["id"])
+        assert rec["book"] is not None or rec["ask"] is not None          # paired, or one question about it
+        assert _finds(store) == []                                         # never two cards for one audiobook
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_separate_them_never_brings_the_card_you_said_where_it_belongs():
+    """*Separate them* (Michi-AB): "never *Find its book…*: you said where it belongs" — kept."""
+    store, root, src, item = _lone()
+    try:
+        _epub(os.path.join(src, "Books", f"{GINGA}.epub"), GINGA, "ja", repeat=6)
+        _look(store, "ja", root, full=True)
+        if _record(store, item["id"])["ask"] is not None:
+            assert store.answer_audiobook(item["id"], True)
+        assert _record(store, item["id"])["book"] is not None
+        assert store.audiobook_separate(item["id"]) is not None
+        assert _record(store, item["id"])["book"] is None and _finds(store) == []
+        _look(store, "ja", root, full=True)
+        assert _finds(store) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_an_audiobook_alone_with_its_transcript_is_read_as_it_and_never_asked_about():
+    store, _data_dir, src, _m4b_path, _srt = _alone_with_transcript("ja", STAR)
+    with store:
+        _look(store, "ja", store.add_source(src))
+        [item] = _audio_items(store)
+        assert item["availability"] == "available" and _finds(store) == []
+
+
+def test_after_a_no_the_card_keeps_its_own_words():
+    from tests.test_audiobook_find import _said_no
+    store, _root, _src, item = _said_no()
+    try:
+        [find] = _finds(store)
+        assert find["said_no"] == NEKO
+        assert _entry(store).title == f"Which book does the audiobook 「{NEKO}」 read?"
+    finally:
+        store.__exit__(None, None, None)

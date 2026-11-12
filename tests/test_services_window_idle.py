@@ -177,6 +177,12 @@ def test_a_save_under_way_keeps_the_fine_hand_over_through_the_windows_rest_and_
         assert sys.getswitchinterval() == pytest.approx(0.0002)
         window_idle.rest()
         assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.busy()                              # (a save begun while the window is awake lowers nothing —
+        window_idle.save_began()                        # finer already — but the rest it held back is still put
+        window_idle.rest()                              # back at its end)
+        assert sys.getswitchinterval() == pytest.approx(0.0002)
+        window_idle.save_ended()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
     finally:
         window_idle.set_switch(None, None)
         window_idle.rest()

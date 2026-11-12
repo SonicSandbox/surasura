@@ -476,6 +476,15 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 ROWS_ACTION_NAMES["try-again"] = "Try again"
 ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
                       False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
+# Michi-NT (Mattias #XP44T6; PROVISIONAL words): a *Not timed* pill checks its timing again — its subtitle, or the same
+# subtitle re-timed beside its video (where tsubasa writes one it fixed)
+ROWS_ACTION_NAMES["check-again"] = "Check again"
+ROWS_CHECK_AGAIN_TIP = {True: "{tip}\n• Click to check its timing again: a subtitle you re-timed beside its video "
+                              "counts too",
+                        False: "{tip}\n• Click to check the timing of its {n} episodes again: a subtitle you re-timed "
+                               "beside its video counts too"}
+CHECK_AGAIN_NOTHING = "Nothing to check again: its episode isn't waiting on its timing any more."
+CHECK_AGAIN_FAILED = "Its timing couldn't be checked again: {why}"
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -1380,6 +1389,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
     # Mattias's field report (3.0.0, #5; PROVISIONAL words)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
+    # Michi-RM3 (PROVISIONAL words)
+    "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
@@ -1527,6 +1538,9 @@ NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, t
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
+NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
+NEEDS_SKIPPED_OWES = "Skipped: its other words still wait, Try again on its row tries them"     # (PROVISIONAL)
 NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"

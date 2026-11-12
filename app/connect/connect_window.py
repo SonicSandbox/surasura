@@ -51,6 +51,7 @@ HOW = {
     "no-profile": ("Show me how", "Open Settings → Connect (preview): the Anki Miner card shows the steps."),
     "repick": ("How to check", "logs"),
     "mine-failed": ("How to check", "logs"),
+    "mine-refused": ("How to check", "logs"),           # Michi-RM3 (the 3.0 window offers Skip this word)
     "error": ("How to check", "logs"),
     "no-pairing": ("Ask hato again", "hato"),
 }

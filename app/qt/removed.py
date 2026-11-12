@@ -84,6 +84,8 @@ def read_store(shell, language, ask, then):
     def run():
         try:
             store = opener.handle()
+            if store is None:
+                store = _when_busy(opener)
             return None if store is None else ask(store)
         except Exception as e:
             print(f"Removed: the trash couldn't be read: {e!r}")
@@ -98,6 +100,30 @@ def read_store(shell, language, ask, then):
     from app.qt import bridge
     bridge.run_in_worker(run, then=then, failed=lambda _info: then(None))
     return True
+
+
+def _when_busy(opener):
+    """(A pool thread's, `read_store`.) No handle: a store only busy (its handle opens without a wait) is asked again,
+    off the window's thread, for as long as an open waits (§6.2) — never answered as unreadable, the window's writer's
+    rule (`moves.Writer._store`, LM11b). The opener looked at again each time: a store found damaged, newer or not a
+    store answers None at once. -> the handle, or None."""
+    from app.library_store import BUSY_AT_OPEN
+    check = getattr(opener, "check", None)
+    if check is None:
+        return None                                       # (a stand-in opener: its answer as given)
+    deadline = time.monotonic() + BUSY_AT_OPEN
+    while time.monotonic() < deadline:
+        check()
+        state = getattr(opener, "state", None)
+        mode, reason = state() if state is not None else (opener.mode, getattr(opener, "reason", None))
+        if mode == "store":
+            store = opener.handle()
+            if store is not None:
+                return store
+        elif reason != "busy":
+            return None
+        time.sleep(0.02)
+    return None
 
 
 def removed_by_root(store, roots):
@@ -352,14 +378,14 @@ class RemovedWindow(windows.SecondaryWindow):
         self.lines = keep
         if order != self.order:
             self._place(order)
-        if made:
+        if len(self.order) < min(self.limit, len(self._want)):
+            self._more()                                  # (asked before `_grow`, as `_build_more` does: the scroll
+        if made:                                          # its resize sets off reads no list mid-build as near its end)
             for line in made:
                 line.show()
             self._chain(min(order.index(line.key) for line in made))
             self._enable(made)
             self._grow()
-        if len(self.order) < min(self.limit, len(self._want)):
-            self._more()
 
     def _line(self, entry):
         self.builds += 1

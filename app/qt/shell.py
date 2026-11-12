@@ -412,8 +412,9 @@ class Services:
         """(Its own thread.) The look (`at_window`), its line to the bar (`anki_session.told`, the 2.x dashboard's
         words), then the known-words sync — at the window's start the one start sync, forced, after the session's sync
         whatever it found (`Automation.started(session=True)` armed none, IK-2); at a focus with Anki open, forced only
-        when the session's sync brought your phone's reviews in — and, synced, Connect kicked to see what waits, on the
-        settings as they are now (IK-5; the Tk `_connect_session`'s order). A quit ends the wait for the Anki it
+        when the session's sync brought your phone's reviews in — and, synced (or at the window's start, whatever the
+        look found: Haya-CL), Connect kicked to see what waits, on the settings as they are now (IK-5; the Tk
+        `_connect_session`'s order). A quit ends the wait for the Anki it
         started at its next look, never starts Anki or a sync after it (`cancel`), and nothing follows it."""
         job = self._session_job(opening)
         try:
@@ -435,7 +436,10 @@ class Services:
                 self.automation.session_began(owed)
             elif (done or {}).get("anki") == "open":
                 self.automation.session_began(sync == "synced")
-            if sync == "synced":
+            if sync == "synced" or opening:
+                # Haya-CL: at the window's start always — a Connect that ended with no window open (its waits kept in
+                # the ledger: the cap, Anki closed, you reviewing) is started again whatever this look found; it
+                # waits out its looks while this window is open. At a focus, only after a sync, as before
                 now = self._session_settings()
                 if now is not None:
                     from app.connect import kick

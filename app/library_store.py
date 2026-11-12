@@ -13079,7 +13079,7 @@ def _store_book_audiobooks(self, item_id):
             if split is None:
                 return None
             epub, title = split["path"], split["title"]
-            origin = {"sha256": (self.joined_book(epub) or {}).get("sha256")}
+            origin = {"sha256": None}                   # (by its path: review r2 N1)
         else:
             epub = origin["origin"].rsplit("#", 1)[0]
             title = self.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE "
@@ -13137,7 +13137,7 @@ def joined_book_path(language, book_id):
 def _store_split_book(self, item_id):
     """Kura-TX B1: the split book the text item `item_id` is a part of -> {id (by its folder and name: the same at
     every look, whatever its parts' bytes), path (`joined_book_path`), parts [item ids, by their numbers], rels [their
-    library copies, in that order], title (the first part's title's, else the name)}; None when it is no such part — a
+    library copies, in that order], all [every item of it, a left-out copy too: whose cards are the book's], title (the first part's title's, else the name)}; None when it is no such part — a
     name not `<name>_<NN>.txt`, an EPUB's part (a book of its own), waiting (no file), or alone (fewer than two
     available parts of that name in its folder). ONE part a number (review B1: the same book from two sources is
     `<name>_01.txt` and the library's `<name>_01 (2).txt` — never joined twice): the shortest name of that number,
@@ -13168,9 +13168,10 @@ def _store_split_book(self, item_id):
                 f"{_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%'", chunk)}
         if item_id in epubs:
             return None
-        by_number = {}
+        by_number, every = {}, []
         for f in sorted(f for f in found if f[3] not in epubs):
             by_number.setdefault(f[0], f)
+            every.append(f[3])
         found = [by_number[n] for n in sorted(by_number)]
         if len(found) < 2:
             return None
@@ -13178,8 +13179,10 @@ def _store_split_book(self, item_id):
                                   (found[0][3],)).fetchone()
     stem = _SPLIT_PART.fullmatch(found[0][4].replace("\\", "/").rpartition("/")[2]).group(1)
     book_id = hashlib.sha1(f"{root}|{folder}|{own.group(1)}".encode("utf-8")).hexdigest()[:16]
+    # `all`: every item of the book, a left-out copy too (review r2 S1: its cards are the book's — *Add audio*, the 🎧)
     return {"id": book_id, "path": joined_book_path(self.language, book_id), "parts": [f[3] for f in found],
-            "rels": [f[4] for f in found], "title": (title[0] if title and title[0] else None) or stem}
+            "rels": [f[4] for f in found], "all": sorted(every),
+            "title": (title[0] if title and title[0] else None) or stem}
 
 
 def _store_joined_book(self, path):
@@ -13224,8 +13227,9 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user"):
             split = self.split_book(joined["parts"][0])
             if split is None or path_key(os.path.abspath(split["path"])) != path_key(os.path.abspath(epub)):
                 return None                  # (its parts changed meanwhile)
-            parts = {"parts": split["parts"]}
-            sha, placed = joined["sha256"], self._audiobook_place({"epub": epub, "parts": split["parts"]})
+            parts = {"parts": split["all"]}
+            # (no sha256: a joined book's answers are kept by its path — review r2 N1, as Connect's `book_key`)
+            sha, placed = None, self._audiobook_place({"epub": epub, "parts": split["all"]})
             found = placed
         else:
             lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"

@@ -208,6 +208,9 @@ def test_the_same_book_from_two_sources_joins_each_part_once(tmp_path):
         got = store.split_book(copies[0])
         assert got is not None and got["parts"] == plain
         book = library.split_book(store, plain[0], "ja")
+        from app.connect import add_audio
+        # review r2 S1: the copy's own cards are the book's (*Add audio*, the row's ⋯, the 🎧) — never left silent
+        assert got["all"] == sorted(plain + copies) and add_audio.book_items(store, book) == sorted(plain + copies)
     with open(book, encoding="utf-8") as f:
         text = f.read()
     first = _part_text(1).splitlines()[0]
@@ -352,6 +355,7 @@ def test_pick_its_audiobook_lists_the_lone_audiobook_for_the_joined_book_and_pai
         assert ab is not None and ab["item_id"] == split["audio"] and ab["key"] and ab["title"] == TITLE
         assert len(works) == 1, "the audiobook is in the book's title"
         assert store.audiobook_hovers()[split["audio"]]["parts"] == sorted(split["parts"]), "its 🎧 on every part"
+        assert _record(store, split["audio"])["book"]["sha256"] is None, "kept by its path (r2 N1), as Connect keys it"
         assert library.paired_books(store) == [(os.path.abspath(book), split["audio"],
                                                 library.book_of(store, book)["sha256"])]
         assert store.pick_audiobook_book(split["audio"], book) is None, "paired already: nothing written"

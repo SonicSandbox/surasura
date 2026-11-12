@@ -355,6 +355,9 @@ NOT_AN_INSTALL = {
     ("app/connect/media_names.py", "fingerprint"): "a subtitle line's words",
     ("app/connect/media_names.py", "line_name"): "a line's key, times and fingerprint",
     ("app/library_store.py", "line_fingerprint"): "a subtitle line's words",
+    ("app/library_store.py", "_store_split_book"): "one split book's folder and name inside the library (its rel "
+                                                   "key, never an absolute path): its joined file's name, one per "
+                                                   "book, never one install's code",
     ("app/names.py", "stamp_of"): "the name tables' content",
     ("app/plan_rules.py", "file_digest"): "one file's path with its stat: one per file, never one install's code",
     ("app/services/automation.py", "shows"): "the backlog record's content",

@@ -10186,11 +10186,12 @@ def _store_removed_rows(self):
     return out
 
 
-def _store_removed(self, now=None):
+def _store_removed(self, now=None, split=False):
     """The Removed list (K2, alpha 4, Mattias's note 6): his own Removes not put back (`_removed_rows`), one entry per
     Remove, newest first -> [{"trash_ids", "title", "titles", "removed_at", "days_left", "count",
     "can_return", "roots"}]; a Remove of several titles is ONE entry (alpha 5, Mado: a picks Remove of 120 titles was
-    120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
+    120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `split` (Kantan-B4: Extract's
+    name check, whose *Put back* is one title's): one entry per title and Remove, never summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
     clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the
     trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't
     come back (no file left, no original read) is left out: Put back would bring nothing back. One read transaction; one
@@ -10222,7 +10223,7 @@ def _store_removed(self, now=None):
         entry = groups[k]
         if not entry["can_return"]:
             continue
-        one = removes.get(entry["removed_at"])              # the same Remove's other titles: one entry
+        one = None if split else removes.get(entry["removed_at"])     # the same Remove's other titles: one entry
         if one is None:
             removes[entry["removed_at"]] = entry
             out.append(entry)
@@ -10235,6 +10236,54 @@ def _store_removed(self, now=None):
     for entry in out:
         entry["trash_ids"].sort()                           # Put back's order: as they were removed
     return out
+
+
+def _store_rename_removed(self, old, new, folders):
+    """Kantan-B4 (Extract's *Add as new*, PROVISIONAL): a removed title gives its name up in the trash, so a new title
+    can take it. Every trash row whose place lies in `<f>/<old>/` (`folders`: the folders a name is taken in, Extract's)
+    gets `<f>/<new>/` — its Put back place, its entry's path and folder — and each of their titles that holds no item
+    any more takes `new`: its folder key (`<old>/…` → `<new>/…`), its title when that is the old name's show, the old
+    name's show dropped from its other names. So the new title of the old name is its own (never joined by folder
+    key or by show, `_folder_work`), and a later Put back brings this one back as `new`, as its own title. One
+    command; no file is moved (the caller moves the folders, inside the same write lock). Not on the Undo stack: the
+    Removed list names it by its new name. -> the trash ids renamed ([] when none: nothing written)."""
+    from app.episode_names import show_key
+    keys = {path_key(f"{f}/{old}") for f in folders}
+    old_key, old_fk, new_fk = show_key(old), path_key(old), path_key(new)
+    with self._command("rename_removed") as cmd:
+        renamed, works = [], set()
+        for r in self.trash_rows():
+            parts = _strip(r["rel_path"] or "").split("/", 2)
+            if len(parts) < 3 or path_key(f"{parts[0]}/{parts[1]}") not in keys:
+                continue
+            rel = f"{parts[0]}/{new}/{parts[2]}"
+            entry = _json_dict(r["entry"]) or {}
+            entry["physical_path"] = rel
+            if "parent_folder" in entry:                    # (a grouped split's `<old>/<old>_1` too: review r1 #1)
+                entry["parent_folder"] = parent_folder_of(rel)
+            self.conn.execute("UPDATE trash SET rel_path = ?, entry = ? WHERE id = ?", (rel, _dumps(entry), r["id"]))
+            renamed.append(r["id"])
+            work = ((_json_dict(r["item_state"]) or {}).get("columns") or {}).get("work_id")
+            if work is not None:
+                works.add(work)
+        if not renamed:
+            return []
+        change = self._change(cmd, "rename_removed")
+        for work in sorted(works):
+            if self.conn.execute("SELECT 1 FROM items WHERE work_id = ? LIMIT 1", (work,)).fetchone():
+                continue                                    # a title still in the library keeps its names
+            row = self._work_row(work)
+            if row is None:
+                continue
+            fields = {"titles": _dumps([t for t in json.loads(row["titles"] or "[]") if show_key(t) != old_key])}
+            if show_key(row["title"]) == old_key:
+                fields["title"] = new
+            fk = row["folder_key"]
+            if fk is not None and (fk == old_fk or fk.startswith(old_fk + "/")):
+                fields["folder_key"] = new_fk + fk[len(old_fk):]
+            self._set_work_fields(cmd, change, work, fields)
+        cmd.touch()
+        return renamed
 
 
 # --- A5K-2: a library folder emptied under its record (Sonic ✅ 2026-10-28) ----------------------------------------- #
@@ -12777,6 +12826,7 @@ Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
+Store.rename_removed = _store_rename_removed
 Store.note_emptied = _store_note_emptied
 Store.emptied = _store_emptied
 Store.removed_under = _store_removed_under

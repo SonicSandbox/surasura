@@ -309,8 +309,10 @@ def ask_remove_picks(win, moves, n, ids, keys=(), then=None):
     def answered(said_yes):
         if not said_yes or moves.refused() is not None:
             return
-        moves._give(drag.Ticket(strings.PICKS_REMOVED.format(title=title), tuple(keys), ids),
-                    lambda t: moves.writer.remove(ids, label=t))
+        from app.qt import removed
+        ticket = drag.Ticket(strings.PICKS_REMOVED.format(title=title), tuple(keys), ids)
+        ticket.buttons = removed.door(win)                       # Kantan-B4: the way to Put back, at the Remove
+        moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         if then is not None:
             then()
     return confirm.ask(win, strings.PICKS_REMOVE_ASK.format(title=title), strings.PICKS_REMOVE_BODY.format(n=files),
@@ -929,9 +931,11 @@ class ItemActions(QObject):
         """`Writer.remove`: its files to the trash (30 days), its toast with Undo."""
         if self.moves.refused() is not None:
             return None
+        from app.qt import removed
         ids = drag.ids_of(row)
-        return self.moves._give(drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids),
-                                lambda t: self.writer.remove(ids, label=t))
+        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids)
+        ticket.buttons = removed.door(self.win)                 # Kantan-B4: the way to Put back, at the Remove
+        return self.moves._give(ticket, lambda t: self.writer.remove(ids, label=t))
 
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):

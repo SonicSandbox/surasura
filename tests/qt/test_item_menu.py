@@ -2618,3 +2618,22 @@ def test_leaving_the_middle_lets_the_hold_go_and_coming_back_needs_a_new_hold(wo
     assert lst_of(win).join_key == rows_of(win)[a].key
     win.moves.cancel()
     assert writer.calls == []
+
+
+def test_B4_the_removes_toast_names_removed_and_its_door_opens_the_list(world):
+    """Kantan-B4 (Mattias: "where is the Trash so I can restore the old one?"): the Remove's toast says where it went
+    and carries *Removed…*, which opens the Removed list (Put back) — beside its Undo."""
+    from app.qt import removed, windows
+    _seed, win, writer = world()
+    row = rows_of(win)[4]
+    win.items.menu_pick(row, "remove")
+    assert wait_until(lambda: _card_open(win.items), 5)
+    win.items.question.yes.click()
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_REMOVED.format(title=row.title), 5)
+    assert "in Removed for 30 days" in win.toasts.card.message
+    door = next(b for b in win.toasts.card.buttons if b.isVisibleTo(win.toasts.card)
+                and b.text() == strings.REMOVED_TOAST_OPEN)
+    assert door.toolTip() == strings.REMOVED_TOAST_OPEN_TIP
+    door.click()
+    assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
+    windows.opened(win, removed.WINDOW).close()

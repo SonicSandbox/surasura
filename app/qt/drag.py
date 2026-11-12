@@ -1039,7 +1039,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks", "rides", "why")
+                 "marks", "rides", "why", "buttons")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -1054,6 +1054,7 @@ class Ticket:
         self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
         self.rides = False                           # a Finished choice the setting made: undone with its drop
         self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
+        self.buttons = ()                            # Kantan-B4: its toast's own buttons (a Remove's *Removed…*)
 
 
 def mines_why(lines, place):
@@ -2313,7 +2314,8 @@ class DragController(QObject):
         ticket.toast = True
         self.toasted = ticket
         self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
-        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons, why=ticket.why)
+        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons or ticket.buttons,
+                             why=ticket.why)
 
     # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
     def _toast_shown(self):

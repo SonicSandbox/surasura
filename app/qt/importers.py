@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
                              QLineEdit, QPlainTextEdit, QPushButton, QRadioButton, QSpinBox, QWidget)
 
 from app import anki_db_import, extract, importers_view
-from app.qt import bridge, confirm, strings, windows
+from app.qt import bridge, confirm, removed, strings, windows
 from app.qt import press as qpress
 from app.services import jobs as jobs_module, tools
 
@@ -601,7 +601,7 @@ class ExtractWindow(ToolWindow):
         self.name = QLineEdit(self)
         self.name.setPlaceholderText(strings.EXTRACT_OUT_HINT)
         self.name.setAccessibleName(strings.EXTRACT_OUT_NAME)
-        self.name.textChanged.connect(lambda _t: self.refresh())
+        self.name.textChanged.connect(lambda _t: (self._offer(None), self.refresh()))
         self.body.addWidget(self.name)
 
         # the split (anything but a deck)
@@ -672,6 +672,15 @@ class ExtractWindow(ToolWindow):
         line.addWidget(self.section)
         self.section_line = _line(self, strings.EXTRACT_SECTION_LINE)      # a7: Current by default, said
         line.addWidget(self.section_line, 1)
+        # Kantan-B4 (Mattias: a removed book added again said only "taken"): the file or its name is a title in
+        # Removed → *Put back* (the Removed list's own command, its toast and Undo) · *Add as new*
+        self.offer = None                                 # (the name check's answer, the job clicked) while they show
+        self.back_door = _button(self, strings.EXTRACT_PUT_BACK, strings.EXTRACT_PUT_BACK_TIP.format(title=""),
+                                 self._put_back)
+        self.new_door = _button(self, strings.EXTRACT_ADD_NEW, strings.EXTRACT_ADD_NEW_TIP, self._add_new)
+        for door in (self.back_door, self.new_door):
+            door.setVisible(False)
+            line.addWidget(door)
         line.addWidget(self.go)
         self.body.addLayout(line)
         self.refresh()
@@ -684,6 +693,7 @@ class ExtractWindow(ToolWindow):
 
     def choose(self, path):
         """A file chosen: its name offered for the folder; a deck's fields read on a worker."""
+        self._offer(None)
         if not self.name.text().strip() and path:
             self.name.setText(importers_view.default_name(path))
         if importers_view.is_deck(path) and path in (self._reading, self._deck_path):
@@ -746,6 +756,7 @@ class ExtractWindow(ToolWindow):
         self.sample.setVisible(deck and self.deck is not None)
         self.go.setEnabled(importers_view.can_extract(path, self.name.text(), self.field.currentText(),
                                                       self.understand.isChecked(), self.busy(), self.deck))
+        self.new_door.setEnabled(not self.busy())
 
     def options(self):
         """The split as the child takes it: (method, value, parts — 0 when not grouping)."""
@@ -764,6 +775,7 @@ class ExtractWindow(ToolWindow):
         then the child. The window counts as writing from the click (one Extract at a time)."""
         if not self.go.isEnabled():
             return
+        self._offer(None)
         job = self.job()
         if not importers_view.is_deck(job["path"]):
             fault = extract.check_options(job["method"], job["value"], bool(job["parts"]), job["parts"] or None)
@@ -773,7 +785,7 @@ class ExtractWindow(ToolWindow):
         self.begin_write()
         self.refresh()
         self.say(strings.EXTRACT_CHECKING)
-        bridge.run_in_worker(extract.check_name, self.name.text(), job["language"],
+        bridge.run_in_worker(extract.check_name, self.name.text(), job["language"], job["path"],
                              then=self.alive(lambda answer: self._named(answer, job)),
                              failed=self.alive(lambda info: self._checked(self._failed_line(info[0]))))
 
@@ -787,14 +799,93 @@ class ExtractWindow(ToolWindow):
         if answer.name is None:
             self._checked(strings.EXTRACT_BAD_NAME)
             return
+        entry = answer.removed                            # Kantan-B4: a title in Removed — never only "taken"
+        if entry is not None and (not answer.taken or answer.free):
+            self._offer(answer, job)
+            self._checked(strings.EXTRACT_IN_REMOVED.format(title=removed.title_words(entry),
+                                                            left=removed.left_words(entry)))
+            return
+        if entry is None and answer.free:                 # removed, its files purged since: the name is still free
+            self._offer(answer, job)
+            self._checked(strings.EXTRACT_REMOVED_GONE.format(name=answer.name))
+            return
         if answer.taken:
             self.name.setText(answer.proposal)
+            if entry is not None:                         # its name held by more than the removed one: Put back only
+                self._offer(answer, job)
+                self._checked(strings.EXTRACT_IN_REMOVED_TAKEN.format(
+                    title=removed.title_words(entry), left=removed.left_words(entry), proposal=answer.proposal))
+                return
             self._checked(strings.EXTRACT_TAKEN.format(name=answer.name, proposal=answer.proposal))
             return
         self.start(answer.name, job)
         self.end_write()                                  # the check's; the child's write goes on
 
-    def start(self, name, job=None):
+    def _offer(self, answer, job=None):
+        """Kantan-B4: *Put back* · *Add as new* for the title in Removed the name check met (`answer`) — *Add as new*
+        only where it can take the name (free, or freed by the child: `free`) — or neither (None: a new check, another
+        file or name)."""
+        entry = answer.removed if answer is not None else None
+        self.offer = (answer, job) if entry is not None or (answer is not None and answer.free) else None
+        self.back_door.setVisible(entry is not None)
+        self.new_door.setVisible(self.offer is not None and (not answer.taken or answer.free))
+        if self.offer is None:
+            return
+        if entry is not None:
+            self.back_door.setToolTip(strings.EXTRACT_PUT_BACK_TIP.format(title=removed.title_words(entry)))
+        self.new_door.setToolTip(strings.EXTRACT_ADD_NEW_FREE_TIP.format(name=answer.name, proposal=answer.proposal)
+                                 if answer.taken else strings.EXTRACT_ADD_NEW_TIP)
+
+    def _put_back(self):
+        """*Put back*: the Removed list's own command (`removed.give_back`: the writer's restore of this title's
+        files, one toast, one Undo; its progress and place kept) — only in the library the check read."""
+        if self.offer is None:
+            return
+        answer, job = self.offer
+        title = removed.title_words(answer.removed)
+        self._offer(None)
+        failed = strings.EXTRACT_PUT_BACK_FAILED.format(title=title)
+        if self._writing_library() != job["language"]:
+            self.say(failed)                              # another library is open: its trash ids aren't these
+            return
+        self.say(strings.EXTRACT_PUTTING_BACK.format(title=title))     # the press's answer, at once
+
+        def told(event):
+            if event == "saved":
+                self.say(strings.EXTRACT_PUT_BACK_DONE.format(title=title))
+            elif event in ("refused", "ended"):
+                self.say(failed)
+        if removed.give_back(self.shell, answer.removed["trash_ids"], strings.REMOVED_BACK.format(title=title),
+                             told=self.alive(told)) is None:
+            self.say(failed)
+
+    def _writing_library(self):
+        """The language of the library the main window's writer writes now (None: none open)."""
+        return getattr(getattr(getattr(self.shell, "moves", None), "writer", None), "language", None)
+
+    def _add_new(self):
+        """*Add as new*: the child as Extract's own, with `--as-new` when the removed title holds the name (it gives
+        the name up in the trash first: `extract.free_name`)."""
+        if self.offer is None or self.busy():
+            return
+        answer, asked = self.offer
+        self._offer(None)
+        job = self.job()                                  # the options as they are now (review r1 #5)
+        if job["language"] != asked["language"]:
+            return                                        # (another library now: the check's answer isn't its)
+        if not importers_view.is_deck(job["path"]):
+            fault = extract.check_options(job["method"], job["value"], bool(job["parts"]), job["parts"] or None)
+            if fault:
+                self.say(strings.EXTRACT_FAULTS[fault])
+                return
+        self.start(answer.name, job, as_new=answer.taken)
+
+    def language_changed(self, language):
+        """A language switch: the open offer was the other library's (review r1 #5)."""
+        super().language_changed(language)
+        self._offer(None)
+
+    def start(self, name, job=None, as_new=False):
         """The child, every value glued to its option (a --- delimiter or a -draft name is a value, never an
         option)."""
         job = job or self.job()
@@ -805,11 +896,14 @@ class ExtractWindow(ToolWindow):
             argv += [f"--field={job['field']}"]
         else:
             argv += ["--split", job["method"], f"--value={job['value']}", "--parts", str(job["parts"])]
+        if as_new:
+            argv.append("--as-new")
         return self._run(strings.EXTRACT_NAME, argv, self._done, parse=extract.parse_result)
 
     def _done(self, code):
         key, values = importers_view.extract_outcome(code, self._result, self._why())
         section = strings.EXTRACT_SECTIONS.get(values.get("section"), "")
+        freed = getattr(self._result, "freed", None)       # Kantan-B4: *Add as new* renamed the removed one
         if key == "done":
             line = strings.EXTRACT_DONE.format(parts=values["parts"], section=section, name=values["name"])
         elif key == "processed":
@@ -820,12 +914,19 @@ class ExtractWindow(ToolWindow):
             line = strings.EXTRACT_ALREADY.format(title=values["title"], parts=values["parts"], name=values["name"])
         elif key == "taken":
             line = strings.EXTRACT_TAKEN.format(name=values["name"], proposal=values["name"] + " 2")
+        elif key == "busy":
+            line = strings.EXTRACT_FREE_BUSY.format(name=values["name"])
         elif key == "name":
             line = strings.EXTRACT_BAD_NAME
         elif key == "empty":
             line = strings.EXTRACT_EMPTY
         else:
             line = self._failed_line(values["why"])
+        if freed:
+            line += strings.EXTRACT_FREED.format(freed=freed)
+            heard = getattr(windows.opened(self.shell, removed.WINDOW), "trash_heard", None)
+            if heard is not None:
+                heard()                                   # an open Removed list shows its new name
         self.say(line)
         self.end_write(line)
         waiting = getattr(self, "on_added", None)     # a5-2 (Hon): (the EPUB an audiobook waits for, its call)

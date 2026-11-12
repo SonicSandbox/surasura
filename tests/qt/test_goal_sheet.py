@@ -572,3 +572,18 @@ def test_open_folder_says_when_the_titles_own_folder_is_gone(world, monkeypatch,
     sheet.pick(show, "folder")
     assert wait_until(lambda: opened == [there], 5)
     assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["copy"], 3) and calls(writer) == []
+
+
+def test_B4_a_goal_removes_toast_carries_the_removed_door(world):
+    """Kantan-B4: the Goal sheet's Remove toast names Removed and carries its door too."""
+    from app.qt import removed, windows
+    seed, win, writer = world()
+    sheet = open_sheet(win)
+    book = goal_view(win).works[2]
+    sheet.ask_remove(book).yes.click()
+    card = win.toasts.card
+    assert card.base == strings.GOAL_REMOVED.format(title=book.title, n=6) and "in Removed" in card.base
+    door = next(b for b in card.buttons if b.isVisibleTo(card) and b.text() == strings.REMOVED_TOAST_OPEN)
+    door.click()
+    assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
+    windows.opened(win, removed.WINDOW).close()

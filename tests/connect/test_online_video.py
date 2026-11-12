@@ -404,3 +404,12 @@ def test_a_fetch_waits_its_turn_and_a_stop_ends_the_wait(fake_miner, monkeypatch
         assert time.monotonic() - started < QUICK and "fetch" not in fake_miner.commands()
     finally:
         other.release()
+
+
+def test_a_held_fetch_never_waits_for_the_turn(fake_miner, monkeypatch):
+    # why (mutant C4): behind the window's half-hour playlist, Connect would wait all that time to learn it is held
+    youtube_hold.hold()
+    monkeypatch.setattr(youtube_hold, "turn", lambda *a, **k: pytest.fail("asked for the turn while held"))
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch)
+    assert youtube_hold.is_words(raised.value.say) and "fetch" not in fake_miner.commands()

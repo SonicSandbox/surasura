@@ -82,6 +82,8 @@ class ServerState:
         self._loading = {}
         self._language = None
         self.started = {}               # round_id -> the round as its brief gave it (its first save writes it)
+        self.refused = {}               # note id -> how many of its translations were refused this session
+
 
     def keep_rounds(self):
         """Whether rounds are kept (Settings → Connections), read on each call: a switch turned off stops the next save."""
@@ -448,6 +450,7 @@ def send_report_tool(what, learner_said="", expected=""):
 
 
 # --- card translations: the learner's AI translates their cards, Surasura checks and writes (app/card_translations) - #
+REFUSED_TWICE = 2               # a card refused this often this session isn't offered again (r2 #3: no endless loop)
 def _anki_url():
     from app import anki_connect
     from app.cli import verbs
@@ -492,8 +495,9 @@ def cards_tool(state, limit=10, deck="", source="", around=None, language=None):
             raise ToolError(f"Surasura made no cards from a show or book called {source!r}. Leave source out for "
                             "every card.")
     try:
+        skip = {n for n, times in state.refused.items() if times >= REFUSED_TWICE}   # never the same card again (r2 #3)
         got = ct.cards(ct.AnkiReads(url), lang, deck=str(deck or "").strip() or None, limit=limit, around=around,
-                       only=only)
+                       only=only, skip=skip)
     except Exception as e:
         trouble = _anki_trouble(e)
         if trouble is None:
@@ -502,8 +506,8 @@ def cards_tool(state, limit=10, deck="", source="", around=None, language=None):
     if not got["cards"]:
         if got["left"]:
             return {"cards": [], "left": got["left"],
-                    "next": "None of the next cards could be offered (too long a sentence, filled meanwhile); the "
-                            "rest wait in another deck or source, or for the learner to look at them in Anki."}
+                    "next": "Stop here: the next cards can't be offered (their sentences are too long, or were filled "
+                            "meanwhile). Tell the learner how many are left; those need them in Anki."}
         return {"cards": [], "next": "Every card has a translation (or none has a sentence to translate)."}
     got["next"] = ("Translate each as this tool's description says, then call surasura_write_translations with "
                    "[{id, translation}]" + (f"; {got['left']} more wait after these." if got["left"] else "."))
@@ -542,10 +546,13 @@ def write_tool(state, items, into="en", language=None):
     if got["written"]:
         undoing.owe_sync(settings)
     out = {"written": len(got["written"]), "batch": got["undo"]}
+    for n in got["refused"]:
+        state.refused[n] = state.refused.get(n, 0) + 1
     if got["refused"]:
         out["refused"] = {str(n): why for n, why in sorted(got["refused"].items())}
-        out["next"] = ("Fix the refused ones as each why says and send just those again; a card with something in it "
-                       "already, or no translation field, is left as it is.")
+        out["next"] = ("Fix the refused ones as each why says and send just those again, once; a card refused twice "
+                       "isn't offered again this session. A card with something in it already, or no translation "
+                       "field, is left as it is.")
     if got["undo"]:
         out["undo"] = f"surasura_undo_translations(batch={got['undo']!r}) takes this batch back."
     return out

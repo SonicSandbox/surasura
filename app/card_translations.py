@@ -44,6 +44,7 @@ WORD = ("Expression", "Word", "Vocab")
 CONNECT_TAG = "surasura::connect::*"           # every card Connect made (ledger.tag_id)
 LIMIT, MOST = 10, 50                            # cards a call: by default, at most
 AROUND, AROUND_MOST = 1, 2                      # lines on each side: by default (the eval's verdict), at most
+NEAR_S = 3                                      # a subtitle's line found by its text: within this of the card's time
 LINE_MAX = 60                                   # characters a neighbouring line keeps (the nearer end)
 SCAN = 500                                      # notes looked at in one `cards` call, at most
 SENTENCE_MOST, WORD_MOST = 400, 40              # a card offered: its sentence at most (else skipped), its word cut to
@@ -126,19 +127,29 @@ def _by_name(names, wanted):
     return next((lower[w.lower()] for w in wanted if w.lower() in lower), None)
 
 
+def _shows(field, templates, side):
+    """True when any card type's `side` template names `field` ({{Hint}}, {{#Hint}}, {{text:Hint}},
+    {{tts ja_JP voices=X:Hint}} …)."""
+    ref = re.compile(r"\{\{\s*[#^/]?\s*(?:[^{}:]+:\s*)*" + re.escape(field) + r"\s*\}\}", re.I)
+    return any(ref.search(str((sides or {}).get(side) or "")) for sides in (templates or {}).values())
+
+
 def on_front(field, templates):
-    """True when any card type's front template shows `field` ({{Hint}}, {{#Hint}}, {{text:Hint}} …)."""
-    ref = re.compile(r"\{\{\s*[#^/]?\s*(?:[\w-]+:)*" + re.escape(field) + r"\s*\}\}", re.I)
-    return any(ref.search(str((sides or {}).get("Front") or "")) for sides in (templates or {}).values())
+    """True when any card type's front template shows `field`: a translation there gives every review away."""
+    return _shows(field, templates, "Front")
 
 
 def translation_field(field_names, templates=None):
     """The field a note type's translation goes in, or None (module docstring): by name, else Hint on the Lapis
-    family — the first no front template shows (`templates`: the note type's, None = not looked at)."""
+    family — the first no front template shows and a back does (`templates`: the note type's, None = not looked
+    at)."""
     named = [_by_name(field_names, (n,)) for n in NAMED]
     if all(_by_name(field_names, (f,)) for f in LAPIS):
         named.append(_by_name(field_names, (HINT,)))
-    return next((f for f in named if f and (templates is None or not on_front(f, templates))), None)
+    if templates is not None and not templates:
+        return None                             # its templates unread: never guessed (r2 #5)
+    return next((f for f in named if f and (templates is None or (not on_front(f, templates)
+                                                                  and _shows(f, templates, "Back")))), None)
 
 
 def in_language(sentence, language):
@@ -151,6 +162,12 @@ def in_language(sentence, language):
 def _quote(term):
     from app import anki_connect
     return '"' + anki_connect.escape_query(term) + '"'
+
+
+def _named(kind, name):
+    """A `note:` / `deck:` term naming exactly `name` (its _ and * read as themselves, not wildcards: r2 #6)."""
+    from app import anki_connect
+    return '"' + kind + ":" + anki_connect.escape_query(name).replace("_", "\\_").replace("*", "\\*") + '"'
 
 
 def _type(anki, model):
@@ -174,11 +191,11 @@ def _types(anki):
 
 
 def _query(model, tf, sf, deck=None, language="ja", extra=""):
-    query = f"{_quote('note:' + model)} {_quote(tf + ':')} {_quote(sf + ':_*')}"
+    query = f"{_named('note', model)} {_quote(tf + ':')} {_quote(sf + ':_*')}"
     must, never = SCRIPT.get(language, SCRIPT["ja"])
     query += " " + _quote(f"{sf}:re:{must}") + (" -" + _quote(f"{sf}:re:{never}") if never else "")
     if deck:
-        query += " " + _quote("deck:" + deck)
+        query += " " + _named("deck", deck)
     return query + (" " + extra if extra else "")
 
 
@@ -211,16 +228,19 @@ def _word(sentence_value, note, word_field):
     return plain(_value(note, word_field)) if word_field else ""
 
 
-def cards(anki, language="ja", deck=None, limit=LIMIT, around=AROUND, only=None, sources=None):
+def cards(anki, language="ja", deck=None, limit=LIMIT, around=AROUND, only=None, sources=None, skip=()):
     """The next `limit` cards wanting a translation -> {"cards": [{id, sentence, word, before?, after?}], "left"}.
     `around`: neighbouring lines on each side for a card Connect made (0: none); `only`: these note ids alone (a
-    title's cards); `sources`: (ledger path, data folder) for the neighbours, None = this install's."""
+    title's cards); `skip`: note ids left out (the ones this session's answers kept failing, r2 #3); `sources`:
+    (ledger path, data folder) for the neighbours, None = this install's."""
     limit = max(1, min(int(limit or LIMIT), MOST))
     around = max(0, min(int(around if around is not None else AROUND), AROUND_MOST))
     ids, types = wanting(anki, deck, language)
     if only is not None:
         keep = {int(n) for n in only}
         ids = [n for n in ids if n in keep]
+    if skip:
+        ids = [n for n in ids if n not in set(skip)]
     out, looked = [], 0
     for at in range(0, min(len(ids), SCAN), MOST):
         part = ids[at:at + MOST]
@@ -319,8 +339,10 @@ def _place(lines, start, sentence, index=None):
     text starts and ends on its lines' bounds and only one such place (review r1 S7: はい。 twice, はい inside これはいけ
     ない) —, else the lines its text is made of, else its line's start alone."""
     import bisect
-    ms = float(start) * 1000 if start is not None else None
+    timed = any(s is not None for s, _t in lines)               # a book's cards are recorded at 0.0 (r2 #1)
+    ms = float(start) * 1000 if start is not None and timed else None
     far = lambda i: abs(lines[i][0] - ms) if lines[i][0] is not None else 0     # noqa: E731
+    near = lambda i: ms is None or far(i) <= NEAR_S * 1000      # noqa: E731  (a subtitle's: by its time too, r2 #2)
     keys, starts, joined = index or _index(lines)
     want = _key(sentence)
     if want:
@@ -335,12 +357,14 @@ def _place(lines, start, sentence, index=None):
             places.append((first, last, bounds))
         if ms is not None and places:
             first, last, _b = min(places, key=lambda p: far(p[0]))
-            return first, last
+            if near(first):
+                return first, last
         bound = [(f, l) for f, l, b in places if b]
         if ms is None and places:
             return bound[0] if len(bound) == 1 else None
         hits = [i for i, k in enumerate(keys) if len(k) >= 4 and k in want]
-        if hits and hits[-1] - hits[0] <= 3 and hits == list(range(hits[0], hits[-1] + 1)):     # one run of lines
+        if (hits and hits[-1] - hits[0] <= 3 and hits == list(range(hits[0], hits[-1] + 1))     # one run of lines
+                and near(hits[0])):
             return hits[0], hits[-1]
     if ms is not None:
         near = [i for i, (s, _t) in enumerate(lines) if s is not None and abs(s - ms) <= 50]

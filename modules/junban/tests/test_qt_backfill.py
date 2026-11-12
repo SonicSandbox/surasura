@@ -1204,7 +1204,7 @@ def test_the_copied_prompt_names_backfills_deck_and_a_stale_count_is_dropped(mai
         _connected(win, _anki())
         assert wait_until(lambda: win.tr_count == 5)
     win.btn_tr_copy.click()
-    assert QApplication.clipboard().text() == S.BF_TR_PROMPT_DECK.format(deck="Mining")
+    assert QApplication.clipboard().text() == S.BF_TR_PROMPT_DECK.format(deck='"Mining"')
     assert 'deck "Mining"' in QApplication.clipboard().text()
     win._show_translations(99, "Other deck", win.language)
     assert win.tr_count == 5 and "5 cards" in win.tr_line.text()

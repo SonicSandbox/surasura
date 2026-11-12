@@ -37,6 +37,7 @@ class Reads(FakeAnki):
         super().__init__()
         self.models = {}
         self.fronts = {}            # note type -> its front template (default: the word alone; ours shows Hint on the back)
+        self.backs = {}
         self.queries = []
 
     def put(self, nid, model, values, tags=()):
@@ -52,7 +53,8 @@ class Reads(FakeAnki):
 
     def templates(self, model):
         return {"Card 1": {"Front": self.fronts.get(model, "{{Expression}}"),
-                           "Back": '{{#Hint}}<div class="tr-reveal">{{Hint}}</div>{{/Hint}}'}}
+                           "Back": self.backs.get(model, '{{#Hint}}<div class="tr-reveal">{{Hint}}</div>{{/Hint}}'
+                                                         '{{SentenceTranslation}}{{Translation}}')}}
 
     def find(self, query):
         import re
@@ -202,7 +204,7 @@ def test_a_book_cards_neighbours_are_its_sentences_and_long_lines_are_cut_at_the
     lines = [t for _s, t in ct.lines_of(SPIDER, "ja")]
     k = next(i for i in range(1, len(lines) - 1) if len(lines[i - 1]) > ct.LINE_MAX and len(lines[i + 1]) > ct.LINE_MAX
              and len(lines[i]) > 10)
-    src = _library(tmp_path, {5: (SPIDER, None, lines[k].replace("、", "、 "))})
+    src = _library(tmp_path, {5: (SPIDER, 0.0, lines[k].replace("、", "、 "))})
     before, after = ct.context([5], "ja", 1, *src)[5]
     assert before == ["…" + lines[k - 1][-(ct.LINE_MAX - 1):]]
     assert after == [lines[k + 1][:ct.LINE_MAX - 1] + "…"]
@@ -334,7 +336,7 @@ def test_a_hint_the_front_shows_is_never_a_translation_field_stock_lapis_is_left
     templates = {"Card": {"Front": "{{Expression}}<div class=hint>{{#Hint}}{{furigana:Hint}}{{/Hint}}</div>", "Back": ""}}
     assert ct.on_front("Hint", templates) and not ct.on_front("Hint", {"Card": {"Front": "{{Expression}}"}})
     assert ct.translation_field(LAPIS, templates) is None
-    assert ct.translation_field(LAPIS + ["SentenceTranslation"], {"C": {"Front": "{{SentenceTranslation}}"}}) == "Hint"
+    assert ct.translation_field(LAPIS + ["SentenceTranslation"], {"C": {"Front": "{{SentenceTranslation}}", "Back": "{{Hint}}"}}) == "Hint"
     anki = _anki()
     anki.fronts["Lapis"] = templates["Card"]["Front"]
     anki.put(1, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の<b>糸</b>"})
@@ -403,12 +405,12 @@ def test_a_book_line_said_twice_or_found_inside_another_gets_no_wrong_neighbours
     """r1 S7: a book has no times. はい。 twice: no neighbours rather than line 1's (a guess could name the wrong
     speaker); はい inside これはいけない。: never placed there — its own line's neighbours."""
     twice = _book(tmp_path, "ごんは、ひとりぼっちの小狐でした。\nはい。\n兵十がうなぎをとっていました。\nはい。\n村の方から、かんかん鐘が鳴ってきました。\n")
-    src = _library(tmp_path, {1: (twice, None, "はい。")})
+    src = _library(tmp_path, {1: (twice, 0.0, "はい。")})
     assert ct.context([1], "ja", 1, *src) == {}
     inside = tmp_path / "in"
     inside.mkdir()
     once = _book(inside, "これはいけない。\nはい\nごんは、そっと草の中から出てきました。\n")
-    src = _library(inside, {2: (once, None, "はい")})
+    src = _library(inside, {2: (once, 0.0, "はい")})
     assert ct.context([2], "ja", 1, *src)[2] == (["これはいけない。"], ["ごんは、そっと草の中から出てきました。"])
 
 
@@ -455,7 +457,7 @@ def test_every_read_cards_makes_goes_through_without_the_write_lock():
     def urlopen(req, timeout=None):
         action = _json.loads(req.data)["action"]
         sent.append(action)
-        result = {"modelNames": ["Lapis"], "modelFieldNames": LAPIS, "modelTemplates": {}, "findNotes": [],
+        result = {"modelNames": ["Lapis"], "modelFieldNames": LAPIS, "modelTemplates": {"C": {"Front": "{{Expression}}", "Back": "{{Hint}}"}}, "findNotes": [],
                   "notesInfo": []}[action]
         return _Reply(_json.dumps({"result": result, "error": None}).encode())
     with mock.patch("urllib.request.urlopen", urlopen):
@@ -463,3 +465,38 @@ def test_every_read_cards_makes_goes_through_without_the_write_lock():
         assert ct.cards(reads, "ja", around=0) == {"cards": [], "left": 0}
     assert {"modelNames", "modelFieldNames", "modelTemplates", "findNotes"} <= set(sent)
     assert set(sent) <= anki_connect.READ_ACTIONS
+
+
+# --- review r2 ------------------------------------------------------------------------------------------------- #
+def test_a_subtitle_line_found_far_from_the_cards_time_is_not_its_place(tmp_path):
+    """r2 #2: the text found only minutes away (another release, a re-timed file): no neighbours, never another
+    scene's; within NEAR_S it is."""
+    srt = tmp_path / "far.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nうんざりだ。\n\n2\n00:00:03,000 --> 00:00:04,000\n行こう。\n\n"
+                   "3\n00:00:05,000 --> 00:00:06,000\nまたね。\n", encoding="utf-8")
+    src = _library(tmp_path, {1: (str(srt), 600.0, "行こう。")})
+    assert ct.context([1], "ja", 1, *src) == {}
+    near = tmp_path / "near"
+    near.mkdir()
+    src = _library(near, {2: (str(srt), 4.5, "行こう。")})
+    assert ct.context([2], "ja", 1, *src)[2] == (["うんざりだ。"], ["またね。"])
+
+
+def test_every_template_form_on_the_front_counts_and_a_field_no_back_shows_or_unread_templates_fail_closed():
+    """r2 #4: {{tts en_US:Hint}}, {{tts ja_JP voices=X speed=0.8:Hint}}, {{ text: Hint }} on the front count; r2 #5:
+    a field no back template shows is never written (it would never be seen), and templates that couldn't be read
+    mean no translation field."""
+    for front in ("{{tts en_US:Hint}}", "{{tts ja_JP voices=X speed=0.8:Hint}}", "{{ text: Hint }}", "{{#Hint}}x{{/Hint}}"):
+        assert ct.on_front("Hint", {"C": {"Front": front}}), front
+    assert not ct.on_front("Hint", {"C": {"Front": "{{Hints}} {{MyHint}}"}})
+    back = {"C": {"Front": "{{Expression}}", "Back": "{{Hint}}"}}
+    assert ct.translation_field(LAPIS, back) == "Hint"
+    assert ct.translation_field(LAPIS, {"C": {"Front": "{{Expression}}", "Back": "{{Sentence}}"}}) is None
+    assert ct.translation_field(LAPIS, {}) is None
+
+
+def test_note_type_and_deck_names_are_literal_in_ankis_search():
+    """r2 #6: Anki reads _ and * as wildcards in note: and deck: — Lapis_v2 must not match "Lapis v2"."""
+    q = ct._query("Lapis_v2", "Hint", "Sentence", deck="Mining_JP*")
+    assert '"note:Lapis\\_v2"' in q and '"deck:Mining\\_JP\\*"' in q
+    assert '"Sentence:re:[ぁ-ゖァ-ヺ]"' in q, "never inside re:"

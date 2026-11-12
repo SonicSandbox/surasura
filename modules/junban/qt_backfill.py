@@ -21,6 +21,7 @@ window, its Fields window and its パターン data window. It paints what `back
 * **It follows the main window's language when idle** (🧭 IK-12, the Tk window's tested behaviour): the preview goes,
   what is offered is read again, the session is made again for the new language on its next use.
 """
+import json
 import os
 import threading
 
@@ -876,7 +877,8 @@ class BackfillWindow(windows.SecondaryWindow):
     def on_copy_translate(self):
         """The prompt names Backfill's deck when one is chosen: the AI translates the cards the line counted (r1 S8)."""
         deck = backfill._deck(self._engine())
-        QApplication.clipboard().setText(S.BF_TR_PROMPT_DECK.format(deck=deck) if deck else S.BF_TR_PROMPT)
+        named = json.dumps(deck, ensure_ascii=False) if deck else None
+        QApplication.clipboard().setText(S.BF_TR_PROMPT_DECK.format(deck=named) if deck else S.BF_TR_PROMPT)
         self._write(S.BF_TR_COPIED)
 
     def _count_translations(self):

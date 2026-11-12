@@ -60,6 +60,20 @@ def _call(name, args=None):
     return anyio.run(go)
 
 
+STATE = None
+
+
+def _call_with(state, name, args):
+    """One server for several calls: the session's memory (refused cards) lives in its state."""
+    global STATE
+    server, _ = mcp_server.build(state, warm=False)
+
+    async def go():
+        async with Client(server) as client:
+            return await client.call_tool(name, args or {})
+    return anyio.run(go)
+
+
 def _tools():
     server, _ = mcp_server.build(_state(), warm=False)
 
@@ -163,3 +177,17 @@ def test_no_card_offered_but_more_waiting_says_so_never_all_done(anki, monkeypat
     monkeypatch.setattr(ct, "cards", lambda *a, **k: {"cards": [], "left": 7})
     data = _data(_call("surasura_cards_to_translate"))
     assert data["left"] == 7 and "Every card" not in data["next"]
+
+
+def test_a_card_refused_twice_this_session_is_not_offered_again(anki):
+    global STATE
+    STATE = _state()
+    """r2 #3: a card whose answers keep failing never holds the queue: after two refusals it isn't offered again
+    this session, and the AI is told so."""
+    first = _data(_call_with(STATE, "surasura_cards_to_translate", {"limit": 1}))
+    nid = first["cards"][0]["id"]
+    for _ in range(2):
+        got = _data(_call_with(STATE, "surasura_write_translations", {"items": [{"id": nid, "translation": "no bold"}]}))
+        assert got["refused"] == {str(nid): ct.ONE_BOLD} and "refused twice" in got["next"]
+    again = _data(_call_with(STATE, "surasura_cards_to_translate", {"limit": 1}))
+    assert again["cards"][0]["id"] != nid

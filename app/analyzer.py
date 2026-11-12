@@ -190,7 +190,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     phrases.MATCHER_VERSION 6. Phrase rows gain `Kana`, the reading of the spelling shown (いい感じ イイカンジ beside
 #     the row's ヨイカンジ; plan_rules.display_reading), shown by the journey; the row stays (Word, Reading). The plan
 #     carries each phrase row's dictionary spelling: PLAN_FORMAT 4. 3.0, with 31–40.
-ENGINE_REVISION = 41
+# 42: a word the tagger doesn't know, cut at a kanji it does (§ Words the tagger doesn't know): an unknown word of two
+#     kanji or more and the one-kanji nouns / な-words touching it are one word — 犍陀多 was 犍陀 + 多 and 犍陀 topped the
+#     Japanese sample's list. SCHEMA_VERSION 24. 3.0.x.
+ENGINE_REVISION = 42
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -916,6 +919,9 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
         sounds = _sounds(words, fillers)
         if sounds is not words:
             words, pos1s = sounds, None             # a sound word may be an adverb: _join_sokuon_to looks again
+        unknown = _unknown_kanji(words)
+        if unknown is not words:
+            words, pos1s = unknown, None
     words = _join_sokuon_to(words, pos1s)
     if cut_words is None:
         cut_words = cut_word_tables()
@@ -1300,6 +1306,59 @@ def _sounds(words, fillers):
         out.extend(words[last:i])
         out.append(word)
         last = i + width
+    out.extend(words[last:])
+    return out
+
+
+# Words the tagger doesn't know: UniDic reads kanji it has no word for two at a time as an unknown word, and a kanji
+# after (or before) them that it knows as that word — a rare name was cut so (犍陀多 read 犍陀 + 多, 多 a noun, a な-word
+# or a name by the sentence), and the cut piece became a list word. An unknown word of two kanji or more, the
+# one-kanji nouns / な-words (or more unknown kanji) after it and the unknown kanji before it, no space between, are
+# one word the dictionary lacks (names.one_word): never a number, a suffix, a word the tagger reads as more than one
+# kanji (犍陀 + 多く), nor an honorific, a plural or a position word last (names._TERM_LAST: 犍陀 + 様). A known kanji
+# before it stays its own word (今 / 父 / 王 + 犍陀多). A lone unknown kanji (奏 + 汰) is the library's to judge
+# (app/names.py: a kanji name, a work's term — runs of one-kanji pieces, which skip 犍陀). Not caught: the tagger
+# reading the kanji after it as a prefix of the next word (犍陀 + 多 + 今…).
+_ALL_KANJI = re.compile(f"^[{HAN}]+$")
+_UNKNOWN_KANJI_PIECE = frozenset(("名詞", "形状詞"))
+
+
+def _unknown_kanji_word(w, least=1):
+    return (w.is_unk and len(w.surface) >= least and not isinstance(w, JoinedWord)
+            and _ALL_KANJI.match(w.surface) is not None)
+
+
+def _unknown_kanji_piece(w):
+    """May `w` stand in an unknown kanji word (§ above): another unknown kanji word, or one kanji read as a noun or a
+    な-word that is no number?"""
+    if _unknown_kanji_word(w):
+        return True
+    f = w.feature
+    return (len(w.surface) == 1 and f.pos1 in _UNKNOWN_KANJI_PIECE and f.pos2 != "数詞"
+            and not isinstance(w, JoinedWord) and _ALL_KANJI.match(w.surface) is not None)
+
+
+def _unknown_kanji(words):
+    """join_affixes' unknown kanji words (§ above): `words` with each made one word; the same list when none is."""
+    out, last, k, n = [], 0, 0, len(words)
+    while k < n:
+        if not _unknown_kanji_word(words[k], 2):
+            k += 1
+            continue
+        a, b = k, k + 1
+        while a > last and _unknown_kanji_word(words[a - 1]) and not getattr(words[a], "white_space", ""):
+            a -= 1
+        while b < n and _unknown_kanji_piece(words[b]) and not getattr(words[b], "white_space", ""):
+            b += 1
+        while b - 1 > k and words[b - 1].surface in names._TERM_LAST:
+            b -= 1
+        if b - a >= 2:
+            out.extend(words[last:a])
+            out.append(names.one_word(words[a:b]))
+            last = b
+        k = b
+    if not last:
+        return words
     out.extend(words[last:])
     return out
 
@@ -4866,6 +4925,7 @@ def settings_signature(settings, language):
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "subs_with_hato",               # Michi-NS: hato finds the waiting videos' subtitles (NS-2), never a run
+        "subs_with_hato_zh",            # Zh-H: the same yes for the Chinese library, never a run
         "open_video", "open_video_program", "open_book", "open_book_program",   # what ▶ opens a file with: never a run
         "finish_cards",                 # When you finish something: its cards' choice (D14), never a run
         "practice_keep_rounds",         # A6: the practice server keeps its rounds, never a run
@@ -4876,13 +4936,14 @@ def settings_signature(settings, language):
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run
+        "connect_zh_word_audio",        # Zh-C: Chinese cards' word audio from Google, never what a run counts
         # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
         "anki_sync_delay_min",
         # Optional-module switches that change what the app SHOWS, never what a run computes.
         # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
         # library_frequency.json it used to switch on.)
         "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
-        "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
+        "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels", "enable_irodori",
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
         # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
         # reads them.
@@ -4897,7 +4958,7 @@ def settings_signature(settings, language):
     }
     # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
     # on every change, and hashing them made each of those clicks cost a full re-analysis.
-    _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
+    _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_", "irodori_")
     # The logic keys no run reads: the tooltip delay and the EPUB importer's split; and the report's
     # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
     # which compute_render_signature holds instead (a re-render, never a re-analysis).

@@ -137,6 +137,9 @@ DEFAULT_SETTINGS = {
     # hands hato its videos with no subtitle (only once hato takes a list: its tools entry lists `find`), and lists
     # `register` for hato with Connect off too (Q3). Off by default. Never in a signature.
     "subs_with_hato": False,
+    # The Chinese library's own *Find them with hato* (Zh-H): its waiting videos go to hato once hato finds Chinese
+    # subtitles (1.3.0: assrt.net, then OpenSubtitles, on the learner's own keys). Off by default. Never in a signature.
+    "subs_with_hato_zh": False,
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
@@ -160,6 +163,10 @@ DEFAULT_SETTINGS = {
     # Never in a signature.
     "connect_video_folders": [],
     "connect_trust_timing": False,      # P-LF-9: mine an unpaired episode nothing here can check, at its own times
+    # Chinese cards' word audio (Zh-C, 2026-11-12, CLAUDE.md §1): Anki Miner reads a Chinese word aloud with Google's
+    # text-to-speech — the word goes to Google — only while this is on; off, every Chinese run file leaves its
+    # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.
+    "connect_zh_word_audio": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
     # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
     # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
@@ -280,7 +287,8 @@ DEFAULT_SETTINGS = {
 # active settings only when the module is importable, keeping optional features fully "tacked
 # on": the core defaults (and the shipped settings.json) stay free of their keys, and a build
 # without the module never sees or persists them.
-_OPTIONAL_MODULE_NAMES = ["modules.youtube_downloader", "modules.koe", "modules.reels", "modules.junban"]
+_OPTIONAL_MODULE_NAMES = ["modules.youtube_downloader", "modules.koe", "modules.reels", "modules.junban",
+                          "modules.irodori"]
 
 
 def _optional_module_defaults() -> Dict[str, Any]:

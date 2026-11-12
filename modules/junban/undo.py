@@ -215,7 +215,7 @@ def normalize_scope(scope):
 
 def save(pairs, scope, language="ja", fields=None, tags=None, tag="", marker_tags=None,
          mode="deck", suspended=None, flags=None, kind="reorder", run_id=None, after=None, unsuspended=None,
-         automatic=False, cut=None, profile=None, later_back=None, tried=None):
+         automatic=False, cut=None, profile=None, later_back=None, tried=None, finished_automatic=False):
     """Write the snapshot and return its path. Call this BEFORE the first write of a run (I3).
 
     The snapshot is saved INCOMPLETE and only `mark_complete` says the run finished. A run that died
@@ -306,6 +306,8 @@ def save(pairs, scope, language="ja", fields=None, tags=None, tag="", marker_tag
         payload["later_back"] = saved_later
     if automatic:
         payload["automatic"] = True
+    if finished_automatic:              # Disc-T1: a run you started took over an automatic one cut short — its Undo
+        payload["finished_automatic"] = True        # puts back both, and says so (`junban_view.restore_question`)
     if tried:
         payload["tried"] = {str(int(card_id)): int(due) for card_id, due in _as_pairs(tried)}
     cuts = [c for c in (cut if isinstance(cut, (list, tuple)) else [cut]) if c]

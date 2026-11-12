@@ -134,6 +134,8 @@ def _unfilled_slots():
                 found[row.id] = "pending with nobody named"
         else:
             path = os.path.join(ROOT, *filler.split(".")) + ".py"
+            if filler.startswith("modules.") and not os.path.isdir(os.path.join(ROOT, *filler.split(".")[:2])):
+                continue        # an optional module absent from this checkout (Iro-AA's): its row hides with it
             if not os.path.exists(path):
                 found[row.id] = f"{filler} isn't there"
             else:

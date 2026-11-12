@@ -1668,6 +1668,7 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     the same quiet *Waits for Anki Miner* as a book — never "N parts have no file", nothing to press — its hover naming
     audio, through the same one rule (`connect.library.waits_for`, the title's type); a subtitle of an anime beside it
     is untouched."""
+    from app.connect import am_release
     from app.services import view_rows as vr
     work(1, "星降る街の小さな工房")
     work(7, "銀河鉄道の夜 朗読", media=media)
@@ -1677,7 +1678,8 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     audio = rows["銀河鉄道の夜 朗読"]
     assert (audio.status.kind, audio.status.label, audio.status.tone) == ("books", vr.STRINGS["books_wait"], "faint")
     # Michi-U: what's true now — Surasura mines audio (Z-16); the Anki Miner it waits for, named
-    assert audio.status.tip == vr.STRINGS["tip_audio_wait_miner"].format(version="3.11.0")
+    assert audio.status.tip == vr.STRINGS["tip_audio_wait_miner"].format(
+        version=am_release.APPROVED)          # the approved one (3.12.0 since Zh-C), the tip's own rule
     assert all(e.text == "audio" for e in audio.episodes)
     anime = rows["星降る街の小さな工房"]
     assert anime.status.kind != "books" and not anime.episodes[0].text

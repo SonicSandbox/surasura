@@ -1153,7 +1153,8 @@ class JunbanWindow(windows.SecondaryWindow):
         if question["kind"] == "none":
             self.messages.set_lines([(question["line"], "warning")])
             return
-        title = qs.JUNBAN_RESTORE_RUN_Q if question["kind"] == "run" else qs.JUNBAN_RESTORE_Q
+        title = (qs.JUNBAN_RESTORE_RUN_Q if question["kind"] == "run" else
+                 qs.JUNBAN_RESTORE_BOTH_Q if question.get("both") else qs.JUNBAN_RESTORE_Q)
         run, confirmed = question.get("run"), question.get("confirmed")
 
         def answered(yes):

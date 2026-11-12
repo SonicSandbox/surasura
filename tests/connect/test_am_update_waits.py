@@ -272,7 +272,7 @@ def test_a_look_that_didnt_find_the_new_version_is_tried_again_a_few_times_never
         clock[0] += setup.FOLLOW_RETRY_S + 1
         setup.follow_install({}, "ja", am_release.APPROVED)
     assert len(checks.calls) == setup.FOLLOW_TRIES
-    assert setup.to_follow("3.12.0"), "another version installed: followed again"
+    assert setup.to_follow("3.99.0"), "another version installed: followed again"
 
 
 @pytest.mark.parametrize("installed", ["3.9.0", OLD])

@@ -30,6 +30,11 @@ line it repeats, and the card runs to its last copy, so the clip ends with the s
 rule, capped. Lines are counted as Anki Miner counts them: since 3.10.1 it drops a line holding none of the
 language's script (an English sign, a ♪～).
 
+A book's or a text's line (Z-9, Michi-BS, Mattias's report 2026-11-12) is its sentence, 。！？ inside 「」 included —
+Anki Miner's own unit is a whole 「…」 speech, and it cuts that unit to the sentence named only when it holds it exactly
+(0xzerolight/anki_miner#148): so the sentence goes as the book writes it (`cues.reading`), a quote mark left alone at
+either end dropped (`book_line`), and one within the learner's *Length* first (PROVISIONAL; never cut).
+
 The card front (IS:233–236): a verb, adjective or helper verb by its dictionary form as written, anything else exactly
 as written; Surasura's `Word` goes as a second entry when it differs and no word in the episode is written that way
 (the homograph guard: 帰る's Word is 返る); never for a set phrase, whose front is the occurrence's own words with the
@@ -67,6 +72,8 @@ _FINISHED = frozenset("。｡．.！？!?…‥")
 # Card lines (rule 1): what a Japanese line's end says about the next line
 _RUNS_ON_MARKS = frozenset("➡➨→⇒➔►―—、，,")        # an arrow, a dash, a comma: the sentence goes on
 _CLOSERS = frozenset("＞>")                          # a narration's closing ＞ ends it, as 》 does
+_QUOTES = dict(zip("「｢『（〔［｛〈《【([{｟〝", "」｣』）〕］｝〉》】)]}｠〟"))   # Anki Miner's bracket pairs (its splitter's)
+_QUOTE_ENDS = frozenset(_QUOTES.values())
 _RUN_ON_TAILS = ("とはいえ", "とはいっても", "ものの", "どころか", "かどで", "ながらも")
 _EITHER_WAY = ("せよ", "しろ")        # にせよ / にしろ: concessive after a case particle に (何にしろ, あるにせよ), runs on;
                                       # after the copula's に (勝手にしろ, 静かにせよ) it is an order, and ends
@@ -77,6 +84,8 @@ _REASONS = frozenset(("から", "ので"))
 _POLITE = frozenset(("です", "ます"))                                   # ですから / ますから end the line…
 _POLITE_STEMS = frozenset(("でし", "まし", "ませ"))                       # …as でしたから / ましたから / ませんから do
 _NOUN_LINKS = frozenset(("ノチ", "アト", "ウチ", "タメ", "ホド"))          # 後 内 為 程 as nouns: のち あと うち ため ほど
+_TOIU = (frozenset(("と", "って")), frozenset(("いう", "ゆう")))         # という / っていう in kana (言う: the verb "say")
+_NAMED = frozenset(("名詞", "接頭辞", "連体詞", "形状詞"))                 # a line opening on what という names
 _HAN = re.compile(f"[{analyzer.HAN}]")
 _HIRAGANA_ONLY = re.compile(r"^[ぁ-ゟー]+$")
 _KATAKANA_ONLY = re.compile(r"^[ァ-ヿー]+$")
@@ -89,13 +98,45 @@ REASONS = {
     "name": "a name (Ignore names is on)",
     "grammar": "a grammar word (Send grammar words is off)",
     "sung": "said only in a song line",
+    # Tsu-U (based on Mattias's Tsubasa-sync #2): said only where a cut in the recording leaves the timing unsure
+    "unsure": "said only near a cut in the recording, where its line's timing is unsure",
 }
+
+
+# Tsu-U review: a span's edges are a line's end and a line's start as tsubasa computed them, unrounded; the written
+# file keeps ms (.srt) or cs (.ass), so the line on an edge can land a few ms inside. Within this of an edge: outside.
+UNSURE_EDGE_S = 0.01
 
 
 def finished(text):
     """Does a subtitle line end its sentence: in 。？！…, or in a closing bracket or quote (IS:262)?"""
     text = (text or "").rstrip()
     return bool(text) and (text[-1] in _FINISHED or unicodedata.category(text[-1]) in ("Pe", "Pf"))
+
+
+def book_line(text):
+    """A book's or a text's sentence as its card names it (`line_text`): a quote mark the split left with no partner
+    in it — at its start (「おれはこれから…好い。) or its end (…黙つてゐるのだぞ。」) — dropped, with the space it
+    leaves; one inside it (…かな」蕗屋は…) and a whole quote (「…知れない。」) kept. It stays an exact piece of its
+    paragraph: Anki Miner cuts its unit (a 「…」 speech is one) only around a sentence it holds exactly (Mattias's
+    0xzerolight/anki_miner#148), so a partner added would bring the whole speech back. Nothing left: as it was."""
+    text = text or ""
+    stack, lone = [], set()
+    for at, ch in enumerate(text):
+        if ch in _QUOTES:
+            stack.append(at)
+        elif ch in _QUOTE_ENDS:
+            if stack and _QUOTES[text[stack[-1]]] == ch:
+                stack.pop()
+            else:
+                lone.add(at)
+    lone.update(stack)
+    lo, hi = 0, len(text)
+    while lo < hi and lo in lone:
+        lo += 1
+    while hi > lo and hi - 1 in lone:
+        hi -= 1
+    return text[lo:hi].strip() or text
 
 
 class Lines:
@@ -129,7 +170,8 @@ class Lines:
         line is the card's (not `forward`: is it pulled in from before)? By its end (rule 1): it runs on at a て / で
         form, a 連用形 or 仮定形 (なら, ば, たら), a case / binding / adverbial particle (に を や は ばっかり), ず, an
         adverb after other words (ずっと; なるほど alone is a reply), an arrow, dash or comma, a tail (にせよ にしろ
-        とはいえ … ながらも; 勝手にしろ is an order), the nouns のち あと うち ため ほど; a plain から / ので only
+        とはいえ … ながらも; 勝手にしろ is an order), the nouns のち あと うち ため ほど; という / っていう when the
+        next line opens on the noun it names (`_names_next`: 竜がいるという / 言い伝えが…); a plain から / ので only
         forward, into its main clause (ですから, ましたから end; a reason is never pulled in from before). It ends at
         。？！…, a closing bracket or ＞, a sentence-final particle, a plain / polite / imperative / volitional form,
         a noun or a name, an interjection, and at けど けれど し もん もの って か
@@ -144,6 +186,8 @@ class Lines:
             return False                    # no word the tagger read: nothing says it runs on
         surface, f = pieces[-1]
         before = [piece[0] for piece in pieces[:-1]]
+        if surface in _TOIU[1] and before[-1:] and before[-1] in _TOIU[0] and f.pos1 == "動詞":
+            return self._names_next(at)
         if surface in _EITHER_WAY and before[-1:] == ["に"]:
             return pieces[-2][1] is not None and pieces[-2][1].pos2 == "格助詞"
         if surface == "で" and before[-1:] == ["の"]:      # UniDic reads ので after ます as の + で
@@ -162,6 +206,26 @@ class Lines:
         if f.pos1 == "副詞":
             return bool(before)
         return f.pos1 == "名詞" and f.kanaBase in _NOUN_LINKS
+
+    def _names_next(self, at):
+        """Does the line after Japanese line `at` (past `at`'s own copies) open on what a という at `at`'s end names:
+        a noun, a prefix, a 連体詞 (その, 大それた), a 形状詞 (立派な), an adjective before its noun (古い), a pronoun
+        before の (彼の…) or the の that stands for one (…という / のは嘘だ)? A report or a name given (…という /
+        だとしたら, 名をシロという / 走るのが…), or a pronoun as the next sentence's subject (私は…), is followed by a
+        sentence of its own; a next line opening on a noun that starts its own sentence (毎朝…, 彼の両親が…) joins: the
+        rule's known limit."""
+        n = self.place.get(at)
+        text = self.cues[at].text
+        for cue in self.kept[n + 1:] if n is not None else ():
+            if self.cues[cue].text == text:
+                continue                    # `at` shown again
+            pieces = [p for p in self._pieces.get(cue) or [] if p[1] is None or p[1].pos1 not in ("補助記号", "空白")]
+            if not pieces or pieces[0][1] is None:
+                return False
+            f = pieces[0][1]
+            return (f.pos1 in _NAMED or (f.pos1 == "形容詞" and (f.cForm or "").startswith("連体形"))
+                    or (f.pos1 == "代名詞" and pieces[1:2] and pieces[1][0] == "の") or f.pos2 == "準体助詞")
+        return False
 
 
 def _spread(cues, kept, lo, hi):
@@ -448,13 +512,23 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
-         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None):
+         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
+         sentence_length=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
     `listed` ({(lemma, reading): list position}): the list's rows, for `list` (and the order of every mode: the list's
     first). `carded`: the card keys (a card's word, its kana fold) of the words with a card. A line's other new words
-    are counted over what its card holds — the line and the lines its expansion adds (IS:268)."""
+    are counted over what its card holds — the line and the lines its expansion adds (IS:268). `unsure` ([(lo, hi)]
+    seconds, Tsu-U): tsubasa's `undetermined` spans of a subtitle it re-timed in parts — no card holds a line starting
+    inside one (it may sit on the wrong side of the cut: Mattias's Tsubasa-sync #2); the word takes another line, or
+    waits (`unsure`).
+
+    A book's or a text's sentences (`cues.units`, Michi-BS): each word's `line_text` is `book_line`'s, and
+    `sentence_length` ((min, preferred max, never longer than) characters: the learner's *Length* and *Never longer
+    than*, logic.context min_chars / preferred_max_chars / max_chars; PROVISIONAL lean, 2026-11-12: cards honour them
+    too) ranks its sentences (`length`) where the 8 s cap ranks a video's lines — a preference only, never cut, a word
+    with only sentences outside it still sent. A video's lines never read it."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -494,6 +568,44 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
+    spans = [(float(lo) + UNSURE_EDGE_S, float(hi) - UNSURE_EDGE_S) for lo, hi in unsure or ()]
+
+    def timed(o):
+        """Is every line a card cut from `o` holds outside tsubasa's undetermined spans? An edge is not inside: a span
+        runs from a line's end to a line's start (tsubasa 0.1.12), give or take the file's own rounding."""
+        return not any(lo < seconds(cues[c].start) < hi for c in span(o.cue) for lo, hi in spans)
+
+    units = bool(getattr(cues, "units", False))
+    named, book = {}, None
+
+    def line_of(at):
+        """The sentence a book's card names (`book_line`), its lone mark kept where without it the sentence sits in
+        more places of the book than with it (畜生め。 inside an earlier 「なるほど、畜生め。」…: Anki Miner takes the
+        first unit holding it — adversary SHOULD 1); a video's line as the subtitle writes it."""
+        nonlocal book
+        if not units:
+            return cues[at].text
+        if at not in named:
+            text = cues[at].text or ""
+            line = book_line(text)
+            if line != text:
+                book = book if book is not None else "\0".join(c.text or "" for c in cues)
+                if book.count(line) > book.count(text):
+                    line = text
+            named[at] = line
+        return named[at]
+
+    def length(at):
+        """A book's sentence against the learner's Length (`sentence_length`: (min, preferred max, never longer than)
+        characters) -> (past the cap, too short, too long): inside it first, then longer up to the cap, then shorter,
+        then past the cap — the report's examples' order (a sentence past max_chars is only ever a word's fallback);
+        (0, 0, 0) for a video's line or with no Length handed in. Based on the approach in #372 by Mattias."""
+        if not units or not sentence_length:
+            return (0, 0, 0)
+        low, high, cap = sentence_length
+        n = len(line_of(at))
+        return (int(bool(cap) and n > cap), int(n < low), int(n > high))
+
     candidates = []
     for key, uses in by_key.items():
         phrase = uses[0].phrase
@@ -523,16 +635,19 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
-        usable = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
-        if reason is None and not usable:
+        heard = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
+        usable = [o for o in heard if timed(o)]
+        if reason is None and not heard:
             reason = "sung"
+        elif reason is None and not usable:
+            reason = "unsure"
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
         # a line no other word took; no other new word; a card that fits the cap uncut (else the shortest); written out
         best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, not fits(o.cue),
-                                          0 if fits(o.cue) else card(o.cue)[3],
+                                          length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]
@@ -543,7 +658,8 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "word": key[0], "reading": key[1], "orth": best.orth, "surface": best.surface, "sent": sent,
             "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
-            "line_start": seconds(cue.start), "line_end": seconds(cue.end), "line_text": cue.text,
+            "line_start": seconds(cue.start), "line_end": seconds(cue.end),
+            "line_text": line_of(best.cue),
             "line_expansion": list(card(best.cue)[1]),
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),

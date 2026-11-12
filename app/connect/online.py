@@ -280,7 +280,10 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
             verdict = anki_miner.api(exe, ["fetch", path], timeout=FETCH_TIMEOUT, on_poll=poll, look_up=True,
                                      env=env if env is not None else child_env())
             if youtube_hold.refused(_failure(verdict, rid)):
-                youtube_hold.hold()
+                try:
+                    youtube_hold.hold()
+                except OSError as e:        # the record unwritable: this run still stops fetching (`HELD`)
+                    log.warning("YouTube: the hold couldn't be noted: %r", e)
     except youtube_hold.Stopped:
         raise stopping.Stopped() from None
     finally:

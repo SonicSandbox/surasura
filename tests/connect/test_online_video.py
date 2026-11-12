@@ -360,7 +360,7 @@ def test_a_refusal_holds_every_youtube_call_and_says_when(fake_miner, monkeypatc
         _fetch(fake_miner, monkeypatch, error="FETCH_FAILED", message=message, transient=True)
     until = youtube_hold.held()
     assert until and raised.value.standing
-    assert raised.value.say == youtube_hold.words(until) and "tomorrow at" in raised.value.say
+    assert raised.value.say == youtube_hold.words(until) and youtube_hold.is_words(raised.value.say)
     with pytest.raises(online.Trouble) as again:
         online.fetch(fake_miner.path, "p-surasura", "ja", 8, LINK)
     assert again.value.say == raised.value.say and fake_miner.commands().count("fetch") == 1, \

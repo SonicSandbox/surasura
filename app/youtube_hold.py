@@ -31,6 +31,7 @@ import time
 from app import locks, path_utils
 
 HOLD_S = 24 * 60 * 60           # a refusal holds every YouTube call this long (PROVISIONAL: "the rest of the day")
+SLACK_S = 60 * 60               # an end this much past a day away still holds (the clock set back a little)
 GAP_S = 2.0                     # the least time between two YouTube calls on this computer
 LOCK = "youtube"
 NAME = "youtube_hold.json"
@@ -57,17 +58,23 @@ def _path():
 
 
 def _read():
+    """The record -> a dict ({} when there is none, or it is broken), or None when it couldn't be read just now (a
+    scanner holding it): a writer then leaves it as it is, never writing over a hold it didn't see."""
     try:
         with open(_path(), encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except ValueError:
+        return {}
+    except OSError:
+        return None
     return data if isinstance(data, dict) else {}
 
 
 def _write(data):
     path = _path()
-    temp = path + ".tmp"
+    temp = f"{path}.{os.getpid()}.tmp"              # each program's own: two installs never share one
     with open(temp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     for attempt in range(5):                # a reader holding it for a moment (a virus scanner) waited out
@@ -87,8 +94,8 @@ def _number(value):
 def held(now=None):
     """The end of the hold running now (epoch seconds), or None."""
     now = time.time() if now is None else now
-    until = _number(_read().get("until"))
-    return until if until is not None and now < until <= now + HOLD_S else None
+    until = _number((_read() or {}).get("until"))
+    return until if until is not None and now < until <= now + HOLD_S + SLACK_S else None
 
 
 def hold(now=None):
@@ -99,18 +106,20 @@ def hold(now=None):
     running = held(now)
     if running is not None:
         return running
-    data = _read()
+    data = _read() or {}                    # (unreadable just now: the hold matters more than the last call's time)
     data.update(until=now + HOLD_S, since=now)
     _write(data)
     return now + HOLD_S
 
 
-def words(until, now=None):
-    """The hold said, with when it ends: "today at 09:15" / "tomorrow at 21:42" (the computer's own clock)."""
-    now = time.time() if now is None else now
-    end, today = time.localtime(until), time.localtime(now)
-    day = "today" if end[:3] == today[:3] else "tomorrow"           # (`held` keeps an end within HOLD_S)
-    return WORDS.format(when=f"{day} at {time.strftime('%H:%M', end)}")
+_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def words(until):
+    """The hold said, with when it ends: "Thursday at 21:42" (the computer's own clock) — the same words all through
+    the hold, so Connect's Needs you counts it once."""
+    end = time.localtime(until)
+    return WORDS.format(when=f"{_DAYS[end.tm_wday]} at {time.strftime('%H:%M', end)}")
 
 
 def is_words(text):
@@ -133,22 +142,29 @@ def _wait(seconds, should_stop):
 def turn(should_stop=None, verb="YouTube download"):
     """One YouTube call: the `youtube` lock taken (waited for, asking `should_stop()` every quarter second ->
     Stopped), then GAP_S since the last call ended waited out; the call's end recorded as it lets go."""
+    taken = None
     while True:
         try:
             taken = locks.take(LOCK, verb)
             break
         except locks.Busy:
+            if locks.unopenable(LOCK):          # (a folder it can't write: no one holds it — the call goes)
+                break
             _wait(locks.POLL, should_stop)
+        except OSError:
+            break
     try:
-        last = _number(_read().get("last"))
+        last = _number((_read() or {}).get("last"))
         if last is not None:
             _wait(max(0.0, min(GAP_S, last + GAP_S - time.time())), should_stop)
         yield
     finally:
         try:
             data = _read()
-            data["last"] = time.time()
-            _write(data)
+            if data is not None:            # (unreadable just now: left as it is, a hold in it kept)
+                data["last"] = time.time()
+                _write(data)
         except OSError:
             pass                            # only the gap is lost: the next call goes at once
-        taken.release()
+        if taken is not None:
+            taken.release()

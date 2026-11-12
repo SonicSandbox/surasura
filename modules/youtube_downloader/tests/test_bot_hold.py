@@ -42,7 +42,7 @@ def ytdlp(monkeypatch):
     box = {"calls": [], "answer": lambda args: Res()}
     monkeypatch.setattr(ytdlp_manager, "get_ytdlp_path", lambda: "yt-dlp.exe")
 
-    def run(cmd, timeout, should_stop=None, tick=None):
+    def run(cmd, timeout, should_stop=None, tick=None, stop_on=None):
         box["calls"].append(cmd[1:])
         return box["answer"](cmd[1:])
     monkeypatch.setattr(ytdlp_manager, "run", run)
@@ -89,7 +89,9 @@ def test_a_refusal_holds_every_youtube_call_and_says_when_it_tries_again(ytdlp, 
     until = youtube_hold.held()
     assert until and abs(until - time.time() - youtube_hold.HOLD_S) < 60
     said = youtube_hold.words(until)
-    assert f"  ! video lecture0001: {said}" in log and "tomorrow at" in said
+    assert f"  ! video lecture0001: {said}" in log and " at " in said
+    assert sum(said in line for line in log) == 1, "said once"
+
     asked = len(ytdlp["calls"])
     log2 = []
     summary = core.extract([OTHER, PLAYLIST], str(out), log=log2.append)
@@ -182,3 +184,58 @@ def test_the_backfill_stops_at_a_refusal_and_never_starts_while_held(ytdlp, tmp_
     summary = core.backfill_cues(str(tmp_path), log=log.append, sleep=lambda s: None)
     assert len(ytdlp["calls"]) == 1, "nothing asked while the hold runs"
     assert summary["stopped"] and summary["remaining"] == 3
+
+
+def test_a_bilibili_tv_rate_limit_is_never_said_as_youtubes_hold():
+    # why (review 7): another site's refusal is its own
+    youtube_hold.hold()
+    message = "ERROR: [BiliIntl] 2041234567: HTTP Error 429: Too Many Requests"
+    assert core.plain_reason(message, youtube=False) == core.RATE_LIMITED
+    assert youtube_hold.is_words(core.plain_reason(message))
+
+
+def test_the_stall_clock_starts_once_the_turn_came(tmp_path):
+    # why (review 1): six minutes waiting behind Connect's video must not read as YouTube not answering
+    now = [0.0]
+    tick = core._watch(str(tmp_path), 3, lambda _l: None, clock=lambda: now[0])
+    now[0] = core.FIRST_S + 60
+    tick.restart()
+    now[0] += core.FIRST_S - 1
+    tick()                                                  # under FIRST_S since its own start: no stall
+    now[0] += 1
+    with pytest.raises(core.Stalled):
+        tick()
+
+
+def test_the_real_call_restarts_the_tick_inside_its_turn(ytdlp, tmp_path):
+    restarted = []
+
+    def tick():
+        pass
+    tick.restart = lambda: restarted.append(len(ytdlp["calls"]))
+    core._run_ytdlp(["--skip-download", VIDEO], timeout=5, tick=tick)
+    assert restarted == [0] and len(ytdlp["calls"]) == 1, "restarted once its turn came, before the call"
+
+
+def test_a_refusal_ends_yt_dlp_at_once_instead_of_asking_for_every_video_left():
+    # why (review 5): with --ignore-errors yt-dlp would ask YouTube for each video left after the bot check
+    import subprocess
+    import sys
+    child = ("import sys, time; sys.stderr.write(%r + '\\n'); sys.stderr.flush(); time.sleep(60)" % BOT)
+    started = time.monotonic()
+    res = ytdlp_manager.run([sys.executable, "-c", child], 120, stop_on=youtube_hold.refused)
+    assert time.monotonic() - started < 15, "ended at the refusal"
+    assert youtube_hold.refused(res.stderr)
+    done = ytdlp_manager.run([sys.executable, "-c", "import sys; print('ok'); sys.stderr.write('fine')"], 60,
+                             stop_on=youtube_hold.refused)
+    assert done.stdout.strip() == "ok" and done.stderr == "fine" and done.returncode == 0
+    assert isinstance(done, subprocess.CompletedProcess)
+
+
+def test_preview_says_the_hold_never_no_captions(tmp_path):
+    # why (review 4): "No transcript found" would send the learner looking for captions that are there
+    from modules.youtube_downloader import preview
+    youtube_hold.hold()
+    txts, why = preview.fetch_here(VIDEO, VIDEO, "ja", str(tmp_path), extract=lambda *a, **k: None,
+                                   ensure=lambda log: True)
+    assert txts == [] and why == youtube_hold.words(youtube_hold.held())

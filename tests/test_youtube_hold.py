@@ -65,18 +65,23 @@ def test_a_broken_record_is_no_hold(root, content):
     assert youtube_hold.held() is None
 
 
-def test_an_end_further_than_a_day_away_is_no_hold(root):
-    # why: the clock moved back (or a record from a copied profile) would otherwise hold for weeks
+def test_an_end_further_than_a_day_away_is_no_hold_but_a_clock_set_back_a_little_still_holds(root):
+    # why: the clock moved back far (or a record from a copied profile) would otherwise hold for weeks; a small
+    # correction (review 3: a time sync stepping back a second) must not lift a hold just begun
     now = time.time()
+    until = youtube_hold.hold(now)
+    assert youtube_hold.held(now - 5) == until
+    assert youtube_hold.held(now - youtube_hold.SLACK_S - 5) is None
+    os.remove(os.path.join(root, "persistent_root", youtube_hold.NAME))
     youtube_hold.hold(now + 10 * youtube_hold.HOLD_S)
     assert youtube_hold.held(now) is None
 
 
-def test_the_words_say_when_it_tries_again():
-    now = time.mktime((2026, 11, 12, 21, 42, 0, 0, 0, -1))
-    said = youtube_hold.words(now + youtube_hold.HOLD_S, now)
-    assert said.startswith(youtube_hold.HEAD) and "tomorrow at 21:42" in said and youtube_hold.is_words(said)
-    assert "today at 21:52" in youtube_hold.words(now + 600, now)
+def test_the_words_say_when_it_tries_again_the_same_all_through_the_hold():
+    # why (review 8): "tomorrow" turning "today" at midnight would make Connect's Needs you count it again
+    now = time.mktime((2026, 11, 12, 21, 42, 0, 0, 0, -1))           # a Thursday
+    said = youtube_hold.words(now + youtube_hold.HOLD_S)
+    assert said.startswith(youtube_hold.HEAD) and "until Friday at 21:42" in said and youtube_hold.is_words(said)
     assert not youtube_hold.is_words("YouTube couldn't be reached: check your internet connection")
 
 
@@ -127,3 +132,19 @@ def test_a_turn_records_its_end_even_when_the_call_fails(root):
     assert abs(_record(root)["last"] - time.time()) < 5
     with youtube_hold.turn():                  # and the lock was let go
         pass
+
+
+def test_a_record_that_cant_be_read_just_now_is_never_written_over(root, monkeypatch):
+    # why (review 2): a scanner holding the file as a turn ends would have written {"last": …} over the hold
+    until = youtube_hold.hold()
+    before = _record(root)
+    monkeypatch.setattr(youtube_hold, "_read", lambda: None)
+    with youtube_hold.turn():
+        pass
+    monkeypatch.undo()
+    assert _record(root) == before and youtube_hold.held() == until
+
+
+def test_the_turn_is_one_for_every_install_of_this_user():
+    # why (review 2): an installed copy and an alpha ask YouTube from one address
+    assert youtube_hold.LOCK in locks.SHARED

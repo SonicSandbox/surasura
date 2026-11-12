@@ -102,11 +102,12 @@ _PLAIN = (
 RATE_LIMITED = "YouTube is turning requests away for now (too many, or its bot check): try again later"
 
 
-def plain_reason(message):
-    """yt-dlp's error, in plain words where it is a known one; else its own first 200 characters."""
+def plain_reason(message, youtube=True):
+    """yt-dlp's error, in plain words where it is a known one; else its own first 200 characters. `youtube`: the call
+    was YouTube's (a refusal is said as the hold it began, Yt-B); bilibili.tv's is said as it was."""
     text = str(message or '').strip()
     if _looks_rate_limited(text):
-        until = youtube_hold.held()                  # (Yt-B) the hold it began, with when YouTube is asked again
+        until = youtube_hold.held() if youtube else None     # (Yt-B) the hold, with when YouTube is asked again
         return youtube_hold.words(until) if until else RATE_LIMITED
     for needles, plain in _PLAIN:
         if any(n in text for n in needles):
@@ -397,22 +398,35 @@ class Held(Exception):
     """(Yt-B) YouTube's bot check holds every YouTube call (`app.youtube_hold`): no call made. Its str: the words."""
 
 
-def _run_ytdlp(args, timeout=1800, tick=None, youtube=False):
-    """One yt-dlp call. `youtube` (a call that reaches YouTube): one at a time on the computer and a little apart
-    (`youtube_hold.turn`), never made while a hold runs (Held), and a refusal in its output holds every YouTube call
-    for a day (Yt-B)."""
+_YOUTUBE_ARG = re.compile(r'(?:^|[/.])(?:youtube\.com|youtu\.be)/', re.I)
+
+
+def _reaches_youtube(args):
+    """(Yt-B) Does this yt-dlp call ask YouTube — one of its links YouTube's?"""
+    return any(not a.startswith('-') and _YOUTUBE_ARG.search(a) for a in args)
+
+
+def _run_ytdlp(args, timeout=1800, tick=None):
+    """One yt-dlp call. A YouTube one (Yt-B, `_reaches_youtube`): one at a time on the computer and a little apart
+    (`youtube_hold.turn`; the tick's stall clock starts once its turn came), never made while a hold runs (Held), and
+    ended at its first refusal ("not a bot", HTTP 429: `--ignore-errors` would ask for every video left), which holds
+    every YouTube call for a day."""
     cmd = [ytdlp_manager.get_ytdlp_path()] + args
     extra = {} if tick is None else {"tick": tick}
-    if not youtube:
+    if not _reaches_youtube(args):
         return ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), **extra)
     try:
         with youtube_hold.turn(_stopping_now()):
             until = youtube_hold.held()
             if until:
                 raise Held(youtube_hold.words(until))
-            res = ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), **extra)
+            getattr(tick, 'restart', lambda: None)()
+            res = ytdlp_manager.run(cmd, timeout, should_stop=_stopping_now(), stop_on=youtube_hold.refused, **extra)
             if youtube_hold.refused(getattr(res, 'stderr', '')):
-                youtube_hold.hold()
+                try:
+                    youtube_hold.hold()
+                except OSError as e:                # the record unwritable: this run still stops; said in the log
+                    print(f"YouTube: the hold couldn't be noted: {e!r}")
             return res
     except youtube_hold.Stopped:
         raise ytdlp_manager.Stopped() from None
@@ -448,6 +462,9 @@ def _watch(tmp, total, log, clock=time.monotonic):
     for STALL_S seconds (FIRST_S before the first file) raises Stalled."""
     state = {"files": 0, "videos": 0, "since": clock()}
 
+    def restart():                                  # (Yt-B) the call's own start: after a wait for its turn
+        state["since"] = clock()
+
     def tick():
         try:
             names = os.listdir(tmp)
@@ -463,6 +480,7 @@ def _watch(tmp, total, log, clock=time.monotonic):
             state["videos"] = videos
             if total > 1:
                 log(f"  … {videos} of {total} videos read")
+    tick.restart = restart
     return tick
 
 
@@ -474,7 +492,7 @@ def _probe(url, log, single=False, timeout=PROBE_S):
         youtube = site_of(url) == 'youtube'
         res = _run_ytdlp(['-J', '--flat-playlist', '--no-warnings', '--extractor-args', 'youtubetab:approximate_date']
                          + (SLEEP_REQUESTS if youtube else []) + (['--no-playlist'] if single else []) + [url],
-                         timeout=timeout, youtube=youtube)
+                         timeout=timeout)
     except Held as e:
         log(f"  ! {e}")
         return None
@@ -488,7 +506,7 @@ def _probe(url, log, single=False, timeout=PROBE_S):
         log(f"  ! could not read {url}: {plain_reason(e)}")
         return None
     if not res.stdout:
-        log(f"  ! could not read {url}: {plain_reason(res.stderr)}")
+        log(f"  ! could not read {url}: {plain_reason(res.stderr, site_of(url) == 'youtube')}")
         return None
     try:
         info = json.loads(res.stdout)
@@ -501,7 +519,7 @@ def _probe(url, log, single=False, timeout=PROBE_S):
         errors = _errors(res.stderr)
         message = errors[0][1] if errors else ''
         plain = _refusal(message) if site_of(url) == 'bilibili' else None
-        log(f"  – could not read {url}: {plain or plain_reason(message)}")
+        log(f"  – could not read {url}: {plain or plain_reason(message, site_of(url) == 'youtube')}")
         return None
     return info
 
@@ -566,7 +584,7 @@ def _report_refusals(stderr, log, summary, site='bilibili'):
             summary['no_transcript'] += 1
         else:
             what = 'episode' if site == 'bilibili' else 'video'
-            log(f"  ! {f'{what} {vid}: ' if vid else ''}{plain_reason(message)}")
+            log(f"  ! {f'{what} {vid}: ' if vid else ''}{plain_reason(message, site != 'bilibili')}")
             summary['errors'] += 1
     for plain, count in refused.items():
         log(f"  – {count} episode{'s' if count > 1 else ''}: {plain}")
@@ -621,7 +639,7 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
             ] + (['--no-playlist'] if single else []) + archive + (
                 ['--playlist-reverse'] if site_urls and set(site_urls) <= set(reverse) else []) + list(site_urls)
             try:
-                res = _run_ytdlp(args, timeout=1800, tick=_watch(tmp, total, log), youtube=youtube)
+                res = _run_ytdlp(args, timeout=1800, tick=_watch(tmp, total, log))
             except Held:                                    # (a hold another program began a moment ago)
                 _held(log, summary)
                 continue
@@ -642,6 +660,8 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
                 continue
             # Every site's errors are said (alpha 8: a YouTube video yt-dlp refused vanished from the run unsaid)
             _report_refusals(getattr(res, 'stderr', ''), log, summary, site)
+            if youtube and youtube_hold.held():             # (Yt-B) its refusal said the hold: not again this run
+                summary['held'] = True
 
         for info_path in sorted(glob.glob(os.path.join(tmp, '*.info.json'))):
             try:
@@ -824,7 +844,7 @@ def backfill_cues(root, lang=DEFAULT_LANG, log=print, should_stop=None, sleep=ti
                 f'https://www.youtube.com/watch?v={vid}',
             ]
             try:
-                res = _run_ytdlp(args, timeout=300, youtube=True)
+                res = _run_ytdlp(args, timeout=300)
             except Held:
                 _held(log, summary)
                 summary['stopped'] = True
@@ -1072,6 +1092,8 @@ def extract(urls, processed_dir, lang=DEFAULT_LANG, keep_timestamps=False,
         if site_of(u) == 'youtube' and _held(log, summary):     # (Yt-B) said once; bilibili.tv links go on
             continue
         probe_results.append((u, _probe_first(u, log) if first_only else _probe(u, log)))
+        if site_of(u) == 'youtube' and youtube_hold.held():     # (its refusal said the hold: not again this run)
+            summary['held'] = True
     places, turned = {}, {}                         # (Mado-Q) each playlist video's place, kept in its sidecar
     root = os.path.dirname(os.path.abspath(processed_dir))
     for u, info in probe_results:

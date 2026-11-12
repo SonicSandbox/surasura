@@ -15,6 +15,7 @@ import sys
 import shutil
 import subprocess
 import stat
+import tempfile
 import time
 import urllib.request
 
@@ -99,12 +100,16 @@ class Stopped(Exception):
 POLL = 0.2              # how often a running child's owner is asked whether to stop
 
 
-def run(cmd, timeout, should_stop=None, tick=None):
+def run(cmd, timeout, should_stop=None, tick=None, stop_on=None):
     """`cmd` (yt-dlp) as a child, answered as `subprocess.run(capture_output=True, text=True)` answered — but asked
     every POLL s whether to stop: `should_stop()` true ends the child (terminate, then kill) and raises Stopped; past
     `timeout` it is ended and TimeoutExpired raised, as `subprocess.run` did. `tick()` is asked every POLL s too
-    (alpha 8: a download's progress and its stall check): what it raises ends the child and is raised. Never a child
-    left running."""
+    (alpha 8: a download's progress and its stall check): what it raises ends the child and is raised. `stop_on(err)`
+    (Yt-B: YouTube's refusal) is asked of what the child said on stderr so far, every POLL s: true ends the child and
+    answers what came (its stderr in a file of its own meanwhile, read through a handle of ours). Never a child left
+    running."""
+    if stop_on is not None:
+        return _run_watching(cmd, timeout, should_stop, tick, stop_on)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
                             encoding="utf-8", errors="replace", creationflags=no_window_flag())
     deadline = time.monotonic() + timeout
@@ -128,6 +133,48 @@ def run(cmd, timeout, should_stop=None, tick=None):
         except BaseException:
             _end(proc)
             raise
+
+
+def _run_watching(cmd, timeout, should_stop, tick, stop_on):
+    fd, err_path = tempfile.mkstemp(prefix="surasura_ytdlp_", suffix=".err")
+    os.close(fd)
+    try:
+        with open(err_path, "w", encoding="utf-8") as err_out, open(err_path, encoding="utf-8", errors="replace") as said:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_out, stdin=subprocess.DEVNULL, text=True,
+                                    encoding="utf-8", errors="replace", creationflags=no_window_flag())
+            deadline = time.monotonic() + timeout
+            err = []
+            while True:
+                try:
+                    out, _none = proc.communicate(timeout=POLL)
+                    err.append(said.read())
+                    return subprocess.CompletedProcess(cmd, proc.returncode, out, "".join(err))
+                except subprocess.TimeoutExpired:
+                    err.append(said.read())
+                    if stop_on("".join(err)):
+                        _end(proc)
+                        err.append(said.read())
+                        return subprocess.CompletedProcess(cmd, proc.returncode, "", "".join(err))
+                    if should_stop is not None and should_stop():
+                        _end(proc)
+                        raise Stopped()
+                    if time.monotonic() >= deadline:
+                        _end(proc)
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    if tick is not None:
+                        try:
+                            tick()
+                        except BaseException:
+                            _end(proc)
+                            raise
+                except BaseException:
+                    _end(proc)
+                    raise
+    finally:
+        try:
+            os.remove(err_path)
+        except OSError:
+            pass
 
 
 def _end(proc):

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "content_key": "v1-bd8d261eb3597ef139f907ac0ed71d98d974589569f0fd6173276677c55d3c7e",
+  "producer": "hato",
+  "producer_version": "1.3.0",
+  "language": "zh",
+  "video_path": "D:\\Shows\\Frieren\\[SubsPlease] Sousou no Frieren - 01 (1080p).mkv",
+  "video_size": 28275,
+  "subtitle_path": "D:\\Shows\\Frieren\\[SubsPlease] Sousou no Frieren - 01 (1080p).zh.ass",
+  "library_path": null,
+  "subtitle_sha256": "a40ca308630430c21e2d1d45d4b19117cffcca97f61326f8ed7457173beca9d9",
+  "verdict": "timed",
+  "untimed_tier": null,
+  "picked_by": "hato",
+  "timing": {"match_rate": 1.0, "offset_s": 5.551115123125783e-16, "outcome": "CONFIDENT", "reference": "text-track", "segments": 1, "tsubasa_version": "0.1.11"},
+  "show": {"episode": 1, "movie": false, "season": null, "title": "Sousou no Frieren"},
+  "jimaku_entry_id": null,
+  "anilist_id": null,
+  "tmdb_id": null,
+  "subtitle_source": {"file_name": "[Nekomoe kissaten] Sousou no Frieren - 01 [WebRip 1080p].chs.ass", "provider": "assrt"},
+  "paired_at": "2026-11-12T05:59:35Z"
+}

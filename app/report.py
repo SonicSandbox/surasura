@@ -119,6 +119,47 @@ CONTENT_KEYS = frozenset(("title", "titles", "name", "line", "say", "word", "wor
                           "filename", "episode", "definition", "glossary", "meaning", "translation", "hint", "fields"))
 
 
+# What a person watched or read, inside a free line of text (a log line, an error): a path, a file's name, a quoted name
+# and every run of Japanese, Chinese or Korean (and fullwidth letters) taken out — for an answer read by the learner's
+# AI (Piyo's diagnose), where a line can't be counted the way CONTENT_KEYS' values are. The zip keeps its logs whole.
+# Taking out too much is the safe side: a path runs to the line's end, a `)`, `]`, `"` or `|` (back to its last
+# extension when it has one); a file's name with no folder runs back to the first "of", "on", "read", "file", "for" or
+# "from" after the line's last `: `, else to that `: `. English words outside a path or quotes stay: a title written so
+# in a log line is not seen. (A path may hold the scrub's placeholders, `C:\Users\<you>\…`: the identity is scrubbed
+# first, then this.)
+_PATH_START = r"(?:[A-Za-z]:[\\/]|\\\\|/[A-Za-z]/)"
+_PATH_REST = r"[^\n)\"\]|]*"
+_ENDS = r"(?=$|[\s,;:)\]\"'])"
+_FILE_PATH = re.compile(_PATH_START + _PATH_REST + r"\.([A-Za-z0-9]{1,5})" + _ENDS)
+_FOLDER_PATH = re.compile(_PATH_START + _PATH_REST)
+_MEDIA = "srt|ass|ssa|vtt|sub|mkv|mp4|m4v|webm|avi|mov|ts|m4a|m4b|mp3|aac|flac|ogg|opus|wav|epub|txt|md|apkg|pdf"
+_NAMES_FOLLOW = (" of ", " on ", " read ", " reading ", " file ", " for ", " from ")   # a file's name comes after these
+_BARE_FILE = re.compile(r"\.(" + _MEDIA + r")" + _ENDS, re.IGNORECASE)
+_QUOTED = re.compile(r"(?<![A-Za-z])'[^'\n]+'(?![A-Za-z])|\"[^\"\n]+\"|「[^」\n]+」|『[^』\n]+』|“[^”\n]+”")
+_WIDE_RUN = re.compile("[" + "".join(f"{chr(a)}-{chr(b)}" for a, b in (
+    (0x1100, 0x11FF), (0x3040, 0x30FF), (0x3130, 0x318F), (0x3400, 0x9FFF), (0xAC00, 0xD7AF), (0xF900, 0xFAFF),
+    (0xFF10, 0xFF5A), (0xFF66, 0xFF9F))) + "]+")   # kana, CJK, Hangul, fullwidth letters
+
+
+def content_free(text, quoted=True):
+    """`text` with every path (`<file .mkv>`, `<folder>`), file's name (`… <file .srt>`), quoted name (`quoted`) and
+    run of Japanese, Chinese or Korean (`…`) taken out: what is left says what happened, never to what."""
+    text = _FILE_PATH.sub(lambda m: f"<file .{m.group(1).lower()}>", str(text))
+    text = _FOLDER_PATH.sub("<folder>", text)
+    while True:                                                   # a file's name with no folder: back to the `: `
+        m = next((m for m in _BARE_FILE.finditer(text) if not text[:m.start()].endswith("<file ")), None)
+        if m is None:
+            break
+        lead = text.rfind(": ", 0, m.start())
+        lead = lead + 2 if lead >= 0 else 0
+        words = [at + len(w) for w in _NAMES_FOLLOW for at in (text.find(w, max(0, lead - 1), m.start()),) if at >= 0]
+        lead = min(words) if words else lead                     # (the first of them: a title may hold "of" too)
+        text = f"{text[:lead]}… <file .{m.group(1).lower()}>{text[m.end():]}"
+    if quoted:
+        text = _QUOTED.sub(lambda m: m.group(0)[0] + "…" + m.group(0)[-1], text)
+    return _WIDE_RUN.sub("…", text)
+
+
 def scrub(obj):
     """`obj` with every value under a CONTENT_KEYS key replaced by a count (a list or dict) or "(left out)", and the
     secrets blanked (`strip_secrets`), at any depth."""
@@ -440,8 +481,14 @@ _JOB_COLUMNS = ("id", "language", "item_id", "kind", "state", "resume", "attempt
 
 
 def _ledger_bytes():
-    """Connect's job ledger, read-only: each job's state row, each batch's state, the outcomes counted per job.
-    -> JSON bytes, or None (no ledger)."""
+    """Connect's job ledger as the zip holds it (`ledger_record`) -> JSON bytes, or None (no ledger)."""
+    out = ledger_record()
+    return None if out is None else _json_bytes(out)
+
+
+def ledger_record():
+    """Connect's job ledger, read-only: each job's state row, each batch's state, the outcomes counted per job, the
+    refused words of each failed job (`_refused`). -> a dict, or None (no ledger). Piyo's `diagnose` reads it too."""
     import pathlib
     from app.connect import ledger as book
     path = book.path()
@@ -468,7 +515,7 @@ def _ledger_bytes():
         out["refused"] = _refused(conn, meta, ALONE)
     finally:
         conn.close()
-    return _json_bytes(out)
+    return out
 
 
 def _refused(conn, meta, prefix):
@@ -503,9 +550,13 @@ def _refused(conn, meta, prefix):
 
 
 def _connect_status_bytes():
+    return _json_bytes(connect_record())
+
+
+def connect_record():
     """Connect's status record as the window reads it, its titles, lines and words left out (`scrub`)."""
     from app.connect import status
-    return _json_bytes(scrub(status.read()))
+    return scrub(status.read())
 
 
 WORD_MAX = 40                   # a refused word kept in a run's result: longer is no word (a line): counted instead
@@ -530,8 +581,13 @@ def _scrubbed_json(path):
 
 
 def _anki_bytes(language):
+    out = anki_record(language)
+    return None if out is None else _json_bytes(out)
+
+
+def anki_record(language):
     """The Anki sync's own record of its last answers (when, what it added, its decks and fields) — its note ids
-    counted, never listed; nothing of a card's fields is in it."""
+    counted, never listed; nothing of a card's fields is in it. -> a dict, or None (no record)."""
     from app import anki_sync
     path = os.path.join(path_utils.get_user_files_path(language), anki_sync.STATE_FILE)
     if not os.path.isfile(path) or is_link(path) or is_placeholder(path):
@@ -539,7 +595,7 @@ def _anki_bytes(language):
     try:
         data = json.loads(path_utils.read_text(path, language))
     except (OSError, ValueError) as e:
-        return _json_bytes({"unreadable": str(e)})
+        return {"unreadable": str(e)}
 
     def counted(o):
         if isinstance(o, dict):
@@ -548,7 +604,7 @@ def _anki_bytes(language):
         if isinstance(o, list):
             return [counted(v) for v in o]
         return o
-    return _json_bytes(strip_secrets(counted(data)))
+    return strip_secrets(counted(data))
 
 
 class Entry:

@@ -210,7 +210,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     if loaded is None:
         loaded = settings()
     from app import tools_entry
-    if not tools_entry.registers(loaded):       # set-up, not automation (P4.1 row 4.1.1): registers with it off too
+    if not tools_entry.registers(loaded, lang):     # set-up, not automation (P4.1 row 4.1.1): registers with it off
         return {"file_id": None, "landed": "skipped", "tier": None, "position": None, "pairing": None,
                 "content_key": key, "skipped": PREVIEW_OFF}
     require_set_up(lang)

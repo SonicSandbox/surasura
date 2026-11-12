@@ -28,7 +28,8 @@ _idle.set()
 _woke = [0.0]                   # when the window last woke from rest (perf_counter)
 _switch = [None, None]          # Python's lock hand-over while the window is awake, and at rest (`set_switch`)
 SAVE_SWITCH_S = 0.00025         # while a save holds the store's write lock: the lock comes back to it at once
-_saves = {"n": 0, "was": None}  # saves under way in this process; the hand-over before the first, when it was lowered
+_saves = {"n": 0, "was": None, "rested": False}   # saves under way here; the hand-over before the first, when it
+                                                # was lowered; the window rested meanwhile (its rest's setting waits)
 _SWITCH_LOCK = threading.Lock() # the hand-over is set by one at a time: the window's busy / rest, a save's start / end
 
 
@@ -55,8 +56,11 @@ def rest():
     with _SWITCH_LOCK:
         was = _idle.is_set()
         _idle.set()
-        if not was and _switch[1] is not None and not _saves["n"]:
-            sys.setswitchinterval(_switch[1])
+        if not was and _switch[1] is not None:
+            if _saves["n"]:
+                _saves["rested"] = True
+            else:
+                sys.setswitchinterval(_switch[1])
 
 
 def save_began():
@@ -72,20 +76,23 @@ def save_began():
 
 
 def save_ended():
-    """(The save's thread, its write lock let go.) The last one puts back the window's own hand-over (awake or at
-    rest, `set_switch`), else the one before the first save; someone else's own setting since stays."""
+    """(The save's thread, its write lock let go.) The last one puts back what it lowered, or a rest it held back: in
+    the window's process the window's own hand-over (awake or at rest, `set_switch`, as its busy / rest would), else
+    the one before the first save, unless someone set their own since."""
     with _SWITCH_LOCK:
         if _saves["n"] <= 0:
             return
         _saves["n"] -= 1
         if _saves["n"]:
             return
-        was, _saves["was"] = _saves["was"], None
-        want = _switch[1] if _idle.is_set() else _switch[0]
-        if want is None:
-            want = was
-        if want is not None and sys.getswitchinterval() == SAVE_SWITCH_S:
-            sys.setswitchinterval(want)
+        was, rested = _saves["was"], _saves["rested"]
+        _saves["was"], _saves["rested"] = None, False
+        own = _switch[1] if _idle.is_set() else _switch[0]
+        if own is not None:
+            if was is not None or rested:
+                sys.setswitchinterval(own)
+        elif was is not None and sys.getswitchinterval() == SAVE_SWITCH_S:
+            sys.setswitchinterval(was)
 
 
 def wait(cap=None):

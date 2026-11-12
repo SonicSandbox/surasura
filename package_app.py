@@ -13,7 +13,7 @@ PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, TSUBASA_EXE_NAME, "updater.exe")  
 # The build's one configuration (S3.1 D15): the bundled modules, the Python and SQLite floors, UPX, the window's Qt
 # modules and update.json's parts. packaging/Surasura.spec reads the same file; neither reads a settings.json.
 BUILD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "build_config.json")
-OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect")
+OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect", "irodori")
 
 
 def load_build_config(path=BUILD_CONFIG):
@@ -118,6 +118,11 @@ def _included_module_test_dirs(modules):
     # Junban: bundled when named, so its suite runs before a build that ships it.
     if modules.get("junban") is True:
         d = os.path.join("modules", "junban", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # Irodori (the AI voice's beta, Iro-AA): bundled when named and present (private, like Koe; off at runtime).
+    if modules.get("irodori") is True:
+        d = os.path.join("modules", "irodori", "tests")
         if os.path.isdir(d):
             dirs.append(d)
     return dirs

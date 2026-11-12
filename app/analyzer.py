@@ -4943,7 +4943,7 @@ def settings_signature(settings, language):
         # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
         # library_frequency.json it used to switch on.)
         "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
-        "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
+        "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels", "enable_irodori",
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
         # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
         # reads them.
@@ -4958,7 +4958,7 @@ def settings_signature(settings, language):
     }
     # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
     # on every change, and hashing them made each of those clicks cost a full re-analysis.
-    _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
+    _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_", "irodori_")
     # The logic keys no run reads: the tooltip delay and the EPUB importer's split; and the report's
     # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
     # which compute_render_signature holds instead (a re-render, never a re-analysis).

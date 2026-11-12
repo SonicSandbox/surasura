@@ -162,7 +162,7 @@ def speech_model(language, need_id, yes, path=None):
     return True
 
 
-def book_audiobook(language, need_id, path=None):
+def book_audiobook(language, need_id, path=None, answer=None):
     """Kura-AB2 *Mine without audio* on *Do you have 「…」's audiobook?* -> True when the question was open (answered
     now); False (nothing written) when there's no ledger or no such open question of this language. The answer kept
     for the book for good (the ledger's meta, by the key its question was asked with: `runner.BOOK_ASKED` /
@@ -180,12 +180,20 @@ def book_audiobook(language, need_id, path=None):
         if not asked or not asked.get("key"):
             return False
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                            (f"{runner.BOOK_SAID}{language}:{asked['key']}", runner.NO_AUDIOBOOK))
+                            (f"{runner.BOOK_SAID}{language}:{asked['key']}", answer or runner.NO_AUDIOBOOK))
         for job in ledger.jobs(language, states=("waiting",)):
             if job.get("reason") == row[1]:
                 ledger.set_state(job["id"], "queued")      # its reason cleared: picks anew, the answer read then
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
     return True
+
+
+def book_ai_audio(language, need_id, path=None):
+    """Iro-AA *Make AI audio (beta)* on the same question (PROVISIONAL): answered as *Mine without audio* is — mined as
+    the book, kept for good — with the answer `runner.AI_AUDIO`, so each part's new cards are queued for the AI voice
+    as it fills (`runner._mark_ai_audio`). -> `book_audiobook`'s answer."""
+    from app.connect import runner
+    return book_audiobook(language, need_id, path, answer=runner.AI_AUDIO)
 
 
 def make_cards(language, gap_id, path=None, store_id=None):

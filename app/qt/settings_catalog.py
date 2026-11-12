@@ -47,7 +47,7 @@ Section = namedtuple("Section", "id icon name")
 Row = namedtuple("Row",
                  "id section kind keys label help tip words options adv group sub when door reaches target bounds")
 
-MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader")
+MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modules.irodori")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
 SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
@@ -85,6 +85,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
+    "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
 
 
@@ -397,6 +398,8 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
+    _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
     # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
     # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
     # Content's *Sort again or start over…* offers it)
@@ -424,6 +427,7 @@ NOT_SHOWN = {
     "add_graduated_words": "retired with Graduate (D23)",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
+    "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",

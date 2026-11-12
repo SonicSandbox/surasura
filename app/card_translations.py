@@ -144,12 +144,10 @@ def on_front(field, templates):
 def translation_field(field_names, templates=None):
     """The field a note type's translation goes in, or None (module docstring): by name, else Hint on the Lapis
     family — the first no front template shows and a back does (`templates`: the note type's, None = not looked
-    at)."""
+    at; none read: no back shows it, so none)."""
     named = [_by_name(field_names, (n,)) for n in NAMED]
     if all(_by_name(field_names, (f,)) for f in LAPIS):
         named.append(_by_name(field_names, (HINT,)))
-    if templates is not None and not templates:
-        return None                             # its templates unread: never guessed (r2 #5)
     return next((f for f in named if f and (templates is None or (not on_front(f, templates)
                                                                   and _shows(f, templates, "Back", False)))), None)
 

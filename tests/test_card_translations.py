@@ -530,3 +530,55 @@ def test_the_cards_held_back_are_counted_not_hidden():
     anki.put(2, "Lapis", {"Expression": "地獄", "Sentence": "地獄の底"})
     got = ct.cards(anki, "ja", around=0, skip={1, 2})
     assert got == {"cards": [], "left": 0, "held": 2}
+
+
+# --- the mutants' survivors (each a case no test held) ---------------------------------------------------------- #
+def _srt(path, cues):
+    lines = []
+    for k, (start, text) in enumerate(cues, 1):
+        a, b = start, start + 0.8
+        stamp = lambda x: f"00:00:{int(x):02d},{int(round((x % 1) * 1000)):03d}"      # noqa: E731
+        lines.append(f"{k}\n{stamp(a)} --> {stamp(b)}\n{text}\n")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return str(path)
+
+
+def test_of_two_close_places_the_nearer_one_to_the_cards_time_wins(tmp_path):
+    """Mutant X1: はい。 at 1.0 s and 2.5 s (both within NEAR_S of the card at 2.5 s): the card's own is the one at
+    2.5 s, its neighbours that line's — never the first place found."""
+    srt = _srt(tmp_path / "close.srt", [(0.0, "いらっしゃいませ。"), (1.0, "はい。"), (1.6, "コーヒーをください。"),
+                                        (2.5, "はい。"), (3.2, "少々お待ちください。")])
+    src = _library(tmp_path, {1: (srt, 2.5, "はい。")})
+    assert ct.context([1], "ja", 1, *src)[1] == (["コーヒーをください。"], ["少々お待ちください。"])
+
+
+def test_a_card_time_inside_a_long_span_counts_as_on_it(tmp_path):
+    """Mutant X8: the sentence runs over three cues from 0 s to 6 s and the card's line starts on the middle one (3 s):
+    its place is the whole span (its time inside it), never the middle cue alone."""
+    srt = _srt(tmp_path / "span.srt", [(0.0, "ごんは、"), (3.0, "ひとりぼっちの"), (6.0, "小狐でした。"),
+                                       (9.0, "村の方から、鐘が鳴ってきました。")])
+    src = _library(tmp_path, {2: (srt, 3.0, "ごんは、ひとりぼっちの小狐でした。")})
+    assert ct.context([2], "ja", 1, *src)[2] == ([], ["村の方から、鐘が鳴ってきました。"])
+
+
+def test_only_a_card_connect_made_takes_its_line_never_another_outcomes(tmp_path):
+    """Mutant X4: an outcome that isn't 'made' (a duplicate: Anki already had the word's card) names that card's note
+    id — its line is another episode's, never this card's neighbours."""
+    from app import cues
+    lines = [c.text for c in cues.read(CAFE, "ja") if c.counted]
+    src = _library(tmp_path, {7: (CAFE, None, lines[3])})
+    conn = sqlite3.connect(src[0])
+    conn.execute("UPDATE outcomes SET outcome = 'duplicate'")
+    conn.commit()
+    conn.close()
+    assert ct.context([7], "ja", 1, *src) == {}
+
+
+def test_write_takes_at_most_MOST_items_a_call(ledger):
+    """Mutant T5: a call with more than MOST items writes the first MOST and never looks at the rest."""
+    anki = _anki()
+    for n in range(1, ct.MOST + 3):
+        anki.put(n, "Lapis", {"Expression": "糸", "Sentence": f"蜘蛛の糸が{n}本、下りてきた。"})
+    got = ct.write(anki, anki, ledger, [{"id": n, "translation": "A spider's <b>thread</b>."}
+                                         for n in range(1, ct.MOST + 3)], "ja")
+    assert got["written"] == list(range(1, ct.MOST + 1)) and anki.value(ct.MOST + 1, "Hint") == ""

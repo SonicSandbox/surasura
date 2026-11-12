@@ -30,11 +30,13 @@ LAPIS = ["Expression", "ExpressionReading", "Sentence", "SentenceAudio", "Pictur
 
 
 class Reads(FakeAnki):
-    """The fake with the reads `cards` makes: note types, their fields, findNotes by the query's terms."""
+    """The fake with the reads `cards` makes: note types, their fields and templates, findNotes by the query's terms
+    (a field empty / not empty / matching `re:`, `-` for not, the note type, deck and tag) as Anki's search reads them."""
 
     def __init__(self):
         super().__init__()
         self.models = {}
+        self.fronts = {}            # note type -> its front template (default: the word alone; ours shows Hint on the back)
         self.queries = []
 
     def put(self, nid, model, values, tags=()):
@@ -48,27 +50,34 @@ class Reads(FakeAnki):
     def fields(self, model):
         return list(self.models.get(model) or ())
 
+    def templates(self, model):
+        return {"Card 1": {"Front": self.fronts.get(model, "{{Expression}}"),
+                           "Back": '{{#Hint}}<div class="tr-reveal">{{Hint}}</div>{{/Hint}}'}}
+
     def find(self, query):
+        import re
         self.queries.append(query)
-        terms = {t.split(":", 1)[0].strip('"'): t.split(":", 1)[1].strip('"')
-                 for t in query.replace('" "', '"\n"').split("\n")}
-        model = terms.get("note")
+        terms = [(neg == "-", t.split(":", 1)[0], t.split(":", 1)[1]) for neg, t in re.findall(r'(-?)"([^"]*)"', query)]
         out = []
         for nid, n in self.notes_.items():
-            if n["modelName"] != model:
-                continue
             ok = True
-            for k, v in terms.items():
+            for neg, k, v in terms:
+                value = n["fields"].get(k, {}).get("value")
                 if k == "note":
-                    continue
-                if k == "tag":
-                    ok &= any(t.lower().startswith(v.rstrip("*").lower()) for t in n["tags"])
+                    hit = n["modelName"] == v
+                elif k == "tag":
+                    hit = any(t.lower().startswith(v.rstrip("*").lower()) for t in n["tags"])
                 elif k == "deck":
-                    ok &= n.get("deck") == v
+                    hit = n.get("deck") == v
                 elif v == "":
-                    ok &= n["fields"].get(k, {}).get("value") == ""
+                    hit = value == ""
                 elif v == "_*":
-                    ok &= n["fields"].get(k, {}).get("value", "") != ""
+                    hit = value not in (None, "")
+                elif v.startswith("re:"):
+                    hit = value is not None and re.search(v[3:], value) is not None
+                else:
+                    raise AssertionError(f"a search term the fake doesn't know: {k}:{v}")
+                ok &= hit != neg
             if ok:
                 out.append(nid)
         return out
@@ -315,3 +324,108 @@ def test_a_card_filled_between_the_search_and_the_read_is_not_offered():
         return got
     anki.find = find_then_type
     assert [c["id"] for c in ct.cards(anki, "ja", around=0)["cards"]] == [1]
+
+
+# --- review r1 (Opus adversary) ---------------------------------------------------------------------------------- #
+def test_a_hint_the_front_shows_is_never_a_translation_field_stock_lapis_is_left_alone(ledger):
+    """r1 B1: stock Lapis shows Hint on the card's front — a translation there gives every review away. A note type
+    whose front template shows the field (any {{…Hint}} form) is never offered and never written; a named
+    translation field the front shows is passed over too."""
+    templates = {"Card": {"Front": "{{Expression}}<div class=hint>{{#Hint}}{{furigana:Hint}}{{/Hint}}</div>", "Back": ""}}
+    assert ct.on_front("Hint", templates) and not ct.on_front("Hint", {"Card": {"Front": "{{Expression}}"}})
+    assert ct.translation_field(LAPIS, templates) is None
+    assert ct.translation_field(LAPIS + ["SentenceTranslation"], {"C": {"Front": "{{SentenceTranslation}}"}}) == "Hint"
+    anki = _anki()
+    anki.fronts["Lapis"] = templates["Card"]["Front"]
+    anki.put(1, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の<b>糸</b>"})
+    assert ct.cards(anki, "ja", around=0)["cards"] == [] and ct.count(anki) == 0
+    got = ct.write(anki, anki, ledger, [{"id": 1, "translation": "The spider's <b>thread</b>"}], "ja")
+    assert got["written"] == [] and got["refused"] == {1: ct.NO_FIELD} and anki.value(1, "Hint") == ""
+
+
+def test_write_holds_a_note_to_the_rules_a_card_is_offered_by(ledger):
+    """r1 S2: an id the AI made up (or a card's text talked it into) lands nowhere else: a vocab note type's
+    Translation field (no Sentence), a card with no sentence or one in another language — each refused, unwritten."""
+    anki = _anki()
+    anki.models["Vocab"] = ["Word", "Translation"]
+    anki.put(1, "Vocab", {"Word": "蜘蛛"})
+    anki.put(2, "Lapis", {"Expression": "空", "Sentence": ""})
+    anki.put(3, "Lapis", {"Expression": "我们", "Sentence": "我们走吧。"})
+    anki.put(4, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の<b>糸</b>"})
+    got = ct.write(anki, anki, ledger, [{"id": n, "translation": "The <b>spider</b>."} for n in (1, 2, 3, 4)], "ja")
+    assert got["written"] == [4]
+    assert got["refused"] == {1: ct.NO_FIELD, 2: ct.NOT_OFFERED, 3: ct.NOT_OFFERED}
+    assert anki.value(1, "Translation") == "" and anki.value(3, "Hint") == ""
+
+
+def test_the_script_is_asked_of_ankis_search_so_other_languages_never_crowd_the_scan():
+    """r1 S3: 600 newer Chinese cards in a Japanese session: the search itself leaves them out (re:), so the Japanese
+    card behind them is still found and counted."""
+    anki = _anki()
+    for n in range(100, 700):
+        anki.put(n, "Lapis", {"Expression": "故乡", "Sentence": f"我回到了故乡{n}。"})
+    anki.put(1, "Lapis", {"Expression": "糸", "Sentence": "蜘蛛の糸が下りてきた。"})
+    assert [c["id"] for c in ct.cards(anki, "ja", around=0)["cards"]] == [1]
+    assert ct.count(anki, language="ja") == 1 and ct.count(anki, language="zh") == 600
+    assert any("re:" in q for q in anki.queries)
+
+
+def test_a_paragraph_card_is_not_offered_and_a_long_word_is_cut():
+    """r1 S4: the answer stays bounded per card: a sentence over SENTENCE_MOST goes unoffered, the word at most
+    WORD_MOST characters."""
+    anki = _anki()
+    text = "".join(t for _s, t in ct.lines_of(SPIDER, "ja"))
+    assert len(text) > ct.SENTENCE_MOST
+    anki.put(1, "Lapis", {"Expression": "x", "Sentence": text})
+    anki.put(2, "Lapis", {"Expression": "糸" * 60, "Sentence": "蜘蛛の糸が下りてきた。"})
+    got = ct.cards(anki, "ja", around=0)["cards"]
+    assert [c["id"] for c in got] == [2] and len(got[0]["word"]) == ct.WORD_MOST
+
+
+def test_an_odd_subtitle_file_gives_its_cards_their_sentence_alone_never_a_failed_call(tmp_path, monkeypatch):
+    """r1 S5: one file the cue reader can't read (an .ass with no Style column raised KeyError): its card goes with
+    its sentence alone, the call doesn't fail."""
+    ass = tmp_path / "odd.ass"
+    ass.write_text("[Events]\nFormat: Layer, Start, End, Text\nDialogue: 0,0:00:01.00,0:00:02.00,こんにちは。\n",
+                   encoding="utf-8")
+    src = _library(tmp_path, {9: (str(ass), 1.0, "こんにちは。")})
+    monkeypatch.setattr(ct, "lines_of", lambda path, language: (_ for _ in ()).throw(KeyError("Style")))
+    assert ct.context([9], "ja", 1, *src) == {}
+
+
+def _book(tmp_path, text):
+    path = tmp_path / "book.txt"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_a_book_line_said_twice_or_found_inside_another_gets_no_wrong_neighbours(tmp_path):
+    """r1 S7: a book has no times. はい。 twice: no neighbours rather than line 1's (a guess could name the wrong
+    speaker); はい inside これはいけない。: never placed there — its own line's neighbours."""
+    twice = _book(tmp_path, "ごんは、ひとりぼっちの小狐でした。\nはい。\n兵十がうなぎをとっていました。\nはい。\n村の方から、かんかん鐘が鳴ってきました。\n")
+    src = _library(tmp_path, {1: (twice, None, "はい。")})
+    assert ct.context([1], "ja", 1, *src) == {}
+    inside = tmp_path / "in"
+    inside.mkdir()
+    once = _book(inside, "これはいけない。\nはい\nごんは、そっと草の中から出てきました。\n")
+    src = _library(inside, {2: (once, None, "はい")})
+    assert ct.context([2], "ja", 1, *src)[2] == (["これはいけない。"], ["ごんは、そっと草の中から出てきました。"])
+
+
+def test_another_languages_job_is_never_read_for_a_card(tmp_path):
+    """r1 N11: item ids are each language's store's: a Chinese job's outcome never gives a Japanese card neighbours."""
+    from app import cues
+    lines = [c.text for c in cues.read(CAFE, "ja") if c.counted]
+    src = _library(tmp_path, {11: (CAFE, None, lines[4])})
+    conn = sqlite3.connect(src[0])
+    conn.execute("UPDATE jobs SET language = 'zh'")
+    conn.commit()
+    conn.close()
+    assert ct.context([11], "ja", 1, *src) == {}
+
+
+def test_a_sound_tag_or_a_cloze_is_refused_and_line_breaks_become_one_line():
+    """r1 N10: [sound:…] in the field would play; {{c1::…}} is a cloze; the translation is one line."""
+    assert ct.check("The <b>spider</b> [sound:x.mp3]", "ja") == (None, ct.MARKUP)
+    assert ct.check("The {{c1::<b>spider</b>}}", "ja") == (None, ct.MARKUP)
+    assert ct.check("The <b>spider</b>\nspun a thread.", "ja") == ("The <b>spider</b> spun a thread.", None)

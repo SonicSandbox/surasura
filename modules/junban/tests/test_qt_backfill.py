@@ -1162,7 +1162,7 @@ def test_the_cards_with_no_translation_are_counted_on_a_worker_and_the_prompt_is
     win = _open(main)
     asked = []
 
-    def count(anki, deck=None):
+    def count(anki, deck=None, language="ja"):
         asked.append((threading.current_thread() is threading.main_thread(), deck))
         return 12
     with mock.patch.object(card_translations, "count", count):
@@ -1180,15 +1180,31 @@ def test_no_count_none_to_do_or_anki_gone_hides_the_line(main):
     from app import card_translations
     win = _open(main)
     assert not win.tr_line.isVisible() and not win.btn_tr_copy.isVisible(), "unknown until Anki answers"
-    with mock.patch.object(card_translations, "count", lambda anki, deck=None: 0):
+    with mock.patch.object(card_translations, "count", lambda anki, deck=None, language="ja": 0):
         _connected(win, _anki())
         assert wait_until(lambda: win.tr_count == 0)
     assert not win.tr_line.isVisible()
 
-    def gone(anki, deck=None):
+    def gone(anki, deck=None, language="ja"):
         raise OSError("Anki stopped answering")
     win.tr_count = "unset"
     with mock.patch.object(card_translations, "count", gone):
         _connected(win, _anki())
         assert wait_until(lambda: win.tr_count is None)
     assert not win.btn_tr_copy.isVisible()
+
+
+def test_the_copied_prompt_names_backfills_deck_and_a_stale_count_is_dropped(main):
+    """r1 S8: the line counts Backfill's deck, so the prompt names it (else the AI would do every deck); r1 N12: a
+    count read for a deck no longer chosen never shows."""
+    from app import card_translations
+    win = _open(main)
+    win._on_choice(win.choices.but(deck="Mining"))             # the deck picked in the window
+    with mock.patch.object(card_translations, "count", lambda anki, deck=None, language="ja": 5):
+        _connected(win, _anki())
+        assert wait_until(lambda: win.tr_count == 5)
+    win.btn_tr_copy.click()
+    assert QApplication.clipboard().text() == S.BF_TR_PROMPT_DECK.format(deck="Mining")
+    assert 'deck "Mining"' in QApplication.clipboard().text()
+    win._show_translations(99, "Other deck", win.language)
+    assert win.tr_count == 5 and "5 cards" in win.tr_line.text()

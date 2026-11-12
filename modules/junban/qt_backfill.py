@@ -554,7 +554,7 @@ class BackfillWindow(windows.SecondaryWindow):
         elif tag == "written":
             self._on_written(item[1])
         elif tag == "translations":
-            self._show_translations(item[1])
+            self._show_translations(*item[1:])
 
     def _status(self, line):
         """A slow step's line on the summary, and its numbers on the bar (a worker's call)."""
@@ -874,7 +874,9 @@ class BackfillWindow(windows.SecondaryWindow):
         self._write(S.BF_COPIED)
 
     def on_copy_translate(self):
-        QApplication.clipboard().setText(S.BF_TR_PROMPT)
+        """The prompt names Backfill's deck when one is chosen: the AI translates the cards the line counted (r1 S8)."""
+        deck = backfill._deck(self._engine())
+        QApplication.clipboard().setText(S.BF_TR_PROMPT_DECK.format(deck=deck) if deck else S.BF_TR_PROMPT)
         self._write(S.BF_TR_COPIED)
 
     def _count_translations(self):
@@ -882,18 +884,20 @@ class BackfillWindow(windows.SecondaryWindow):
         if not self.connected:
             return
         settings = self._engine()
-        bridge.run_in_worker(self._translations_worker, settings)
+        bridge.run_in_worker(self._translations_worker, settings, self.language)
 
-    def _translations_worker(self, settings):
+    def _translations_worker(self, settings, language):
         from app import card_translations
+        deck = backfill._deck(settings)
         try:
-            n = card_translations.count(card_translations.AnkiReads(backfill._url(settings)),
-                                        backfill._deck(settings) or None)
+            n = card_translations.count(card_translations.AnkiReads(backfill._url(settings)), deck or None, language)
         except Exception:
             n = None                            # Anki stopped answering: the line goes, nothing else says it
-        self.relay.call(("translations", n))
+        self.relay.call(("translations", n, deck, language))
 
-    def _show_translations(self, n):
+    def _show_translations(self, n, deck=None, language=None):
+        if language is not None and (deck != backfill._deck(self._engine()) or language != self.language):
+            return                              # a count for a deck or language no longer on screen (r1 N12)
         self.tr_count = n
         shown = bool(n)
         if shown:

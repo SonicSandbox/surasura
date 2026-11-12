@@ -142,3 +142,24 @@ def test_a_source_surasura_made_nothing_from_says_so(anki, monkeypatch):
     assert _error(got) and "made no cards" in got.content[0].text
     monkeypatch.setattr(ct, "source_notes", lambda language, title, data_dir=None: [3])
     assert [c["id"] for c in _data(_call("surasura_cards_to_translate", {"source": "蜘蛛"}))["cards"]] == [3]
+
+
+def test_a_batch_stopped_part_way_by_any_failure_names_its_undo(anki):
+    """r1 S6: something not Anki's stops the write after the first card: the answer names the batch to take back,
+    the sync is arranged, and that Undo works."""
+    anki.fail_on_update = 3
+    got = _call("surasura_write_translations", {"items": [
+        {"id": 1, "translation": "By the <b>lotus pond</b> in paradise."},
+        {"id": 3, "translation": "A <b>spider</b> of paradise."}]})
+    text = got.content[0].text
+    assert _error(got) and "surasura_undo_translations(batch=" in text and anki.synced == [True]
+    batch = text.split("batch=")[1].split(")")[0].strip("'\"")
+    assert anki.value(1, "Hint").startswith("By the")
+    assert _data(_call("surasura_undo_translations", {"batch": batch})) == {"emptied": 1, "kept": {"3": "never written"}}
+
+
+def test_no_card_offered_but_more_waiting_says_so_never_all_done(anki, monkeypatch):
+    """r1 S3: a scan that offered nothing while cards remain never says every card has a translation."""
+    monkeypatch.setattr(ct, "cards", lambda *a, **k: {"cards": [], "left": 7})
+    data = _data(_call("surasura_cards_to_translate"))
+    assert data["left"] == 7 and "Every card" not in data["next"]

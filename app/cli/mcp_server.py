@@ -500,6 +500,10 @@ def cards_tool(state, limit=10, deck="", source="", around=None, language=None):
             raise
         raise trouble from None
     if not got["cards"]:
+        if got["left"]:
+            return {"cards": [], "left": got["left"],
+                    "next": "None of the next cards could be offered (too long a sentence, filled meanwhile); the "
+                            "rest wait in another deck or source, or for the learner to look at them in Anki."}
         return {"cards": [], "next": "Every card has a translation (or none has a sentence to translate)."}
     got["next"] = ("Translate each as this tool's description says, then call surasura_write_translations with "
                    "[{id, translation}]" + (f"; {got['left']} more wait after these." if got["left"] else "."))
@@ -524,15 +528,17 @@ def write_tool(state, items, into="en", language=None):
             got = ct.write(ct.AnkiReads(url), sa.AnkiConnectNotes(url), ledger, items, lang, str(into or "en"))
     except Exception as e:
         rid = getattr(e, "sentence_audio_id", None)
-        if rid is not None:                 # part written: its sync owed, its Undo named
-            undoing.owe_sync(settings)
         trouble = _anki_trouble(e)
+        if rid is None:
+            if trouble is None:
+                raise
+            raise trouble from None
+        undoing.owe_sync(settings)          # part written, whatever stopped it: its sync owed, its Undo named (S6)
         if trouble is None:
-            raise
-        if rid is not None:
-            raise ToolError(f"{trouble} Some cards were written before it stopped: surasura_undo_translations("
-                            f"batch={rid!r}) takes them back.") from None
-        raise trouble from None
+            contract.log.exception("mcp: a translation batch stopped part-way")
+        why = str(trouble) if trouble is not None else "Something stopped the write part-way."
+        raise ToolError(f"{why} Some cards were written before it stopped: surasura_undo_translations("
+                        f"batch={rid!r}) takes them back.") from None
     if got["written"]:
         undoing.owe_sync(settings)
     out = {"written": len(got["written"]), "batch": got["undo"]}

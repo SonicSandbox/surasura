@@ -217,7 +217,7 @@ def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect", texts=None, ve
     return {"id": rid, "filled": sorted(todo), "skipped": skipped}
 
 
-def undo(anki, ledger, rid):
+def undo(anki, ledger, rid, verb=VERB):
     """A `fill`'s one Undo -> {"emptied": [note ids], "kept": {note id: why}, "deleted": [clip names]}: the field
     emptied only where it still holds what was written, the tag off those notes, then each clip no note names any
     more. A record already undone, or none: nothing written ({"emptied": [], …, "refused": why})."""
@@ -227,7 +227,7 @@ def undo(anki, ledger, rid):
     if anki.reviewing():
         raise Reviewing()
     emptied, kept, deleted = [], {}, []
-    with anki.writer(VERB + " (undo)"):
+    with anki.writer(verb + " (undo)"):
         if anki.reviewing():
             raise Reviewing()
         rec = record(ledger, rid)                             # read again under the lock: two Undos, one runs (r2 N4)

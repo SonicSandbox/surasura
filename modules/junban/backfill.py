@@ -793,7 +793,9 @@ def _run(settings, session, planned=None, progress=None, auto=False):
         else:
             edits, skipped = _still_as_previewed(url, planned.get("edits") or {})
     except AnkiError as e:
-        return _report(False, "Nothing was filled.", problems=[str(e)])
+        # `anki_busy`: Anki busy with a collection operation (its sync, #370) — the automatic fill is quietly not now
+        return _report(False, "Nothing was filled.", problems=[str(e)],
+                       **({"anki_busy": True} if anki_connect.is_busy(e) else {}))
     if not edits:
         return _report(True, "Nothing to fill.", skipped=skipped)
 
@@ -1099,7 +1101,8 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
             if row[3] not in ("fill", "replace"):
                 skipped[reason(row[3])] += 1
     except AnkiError as e:
-        return _named_report(False, "Nothing was filled.", problems=[str(e)])
+        return _named_report(False, "Nothing was filled.", problems=[str(e)],
+                             **({"anki_busy": True} if anki_connect.is_busy(e) else {}))
     if dry_run or not edits:
         return _named_report(True, f"Would fill {len(edits)} note{'' if len(edits) == 1 else 's'}." if dry_run
                              else "Nothing to fill.", skipped=dict(skipped), planned=len(edits))
@@ -1108,7 +1111,8 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
         planned_edits = edits
         edits, changed = _still_as_previewed(url, edits)
     except AnkiError as e:
-        return _named_report(False, "Nothing was filled.", problems=[str(e)])
+        return _named_report(False, "Nothing was filled.", problems=[str(e)],
+                             **({"anki_busy": True} if anki_connect.is_busy(e) else {}))
     if changed:                 # counted in notes, as every other reason here (`changed` counts fields)
         skipped["changed since"] += sum(1 for note_id, changes in planned_edits.items()
                                         if len(edits.get(int(note_id)) or {}) < len(changes))

@@ -292,7 +292,20 @@ def test_the_supplied_texts_are_their_upstreams_and_the_readme_says_from_where()
             assert f"`{name}/`" in readme, name
             for file in os.listdir(os.path.join(folder, name)):
                 texts[f"{name}/{file}"] = open(os.path.join(folder, name, file), encoding="utf-8").read()
-    assert sorted(texts) == ["OpenCC/LICENSE", "jieba/LICENSE", "pysrt/LICENCE.txt"]
+    assert sorted(texts) == ["OpenCC/LICENSE", "PyQt6-Qt6/Qt-third-party-notices.txt", "jieba/LICENSE",
+                             "pysrt/LICENCE.txt"]
+    # Qt's own third-party components (Minato-SM), for the Qt the build takes: each named, each licence text in it.
+    qt = texts["PyQt6-Qt6/Qt-third-party-notices.txt"]
+    assert qt.startswith("Qt 6.11.2 ") and "scripts/build_qt_notices.py" in qt
+    for component, text in (("PCRE2", "qtbase/src/3rdparty/pcre2/LICENCE.md"), ("Freetype 2", "FreeType Project"),
+                            ("HarfBuzz-NG", "qtbase/src/3rdparty/harfbuzz-ng/COPYING"), ("LibPNG", "PNG Reference"),
+                            ("LibJPEG-turbo", "Independent JPEG Group"), ("Data Compression Library (zlib)",
+                                                                         "Jean-loup Gailly"),
+                            ("MD4C", "qtbase/src/3rdparty/md4c/LICENSE.md"), ("WebP (libwebp)", "Google Inc"),
+                            ("TIFF Software Distribution (libtiff)", "Sam Leffler"), ("XSVG", "qtsvg/src/svg/"),
+                            ("Unicode Character Database (UCD)", "UNICODE LICENSE V3")):
+        assert f"\n{component}\n" in qt and text in qt, component
+    assert "Pixman" not in qt and "Wayland" not in qt and "Catch2" not in qt   # not in the Windows parts it carries
     assert "Copyright (c) 2013 Sun Junyi" in texts["jieba/LICENSE"]
     assert "GNU GENERAL PUBLIC LICENSE" in texts["pysrt/LICENCE.txt"] and "Version 3, 29 June 2007" in texts["pysrt/LICENCE.txt"]
     for name in ("OpenCC/LICENSE",):

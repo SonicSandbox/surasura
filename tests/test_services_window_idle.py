@@ -227,3 +227,24 @@ def test_a_save_and_a_re_order_host_hold_the_hand_over_together_and_neither_end_
         for interval in list(window_idle._holds):
             window_idle.let_go(interval)
         sys.setswitchinterval(was)
+
+
+def test_a_re_order_host_a_test_never_stopped_is_let_go_after_it_and_the_run_goes_back_to_its_hand_over():
+    """The harness's put-back (conftest `_switch_interval_put_back`): a test that leaves its in-process host running
+    would leave every later test — timed bounds included — at the host's 1 ms; after each test every hold left is let
+    go, and what was set before comes back."""
+    import sys
+    from app import replan_preview
+    from tests.conftest import let_go_of_holds_left
+    was = sys.getswitchinterval()
+    try:
+        sys.setswitchinterval(0.005)
+        replan_preview._share_the_window()               # (a host started, never stopped)
+        replan_preview._share_the_window()
+        assert sys.getswitchinterval() == pytest.approx(replan_preview.WINDOW_SWITCH_S)
+        let_go_of_holds_left()
+        assert window_idle._holds == [] and sys.getswitchinterval() == pytest.approx(0.005)
+    finally:
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
+        sys.setswitchinterval(was)

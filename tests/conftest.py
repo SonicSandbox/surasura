@@ -128,7 +128,12 @@ def _switch_interval_put_back():
     probe sets 1 µs for the 200 tests after it, and putting 5 ms back there let its busy watcher hold the lock 5 ms at
     every release (its nested run 8 s → past its 300 s timeout)."""
     yield
-    idle = sys.modules.get("app.services.window_idle")      # (the hand-over's one owner: a host holds it there)
+    let_go_of_holds_left()
+
+
+def let_go_of_holds_left():
+    """(`_switch_interval_put_back`, after each test.) Every hold of the hand-over's one owner left behind let go."""
+    idle = sys.modules.get("app.services.window_idle")      # (a host holds it there)
     if idle is not None:
         with idle._SWITCH_LOCK:
             left = list(idle._holds)

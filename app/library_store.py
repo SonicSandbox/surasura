@@ -13068,7 +13068,8 @@ def _store_book_audiobooks(self, item_id):
     {epub, title, audiobooks: [{item_id, title, n (files), seconds}]} — the library's audiobooks with no book: one
     Hon asks about for this very book (H-8) first, then those with no question open, the likeliest first for this book
     (`audiobooks`' title levels), one told *No* about it or *It has no book* last, then by title; None when the item is
-    no live part of an EPUB — nor of a split book (Kura-TX: `epub` its joined `.txt`, `split_book`). One read."""
+    no live part of an EPUB — nor of a split book (Kura-TX: `epub` its joined `.txt`, `split_book`). `paired`: an
+    audiobook reads this book already (⋯ → *Its audiobook…* is offered only while none does). One read."""
     from app import audiobooks
     with self._reading():
         origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
@@ -13091,10 +13092,13 @@ def _store_book_audiobooks(self, item_id):
                     f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
                 title = None                             # two books in one title: this one named by its file
             title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
-        lone, seen = [], set()
+        lone, seen, paired = [], set(), False
         for _k, ab_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
             ask = ab.get("ask")
+            book = ab.get("book")
+            paired = paired or (isinstance(book, dict) and isinstance(book.get("epub"), str) and
+                                path_key(os.path.abspath(book["epub"])) == path_key(os.path.abspath(epub)))
             asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
                 path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
             if ab_id in seen or ab.get("book") or (ask and not asked_here):
@@ -13113,7 +13117,7 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    return {"epub": os.path.abspath(epub), "title": title,
+    return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
                             "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)]}
 

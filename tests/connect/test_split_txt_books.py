@@ -359,6 +359,8 @@ def test_pick_its_audiobook_lists_the_lone_audiobook_for_the_joined_book_and_pai
         assert library.paired_books(store) == [(os.path.abspath(book), split["audio"],
                                                 library.book_of(store, book)["sha256"])]
         assert store.pick_audiobook_book(split["audio"], book) is None, "paired already: nothing written"
+        # the audit's ask 2: ⋯ → *Its audiobook…* is offered only while the book has none
+        assert offered["paired"] is False and store.book_audiobooks(split["parts"][0])["paired"] is True
 
 
 def test_the_pair_survives_the_next_look_and_undo_takes_it_back_whole(split):

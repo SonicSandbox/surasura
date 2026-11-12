@@ -76,20 +76,6 @@ class Counter(QObject):
         return False
 
 
-@pytest.fixture(autouse=True)
-def _probe_stack():
-    """PROBE (Piyo-TR, never merged): faulthandler to the real stderr, every thread, before each test here — an
-    in-process CLI call may have pointed it at a cli.log in a temp folder, so the crash said nothing."""
-    import faulthandler
-    import sys
-    faulthandler.enable(file=sys.__stderr__, all_threads=True)
-    print(f"PROBE threads at start: {[t.name for t in threading.enumerate()]}", file=sys.__stderr__, flush=True)
-    yield
-    import gc
-    print(f"PROBE threads at end: {[t.name for t in threading.enumerate()]} gc={gc.isenabled()}",
-          file=sys.__stderr__, flush=True)
-
-
 @pytest.fixture
 def part(qapp, monkeypatch, qt_timer):
     """A host with the part (the install offered: `can-install`), its look a stand-in, the sheet a stand-in."""

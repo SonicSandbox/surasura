@@ -1208,3 +1208,24 @@ def test_the_copied_prompt_names_backfills_deck_and_a_stale_count_is_dropped(mai
     assert 'deck "Mining"' in QApplication.clipboard().text()
     win._show_translations(99, "Other deck", win.language)
     assert win.tr_count == 5 and "5 cards" in win.tr_line.text()
+
+
+def test_a_deck_picked_is_counted_again_on_its_previews_worker(main):
+    """The deck box's slot starts no worker of its own (the press rule, tests/qt/test_press_static.py): the preview a
+    deck pick starts counts that deck's cards, off the window's thread."""
+    from app import card_translations
+    win = _open(main)
+    asked = []
+
+    def count(anki, deck=None, language="ja"):
+        asked.append((threading.current_thread() is threading.main_thread(), deck))
+        return {None: 4, "Mining": 9}.get(deck, 0)
+    fake = _anki()
+    with mock.patch.object(card_translations, "count", count):
+        _connected(win, fake)
+        assert wait_until(lambda: win.tr_count == 4)
+        win._on_choice(win.choices.but(deck="Mining"))
+        _previewed(win, fake)
+        assert wait_until(lambda: win.tr_count == 9)
+    assert ("Mining" in [d for _m, d in asked]) and not any(m for m, _d in asked)
+    assert "9 cards" in win.tr_line.text()

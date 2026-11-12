@@ -344,7 +344,6 @@ class BackfillWindow(windows.SecondaryWindow):
     def _on_deck(self, index):
         text = self.deck_box.itemText(index)
         self._on_choice(self.choices.but(deck="" if text == S.BF_ALL_DECKS else text))
-        self._count_translations()
 
     def _on_cards(self, value):
         self._on_choice(self.choices.but(cards=value))
@@ -584,6 +583,8 @@ class BackfillWindow(windows.SecondaryWindow):
             except Exception as e:
                 self.relay.call(("message", S.BF_DECKS_FAILED.format(e=e)))
         self.relay.call(("conn", report, decks))
+        if report.get("ok"):
+            self._translations_worker(settings, self.language)
 
     def _on_connection(self, report, decks):
         self.connected = bool(report.get("ok"))
@@ -591,7 +592,6 @@ class BackfillWindow(windows.SecondaryWindow):
             version = report.get("version")
             self._set_text(self.conn, S.BF_CONN_OK_VERSION.format(version=version) if version else S.BF_CONN_OK)
             self._set_decks(decks)
-            self._count_translations()
         else:
             self._set_text(self.conn, S.BF_CONN_NO)
             self._write(S.BF_START_ANKI)
@@ -644,6 +644,7 @@ class BackfillWindow(windows.SecondaryWindow):
             self.relay.call(("summary", ""))
             return
         self.relay.call(("preview", result, key, V.shown(result, choices)))
+        self._translations_worker(settings, self.language)    # the deck may have changed: its count (no worker of its own)
 
     def _show_preview(self, result, key, shown):
         """One preview, as its worker made it (`V.shown`) — unless the choices or the language changed while it ran:
@@ -881,14 +882,9 @@ class BackfillWindow(windows.SecondaryWindow):
         QApplication.clipboard().setText(S.BF_TR_PROMPT_DECK.format(deck=named) if deck else S.BF_TR_PROMPT)
         self._write(S.BF_TR_COPIED)
 
-    def _count_translations(self):
-        """How many cards in Backfill's deck have no translation (`card_translations.count`), on a worker."""
-        if not self.connected:
-            return
-        settings = self._engine()
-        bridge.run_in_worker(self._translations_worker, settings, self.language)
-
     def _translations_worker(self, settings, language):
+        """How many cards in Backfill's deck have no translation (`card_translations.count`) — called on the
+        connection check's worker and each preview's (a slot hands no work over but through a press)."""
         from app import card_translations
         deck = backfill._deck(settings)
         try:

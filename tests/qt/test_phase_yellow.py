@@ -236,7 +236,7 @@ def test_junbans_deck_waits_grey_until_anki_answers_with_the_automatic_sync_off(
     assert asked[0][1] and "127.0.0.1" in asked[0][0]                        # on a worker, loopback
     assert win.phase.states[P.JUNBAN].needs is None                          # Anki closed: grey
     win._look_for_anki()                                                      # asked again at once: throttled
-    assert len(asked) == 1
+    assert not win._anki_looking and len(asked) == 1                          # (no ask went to a worker)
     open_[0] = True                                                           # the learner opens Anki, comes back
     monkeypatch.setattr(shell, "ANKI_LOOK_EVERY", 0.0)
     win._look_for_anki()

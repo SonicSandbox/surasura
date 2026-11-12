@@ -505,6 +505,35 @@ class NeedsCards(QWidget):
 
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
+def audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
+    """Kura-AB3 A2: *Add the narrator's voice*'s answer (`actions.add_audio` / `add_audio_book`, from the book's line
+    or its row's ⋯) shown: a toast with its *Undo* (`undo`, `actions.add_audio_undo`, on a worker) whenever something
+    was written — a press stopped part-way too —, else its plain words in the bar (`say`)."""
+    got = got or {}
+    if not got.get("id"):
+        say(got.get("say") or strings.NEEDS_AUDIO_GONE)
+        return
+    title, n = got.get("title") or title, got.get("filled") or 0
+    if not got.get("ok"):
+        text = got.get("say") or strings.NEEDS_AUDIO_GONE
+    elif got.get("not_cut") and got.get("why"):
+        text = strings.NEEDS_AUDIO_SOME.format(n=n, title=title, m=got["not_cut"], why=got["why"])
+    else:
+        text = strings.NEEDS_AUDIO_ADDED.format(n=n, title=title)
+
+    def undone(back):
+        back = back or {}
+        if not back.get("ok"):
+            say(back.get("say") or strings.NEEDS_AUDIO_GONE)
+        elif back.get("kept"):
+            say(strings.NEEDS_AUDIO_UNDONE_KEPT.format(n=back["emptied"], k=back["kept"]))
+        else:
+            say(strings.NEEDS_AUDIO_UNDONE.format(n=back["emptied"]))
+    rid = got["id"]
+    win.toasts.show(text, undo=lambda: bridge.run_in_worker(lambda: undo(lang, rid, read_settings() or {}),
+                                                            then=undone, failed=failed))
+
+
 def _connect_callable(module, name):
     """Connect's call for an action, or None (Connect not installed: its button hidden)."""
     try:
@@ -1590,39 +1619,22 @@ class NeedsYou(QObject):
         clips, Anki's empty sentence-audio fields are filled under the one writer), then a toast with its *Undo* (the
         record's own: `actions.add_audio_undo`, on a worker too). A "couldn't" leaves the line, pressed again it asks
         again."""
-        add, lang, read_settings = self.connect_calls["add_audio"], self.language, self.read_settings
-        need_id = entry.data["need_id"]
+        add, kick = self.connect_calls["add_audio"], self.connect_calls.get("kick")
+        lang, read_settings, need_id = self.language, self.read_settings, entry.data["need_id"]
+
+        def run():
+            got = add(lang, need_id, read_settings() or {})
+            if (got or {}).get("id") and kick is not None:
+                kick(read_settings() or {})          # Anki's sync it owes, sent by Connect (r1 N4)
+            return got
 
         def done(got):
-            got = got or {}
-            if not got.get("ok"):
+            if not (got or {}).get("ok"):
                 self._stays("add_audio", entry)
-                self._connect_done(got.get("say") or strings.NEEDS_AUDIO_GONE)
-                return
-            title, n = got.get("title") or entry.title, got.get("filled") or 0
-            if not n:
-                self._connect_done(strings.NEEDS_AUDIO_NONE.format(title=title))
-                return
-            text = (strings.NEEDS_AUDIO_SOME.format(n=n, title=title, m=got["not_cut"], why=got["why"])
-                    if got.get("not_cut") and got.get("why") else strings.NEEDS_AUDIO_ADDED.format(n=n, title=title))
             self.refresh()
-            if self._alive():
-                self.win.toasts.show(text, undo=lambda rid=got.get("id"): self._add_audio_undo(rid))
-        self._press("add_audio", entry, lambda: add(lang, need_id, read_settings() or {}), then=done)
-
-    def _add_audio_undo(self, record_id):
-        undo, lang, read_settings = self.connect_calls["add_audio_undo"], self.language, self.read_settings
-
-        def done(got):
-            got = got or {}
-            if not got.get("ok"):
-                self._say(got.get("say") or strings.NEEDS_AUDIO_GONE)
-            elif got.get("kept"):
-                self._say(strings.NEEDS_AUDIO_UNDONE_KEPT.format(n=got["emptied"], k=got["kept"]))
-            else:
-                self._say(strings.NEEDS_AUDIO_UNDONE.format(n=got["emptied"]))
-        if record_id:
-            bridge.run_in_worker(lambda: undo(lang, record_id, read_settings() or {}), then=done, failed=self._failed)
+            audio_added(self.win, got, entry.title, self._say, self.connect_calls["add_audio_undo"], lang,
+                        read_settings, self._failed)
+        self._press("add_audio", entry, run, then=done)
 
     # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
     def _do_get_speech_model(self, entry, _line):

@@ -296,7 +296,7 @@ def act(settings, language, book=None, confirm=False, undo_id=None):
             raise
         if rid is not None:
             err = CliError(err.code, PART_WRITTEN.format(why=err.message.rstrip("."), id=rid),
-                           **dict(err.context, undo=rid))
+                           **dict(err.context, undo=rid, why=err.message.rstrip(".")))
         raise err from None
 
 
@@ -361,7 +361,10 @@ def _add(settings, language, book, confirm, anki, ledger):
         if done["filled"]:
             from app.connect import undo as undoing
             undoing.owe_sync(settings)
-        return dict(counts, confirm=True, id=done["id"], filled=len(done["filled"]),
+        missed = set(found["can"]) - set(clips)            # the press's looked: all but these (the row asks again)
+        looked = sorted((set(found["can"]) | set(found["has_audio"]) | set(found["unheard"]) | set(found["gone"]))
+                        - missed)
+        return dict(counts, confirm=True, id=done["id"], filled=len(done["filled"]), looked=looked,
                     skipped={str(k): v for k, v in done["skipped"].items()},
                     not_cut=len(set(found["can"]) - set(clips)),
                     **({"not_cut_why": troubles[0]} if troubles and set(found["can"]) - set(clips) else {}))

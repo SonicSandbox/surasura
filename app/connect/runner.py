@@ -124,11 +124,15 @@ BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 # Kura-AB3 A2 (PROVISIONAL, spec `tracks/pipeline/work/AB3/add-audio-spec.md` L2): once a book first lines up with its
 # audiobook, the cards Connect made from it before — text-only — are offered the narrator's voice: ONE standing *Needs
 # you* line a book (on the audiobook's item, as AB-Q4's line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub,
-# item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`).
+# item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`). Asked at
+# every language pass for each paired book not asked yet (`_add_audio_offers`: the lead's MUST, Mattias's books were all
+# mined before — no part is picked again), and at a part's own line-up. A press, from the line or the book row's ⋯,
+# keeps the notes it looked at (`ADD_AUDIO_SEEN<lang>:<book key>` -> [note ids]): the row offers only the others.
 ADD_AUDIO_NEED = "book-add-audio"
-ADD_AUDIO_ASK = ("「{title}」: {n} of its cards were made before its audiobook was lined up — add the narrator's voice "
-                 "to them?")
+ADD_AUDIO_ASK = ("「{title}」 is lined up with its audiobook now — add the narrator's voice to the cards Connect made "
+                 "from it before, where they have none?")
 ADD_AUDIO_ASKED = "add_audio_asked:"
+ADD_AUDIO_SEEN = "add_audio_seen:"
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
 # length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
@@ -552,6 +556,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
         wait = Wait(n.say, look=False)
     if wait is not None:
         return _waiting_all(ledger, lang, parked, out, wait.reason, wait.look)
+    _add_audio_offers(steps, ledger, lang)      # Kura-AB3 A2: before the queue — a book mined out has no job
     outside = False
     tried = set()
     look = False                # the inbox and the level looked at again before the next job (after a job, or F11)
@@ -594,6 +599,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
                     keep |= _failed_says(ledger, lang, job["item_id"])
                 elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
                     _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
+                keep |= _add_audio_says(ledger, lang, job["item_id"])     # Kura-AB3 A2 r1 S6: the book's line stays
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
@@ -1091,13 +1097,41 @@ def _line_up(steps, ledger, lang, job, book):
     return got.get("lineup")
 
 
+def _add_audio_says(ledger, lang, item):
+    """The words of `item`'s open *Add the narrator's voice* line (its job's end leaves it: r1 S6)."""
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND kind = ? AND item_id = ? "
+                                              "AND fixed_at IS NULL", (lang, ADD_AUDIO_NEED, item))}
+
+
+def _add_audio_offers(steps, ledger, lang):
+    """Kura-AB3 A2 (the lead's MUST): each book paired with its audiobook and not asked yet, looked at read only
+    (`steps.lined_up`): lined up now (paired since, its own subtitle checked or trusted, a sync finished) → its earlier
+    cards offered (`_add_audio_offer`); not yet → nothing kept, asked at a later pass. A book asked reads the ledger
+    alone (S19). A busy library or a file away: the next pass. Never fails the pass."""
+    books, lined_up = getattr(steps, "paired_books", None), getattr(steps, "lined_up", None)
+    if books is None or lined_up is None:
+        return
+    try:
+        pairs = books(lang)
+    except Exception as e:                      # (a Wait: the library busy) the next pass
+        log.info("Connect: couldn't read the paired books (%s): %s", lang, e)
+        return
+    for epub, item, sha in pairs:
+        if _meta(ledger, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}") is not None:
+            continue
+        try:
+            lined = lined_up(lang, epub)
+        except Exception as e:
+            log.info("Connect: couldn't look at a book's line-up (%s): %s", lang, e)
+            continue
+        if lined:
+            _add_audio_offer(steps, ledger, lang, epub, lined.get("item_id", item))
+
+
 def _add_audio_offer(steps, ledger, lang, epub, item):
     """Kura-AB3 A2: the book `epub` lined up — its cards Connect made before (the store's made words of its parts)
     offered the narrator's voice once (ADD_AUDIO_NEED on the audiobook's `item`). Asked once a book, whatever the count:
     a look after the first reads the ledger alone (S19). Never fails the mine."""
-    key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub)}"
-    if _meta(ledger, key) is not None:
-        return
     made = getattr(steps, "made_before", None)
     try:
         got = made(lang, epub) if made is not None else None
@@ -1106,11 +1140,14 @@ def _add_audio_offer(steps, ledger, lang, epub, item):
         return
     if got is None:
         return
-    title, n = got
+    title, n, sha = got
+    key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
+    if _meta(ledger, key) is not None:
+        return
     with ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
             {"epub": os.path.abspath(epub), "item": item, "title": title}, sort_keys=True, ensure_ascii=False)))
-        if n and ledger.need(lang, ADD_AUDIO_NEED, ADD_AUDIO_ASK.format(title=title, n=n), item_id=item,
+        if n and ledger.need(lang, ADD_AUDIO_NEED, ADD_AUDIO_ASK.format(title=title), item_id=item,
                              standing=True):
             log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
 
@@ -3038,13 +3075,21 @@ class Steps:
             lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
 
+    def paired_books(self, lang):
+        """Kura-AB3 A2: [(EPUB, its audiobook's item)] the store pairs (`library.paired_books`), read only."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return library.paired_books(store)
+
     def made_before(self, lang, epub):
-        """Kura-AB3 A2: (the book's title, how many notes Connect made from its parts so far) — the store read only."""
+        """Kura-AB3 A2: (the book's title, how many notes Connect made from its parts so far, its EPUB's sha256 or
+        None) — the store read only."""
         from app.connect import add_audio, library
         with self._open(lang) as store:
             notes = add_audio.made_notes(store, add_audio.book_items(store, epub))
             book = library.book_of(store, epub)
-        return (book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], len(notes)
+        return ((book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], len(notes),
+                (book or {}).get("sha256"))
 
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its

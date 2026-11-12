@@ -35,8 +35,10 @@ def offer(world):  # noqa: F811
     say = runner.ADD_AUDIO_ASK.format(title=STAR, n=8)
     connect = {"jobs": [], "needs": [{"id": 31, "kind": runner.ADD_AUDIO_NEED, "say": say, "item": 9, "seen_at": None,
                                       "at": "2026-11-12T05:00:00Z"}]}
+    answers["kick"] = None
     _seed, win, _writer, ny = world(connect=connect, connect_calls={"add_audio": rec("add_audio"),
-                                                                    "add_audio_undo": rec("add_audio_undo")})
+                                                                    "add_audio_undo": rec("add_audio_undo"),
+                                                                    "kick": rec("kick")})
     entry = next(e for e in ny.entries if e.kind == runner.ADD_AUDIO_NEED)
     return win, ny, entry, got, answers
 
@@ -55,6 +57,7 @@ def test_the_press_runs_on_a_worker_then_its_toast_undoes_that_record_on_a_worke
     assert wait_until(lambda: any(g[0] == "add_audio" for g in got), 5)
     [(_name, args, on_worker)] = [g for g in got if g[0] == "add_audio"]
     assert on_worker and args[:2] == ("ja", 31)
+    assert wait_until(lambda: [g for g in got if g[0] == "kick"], 5), "Connect kicked: the sync it owes"
     assert wait_until(lambda: win.toasts.alive and win.toasts.text, 5)
     assert win.toasts.text == strings.NEEDS_AUDIO_ADDED.format(n=5, title=STAR)
     undo = next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO)
@@ -81,3 +84,89 @@ def test_some_cards_not_cut_are_named_in_the_toast(offer):
     button(ny, entry.key, "add_audio").click()
     assert wait_until(lambda: win.toasts.alive and win.toasts.text, 5)
     assert win.toasts.text == strings.NEEDS_AUDIO_SOME.format(n=3, title=STAR, m=2, why="Anki Miner took too long.")
+
+
+def test_a_press_stopped_part_way_still_offers_its_undo_in_plain_words(offer):
+    """r1 S4: Anki stopped answering after some cards were written — the bar's words are the window's (no command
+    line), and the toast's Undo takes back what was written."""
+    win, ny, entry, got, answers = offer
+    answers["add_audio"] = {"ok": False, "id": "18-cd", "say": "Some of 「x」's cards got the narrator's voice before "
+                                                             "this stopped (Anki isn't open). Undo takes them back; "
+                                                             "adding again does the rest."}
+    button(ny, entry.key, "add_audio").click()
+    assert wait_until(lambda: win.toasts.alive and win.toasts.text, 5)
+    assert "surasura-cli" not in win.toasts.text and win.toasts.text == answers["add_audio"]["say"]
+    next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
+    assert wait_until(lambda: any(g[0] == "add_audio_undo" for g in got), 5)
+    assert [g[1][1] for g in got if g[0] == "add_audio_undo"] == ["18-cd"]
+
+
+# --- the book row's ⋯ (the lead's MUST): whenever such cards exist and a line-up is ready ------------------------ #
+@pytest.fixture
+def row_offer(qapp):
+    from PyQt6.QtCore import QPoint
+    from tests.fixtures import window_seed
+    from tests.qt.test_drag import open_window
+    from tests.qt.test_item_menu import ItemWriter, rows_of
+    seed = window_seed.build()
+    win, services = open_window(qapp, seed, ItemWriter(seed.library, apply=False))
+    main, got = threading.main_thread(), []
+    answer = {"offer": {"epub": "D:/Books/星屑.epub", "title": STAR, "n": 8},
+              "book": {"ok": True, "filled": 5, "id": "19-ef", "title": STAR, "not_cut": 0, "why": None, "say": None},
+              "undo": {"ok": True, "emptied": 5, "kept": 0, "say": None}}
+
+    def rec(name):
+        def call(*args):
+            got.append((name, args, threading.current_thread() is not main))
+            return answer[name]
+        return call
+    win.items.add_audio_offer, win.items.add_audio_book, win.items.add_audio_undo = rec("offer"), rec("book"), rec("undo")
+    row = rows_of(win)[4]
+    yield win, row, got, answer, (lambda: win.items.menu(row, win.mapToGlobal(QPoint(300, 300))))
+    win.close()
+    services.shutdown(0.5)
+
+
+def _entry(m):
+    return next((a for a in m.actions() if a.text() == strings.ITEM_MENU["add-audio"][0]), None)
+
+
+def test_the_rows_menu_offers_it_before_open_its_folder_once_connect_answers_on_a_worker(row_offer):
+    from app.qt import drag
+    win, row, got, _answer, open_menu = row_offer
+    m = open_menu()
+    assert wait_until(lambda: _entry(m) is not None, 5)
+    texts = [a.text() for a in m.actions()]
+    assert texts.index(strings.ITEM_MENU["add-audio"][0]) + 1 == texts.index(strings.ITEM_MENU["folder"][0])
+    assert "8 of its cards" in _entry(m).toolTip()
+    [(_n, args, on_worker)] = [g for g in got if g[0] == "offer"]
+    assert on_worker and args[0] == "ja" and args[1] == drag.ids_of(row)
+    m.hide()
+
+
+def test_no_offer_no_entry(row_offer):
+    win, _row, got, answer, open_menu = row_offer
+    answer["offer"] = None
+    m = open_menu()
+    assert wait_until(lambda: [g for g in got if g[0] == "offer"], 5)
+    wait_until(lambda: False, 0.3)                      # (its answer had its turn on the window's thread)
+    assert _entry(m) is None
+    m.hide()
+
+
+def test_the_rows_press_says_so_at_once_runs_on_a_worker_and_its_toast_undoes_it(row_offer):
+    win, _row, got, _answer, open_menu = row_offer
+    said = []
+    real_say = win.say
+    win.say = lambda text: (said.append(text), real_say(text))
+    m = open_menu()
+    assert wait_until(lambda: _entry(m) is not None, 5)
+    _entry(m).trigger()
+    assert said[:1] == [strings.NEEDS_AUDIO_RUNNING.format(title=STAR)], "the press reacts at once"
+    assert wait_until(lambda: win.toasts.alive and win.toasts.text == strings.NEEDS_AUDIO_ADDED.format(n=5, title=STAR),
+                      5)
+    [(_n, args, on_worker)] = [g for g in got if g[0] == "book"]
+    assert on_worker and args[:2] == ("ja", "D:/Books/星屑.epub")
+    next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
+    assert wait_until(lambda: [g for g in got if g[0] == "undo"], 5)
+    assert [g[1][1] for g in got if g[0] == "undo"] == ["19-ef"]

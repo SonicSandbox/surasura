@@ -457,7 +457,8 @@ def _woken_since(summary):
 
 def _loop(loaded, languages, looks=None):
     """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
-    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
+    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits —
+    and a run stopped for a newer build in the program folder starts that build's Connect (Haya-CL)."""
     from app import batch_gc, locks
     from app.connect import kick, runner
     from app.connect.ledger import TooNew
@@ -472,8 +473,14 @@ def _loop(loaded, languages, looks=None):
                 summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
         except TooNew as e:
             raise CliError("needs-you", str(e), ask="Update Surasura") from None
-        if not summary.get("stopped") and (any(_pending(lang) for lang in languages) or _woken_since(summary)):
-            _kick(loaded)               # logged after its last read: the next Connect reads it
+        if summary.get("stopped") == runner.REPLACED:
+            _kick(loaded)               # Haya-CL: a newer build under it: the folder's own Connect takes over
+        elif not summary.get("stopped") and (_woken_since(summary) or (
+                not summary.get("inbox_unread") and any(_pending(lang) for lang in languages))):
+            # logged after its last read: the next Connect reads it. Ended with no window open and an inbox it couldn't
+            # read (Haya-CL): only a kick since its last look starts one — that inbox waits for the next start, never
+            # a Connect started again and again with no window to wait for
+            _kick(loaded)
         return summary
     finally:
         _release_finish(summary, runner)

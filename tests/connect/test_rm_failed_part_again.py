@@ -111,7 +111,7 @@ def test_a_new_try_under_way_or_one_that_went_through_is_no_failure_any_more(tmp
     with Ledger(path) as ledger:
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed", "done"]
-        assert not [n for n in ledger.needs("ja") if n["kind"] == "mine-failed"], "fixed once the part went through"
+        assert not [n for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS], "fixed once the part went through"
     mined = [e for e in steps.log if e[0] == "mine"]
     assert mined[-1][3] == [WORDS[2][0]], "only the word not on a card yet"
     assert sorted(steps.anki.words()) == sorted(w for w, _r in WORDS), "every word on a card, each once"
@@ -124,7 +124,7 @@ def test_a_try_that_fails_again_is_named_again_though_you_dismissed_the_first(tm
     hiding it — and the row is *Try again* again."""
     steps, path = _failed_part(tmp_path)
     with Ledger(path) as ledger:
-        first = [n for n in ledger.needs("ja") if n["kind"] == "mine-failed"]
+        first = [n for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
         assert len(first) == 1
     status.dismiss(first[0]["id"], path=path)
     with Ledger(path) as ledger, ledger.transaction():
@@ -133,7 +133,7 @@ def test_a_try_that_fails_again_is_named_again_though_you_dismissed_the_first(tm
     with Ledger(path) as ledger:
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed", "failed"]
-        listed = [n for n in ledger.needs("ja") if n["kind"] == "mine-failed"]
+        listed = [n for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
         assert len(listed) == 1 and listed[0]["id"] != first[0]["id"] and not listed[0].get("seen_at")
     rec = _record(path)["languages"]["ja"]
     assert rec["unseen"] == 1
@@ -188,7 +188,7 @@ def test_one_card_anki_refuses_never_holds_back_the_parts_other_words(tmp_path):
     assert sorted(steps.anki.words()) == sorted([WORDS[0][0], WORDS[2][0]])
     with Ledger(path) as ledger:
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed"]
-        say = [n["say"] for n in ledger.needs("ja") if n["kind"] == "mine-failed"]
+        say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
     assert len(say) == 1 and WORDS[1][0] in say[0] and "cannot create note for unknown reason" in say[0]
     assert WORDS[0][0] not in say[0] and "Try again" in say[0]
     item = feed.build(_record(path), "ja").items[1]
@@ -200,7 +200,7 @@ def test_a_part_whose_only_word_anki_refuses_is_named_with_it(tmp_path):
     steps, path = _refused_part(tmp_path, {WORDS[0][0]}, words=WORDS[:1])
     assert [e[3] for e in steps.log if e[0] == "mine"] == [[WORDS[0][0]], [WORDS[0][0]]]
     with Ledger(path) as ledger:
-        say = [n["say"] for n in ledger.needs("ja") if n["kind"] == "mine-failed"]
+        say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
     assert len(say) == 1 and WORDS[0][0] in say[0]
     assert feed.build(_record(path), "ja").items[1].kind == feed.FAILED
 
@@ -307,12 +307,12 @@ def test_a_wait_between_two_words_alone_is_a_wait_never_a_failure_blaming_anki(t
         job = ledger.jobs("ja")[0]
         assert (job["state"], job["reason"], job["resume"]) == ("waiting", runner.REVIEWING, "mining")
         assert (job["failures"] or 0) == 1, "only the whole batch Anki refused counts"
-        assert not [n for n in ledger.needs("ja") if n["kind"] == "mine-failed"]
+        assert not [n for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
     steps.mine = original                       # done reviewing: the next look goes on, a word at a time
     with Ledger(path) as ledger:
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed"]
-        say = [n["say"] for n in ledger.needs("ja") if n["kind"] == "mine-failed"][0]
+        say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS][0]
     assert sorted(steps.anki.words()) == sorted([WORDS[1][0], WORDS[2][0]])
     assert WORDS[0][0] in say and WORDS[1][0] not in say and WORDS[2][0] not in say
 
@@ -325,7 +325,7 @@ def test_every_word_is_tried_alone_though_the_first_ones_are_refused(tmp_path):
     assert [e[3] for e in steps.log if e[0] == "mine"][1:] == [[w] for w, _r in words]
     assert sorted(steps.anki.words()) == sorted(w for w, _r in words[2:])
     with Ledger(path) as ledger:
-        say = [n["say"] for n in ledger.needs("ja") if n["kind"] == "mine-failed"][0]
+        say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS][0]
     assert f"{WORDS[0][0]}, {WORDS[1][0]} (" in say and words[2][0] not in say
 
 
@@ -378,7 +378,7 @@ def test_a_crash_then_a_refusal_never_names_words_anki_never_refused_alone(tmp_p
     with Ledger(path) as ledger:
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed"]
-        say = [n["say"] for n in ledger.needs("ja") if n["kind"] == "mine-failed"][0]
+        say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS][0]
     assert say == runner.MINE_FAILED_SAY.format(title=steps.title("ja", {"item_id": 1}) or "An episode")
 
 

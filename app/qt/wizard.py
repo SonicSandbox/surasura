@@ -2963,7 +2963,7 @@ class SetupWizard(QWidget):
         offered = self.page.next_offered() or busy
         if offered and self._offered is False:
             self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
-        self._offered = offered
+        self._offered = offered                           # (Kantan-B1: Anki's answer re-arms too, `_anki_looked`)
         _show(self.btn_next, offered)
         text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
         if self.resort is not None:
@@ -4072,7 +4072,7 @@ class SetupWizard(QWidget):
             self._count_wait = COUNT_AGAIN_MS
         self._numbers_seq += 1
         seq, language = self._numbers_seq, self.language
-        count, chores = self.api.level_numbers, getattr(self.shell, "chores", None)
+        count, chores = self.api.level_numbers, getattr(getattr(self.shell, "services", None), "chores", None)
 
         def read(settings, language):
             numbers = count(settings, language)

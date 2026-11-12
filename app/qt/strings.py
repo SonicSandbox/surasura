@@ -328,6 +328,10 @@ BAR_LEVEL_AUTO_NONE = "Auto"
 BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
 BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the commonest band whose list holds enough words, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
+# Kantan-B1 (B1, Sonic ✅ 2026-11-12; PROVISIONAL): the list's size, never a band's name ("Native" to a beginner)
+BAR_LEVEL_AUTO_WORDS = "Auto · ≈{words:,} words"
+BAR_LEVEL_AUTO_WORDS_TIP = ("Your level, chosen for you: your list holds ≈{words:,} words, the commonest band with "
+                            "enough of them ({band} now)")
 # W3.5 row 7: the journey dot (the re-order's and Connect's lines are 順's and Anki Miner's hovers since alpha 3).
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
@@ -564,6 +568,7 @@ FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync rea
 # one's hover its name and what it does, what it is doing now, then the last thing that ended. Alpha 3 (Sonic
 # 2026-10-24: "I'd actually prefer if pressing it opened up their settings"): a press opens the circle's settings.
 PHASE_STRIP_NAME = "What's running"
+PHASE_DECK_WHEN_ANKI = "Card order: pick your deck once Anki is open"    # Kantan-B1 (B3, PROVISIONAL): 順 grey
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
@@ -1583,7 +1588,7 @@ NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed befor
 NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
-NEEDS_FAILURE_LOG_TIP = "The details are in {path}"              # Kantan-B1 (A1): a failed Generate's path, hover only
+NEEDS_FAILURE_LOG_TIP = "The last Generate's details are in {path}"             # Kantan-B1 (A1): a failed Generate's path, hover only
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
 NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
 NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"

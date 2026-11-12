@@ -13,6 +13,7 @@ Each icon state is a test: 順 (a deck to pick, an unfinished reorder, Only i+1,
 episodes waiting on you), Anki (a prompt or another profile; closed), 届 (a folder gone; offline). Japanese and Chinese
 libraries from the suite's seed (`window_seed`), Connect's lines as its runner words them.
 """
+import threading
 import time
 
 import pytest
@@ -204,10 +205,44 @@ def test_junban_amber_opens_its_window_at_the_control_to_decide(junban_world, mo
     monkeypatch.setattr(windows, "launch", lambda shell, op: launched.append(op.name) or shown)
     win.open_setting = lambda target: opened.append(target) or True
     assert wait_until(lambda: P.JUNBAN in win.phase.opens)
+    win.phase.set_anki(True)                              # (Kantan-B1: a deck to pick is amber once Anki answers)
     win.show_status(win.services.status.snapshot()._replace(replan=line))
     assert win.phase.states[P.JUNBAN].needs == str(line)
     win._circle_pressed(P.JUNBAN)
     assert launched == ["junban"] and shown.highlighted == [control] and opened == []
+
+
+def test_junbans_deck_waits_grey_until_anki_answers_with_the_automatic_sync_off(junban_world, monkeypatch):
+    """Kantan-B1 (B3; the review's blocker: the sync is off by default, so its answers alone left 順 grey for good):
+    while a deck to pick waits, the window asks AnkiConnect (loopback, a worker; at the status change and as the
+    window comes to the front, at most every ANKI_LOOK_EVERY s). Closed: grey. Open: amber. The sync's own answers
+    count too — closed grey again — and a sync state that says nothing about Anki changes nothing."""
+    from app import anki_connect
+    from app.qt import shell
+    from app.services import automation as A
+    main = threading.main_thread()
+    asked, open_ = [], [False]
+    monkeypatch.setattr(anki_connect, "probe", lambda url, required=(), timeout=5:
+                        asked.append((url, threading.current_thread() is not main)) or {"ok": open_[0]})
+    win = junban_world.win
+    assert wait_until(lambda: P.JUNBAN in win.phase.opens)
+    assert not win.services.settings.get().get("anki_sync_auto")             # (the default)
+    win.show_status(win.services.status.snapshot()._replace(replan=rp.InJunban(rp.ONE_DECK)))
+    assert wait_until(lambda: asked and not win._anki_looking)
+    assert asked[0][1] and "127.0.0.1" in asked[0][0]                        # on a worker, loopback
+    assert win.phase.states[P.JUNBAN].needs is None                          # Anki closed: grey
+    win._look_for_anki()                                                      # asked again at once: throttled
+    assert len(asked) == 1
+    open_[0] = True                                                           # the learner opens Anki, comes back
+    monkeypatch.setattr(shell, "ANKI_LOOK_EVERY", 0.0)
+    win._look_for_anki()
+    assert wait_until(lambda: win.phase.states[P.JUNBAN].needs == rp.ONE_DECK)
+    win._show_automation(A.State(A.IDLE, "ja", 0, 120, None, None, 1))       # says nothing about Anki: amber stays
+    assert win.phase.states[P.JUNBAN].needs == rp.ONE_DECK
+    win._show_automation(A.State(A.CLOSED, "ja", 0, 120, None, None, 2))     # a sync found Anki closed: grey
+    assert win.phase.states[P.JUNBAN].needs is None
+    win._show_automation(A.State(A.SYNCED, "ja", 0, 120, None, None, 3))     # ... and answering: amber
+    assert win.phase.states[P.JUNBAN].needs == rp.ONE_DECK
 
 
 @pytest.mark.parametrize("line", [rp.GivesUp(rp.AFTER_GENERATE.format(mode="Only i+1 sentences")),

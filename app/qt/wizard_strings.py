@@ -231,8 +231,9 @@ ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
 ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
 ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
 # Kantan-B1 (A2, PROVISIONAL): Anki closed — *Next* stays, and goes on as *Skip* does (nothing written)
-ORDER_WHEN_OPEN = "Card order starts once Anki is open."
-ORDER_NEXT_TIP = "Go on without Card order for now: it starts once Anki is open. Nothing is changed.\n• Enter"
+ORDER_WHEN_OPEN = "Once Anki is open, 順 turns amber: pick your deck there."
+ORDER_NEXT_TIP = ("Go on without Card order for now: once Anki is open, pick your deck in 順. Nothing is "
+                  "changed.\n• Enter")
 # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the deck's new cards — the first sentence is *Needs you*'s
 # (`app/services/needs.backlog_head`: *Your 2,300 new cards come from 14 shows; 12 are on this PC.*), then one of these
 BEHIND_LOOKING = "Looking at where your new cards came from…"

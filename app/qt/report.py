@@ -1240,8 +1240,8 @@ class ReportWindow(SecondaryWindow):
             self.back()                                            # ... report carries these words too)
         for box, words, most in ((self.what, what, PIYO_WHAT_MAX), (self.expected, expected, PIYO_EXPECTED_MAX)):
             words = str(words or "").strip()[:most]
-            if words:
-                had = box.toPlainText().strip()
+            had = box.toPlainText().strip()
+            if words and words not in had:                         # (pressed again: the line isn't said twice)
                 box.setPlainText(f"{had}\n\n{words}" if had else words)
         self.what.setFocus()                                       # (never a button: a key typed meanwhile sends nothing)
 

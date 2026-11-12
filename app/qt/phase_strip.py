@@ -131,6 +131,8 @@ class PhaseStrip(QWidget):
         self._focus = None                     # the circle the keyboard is on
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
+        self.anki_answers = False              # Kantan-B1 (B3): Anki answers (the footer's emerald lit: `set_anki`)
+        self._snap = None                      # the last status snapshot (`set_anki` reads it again)
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
         self.on_states = None                  # states -> None, after each refresh (the shell's one-time hints, HC-3)
         self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
@@ -170,10 +172,24 @@ class PhaseStrip(QWidget):
         self._views = tuple(views or ())
         self.refresh()
 
+    def set_anki(self, answers):
+        """Kantan-B1 (B3, Sonic ✅ 2026-11-12): whether Anki answers now (the footer's emerald lit). 順's deck to pick
+        is amber only then — setup's *Skip* on Card order, or Anki closed, never meets *A decision waits for you* at
+        once; before, its hover says it waits for Anki (grey)."""
+        answers = bool(answers)
+        if answers == self.anki_answers:
+            return
+        self.anki_answers = answers
+        if self._snap is not None:
+            self.set_status(self._snap)
+
     def set_status(self, snap):
+        self._snap = snap
         standing = {c: getattr(snap, field, None) or "" for c, field in STANDING.items()}
         asks = standing.get(phase.JUNBAN)
         asks = asks if isinstance(asks, (replan_preview.InJunban, replan_preview.Fails)) and asks else None
+        if isinstance(asks, replan_preview.InJunban) and asks != replan_preview.RESTORE_FIRST and not self.anki_answers:
+            standing[phase.JUNBAN], asks = strings.PHASE_DECK_WHEN_ANKI, None      # (B3: a deck waits for Anki: grey)
         standing = {c: line for c, line in standing.items() if line and not (c == phase.JUNBAN and asks)}
         parts = self._extra.get(phase.JUNBAN, {})
         if (parts.get("asks") or (None, None))[1] != asks or type(self._asks) is not type(asks):

@@ -1934,17 +1934,17 @@ def test_page_six_says_reading_n_files_while_the_indexer_reads_never_counting_ov
     monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
     log = tmp_path / "indexer-window.log"
     log.write_text("Indexer: 1 of 4\n", encoding="utf-8")
-    shell.chores = ReadingChores(str(log))
+    shell.services.chores = ReadingChores(str(log))                 # (the window's chores are its services')
     go_to(wiz, "level")
     page = wiz.page
     assert wait_until(lambda: page.counting.text() == "Reading 4 files…")
     assert not page.counting.isHidden() and page.numbers_part.isHidden()
     page.show_numbers(None, 1)
     assert page.counting.text() == "Reading 1 file…"
-    shell.chores.reading = False                                    # the indexer ended: no count of its kept
+    shell.services.chores.reading = False                                    # the indexer ended: no count of its kept
     wiz.read_numbers()
     assert wait_until(lambda: page.counting.text() == S.COUNTING)
-    shell.chores.reading = True
+    shell.services.chores.reading = True
     page.show_numbers(None, 4)
     os.utime(log, (1, 1))                                           # an old run's log: never this run's count
     wiz.read_numbers()
@@ -2167,10 +2167,10 @@ def test_card_order_coming_up_when_anki_answers_takes_no_press_aimed_before_it(m
     wiz, _shell, api, settings, _m = make(api=api)
     go_to(wiz, "order")
     settle(wiz)
-    assert wiz.btn_next.isHidden()
+    assert not wiz.btn_next.isHidden() and wiz.btn_next.toolTip() == S.ORDER_NEXT_TIP     # Kantan-B1: Next as Skip
     settings.calls.clear()
     wiz._anki_looked(dict(OPEN_LOOK), wiz._anki_seq, wiz.language)       # Anki answers: the controls come up
-    assert not wiz.btn_next.isHidden()
+    assert not wiz.btn_next.isHidden() and wiz.btn_next.toolTip() == S.NEXT_TIP   # (now it saves: it waits again)
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
     QTest.keyClick(wiz, Qt.Key.Key_Return)
     assert W.PAGES[wiz.index] == "order" and settings.calls == [], "nothing saved before the page was seen"

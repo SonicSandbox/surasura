@@ -70,15 +70,19 @@ def test_the_page_says_the_copy_and_warns_once_the_library_is_big(make, empty_li
     assert "big library" in page.reading_line.text()
 
 
-def test_page_three_always_offers_use_every_core_and_saves_it_at_once(make, empty_library):
-    """K5 C4, as Mado-O changed it (Sonic 2026-10-30): *Use every core* is on page 3 from the start — decided before
-    the load screen reads the library, whatever its size — and saved the moment it is flipped, never on *Next* (the
-    copy's pools read the key as they open, so a flip while the look lists 20,000 books still counts); it shows the
-    key as saved, and a count — the big library's warning too — never hides it or writes it."""
+def test_page_three_offers_use_every_core_once_a_folder_is_picked_and_saves_it_at_once(make, empty_library,
+                                                                                       ja_resources_dir):
+    """K5 C4, as Mado-O changed it (Sonic 2026-10-30): *Use every core* is on page 3 — decided before the load screen
+    reads the library, whatever its size — and saved the moment it is flipped, never on *Next* (the copy's pools read
+    the key as they open, so a flip while the look lists 20,000 books still counts); it shows the key as saved, and a
+    count — the big library's warning too — never hides it or writes it. Kantan-B1 (A2): it shows once a folder is
+    picked (a reading speed asked before any folder was a question with no subject), still before *Next*."""
     wiz, _shell, _api, settings, _m = make(api=SourcesApi())
     go_to(wiz, "shows")
     page = wiz.page
     settings.calls.clear()
+    assert page.every_core.isHidden()
+    page.add_folder(ja_resources_dir)
     assert not page.every_core.isHidden() and not page.every_core.switch.isChecked()
     assert page.every_core.toolTip() or page.every_core.switch.toolTip()
     page.show_reading(setup_wizard.BIG_LIBRARY - 1, 300)

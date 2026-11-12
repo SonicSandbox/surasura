@@ -579,7 +579,7 @@ def build(state=None, warm=True, serving=False):
     @server.tool(annotations=reads, structured_output=False)    # (its words once: never doubled)
     def surasura_diagnose(area: str = "", language: str = "") -> str:
         """What Surasura sees on this computer when the learner asks why theirs is doing something: its version, the
-        newest log lines that say something failed, waited or was refused, Connect's jobs as states and counts (a
+        newest log lines that say something failed, waited or was refused, the card jobs (connect) as states and counts (a
         failed part's refused words), Anki's sync, hato, the library's counts. area: app, connect, anki, library or
         hato — ask only for the one you need (anki also asks whether Anki is open, on this computer); leave it out
         for all. Read only: it changes nothing and sends nothing; the learner's names are written <you>, <pc>…."""

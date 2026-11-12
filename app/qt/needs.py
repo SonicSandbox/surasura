@@ -243,9 +243,9 @@ def _label(text, name, parent, wrap=True):
 # round 8 row 45: the buttons whose press turns an arc (`app/qt/press.py`, `NeedsYou._press`) — a card's answers that
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
-ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "skip_words", "dismiss", "make_cards",
-           "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
-           "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
+ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "check_again", "skip_words", "dismiss",
+           "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
+           "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -772,6 +772,7 @@ class NeedsYou(QObject):
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
+                              "check_again": _connect_callable("actions", "check_again"),     # Kantan-B2 (B4)
                               "ask_hato": _connect_callable("hato", "backfill"),
                               "dismiss": _connect_callable("status", "dismiss"),
                               "save_logs": _connect_callable("status", "save_logs"),
@@ -1064,7 +1065,7 @@ class NeedsYou(QObject):
             return name in self.hooks
         if name in self.WRITES:
             return getattr(self.win, "moves", None) is not None
-        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki", "skip_words"):
+        if name in ("mine_anyway", "check_again", "ask_hato", "dismiss", "save_logs", "open_anki", "skip_words"):
             return self.connect_calls.get(name) is not None
         if name in ("get_speech_model", "no_speech_model"):
             return self.connect_calls.get("speech_model") is not None
@@ -1924,6 +1925,26 @@ class NeedsYou(QObject):
                 self._stays("mine_anyway", entry)
             self._connect_done(strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("mine_anyway", entry, run, then=done)
+
+    def _do_check_again(self, entry, _line):
+        """Kantan-B2 (AUDIT B4): *Not timed*'s *Check again* — the row's own (`actions.check_again`: the subtitle beside
+        its video read first, the job queued) for its episode, on a worker, then Connect kicked; the card goes. Nothing
+        to check again any more: said, the card stays."""
+        check, kick, lang, read_settings = (self.connect_calls["check_again"], self.connect_calls.get("kick"),
+                                            self.language, self.read_settings)
+        item_id = entry.data.get("item_id")
+
+        def run():
+            ok = item_id is not None and check(lang, item_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("check_again", entry)
+            self._connect_done(strings.NEEDS_CHECK_AGAIN if ok else strings.CHECK_AGAIN_NOTHING)
+        self._press("check_again", entry, run, then=done)
 
     def _do_skip_words(self, entry, _line):
         """Michi-RM3: *Skip this word* — those words left out for good (`actions.skip_refused`), the part's other cards

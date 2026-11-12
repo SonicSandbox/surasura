@@ -48,7 +48,8 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   `kept_out` (how many new files a look left out because their bytes or video are an item's he removed: a copy in
   another folder) and `kept_out_ids` (those Removes' trash ids: *Bring back* is `Writer.restore(kept_out_ids)`) —
   from the look cache (`sources.notes`), so a quick look that lists nothing again keeps saying them.
-  `look_at(root_id)`: one full look of that folder now (after a *Bring back*).
+  `look_at(root_id)`: one full look of that folder now (after a *Bring back*). Kantan-B2 (AUDIT A3): and `short`, how
+  many loose texts its last look left out as too short (`sources.notes`; New arrivals says it).
 - **A video's own subtitle track** (Michi-ST, `app/tracks.py`): after every look, the videos waiting for a subtitle
   (K5) are asked of Anki Miner on a worker of their own (`_ask_tracks`): one fill at a time, an ask meanwhile folded
   into one more after it; never on the looks' worker, so a long copy never holds a look or Refresh. The window closing
@@ -876,7 +877,7 @@ class SourceLooks:
         """Alpha 4: each source row's `not_read`, `kept_out` and `kept_out_ids` (see the module's note); a row the
         notes can't be read for says nothing (empty), never the summary's failure."""
         for r in rows:
-            r.update(not_read=[], kept_out=0, kept_out_ids=[])
+            r.update(not_read=[], kept_out=0, kept_out_ids=[], short=0)
         try:
             said = sources.notes(self.language, store)
             keys = {k for n in said.values() for ks in n["kept_out"].values() for k in ks}
@@ -886,6 +887,7 @@ class SourceLooks:
                 if not n:
                     continue
                 r["not_read"] = n["not_read"]
+                r["short"] = n.get("short", 0)                    # Kantan-B2: short texts left out (AUDIT A3)
                 files = [ks for ks in n["kept_out"].values() if any(k in out for k in ks)]
                 r["kept_out"] = len(files)
                 r["kept_out_ids"] = sorted({i for ks in files for k in ks for i in out.get(k, ())})

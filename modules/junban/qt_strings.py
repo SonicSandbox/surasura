@@ -67,12 +67,12 @@ JUNBAN_MARKER_TAIL = " Words that do not carry it keep their current order, at t
 JUNBAN_MARKER_NAMES = {"star": "Only ☆ high leverage", "lopsided": "Only ⚖︎ lopsided", "reading": "Only 文 reading"}
 JUNBAN_OWN_TAG = "My own cards have this tag:"
 JUNBAN_OWN_TAG_NAME = "Your own cards' tag"
-JUNBAN_OWN_TAG_TIP = ("Cards you mine yourself go ahead of the ones Surasura Connect makes, in the order you mined them, "
-                      "and are never suspended. Without a tag, that's every card without Connect's tag mined since "
-                      "Connect's first. Type a tag (immersion) and every card carrying it is yours too, whenever you "
+JUNBAN_OWN_TAG_TIP = ("Cards you mine yourself go ahead of the cards made for you, in the order you mined them, "
+                      "and are never suspended. Without a tag, that's every card without their tag mined since "
+                      "the first card made for you. Type a tag (immersion) and every card carrying it is yours too, whenever you "
                       "mined it.")
 JUNBAN_ORDER_ALL = "Order all cards by the list"
-JUNBAN_ORDER_ALL_TIP = ("Put your own cards in your list's order too, among Connect's, instead of ahead of them. They "
+JUNBAN_ORDER_ALL_TIP = ("Put your own cards in your list's order too, among the cards made for you, instead of ahead of them. They "
                         "are still never suspended.")
 JUNBAN_TOUCH = "Also update the cards"
 JUNBAN_TOUCH_OPEN = "▾  " + JUNBAN_TOUCH

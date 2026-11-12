@@ -81,7 +81,7 @@ ANKI_MINER_OPEN = "Anki Miner is open: close it to make cards."
 # A2-6: told BUSY while Surasura's *Finish its setup* runs Anki Miner's setup (`anki_miner.setting_up`): nothing to close
 SETTING_UP = "Anki Miner is finishing its setup: cards are made once it's done."
 WRITER_BUSY = "Another program is writing to Anki."
-SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installed. Connect waits at the cap."
+SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installed. No more cards are made past the cap."
 REVIEWING = "Waiting while you review in Anki."
 ANKI_CLOSED = "Waiting for Anki: it isn't open."
 # A call to Anki that failed while Anki answers (one slow or refused request: laptop round 5 review A1) — that
@@ -93,7 +93,7 @@ NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)
 # isn't found (`Steps.audio`), or one transcript spans several audio files (its lines can't be told apart by file)
 NO_AUDIO = "No audio: its audio file isn't on this computer."
 NO_TEXT = "Nothing to cut its cards from yet: this audiobook has no text of its own (its book's, or a question open)."
-SEVERAL_FILES = ("One transcript for {n} audio files: Connect can't tell which file each line is in, so its cards "
+SEVERAL_FILES = ("One transcript for {n} audio files: Surasura can't tell which file each line is in, so its cards "
                  "wait. A subtitle file for each audio file, named like it, is mined.")
 # Michi-AB Stage B (AB-Q2/Q3, PROVISIONAL): a book paired with its audiobook waits while Anki Miner lines them up (its
 # cards then come with their sentence audio); the row says so with *Stop* (`lining_up`: the feed's LINING_UP)
@@ -123,8 +123,7 @@ MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Tr
 # type that isn't a cloze one — the line says so in plain words (PROVISIONAL words)
 MINE_REFUSED = "mine-refused"
 MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}){hint}. Skip this word and the rest "
-                    "of the part is done, and it's never asked again; Try again tries it once more. The cards it made "
-                    "are kept.")
+                    "of the part is done, and it's never asked again. The cards it made are kept.")   # Kantan-B2 (B5)
 UNKNOWN_REASON = "cannot create note for unknown reason"     # AnkiConnect's words for a cloze state of Anki's check
 CLOZE_HINT = (": a dictionary's text for this word looks like an Anki cloze ({{c1::…}}), and Anki refuses it on "
               "this note type")      # (Mattias found it: a grammar dictionary's example sentences, 2026-11-12)
@@ -167,7 +166,7 @@ CHINESE = "Chinese cards come later."
 STOPPED_BY_YOU = STOPPED_REASON
 # Laptop round 9 #56: an open job with no reason of its own while Connect works on another (`status` computes it for
 # the record; never written to the ledger)
-TURN = "Waiting its turn: Connect is making another episode's cards now."
+TURN = "Waiting its turn: Surasura is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
@@ -176,9 +175,9 @@ LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait fo
 # aside with this line (`_books_aside`): never picked, never a *No video* card, nothing on the circles. Once Anki Miner
 # reads them, they're queued again by themselves (`ledger.reopen_skipped`): nothing to undo. K67's asked-only rule is
 # this one now.
-BOOKS_WAIT = "Waits for Anki Miner to read books: Connect makes its cards by itself once Anki Miner can."
+BOOKS_WAIT = "Waits for Anki Miner to read books: Surasura makes its cards by itself once Anki Miner can."
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
-AUDIO_WAIT = "Waits for Anki Miner to mine audio: Connect makes its cards by itself once Anki Miner can."
+AUDIO_WAIT = "Waits for Anki Miner to mine audio: Surasura makes its cards by itself once Anki Miner can."
 WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
 # Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
 # here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
@@ -192,9 +191,9 @@ LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
-SWITCHED_OFF = "Connect was switched off."
+SWITCHED_OFF = "Cards made for you was switched off."
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
-REPLACED = "Surasura was updated: the new version's Connect takes over."
+REPLACED = "Surasura was updated: the new version makes the cards from here."
 MINER_ABSENT = "Anki Miner isn't installed"
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
@@ -699,7 +698,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 return _waiting_all(ledger, lang, parked, out, n.say, False, tried) or outside
         except Exception as e:              # R15: a fault of one job never ends the run nor hides it
             log.exception("Connect's job %s stopped on an error", job["id"])
-            say = f"Connect stopped on an error while making an episode's cards ({type(e).__name__}): {e}"
+            say = f"Surasura stopped on an error while making an episode's cards ({type(e).__name__}): {e}"
             if ledger.need(lang, "error", say, item_id=job["item_id"], job_id=job["id"]):
                 out["needs"].append(say)
             _wait(ledger, job, Wait(say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out, parked)
@@ -1728,7 +1727,7 @@ def _fit(steps, ledger, lang, job):
         if picked.pop("beside", None):      # Michi-NT: the next pick (and a *Mine anyway*) is the copy's again
             ledger.set_state(jid, "fit-check", picked=picked)
         title = steps.title(lang, job)
-        gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
+        gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Surasura stopped trying. {MINE_ANYWAY_HINT}"
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
         was = picked.pop("beside", None)
@@ -2120,7 +2119,7 @@ def _full(steps, lang, asked=False):
     count = steps.waiting_count(lang)
     if count is None or count < cap:
         return None
-    return Wait(f"Your {count} cards are waiting: Connect makes more as you study them.", resume="mining")
+    return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
 
 
 def _at_cap(steps, ledger, lang, todo, asked=False):
@@ -2139,7 +2138,7 @@ def _at_cap(steps, ledger, lang, todo, asked=False):
         count = steps.waiting_count(lang)
         if count is not None and count < cap:
             return None
-    return Wait(f"Your {count} cards are waiting: Connect makes more as you study them.", resume="mining")
+    return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
 
 
 def _outcome(ledger, jid, word):
@@ -2812,7 +2811,7 @@ class Steps:
             raise Needs("known-sync", e.message) from None
         got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
         if got.generate == "first":
-            self._generate(ns, "Generate didn't finish, so Connect waits for a current list.", ledger)
+            self._generate(ns, "Generate didn't finish, so your cards wait for a current list.", ledger)
             got = self.current(lang, fresh=True)
         if got.generate == "after":
             self._after[lang] = got.reason
@@ -2896,7 +2895,7 @@ class Steps:
             return False
         log.info("Connect: Generate after mining (%s): %s", lang, why)
         self._generate(SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False),
-                       "Generate didn't finish after Connect made its cards: your list catches up at the next one.",
+                       "Generate didn't finish after its cards were made: your list catches up at the next one.",
                        ledger)
         try:
             self._serves(lang, self.current(lang, fresh=True))
@@ -3012,10 +3011,10 @@ class Steps:
         if len(chosen) < count + len(needed) - cap:
             # the count holds your own new cards too (B3-2 A), the shelf takes only Connect's: shelving that can't
             # bring the batch under the cap suspends cards for nothing (review r2 #3) — nothing is shelved
-            self._say(lang, f"the shelf can't make room: {count} cards wait, {len(chosen)} of Connect's could go.")
+            self._say(lang, f"the shelf can't make room: {count} cards wait, {len(chosen)} of the cards made for you could go.")
             return 0
         run = shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
-        self._say(lang, f"{len(chosen)} of Connect's waiting cards went to the shelf (suspended in Anki, tagged "
+        self._say(lang, f"{len(chosen)} waiting cards made for you went to the shelf (suspended in Anki, tagged "
                         f"{shelf.SHELF_TAG}; restore point {run}).")
         return len(chosen)
 

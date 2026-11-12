@@ -62,8 +62,23 @@ TOUR = ("automation", "cards", "known", "generate", "junban", "backfill", "arriv
 # The cards that need an optional module (§4.1, S10): absent → not in *All help* or the tour, and no ? for them
 NEEDS_MODULE = {"junban": "junban", "backfill": "junban"}
 
+# Kantan-B2 (AUDIT A3, finding 3): the cards whose words speak of cards being made, and of the top-cards line (`live`)
+LINE_CARDS = ("current", "cards")
+OFF_SETTINGS = "connect_enabled"            # with cards off, *Open its settings* goes to the switch
+
 ASSETS = os.path.join("app", "assets", "help")
 MANIFEST = "clips.json"
+
+
+def live(card_id, cards_on, line_shown):
+    """Kantan-B2 (AUDIT A3, finding 3): what card `card_id` says as things are now -> (off, after). `off`: cards are off,
+    so it says so (`HELP_CARDS_OFF`, `HELP_CARDS_OFF_ALSO`), never that cards get made, and its *Open its settings* goes
+    to `OFF_SETTINGS`; `after`: its before → after shows (a drag above the top-cards line: only while Current draws that
+    line). `cards_on` — *Make cards for me* is on; `line_shown` — Current draws its top-cards line. Every other card:
+    (False, True), as ever."""
+    if card_id not in LINE_CARDS:
+        return False, True
+    return not cards_on, bool(cards_on and line_shown)
 
 
 @functools.lru_cache(maxsize=None)

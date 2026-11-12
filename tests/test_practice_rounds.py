@@ -274,3 +274,29 @@ def test_a_round_done_again_shows_its_words_with_the_reading_it_kept():
     words = pr.words(kept)
     assert words[0]["kana"] == "イイカンジ" and words[0]["reading"] == "ヨイカンジ"
     assert "kana" not in words[1] and "kana" not in words[2]          # none kept, or not a string: left out
+
+
+# --- Kantan-B2 (AUDIT A4, finding 10): the newest round, as Settings' Piyo row and Things to try read it ------------- #
+# What a wrong answer would cost: a row that says no round was played after one was (the learner thinks Piyo never
+# connected), a date or word count from another round or language, or one unreadable file hiding every round after it.
+def test_last_round_is_none_without_a_round_and_the_newest_saved_rounds_date_and_words_after():
+    from datetime import datetime
+    assert pr.last_round("ja") is None                                       # no practice folder yet
+    three = dict(JA_START, words=JA_START["words"] + [{"word": "喫茶店", "orth": "喫茶店", "reading": "キッサテン",
+                                                         "lines": [{"line": "喫茶店の朝は静かだ。", "from": "朝.txt"}]}])
+    _saved("ja", three, when=600)                                            # an older one, 3 words
+    newest = _saved("ja", JA_START, lines=["冒険は危険だが、価値がある。"], when=60)
+    when, n = pr.last_round("ja")
+    assert n == 2 and isinstance(when, datetime)
+    assert abs(when.timestamp() - os.path.getmtime(_round_file("ja", newest))) < 1
+    assert pr.last_round("zh") is None                                       # never another language's
+
+
+def test_last_round_passes_an_unreadable_newest_file_and_reads_the_next():
+    _saved("ja", JA_START, when=600)
+    broken = os.path.join(pr.folder("ja"), pr.new_id() + ".json")
+    with open(broken, "w", encoding="utf-8") as f:
+        f.write("{冒険")                                                    # a hand edit cut short: left as it is
+    when, n = pr.last_round("ja")
+    assert n == 2
+    assert open(broken, encoding="utf-8").read() == "{冒険"

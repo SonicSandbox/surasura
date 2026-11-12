@@ -228,7 +228,10 @@ def part_way(why):
 RETIME_EXTENSIONS = (".srt", ".ass", ".ssa")     # what tsubasa writes back in its own format (place.EXTENSIONS)
 # tsubasa's re-timed copy: its path, and the cues it dropped (in a stretch the video doesn't hold, or before its
 # start: its answer's `dropped_in_gap` + `dropped_before_zero` — a cut broadcast's own)
-Retimed = namedtuple("Retimed", "path dropped")
+Retimed = namedtuple("Retimed", "path dropped undetermined")
+# `undetermined` (Tsu-U, from tsubasa 0.1.12's field; based on Mattias's Tsubasa-sync #2): [(lo, hi)] seconds of the
+# written file where a line may sit on the wrong side of a cut (`unsure_in_written`), so no card is cut from a line
+# starting inside one (`pick.pick`'s `unsure`). Empty from a tsubasa before 0.1.12.
 
 
 def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
@@ -260,7 +263,40 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     if not os.path.normcase(os.path.realpath(path)).startswith(root) or not os.path.isfile(path):
         return None                 # never a file outside the job's own folder
     dropped = [answer.get(k) for k in ("dropped_in_gap", "dropped_before_zero")]
-    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0))
+    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0),
+                   unsure_in_written(answer))
+
+
+def undetermined(answer):
+    """tsubasa's `undetermined` spans in its answer -> [(lo, hi)] seconds; anything not a pair of numbers, lo <= hi,
+    left out (never a guess at what it meant)."""
+    spans = answer.get("undetermined") if isinstance(answer, dict) else None
+    out = []
+    for span in spans if isinstance(spans, list) else ():
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            lo, hi = (_number(v) for v in span)
+            if lo is not None and hi is not None and lo <= hi:
+                out.append((lo, hi))
+    return out
+
+
+def unsure_in_written(answer):
+    """Where, in the file tsubasa WROTE, a line may sit on the wrong side of a cut -> [(lo, hi)] seconds. Per cut,
+    tsubasa's span (`undetermined`: the video's time) and that span moved by the jump (`d`, the next part's offset
+    minus this one's): a line given the other part's offset is written there (Tsu-U review: on a +40 s jump a line
+    written at 141 s for a span of 98-115 s). Segments that don't line up with the spans: the spans alone."""
+    spans = undetermined(answer)
+    segments = answer.get("segments") if isinstance(answer, dict) else None
+    offsets = [_number(s[1]) if isinstance(s, (list, tuple)) and len(s) == 2 else None
+               for s in (segments if isinstance(segments, list) else ())]
+    out = []
+    for i, (lo, hi) in enumerate(spans):
+        out.append((lo, hi))
+        if len(offsets) == len(spans) + 1 and None not in (offsets[i], offsets[i + 1]):
+            d = offsets[i + 1] - offsets[i]
+            if d:
+                out.append((lo + d, hi + d))
+    return out
 
 
 def _media(path):

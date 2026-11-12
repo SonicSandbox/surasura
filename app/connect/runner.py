@@ -1487,6 +1487,7 @@ def _fit_tries(ledger, jid, failed):
 RETIMED = "retimed:"            # ledger meta: `retimed:<job id>` -> when its library copy was given to tsubasa to re-time
 RETIMED_FOLDER = "retimed"      # in a job's run folder: tsubasa's re-timed copy, until it takes the copy's place
 RETIME_PART = ".retimed.part"   # beside the copy: its re-timed bytes, flushed, until `os.replace` (never S5's `.part`)
+UNSURE_FILE = "undetermined.json"   # in a job's run folder: tsubasa's undetermined spans of its re-timed copy (Tsu-U)
 
 
 def _retime(steps, ledger, lang, job, video, copy):
@@ -3081,7 +3082,8 @@ class Steps:
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
                              wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
-                             held=self._anki_miner_held(lang))
+                             held=self._anki_miner_held(lang),
+                             unsure=self.unsure(job, subtitle) if reading is None else [])   # Tsu-U
         try:
             out = verbs.pick(ns)
         except CliError as e:
@@ -3152,7 +3154,46 @@ class Steps:
             sources._drop(part)
             log.info("Connect: job %s: its copy changed while tsubasa re-timed it; checked again", job["id"])
             return None
-        return sources.put_copy(data_dir, full, part)
+        placed = sources.put_copy(data_dir, full, part)
+        if placed:
+            self._keep_unsure(job, full, made.undetermined)
+        return placed
+
+    def _keep_unsure(self, job, copy, spans):
+        """Tsu-U (based on Mattias's Tsubasa-sync #2): the spans tsubasa left undetermined in the copy it just re-timed,
+        kept in the job's run folder (`UNSURE_FILE`) for that copy as written — the next pick cuts no card from a line
+        inside one (`unsure`). None: the file removed (a re-time with none leaves none from before). A write that fails
+        is logged: the cards are then cut as they would be without it."""
+        path = os.path.join(self.run_dir(job), UNSURE_FILE)
+        try:
+            if not spans:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            record = {"copy": os.path.normcase(os.path.abspath(copy)), "stamp": _stamp(copy),
+                      "spans": [[lo, hi] for lo, hi in spans]}
+            with open(path + ".part", "w", encoding="utf-8") as f:
+                json.dump(record, f)
+            os.replace(path + ".part", path)
+            log.info("Connect: job %s: tsubasa can't place its cut within %s; no card from a line there", job["id"],
+                     ", ".join(f"{lo:.1f}–{hi:.1f} s" for lo, hi in spans))
+        except OSError:
+            log.warning("Connect couldn't keep job %s's unsure spans", job.get("id"), exc_info=True)
+
+    def unsure(self, job, subtitle):
+        """Tsu-U: tsubasa's undetermined spans [(lo, hi)] for `subtitle`, kept at the job's re-time (`_keep_unsure`) —
+        only for that very copy, unchanged since (a copy written again since is checked again: no old span); else []."""
+        try:
+            with open(os.path.join(self.run_dir(job), UNSURE_FILE), encoding="utf-8") as f:
+                record = json.load(f)
+            if (not isinstance(record, dict) or not subtitle
+                    or record.get("copy") != os.path.normcase(os.path.abspath(subtitle))
+                    or record.get("stamp") != _stamp(subtitle)):
+                return []
+            return fit_check.undetermined({"undetermined": record.get("spans")})
+        except (OSError, ValueError, TypeError):
+            return []
 
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups

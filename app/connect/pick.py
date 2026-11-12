@@ -89,7 +89,14 @@ REASONS = {
     "name": "a name (Ignore names is on)",
     "grammar": "a grammar word (Send grammar words is off)",
     "sung": "said only in a song line",
+    # Tsu-U (based on Mattias's Tsubasa-sync #2): said only where a cut in the recording leaves the timing unsure
+    "unsure": "said only near a cut in the recording, where its line's timing is unsure",
 }
+
+
+# Tsu-U review: a span's edges are a line's end and a line's start as tsubasa computed them, unrounded; the written
+# file keeps ms (.srt) or cs (.ass), so the line on an edge can land a few ms inside. Within this of an edge: outside.
+UNSURE_EDGE_S = 0.01
 
 
 def finished(text):
@@ -448,13 +455,16 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
-         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None):
+         ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=()):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
     `listed` ({(lemma, reading): list position}): the list's rows, for `list` (and the order of every mode: the list's
     first). `carded`: the card keys (a card's word, its kana fold) of the words with a card. A line's other new words
-    are counted over what its card holds — the line and the lines its expansion adds (IS:268)."""
+    are counted over what its card holds — the line and the lines its expansion adds (IS:268). `unsure` ([(lo, hi)]
+    seconds, Tsu-U): tsubasa's `undetermined` spans of a subtitle it re-timed in parts — no card holds a line starting
+    inside one (it may sit on the wrong side of the cut: Mattias's Tsubasa-sync #2); the word takes another line, or
+    waits (`unsure`)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -494,6 +504,13 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     def others(o):
         return len(set().union(*(new_in.get(c, ()) for c in span(o.cue))) - {o.key})
 
+    spans = [(float(lo) + UNSURE_EDGE_S, float(hi) - UNSURE_EDGE_S) for lo, hi in unsure or ()]
+
+    def timed(o):
+        """Is every line a card cut from `o` holds outside tsubasa's undetermined spans? An edge is not inside: a span
+        runs from a line's end to a line's start (tsubasa 0.1.12), give or take the file's own rounding."""
+        return not any(lo < seconds(cues[c].start) < hi for c in span(o.cue) for lo, hi in spans)
+
     candidates = []
     for key, uses in by_key.items():
         phrase = uses[0].phrase
@@ -523,9 +540,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
-        usable = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
-        if reason is None and not usable:
+        heard = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
+        usable = [o for o in heard if timed(o)]
+        if reason is None and not heard:
             reason = "sung"
+        elif reason is None and not usable:
+            reason = "unsure"
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})

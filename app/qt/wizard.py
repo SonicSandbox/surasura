@@ -3418,9 +3418,10 @@ class SetupWizard(QWidget):
                              then=self.alive(answered), failed=self.alive(failed))
 
     def _pick_files_dialog(self, title, start):
+        from app import audiobooks
         from app.connect import runner
         patterns = " ".join("*" + ext for ext in path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS
-                            + runner.VIDEO_EXTENSIONS)
+                            + runner.VIDEO_EXTENSIONS + audiobooks.AUDIO_EXTENSIONS)   # Kantan-B3: audiobooks too
         paths, _chosen = QFileDialog.getOpenFileNames(self, title, start, S.PICK_FILE_FILTER.format(patterns=patterns))
         return paths
 

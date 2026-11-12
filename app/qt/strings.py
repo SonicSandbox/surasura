@@ -1287,10 +1287,12 @@ ADD_NOTHING = "Nothing to add in {name}: no subtitle or text files"
 # Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook dropped or picked alone
 AUDIOBOOK_IN_TITLE = "「{name}」 is an audiobook"
 AUDIOBOOK_IN_TITLE_N = "{n} audiobooks"
-AUDIOBOOK_IN_BODY = ("Surasura reads it where it is, in {folders}, and looks there again for new files. Then it joins "
-                     "its book, or Needs you asks which book it is.")
-AUDIOBOOK_IN_BODY_N = ("Surasura reads them where they are, in {folders}, and looks there again for new files. Then "
-                       "each joins its book, or Needs you asks which book it is.")
+AUDIOBOOK_IN_BODY = ("Surasura reads it where it is, in {folders}, and looks there again for new files. It joins its "
+                     "book, or waits in New arrivals while Needs you asks which book it is.")
+AUDIOBOOK_IN_BODY_N = ("Surasura reads them where they are, in {folders}, and looks there again for new files. Each "
+                       "joins its book, or waits in New arrivals while Needs you asks which book it is.")
+AUDIOBOOK_IN_OTHERS = "Everything else Surasura reads in {folders} comes in too: subtitles, texts, books and videos."
+AUDIOBOOK_IN_REFUSED = "「{name}」 is an audiobook: put it in a folder of its own, then drop that folder. {why}"
 AUDIOBOOK_IN_YES = "Read its folder"
 AUDIOBOOK_IN_YES_N = "Read {n} folders"
 AUDIOBOOK_IN_YES_TIP = "As + Add → A folder… does: nothing is moved"

@@ -132,10 +132,11 @@ PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads 
 PICK_TITLE = "Where are your shows and books?"
 # Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
 PICK_FILE = "Choose a file…"
-PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB: Surasura sees which it is.\n"
+PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text, an EPUB or an audiobook: Surasura sees which "
+                 "it is.\n"
                  "• It goes at the top of Current; nothing in the file is changed")
 PICK_FILE_TITLE = "Choose a file"
-PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
+PICK_FILE_FILTER = "Subtitles, videos, texts, books and audiobooks ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
 # Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook chosen as a file
 FILE_AUDIOBOOK = ("{name} is an audiobook: Surasura reads it in its folder, then asks which book it is. Choose its "

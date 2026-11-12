@@ -31,7 +31,7 @@ def _entry(store):
 
 
 def _lone(language="ja"):
-    """GINGA's audiobook (three MP3s, 50 minutes) read where it is, with no book anywhere -> (store, root, src, item)."""
+    """GINGA's audiobook (three MP3s, 50 minutes) read where it is, no book anywhere -> (store, root, src, item)."""
     store, _data_dir = _empty(language)
     src = _drive("driveA")
     _audio_folder(os.path.join(src, "Audiobooks", GINGA), GINGA, 3000)

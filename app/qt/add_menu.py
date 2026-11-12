@@ -41,7 +41,7 @@ from PyQt6.QtGui import QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPlainTextEdit,
                              QPushButton, QToolButton, QVBoxLayout)
 
-from app import theme
+from app import path_utils, theme
 from app.qt import bridge, confirm, motion, shadow, strings, style, windows
 from app.qt import press as qpress
 
@@ -134,43 +134,83 @@ def walk_folder(folder):
 AUDIO_DEPTH = 3                                          # how deep a dropped folder is looked into for audio
 
 
-def audiobook_folders(paths):
-    """(A worker: it lists folders.) Kantan-B3 (Mattias, 2026-11-12: an audiobook dropped in alone was *left out*, "has
-    to be srt then I guess"): the audiobooks among `paths` (an Explorer drop, + Add's *Files…*) — an audio file
-    (`audiobooks.is_audio`) is its folder's; a folder holding audio, in it or up to `AUDIO_DEPTH` folders inside (a
-    disc's, a title's), is one itself -> ([(folder, name)] in order, the rest in order). `name`: what the card calls
-    it — the one file picked from that folder, else its folder's name. Nothing read but names."""
+def audiobook_folders(paths, language=None):
+    """(A worker: it lists folders and reads audio tags.) Kantan-B3 (Mattias, 2026-11-12: an audiobook dropped in alone
+    was *left out* as not a text or subtitle, "has to be srt then I guess"): the audiobooks among `paths` (an Explorer
+    drop, + Add's *Files…*), by the look's own rule (`audiobooks.find`: 20 minutes or more, never beside a video) — an
+    audio file's folder, or a dropped folder with one up to `AUDIO_DEPTH` folders down. -> (found, rest, held): found
+    [{folder, name (the audiobook's title, else the folder's name), n (its audiobooks), others (it holds anything else
+    the look reads: subtitles, texts, books, videos), refused (the store's reason it can't be read where it is, or
+    None)}], `rest` (the paths that are none: handed on as before), `held` (texts and subtitles of that drop inside a
+    folder to be read: they come with it, or, at a No, go on as before)."""
     from app import audiobooks
     from app import library_store as ls
     found, rest = {}, []
-    for p in paths:
-        p = os.path.normpath(p)
+    for p in map(os.path.normpath, paths):
         if os.path.isdir(p):
-            if not _holds_audio(p):
-                rest.append(p)
-                continue
-            found.setdefault(ls.path_key(p), [p, [], True])[2] = True
+            books, others = _look_into(p)
+            folder = p
         elif audiobooks.is_audio(p):
             folder = os.path.dirname(p)
-            found.setdefault(ls.path_key(folder), [folder, [], False])[1].append(os.path.basename(p))
+            books = [a for a in _find(folder, folder) if ls.path_key(p) in {ls.path_key(f) for f in a.files}]
+            others = None
         else:
+            books = None
+        if not books:
             rest.append(p)
-    return [(folder, names[0] if len(names) == 1 and not whole else os.path.basename(folder) or folder)
-            for folder, names, whole in found.values()], rest
+            continue
+        e = found.setdefault(ls.path_key(folder), {"folder": folder, "books": {}, "others": False})
+        e["books"].update((tuple(a.files), a) for a in books)
+        if others is not None:
+            e["others"] = e["others"] or others
+    out = []
+    for e in found.values():
+        books = list(e["books"].values())
+        others = e["others"] or _look_into(e["folder"], audio=False)[1]
+        refused = _refused(language, e["folder"])
+        out.append({"folder": e["folder"], "name": (books[0].title if len(books) == 1 else "") or
+                    os.path.basename(e["folder"]) or e["folder"], "n": len(books), "others": others,
+                    "refused": refused})
+    keys = [ls.path_key(e["folder"]).rstrip("/") + "/" for e in out if not e["refused"]]
+    held = [p for p in rest if any(ls.path_key(p).startswith(k) for k in keys) and path_utils.file_kind(p)]
+    return out, [p for p in rest if p not in held], held
 
 
-def _holds_audio(folder):
+def _find(folder, root):
     from app import audiobooks
-    top = os.path.normpath(folder).count(os.sep)
     try:
-        for where, dirs, files in os.walk(folder):
-            if any(audiobooks.is_audio(f) for f in files):
-                return True
-            if os.path.normpath(where).count(os.sep) - top >= AUDIO_DEPTH:
-                dirs[:] = []
-    except OSError:
-        return False
-    return False
+        return audiobooks.find(folder, root=root)
+    except (OSError, ValueError):
+        return []
+
+
+def _look_into(folder, audio=True):
+    """`folder` and its folders `AUDIO_DEPTH` down -> (its audiobooks, whether it holds anything else the look
+    reads)."""
+    from app import audiobooks
+    from app.connect.runner import video_name
+    books, others = [], False
+    top = os.path.normpath(folder).count(os.sep)
+    for where, dirs, files in os.walk(folder):
+        if audio and (any(audiobooks.is_audio(f) for f in files) or
+                      any(audiobooks.disc_number(d) is not None for d in dirs)):
+            books += _find(where, folder)                # (its disc folders joined in by `find`, never twice)
+        others = others or any(path_utils.file_kind(f) or video_name(f) for f in files)
+        if os.path.normpath(where).count(os.sep) - top >= AUDIO_DEPTH:
+            dirs[:] = []
+    return books, others
+
+
+def _refused(language, folder):
+    """The store's own reason `folder` can't be read where it is (a whole drive, the user folder, Surasura's own), or
+    None (no library yet: + Add → *A folder…* says so)."""
+    if language is None:
+        return None
+    try:
+        from app.services import setup_wizard
+        return setup_wizard.folder_refused(language, folder)
+    except Exception:
+        return None
 
 
 def safe_title(title):
@@ -314,42 +354,72 @@ class Adder(QObject):
 
     # --- Kantan-B3: an audiobook brought in alone (PROVISIONAL words) ------------------------------------------ #
     def audiobooks_apart(self, paths, rest_to):
-        """An Explorer drop or *Files…* that may hold an audiobook: listed on a worker (`audiobook_folders`); the rest
-        handed to `rest_to(paths)` as before (a subtitle added, a video named as left out), the audiobooks' folders
-        asked about (`ask_audiobooks`). -> False without the looks (a 2.x library: nothing reads a folder where it is),
-        the caller going on as before."""
+        """An Explorer drop or *Files…* that may hold an audiobook: listed on a worker (`audiobook_folders`, the bar's
+        arc meanwhile); the rest handed to `rest_to(paths)` as before (a subtitle added, a video named as left out),
+        the audiobooks asked about (`ask_audiobooks`), one that can't be read where it is said in the bar. -> False
+        without the looks (a 2.x library: nothing reads a folder where it is), the caller going on as before."""
         if getattr(self.shell, "looks", None) is None:
             return False
-        paths = list(paths)
+        paths = [os.path.normpath(p) for p in paths]
+        language = windows.language_of(self.shell)
 
-        def listed(found):
-            folders, rest = found
+        def listed(answer):
+            found, rest, held = answer
             if rest:
                 rest_to(rest)
-            if folders:
-                self.ask_audiobooks(folders)
-        bridge.run_in_worker(lambda: audiobook_folders(paths), then=listed, failed=lambda _info: rest_to(paths))
+            if language != windows.language_of(self.shell):
+                return                                    # (another language's library now: nothing asked of it)
+            for f in found:
+                if f["refused"]:
+                    windows.say_in_bar(self.shell, strings.AUDIOBOOK_IN_REFUSED.format(name=f["name"],
+                                                                                        why=f["refused"]))
+            ok = [f for f in found if not f["refused"]]
+            if ok:
+                self.ask_audiobooks(ok, held, rest_to)
+            elif held:
+                rest_to(held)
+
+        def failed(info):
+            audio = [p for p in paths if _audio_name(p)]
+            rest = [p for p in paths if p not in audio]
+            if rest:
+                rest_to(rest)
+            if audio:
+                windows.say_in_bar(self.shell, strings.ADD_FOLDER_FAILED.format(
+                    name=os.path.basename(audio[0]), why=info[0]))
+        qpress.run(None, ("audiobooks", tuple(paths)), audiobook_folders, paths, language, then=listed,
+                   failed=failed, win=self.shell)
         return True
 
-    def ask_audiobooks(self, found):
-        """[(folder, name)]: one card names the audiobook(s) and the folder(s) its yes reads where they are (+ Add's *A
-        folder…*: nothing moved; its look pairs a book it finds, else *Needs you* asks which book it is). No, Esc or a
-        click outside: nothing read."""
-        n = len(found)
-        folders = [f for f, _name in found]
+    def ask_audiobooks(self, found, held=(), rest_to=None):
+        """`found` (`audiobook_folders`' kept ones): one card names the audiobook(s), the folder(s) its yes reads where
+        they are (+ Add's *A folder…*: nothing moved; its look pairs a book it finds, else *Needs you* asks which book)
+        and anything else read there with them. No, Esc or a click outside: nothing read, `held` (that drop's texts in
+        those folders) handed to `rest_to` as before."""
+        n, books = len(found), sum(f["n"] for f in found)
+        folders = [f["folder"] for f in found]
         where = ", ".join(f"「{os.path.basename(f) or f}」" for f in folders[:3]) + (" …" if n > 3 else "")
+        others = [f["folder"] for f in found if f["others"]]
+        body = (strings.AUDIOBOOK_IN_BODY if books == 1 else strings.AUDIOBOOK_IN_BODY_N).format(folders=where)
+        if others:
+            body += " " + strings.AUDIOBOOK_IN_OTHERS.format(folders=", ".join(
+                f"「{os.path.basename(f) or f}」" for f in others[:3]) + (" …" if len(others) > 3 else ""))
+        card = []
 
         def answered(yes):
-            self.question = None
+            if card and self.question is card[0]:
+                self.question = None
             if yes:
                 for folder in folders:
                     self.read_folder(folder)
+            elif held and rest_to is not None:
+                rest_to(list(held))
         self.question = confirm.ask(
-            self.shell, strings.AUDIOBOOK_IN_TITLE.format(name=found[0][1]) if n == 1 else
-            strings.AUDIOBOOK_IN_TITLE_N.format(n=n), (strings.AUDIOBOOK_IN_BODY if n == 1 else
-                                                       strings.AUDIOBOOK_IN_BODY_N).format(folders=where),
+            self.shell, strings.AUDIOBOOK_IN_TITLE.format(name=found[0]["name"]) if books == 1 else
+            strings.AUDIOBOOK_IN_TITLE_N.format(n=books), body,
             strings.AUDIOBOOK_IN_YES if n == 1 else strings.AUDIOBOOK_IN_YES_N.format(n=n),
             strings.AUDIOBOOK_IN_YES_TIP, on_answer=answered)
+        card.append(self.question)
         return self.question
 
     # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #

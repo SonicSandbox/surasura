@@ -27,6 +27,14 @@ day's words first:
   §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), Chinese (E24)
   and a setup Anki Miner lacks wait for the next start. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
+- **Never waiting with no window open** (Haya-CL, Mattias 3.0.2: "a bunch of surasura-cli.exe running after having
+  closed Surasura"; lean, PROVISIONAL): those 2-minute looks go on only while a Surasura window is open (its running
+  mark, `Steps.window_open`). When what is left only waits and no window is open — closed, crashed or killed — Connect
+  exits instead of pausing, and a pause ends within UPDATE_LOOK_S of the last window closing; the window's next start
+  (or hato's next hand-over) starts it again and the waits are read from the ledger as before. Work it can do now (a
+  batch, a hato drop with the window closed) is still done first. And a Connect whose program folder now holds another
+  build (`Steps.replaced`: Setup or a swap put a newer Surasura under it) stops at the next step boundary and starts the
+  folder's own Connect (`connect_verbs._loop`): never an old version's Connect working on beside a new one.
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
   an ask, nor a level job beyond the line on 3.0 (P4.1 C3, C4: `inbox.keeps`).
@@ -157,6 +165,8 @@ STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Connect was switched off."
+# Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
+REPLACED = "Surasura was updated: the new version's Connect takes over."
 MINER_ABSENT = "Anki Miner isn't installed"
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
@@ -257,14 +267,14 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         while True:
             summary["looks"] += 1
             _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
-            outside = work = battery = False
+            outside = work = battery = unread = False
             for lang in languages:
                 stop = _stop(steps)
                 if stop:
                     summary["stopped"] = stop
                     return summary
                 if _consume(steps, ledger, lang):
-                    outside = work = True       # the inbox couldn't be read: looked at again, never lost
+                    outside = work = unread = True      # the inbox couldn't be read: looked at again, never lost
                 if lang not in undos_looked:    # an undo a kill left half-way: finished whatever else runs (#5)
                     undos_looked.add(lang)
                     _finish_undos(steps, ledger, lang)
@@ -299,8 +309,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if not (_woken(steps, ledger, parked) and any(_open_jobs(ledger, lang, parked) for lang in languages)):
                     break
                 continue
+            if not _window_open(steps):
+                # Haya-CL: what is left only waits and no Surasura window is open: Connect ends here, never a
+                # surasura-cli.exe looking every 2 minutes for hours after the window closed; the window's next start
+                # (or hato's next hand-over) starts it again, and the ledger keeps every wait
+                summary["no_window"] = True
+                if unread:
+                    summary["inbox_unread"] = True      # `connect_verbs._loop`: no start again for its pending inbox
+                log.info("Connect: what is left waits and no Surasura window is open: it stops until the next start")
+                break
             if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)
-                          or _woken(steps, ledger, parked)):
+                          or _woken(steps, ledger, parked) or _replaced(steps) or not _window_open(steps)):
                 summary["stopped"] = "cancelled"
                 break
         return summary
@@ -345,7 +364,46 @@ def _stop(steps):
         return STOPPED_FOR_UPDATE
     if not steps.enabled():
         return SWITCHED_OFF
+    if _replaced(steps):
+        return REPLACED
     return None
+
+
+def _replaced(steps):
+    """Haya-CL: does this Connect's program folder hold another build now (`Steps.replaced`)? A stand-in without
+    the look, or a look that fails, says no (logged)."""
+    replaced = getattr(steps, "replaced", None)
+    if replaced is None:
+        return False
+    try:
+        return bool(replaced())
+    except Exception:
+        log.warning("Connect couldn't look at its program's build; it goes on", exc_info=True)
+        return False
+
+
+WINDOW_KINDS = ("window", "dashboard", None)      # app_entry's mark kinds of a start that opens a window (None: a
+                                                    # record not written yet — a window just starting counts as one)
+
+
+def _a_window(kind):
+    """Is a running mark of `kind` a window's? The 3.0 window ("window"), the 2.x Tk window ("dashboard"), and a
+    window started with a flag (`Surasura.exe --hud`: app_entry names the mark after its first argument)."""
+    return kind in WINDOW_KINDS or (isinstance(kind, str) and kind.startswith("-"))
+
+
+def _window_open(steps):
+    """Haya-CL: is a Surasura window open (`Steps.window_open`)? Only then does Connect wait out its 2-minute looks.
+    A stand-in without the look, or a look that fails, says yes (logged): the wait as before 3.0.3, never an exit
+    that leaves work for nobody."""
+    window_open = getattr(steps, "window_open", None)
+    if window_open is None:
+        return True
+    try:
+        return bool(window_open())
+    except Exception:
+        log.warning("Connect couldn't look for an open window; it waits as before", exc_info=True)
+        return True
 
 
 def _consume(steps, ledger, lang):
@@ -1952,6 +2010,18 @@ class Steps:
     def update_staged(self):
         from app import library_store
         return library_store.update_staged(looks=library_store.PROBE_LOOKS)
+
+    def window_open(self):
+        """Haya-CL: is a Surasura window open — any install of this data name (`locks.running_others`: a running mark
+        of kind "window"; a mark whose record can't be read yet, a window just starting, counts as one)?"""
+        from app import locks
+        return any(_a_window(r.get("kind")) for r in locks.running_others())
+
+    def replaced(self):
+        """Haya-CL: does the program folder hold another build than this running program (`build_info.stamp_skew`:
+        Setup or a swap put a newer Surasura under it)? From source: never."""
+        from app import build_info
+        return build_info.stamp_skew() is not None
 
     def kicked(self):
         """Has a kick stamped the wake mark since the last look at it (`kick.wake_stamp`)? Then the mark is taken as

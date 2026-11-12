@@ -14,7 +14,11 @@
 - **Built when the look changes, never on an open** (R5): `set_look` rebuilds only for a new answer; an open with the
   same answer makes no widget. Nothing here reads a file: the shell asks the service on a worker.
 """
-from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, pyqtSignal
+import collections
+import time
+
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
                              QVBoxLayout, QWidget)
@@ -25,6 +29,7 @@ from app.qt.frame import _Away, _iris
 
 EDGE = 8                            # px the panel keeps from the window's edges
 FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
+SLICES_KEPT = 64                    # the last pieces' times kept (tests: the largest slice ≤ 4 ms)
 
 
 def release_name(release):
@@ -163,6 +168,9 @@ class GuidePanel(motion.Overlay):
         self.cards = []
         self.folds = []                     # (button, [fix cards], n)
         self.builds = 0                     # the body made (tests: once per new look, never per open)
+        self._token = 0                     # which body the pieces on their way are for
+        self._pieces = collections.deque()  # the body's pieces still to make, one a turn
+        self.slices = []                    # each piece's time on the GUI thread, ms (the last SLICES_KEPT)
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         parent.installEventFilter(self)
@@ -190,7 +198,12 @@ class GuidePanel(motion.Overlay):
         return bool(self.look is not None and self.look.releases)
 
     def _build(self):
+        """A new answer's body, **one piece per event-loop turn** (the lead, 2026-11-12: the 4 ms rule strict — a whole
+        release built at once took 3.3–4.8 ms at 100–200 %): the empty body at once, then each line, card and fold
+        piece in a turn of its own (`_step`). A newer answer cancels the pieces still to come; the panel places itself
+        once the last lands. `builds` counts finished bodies."""
         f = self._f
+        self._token += 1
         body = QWidget()
         body.setObjectName("guidebody")
         col = QVBoxLayout(body)
@@ -200,42 +213,80 @@ class GuidePanel(motion.Overlay):
         releases = self.look.releases if self.look else ()
         self.heading.setText(strings.GUIDE_HEADING_ONE.format(version=releases[0].release.version)
                              if len(releases) == 1 else strings.GUIDE_HEADING)
+        pieces = []
+
+        def label(name, text):
+            pieces.append(lambda: col.addWidget(self._label(name, text, body)))
+
+        def card(item, folded=False, into=None):
+            def make():
+                c = _Card(item, self._show, body, folded=folded)
+                if folded:
+                    c.setVisible(False)
+                    into[1].append(c)
+                self.cards.append(c)
+                col.addWidget(c)
+            pieces.append(make)
+
+        def fold(entry):
+            def make():
+                b = QPushButton("", body)
+                b.setObjectName("guidefold")
+                b.setProperty("kind", "link")
+                b.setToolTip(strings.GUIDE_FIXES_TIP)
+                b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                b.setAutoDefault(False)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                col.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+                entry[0] = b
+                self.folds.append(entry)
+                b.clicked.connect(lambda _c=False, e=entry: self._fold(e))
+            pieces.append(make)
+
         for shown in releases:
             if len(releases) > 1:                          # (one release: its version is the heading's)
-                col.addWidget(self._label("guidever", release_name(shown.release), body))
+                label("guidever", release_name(shown.release))
             if shown.for_you and shown.others:             # "For you" only where it explains the order
-                col.addWidget(self._label("guidegroup", strings.GUIDE_FOR_YOU, body))
+                label("guidegroup", strings.GUIDE_FOR_YOU)
             for n, item in enumerate(shown.for_you + shown.others):
                 if n == len(shown.for_you) and shown.for_you:
-                    col.addSpacing(round(6 * f))
-                card = _Card(item, self._show, body)
-                self.cards.append(card)
-                col.addWidget(card)
+                    pieces.append(lambda: col.addSpacing(round(6 * f)))
+                card(item)
             if shown.fixes:
-                fold = QPushButton("", body)
-                fold.setObjectName("guidefold")
-                fold.setProperty("kind", "link")
-                fold.setToolTip(strings.GUIDE_FIXES_TIP)
-                fold.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-                fold.setAutoDefault(False)
-                fold.setCursor(Qt.CursorShape.PointingHandCursor)
-                col.addWidget(fold, 0, Qt.AlignmentFlag.AlignLeft)
-                fixes = []
+                entry = [None, [], False]
+                fold(entry)
                 for item in shown.fixes:
-                    card = _Card(item, self._show, body, folded=True)
-                    card.setVisible(False)
-                    self.cards.append(card)
-                    fixes.append(card)
-                    col.addWidget(card)
-                entry = [fold, fixes, False]
-                self.folds.append(entry)
-                fold.clicked.connect(lambda _c=False, e=entry: self._fold(e))
-                self._fold_words(entry)
-        col.addStretch(1)
+                    card(item, folded=True, into=entry)
+                pieces.append(lambda e=entry: self._fold_words(e))
+        pieces.append(lambda: col.addStretch(1))
         old, self.body = self.body, body
         self.scroll.setWidget(body)                        # (the old body is the scroll area's to delete)
-        self.builds += 1
         del old
+        self._pieces = collections.deque(pieces)
+        self._next_piece(self._token)
+
+    def building(self):
+        """Whether a body's pieces are still on their way."""
+        return bool(self._pieces)
+
+    def _next_piece(self, token):
+        QTimer.singleShot(0, lambda: self._step(token))
+
+    def _step(self, token):
+        """One piece of the body (`_build`), timed; the next in the next turn."""
+        if sip.isdeleted(self) or token != self._token or not self._pieces:
+            return
+        t0 = time.perf_counter()
+        self._pieces.popleft()()
+        done = not self._pieces
+        if done:
+            self.builds += 1
+            if self.isVisible():
+                self.place()
+        self.slices.append((time.perf_counter() - t0) * 1000)
+        del self.slices[:-SLICES_KEPT]
+        if not done:
+            self._next_piece(token)
 
     def _label(self, name, text, parent):
         label = QLabel(text, parent)

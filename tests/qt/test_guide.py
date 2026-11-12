@@ -53,7 +53,8 @@ def notes(tmp_path, monkeypatch):
 
 def _looked(world, notes, n=1):
     world.win._guide_look()
-    assert wait_until(lambda: len(notes) >= n and world.d.guide_panel.look is not None)
+    panel = world.d.guide_panel
+    assert wait_until(lambda: len(notes) >= n and panel.look is not None and not panel.building())
 
 
 def test_the_star_waits_for_a_look_then_sits_just_left_of_the_question_mark_glowing(world, notes):
@@ -212,7 +213,8 @@ def test_an_open_panel_never_changes_under_the_learner_and_takes_the_newer_answe
     assert guide.read_state().get("seen") == "3.0.4"
     assert [c.item.version for c in panel.cards] == shown and panel.builds == 1     # still what they opened
     panel.close()
-    assert panel.builds == 2 and {c.item.version for c in panel.cards} == {"3.0.4"}  # the newer answer, once closed
+    assert wait_until(lambda: panel.builds == 2)                            # the newer answer, once closed
+    assert {c.item.version for c in panel.cards} == {"3.0.4"}
 
 
 def test_the_glow_never_relights_with_the_panel_open_and_an_older_answer_is_dropped(world, notes):
@@ -295,3 +297,28 @@ def test_a_panel_that_fits_shows_no_scroll_bar_and_folded_lines_are_quiet_and_le
     for _fold, fixes, _shown in panel.folds:
         assert all(c.objectName() == "guidefix" and c.show_me is None for c in fixes)
     panel.close()
+
+
+def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_rest(world, notes):
+    # The lead, 2026-11-12: the 4 ms rule strict. Two releases, the shipped notes (wrapping lines): the body is built one
+    # piece a turn — each piece, and the place after the last, under 4 ms on the window's thread.
+    import time
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), guide.FOLDER)
+    releases = guide.read_notes(here)
+    look = guide.Look("3.0.4", tuple(guide.arrange(r, {"everyone", "ja", "miner", "books"}) for r in releases), True)
+    panel = world.d.guide_panel
+    panel.slices.clear()
+    panel.set_look(look)
+    assert panel.building() and not panel.cards                             # nothing built in the asking turn
+    assert wait_until(lambda: not panel.building())
+    assert len(panel.slices) >= len(panel.cards) and max(panel.slices) < 4.0, max(panel.slices)
+    t0 = time.perf_counter()
+    panel.place()
+    assert (time.perf_counter() - t0) * 1000 < 4.0
+    built = panel.builds
+    panel.set_look(look._replace(releases=look.releases[:1]))               # a newer answer mid-way …
+    QApplication.processEvents()
+    panel.set_look(look)                                                     # … and another: only the last finishes
+    assert wait_until(lambda: not panel.building())
+    QApplication.processEvents()
+    assert panel.builds == built + 1 and len({c.item.version for c in panel.cards}) == len(look.releases)

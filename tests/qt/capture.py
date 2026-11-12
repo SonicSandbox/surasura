@@ -405,7 +405,7 @@ def run_integrated(scale, out_dir):
     # the feature guide (Hoshi-S): the ✦ glowing beside the ?, then its panel open with its fixes unfolded (the shipped
     # notes, copied with the assets: this version's)
     win._guide_look()
-    until(lambda: d.guide_panel.look is not None and d.guide.isVisible())
+    until(lambda: d.guide_panel.look is not None and d.guide.isVisible() and not d.guide_panel.building())
     shot("guide-glow", () if d.guide.glow else ["the ✦ isn't glowing before its first open"])
     d.guide.click()
     settle(30)
@@ -413,13 +413,16 @@ def run_integrated(scale, out_dir):
         entry[0].click()
     settle(20)
     panel = d.guide_panel.geometry()
-    d.guide_panel.hide()                                          # the GUI thread's cost of a new answer and a place
-    t0 = time.perf_counter()
+    d.guide_panel.hide()                                          # the GUI thread's largest slice of a new answer
+    d.guide_panel.slices.clear()
     d.guide_panel._build()
+    until(lambda: not d.guide_panel.building())
+    t0 = time.perf_counter()
     d.guide_panel.place()
-    build_ms = (time.perf_counter() - t0) * 1000
-    print(json.dumps({"scale": scale, "guide_build_ms": round(build_ms, 2), "cards": len(d.guide_panel.cards)}),
-          flush=True)
+    place_ms = (time.perf_counter() - t0) * 1000
+    print(json.dumps({"scale": scale, "guide_largest_slice_ms": round(max(d.guide_panel.slices), 2),
+                      "guide_place_ms": round(place_ms, 2), "pieces": len(d.guide_panel.slices),
+                      "cards": len(d.guide_panel.cards)}), flush=True)
     d.guide.click()
     settle(20)
     for entry in d.guide_panel.folds:

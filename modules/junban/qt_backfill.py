@@ -308,6 +308,16 @@ class BackfillWindow(windows.SecondaryWindow):
         self.btn_fill = self._button(S.BF_FILL, S.BF_FILL_TIP, self.on_fill, kind="primary")
         actions.addWidget(self.btn_fill)
         self.body.addLayout(actions)
+        self.ai_audio = None                 # Iro-AA: the AI voice's beta, its own button (absent or off: none)
+        try:
+            from modules.irodori import qt_backfill as ai_audio
+        except ImportError:
+            ai_audio = None
+        if ai_audio is not None:
+            try:                             # its button never keeps Backfill's window from opening
+                self.ai_audio = ai_audio.attach(self, actions)
+            except Exception as e:
+                print(f"Backfill: the AI audio button wasn't added: {e!r}")
         self.resize(round(780 * f), round(660 * f))
 
     # --- settings ---------------------------------------------------------------------------------------------- #

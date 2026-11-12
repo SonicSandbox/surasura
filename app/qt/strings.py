@@ -1379,6 +1379,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                              "takes it back"),
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
+    # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
+    "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
+                                         "card's sentence. Its audiobook, if you have it, sounds better"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1431,6 +1434,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_with_hato": ("Find them with hato", "hato looks for their subtitles on jimaku.cc by each show's title, with "
                                               "your jimaku key, and fits each one to its video. From then on it looks "
                                               "for every new video with no subtitle by itself"),
+    # Zh-H (PROVISIONAL): the Chinese library's card — hato 1.3's Chinese sites, on the learner's own keys
+    "find_with_hato_zh": ("Find them with hato", "hato looks for their subtitles on assrt.net, then OpenSubtitles, by "
+                                                 "each show's title, with your own free keys (hato's Settings), and "
+                                                 "fits each one to its video. From then on it looks for every new "
+                                                 "video with no subtitle by itself"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1518,6 +1526,7 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
@@ -1643,6 +1652,11 @@ REPORT_SAVE_TIP = "Keep this report on your list (Ctrl+Enter). Send them all at 
 REPORT_SAVED = "Saved to your list. Note the next one whenever you like"
 REPORT_SAVE_FAILED = "That report couldn't be saved: {why}"
 REPORT_WHERE = "the {tab} tab"
+# Piyo's *Send report*: the learner's AI wrote the report with them and asked to send it; the window
+# shows it in the form for them to read, change and send — nothing is sent until they press Send on What goes
+REPORT_FROM_PIYO = ("Your AI wrote this report with you (Piyo). Read it, change anything, then press Send report: "
+                    "you'll see exactly what goes before anything is sent")
+REPORT_FROM_PIYO_WHERE = "{where}, written with Piyo"
 REPORT_LIST_HEADING = "Your list ({n})"
 REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until they're sent or zipped"
 REPORT_LIST_NAME = "Your saved reports"

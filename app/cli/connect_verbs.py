@@ -210,7 +210,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     if loaded is None:
         loaded = settings()
     from app import tools_entry
-    if not tools_entry.registers(loaded):       # set-up, not automation (P4.1 row 4.1.1): registers with it off too
+    if not tools_entry.registers(loaded, lang):     # set-up, not automation (P4.1 row 4.1.1): registers with it off
         return {"file_id": None, "landed": "skipped", "tier": None, "position": None, "pairing": None,
                 "content_key": key, "skipped": PREVIEW_OFF}
     require_set_up(lang)
@@ -616,6 +616,24 @@ def undo(args):
     # the window's sequence too (P3.1 row 3.1.5): the checks, the plain words and the owed sync live in one place
     return undoing.act(loaded, language(args, loaded), job=args.job, shelf_run=args.shelf, confirm=args.confirm,
                        sync=_owe_sync)
+
+
+def add_audio_args(parser):
+    add_language(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--book", metavar="EPUB", help="the book (its EPUB in the library) whose cards get its audiobook's audio")
+    which.add_argument("--undo", metavar="ID", help="take back one *Add audio* (its id, as the answer gave it)")
+    parser.add_argument("--confirm", action="store_true", help="do it; without it, only how many cards it would fill")
+
+
+def add_audio(args):
+    """*Add audio to these cards* (Kura-AB3): the narrator's clip into the empty sentence-audio field of each card
+    Connect made from `--book`, once the book is lined up with its audiobook (`app/connect/add_audio.py`). Without
+    `--confirm`, the counts only (nothing written). `--undo ID` takes one back. Only with Connect on; never while you
+    review."""
+    loaded = settings()
+    from app.connect import add_audio as adding
+    return adding.act(loaded, language(args, loaded), book=args.book, confirm=args.confirm, undo_id=args.undo)
 
 
 def _owe_sync(loaded):

@@ -256,7 +256,5 @@ def _probe_stack(request):
     if 'test_ankiconnect_install_part' not in str(request.node.fspath) and 'test_addon_steps' not in str(request.node.fspath):
         yield
         return
-    faulthandler.enable(file=sys.__stderr__, all_threads=True)
-    print(f'PROBE start {request.node.name}: {[t.name for t in _t.enumerate()]}', file=sys.__stderr__, flush=True)
+    # v3: the same fixture doing nothing (splits faulthandler re-armed vs a fixture's timing)
     yield
-    print(f'PROBE end {request.node.name}: {[t.name for t in _t.enumerate()]}', file=sys.__stderr__, flush=True)

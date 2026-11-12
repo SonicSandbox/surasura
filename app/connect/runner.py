@@ -69,7 +69,8 @@ from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PR
 log = logging.getLogger("surasura-cli")
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
-OFFER_EVERY_S = 600             # Kura-AB3 A2 r2 S4: the paired books looked at for *Add audio* at most this often
+OFFER_EVERY = 5                 # Kura-AB3 A2 r2 S4: the paired books looked at for *Add audio* at the first look and
+                                # every this many after (about 10 min at LOOK_EVERY_S; by looks: no clock read)
 UPDATE_LOOK_S = 5               # K99: inside that pause, an update staged is looked for this often
 WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasura writer, a Generate)
 ALL_GONE_MIN = 10               # the deleted-card check: this many notes or more, all gone at once -> nothing marked
@@ -145,7 +146,7 @@ BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 # audiobook, the cards Connect made from it before — text-only — are offered the narrator's voice: ONE standing *Needs
 # you* line a book (on the audiobook's item, as AB-Q4's line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub,
 # item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`). Asked at
-# each look of `run` for each paired book not asked yet, whatever the queue (`_add_audio_offers`, every OFFER_EVERY_S:
+# each paired book not asked yet, at `run`'s looks whatever the queue (`_add_audio_offers`, every OFFER_EVERY looks,
 # the lead's MUST, Mattias's books were all mined before — no part is picked again), and at a part's own line-up. Its
 # record keeps the book's Connect notes then (`notes`: made before it lined up, text-only) — the only ones offered. A press, from the line or the book row's ⋯,
 # keeps the notes it looked at (`ADD_AUDIO_SEEN<lang>:<book key>` -> [note ids]): the row offers only the others.
@@ -300,7 +301,6 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
     begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
-    offered = {}                # Kura-AB3 A2: {language: when its paired books were last looked at for Add audio}
     parked = {}                 # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
                                 # — {job id: its ask when parked}; a newer ask tries it again (#42, review r42 #3)
     try:
@@ -319,9 +319,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if lang not in undos_looked:    # an undo a kill left half-way: finished whatever else runs (#5)
                     undos_looked.add(lang)
                     _finish_undos(steps, ledger, lang)
-                if time.monotonic() - offered.get(lang, -OFFER_EVERY_S) >= OFFER_EVERY_S:
-                    offered[lang] = time.monotonic()    # Kura-AB3 A2 r2 B1: whatever the queue (a book mined out)
-                    _add_audio_offers(steps, ledger, lang)
+                if (summary["looks"] - 1) % OFFER_EVERY == 0:     # Kura-AB3 A2 r2 B1: whatever the queue
+                    _add_audio_offers(steps, ledger, lang)          # (a book mined out has no job)
                 if not _open_jobs(ledger, lang, parked):
                     _gone_look(steps, lang)     # nothing to mine: the deleted-cards look all the same (once a run)
                     continue

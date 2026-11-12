@@ -34,7 +34,7 @@ def offer(world):  # noqa: F811
         return call
     say = runner.ADD_AUDIO_ASK.format(title=STAR, n=8)
     connect = {"jobs": [], "needs": [{"id": 31, "kind": runner.ADD_AUDIO_NEED, "say": say, "item": 9, "seen_at": None,
-                                      "at": "2026-11-12T05:00:00Z"}]}
+                                      "at": "2026-11-10T05:00:00Z"}]}
     answers["kick"] = None
     _seed, win, _writer, ny = world(connect=connect, connect_calls={"add_audio": rec("add_audio"),
                                                                     "add_audio_undo": rec("add_audio_undo"),
@@ -103,7 +103,7 @@ def test_a_press_stopped_part_way_still_offers_its_undo_in_plain_words(offer):
 
 # --- the book row's ⋯ (the lead's MUST): whenever such cards exist and a line-up is ready ------------------------ #
 @pytest.fixture
-def row_offer(qapp):
+def row_offer(qapp, monkeypatch):
     from PyQt6.QtCore import QPoint
     from tests.fixtures import window_seed
     from tests.qt.test_drag import open_window
@@ -124,6 +124,8 @@ def row_offer(qapp):
     answer["kick"] = None
     win.items.kick = rec("kick")
     row = rows_of(win)[4]
+    from app.qt import item_menu
+    monkeypatch.setattr(item_menu, "book_row", lambda r: r is row)      # (the seed's rows are videos: this, a book's)
     yield win, row, got, answer, (lambda: win.items.menu(row, win.mapToGlobal(QPoint(300, 300))))
     win.close()
     services.shutdown(0.5)
@@ -254,3 +256,16 @@ def test_a_press_on_a_book_not_lined_up_asks_mine_now_on_its_first_part_through_
     button(ny, entry.key, "add_audio").click()
     assert wait_until(lambda: asked, 5)
     assert asked == [("「x」 is lined up with its audiobook first", [42])]
+
+
+def test_a_row_of_no_books_part_asks_connect_nothing(row_offer):
+    """Up next at 20,000 files: ⋯ on a video's row starts no worker for *Add the narrator's voice…* (an open makes
+    nothing) — only a book's part can be a book's."""
+    from PyQt6.QtCore import QPoint
+    from tests.qt.test_item_menu import rows_of
+    win, row, got, _answer, _open_menu = row_offer
+    other = next(r for r in rows_of(win) if r is not row)
+    m = win.items.menu(other, win.mapToGlobal(QPoint(300, 300)))
+    wait_until(lambda: False, 0.3)
+    assert not [g for g in got if g[0] == "offer"] and _entry(m) is None
+    m.hide()

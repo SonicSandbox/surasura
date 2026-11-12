@@ -132,7 +132,7 @@ def test_the_toasts_undo_of_a_record_no_longer_there_says_so(book, fake_miner, t
     assert json.dumps(got)
 
 
-# --- the lead's MUST (2026-11-12): Mattias's books were all mined text-only before this ships ---------------------- #
+# --- the lead's MUST: Mattias's books were all mined text-only before this ships ---------------------- #
 def _mined_out(book, tmp_path):  # noqa: F811
     """The book fully mined: no part waits, no job open — only its earlier cards (the store's made words)."""
     path = str(tmp_path / "ledger.sqlite")
@@ -369,7 +369,7 @@ def test_the_seen_record_is_merged_never_replaced_and_cards_mined_since_are_neve
         parts = add_audio.book_items(store, book["book"])
     assert actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)["filled"] == 5
     with book["steps"]._open("ja") as store:                          # a part mined since, with the narrator's voice
-        library.record_batch(store, parts[0], {"later": [400]}, "2026-11-12T00:00:00Z")
+        library.record_batch(store, parts[0], {"later": [400]}, "2026-11-10T00:00:00Z")
     book["anki"].add(400, book["lines"][9], book["lines"][9][:2], audio="[sound:surasura-sa-x.mp3]")
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
     got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)
@@ -534,7 +534,7 @@ def test_cards_made_while_it_waited_are_offered_and_a_jobs_line_up_says_so(book,
         [offer] = _offers(ledger)
     with book["steps"]._open("ja") as store:
         parts = add_audio.book_items(store, book["book"])
-        library.record_batch(store, parts[0], {"meanwhile": [500]}, "2026-11-12T00:00:00Z")
+        library.record_batch(store, parts[0], {"meanwhile": [500]}, "2026-11-10T00:00:00Z")
     assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)["n"] == 9
     _trust(monkeypatch, book)
     with Ledger(path) as ledger:

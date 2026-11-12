@@ -183,6 +183,12 @@ def unnamed(row):
 
 
 # --- K6 and Q7: *Never read this folder*, one rule for a list row's ⋯, New arrivals' ⋯ and Settings' *Skip a folder…* #
+def book_row(row):
+    """Kura-AB3 A2: does `row` hold a book's part (`Episode.text` "books": Z-9) — the only rows *Add the narrator's
+    voice…* is asked for (Up next at 20,000 files: an open of any other row starts no worker, makes no object)."""
+    return any(getattr(e, "text", None) == "books" for e in getattr(row, "episodes", ()) or ())
+
+
 def _connect_call(name, module="actions"):
     """Connect's `<module>.<name>`, or None (Connect not installed: no entry)."""
     try:
@@ -815,8 +821,8 @@ class ItemActions(QObject):
         goes in before *Open its folder* when it answers while this menu is still open. -> True when it was asked."""
         offer = self.add_audio_offer
         self._audio_ask += 1
-        if offer is None or self.add_audio_book is None or self.add_audio_undo is None:
-            return False
+        if offer is None or self.add_audio_book is None or self.add_audio_undo is None or not book_row(row):
+            return False                             # (a row of no book's part asks nothing: an open makes nothing)
         ask, ids, lang, read = self._audio_ask, drag.ids_of(row), self.language, self._settings
         fill = getattr(m, "fills", None)
 

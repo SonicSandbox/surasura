@@ -307,8 +307,11 @@ class SecondaryWindow(QWidget):
         if self.status.text() == text:
             return
         self.status.setText(text)
-        self.status.setVisible(bool(text))
-        self.status_paints += 1
+        shown = bool(text)
+        if (shown or not self.status.isHidden()) and self.body_scroll is not None:
+            self.body_scroll.updateGeometry()             # `body_room` counts the line (its height, as wrapped) only
+        self.status.setVisible(shown)                     # while it shows: one shown, changed or gone after the
+        self.status_paints += 1                           # window's first layout never pushes it past a short screen
         self.tell_icon()                                  # (its icon's hover says what it is doing)
 
     def alive(self, fn):

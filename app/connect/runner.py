@@ -29,6 +29,14 @@ day's words first:
   re-timed beside its video (tsubasa's own output) is checked in its copy's place and mined from when timed; a copy
   that changed since its check, or *Check again* (`actions.check_again`), lets it go again in this run. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
+- **Never waiting with no window open** (Haya-CL, Mattias 3.0.2: "a bunch of surasura-cli.exe running after having
+  closed Surasura"; lean, PROVISIONAL): those 2-minute looks go on only while a Surasura window is open (its running
+  mark, `Steps.window_open`). When what is left only waits and no window is open — closed, crashed or killed — Connect
+  exits instead of pausing, and a pause ends within UPDATE_LOOK_S of the last window closing; the window's next start
+  (or hato's next hand-over) starts it again and the waits are read from the ledger as before. Work it can do now (a
+  batch, a hato drop with the window closed) is still done first. And a Connect whose program folder now holds another
+  build (`Steps.replaced`: Setup or a swap put a newer Surasura under it) stops at the next step boundary and starts the
+  folder's own Connect (`connect_verbs._loop`): never an old version's Connect working on beside a new one.
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
   an ask, nor a level job beyond the line on 3.0 (P4.1 C3, C4: `inbox.keeps`).
@@ -108,9 +116,18 @@ MINE_FAILED = "Anki Miner stopped twice while making its cards"
 MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
                    "it made are kept.")
 # … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
-# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
-MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
-                    "more; the cards it made are kept.")
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1). Michi-RM3:
+# its own *Needs you* kind (MINE_REFUSED: *Skip this word* beside *Try again*, `actions.skip_refused`); and when Anki's
+# answer is its fields check's "unknown reason" — a cloze state, proven on DevTest: a field holds cloze marks on a note
+# type that isn't a cloze one — the line says so in plain words (PROVISIONAL words)
+MINE_REFUSED = "mine-refused"
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}){hint}. Skip this word and the rest "
+                    "of the part is done, and it's never asked again; Try again tries it once more. The cards it made "
+                    "are kept.")
+UNKNOWN_REASON = "cannot create note for unknown reason"     # AnkiConnect's words for a cloze state of Anki's check
+CLOZE_HINT = (": a dictionary's text for this word looks like an Anki cloze ({{c1::…}}), and Anki refuses it on "
+              "this note type")      # (Mattias found it: a grammar dictionary's example sentences, 2026-11-12)
+FAILED_KINDS = ("mine-failed", MINE_REFUSED)
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
 # Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
@@ -160,6 +177,8 @@ STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Connect was switched off."
+# Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
+REPLACED = "Surasura was updated: the new version's Connect takes over."
 MINER_ABSENT = "Anki Miner isn't installed"
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
@@ -267,14 +286,14 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
             summary["looks"] += 1
             _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
             _copy_changed(ledger, parked)   # Michi-NT: a not-timed episode's subtitle fixed meanwhile
-            outside = work = battery = False
+            outside = work = battery = unread = False
             for lang in languages:
                 stop = _stop(steps)
                 if stop:
                     summary["stopped"] = stop
                     return summary
                 if _consume(steps, ledger, lang):
-                    outside = work = True       # the inbox couldn't be read: looked at again, never lost
+                    outside = work = unread = True      # the inbox couldn't be read: looked at again, never lost
                 if lang not in undos_looked:    # an undo a kill left half-way: finished whatever else runs (#5)
                     undos_looked.add(lang)
                     _finish_undos(steps, ledger, lang)
@@ -309,8 +328,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if not (_woken(steps, ledger, parked) and any(_open_jobs(ledger, lang, parked) for lang in languages)):
                     break
                 continue
+            if not _window_open(steps):
+                # Haya-CL: what is left only waits and no Surasura window is open: Connect ends here, never a
+                # surasura-cli.exe looking every 2 minutes for hours after the window closed; the window's next start
+                # (or hato's next hand-over) starts it again, and the ledger keeps every wait
+                summary["no_window"] = True
+                if unread:
+                    summary["inbox_unread"] = True      # `connect_verbs._loop`: no start again for its pending inbox
+                log.info("Connect: what is left waits and no Surasura window is open: it stops until the next start")
+                break
             if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)
-                          or _woken(steps, ledger, parked)):
+                          or _woken(steps, ledger, parked) or _replaced(steps) or not _window_open(steps)):
                 summary["stopped"] = "cancelled"
                 break
         return summary
@@ -355,7 +383,46 @@ def _stop(steps):
         return STOPPED_FOR_UPDATE
     if not steps.enabled():
         return SWITCHED_OFF
+    if _replaced(steps):
+        return REPLACED
     return None
+
+
+def _replaced(steps):
+    """Haya-CL: does this Connect's program folder hold another build now (`Steps.replaced`)? A stand-in without
+    the look, or a look that fails, says no (logged)."""
+    replaced = getattr(steps, "replaced", None)
+    if replaced is None:
+        return False
+    try:
+        return bool(replaced())
+    except Exception:
+        log.warning("Connect couldn't look at its program's build; it goes on", exc_info=True)
+        return False
+
+
+WINDOW_KINDS = ("window", "dashboard", None)      # app_entry's mark kinds of a start that opens a window (None: a
+                                                    # record not written yet — a window just starting counts as one)
+
+
+def _a_window(kind):
+    """Is a running mark of `kind` a window's? The 3.0 window ("window"), the 2.x Tk window ("dashboard"), and a
+    window started with a flag (`Surasura.exe --hud`: app_entry names the mark after its first argument)."""
+    return kind in WINDOW_KINDS or (isinstance(kind, str) and kind.startswith("-"))
+
+
+def _window_open(steps):
+    """Haya-CL: is a Surasura window open (`Steps.window_open`)? Only then does Connect wait out its 2-minute looks.
+    A stand-in without the look, or a look that fails, says yes (logged): the wait as before 3.0.3, never an exit
+    that leaves work for nobody."""
+    window_open = getattr(steps, "window_open", None)
+    if window_open is None:
+        return True
+    try:
+        return bool(window_open())
+    except Exception:
+        log.warning("Connect couldn't look for an open window; it waits as before", exc_info=True)
+        return True
 
 
 def _consume(steps, ledger, lang):
@@ -740,8 +807,8 @@ def _fixed_said(ledger, lang, says):
 
 def _failed_says(ledger, lang, item_id):
     """The words of the item's open *Anki Miner stopped* lines (Mattias #5): only a new try of its words ends them."""
-    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind = "
-                                              "'mine-failed' AND fixed_at IS NULL", (lang, item_id))}
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind IN "
+                                              "(?, ?) AND fixed_at IS NULL", (lang, item_id) + FAILED_KINDS)}
 
 
 def _skipped_says(job):
@@ -1239,12 +1306,15 @@ def _pick(steps, ledger, lang, job, record=True):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
         # either (a name: sent once a version, never again with every episode)
         declined |= ledger.uncardable(lang, got["anki_miner"])
+        declined |= ledger.skipped_words(lang, got["anki_miner"])     # Michi-RM3: *Skip this word*, any part
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
-    if isinstance(pairing, dict) and pairing.get("verdict") == "transcribed":
+    if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
+            pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
+        #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
@@ -1941,14 +2011,16 @@ def _fail_mining(steps, ledger, lang, job, record=True):
              if w["word"] in refused and _outcome(ledger, job["id"], w) in UNSETTLED]
     if said and words:              # Mattias #5: the words Anki refused alone: named, with Anki's reason
         named = ", ".join(words[:3]) + (f" and {len(words) - 3} more" if len(words) > 3 else "")
-        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said)
+        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said,
+                                      hint=CLOZE_HINT if UNKNOWN_REASON in str(said) else "")
+        kind = MINE_REFUSED
     else:
-        say = MINE_FAILED_SAY.format(title=title)
+        say, kind = MINE_FAILED_SAY.format(title=title), "mine-failed"
     with ledger.transaction():
-        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'mine-failed' "
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind IN (?, ?) "
                             "AND fixed_at IS NULL AND COALESCE(job_id, -1) != ?",
-                            (_now(), lang, job["item_id"], job["id"]))
-        ledger.need(lang, "mine-failed", say, item_id=job["item_id"], job_id=job["id"])
+                            (_now(), lang, job["item_id"]) + FAILED_KINDS + (job["id"],))
+        ledger.need(lang, kind, say, item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
 
 
@@ -2138,6 +2210,18 @@ class Steps:
         from app import library_store
         return library_store.update_staged(looks=library_store.PROBE_LOOKS)
 
+    def window_open(self):
+        """Haya-CL: is a Surasura window open — any install of this data name (`locks.running_others`: a running mark
+        of kind "window"; a mark whose record can't be read yet, a window just starting, counts as one)?"""
+        from app import locks
+        return any(_a_window(r.get("kind")) for r in locks.running_others())
+
+    def replaced(self):
+        """Haya-CL: does the program folder hold another build than this running program (`build_info.stamp_skew`:
+        Setup or a swap put a newer Surasura under it)? From source: never."""
+        from app import build_info
+        return build_info.stamp_skew() is not None
+
     def kicked(self):
         """Has a kick stamped the wake mark since the last look at it (`kick.wake_stamp`)? Then the mark is taken as
         seen: one wake a kick. -> False, True, or `kick.VIDEOS` for a kick that may have found videos (MV-2)."""
@@ -2306,6 +2390,13 @@ class Steps:
         from app.connect import library
         with self._open(lang) as store:
             return library.pairing_of(store, job["item_id"])
+
+    def heard(self, lang, job):
+        """Hato-SP: was the item's text made from its video's audio by another tool (`library.heard`)? A busy
+        store is a Wait."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return library.heard(store, job["item_id"])
 
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text

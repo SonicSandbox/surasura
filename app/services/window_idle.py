@@ -8,6 +8,13 @@ the window says when it wakes and when it goes back to wait (the event dispatche
 by `app/qt/shell.py`), and a worker waits at the start of a step (`wait()`) while the window is awake — at most
 `CAP_S`, so a window that never rests never stops the work. Without a window (the command line, the tests' services)
 the window is always idle: nothing waits. Qt-free.
+
+A save holds Python's lock at once too (F13's leftover, Kura-F13 2026-11-12): a store save gives the lock up at each of
+its ~70 SQLite steps and waited for it back a whole switch interval each time a busy thread ran Python — a look's pass
+over 20,000 origins made a ~3 ms move save in 0.1–0.5 s. While a save holds the store's write lock
+(`library_store.Store._writing`: `save_began` / `save_ended`, in any process) the lock comes back to it at once; the
+last save's end puts back the window's own hand-over, or what was set before. Only for the save's few milliseconds:
+under 1 ms two busy threads take turns at every step (Mado-SP: 3.5× as long), so never for a whole look.
 """
 import sys
 import threading
@@ -20,6 +27,9 @@ _idle = threading.Event()
 _idle.set()
 _woke = [0.0]                   # when the window last woke from rest (perf_counter)
 _switch = [None, None]          # Python's lock hand-over while the window is awake, and at rest (`set_switch`)
+SAVE_SWITCH_S = 0.00025         # while a save holds the store's write lock: the lock comes back to it at once
+_saves = {"n": 0, "was": None}  # saves under way in this process; the hand-over before the first, when it was lowered
+_SWITCH_LOCK = threading.Lock() # the hand-over is set by one at a time: the window's busy / rest, a save's start / end
 
 
 def set_switch(awake, at_rest):
@@ -33,17 +43,49 @@ def busy():
     at once from a busy worker (`set_switch`)."""
     if _idle.is_set():
         _woke[0] = time.perf_counter()
-        _idle.clear()
-        if _switch[0] is not None:
-            sys.setswitchinterval(_switch[0])
+        with _SWITCH_LOCK:
+            _idle.clear()
+            if _switch[0] is not None:
+                sys.setswitchinterval(_switch[0])
 
 
 def rest():
-    """(The window's thread.) It goes back to wait: the background may work, the lock handed over as before."""
-    was = _idle.is_set()
-    _idle.set()
-    if not was and _switch[1] is not None:
-        sys.setswitchinterval(_switch[1])
+    """(The window's thread.) It goes back to wait: the background may work, the lock handed over as before — once no
+    save is under way (`save_ended` puts it back then)."""
+    with _SWITCH_LOCK:
+        was = _idle.is_set()
+        _idle.set()
+        if not was and _switch[1] is not None and not _saves["n"]:
+            sys.setswitchinterval(_switch[1])
+
+
+def save_began():
+    """(Any thread: a store save taking the write lock, `Store._writing`.) Until the last save ends, Python's lock
+    comes back to a save at once from a busy thread (`SAVE_SWITCH_S`); a finer hand-over already set stays."""
+    with _SWITCH_LOCK:
+        if not _saves["n"]:
+            was = sys.getswitchinterval()
+            if was > SAVE_SWITCH_S:
+                sys.setswitchinterval(SAVE_SWITCH_S)
+                _saves["was"] = was
+        _saves["n"] += 1
+
+
+def save_ended():
+    """(The save's thread, its write lock let go.) The last one puts back the window's own hand-over (awake or at
+    rest, `set_switch`), else the one before the first save; someone else's own setting since stays."""
+    with _SWITCH_LOCK:
+        if _saves["n"] <= 0:
+            return
+        _saves["n"] -= 1
+        if _saves["n"]:
+            return
+        was, _saves["was"] = _saves["was"], None
+        want = _switch[1] if _idle.is_set() else _switch[0]
+        if want is None:
+            want = was
+        if want is not None and sys.getswitchinterval() == SAVE_SWITCH_S:
+            sys.setswitchinterval(want)
 
 
 def wait(cap=None):

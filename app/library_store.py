@@ -51,6 +51,7 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import library_watch
+from app.services import window_idle
 from app.path_utils import (CONTENT_EXTENSIONS, TRASH_DAYS, backup_to_trash, decode_text, infer_source_type,
                             read_source_marker, restart_trash_clock)
 
@@ -2064,55 +2065,59 @@ class Store:
             finally:
                 self._depth -= 1
             return
-        if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
-            raise StoreReadOnly("the library store is damaged and needs Repair")
-        self._wlock.acquire(wait)
-        committed = wrote = False
-        try:
-            changes = self.conn.total_changes
-            self.conn.gate.open = True
-            if begin:
-                try:
-                    self.conn.execute("BEGIN IMMEDIATE")
-                except sqlite3.OperationalError as exc:
-                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                        raise StoreBusy("the library is busy; try again") from exc
-                    raise
-            self._depth = 1
+        window_idle.save_began()                 # F13: Python's lock comes back to this save at once (G1),
+        try:                                     # its commit's ring and Connect's export timer included
+            if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
+                raise StoreReadOnly("the library store is damaged and needs Repair")
+            self._wlock.acquire(wait)
+            committed = wrote = False
             try:
-                yield
-            except BaseException:
-                self._depth = 0
-                if self.conn.in_transaction:
-                    self.conn.execute("ROLLBACK")
-                raise
-            self._depth = 0
-            if begin:
+                changes = self.conn.total_changes
+                self.conn.gate.open = True
+                if begin:
+                    try:
+                        self.conn.execute("BEGIN IMMEDIATE")
+                    except sqlite3.OperationalError as exc:
+                        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                            raise StoreBusy("the library is busy; try again") from exc
+                        raise
+                self._depth = 1
                 try:
-                    self.conn.execute("COMMIT")
+                    yield
                 except BaseException:
+                    self._depth = 0
                     if self.conn.in_transaction:
                         self.conn.execute("ROLLBACK")
                     raise
-                committed = True
-                wrote = self.role in OUTSIDE_ROLES and self.conn.total_changes != changes
-        except sqlite3.DatabaseError as exc:
-            if _is_malformed(exc):
-                mark_damaged(self.db_path, f"{self.role}: {exc}")
-            raise
-        finally:
-            self._depth = 0
-            try:
-                self.conn.gate.open = False
+                self._depth = 0
+                if begin:
+                    try:
+                        self.conn.execute("COMMIT")
+                    except BaseException:
+                        if self.conn.in_transaction:
+                            self.conn.execute("ROLLBACK")
+                        raise
+                    committed = True
+                    wrote = self.role in OUTSIDE_ROLES and self.conn.total_changes != changes
+            except sqlite3.DatabaseError as exc:
+                if _is_malformed(exc):
+                    mark_damaged(self.db_path, f"{self.role}: {exc}")
+                raise
             finally:
-                self._wlock.release()
-                if committed:
-                    library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
-        if wrote:                                # Connect's commit: the copy's trigger
-            try:
-                _outside_wrote(self)
-            except Exception:                    # a committed write never fails for its trigger
-                pass
+                self._depth = 0
+                try:
+                    self.conn.gate.open = False
+                finally:
+                    self._wlock.release()
+                    if committed:
+                        library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
+            if wrote:                                # Connect's commit: the copy's trigger
+                try:
+                    _outside_wrote(self)
+                except Exception:                    # a committed write never fails for its trigger
+                    pass
+        finally:
+            window_idle.save_ended()
 
     def checkpoint(self, wait=LOCK_TIMEOUT):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""

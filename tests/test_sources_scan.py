@@ -2657,6 +2657,70 @@ def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_bu
             assert max(during) <= MOVE_BUDGET, sorted(during)[-5:]
 
 
+def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_the_pass(monkeypatch):
+    """F13's leftover (G1): a look's pass over every origin of a big library (their names, records, shows) runs in
+    Python, which holds the interpreter's lock; a move's save gives it up at each of its ~70 SQLite steps and waited
+    for it back a whole switch interval each time — 5 ms by default (1 ms in the window's process): a save of ~3 ms
+    took 0.1–0.5 s while such a pass ran. A save now gets it back at once (`window_idle.save_began`). Here the look's
+    pass is a long stretch of plain Python where a 20,000-origin library's would be, run once a move has begun (the
+    look holds no lock there); every move whose save overlapped it saves within MOVE_BUDGET in the timed run
+    (SURASURA_STORE_BENCH=1), and within four times that elsewhere (it took ~0.5 s each before)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _drive("driveA")
+    with store:
+        root = store.add_source(src)
+        _seed(store, root, data_dir, language, src, 600, name="[Grp] {show} - {e:02d} (1080p).ja.srt")
+        show = "既存0003"
+        _write(os.path.join(src, "seeded", show, f"[Grp] {show} - 77 (1080p).ja.srt"), _text(language, 77))
+        _settle(src)
+        tier = "now" if store.ordered("now") else "soon"
+        ids = [i for i, _e, _a in store.ordered(tier)][:6]
+        began, done, moves, errors = threading.Event(), threading.Event(), [], []
+        spun = []                                            # the pass's (start, end)
+
+        def mover():
+            other = ls.open_store(language, data_dir, user_files_dir)
+            n = 0
+            with other:
+                while not done.is_set():
+                    t0 = time.perf_counter()
+                    began.set()
+                    try:
+                        other.move([ids[n % len(ids)]], tier, before_id=ids[(n + 3) % len(ids)])
+                        moves.append((t0, time.perf_counter()))
+                    except ls.StoreError as e:
+                        errors.append(repr(e))
+                    n += 1
+                    done.wait(0.01)
+        real_new = sources._Look._new
+
+        def new_after_a_long_pass(look, *args):
+            assert began.wait(30), "the mover began no move"
+            if not spun:                                     # a whole-library pass: Python only, no lock, ~1 s
+                s0, table = time.perf_counter(), {}
+                while time.perf_counter() - s0 < 1.0:
+                    for k in range(500):
+                        table[k] = f"Library/{k:05d}/e.srt".rsplit("/", 1)
+                spun.append((s0, time.perf_counter()))
+            return real_new(look, *args)
+        monkeypatch.setattr(sources._Look, "_new", new_after_a_long_pass)
+        thread = threading.Thread(target=mover, name="mover")
+        thread.start()
+        try:
+            began.clear()
+            result = sources.scan(store, language, root)
+        finally:
+            done.set()
+            thread.join()
+        assert result["added"] == 1 and spun
+        s0, s1 = spun[0]
+        during = [saved - t0 for t0, saved in moves if t0 < s1 and saved > s0]
+        assert errors == [] and during, (errors, moves, spun)
+        assert max(during) <= (MOVE_BUDGET if BENCH else 4 * MOVE_BUDGET), sorted(during)[-5:]
+
+
 def test_the_releases_already_in_are_a_folders_own_never_its_subfolders():
     """S7 is per folder: worked out from the origins whose keys start with the folder's (F13), a subfolder's release
     (`Show/Season 1/… - 01`) is never the folder's own — a `… - 01` found beside it is an episode of its own."""

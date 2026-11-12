@@ -3333,7 +3333,7 @@ class Steps:
         wait.restarted = status == lineup.STOPPED
         raise wait
 
-    def _own_timing(self, lang, job, ab):
+    def _own_timing(self, lang, job, ab, look_only=False):
         """Kura-AB3 (Mattias's 3.0.2 report; PROVISIONAL): the paired audiobook `ab` (`library.audiobook_of_book`) whose
         own timed subtitle Hon found this book's (`timing`: its copy in the library) — one audio file, an `.srt`, both
         on this computer, its last cue inside the audio's length — is the book's line-up as it is (`lineup.own`: no
@@ -3342,7 +3342,8 @@ class Steps:
         time by the spot-check (`_own_spot`), or *Trust my subtitles' timing* on (`connect_trust_timing`: no speech
         model at all). Never a wrong clip (review B2): not heard in time, not checked now, or — once Anki Miner's own
         line-up said this audio doesn't follow the book (nothing lined up, a grade of C or D) — anything but heard in
-        time, is None. A sync still running for the pair is stopped once its subtitle is used (S2)."""
+        time, is None. A sync still running for the pair is stopped once its subtitle is used (S2). `look_only`
+        (*Add audio to these cards*' plan, `lined_up`): never a listen, never a stop, nothing written."""
         from app.connect import lineup
         from app.path_utils import get_data_path
         rel = ab.get("timing")
@@ -3356,20 +3357,42 @@ class Steps:
         if not found or (isinstance(seconds, (int, float)) and seconds > 0 and
                          max(end for _s, end, _t in found) > seconds + OWN_SLACK_S):
             return None                     # timed to a longer cut than this audio (S1)
-        synced = lineup.look(ab["key"]) if ab["key"] else {}
+        synced = (lineup.read if look_only else lineup.look)(ab["key"]) if ab["key"] else {}
         doubt = synced.get("status") == lineup.NONE or (
             synced.get("status") == lineup.DONE and synced.get("grade") not in lineup.GOOD)
         # never a listen while Anki Miner's own line-up is done and good (it cuts the cards: review r2 S2) or still
         # running (each look would listen again beside it: r2 S3) — only a kept or trusted answer counts then
-        listen = not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
+        listen = not look_only and not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
         said = self._own_spot(lang, job, audio, srt, listen=listen)
         if said not in (lineup.MATCHED, OWN_TRUSTED) or (doubt and said != lineup.MATCHED):
             log.info("Connect: %s's own subtitle isn't used for its timing (%s)", ab["title"], said or "unchecked")
             return None
-        if ab["key"] and lineup.running(ab["key"]):
+        if not look_only and ab["key"] and lineup.running(ab["key"]):
             lineup.stop(ab["key"])
             lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
+
+    def lined_up(self, lang, epub):
+        """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its
+        cues, as the pick hands them to the mine), "item_id" (the audiobook's), "title"}, or None (no audiobook paired,
+        *Keep them together*, nothing usable yet). Its own subtitle checked or trusted (`_own_timing`, look only), else
+        a finished sync of grade A/B (its files where the store holds them now) — never a sync started, a listen, a
+        stop or a write. A busy store is a Wait."""
+        from app.connect import library, lineup
+        with self._open(lang) as store:
+            ab = library.audiobook_of_book(store, epub)
+        if ab is None or ab["lineup"] == "kept":
+            return None
+        own = self._own_timing(lang, {"id": "add-audio", "asked_at": None}, ab, look_only=True)
+        if own is not None:
+            return dict(own, title=ab["title"])
+        state = lineup.read(ab["key"]) if ab["key"] else {}
+        if not lineup.usable(state):
+            return None
+        files = [dict(f, audio_file=ab["files"][k] if k < len(ab["files"]) else f.get("audio_file"))
+                 for k, f in enumerate(state.get("files") or ())]
+        return {"lineup": {"status": lineup.DONE, "key": ab["key"], "grade": state.get("grade"), "files": files},
+                "item_id": ab["item_id"], "title": ab["title"]}
 
     def _own_spot(self, lang, job, audio, srt, listen=True):
         """AB-Q5's spot-check of an audiobook's own subtitle for `_own_timing` -> lineup.MATCHED / NOT_MATCHED (kept per

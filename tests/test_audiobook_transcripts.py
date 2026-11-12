@@ -10,7 +10,7 @@ is its transcript, never a title of its own.
 - A transcript taken in as a subtitle of its own before its audiobook was known becomes the audiobook's item (its
   marks kept), so a library from before this change stops counting it twice too.
 
-Why these matter: Sonic's own vol 1 (an M4B, its `.srt` and its EPUB side by side) counted its words twice — the
+Why these matter: a tester's own vol 1 (an M4B, its `.srt` and its EPUB side by side) counted its words twice — the
 book's and the transcript's. Every look here runs on real files built on disk (an EPUB of real text, M4Bs and MP3s
 with real tags and lengths, transcripts of real sentences) and proves the source folders are never written to.
 """

@@ -6,7 +6,7 @@ ignored word raised to known; Migaku's header or the list's order lost; half a f
 dated copy kept (CLAUDE.md §4); a write beside the Anki sync's (two writers of KnownWord.json); a window that freezes
 while a big deck is tokenized (the child's job).
 
-Real data: the Migaku export `tests/Test Resources/ja/KnownWord.json` (one entry per status) and the real decks
+Data: the Migaku-shaped export `tests/Test Resources/ja/KnownWord.json` (one entry per status) and the fixture decks
 `testAnki.apkg` / `ankiTest3.apkg` (inventory §2.4 rows, each a test).
 """
 import json
@@ -42,7 +42,7 @@ def _trash():
 
 @pytest.fixture
 def migaku_file(ja_resources_dir):
-    """A slice of the real Migaku export — one entry per status — in the sandboxed User Files/ja/."""
+    """A slice of the Migaku-shaped export — one entry per status — in the sandboxed User Files/ja/."""
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)
     picked = {}

@@ -1,10 +1,6 @@
-"""*Install AnkiConnect for me*, on screen (3.0.1, spec §10 `tests/qt/`): the button in Mado-A's shared part
-(`app/qt/addon_steps.AddonSteps`) — shown only where the install's look says it can; the sheet's *Back* does nothing;
-the waiting line and its *Cancel*; the done line's *Open Anki* (Anki on Connect's profile, never Connect's kick); one
-install state for every part on screen; *Copy code* always there under it. And the work it costs (S19, Sonic
-2026-11-05: redraw waste caught at build time): one view painted per change, nothing painted for a press that changes
-nothing. The route itself is `tests/connect/test_ankiconnect_install.py`'s: here it is a stand-in."""
+import contextlib
 import threading
+import types
 
 import pytest
 from PyQt6.QtCore import QEvent, QObject, QTimer
@@ -27,7 +23,7 @@ def _button(text, tip, parent):
 
 
 class Sheet:
-    """`confirm.ask`'s stand-in: the asks it was given; `answer(yes)` answers the last one."""
+    pass
 
     def __init__(self):
         self.asked = []
@@ -40,7 +36,7 @@ class Sheet:
 
 
 class Route:
-    """`install_as_job`'s stand-in, on the part's own thread: it reports its phases and ends when told."""
+    pass
 
     def __init__(self):
         self.calls, self.go, self.result = [], threading.Event(), I.INSTALLED
@@ -58,7 +54,7 @@ class Route:
 
 
 class Counter(QObject):
-    """Paint and layout events on a widget and its children (S19's eye)."""
+    pass
 
     def __init__(self, root):
         super().__init__(root)                         # the root owns it: never a filter left dangling
@@ -76,9 +72,13 @@ class Counter(QObject):
         return False
 
 
-@pytest.fixture
-def part(qapp, monkeypatch, qt_timer):
-    """A host with the part (the install offered: `can-install`), its look a stand-in, the sheet a stand-in."""
+def _install_threads():
+    return [t for t in threading.enumerate() if t.name == "ankiconnect-install" and t.is_alive()]
+
+
+@contextlib.contextmanager
+def _part(monkeypatch, qt_timer):
+    pass
     monkeypatch.setattr(addon_steps, "_STATE", None)     # a fresh install state per test
     looks = {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 260902}
     asked = []
@@ -101,11 +101,42 @@ def part(qapp, monkeypatch, qt_timer):
         made.append(steps)
         return steps
     host.show()
-    yield type("P", (), {"make": staticmethod(make), "looks": looks, "asked": asked, "sheet": sheet,
-                         "route": route, "checked": checked, "host": host})
-    route.go.set()
-    host.close()
-    host.deleteLater()
+    got = types.SimpleNamespace(make=make, looks=looks, asked=asked, sheet=sheet, route=route, checked=checked,
+                                host=host)
+    try:
+        yield got
+    finally:
+        _let_go(got)
+
+
+def _let_go(got):
+    got.route.go.set()
+    _end(got.host)
+
+
+def _end(host):
+    pass
+    from PyQt6 import sip
+    for thread in _install_threads():
+        thread.join(5)
+    st = addon_steps._STATE
+    if st is not None and not sip.isdeleted(st):
+        wait_until(lambda: sip.isdeleted(st) or (not st.looking and st.phase not in (addon_steps.RUNNING,
+                                                                                     addon_steps.WAITING)))
+    for _ in range(3):
+        QApplication.processEvents()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    if not sip.isdeleted(host):
+        host.close()
+        sip.delete(host)
+    if st is not None and not sip.isdeleted(st):
+        sip.delete(st)
+
+
+@pytest.fixture
+def part(qapp, monkeypatch, qt_timer):
+    with _part(monkeypatch, qt_timer) as got:
+        yield got
 
 
 def _settle():
@@ -261,8 +292,6 @@ def test_the_done_lines_watch_checks_again_once_ankiconnect_answers(part, monkey
 
 
 def test_work_one_view_painted_per_change_and_none_for_an_answer_that_changes_nothing(part):
-    # S19: each phase the learner sees is one view painted; the same look again, or the same phase reported twice,
-    # paints and lays out nothing
     steps = part.make()
     steps.want(True)
     assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
@@ -303,7 +332,6 @@ def test_a_custom_address_is_said_on_the_done_line(part, monkeypatch, qt_timer):
     assert wait_until(lambda: steps.install_line.text() == I.DONE_ELSEWHERE.format(url="http://127.0.0.1:9999"))
 
 
-# --- in the three places (AC-5) ------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_setups_anki_step_offers_it_first_in_japanese_and_chinese(make, monkeypatch, language):
     from tests.qt.test_wizard import FakeApi
@@ -319,9 +347,7 @@ def test_setups_anki_step_offers_it_first_in_japanese_and_chinese(make, monkeypa
     assert wiz.language == language
 
 
-# --- the review's rows (Mado-AC register A1-A7) ------------------------------------------------------------------- #
 def test_a_sheet_dropped_unanswered_puts_the_part_back(part, monkeypatch):
-    # A2: the window hid (or the wizard closed) with the sheet open: `on_answer` is never called; the card's end is
     cards = []
 
     def ask(window, *a, **kw):
@@ -342,7 +368,6 @@ def test_a_sheet_dropped_unanswered_puts_the_part_back(part, monkeypatch):
 
 
 def test_a_look_that_cant_tell_whether_anki_runs_offers_no_button(part):
-    # A6: the route could only end "couldn't tell whether Anki is closed" (spec 5.4 step 2: Copy code only)
     steps = part.make()
     steps.set_unsure(True)
     steps.want(True)
@@ -354,7 +379,6 @@ def test_a_look_that_cant_tell_whether_anki_runs_offers_no_button(part):
 
 
 def test_needs_you_wakes_no_connect_when_anki_answers_after_the_done_lines_open_anki(part, monkeypatch):
-    # A3 (AC-4 A): the done line's press marks the opening as quiet; the next "AnkiConnect answers" uses it up
     from app.connect import setup
     monkeypatch.setattr(open_anki, "running", lambda: True)              # already open: nothing started
     monkeypatch.setattr(setup, "anki_profile", lambda: None)
@@ -371,8 +395,6 @@ def test_needs_you_wakes_no_connect_when_anki_answers_after_the_done_lines_open_
 
 
 def test_the_route_may_look_while_its_job_is_in_a_shown_windows_bar(part):
-    # A1/A4: no part on screen (another tab), the bar's job still says "Close Anki": the route may look; the window
-    # minimised, it may not
     import weakref
     st = addon_steps.state()
     steps = part.make()
@@ -393,8 +415,6 @@ def test_the_route_may_look_while_its_job_is_in_a_shown_windows_bar(part):
 
 
 def test_the_real_route_under_the_real_part_installs_once_anki_closes(qapp, tmp_path, monkeypatch):
-    # A1 (the must-fix): the real `install_as_job`, the real wait, the real files; only AnkiWeb and the process list
-    # stood in for. Anki open at the press: the waiting line; closed: installed, the folder placed
     import json
     import os
     import types
@@ -433,5 +453,5 @@ def test_the_real_route_under_the_real_part_installs_once_anki_closes(qapp, tmp_
             assert json.load(f) == T.META
         assert not os.path.exists(os.path.join(str(base), I.ANKI_STAGING))
     finally:
-        host.close()
-        host.deleteLater()
+        _end(host)
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

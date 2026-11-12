@@ -1,6 +1,6 @@
-"""AnkiConnect missing, on screen (alpha 8, Mado-A): `app/qt/addon_steps.py` — *Copy code* and the watch that runs
-*Check again* by itself (the wizard's and Settings' own tests drive them in place)."""
 import threading
+
+import pytest
 
 from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
@@ -10,14 +10,25 @@ from app.qt import addon_steps
 from tests.qt.conftest import wait_until
 
 
+@pytest.fixture
+def host(qapp):
+    pass
+    from PyQt6 import sip
+    widget = QWidget()
+    yield widget
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)     # its own deleteLater, now
+    if not sip.isdeleted(widget):
+        widget.close()
+        sip.delete(widget)
+
+
 def _button(text, tip, parent):
     b = QPushButton(text, parent)
     b.setToolTip(tip)
     return b
 
 
-def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp, monkeypatch):
-    # the waits driven by hand (A8A-5: no timing margin to lose on a loaded machine)
+def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp, monkeypatch, host):
     waits = []
 
     class Timer:
@@ -26,7 +37,6 @@ def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp
             waits.append((ms, fn))
     monkeypatch.setattr(addon_steps, "QTimer", Timer)
     said = []
-    host = QWidget()
     steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, host), "wizsub", said.append, host)
     host.show()
     steps.copy.click()
@@ -41,7 +51,7 @@ def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp
     host.close()
 
 
-def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, monkeypatch, qt_timer):
+def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, monkeypatch, qt_timer, host):
     monkeypatch.setattr(A, "EVERY", 0.0)
     gate = threading.Event()
     asked, answered = [], []
@@ -51,7 +61,6 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
         gate.wait(5)
         return True
     monkeypatch.setattr(A, "answers", answers)
-    host = QWidget()
     tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "http://127.0.0.1:8765", lambda: answered.append(1))
     tick.timeout.emit()
@@ -74,13 +83,10 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
     host.close()
 
 
-def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup_wizard(qapp, monkeypatch, qt_timer):
-    # A8A-1: `seen` (the host's look's `running`) goes to the light look, so an Anki opened where none was seen is
-    # news; A8A-3: the setup wizard over the window disables the parts under it — their watch asks nothing
+def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup_wizard(qapp, monkeypatch, qt_timer, host):
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(seen) or False)
-    host = QWidget()
     host.show()
     tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
@@ -97,11 +103,10 @@ def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup
     host.close()
 
 
-def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch, qt_timer):
+def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch, qt_timer, host):
     monkeypatch.setattr(A, "EVERY", 60.0)
     asked = []
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or False)
-    host = QWidget()
     host.show()
     tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
@@ -115,16 +120,13 @@ def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch, qt_timer
 
 
 def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_and_closing_counts_at_once(
-        qapp, monkeypatch, qt_timer):
-    # Mado-N A8N-1: a starting Anki loads AnkiConnect first — *Open Anki* (or opening it by hand) never flashes the
-    # steps; A8N-2: an Anki seen running that closes is news at once
+        qapp, monkeypatch, qt_timer, host):
     monkeypatch.setattr(A, "EVERY", 0.0)
     clock = {"t": 1000.0}
     monkeypatch.setattr(addon_steps.time, "monotonic", lambda: clock["t"])
     news = {"now": A.OPENED}
     monkeypatch.setattr(A, "answers", lambda url, seen=None: news["now"])
     answered = []
-    host = QWidget()
     host.show()
     tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: answered.append(watch.news))
@@ -151,11 +153,10 @@ def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_a
     assert answered == [A.OPENED, A.GONE]                 # closed: at once
     host.close()
 
-def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch, qt_timer):
+def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch, qt_timer, host):
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or True)
-    host = QWidget()
     host.show()
     tick = qt_timer()
     watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
@@ -168,3 +169,4 @@ def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp,
     assert asked == []
     assert addon_steps.ticker(object()) is None
     assert addon_steps.ticker(type("Shell", (), {"_poll": tick})()) is tick
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

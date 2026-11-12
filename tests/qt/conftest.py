@@ -244,17 +244,3 @@ def own_folder_answers(monkeypatch, tmp_path, name, how=None):
     monkeypatch.setattr(own_folder, "read_how", lambda opener, data, ids=(), rels=(), folders=():
                         (asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there), how))
     return str(there), asked
-
-
-# PROBE (Piyo-TR, never merged): faulthandler to the real stderr, every thread, before each test of the crashing
-# file (an in-process CLI call may have pointed it at a temp cli.log); the live threads at each start and end.
-@pytest.fixture(autouse=True)
-def _probe_stack(request):
-    import faulthandler
-    import sys
-    import threading as _t
-    if 'test_ankiconnect_install_part' not in str(request.node.fspath) and 'test_addon_steps' not in str(request.node.fspath):
-        yield
-        return
-    # v3: the same fixture doing nothing (splits faulthandler re-armed vs a fixture's timing)
-    yield

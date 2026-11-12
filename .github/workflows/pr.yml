@@ -79,7 +79,6 @@ jobs:
       - name: Core suite, one shard
         if: ${{ matrix.shard == 4 }}
         env:
-          PYTHONFAULTHANDLER: "1"
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
           TEMP: ${{ runner.temp }}

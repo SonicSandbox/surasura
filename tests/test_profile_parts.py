@@ -57,6 +57,7 @@ CALL_SITES = {
     "app/services/covers_online.py": 6,
     "app/services/first_run.py": 1,
     "app/services/generate.py": 1,
+    "app/services/guide.py": 1,       # the feature guide's guide.json (PARTS: install, moves with Start over)
     "app/services/journey.py": 1,
     "app/services/library_reader.py": 1,
     "app/services/moves.py": 1,
@@ -112,7 +113,7 @@ def _writers():
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
-    from app.services import anki_miner_setup
+    from app.services import anki_miner_setup, guide
     out = [
         ("the window's reader cache", library_reader.cache_path("ja"), False),
         ("the window's pending moves", moves.journal_path("ja"), False),
@@ -130,6 +131,7 @@ def _writers():
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),
         ("the airing cache", airing.cache_path("ja"), False),
         ("the window's state", os.path.join(path_utils.get_local_data_path(), "window_state.json"), False),
+        ("the feature guide's state", guide.state_path(), False),
         ("the one-window lock", os.path.join(path_utils.get_local_data_path(), "window-abc.lock"), False),
         ("the update's state", updater.update_state_path(), False),
         ("the update's folder", updater.update_dir(), True),

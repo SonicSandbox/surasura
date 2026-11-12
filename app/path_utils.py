@@ -832,6 +832,7 @@ PARTS = (
     ("install", BACKUPS, "backups", STAYS, STAYS),
     ("install", "connect", "connect", MOVES, PART),              # Connect's ledger, whitelist, known signal, folder times
     ("install", "window_state.json", "window_state", MOVES, STAYS),
+    ("install", "guide.json", "window_state", MOVES, STAYS),     # the feature guide's state: one of the window's files
     ("install", "window_cache_*.json", "window_cache", MOVES, STAYS),
     ("install", "window_pending_*.json", "window_pending", MOVES, STAYS),
     ("install", "needs_seen_*.json", "needs_seen", MOVES, STAYS),

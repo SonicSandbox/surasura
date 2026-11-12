@@ -77,6 +77,8 @@ _REASONS = frozenset(("から", "ので"))
 _POLITE = frozenset(("です", "ます"))                                   # ですから / ますから end the line…
 _POLITE_STEMS = frozenset(("でし", "まし", "ませ"))                       # …as でしたから / ましたから / ませんから do
 _NOUN_LINKS = frozenset(("ノチ", "アト", "ウチ", "タメ", "ホド"))          # 後 内 為 程 as nouns: のち あと うち ため ほど
+_TOIU = (frozenset(("と", "って")), frozenset(("いう", "ゆう")))         # という / っていう in kana (言う: the verb "say")
+_NAMED = frozenset(("名詞", "接頭辞", "連体詞", "形状詞"))                 # a line opening on what という names
 _HAN = re.compile(f"[{analyzer.HAN}]")
 _HIRAGANA_ONLY = re.compile(r"^[ぁ-ゟー]+$")
 _KATAKANA_ONLY = re.compile(r"^[ァ-ヿー]+$")
@@ -136,7 +138,8 @@ class Lines:
         line is the card's (not `forward`: is it pulled in from before)? By its end (rule 1): it runs on at a て / で
         form, a 連用形 or 仮定形 (なら, ば, たら), a case / binding / adverbial particle (に を や は ばっかり), ず, an
         adverb after other words (ずっと; なるほど alone is a reply), an arrow, dash or comma, a tail (にせよ にしろ
-        とはいえ … ながらも; 勝手にしろ is an order), the nouns のち あと うち ため ほど; a plain から / ので only
+        とはいえ … ながらも; 勝手にしろ is an order), the nouns のち あと うち ため ほど; という / っていう when the
+        next line opens on the noun it names (`_names_next`: 竜がいるという / 言い伝えが…); a plain から / ので only
         forward, into its main clause (ですから, ましたから end; a reason is never pulled in from before). It ends at
         。？！…, a closing bracket or ＞, a sentence-final particle, a plain / polite / imperative / volitional form,
         a noun or a name, an interjection, and at けど けれど し もん もの って か
@@ -151,6 +154,8 @@ class Lines:
             return False                    # no word the tagger read: nothing says it runs on
         surface, f = pieces[-1]
         before = [piece[0] for piece in pieces[:-1]]
+        if surface in _TOIU[1] and before[-1:] and before[-1] in _TOIU[0] and f.pos1 == "動詞":
+            return self._names_next(at)
         if surface in _EITHER_WAY and before[-1:] == ["に"]:
             return pieces[-2][1] is not None and pieces[-2][1].pos2 == "格助詞"
         if surface == "で" and before[-1:] == ["の"]:      # UniDic reads ので after ます as の + で
@@ -169,6 +174,26 @@ class Lines:
         if f.pos1 == "副詞":
             return bool(before)
         return f.pos1 == "名詞" and f.kanaBase in _NOUN_LINKS
+
+    def _names_next(self, at):
+        """Does the line after Japanese line `at` (past `at`'s own copies) open on what a という at `at`'s end names:
+        a noun, a prefix, a 連体詞 (その, 大それた), a 形状詞 (立派な), an adjective before its noun (古い), a pronoun
+        before の (彼の…) or the の that stands for one (…という / のは嘘だ)? A report or a name given (…という /
+        だとしたら, 名をシロという / 走るのが…), or a pronoun as the next sentence's subject (私は…), is followed by a
+        sentence of its own; a next line opening on a noun that starts its own sentence (毎朝…, 彼の両親が…) joins: the
+        rule's known limit."""
+        n = self.place.get(at)
+        text = self.cues[at].text
+        for cue in self.kept[n + 1:] if n is not None else ():
+            if self.cues[cue].text == text:
+                continue                    # `at` shown again
+            pieces = [p for p in self._pieces.get(cue) or [] if p[1] is None or p[1].pos1 not in ("補助記号", "空白")]
+            if not pieces or pieces[0][1] is None:
+                return False
+            f = pieces[0][1]
+            return (f.pos1 in _NAMED or (f.pos1 == "形容詞" and (f.cForm or "").startswith("連体形"))
+                    or (f.pos1 == "代名詞" and pieces[1:2] and pieces[1][0] == "の") or f.pos2 == "準体助詞")
+        return False
 
 
 def _spread(cues, kept, lo, hi):

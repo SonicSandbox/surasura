@@ -2661,7 +2661,7 @@ def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_
     """F13's leftover (G1): a look's pass over every origin of a big library (their names, records, shows) runs in
     Python, which holds the interpreter's lock; a move's save gives it up at each of its ~70 SQLite steps and waited
     for it back a whole switch interval each time — 5 ms by default (1 ms in the window's process): a save of ~3 ms
-    took 0.1–0.5 s while such a pass ran. A save now gets it back at once (`window_idle.save_began`). Here the look's
+    took 0.1–0.5 s while such a pass ran. A save now gets it back at once (`window_idle.hold`). Here the look's
     pass is a long stretch of plain Python where a 20,000-origin library's would be, run once a move has begun (the
     look holds no lock there); every move whose save overlapped it saves within MOVE_BUDGET in the timed run
     (SURASURA_STORE_BENCH=1), and within four times that elsewhere (it took ~0.5 s each before)."""
@@ -2761,6 +2761,14 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_let
                     with store._writing():
                         pass
             assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
+            with monkeypatch.context() as patched:               # (the hand-over itself failing — round 2: the hold
+                patched.setattr(window_idle, "_hand_over", lambda: 1 / 0)   # was outside the try that lets the
+                with pytest.raises(ZeroDivisionError):           # lock go, so the store stayed locked)
+                    with store._writing():
+                        pass
+            with store._writing(wait=0.5):                       # (the lock was let go)
+                pass
+            assert window_idle._holds == []
             ls.mark_damaged(store.db_path, "a test's damaged store")
             try:
                 with pytest.raises(ls.StoreReadOnly):

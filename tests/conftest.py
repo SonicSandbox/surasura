@@ -132,11 +132,13 @@ def _switch_interval_put_back():
 
 
 def let_go_of_holds_left():
-    """(`_switch_interval_put_back`, after each test.) Every hold of the hand-over's one owner left behind let go."""
-    idle = sys.modules.get("app.services.window_idle")      # (a host holds it there)
-    if idle is not None:
+    """(`_switch_interval_put_back`, after each test.) A re-order host's hold left behind let go (`window_idle`, the
+    hand-over's one owner); a save's is its own — a thread's save still running lets go of it itself."""
+    idle = sys.modules.get("app.services.window_idle")
+    preview = sys.modules.get("app.replan_preview")
+    if idle is not None and preview is not None:
         with idle._SWITCH_LOCK:
-            left = list(idle._holds)
+            left = [i for i in idle._holds if i == preview.WINDOW_SWITCH_S]
         for interval in left:
             idle.let_go(interval)
 

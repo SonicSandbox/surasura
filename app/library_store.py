@@ -2068,11 +2068,12 @@ class Store:
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
         self._wlock.acquire(wait)
-        window_idle.hold(window_idle.SAVE_SWITCH_S)   # F13: Python's lock back to this save at once (G1), its ring
-        try:                                     # and Connect's export timer too; never while it waits for the lock
+        try:
             committed = wrote = False
             try:
-                changes = self.conn.total_changes
+                window_idle.hold(window_idle.SAVE_SWITCH_S)   # F13: Python's lock back to this save at once (G1),
+                changes = self.conn.total_changes             # its ring and Connect's export timer too; never while it
+                                                              # waits for the lock
                 self.conn.gate.open = True
                 if begin:
                     try:

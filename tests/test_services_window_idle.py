@@ -184,10 +184,10 @@ def test_a_save_under_way_keeps_the_fine_hand_over_through_the_windows_rest_and_
         window_idle.let_go(window_idle.SAVE_SWITCH_S)
         assert sys.getswitchinterval() == pytest.approx(0.001)
     finally:
-        window_idle.set_switch(None, None)
-        window_idle.rest()
         for interval in list(window_idle._holds):
             window_idle.let_go(interval)
+        window_idle.set_switch(None, None)
+        window_idle.rest()
         sys.setswitchinterval(was)
 
 
@@ -223,9 +223,9 @@ def test_a_save_and_a_re_order_host_hold_the_hand_over_together_and_neither_end_
         replan_preview._leave_the_window()
         assert sys.getswitchinterval() == pytest.approx(0.001)
     finally:
-        window_idle.set_switch(None, None)
         for interval in list(window_idle._holds):
             window_idle.let_go(interval)
+        window_idle.set_switch(None, None)
         sys.setswitchinterval(was)
 
 
@@ -247,4 +247,37 @@ def test_a_re_order_host_a_test_never_stopped_is_let_go_after_it_and_the_run_goe
     finally:
         for interval in list(window_idle._holds):
             window_idle.let_go(interval)
+        sys.setswitchinterval(was)
+
+
+def test_a_hold_still_in_force_when_the_window_is_unwired_lets_go_to_the_windows_last_own_and_later_holds_still_work():
+    """(Round 2's blocking find.) At quit the window is unwired (`shell.unwire_idle`: rest, then `set_switch(None,
+    None)`) while a save may still hold the hand-over, or the in-process re-order host lives on: the base under the
+    holds was never recorded in the window's process, and the next hand-over took min(None, …) — a TypeError out of
+    every later save, its write lock kept. The base follows the window's own while it is wired; after the unwire the
+    last let-go puts back the window's at-rest one, and holds go on working."""
+    import sys
+    from app import replan_preview
+    was = sys.getswitchinterval()
+    save_s, host_s = window_idle.SAVE_SWITCH_S, replan_preview.WINDOW_SWITCH_S
+    try:
+        window_idle.set_switch(0.00025, 0.001)                   # (the window's process: wired before any save)
+        sys.setswitchinterval(0.001)
+        window_idle.busy()
+        window_idle.hold(save_s)                                 # a save under way at quit
+        replan_preview._share_the_window()                       # and the in-process host still alive
+        window_idle.rest()
+        window_idle.set_switch(None, None)                       # (unwire_idle)
+        window_idle.let_go(save_s)
+        assert sys.getswitchinterval() == pytest.approx(host_s)                 # (the host's, still alive)
+        window_idle.hold(save_s)                                 # a save during shutdown
+        assert sys.getswitchinterval() == save_s
+        window_idle.let_go(save_s)
+        replan_preview._leave_the_window()
+        assert window_idle._holds == [] and sys.getswitchinterval() == pytest.approx(0.001)
+    finally:
+        for interval in list(window_idle._holds):
+            window_idle.let_go(interval)
+        window_idle.set_switch(None, None)
+        window_idle.rest()
         sys.setswitchinterval(was)

@@ -15,8 +15,10 @@ before the first (someone's own setting since stays theirs). A save holds `SAVE_
 write lock (F13's leftover, Kura-F13 2026-11-12: a save gives the lock up at each of its ~70 SQLite steps and the
 commit's ring, and waited for it back a whole interval each time a busy thread ran Python — a look's pass over 20,000
 origins made a ~3 ms move save in 0.1–0.5 s); a re-order host in the window's own process holds 1 ms while it lives
-(`replan_preview`). A save's hold lasts only its few milliseconds: under 1 ms two busy threads take turns at every step
-(Mado-SP: 3.5× as long), so never for a whole look, nor while a save waits for the lock.
+(`replan_preview`). Under 1 ms two busy threads take turns at every step (Mado-SP: 3.5× as long), so a save holds it
+only while it holds the write lock — never while it waits for it, nor for a whole look: a window's save lasts
+milliseconds; the long writes under the lock (the store's reset, a migration's or Repair's rebuild, a checkpoint) run
+in the helper or once, with no other busy thread to take turns with.
 """
 import sys
 import threading
@@ -83,8 +85,10 @@ def _hand_over():
     """(Under `_SWITCH_LOCK`.) The finest of the window's own (else the one in force before the holds) and the holds."""
     now = sys.getswitchinterval()
     own = _switch[1] if _idle.is_set() else _switch[0]
-    if own is None:
-        if _handed["set"] is None or now != _handed["set"]:
+    if own is not None:
+        _handed["before"] = own                     # (the window unwired under a hold falls back to its last own)
+    else:
+        if _handed["before"] is None or _handed["set"] is None or now != _handed["set"]:
             _handed["before"] = now                 # (none of ours in force, or someone set their own since: theirs)
         own = _handed["before"]
     want = min([own, *_holds])

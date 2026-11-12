@@ -13139,49 +13139,57 @@ def _store_split_book(self, item_id):
     every look, whatever its parts' bytes), path (`joined_book_path`), parts [item ids, by their numbers], rels [their
     library copies, in that order], title (the first part's title's, else the name)}; None when it is no such part — a
     name not `<name>_<NN>.txt`, an EPUB's part (a book of its own), waiting (no file), or alone (fewer than two
-    available parts of that name in its folder). Read only; one range read of its folder."""
-    row = self.conn.execute("SELECT root_id, rel_key, availability FROM items WHERE id = ?", (item_id,)).fetchone()
-    if row is None or row[2] != "available":
-        return None
-    root, rel_key = row[0], row[1]
-    folder, _sep, name = rel_key.rpartition("/")
-    own = _SPLIT_PART.fullmatch(name)
-    if own is None:
-        return None
-    sql = "SELECT id, rel_path, rel_key FROM items WHERE root_id = ? AND availability = 'available'"
-    found = []
-    for other, rel, key in self.conn.execute(sql + " AND rel_key >= ? AND rel_key < ?", (root, folder + "/",
-                                                                                        folder + "0")) \
-            if folder else self.conn.execute(sql, (root,)):     # ("0" sorts right after "/": the folder's range)
-        head, _sep, tail = key.rpartition("/")
-        m = _SPLIT_PART.fullmatch(tail) if head == folder else None
-        if m is not None and m.group(1) == own.group(1):
-            found.append((int(m.group(2)), key, other, rel))
-    ids = [f[2] for f in found]
-    epubs = set()
-    for chunk in _chunks(ids, 500):
-        epubs |= {r[0] for r in self.conn.execute(
-            f"SELECT DISTINCT p.item_id FROM pairings p WHERE p.item_id IN ({','.join('?' * len(chunk))}) AND "
-            f"{_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%'", chunk)}
-    if item_id in epubs:
-        return None
-    found = sorted(f for f in found if f[2] not in epubs)
-    if len(found) < 2:
-        return None
-    title = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
-                              (found[0][2],)).fetchone()
-    stem = _SPLIT_PART.fullmatch(found[0][3].replace("\\", "/").rpartition("/")[2]).group(1)
+    available parts of that name in its folder). ONE part a number (review B1: the same book from two sources is
+    `<name>_01.txt` and the library's `<name>_01 (2).txt` — never joined twice): the shortest name of that number,
+    then the first; a part left out so still names the book. Read only, in one read; one range read of its folder."""
+    with self._reading():
+        row = self.conn.execute("SELECT root_id, rel_key, availability FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None or row[2] != "available":
+            return None
+        root, rel_key = row[0], row[1]
+        folder, _sep, name = rel_key.rpartition("/")
+        own = _SPLIT_PART.fullmatch(name)
+        if own is None:
+            return None
+        sql = "SELECT id, rel_path, rel_key FROM items WHERE root_id = ? AND availability = 'available'"
+        found = []
+        for other, rel, key in self.conn.execute(sql + " AND rel_key >= ? AND rel_key < ?", (root, folder + "/",
+                                                                                            folder + "0")) \
+                if folder else self.conn.execute(sql, (root,)):     # ("0" sorts right after "/": the folder's range)
+            head, _sep, tail = key.rpartition("/")
+            m = _SPLIT_PART.fullmatch(tail) if head == folder else None
+            if m is not None and m.group(1) == own.group(1):
+                found.append((int(m.group(2)), len(tail), key, other, rel))
+        ids = [f[3] for f in found]
+        epubs = set()
+        for chunk in _chunks(ids, 500):
+            epubs |= {r[0] for r in self.conn.execute(
+                f"SELECT DISTINCT p.item_id FROM pairings p WHERE p.item_id IN ({','.join('?' * len(chunk))}) AND "
+                f"{_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%'", chunk)}
+        if item_id in epubs:
+            return None
+        by_number = {}
+        for f in sorted(f for f in found if f[3] not in epubs):
+            by_number.setdefault(f[0], f)
+        found = [by_number[n] for n in sorted(by_number)]
+        if len(found) < 2:
+            return None
+        title = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                  (found[0][3],)).fetchone()
+    stem = _SPLIT_PART.fullmatch(found[0][4].replace("\\", "/").rpartition("/")[2]).group(1)
     book_id = hashlib.sha1(f"{root}|{folder}|{own.group(1)}".encode("utf-8")).hexdigest()[:16]
-    return {"id": book_id, "path": joined_book_path(self.language, book_id), "parts": [f[2] for f in found],
-            "rels": [f[3] for f in found], "title": (title[0] if title and title[0] else None) or stem}
+    return {"id": book_id, "path": joined_book_path(self.language, book_id), "parts": [f[3] for f in found],
+            "rels": [f[4] for f in found], "title": (title[0] if title and title[0] else None) or stem}
 
 
 def _store_joined_book(self, path):
     """Kura-TX B1: the split book whose joined `.txt` is `path` (`split_book`'s, its sidecar written by Connect) ->
     `split_book`'s answer and `sha256` (its parts' bytes' key, as the sidecar holds it, or None); None when `path` is
     no joined book of this library (not one, its sidecar unread, or no part the sidecar names is still a part of a book
-    joined there). Read only."""
-    if not isinstance(path, str) or not os.path.basename(path).startswith(JOINED_PREFIX):
+    joined there; never a file outside Connect's `books` folder: review N5). Read only."""
+    if not isinstance(path, str) or not os.path.basename(path).startswith(JOINED_PREFIX) or \
+            path_key(os.path.dirname(os.path.abspath(path))) != \
+            path_key(os.path.dirname(os.path.abspath(joined_book_path(self.language, "x")))):
         return None
     try:
         with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:

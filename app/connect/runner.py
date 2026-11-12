@@ -2584,8 +2584,10 @@ class Steps:
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
         (`library.waits_for`), else None (`connect.reading.source`: the EPUB a part was cut from, else the item's own
         text). A busy store is a Wait. Kura-TX: a part of a book 2.x split into `.txt` parts is read as itself, its
-        book the parts' joined `.txt` (`library.split_book`), which stands where an EPUB's path stands."""
+        book the parts' joined `.txt` (`library.split_book`), which stands where an EPUB's path stands — joined after
+        the store is let go (review S3: `_held` only around its reads)."""
         from app.connect import library, reading
+        split = None
         with _held():
             with self._open(lang) as store:
                 item = store.item(job["item_id"]) or {}
@@ -2598,7 +2600,9 @@ class Steps:
             found, book = reading.source(path, pairing)
             if book is None and str(found).lower().endswith(".txt"):
                 with self._open(lang) as store:
-                    book = library.split_book(store, job["item_id"], lang)
+                    split = store.split_book(job["item_id"])
+        if split is not None:
+            book = library.join_book(split, lang)
         return reading.as_text(found, self.run_dir(job), lang), book
 
     def subtitle(self, lang, job):

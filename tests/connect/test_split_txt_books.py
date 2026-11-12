@@ -121,19 +121,15 @@ def test_the_learners_files_are_never_moved_renamed_or_rewritten_and_the_library
     assert (_tree(split["src"]), _tree(os.path.join(split["data_dir"], "Library"))) == before
 
 
-def test_the_books_question_names_the_title_and_is_keyed_by_its_parts_bytes(split, fake_miner):
+def test_the_books_question_names_the_title_by_its_first_part_and_is_kept_by_the_joined_books_path(split,
+                                                                                                fake_miner):
     """B1 → Kura-AB2's question: the joined book with no audiobook asks once, by its first part — *Do you have
-    「蜘蛛の糸」's audiobook?* — keyed by the parts' sha256s in order (a moved folder is the same book; a part changed is
-    asked again). Nothing started."""
+    「蜘蛛の糸」's audiobook?* — its answer kept by the joined book's path (the same while its folder and name stay,
+    whatever its parts' bytes: review S1). Nothing started."""
     _reading, book = _joined(split)
     got = split["steps"].line_up("ja", _job(split["parts"][1], 2), book)
-    shas = []
-    for n in (1, 2):
-        with open(split["paths"][n - 1], "rb") as f:
-            shas.append(hashlib.sha256(f.read()).hexdigest())
     assert got == {"book_ask": runner.BOOK_AUDIO_ASK.format(title=TITLE), "item_id": split["parts"][0],
-                   "key": f"sha256:{hashlib.sha256(chr(10).join(shas).encode('ascii')).hexdigest()}",
-                   "epub": os.path.abspath(book)}
+                   "key": f"path:{ls.path_key(os.path.abspath(book))}", "epub": os.path.abspath(book)}
     assert "sync" not in fake_miner.commands()
 
 
@@ -162,11 +158,21 @@ def test_parts_saved_in_shift_jis_or_with_a_bom_join_as_one_utf8_text(tmp_path):
     assert one.splitlines()[0][:20] in text and two.splitlines()[0][:20] in text
 
 
-def test_a_part_changed_in_the_library_joins_again_at_the_same_place_under_a_new_key(split):
+def test_a_part_changed_in_the_library_joins_again_at_the_same_place_and_its_answer_stays(split, tmp_path):
     """The join is made again when a part's copy changes (its size or time): the same path — a pairing names it —,
-    the new text, a new key (a new edition asks again, as an EPUB's does)."""
+    the new text, its bytes' key new in the sidecar. Review S1: *Mine without audio* said before the edit stays said —
+    a learner's numbered notes, edited every day, never ask again, nor hold a part again."""
+    from app.connect import actions
     _reading, book = _joined(split)
-    key = _book_of(split, book)["sha256"]
+    side = os.path.splitext(book)[0] + ".json"
+    key = json.load(open(side, encoding="utf-8"))["sha256"]
+    ledger_path = str(tmp_path / "ledger.db")
+    with Ledger(ledger_path) as ledger:
+        jid = ledger.queue("ja", split["parts"][0], "mine", None, "store-1")
+        with pytest.raises(runner.Wait):
+            runner._line_up(split["steps"], ledger, "ja", ledger.job_by_id(jid), (None, book))
+        [need] = [n for n in ledger.needs("ja", listed=False) if n["kind"] == runner.BOOK_AUDIO_NEED]
+    assert actions.book_audiobook("ja", need["id"], path=ledger_path) is True
     rel = _parts_of_rel(split)[1]
     copy = os.path.join(split["data_dir"], *rel.split("/"))
     with open(copy, "a", encoding="utf-8", newline="\n") as f:
@@ -175,7 +181,37 @@ def test_a_part_changed_in_the_library_joins_again_at_the_same_place_under_a_new
     assert again == book
     with open(book, encoding="utf-8") as f:
         assert "この一部始終をじっと見ていらっしゃいましたが" in f.read()
-    assert _book_of(split, book)["sha256"] != key
+    assert json.load(open(side, encoding="utf-8"))["sha256"] != key
+    with Ledger(ledger_path) as ledger:
+        later = ledger.queue("ja", split["parts"][1], "mine", None, "store-1")
+        assert runner._line_up(split["steps"], ledger, "ja", ledger.job_by_id(later), (None, again)) is None
+        assert not [n for n in ledger.needs("ja", listed=False) if n["kind"] == runner.BOOK_AUDIO_NEED]
+
+
+def test_the_same_book_from_two_sources_joins_each_part_once(tmp_path):
+    """Review B1: the same parts in two of the learner's folders land in one title, the library naming the second
+    copies — an older save of each — `<name>_01 (2).txt`: one part a number (the plain name), so the joined book holds the story once, never
+    every part twice (Anki Miner would line the audio up with a book read twice over)."""
+    store, _data_dir = _empty("ja")
+    for name in ("old-pc", "backup"):
+        src = _drive(name)
+        for n in (1, 2):
+            _write(os.path.join(src, TITLE, f"{TITLE}_{n:02d}.txt"),
+                   _part_text(n) + ("" if name == "old-pc" else "（一九一八年四月）\n"))   # an older save of each
+    with store:
+        for name in ("old-pc", "backup"):
+            _look(store, "ja", store.add_source(_drive(name)))
+        rows = _parts_of(store)
+        plain = [i for i, rel in rows if rel.endswith((f"{TITLE}_01.txt", f"{TITLE}_02.txt"))]
+        copies = [i for i, _rel in rows if i not in plain]
+        assert len(plain) == 2 and copies, [rel for _i, rel in rows]
+        got = store.split_book(copies[0])
+        assert got is not None and got["parts"] == plain
+        book = library.split_book(store, plain[0], "ja")
+    with open(book, encoding="utf-8") as f:
+        text = f.read()
+    first = _part_text(1).splitlines()[0]
+    assert text.count(first) == 1
 
 
 def _book_of(split, book):
@@ -209,15 +245,50 @@ def test_what_is_not_a_split_book_stays_a_text_one_part_two_names_or_a_plain_nam
 
 
 def test_a_split_books_parts_go_by_their_numbers_never_by_their_names_letters_a_chapters_label_too():
-    """2.x numbered past 99 (Mattias's CHAOS;CHILD_100.txt): `_09` < `_10` < `_100`, and a chapter's part
+    """2.x numbered past 99 (Mattias's CHAOS;CHILD_100.txt): `_08` < `_99` < `_100`, and a chapter's part
     (`<name>_NN (3) <label>.txt`, `extract.part_name`'s form) is a part of the same book."""
-    names = ["蜘蛛の糸_100.txt", "蜘蛛の糸_10.txt", "蜘蛛の糸_09 (1) 地獄.txt"]
+    names = ["蜘蛛の糸_100.txt", "蜘蛛の糸_99.txt", "蜘蛛の糸_08 (1) 地獄.txt"]
     store, ids = _library_of(names)
     with store:
-        got = store.split_book(ids["蜘蛛の糸_10.txt"])
-        assert got["parts"] == [ids["蜘蛛の糸_09 (1) 地獄.txt"], ids["蜘蛛の糸_10.txt"], ids["蜘蛛の糸_100.txt"]]
+        got = store.split_book(ids["蜘蛛の糸_99.txt"])
+        assert got["parts"] == [ids["蜘蛛の糸_08 (1) 地獄.txt"], ids["蜘蛛の糸_99.txt"], ids["蜘蛛の糸_100.txt"]]
         assert got == store.split_book(ids["蜘蛛の糸_100.txt"]), "every part names the same book"
         assert os.path.basename(got["path"]).startswith(ls.JOINED_PREFIX)
+
+
+def test_a_part_in_a_folder_below_or_a_part_gone_from_the_library_is_no_part_of_the_book(tmp_path):
+    """One folder's parts only: a same-named part in a folder below is a text of its own. A part whose copy is gone
+    (missing, as the store marks it) is no part — the book is the parts still there."""
+    names = ["蜘蛛の糸_01.txt", "蜘蛛の糸_02.txt", "蜘蛛の糸_03.txt", "下巻/蜘蛛の糸_04.txt"]
+    store, ids = _library_of(names)
+    with store:
+        assert store.split_book(ids["蜘蛛の糸_04.txt"]) is None
+        assert store.split_book(ids["蜘蛛の糸_01.txt"])["parts"] == [ids[f"蜘蛛の糸_0{n}.txt"] for n in (1, 2, 3)]
+        rel = store.item(ids["蜘蛛の糸_02.txt"])["rel_path"]
+        os.remove(os.path.join(store.data_dir, *rel.split("/")))
+        store.sync_disk()
+        assert store.item(ids["蜘蛛の糸_02.txt"])["availability"] == "missing"
+        assert store.split_book(ids["蜘蛛の糸_02.txt"]) is None
+        assert store.split_book(ids["蜘蛛の糸_03.txt"])["parts"] == [ids["蜘蛛の糸_01.txt"], ids["蜘蛛の糸_03.txt"]]
+
+
+def test_an_epubs_parts_beside_2xs_loose_parts_of_the_same_name_stay_two_books(tmp_path):
+    """Mattias's migrated parts and, later, the same book's EPUB: the EPUB's parts are the EPUB's book (the look keeps
+    them in their own title folder); the loose parts alone are the split book — never one book of both."""
+    from tests.test_audiobook_items import _epub
+    store, _data_dir = _empty("ja")
+    src = _drive("both")
+    _epub(os.path.join(src, f"{TITLE}.epub"), TITLE, "ja")
+    for n in (1, 2):
+        _write(os.path.join(src, TITLE, f"{TITLE}_{n:02d}.txt"), _part_text(n))
+    with store:
+        _look(store, "ja", store.add_source(src))
+        rows = _parts_of(store)
+        loose = [i for i, rel in rows if rel.endswith((f"{TITLE}_01.txt", f"{TITLE}_02.txt"))]
+        epub = [i for i, _rel in rows if i not in loose]
+        assert len(loose) == 2 and epub
+        assert [store.split_book(i) for i in epub] == [None] * len(epub)
+        assert store.split_book(loose[0])["parts"] == loose
 
 
 def test_an_epubs_own_parts_are_its_book_never_a_split_book(tmp_path):
@@ -280,6 +351,7 @@ def test_pick_its_audiobook_lists_the_lone_audiobook_for_the_joined_book_and_pai
                  for i in split["parts"] + [split["audio"]]}
         assert ab is not None and ab["item_id"] == split["audio"] and ab["key"] and ab["title"] == TITLE
         assert len(works) == 1, "the audiobook is in the book's title"
+        assert store.audiobook_hovers()[split["audio"]]["parts"] == sorted(split["parts"]), "its 🎧 on every part"
         assert library.paired_books(store) == [(os.path.abspath(book), split["audio"],
                                                 library.book_of(store, book)["sha256"])]
         assert store.pick_audiobook_book(split["audio"], book) is None, "paired already: nothing written"
@@ -310,8 +382,13 @@ def test_a_joined_book_no_part_of_this_library_names_is_never_paired(split, tmp_
     with open(os.path.splitext(book)[0] + ".json", encoding="utf-8") as f, \
             open(os.path.splitext(stray)[0] + ".json", "w", encoding="utf-8") as g:
         g.write(f.read())
+    away = str(tmp_path / os.path.basename(book))      # the book's own files, outside Connect's folder (N5)
+    for a, b in ((book, away), (os.path.splitext(book)[0] + ".json", os.path.splitext(away)[0] + ".json")):
+        with open(a, encoding="utf-8") as f, open(b, "w", encoding="utf-8") as g:
+            g.write(f.read())
     with split["steps"]._open("ja") as store:
         assert store.joined_book(stray) is None and store.pick_audiobook_book(split["audio"], stray) is None
+        assert store.joined_book(away) is None and store.pick_audiobook_book(split["audio"], away) is None
         assert _record(store, split["audio"])["book"] is None
 
 

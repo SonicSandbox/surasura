@@ -164,21 +164,27 @@ def paired_books(store):
 
 
 def split_book(store, item_id, language):
-    """Kura-TX B1 (PROVISIONAL): the book 2.x split into `.txt` parts that the item is a part of (`Store.split_book`'s
-    rule) -> its joined `.txt`'s path — the parts' library copies in order, a line between, written in Connect's folder
-    (the app's own file: the learner's files and the library's copies are only read), with its sidecar (`<joined>.json`:
-    each part's item, copy, size, time and sha256, and their key — the sha256 of the parts' sha256s in order, the
-    book's answer key as an EPUB's sha256 is). Made again only when a part's copy changed (its size or time), a part
-    came or went, or the file is gone. None when the item is no such part, or a copy can't be read now (the part is
-    mined as a text, as before)."""
+    """Kura-TX B1 (PROVISIONAL): the joined `.txt` of the book 2.x split into `.txt` parts that the item is a part of
+    (`Store.split_book`'s rule, then `join_book`) -> its path, or None. Holds the store only for its read: call
+    `join_book` yourself where the store is held for other reads (`runner.Steps.reading`, review S3)."""
+    return join_book(store.split_book(item_id), language)
+
+
+def join_book(got, language):
+    """Kura-TX B1: a split book (`Store.split_book`'s answer, or None) -> its joined `.txt`'s path: the parts' library
+    copies in order, each read as a Generate reads it (`path_utils.read_text`), a line between, written in UTF-8 in
+    Connect's folder (the app's own file: the learner's files and the library's copies are only read), with its sidecar
+    (`<joined>.json`: each part's item, copy, size, time and sha256, and their key — the sha256 of the parts' sha256s
+    in order). Made again only when a part's copy changed (its size or time), a part came or went, or the file is
+    gone; each through a temporary file, removed when it fails. None when `got` is None, or a copy can't be read or the
+    file written now (the part is mined as a text, as before)."""
     from app.path_utils import get_data_path, read_text
-    got = store.split_book(item_id)
     if got is None:
         return None
     path = got["path"]
     side = os.path.splitext(path)[0] + ".json"
     data_dir = get_data_path(language)
-    parts = []
+    parts, tmp = [], None
     try:
         for item, rel in zip(got["parts"], got["rels"]):
             st = os.stat(os.path.join(data_dir, *rel.replace("\\", "/").split("/")))
@@ -206,8 +212,14 @@ def split_book(store, item_id, language):
             with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 f.write(body)
             os.replace(tmp, name)
+            tmp = None
     except (OSError, UnicodeError) as e:
-        log.info("Connect: a split book's parts couldn't be joined now (item %s): %s", item_id, e)
+        log.info("Connect: a split book's parts couldn't be joined now (%s): %s", got.get("title"), e)
+        if tmp is not None:
+            try:
+                os.remove(tmp)                  # (Anki Miner holding the joined file: review N4)
+            except OSError:
+                pass
         return None
     return path
 
@@ -217,13 +229,14 @@ def book_of(store, epub):
     asked by, so every part asks the same one), sha256 (the EPUB's, from its parts' records: the answer survives a
     move), title (its title's — its file's when the title holds another book too, `Store.library_books`' rule)}; None
     when no live part of it is in the library. One range read of the pairings. Kura-TX: a split book's joined `.txt`
-    (`split_book`) — its first part, its parts' key, its title."""
+    (`split_book`) — its first part and its title; no sha256 (review S1: its answers are kept by its path, which an
+    edited part never moves — a learner's numbered notes, answered once, stay answered)."""
     from app import library_store
     if not epub:
         return None
     joined = store.joined_book(epub)
     if joined is not None:
-        return {"item": joined["parts"][0], "sha256": joined["sha256"], "title": joined["title"]}
+        return {"item": joined["parts"][0], "sha256": None, "title": joined["title"]}
     lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
     with store._reading():
         rows = store.conn.execute(

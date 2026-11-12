@@ -2053,8 +2053,8 @@ class NeedsYou(QObject):
         """*Find them with hato* (NS-2: the one press, the first time): its card's library's yes kept
         (`no_subs.setting`: the action names the library — Zh-H — never the page's library of the moment, which a switch
         changes before the old cards go), through the settings service; Surasura's tools entry written again (hato's
-        `register` listed: Q3), then a look — after it the waiting videos go to hato on the looks' own worker
-        (`SourceLooks._fill_tracks`)."""
+        `register` listed: Q3), then a look — after it the waiting videos go to hato on its own worker, after
+        the look's track fill (`SourceLooks._ask_hato`)."""
         from app import no_subs
         settings = self.win.services.settings
         settings.set({no_subs.setting(language): True})

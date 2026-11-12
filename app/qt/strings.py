@@ -1411,6 +1411,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                   "again"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # Kantan-B1 (A1, PROVISIONAL): a failed Generate's way on
+    "generate_again": ("Generate again", "Make your list again now, as the Generate button at the top does"),
+    "report": ("Report a problem", "Tell us what went wrong: Report a problem opens with this line written in, for "
+                                   "you to add to and send"),
     # T6: a gone source folder's card (Sonic 2026-10-24)
     "find_folder": ("Find its new folder…", "Choose where the folder is now. Surasura reads it there and joins its "
                                             "episodes to the shows you have, never as a second copy, then stops "
@@ -1579,6 +1583,7 @@ NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed befor
 NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
+NEEDS_FAILURE_LOG_TIP = "The details are in {path}"              # Kantan-B1 (A1): a failed Generate's path, hover only
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
 NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
 NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"

@@ -114,8 +114,10 @@ def _child():
     for size in ("S", "M", "L"):
         style.apply(app, "night", size, "ja")
         for w, h in WINDOWS:
-            for name, fix in (("seen", SEEN), ("before-3.7", BEFORE_37)):
+            for name, fix in (("seen", SEEN), ("before-3.7", BEFORE_37), ("anki-closed", SEEN)):
                 anki = {"open": True, "say": None, "decks": list(DECKS), "preselected": [DECKS[0][0]]}
+                if name == "anki-closed":                 # Kantan-B1: Card order's closed part, its line and Next
+                    anki = {"open": False, "say": None, "decks": [], "preselected": [], "running": True}
                 shell = T.FakeShell(T.FakeSettings({}))
                 wiz = W.SetupWizard(shell, parent=shell.centralWidget(),
                                     api=T.FakeApi(anki=anki, rows=ROWS, numbers=T.NUMBERS),
@@ -129,6 +131,8 @@ def _child():
                 for pid in W.PAGES:
                     if name == "before-3.7" and pid != "cards":
                         continue                          # (the other pages don't read the fix)
+                    if name == "anki-closed" and pid != "order":
+                        continue
                     T.go_to(wiz, pid)
                     wiz.page.entered()
                     T.wait_until(lambda: not wiz._anki_looking, 2.0)
@@ -159,7 +163,7 @@ def test_every_page_reads_whole_at_100_and_250_percent_every_text_size_and_the_l
     assert line is not None, done.stdout[-2000:] + done.stderr[-4000:]
     problems, checked, dpr = json.loads(line[len("RESULT "):])
     assert abs(dpr - float(scale)) < 0.01
-    assert checked == 3 * 2 * (len(W.PAGES) + 1) and problems == [], "\n".join(problems[:40])
+    assert checked == 3 * 2 * (len(W.PAGES) + 2) and problems == [], "\n".join(problems[:40])
 
 
 # --- the words before 3.7, from 3.7 ------------------------------------------------------------------------------------ #

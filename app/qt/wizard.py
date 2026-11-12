@@ -59,6 +59,7 @@ ROWS_SHOWN = 6                                  # page 3's rows; the rest are "a
 YOUTUBE_DOOR = "youtube-downloader"             # alpha 8: page 3's *YouTube…* shows while the downloader's door does
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
+INDEX_FRESH_S = 10                              # page 6's *Reading N files…*: an indexer log older than this is no run's
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
 SAVED_WAIT = 10                                 # s: D1's check after sorting waits at most this long for its places
 GLYPH_GEM = {"ja": "sapphire", "zh": "ruby"}    # page 1's wash under each glyph
@@ -1273,8 +1274,12 @@ class _Page(QWidget):
         """The page shows: what it reads is asked again on a worker."""
 
     def next_offered(self):
-        """False while the page can't go on (Anki not open on *Card order*): *Next* hides, Enter is *Skip*."""
+        """False while the page can't go on (Anki not open on *What you know*): *Next* hides, Enter is *Skip*."""
         return True
+
+    def next_skips(self):
+        """True while *Next* goes on as *Skip* does, nothing written (Kantan-B1: *Card order* with Anki closed)."""
+        return False
 
     def focus_first(self):
         """Where the keyboard starts on this page (nothing: the wizard keeps it; a key's Tab finds the controls)."""
@@ -1533,6 +1538,9 @@ class ShowsPage(_Page):
         pick.addWidget(self.btn_stop)
         pick.addStretch(1)
         fbox.addLayout(pick)
+        # Kantan-B1 (A2; Mattias, 11-10: "will it move my files?" was answered only in a hover)
+        self.where_line = _label("wizsub", S.PICK_WHERE_THEY_ARE, self.folders_part, wrap=True)
+        fbox.addWidget(self.where_line)
         # alpha 8: *YouTube…*'s links, one a line, and the downloader's own risk tick (its setting, its words)
         self.links_part = QWidget(self.folders_part)
         lbox = QVBoxLayout(self.links_part)
@@ -1554,6 +1562,8 @@ class ShowsPage(_Page):
         self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
         self.every_core.switch.toggled.connect(self.wiz.use_every_core)
         fbox.addWidget(self.every_core)                   # Mado-O (Sonic 2026-10-30): decided before the load
+        self.every_core.setVisible(False)                 # Kantan-B1 (A2): a reading speed — shown once a folder is
+                                                          # ... picked (`_paint_folders`), never asked before one
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
@@ -1718,6 +1728,7 @@ class ShowsPage(_Page):
             self.folder_list.addWidget(w)
         _show(self.btn_skip, bool(self.folders))          # only inside a folder picked
         _enable(self.btn_skip, self.wiz.reading is None)
+        _show(self.every_core, bool(self.folders) and not self.every_core.property("resort-hidden"))   # Kantan-B1
         _enable(self.btn_its_folder, self.wiz.reading is None)
         text = S.PICK_ANOTHER if self.folders else S.PICK_FOLDER
         if self.btn_pick.text() != text:
@@ -1940,6 +1951,9 @@ class OrderPage(_Page):
         self.box.addWidget(self.picture)
         self.closed_part, self.closed_line, self.closed_steps, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
+        self.when_open = _label("wizsub", S.ORDER_WHEN_OPEN, self, wrap=True)    # Kantan-B1 (A2): with the closed part
+        self.when_open.setVisible(False)
+        self.box.addWidget(self.when_open)
         # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
         self.off_line = _label("wizclosed", S.ORDER_OFF, self, wrap=True)
         self.off_line.setVisible(False)
@@ -2135,6 +2149,7 @@ class OrderPage(_Page):
         _show(self.off_line, bool(off))
         is_open = bool(look and look.get("open")) and not off
         _show(self.closed_part, not off and look is not None and not is_open)
+        _show(self.when_open, not off and look is not None and not is_open)
         if look is not None and not look.get("open"):
             _say_closed(self.closed_line, self.closed_steps, look, self.closed_part.watch)
         _show(self.controls, is_open)
@@ -2166,8 +2181,13 @@ class OrderPage(_Page):
                 "later": self.later.value() or "leave"}
 
     def next_offered(self):
+        """Kantan-B1 (A2, the walk's dead end: Anki closed left only a small *Skip*): once Anki was looked for, *Next*
+        stays — with Anki closed it goes on as *Skip* does (`next_skips`: nothing written)."""
+        return self.wiz.anki is not None and not self.wiz.junban_off()
+
+    def next_skips(self):
         look = self.wiz.anki
-        return bool(look and look.get("open")) and not self.wiz.junban_off()
+        return not (look and look.get("open"))
 
     def entered(self):
         if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
@@ -2582,6 +2602,7 @@ class LevelPage(_Page):
         discord.addStretch(1)
         self.box.addLayout(discord)
         self.numbers = None
+        self.reading = None                 # Kantan-B1: the files the indexer reads while counting (None: not reading)
         self._band = None                   # the band the user moved to (None: Automatic's)
         self._shown = None
         self.number_paints = 0
@@ -2604,8 +2625,9 @@ class LevelPage(_Page):
     def entered(self):
         self.wiz.read_numbers(fresh=True)
 
-    def show_numbers(self, numbers):
-        self.numbers = numbers
+    def show_numbers(self, numbers, reading=None):
+        """`reading` (Kantan-B1): how many files the indexer reads while nothing is counted yet (None: not reading)."""
+        self.numbers, self.reading = numbers, reading
         self._paint()
 
     def counted(self):
@@ -2644,7 +2666,9 @@ class LevelPage(_Page):
         counted = self.counted()
         if not counted:                                   # Disc-T1: nothing to count is said, never *Counting* for
             empty = None if self.wiz.fetching is not None else (n or {}).get("empty")  # good (YouTube's videos coming:
-            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, S.COUNTING))  # still)
+            # still); Kantan-B1 (A2): while the indexer reads, how many files it reads
+            counting = _count(S.READING_FILES, self.reading) if self.reading else S.COUNTING
+            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, counting))
         _show(self.counting, not counted)
         _show(self.numbers_part, counted)
         if not counted:
@@ -2674,8 +2698,24 @@ class LevelPage(_Page):
             self.big["coverage"].style().polish(self.big["coverage"])
 
     def language_changed(self, language):
-        self.numbers, self._shown = None, None
+        self.numbers, self.reading, self._shown = None, None, None
         self._paint()
+
+
+def _index_reading(chores, numbers):
+    """(A worker.) Kantan-B1 (A2: page 6 said *Counting your shows…* over an empty graph while the samples were read):
+    while the numbers aren't in and the window's indexer reads, how many files it reads (its log's newest count,
+    `setup_load.read_count`, the load screen's) — else None."""
+    if chores is None or (numbers or {}).get("bands") or (numbers or {}).get("empty"):
+        return None
+    try:
+        if not chores.indexing():
+            return None
+        from app.services import setup_load
+        got = setup_load.read_count(chores.index_log(), time.time() - INDEX_FRESH_S)
+    except Exception:                                     # (no count: *Counting* stays, as before)
+        return None
+    return got[1] if got else None
 
 
 def number_for(numbers, key, band):
@@ -2928,9 +2968,12 @@ class SetupWizard(QWidget):
         text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
         if self.resort is not None:
             text, tip = S.RESORT_NEXT, S.RESORT_NEXT_TIP
+        elif self.page.next_skips():
+            tip = S.ORDER_NEXT_TIP                        # Kantan-B1: on as *Skip* goes (Anki closed)
         if self.btn_next.text() != text:
             self.btn_next.setText(text)
             self.btn_next.setAccessibleName(text)
+        if self.btn_next.toolTip() != tip:
             self.btn_next.setToolTip(tip)
         for b in (self.btn_back, self.btn_skip, self.btn_next):
             if b.isEnabled() == busy:
@@ -2981,6 +3024,9 @@ class SetupWizard(QWidget):
             return
         page = self.page
         if not page.next_offered():
+            return
+        if page.next_skips():
+            self.skip()                                    # Kantan-B1: Anki closed on *Card order*: nothing written
             return
         if self.resort is not None:
             self._resort_next()
@@ -4026,14 +4072,20 @@ class SetupWizard(QWidget):
             self._count_wait = COUNT_AGAIN_MS
         self._numbers_seq += 1
         seq, language = self._numbers_seq, self.language
-        bridge.run_in_worker(self.api.level_numbers, thaw(self._settings()), language,
-                             then=self.alive(lambda n: self._numbers(n, seq, language)),
+        count, chores = self.api.level_numbers, getattr(self.shell, "chores", None)
+
+        def read(settings, language):
+            numbers = count(settings, language)
+            return numbers, _index_reading(chores, numbers)
+        bridge.run_in_worker(read, thaw(self._settings()), language,
+                             then=self.alive(lambda got: self._numbers(got, seq, language)),
                              failed=self.alive(lambda info: self._numbers_failed(info, seq, language)))
 
-    def _numbers(self, numbers, seq, language):
+    def _numbers(self, got, seq, language):
         if seq != self._numbers_seq or language != self.language:
             return
-        self.pages[5].show_numbers(numbers)
+        numbers, reading = got
+        self.pages[5].show_numbers(numbers, reading)
         if not self.pages[5].counted():                   # still counting (or no shows yet): asked again while shown,
             self._count_later(seq)                        # each time twice as long after, and when the indexer ran
 

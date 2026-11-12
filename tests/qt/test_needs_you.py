@@ -540,6 +540,65 @@ def test_failures_keep_open_the_logs_folder_and_save_logs_to_a_file(world, tmp_p
     assert saved == [(dest, True)]
 
 
+PARTIAL = "Your list was written, but the report couldn't be."     # the analyzer's own line (app/analyzer.py)
+
+
+def test_a_failed_generate_offers_generate_again_and_report_a_problem_its_path_only_in_the_hover(world, monkeypatch,
+                                                                                                  tmp_path):
+    """Kantan-A's walk (11-12): a failed Generate's card offered only the two log buttons — no way forward — and its
+    title was a path. Now: *Generate again* (the header's Generate, on a worker, its arc on the card's button) and
+    *Report a problem* (the bug's window, the line written in), then the logs; the path is the title's hover."""
+    seed, win, writer, ny = world()
+    main = threading.main_thread()
+    asked = []
+    monkeypatch.setattr(win.services, "generate", lambda: asked.append(threading.current_thread() is not main))
+    log = str(tmp_path / "logs" / "generate-window.log")
+    monkeypatch.setattr(win.services, "controller", SimpleNamespace(log_path=lambda: log))    # (the world has none)
+    ny.failures_in((status_service.Entry(PARTIAL, "2026-11-12T07:50:00", False, "generate"),))
+    assert wait_until(lambda: any(e.kind == service.FAILURE for e in ny.entries), 10)
+    fail = next(e for e in ny.entries if e.kind == service.FAILURE)
+    assert [b.property("action") for b in ny.cards.buttons(fail.key)] == ["generate_again", "report", "open_logs",
+                                                                         "save_logs"]
+    title = next(l for l in ny.cards.card(fail.key).findChildren(QLabel) if l.objectName() == "needstitle")
+    assert title.text() == PARTIAL and log not in title.text()
+    assert title.toolTip() == strings.NEEDS_FAILURE_LOG_TIP.format(path=log)
+    for b in ny.cards.buttons(fail.key):
+        assert b.toolTip(), b.property("action")                 # the Qt guide: every button has its hover
+    button(ny, fail.key, "generate_again").click()
+    assert wait_until(lambda: asked, 5) and asked == [True]     # asked once, on a worker
+    filled = []
+
+    class Report:
+        def fill(self, what, expected=""):
+            filled.append(what)
+    from app.qt import report as qreport
+    monkeypatch.setattr(qreport, "open_report", lambda shell: Report() if shell is win else None)
+    button(ny, fail.key, "report").click()
+    assert filled == [PARTIAL]                                   # at once: the window opens with the line in it
+
+
+def test_a_command_lines_failure_keeps_only_the_logs():
+    """A failure that isn't the window's Generate (a command line's) has no *Generate again*: that would start another
+    run than the one that failed."""
+    got = service.entries(None, (status_service.Entry("surasura-cli plan stopped", "2026-11-12T07:00:00", False,
+                                                      "cli:plan"),), generate_log="C:/logs/generate-window.log")
+    assert [(e.actions, e.data["log"]) for e in got] == [(("open_logs", "save_logs"), None)]
+
+
+def test_the_same_failure_twice_is_one_card_counted_and_a_new_one_its_own():
+    """Kantan-A's walk: two Generates that stopped the same way made two identical cards. One card per line, *· 2
+    times*, keyed by the newest (a newer one after *Not now* shows again), unseen while any is; another line, its own."""
+    failures = (status_service.Entry(PARTIAL, "2026-11-12T07:52:00", False, "generate"),
+                status_service.Entry("Another Surasura program is writing your list; nothing was changed.",
+                                     "2026-11-12T07:51:00", True, "generate"),
+                status_service.Entry(PARTIAL, "2026-11-12T07:50:00", True, "generate"))
+    got = [e for e in service.entries(None, failures) if e.kind == service.FAILURE]
+    assert [e.title for e in got] == [f"{PARTIAL} · 2 times",
+                                      "Another Surasura program is writing your list; nothing was changed."]
+    assert got[0].key.startswith("failure:2026-11-12T07:52:00:") and got[0].unseen and not got[1].unseen
+    assert got[0].data["text"] == PARTIAL                        # Report a problem's line: never the count
+
+
 # --- S19 / N9 ------------------------------------------------------------------------------------------------------- #
 def test_N9_an_empty_status_tick_works_nothing_out_and_repaints_no_card(world):
     seed, win, writer, ny = world()

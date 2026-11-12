@@ -1229,6 +1229,13 @@ class ReportWindow(SecondaryWindow):
     def fill_from_piyo(self, what, expected=""):
         """Piyo's *Send report*: the AI's words in the form — after any draft already there — for the learner to read,
         change and send. Nothing is saved or sent here: *Send report* (What goes, then Send) is the learner's."""
+        self.fill(what, expected)
+        self.from_piyo = True
+        self.say(strings.REPORT_FROM_PIYO)
+
+    def fill(self, what, expected=""):
+        """`what` (and `expected`) in the form, after any draft already there, the form shown and focused — Piyo's
+        words, or a *Needs you* failure's line (Kantan-B1). Nothing is saved or sent here."""
         if self.pages.currentIndex() != self.FORM:                # (What goes up: its unsent zip goes; the next Send
             self.back()                                            # ... report carries these words too)
         for box, words, most in ((self.what, what, PIYO_WHAT_MAX), (self.expected, expected, PIYO_EXPECTED_MAX)):
@@ -1236,8 +1243,6 @@ class ReportWindow(SecondaryWindow):
             if words:
                 had = box.toPlainText().strip()
                 box.setPlainText(f"{had}\n\n{words}" if had else words)
-        self.from_piyo = True
-        self.say(strings.REPORT_FROM_PIYO)
         self.what.setFocus()                                       # (never a button: a key typed meanwhile sends nothing)
 
     def add_note(self):

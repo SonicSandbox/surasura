@@ -2724,17 +2724,20 @@ def test_a_window_move_made_while_a_look_runs_python_saves_at_once_however_long_
         assert max(during) <= (MOVE_BUDGET if BENCH else 4 * MOVE_BUDGET), sorted(during)[-5:]
 
 
-def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_lets_it_go_whatever_ends_it(monkeypatch):
-    """F13's leftover: the save's outer write from its lock taken — the commit and the commit's ring (eight bell slots
-    opened through ctypes, each one giving up Python's lock: a hold that ended before the ring left a move during a
-    look at ~60 ms) — gets Python's lock back at once; a nested command is the same save; never while it waits for the
-    lock (up to 5 s: the whole process would take turns at every step meanwhile). Every way out lets it go — a commit,
-    a command that raises, a damaged store refused, a lock not got — or the process would hand its lock over at once
-    for good and two busy threads would take turns at every step (Mado-SP: 3.5x as long)."""
+def test_a_store_save_holds_the_fine_hand_over_from_its_start_to_its_ring_and_lets_it_go_whatever_ends_it(monkeypatch):
+    """F13's leftover: the save's whole outer write — its damaged check, the lock taken, the commit and the commit's
+    ring (eight bell slots opened through ctypes, each one giving up Python's lock: a hold that ended before the ring
+    left a move during a look at ~60 ms; one that began after the lock left ~5 ms before each ask and the waits behind
+    a take-in) — gets Python's lock back at once; a nested command is the same save. A wait for the lock holds it only
+    for HOLD_WAIT_S (a look's take-in holds the lock 6–20 ms): a longer one (up to 5 s) never, or every busy thread
+    would take turns at each step meanwhile. Every way out lets it go — a commit, a command that raises, a damaged
+    store refused, a lock not got — or the process would hand its lock over at once for good and two busy threads
+    would take turns at every step (Mado-SP: 3.5x as long)."""
     from app.services import window_idle
     language = "ja"
     store, _data_dir = _empty(language)
     was = sys.getswitchinterval()
+    save_s = window_idle.SAVE_SWITCH_S
     seen = []
     real_ring = ls.library_watch.ring
     monkeypatch.setattr(ls.library_watch, "ring", lambda db: (seen.append(sys.getswitchinterval()), real_ring(db))[1])
@@ -2752,14 +2755,49 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_lock_to_its_ring_and_let
                     raise ValueError("a command's own error")
             assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
 
-            def busy(_wait):
-                assert window_idle._holds == []                    # (never held while it waits for the lock)
+            asked = []                                           # (timeout, the holds in force) of each lock ask
+            real_acquire = store._wlock.acquire
+
+            def busy(wait):
+                asked.append((round(wait, 3), list(window_idle._holds)))
                 raise ls.StoreBusy("the library is busy; try again")
-            with monkeypatch.context() as patched:
-                patched.setattr(store._wlock, "acquire", busy)
+
+            def busy_then_free(wait):
+                asked.append((round(wait, 3), list(window_idle._holds)))
+                if len(asked) == 1:
+                    raise ls.StoreBusy("the library is busy; try again")
+                return real_acquire(wait)
+            with monkeypatch.context() as patched:               # a lock not got: under the hold for its first
+                patched.setattr(store._wlock, "acquire", busy)   # HOLD_WAIT_S (a take-in's span), then without it
                 with pytest.raises(ls.StoreBusy):
-                    with store._writing():
+                    with store._writing(wait=1.0):
                         pass
+                assert asked == [(ls.HOLD_WAIT_S, [save_s]), (round(1.0 - ls.HOLD_WAIT_S, 3), [])]
+                asked.clear()
+                with pytest.raises(ls.StoreBusy):                # (a short wait: all of it under the hold)
+                    with store._writing(wait=0.02):
+                        pass
+                assert asked == [(0.02, [save_s])]
+                asked.clear()
+                patched.setattr(store._wlock, "acquire", busy_then_free)
+                with store._writing(wait=1.0):                   # got after a long wait: held again for the save
+                    assert window_idle._holds == [save_s] and sys.getswitchinterval() == save_s
+                assert [h for _w, h in asked] == [[save_s], []]
+                asked.clear()
+                calls = []
+                real_hand_over = window_idle._hand_over
+
+                def third_fails():                               # (the hold taken again after that wait failing:
+                    calls.append(1)                              # the lock is let go all the same)
+                    if len(calls) == 3:
+                        raise ZeroDivisionError("the hand-over itself")
+                    real_hand_over()
+                patched.setattr(window_idle, "_hand_over", third_fails)
+                with pytest.raises(ZeroDivisionError):
+                    with store._writing(wait=1.0):
+                        pass
+            with store._writing(wait=0.5):                       # (the lock was let go)
+                pass
             assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
             with monkeypatch.context() as patched:               # (the hand-over itself failing — round 2: the hold
                 patched.setattr(window_idle, "_hand_over", lambda: 1 / 0)   # was outside the try that lets the

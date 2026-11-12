@@ -233,6 +233,8 @@ EXIT_BAD_DATA = 6
 
 LOCK_TIMEOUT = 5.0               # the write lock and SQLite's busy wait
 LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
+HOLD_WAIT_S = 0.05               # F13: a save waits this long for the write lock under its hand-over hold (a
+                                 # look's take-in holds it 6–20 ms at 20k); a longer wait (another program's save) not
 CLOSE_WAIT_MS = 50               # a close's anchor and its write lock are waited for this long (§6.12)
 BUSY_AT_OPEN = 1.0               # "database is locked" at open is retried this long (§6.2)
 MAINT_WAIT = 10.0                # a helper waits this long for the maintenance lock, then exits 5
@@ -2065,15 +2067,25 @@ class Store:
             finally:
                 self._depth -= 1
             return
-        if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
-            raise StoreReadOnly("the library store is damaged and needs Repair")
-        self._wlock.acquire(wait)
-        try:
+        held = True                              # F13: Python's lock back to this save at once (G1), from its
+        try:                                     # damaged check to its ring (`window_idle.hold`)
+            window_idle.hold(window_idle.SAVE_SWITCH_S)
+            if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
+                raise StoreReadOnly("the library store is damaged and needs Repair")
+            try:
+                self._wlock.acquire(min(wait, HOLD_WAIT_S))
+            except StoreBusy:
+                if wait <= HOLD_WAIT_S:
+                    raise
+                held = False                     # a long wait: never under the hold (every busy thread would take
+                window_idle.let_go(window_idle.SAVE_SWITCH_S)   # turns at each step meanwhile)
+                self._wlock.acquire(wait - HOLD_WAIT_S)
             committed = wrote = False
             try:
-                window_idle.hold(window_idle.SAVE_SWITCH_S)   # F13: Python's lock back to this save at once (G1),
-                changes = self.conn.total_changes             # its ring and Connect's export timer too; never while it
-                                                              # waits for the lock
+                if not held:                     # (held again inside the try that lets the lock go)
+                    held = True
+                    window_idle.hold(window_idle.SAVE_SWITCH_S)
+                changes = self.conn.total_changes
                 self.conn.gate.open = True
                 if begin:
                     try:
@@ -2118,7 +2130,8 @@ class Store:
                 except Exception:                    # a committed write never fails for its trigger
                     pass
         finally:
-            window_idle.let_go(window_idle.SAVE_SWITCH_S)
+            if held:
+                window_idle.let_go(window_idle.SAVE_SWITCH_S)
 
     def checkpoint(self, wait=LOCK_TIMEOUT):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""

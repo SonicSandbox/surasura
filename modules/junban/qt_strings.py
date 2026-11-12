@@ -192,6 +192,8 @@ JUNBAN_GENERATE_STARTED = "Bringing your list up to date — the new order shows
 JUNBAN_GENERATE_FAILED = "Generate could not start: {why}"
 JUNBAN_RESTORE_RUN_Q = "An automatic reorder didn't finish. Put back the cards it moved?"
 JUNBAN_RESTORE_Q = "Put your cards back where they were before the last reorder?"
+JUNBAN_RESTORE_BOTH_Q = ("Put your cards back where they were before the last reorder — and the automatic one "  # Disc-T1,
+                         "it finished?")                                                                       # PROVISIONAL
 JUNBAN_RESTORE_YES = "Restore"
 JUNBAN_RESTORE_YES_TIP = "Put the cards back as the line above says. Anki writes no undo of its own."
 JUNBAN_CONFIRM_NO_TIP = "Stop here. Nothing in Anki is changed (Esc does the same)."

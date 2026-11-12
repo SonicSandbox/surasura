@@ -842,6 +842,8 @@ PARTS = (
     ("install", "anki-miner-install", "staging", MOVES, STAYS),
     ("install", "anki-miner-setup", "staging", MOVES, STAYS),
     ("install", "ankiconnect-install", "staging", MOVES, STAYS),   # 3.0.1: AnkiWeb's add-on, while it's checked
+    ("install", "irodori-queue-*.json", "ai_audio_queue", MOVES, STAYS),     # Iro-AA: the book cards waiting for AI audio
+    ("install", "irodori-runs-*.json", "ai_audio_runs", MOVES, STAYS),       # ... each run's Undo (with Connect's ledger)
     ("roaming", "settings.json", "settings", MOVES, STAYS),      # installed: here; portable: in the library folder
     ("roaming", "telemetry_id.json", "telemetry_id", STAYS, STAYS),     # P7: one install counts once
     ("roaming", "telemetry_url.json", "telemetry_url", STAYS, STAYS),   # stays with the id
@@ -865,6 +867,7 @@ PARTS = (
     ("local", "locks", "locks", STAYS, STAYS),
     ("local", UPDATE_DIRNAME, "update", STAYS, STAYS),
     ("local", "tools", "tools", STAYS, STAYS),
+    ("local", "irodori", "ai_audio_runtime", STAYS, STAYS),      # Iro-AA: the AI voice's program and model, never state
     ("local", BACKUPS, "backups", STAYS, STAYS),
     ("local", "libraries", "libraries", STAYS, STAYS),           # every install's stores: only this one's move (below)
     ("index", "token_store_*", "token_store", MOVES, STAYS),

@@ -22,8 +22,9 @@ import types
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, library, migrated, names,
-                                              no_line, paths, pieces_ok, roots, subprocess_env, touch, write_manifest)
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, frozen_names, library, migrated,
+                                              names, no_line, paths, pieces_ok, roots, subprocess_env, touch,
+                                              write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
@@ -95,16 +96,15 @@ def ref_move_relative(lst, items, target_path, position):
         lst.insert(insert_idx, item)
 
 
-def ref_nudge(lst, items, direction, current_bucket):
+def ref_nudge(lst, items, direction):
     indices_to_move = ref_indices(lst, items)
     if not indices_to_move:
         return
-    visible_indices = []
-    for i, entry in enumerate(lst):
-        p = entry.get("physical_path", "")
-        if p.startswith(current_bucket + "/"):
-            visible_indices.append(i)
-    visible_indices.sort()
+    # The one change to the frozen copy: "visible" = every row of the tier (`lst`), as the store's nudge and the tree
+    # (spec §7, `nudge`: after L5 a folder no longer tells the tier), not today's rows "whose path starts with the
+    # tier's folder". Q4-9 puts a goal show's new episode at the top of NOW with its file still in GoalContent/: the
+    # tree draws it in NOW, and the folder rule made ▼ jump it unseen (Kura-ST: step 736 with 100 more names).
+    visible_indices = list(range(len(lst)))
     if direction == "up":
         first_moving = indices_to_move[0]
         target_idx = -1
@@ -202,14 +202,13 @@ class Model:
         self.lists[target] = ref_place_new_entries(self.lists[target], moving)
 
 
-def _run_property(language, steps, seed):
-    store = no_line(migrated(language, shows=4, episodes=5, loose=2))     # 2.4's placement, the line's rule aside
+def _run_property(language, steps, seed, words):
+    store = no_line(migrated(language, shows=4, episodes=5, loose=2, words=words))  # 2.4's placement, the line aside
     data_dir, user_files_dir = roots(language)
     from tests.test_library_store_support import read_doc
     doc = read_doc(user_files_dir)
     model = Model(doc, store)
     rng = random.Random(seed)
-    words = names(language)
     tainted = set()
     counter = [0]
 
@@ -233,7 +232,7 @@ def _run_property(language, steps, seed):
             k = rng.randint(1, min(2, len(lst)))
             picked = rng.sample(lst, k)
             direction = rng.choice(["up", "down"])
-            ref_nudge(lst, [e["physical_path"] for e in picked], direction, ls.FOLDER_OF_TIER[tier])
+            ref_nudge(lst, [e["physical_path"] for e in picked], direction)
             store.nudge([e["_sid"] for e in picked], direction)
         elif op == "insert":
             kind = rng.choice(["show", "newshow", "loose", "hato"])
@@ -286,10 +285,54 @@ def _run_property(language, steps, seed):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_property_1000_random_steps_match_todays_code(language):
+def test_property_1000_random_steps_match_todays_code(language, monkeypatch):
     """WP-L2 #1: a fixed seed, 1,000 random moves, nudges, inserts, removes and tier changes on a library
-    whose folders match their tiers, no undo → the same order as today's code after every step."""
-    _run_property(language, 1000, seed=20261004)
+    whose folders match their tiers, no undo → the same order as today's code after every step. Its names are its own
+    (property_names.json): one more text in Test Resources/<lang>/ walked a different library (Kura-ST)."""
+    _no_resource_names(monkeypatch)
+    _run_property(language, 1000, seed=20261004, words=frozen_names(language))
+
+
+def _no_resource_names(monkeypatch):
+    """The property tests never read Test Resources' texts for names."""
+    def names(language):
+        raise AssertionError("the property test read its names from Test Resources")
+    monkeypatch.setattr("tests.test_library_store_support.names", names)
+    monkeypatch.setattr(sys.modules[__name__], "names", names)              # this module's own import of it
+
+
+def test_property_1000_random_steps_over_100_more_names(monkeypatch):
+    """The same seed over the 100 names a book text of 杜子春 added to Test Resources/ja/: this walk puts a goal show's
+    new episode at the top of NOW (Q4-9; its file stays in GoalContent/) and at step 736 ▼s a row onto it, which the
+    frozen reference's folder rule skipped unseen (Kura-ST). Japanese only: the walk that met it."""
+    words = frozen_names("ja", "ja_toshishun")
+    assert len(words) == len(frozen_names("ja")) + 100 == len(set(words))       # else it walks the other library
+    _no_resource_names(monkeypatch)
+    _run_property("ja", 1000, seed=20261004, words=words)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_nudge_counts_a_goal_shows_new_episode_in_now_as_a_row(language):
+    """The property test's divergence shrunk to its two steps: a goal show's new episode lands at the top of NOW (Q4-9)
+    with its file still in GoalContent/, and the tree draws it there. ▲ on the row below it moves above it, and ▼ puts
+    it back: one row each, as drawn (spec §7 `nudge`: visible = in this tier). Today's folder rule (only rows whose
+    path starts with HighPriority/) saw no row above, so ▲ did nothing, and ▼ jumped the episode unseen."""
+    words = frozen_names(language)
+    store = no_line(migrated(language, shows=2, episodes=2, loose=0, words=words))
+    data_dir, _ = roots(language)
+    show = next(p.rsplit("/", 1)[0] for p in paths(store, "goal") if p.count("/") == 2)   # rows in 6+ Months only
+    new = store.insert([touch(data_dir, f"{show}/{words[100]}_第03話.srt")], "goal").added[0]
+    now = store.ids("now")
+    assert now[0] == new and paths(store, "now")[0].startswith("GoalContent/")       # Q4-9: the top of NOW
+    below = now[1]
+    assert store.nudge([below], "up") is not None
+    assert store.ids("now") == [below, new] + now[2:]
+    assert store.nudge([below], "down") is not None
+    assert store.ids("now") == now
+    ref = [{"physical_path": p} for p in paths(store, "now")]           # the reference agrees, step for step
+    ref_nudge(ref, [ref[1]["physical_path"]], "up")
+    assert [e["physical_path"] for e in ref][:2] == [paths(store, "now")[1], paths(store, "now")[0]]
+    store.close()
 
 
 # ================================================================================================ #

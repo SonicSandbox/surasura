@@ -35,6 +35,14 @@ def names(language):
     return _NAMES[language]
 
 
+def frozen_names(*keys):
+    """The property test's own names (`Test Resources/library_store/property_names.json`, outside the ja / zh folders
+    `names` reads), the lists of `keys` one after another: adding a text to Test Resources never moves its walk."""
+    with open(os.path.join(RESOURCES, "library_store", "property_names.json"), encoding="utf-8") as f:
+        doc = json.load(f)
+    return [word for key in keys for word in doc[key]]
+
+
 def roots(language):
     root = os.environ["SURASURA_TEST_ROOT"]
     return (os.path.join(root, "data", language), os.path.join(root, "User Files", language))
@@ -78,11 +86,12 @@ def read_doc(user_files_dir):
         return json.load(f)
 
 
-def library(language, shows=3, episodes=4, loose=1, tiers=("now", "soon", "goal"), create=True):
+def library(language, shows=3, episodes=4, loose=1, tiers=("now", "soon", "goal"), create=True, words=None):
     """A small library whose folders match their tiers: per tier, `shows` show folders of `episodes`
-    episodes and `loose` loose files, named with real words. Returns (data_dir, user_files_dir, doc)."""
+    episodes and `loose` loose files, named with real words (`words`, else `names`). Returns (data_dir,
+    user_files_dir, doc)."""
     data_dir, user_files_dir = roots(language)
-    words = names(language)
+    words = words or names(language)
     n = 0
     doc = {"schedule": {p: [] for p in ls.PHASES}}
     for tier in tiers:

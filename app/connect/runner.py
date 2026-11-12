@@ -24,8 +24,9 @@ day's words first:
 - **Waiting** (02 §2, one reason at a time): Anki closed (E1), you reviewing (E2, asked before each write), another
   profile (E3) — the session's `waiting` —, on battery (E32), Anki Miner open (E8), another program writing Anki: each
   may end while Connect runs, so it **stays running and looks again every 2 minutes** at below-normal priority (02
-  §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), Chinese (E24)
-  and a setup Anki Miner lacks wait for the next start. Not timed (Michi-NT, Mattias #XP44T6): the same subtitle
+  §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), a language
+  Connect makes no cards in (E24; Chinese cards since Zh-C, 2026-11-12: `CARD_LANGUAGES`) and a setup Anki Miner lacks
+  wait for the next start. Not timed (Michi-NT, Mattias #XP44T6): the same subtitle
   re-timed beside its video (tsubasa's own output) is checked in its copy's place and mined from when timed; a copy
   that changed since its check, or *Check again* (`actions.check_again`), lets it go again in this run. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
@@ -58,6 +59,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import time
 from types import SimpleNamespace
 
@@ -141,6 +143,12 @@ BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry th
                   "book without audio.")
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
+# Iro-AA (PROVISIONAL): *Make AI audio (beta)* — mined as *Mine without audio*, then each part's new cards queued for the
+# AI voice (`modules.irodori`, the beta: off by default, absent in a build without it) when the part fills
+# (`_queue_ai_audio`, the job marked `AI_JOB<id>` at its pick), their audio made once the run's jobs are through
+# (`_ai_audio`): only an empty SentenceAudio, through the shared writer, one Undo a part
+AI_AUDIO = "ai"
+AI_JOB = "ai_audio_job:"
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
 # length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
 # my subtitles' timing* on (never listened to)
@@ -150,6 +158,10 @@ OWN_TRUSTED = "trusted"
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
 MOVED = "This episode's video isn't where it was ({folder})."
+# E24: the languages Connect makes cards in — Chinese too since Zh-C (2026-11-12: Anki Miner 3.12's Chinese, Sonic's
+# "Yes to the Chinese leans"). `CHINESE` is the reason a 3.0.x ledger's Chinese job may still carry: such a job is
+# picked up again at Connect's next start like any waiting one
+CARD_LANGUAGES = ("ja", "zh")
 CHINESE = "Chinese cards come later."
 # Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
 STOPPED_BY_YOU = STOPPED_REASON
@@ -254,9 +266,10 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
-class _Beside(Repick):
-    """Michi-NT: pick again from the subtitle beside its video (`_fit`) — a choice of file, never a change: it counts
-    as none of `_job`'s re-picks (once a pass: `_fit` never switches from the file beside)."""
+class _Again(Repick):
+    """Pick again from the same subtitle in other bytes (`_fit`) — the one beside its video (Michi-NT), or its library
+    copy re-timed by tsubasa (Michi-NT2) — never a change of what the words were picked for: it counts as none of
+    `_job`'s re-picks (each at most once a pass: `_fit` never switches from the file beside, a job is re-timed once)."""
 
 
 def _now():
@@ -593,7 +606,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
     """Every open job of one language, once -> True when one waits on something outside Connect (look again). The top
     20 and the inbox are read again before each job (adversary P2.4-A #2): an episode moved out mid-burst is dropped,
     a new first one goes next."""
-    if lang != "ja":            # E24: Japanese first, until Anki Miner and Connect say Chinese works
+    if lang not in CARD_LANGUAGES:      # E24: a language Connect makes no cards in waits (none since Zh-C)
         return _waiting_all(ledger, lang, parked, out, CHINESE, False)
     wait = store_now = None
     only_asked = False          # on battery with a *Mine now* waiting: this pass mines the asked ones alone (M-3)
@@ -633,6 +646,9 @@ def _language(steps, ledger, lang, prepared, parked, out):
             _working(ledger, lang, False)
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
+                continue
+            if not only_asked and _ai_audio(steps, ledger, lang, parked, tried):
+                look = True     # Iro-AA: a part came in while the AI voice worked: it goes first, the voice after
                 continue
             break
         failed = None
@@ -1013,8 +1029,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
                         step = "filling"
                     break
-                except _Beside:
-                    step = "picking"            # Michi-NT: the file beside its video — no change, no re-pick spent
+                except _Again:
+                    step = "picking"            # Michi-NT: the same subtitle, another file — no re-pick spent
                 except Repick:
                     step = "picking"
                     repicks += 1
@@ -1147,6 +1163,7 @@ def _line_up(steps, ledger, lang, job, book):
     if got and got.get("book_ask"):
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
+        _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
@@ -1158,6 +1175,63 @@ def _line_up(steps, ledger, lang, job, book):
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     return got.get("lineup")
+
+
+def _mark_ai_audio(ledger, lang, job, got):
+    """Iro-AA: a part of a book answered *Make AI audio (beta)* — its job marked (`AI_JOB<id>`), so its new cards are
+    queued for the AI voice when it fills. Read first: an unmarked book writes nothing."""
+    key, epub = got.get("key"), got.get("epub")
+    keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
+    if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
+        return
+    mark = f"{AI_JOB}{int(job['id'])}"
+    if _meta(ledger, mark) is None:
+        with ledger.transaction():
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
+
+
+def _queue_ai_audio(steps, ledger, lang, job, ids):
+    """Iro-AA: the marked part's new cards handed to the AI voice's waiting list (`steps.queue_ai_audio`), its mark
+    gone. A failure is logged: the cards stay as Anki Miner made them (without audio), never a reason to stop."""
+    mark = f"{AI_JOB}{int(job['id'])}"
+    if _meta(ledger, mark) is None:
+        return
+    queue = getattr(steps, "queue_ai_audio", None)
+    try:
+        if queue is not None:
+            queue(lang, ids, job)
+        with ledger.transaction():
+            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (mark,))
+    except Exception:
+        log.warning("Connect couldn't queue job %s's cards for AI audio", job["id"], exc_info=True)
+
+
+def _ai_audio(steps, ledger, lang, parked, tried=()):
+    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`). It
+    stops between two sentences — and the pass goes on — when a part comes in meanwhile (an open job: *Mine now*, a
+    placement read; AI audio never holds a part back), for Connect's stop or an update staged, on battery, and when
+    the session can't write now (you review, Anki closed, another profile: `_blocked`). -> True when it stopped for a
+    part (the loop looks again). Never raises."""
+    make = getattr(steps, "ai_audio", None)
+    if make is None or _stop(steps):
+        return False
+    came = []
+    from app.connect import kick
+    woken = kick.wake_stamp()
+
+    def should_stop():
+        # a part waiting (*Mine now*), or a kick since the pass began — a placement in the library, a press: the
+        # inbox is read by the loop's next look (review r2 #3)
+        if _open_jobs(ledger, lang, parked, tried) or kick.wake_stamp() != woken:
+            came.append(True)
+            return True
+        return bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)() or
+                    _blocked(steps, lang, None) is not None)
+    try:
+        make(lang, should_stop=should_stop)
+    except Exception:
+        log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
+    return bool(came)
 
 
 def book_key(epub, sha256=None):
@@ -1327,6 +1401,7 @@ def _pick(steps, ledger, lang, job, record=True):
     if beside:
         picked["beside"], picked["copy"] = beside, before.get("copy")
         picked["beside_at"] = _stamp(beside)    # the file as checked: changed or gone before a batch -> picked again
+        picked["part_way"] = bool(before.get("part_way"))   # Michi-NT2: the copy's own verdict, for its re-time
     if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
         picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
         #                             marked origin's video standing in is another file); a new one clears it
@@ -1481,6 +1556,46 @@ def _fit_tries(ledger, jid, failed):
         return tries
 
 
+RETIMED = "retimed:"            # ledger meta: `retimed:<job id>` -> when its library copy was given to tsubasa to re-time
+RETIMED_FOLDER = "retimed"      # in a job's run folder: tsubasa's re-timed copy, until it takes the copy's place
+RETIME_PART = ".retimed.part"   # beside the copy: its re-timed bytes, flushed, until `os.replace` (never S5's `.part`)
+UNSURE_FILE = "undetermined.json"   # in a job's run folder: tsubasa's undetermined spans of its re-timed copy (Tsu-U)
+
+
+def _retime(steps, ledger, lang, job, video, copy):
+    """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa in its own place (`Steps.retime`)
+    -> True. Once a job (`RETIMED`, marked before tsubasa is asked: a Connect killed meanwhile never asks again and
+    again) — given back when tsubasa gave no answer this time, the copy changed meanwhile, or at your *Stop*;
+    *Check again* lets it be asked once more. A stand-in Steps without it, no video, or a failure: False, the
+    copy as it was, the job named not timed. Your *Stop* ends it as the check does."""
+    do = getattr(steps, "retime", None)
+    if do is None or not video or not copy:
+        return False
+    key = f"{RETIMED}{int(job['id'])}"
+    if ledger.conn.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is not None:
+        return False
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, _now()))
+    try:
+        done = do(lang, job, video, copy)
+    except stopping.Stopped:
+        _unmark(ledger, key)                # your *Stop*: asked again when the job goes on
+        raise
+    except Exception:                       # a re-time that fails is no reason for the job to fail: not timed, named
+        log.warning("Connect couldn't have tsubasa re-time job %s's subtitle", job.get("id"), exc_info=True)
+        return False
+    if done is None:                        # no answer this time, or its copy changed meanwhile: asked at the next check
+        _unmark(ledger, key)
+    if done:
+        log.info("Connect: job %s: tsubasa re-timed its library copy, every part its own shift: %s", job["id"], copy)
+    return bool(done)
+
+
+def _unmark(ledger, key):
+    with ledger.transaction():
+        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+
+
 def _stamp(path):
     """[path, size, modified time] of a file as it is now, or None (no path, or it can't be read)."""
     try:
@@ -1546,23 +1661,29 @@ def retimed_beside(video, copy, language):
         stamp = _stamp(path)
         if stamp is not None and _on_disk(path):     # never a cloud placeholder: its read would download it (RD-S1)
             found.append((stamp[2], path))
-    if not found:
-        return None
-    try:
-        lines = [c.text for c in cues.read(copy, language)]
-        with open(copy, "rb") as f:
-            own = f.read()
-    except (OSError, UnicodeDecodeError, ValueError):
-        return None
     for _at, path in sorted(found, reverse=True):
-        try:
-            with open(path, "rb") as f:
-                same_bytes = f.read() == own
-            if lines and not same_bytes and [c.text for c in cues.read(path, language)] == lines:
-                return path
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
+        if same_subtitle(copy, path, language):
+            return path
     return None
+
+
+def same_subtitle(copy, other, language, dropped=0):
+    """Is `other` the subtitle `copy` is, re-timed — the very lines (`cues.read`'s texts, in order: CRLF or LF, a BOM
+    or none read alike) in other bytes, less exactly the `dropped` cues tsubasa says it left out (in a stretch its
+    video doesn't hold: Michi-NT2's re-time)? No line, or a file that can't be read: no."""
+    from app import cues
+    try:
+        with open(copy, "rb") as f, open(other, "rb") as g:
+            if f.read() == g.read():
+                return False
+        lines = [c.text for c in cues.read(copy, language)]
+        kept = [c.text for c in cues.read(other, language)]
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    if not lines or not kept or len(lines) - len(kept) != dropped:
+        return False
+    rest = iter(lines)                      # `kept` in `lines`' order, nothing new (a subsequence)
+    return all(any(line == text for line in rest) for text in kept)
 
 
 def _fit(steps, ledger, lang, job):
@@ -1611,18 +1732,27 @@ def _fit(steps, ledger, lang, job):
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
         was = picked.pop("beside", None)
+        part_way = who == "tsubasa" and fit_check.part_way(why)     # this check's: the copy's, unless `was`
         if was:
             # Michi-NT: the subtitle beside its video wasn't timed either — the next check starts from the copy again
             log.info("Connect: job %s: the subtitle beside its video isn't timed either: %s", jid, was)
+            part_way = picked.pop("part_way", False)                # the copy's own verdict, kept at the switch
         elif who == "tsubasa" and verdict == fit_check.NOT_TIMED:
             # Michi-NT (Mattias #XP44T6): the library's copy isn't timed — the same subtitle re-timed beside its video
             # (tsubasa's own output, named after the video) is checked in its place: timed, its cards are cut from it
             other = _retimed(steps, lang, job, picked)
             if other:
                 log.info("Connect: job %s: its subtitle re-timed beside its video is checked: %s", jid, other)
-                picked["beside"], picked["copy"] = other, picked.get("file")
+                picked["beside"], picked["copy"], picked["part_way"] = other, picked.get("file"), part_way
                 ledger.set_state(jid, "fit-check", picked=picked)
-                raise _Beside()
+                raise _Again()
+        copy = picked.get("copy") if was else picked.get("file")
+        if part_way and _retime(steps, ledger, lang, job, picked.get("video"), copy):
+            # Michi-NT2 (based on Mattias's #364): its timing changes part-way — tsubasa re-timed the library's copy
+            # itself, every segment its own shift: picked again from it and checked again (a copy that still changes
+            # part-way is named, never re-timed twice a job)
+            ledger.set_state(jid, "fit-check", picked=picked)
+            raise _Again()
         # the library's copy as checked (never one beside a video: a share is never looked at each look) — a change
         # to it lets the job go again in this run (`_copy_changed`)
         picked["checked"] = _stamp(picked.get("copy") if was else picked.get("file"))
@@ -2067,6 +2197,7 @@ def _fill(steps, ledger, lang, job):
     if not ids:
         ledger.set_state(jid, "ordering")
         return
+    _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2594,6 +2725,35 @@ class Steps:
         from app.connect import power
         return power.on_battery()
 
+    def queue_ai_audio(self, lang, note_ids, job):
+        """Iro-AA: a book part's new cards on the AI voice's waiting list (`modules.irodori`; absent: nothing)."""
+        try:
+            from modules import irodori
+        except ImportError:
+            return 0
+        return irodori.queue_notes(lang, note_ids, source={"job": job.get("id"), "item": job.get("item_id")})
+
+    def ai_audio(self, lang, should_stop):
+        """Iro-AA: the AI voice's waiting list made — the beta on, the voice installed, the shared writer there; else it
+        waits (`irodori.run_queue`). settings.json read now, and again between two sentences: the beta switched off in
+        the window stops it (review r2 #4). The cards it wrote: the session's sync clock, as any new write (S3)."""
+        try:
+            from modules import irodori
+        except ImportError:
+            return None
+        from app import settings_manager
+
+        def fresh():
+            try:
+                return settings_manager.load_settings(strict=True)
+            except Exception:
+                return {}                       # unreadable now: read as off (nothing made)
+        got = irodori.run_queue(fresh(), lang, should_stop=lambda: bool(should_stop() or not irodori.enabled(fresh())))
+        if got.get("written"):              # each run's Undo is kept by the module (`irodori.last_run`)
+            log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
+            self.after_write(lang)
+        return got
+
     def after_write(self, lang):
         """New cards made: the session's sync clock (S3; P2.3's rule), then the Anki backlog read again, so the
         window's count of new cards follows within its 3 s look (laptop round 5 #27: whoever adds cards reads the
@@ -3024,7 +3184,8 @@ class Steps:
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
                              wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
-                             held=self._anki_miner_held(lang))
+                             held=self._anki_miner_held(lang),
+                             unsure=self.unsure(job, subtitle) if reading is None else [])   # Tsu-U
         try:
             out = verbs.pick(ns)
         except CliError as e:
@@ -3053,6 +3214,88 @@ class Steps:
     def retimed(self, lang, job, video, subtitle):
         """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
         return retimed_beside(video, subtitle, lang)
+
+    def retime(self, lang, job, video, copy):
+        """Michi-NT2 (based on Mattias's #364): the library copy `copy` re-timed by tsubasa (`fit_check.retime`, written
+        in the job's own run folder, removed after) put in its place by S5's own rule (`sources.put_copy`: the old copy
+        into the data folder's `.trash` first, purged 30 days on; the new one written beside it, then `os.replace`)
+        -> True; else False and the copy as it was; None: not now (no answer from tsubasa, or the copy changed
+        while it was re-timed — the library's own re-copy wins, and its text is checked next). Only a copy inside the
+        language's `Library` (`sources.inside_library`: a hato / 2.x file, a `Library` that leads elsewhere, never),
+        only the same subtitle (`same_subtitle`: its very lines, less the cues tsubasa says it dropped). Written whole
+        and flushed (`sources._copy_part`) under a name of its own (`RETIME_PART`: never the look's `.part`), and the
+        copy checked unchanged right before its place is taken. Its original is left as it is: one that changes is
+        copied over it again (S5), and checked again."""
+        from app import sources
+        from app.path_utils import get_data_path
+        data_dir = get_data_path(lang)
+        try:
+            rel = os.path.relpath(copy, data_dir).replace("\\", "/")
+        except ValueError:                  # another drive: never inside
+            return False
+        full = sources.inside_library(data_dir, rel)
+        if full is None or not os.path.isfile(full):
+            return False
+        out_dir = os.path.join(self.run_dir(job), RETIMED_FOLDER)
+        part = full + RETIME_PART
+        was = _stamp(full)
+        try:
+            made = fit_check.retime(video, full, out_dir)
+            if made == fit_check.RETRY:
+                return None
+            if made is None or not same_subtitle(full, made.path, lang, made.dropped):
+                log.info("Connect: job %s: tsubasa gave no re-timed copy of the same subtitle; its copy kept", job["id"])
+                return False
+            sources._copy_part(made.path, part)
+        except OSError:
+            sources._drop(part)
+            return False
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+        if _stamp(full) != was:             # the library copied its original in meanwhile (S5): that text first
+            sources._drop(part)
+            log.info("Connect: job %s: its copy changed while tsubasa re-timed it; checked again", job["id"])
+            return None
+        placed = sources.put_copy(data_dir, full, part)
+        if placed:
+            self._keep_unsure(job, full, made.undetermined)
+        return placed
+
+    def _keep_unsure(self, job, copy, spans):
+        """Tsu-U (based on Mattias's Tsubasa-sync #2): the spans tsubasa left undetermined in the copy it just re-timed,
+        kept in the job's run folder (`UNSURE_FILE`) for that copy as written — the next pick cuts no card from a line
+        inside one (`unsure`). None: the file removed (a re-time with none leaves none from before). A write that fails
+        is logged: the cards are then cut as they would be without it."""
+        path = os.path.join(self.run_dir(job), UNSURE_FILE)
+        try:
+            if not spans:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            record = {"copy": os.path.normcase(os.path.abspath(copy)), "stamp": _stamp(copy),
+                      "spans": [[lo, hi] for lo, hi in spans]}
+            with open(path + ".part", "w", encoding="utf-8") as f:
+                json.dump(record, f)
+            os.replace(path + ".part", path)
+            log.info("Connect: job %s: tsubasa can't place its cut within %s; no card from a line there", job["id"],
+                     ", ".join(f"{lo:.1f}–{hi:.1f} s" for lo, hi in spans))
+        except OSError:
+            log.warning("Connect couldn't keep job %s's unsure spans", job.get("id"), exc_info=True)
+
+    def unsure(self, job, subtitle):
+        """Tsu-U: tsubasa's undetermined spans [(lo, hi)] for `subtitle`, kept at the job's re-time (`_keep_unsure`) —
+        only for that very copy, unchanged since (a copy written again since is checked again: no old span); else []."""
+        try:
+            with open(os.path.join(self.run_dir(job), UNSURE_FILE), encoding="utf-8") as f:
+                record = json.load(f)
+            if (not isinstance(record, dict) or not subtitle
+                    or record.get("copy") != os.path.normcase(os.path.abspath(subtitle))
+                    or record.get("stamp") != _stamp(subtitle)):
+                return []
+            return fit_check.undetermined({"undetermined": record.get("spans")})
+        except (OSError, ValueError, TypeError):
+            return []
 
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups
@@ -3187,7 +3430,7 @@ class Steps:
         wait.restarted = status == lineup.STOPPED
         raise wait
 
-    def _own_timing(self, lang, job, ab):
+    def _own_timing(self, lang, job, ab, look_only=False):
         """Kura-AB3 (Mattias's 3.0.2 report; PROVISIONAL): the paired audiobook `ab` (`library.audiobook_of_book`) whose
         own timed subtitle Hon found this book's (`timing`: its copy in the library) — one audio file, an `.srt`, both
         on this computer, its last cue inside the audio's length — is the book's line-up as it is (`lineup.own`: no
@@ -3196,7 +3439,8 @@ class Steps:
         time by the spot-check (`_own_spot`), or *Trust my subtitles' timing* on (`connect_trust_timing`: no speech
         model at all). Never a wrong clip (review B2): not heard in time, not checked now, or — once Anki Miner's own
         line-up said this audio doesn't follow the book (nothing lined up, a grade of C or D) — anything but heard in
-        time, is None. A sync still running for the pair is stopped once its subtitle is used (S2)."""
+        time, is None. A sync still running for the pair is stopped once its subtitle is used (S2). `look_only`
+        (*Add audio to these cards*' plan, `lined_up`): never a listen, never a stop, nothing written."""
         from app.connect import lineup
         from app.path_utils import get_data_path
         rel = ab.get("timing")
@@ -3210,20 +3454,42 @@ class Steps:
         if not found or (isinstance(seconds, (int, float)) and seconds > 0 and
                          max(end for _s, end, _t in found) > seconds + OWN_SLACK_S):
             return None                     # timed to a longer cut than this audio (S1)
-        synced = lineup.look(ab["key"]) if ab["key"] else {}
+        synced = (lineup.read if look_only else lineup.look)(ab["key"]) if ab["key"] else {}
         doubt = synced.get("status") == lineup.NONE or (
             synced.get("status") == lineup.DONE and synced.get("grade") not in lineup.GOOD)
         # never a listen while Anki Miner's own line-up is done and good (it cuts the cards: review r2 S2) or still
         # running (each look would listen again beside it: r2 S3) — only a kept or trusted answer counts then
-        listen = not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
+        listen = not look_only and not lineup.usable(synced) and not (ab["key"] and lineup.running(ab["key"]))
         said = self._own_spot(lang, job, audio, srt, listen=listen)
         if said not in (lineup.MATCHED, OWN_TRUSTED) or (doubt and said != lineup.MATCHED):
             log.info("Connect: %s's own subtitle isn't used for its timing (%s)", ab["title"], said or "unchecked")
             return None
-        if ab["key"] and lineup.running(ab["key"]):
+        if not look_only and ab["key"] and lineup.running(ab["key"]):
             lineup.stop(ab["key"])
             lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
+
+    def lined_up(self, lang, epub):
+        """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its
+        cues, as the pick hands them to the mine), "item_id" (the audiobook's), "title"}, or None (no audiobook paired,
+        *Keep them together*, nothing usable yet). Its own subtitle checked or trusted (`_own_timing`, look only), else
+        a finished sync of grade A/B (its files where the store holds them now) — never a sync started, a listen, a
+        stop or a write. A busy store is a Wait."""
+        from app.connect import library, lineup
+        with self._open(lang) as store:
+            ab = library.audiobook_of_book(store, epub)
+        if ab is None or ab["lineup"] == "kept":
+            return None
+        own = self._own_timing(lang, {"id": "add-audio", "asked_at": None}, ab, look_only=True)
+        if own is not None:
+            return dict(own, title=ab["title"])
+        state = lineup.read(ab["key"]) if ab["key"] else {}
+        if not lineup.usable(state):
+            return None
+        files = [dict(f, audio_file=ab["files"][k] if k < len(ab["files"]) else f.get("audio_file"))
+                 for k, f in enumerate(state.get("files") or ())]
+        return {"lineup": {"status": lineup.DONE, "key": ab["key"], "grade": state.get("grade"), "files": files},
+                "item_id": ab["item_id"], "title": ab["title"]}
 
     def _own_spot(self, lang, job, audio, srt, listen=True):
         """AB-Q5's spot-check of an audiobook's own subtitle for `_own_timing` -> lineup.MATCHED / NOT_MATCHED (kept per
@@ -3364,7 +3630,7 @@ class Steps:
     def _mine_one(self, lang, job, picked, words, attempt):
         from app.cli import verbs
         from app.cli.contract import CliError
-        from app.connect import anki_miner
+        from app.connect import anki_miner, runfile
         miner = anki_miner.find(self.loaded)
         if miner is None:
             raise Skip("Anki Miner isn't installed")
@@ -3387,7 +3653,8 @@ class Steps:
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
-                                         from_audio=bool(picked.get("from_audio")), names=picked.get("names"))
+                                         from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
+                                         word_audio=runfile.word_audio_on(self._settings(lang), lang))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

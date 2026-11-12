@@ -494,8 +494,12 @@ SAID_PITCH = " Pitch categories are written in romaji, as “{note}” reads the
 SAID_DICTS = " Anki Miner's {language} dictionaries are in (its profile “{name}”)."
 SAID_DICTS_CURRENT = " Anki Miner's {language} dictionaries are in (the profile its window uses)."
 SAID_DICTS_SHORT = " Anki Miner's {language} dictionaries are in."     # the profile already said in the same line
-# The note types Anki Miner fills completely (3.11.0 `services/note_presets.py`): their fields need no saying
-PRESETS = frozenset(("lapis", "kiku", "senren", "anki miner note"))
+# The note types Anki Miner fills completely (3.12.0 `services/note_presets.py`): their fields need no saying
+from app.connect.miner_settings import MAPPED, PRESETS  # noqa: E402  (standard library only)
+# Zh-C: a Chinese note type the learner mapped field by field (`miner_settings.MAPPED`), said as theirs
+SAID_MAPPED = " “{note}” is filled as you chose: the word in “{word}”, the sentence in “{sentence}”."
+BACKFILL_NOT_SAVED = (" Surasura couldn't name “{note}” Chinese for Anki Backfill: set it in Backfill's Fields "
+                      "window.")
 SETUP_DO_FAILED = "Its setup didn't finish here: Surasura offers it again the next time you open Surasura"
 # Choice 86 (Sonic, 2026-11-09): the new deck of Surasura's own, made in Anki when it is taken (`_make_deck`)
 MAKE_DECK_VERB = "Finish its setup (a new deck)"
@@ -537,6 +541,36 @@ def _make_deck(settings, language, deck, save):
         except Exception:                       # its cards still go there; the next press tries the list again
             said += DECK_KNOWN_NOT_SAVED
     return {"settings": settings, "said": said}
+
+
+def _backfill_language(note, language, save, settings):
+    """Zh-C: the note type Chinese cards are made with, named Chinese in Backfill's note languages
+    (`junban_backfill_note_languages`) when it names none for it — Backfill tells a note type's language by its kana,
+    so a Chinese one is never filled until it is named — merged onto settings.json as it is when written; one the
+    learner set is never changed. Never a Japanese preset (Lapis, Kiku, Senren) nor a note type whose notes are mostly
+    kana (`AnkiReads.mostly_kana`; Anki unread: not named) — a Japanese note type named Chinese would stop Backfill
+    filling every Japanese card of it (review MUST). -> "" (nothing to say), or a line when it couldn't be saved."""
+    from app import anki_connect
+    from app.connect import miner_settings
+    if note.strip().casefold() in miner_settings.JA_PRESETS:
+        return ""
+    try:
+        if miner_settings.AnkiReads(anki_connect.address(settings)).mostly_kana(note):
+            return ""
+    except Exception:                   # Anki unread: Backfill keeps telling it by its kana
+        return ""
+
+    def name(file):
+        saved = file.get("junban_backfill_note_languages")
+        saved = dict(saved) if isinstance(saved, dict) else {}
+        if note not in saved:
+            saved[note] = language
+            file["junban_backfill_note_languages"] = saved
+    try:
+        save({}, update=name)
+        return ""
+    except Exception:                   # its cards are still made; Backfill's own window sets it
+        return BACKFILL_NOT_SAVED.format(note=note)
 
 
 def _write_settings(found, settings, language, items, folder, chosen, save):
@@ -632,9 +666,13 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
         said = SAID_NOTE.format(language=language_name, note=note)
     mapped = values.get("anki_fields") or {}
     before = str((export.get("settings") or {}).get("anki_note_type") or "")
-    if note and note != before and note.strip().casefold() not in PRESETS and mapped.get("word") and \
-            mapped.get("sentence"):
+    own = note and note.strip().casefold() not in PRESETS and mapped.get("word") and mapped.get("sentence")
+    if own and language in MAPPED:          # Zh-C: the learner's own map, said as theirs
+        said += SAID_MAPPED.format(note=note, word=mapped["word"], sentence=mapped["sentence"])
+    elif own and note != before:
         said += SAID_FIELDS.format(note=note, word=mapped["word"], sentence=mapped["sentence"])
+    if note and language in MAPPED:         # Zh-C: Backfill fills a Chinese note type only once it is named Chinese
+        out["said"] += _backfill_language(note, language, save, settings)
     if values.get("card_type") == "":
         said += SAID_CARD_TYPE.format(note=note)
     if values.get("pitch_category_format") == "romaji":

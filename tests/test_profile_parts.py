@@ -65,6 +65,9 @@ CALL_SITES = {
     "app/telemetry.py": 3,
     "app/token_index.py": 1,
     "app/updater.py": 3,
+    "modules/irodori/make.py": 1,     # Iro-AA: the runs' Undo list (install: irodori-runs-*.json)
+    "modules/irodori/queue.py": 1,    # ... Connect's waiting list (install: irodori-queue-*.json)
+    "modules/irodori/runtime.py": 1,  # ... the voice's runtime (local: irodori/, stays)
     "modules/junban/__init__.py": 1,
     "modules/junban/backlog_shows.py": 1,
     "modules/junban/patterns_build.py": 1,

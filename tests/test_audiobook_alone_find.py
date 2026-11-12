@@ -142,6 +142,37 @@ def test_a_yes_whose_book_was_removed_meanwhile_is_never_asked_about_again():
         assert _finds(store) == []
 
 
+def test_a_separated_audiobook_renamed_keeps_its_word_and_stays_unasked():
+    """D5: *Separate them*, then its folder renamed by the learner — the same item, its `placed` mark kept with the
+    other marks (`sources.AUDIO_MARKS`): still no card."""
+    store, root, src, item = _lone()
+    try:
+        _epub(os.path.join(src, "Books", f"{GINGA}.epub"), GINGA, "ja", repeat=6)
+        _look(store, "ja", root, full=True)
+        if _record(store, item["id"])["ask"] is not None:
+            assert store.answer_audiobook(item["id"], True)
+        assert store.audiobook_separate(item["id"]) is not None
+        os.rename(os.path.join(src, "Audiobooks", GINGA), os.path.join(src, "Audiobooks", GINGA + "（朗読）"))
+        _look(store, "ja", root, full=True)
+        assert [i["id"] for i in _audio_items(store)] == [item["id"]]
+        rec = _record(store, item["id"])
+        assert rec["files"][0].endswith(os.path.join(GINGA + "（朗読）", "01.mp3")) and rec["placed"] is True
+        assert _finds(store) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_the_cards_three_wordings_follow_what_was_said():
+    """Never answered (`said_no` None): *is an audiobook*; a *No* to a named book: *Not 「…」*; a *No* without a title
+    (`said_no` ""): *Not that book*."""
+    base = {"kind": needs.AUDIOBOOK_FIND, "item_id": 7, "title": GINGA, "files": ["D:/A/01.mp3"], "seconds": 3000}
+    alone, named, plain = (needs.entries(None, asks=[dict(base, said_no=s)])[0] for s in (None, NEKO, ""))
+    assert alone.title == f"「{GINGA}」 is an audiobook. Which book is it?" and "you said" not in alone.say
+    assert named.title == plain.title == f"Which book does the audiobook 「{GINGA}」 read?"
+    assert f"Not 「{NEKO}」, you said." in named.say and "Not that book, you said." in plain.say
+    assert alone.key == named.key == plain.key                   # one card an audiobook, whichever words
+
+
 def test_an_audiobook_alone_with_its_transcript_is_read_as_it_and_never_asked_about():
     store, _data_dir, src, _m4b_path, _srt = _alone_with_transcript("ja", STAR)
     with store:

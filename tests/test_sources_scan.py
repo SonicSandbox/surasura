@@ -2796,7 +2796,8 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_start_to_its_ring_and_le
                 with pytest.raises(ZeroDivisionError):
                     with store._writing(wait=1.0):
                         pass
-            with store._writing(wait=0.5):                       # (the lock was let go)
+            assert store._wlock.depth == 0 and not store._wlock.file.held   # (the lock was let go: a second save
+            with store._writing(wait=0.5):                       # on this thread would take it again re-entrantly)
                 pass
             assert sys.getswitchinterval() == pytest.approx(0.005) and window_idle._holds == []
             with monkeypatch.context() as patched:               # (the hand-over itself failing — round 2: the hold
@@ -2804,7 +2805,8 @@ def test_a_store_save_holds_the_fine_hand_over_from_its_start_to_its_ring_and_le
                 with pytest.raises(ZeroDivisionError):           # lock go, so the store stayed locked)
                     with store._writing():
                         pass
-            with store._writing(wait=0.5):                       # (the lock was let go)
+            assert store._wlock.depth == 0 and not store._wlock.file.held   # (the lock was let go: a second save
+            with store._writing(wait=0.5):                       # on this thread would take it again re-entrantly)
                 pass
             assert window_idle._holds == []
             ls.mark_damaged(store.db_path, "a test's damaged store")

@@ -4058,7 +4058,9 @@ def connect_instance(window, instance):
     """A later start brings this window forward; closing stops listening before the window hides (single.py)."""
     instance.activated.connect(window.bring_to_front)
     window.closing.connect(instance.stop_listening)
-    window.first_frame.connect(instance.replay)       # the starts heard while setup or the gate showed: once it's up
+    replay = getattr(instance, "replay", None)        # the starts heard while setup or the gate showed: once it's up
+    if replay is not None:
+        window.first_frame.connect(replay)
 
 
 def main(argv=None, after_gate=None):

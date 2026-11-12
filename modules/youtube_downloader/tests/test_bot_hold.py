@@ -297,3 +297,13 @@ def test_only_a_youtube_call_is_ended_at_its_first_refusal(ytdlp):
     core._run_ytdlp(["--skip-download", VIDEO], timeout=5)
     core._run_ytdlp(["--skip-download", BILIBILI], timeout=5)
     assert ytdlp["stop_on"] == [youtube_hold.refused, None]
+
+
+def test_a_held_run_never_waits_for_the_turn_just_to_learn_it_is_held(ytdlp, tmp_path, monkeypatch):
+    # why (mutant D10): behind another program's half-hour call, a held run would wait all that time for nothing
+    youtube_hold.hold()
+    monkeypatch.setattr(youtube_hold, "turn", lambda *a, **k: pytest.fail("asked for the turn while held"))
+    log, summary = [], {"written": 0, "no_transcript": 0, "errors": 0}
+    core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
+                          log.append, summary)
+    assert log == [f"  ! {youtube_hold.words(youtube_hold.held())}"] and ytdlp["calls"] == []

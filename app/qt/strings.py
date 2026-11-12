@@ -105,7 +105,7 @@ ITEM_MENU = {
     "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
     "cover": ("Change cover…", "Choose the picture it shows"),
     # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
-    "add-audio": ("Add the narrator's voice…", "{n} of its cards Connect made can get their sentence in the narrator's "
+    "add-audio": ("Add the narrator's voice…", "{n} of its cards made for you can get their sentence in the narrator's "
                                                "voice: only an empty sentence-audio field is filled, nothing else on "
                                                "the card changes. Undo takes it back"),
     "folder": ("Open its folder", "Open the folder its files are in"),
@@ -1557,7 +1557,7 @@ NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    #
 NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
 NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")
-NEEDS_AUDIO_RUNNING = "Connect is looking at 「{title}」's cards for the narrator's voice…"
+NEEDS_AUDIO_RUNNING = "Surasura is looking at 「{title}」's cards for the narrator's voice…"
 NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"

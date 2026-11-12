@@ -657,6 +657,23 @@ def test_a_retimers_mark_comes_off_the_stem_and_is_read_by_the_one_rule(name, st
     assert sources._marked(name) is retimed and sources._tag(name)[:2] == (stem, language)
 
 
+@pytest.mark.parametrize("name, made", [
+    ("Hoshizora Kissa - 05.ja.from-audio.srt", True),           # Surasura's copy beside the video, hato's own
+    ("Hoshizora Kissa - 05.from-audio.ja.srt", True),           # either side of the language, as `.synced`
+    ("C:\\Anime\\星空喫茶\\星空喫茶 第05話.ja.FROM-AUDIO.srt", True),   # a path; the mark in any case
+    ("Hoshizora Kissa - 05.ja.synced.srt", False),             # re-timed by a person's tool: no speech model's
+    ("Hoshizora Kissa - 05.ja.srt", False),
+    ("from-audio diary - 05.ja.srt", False),                    # a show's own words, never a dot tag
+    ("Hoshizora Kissa - 05.from-audio.alt.srt", False),         # an unknown tag ends the tags first
+    ("Hoshizora Kissa - 05.from-audio.zh.ja.srt", False),       # a second language ends them, as in `_marks`
+    ("", False),
+])
+def test_a_subtitle_made_from_the_audio_is_known_by_its_mark_whoever_made_it(name, made):
+    """Hato-SP: the `.from-audio` dot tag is the one marker of a subtitle made from its video's audio — Surasura's own
+    copy (`no_subs`) and hato's *Subtitles from the audio* write the same name — so Connect tags the cards cut from either."""
+    assert en.from_audio(name) is made
+
+
 @pytest.mark.usefixtures("_fresh_look")
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_season_zeros_special_is_not_hidden_behind_season_ones_v2(language):

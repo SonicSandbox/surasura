@@ -25,7 +25,9 @@ day's words first:
   profile (E3) — the session's `waiting` —, on battery (E32), Anki Miner open (E8), another program writing Anki: each
   may end while Connect runs, so it **stays running and looks again every 2 minutes** at below-normal priority (02
   §2a). No video (E15: a cloud placeholder is never opened), not timed (E16, named once in *Needs you*), Chinese (E24)
-  and a setup Anki Miner lacks wait for the next start. **It exits when no job is left**, or when every job left waits
+  and a setup Anki Miner lacks wait for the next start. Not timed (Michi-NT, Mattias #XP44T6): the same subtitle
+  re-timed beside its video (tsubasa's own output) is checked in its copy's place and mined from when timed; a copy
+  that changed since its check, or *Check again* (`actions.check_again`), lets it go again in this run. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
 - **Never waiting with no window open** (Haya-CL, Mattias 3.0.2: "a bunch of surasura-cli.exe running after having
   closed Surasura"; lean, PROVISIONAL): those 2-minute looks go on only while a Surasura window is open (its running
@@ -113,9 +115,18 @@ MINE_FAILED = "Anki Miner stopped twice while making its cards"
 MINE_FAILED_SAY = ("{title}: Anki Miner stopped twice while making its cards. Try again makes the rest; the cards "
                    "it made are kept.")
 # … and when its runs failed for some words alone (`ALONE`, below): which words, and Anki Miner's own words for why
-# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1)
-MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}). Try again tries them once "
-                    "more; the cards it made are kept.")
+# (Anki's *cannot create note …* in the field; a clip ffmpeg couldn't cut reads the same way: review r3 N1). Michi-RM3:
+# its own *Needs you* kind (MINE_REFUSED: *Skip this word* beside *Try again*, `actions.skip_refused`); and when Anki's
+# answer is its fields check's "unknown reason" — a cloze state, proven on DevTest: a field holds cloze marks on a note
+# type that isn't a cloze one — the line says so in plain words (PROVISIONAL words)
+MINE_REFUSED = "mine-refused"
+MINE_REFUSED_SAY = ("{title}: Anki Miner couldn't make the cards for {words} ({why}){hint}. Skip this word and the rest "
+                    "of the part is done, and it's never asked again; Try again tries it once more. The cards it made "
+                    "are kept.")
+UNKNOWN_REASON = "cannot create note for unknown reason"     # AnkiConnect's words for a cloze state of Anki's check
+CLOZE_HINT = (": a dictionary's text for this word looks like an Anki cloze ({{c1::…}}), and Anki refuses it on "
+              "this note type")      # (Mattias found it: a grammar dictionary's example sentences, 2026-11-12)
+FAILED_KINDS = ("mine-failed", MINE_REFUSED)
 LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
                   "sentence audio.")
 # Kura-AB2 (Mattias's 3.0.0 field report, issue 3; PROVISIONAL): a book about to be mined with no audiobook paired
@@ -238,6 +249,11 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
+class _Beside(Repick):
+    """Michi-NT: pick again from the subtitle beside its video (`_fit`) — a choice of file, never a change: it counts
+    as none of `_job`'s re-picks (once a pass: `_fit` never switches from the file beside)."""
+
+
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -267,6 +283,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         while True:
             summary["looks"] += 1
             _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
+            _copy_changed(ledger, parked)   # Michi-NT: a not-timed episode's subtitle fixed meanwhile
             outside = work = battery = unread = False
             for lang in languages:
                 stop = _stop(steps)
@@ -788,8 +805,8 @@ def _fixed_said(ledger, lang, says):
 
 def _failed_says(ledger, lang, item_id):
     """The words of the item's open *Anki Miner stopped* lines (Mattias #5): only a new try of its words ends them."""
-    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind = "
-                                              "'mine-failed' AND fixed_at IS NULL", (lang, item_id))}
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND item_id = ? AND kind IN "
+                                              "(?, ?) AND fixed_at IS NULL", (lang, item_id) + FAILED_KINDS)}
 
 
 def _skipped_says(job):
@@ -970,7 +987,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
         # look-up still under way at a press is ended, and the job stops before the step it was in
         with stopping.watching(lambda: _stop_pressed(ledger, jid)):
-            for _ in range(3):      # a profile or pairing that changed since the pick: picked again (at most twice)
+            repicks = 0             # a profile or pairing that changed since the pick: picked again (at most twice)
+            while repicks < 3:
                 try:
                     if step in (None, "picking"):
                         _stop_here(steps, ledger, lang, job, step, record)
@@ -990,8 +1008,11 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
                         step = "filling"
                     break
+                except _Beside:
+                    step = "picking"            # Michi-NT: the file beside its video — no change, no re-pick spent
                 except Repick:
                     step = "picking"
+                    repicks += 1
             else:
                 raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was "
                             "mined.")
@@ -1264,10 +1285,18 @@ def _pick(steps, ledger, lang, job, record=True):
         folder = steps.video_moved(lang, job)
         raise Wait(MOVED.format(folder=folder) if folder else NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
+    before = ledger.picked(jid) or {}
+    # Michi-NT (Mattias #XP44T6): its library copy wasn't timed, and the same subtitle re-timed beside its video was
+    # found (`_fit`, `retimed_beside`) — picked from that file, for that video, while it is there
+    beside = before.get("beside") if book is None and subtitle is None else None
+    if beside and (before.get("video") != video or not os.path.isfile(beside)):
+        beside = None
     if book is not None:
         got = steps.pick(lang, job, None, reading=book[0])
     elif subtitle is not None:
         got = steps.pick(lang, job, video, subtitle=subtitle)      # its own captions, fetched with it
+    elif beside:
+        got = steps.pick(lang, job, video, subtitle=beside)
     else:
         got = steps.pick(lang, job, video)
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
@@ -1275,19 +1304,24 @@ def _pick(steps, ledger, lang, job, record=True):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
         # either (a name: sent once a version, never again with every episode)
         declined |= ledger.uncardable(lang, got["anki_miner"])
+        declined |= ledger.skipped_words(lang, got["anki_miner"])     # Michi-RM3: *Skip this word*, any part
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
-    if isinstance(pairing, dict) and pairing.get("verdict") == "transcribed":
+    if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
+            pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
+        #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
         if lined:
             picked["lineup"] = lined                # Stage B: its words cut from the audiobook where it was heard
-    before = ledger.picked(jid) or {}
+    if beside:
+        picked["beside"], picked["copy"] = beside, before.get("copy")
+        picked["beside_at"] = _stamp(beside)    # the file as checked: changed or gone before a batch -> picked again
     if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
         picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
         #                             marked origin's video standing in is another file); a new one clears it
@@ -1442,6 +1476,90 @@ def _fit_tries(ledger, jid, failed):
         return tries
 
 
+def _stamp(path):
+    """[path, size, modified time] of a file as it is now, or None (no path, or it can't be read)."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    return [path, st.st_size, st.st_mtime_ns]
+
+
+def _copy_changed(ledger, parked):
+    """Michi-NT (Mattias #XP44T6): a job parked as not timed whose library copy changed since it was checked (you
+    re-timed it, or its original changed and the library copied it again) goes again in this run — never only at the
+    next start. One stat of a local file a parked job, each look; nothing written."""
+    for job_id in list(parked):
+        checked = (ledger.picked(job_id) or {}).get("checked")
+        if not isinstance(checked, list) or len(checked) != 3:
+            continue
+        now = _stamp(checked[0])
+        if now is not None and now != checked:      # (a copy gone is the next start's: never let go each look)
+            del parked[job_id]
+
+
+def _retimed(steps, lang, job, picked):
+    """The same subtitle re-timed beside the job's video (`Steps.retimed`), or None — a stand-in Steps without the
+    look never has one."""
+    look = getattr(steps, "retimed", None)
+    video, copy = picked.get("video"), picked.get("file")
+    if look is None or not video or not copy:
+        return None
+    try:
+        return look(lang, job, video, copy)
+    except Exception:                       # a look that fails is no subtitle beside it: the copy's verdict stands
+        log.warning("Connect couldn't look beside job %s's video for its subtitle", job.get("id"), exc_info=True)
+        return None
+
+
+def retimed_beside(video, copy, language):
+    """Michi-NT (Mattias #XP44T6): a subtitle beside `video`, named after it (`<video's name>.ja.srt`: where tsubasa
+    writes a subtitle it re-timed to that video, as a player looks for it), with no language mark or the library's,
+    that holds the very lines of the library's `copy` (the same subtitle, re-timed — never another release) in other
+    bytes -> its path (the newest of several), else None. One listing of the video's folder and a read of each such
+    file; asked only once the copy was found not timed. Never an audio file's."""
+    from app import cues
+    from app.connect.anki_miner import is_audio
+    from app.episode_names import identity, video_stems
+    if is_audio(video):
+        return None
+    folder, name = os.path.split(video)
+    stem = os.path.splitext(name)[0].lower()
+    try:
+        names = os.listdir(folder or ".")
+    except OSError:
+        return None
+    found = []
+    for n in names:
+        path = os.path.join(folder, n)
+        if not n.lower().endswith(cues.SUBTITLES) or stem not in {s.lower() for s in video_stems(n)}:
+            continue
+        langs = identity(n).languages
+        if (langs and language not in langs) or os.path.normcase(os.path.abspath(path)) == \
+                os.path.normcase(os.path.abspath(copy)):
+            continue
+        stamp = _stamp(path)
+        if stamp is not None and _on_disk(path):     # never a cloud placeholder: its read would download it (RD-S1)
+            found.append((stamp[2], path))
+    if not found:
+        return None
+    try:
+        lines = [c.text for c in cues.read(copy, language)]
+        with open(copy, "rb") as f:
+            own = f.read()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    for _at, path in sorted(found, reverse=True):
+        try:
+            with open(path, "rb") as f:
+                same_bytes = f.read() == own
+            if lines and not same_bytes and [c.text for c in cues.read(path, language)] == lines:
+                return path
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+    return None
+
+
 def _fit(steps, ledger, lang, job):
     jid = job["id"]
     picked = ledger.picked(jid) or {}
@@ -1481,10 +1599,29 @@ def _fit(steps, ledger, lang, job):
         # a check that times out on this PC every time held the episode at the hourglass for ever)
         if tries < FIT_TRIES:
             raise Wait(f"{why} (try {tries} of {FIT_TRIES})")
+        if picked.pop("beside", None):      # Michi-NT: the next pick (and a *Mine anyway*) is the copy's again
+            ledger.set_state(jid, "fit-check", picked=picked)
         title = steps.title(lang, job)
         gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
         raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
+        was = picked.pop("beside", None)
+        if was:
+            # Michi-NT: the subtitle beside its video wasn't timed either — the next check starts from the copy again
+            log.info("Connect: job %s: the subtitle beside its video isn't timed either: %s", jid, was)
+        elif who == "tsubasa" and verdict == fit_check.NOT_TIMED:
+            # Michi-NT (Mattias #XP44T6): the library's copy isn't timed — the same subtitle re-timed beside its video
+            # (tsubasa's own output, named after the video) is checked in its place: timed, its cards are cut from it
+            other = _retimed(steps, lang, job, picked)
+            if other:
+                log.info("Connect: job %s: its subtitle re-timed beside its video is checked: %s", jid, other)
+                picked["beside"], picked["copy"] = other, picked.get("file")
+                ledger.set_state(jid, "fit-check", picked=picked)
+                raise _Beside()
+        # the library's copy as checked (never one beside a video: a share is never looked at each look) — a change
+        # to it lets the job go again in this run (`_copy_changed`)
+        picked["checked"] = _stamp(picked.get("copy") if was else picked.get("file"))
+        ledger.set_state(jid, "fit-check", picked=picked)
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
     picked["offset"] = offset               # the shift Anki Miner cuts the lines by (intent keeper P2.4-A #1)
@@ -1521,6 +1658,8 @@ def _mine(steps, ledger, lang, job, record=True):
             _fail_mining(steps, ledger, lang, job, record)
         if fit_check.version(steps.pairing(lang, job)) != picked.get("pairing"):
             raise Repick()                  # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
+        if picked.get("beside") and _stamp(picked["beside"]) != picked.get("beside_at"):
+            raise Repick()                  # Michi-NT: the subtitle beside its video changed or went since its check
         wait = _blocked(steps, lang, "mining", asked=bool(job.get("asked_at")))
         if wait is not None:
             raise wait
@@ -1814,14 +1953,16 @@ def _fail_mining(steps, ledger, lang, job, record=True):
              if w["word"] in refused and _outcome(ledger, job["id"], w) in UNSETTLED]
     if said and words:              # Mattias #5: the words Anki refused alone: named, with Anki's reason
         named = ", ".join(words[:3]) + (f" and {len(words) - 3} more" if len(words) > 3 else "")
-        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said)
+        say = MINE_REFUSED_SAY.format(title=title, words=named, why=said,
+                                      hint=CLOZE_HINT if UNKNOWN_REASON in str(said) else "")
+        kind = MINE_REFUSED
     else:
-        say = MINE_FAILED_SAY.format(title=title)
+        say, kind = MINE_FAILED_SAY.format(title=title), "mine-failed"
     with ledger.transaction():
-        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'mine-failed' "
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind IN (?, ?) "
                             "AND fixed_at IS NULL AND COALESCE(job_id, -1) != ?",
-                            (_now(), lang, job["item_id"], job["id"]))
-        ledger.need(lang, "mine-failed", say, item_id=job["item_id"], job_id=job["id"])
+                            (_now(), lang, job["item_id"]) + FAILED_KINDS + (job["id"],))
+        ledger.need(lang, kind, say, item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
 
 
@@ -2191,6 +2332,13 @@ class Steps:
         from app.connect import library
         with self._open(lang) as store:
             return library.pairing_of(store, job["item_id"])
+
+    def heard(self, lang, job):
+        """Hato-SP: was the item's text made from its video's audio by another tool (`library.heard`)? A busy
+        store is a Wait."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return library.heard(store, job["item_id"])
 
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
@@ -2896,6 +3044,10 @@ class Steps:
         if not trust and anki_miner.is_audio(video) and anki_miner.can_now(anki_miner.SPOT_CHECK):
             spot = lambda: self._spot(lang, job, video, subtitle)      # noqa: E731
         return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot)
+
+    def retimed(self, lang, job, video, subtitle):
+        """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
+        return retimed_beside(video, subtitle, lang)
 
     def _miner_profile(self, lang, job):
         """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups

@@ -27,7 +27,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PyQt6.QtGui import QImage, QKeyEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
@@ -628,10 +628,17 @@ def test_undo_after_start_over_puts_the_sorting_back_and_then_each_choice_undoes
     assert calls(writer, "undo") == [("undo", [], {"change": reset})]
     assert [e["name"] for e in screen.history] == ["now", "soon", "finished"]
     settle()
+    landed = screen.set_groups
+
+    def late(groups):                       # a slow runner: the library's view lands 0.3 s after the writer's undo
+        QTimer.singleShot(300, lambda: landed(groups))
+    screen.set_groups = late
     press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert wait_until(lambda: len(calls(writer, "undo")) == 2, 5)
     assert calls(writer, "undo")[1][2]["change"] is writer.saved[2], "then the last choice, by its own change"
-    assert wait_until(lambda: screen.top_arrival().key == placed[2].key, 5)
+    # a saved choice's title is back once the library's view after its undo lands (none on top until then), as
+    # `test_undo_brings_the_last_title_back_on_top…` waits for it; only an unsaved one is back at once
+    assert wait_until(lambda: screen.top_arrival() is not None and screen.top_arrival().key == placed[2].key, 5)
 
 
 def test_ignored_titles_come_back_with_start_over_and_its_undo_ignores_them_again(world):

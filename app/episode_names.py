@@ -265,7 +265,7 @@ def _marks(stem):
     """(stem without its marks, languages, flags, bilingual, a track named by its language, re-timed): the dot tags
     from the right (a second language tag ends them, as it always did; a re-timer's mark comes off), then every bracket of marks but the leading one, AM's
     `_track3`, an underscore's word (never `_hi` / `_cc`: a word, not a flag), and `N_Language`."""
-    langs, flags, two, retimed = set(), set(), [], False
+    langs, flags, two, off = set(), set(), [], set()
 
     def take(m):
         langs.update(m[0])
@@ -274,8 +274,10 @@ def _marks(stem):
 
     while True:
         base, dot = os.path.splitext(stem)
-        if base and unicodedata.normalize("NFKC", dot[1:]).casefold() in RETIMED:
-            retimed, stem = True, base
+        mark = unicodedata.normalize("NFKC", dot[1:]).casefold()
+        if base and mark in RETIMED:
+            off.add(mark)
+            stem = base
             continue
         m = _mark(dot[1:], _LANGS) if base and dot[1:] else None
         if m is None or (m[0] and langs):
@@ -301,7 +303,7 @@ def _marks(stem):
         if t is None:
             take(m)
         stem = tail[:(t or u).start()]
-    return stem, frozenset(langs), frozenset(flags), any(two) or len(langs) >= 2, bool(track), retimed
+    return stem, frozenset(langs), frozenset(flags), any(two) or len(langs) >= 2, bool(track), frozenset(off)
 
 
 def _number(value):
@@ -396,7 +398,8 @@ def identity(name, folder_name=None, bare_numbers=False):
     kept for the last names asked: the same name is read once)."""
     raw = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
     stem = _EXT.sub("", raw)
-    stem, langs, flags, two, track, retimed = _marks(stem)
+    stem, langs, flags, two, track, off = _marks(stem)
+    retimed = bool(off)
     text = unicodedata.normalize("NFKC", stem)
     lead = re.match(r"\s*\[([^\]]*)\]", text)
     inside = [next(g for g in b.groups() if g is not None) for b in _BRACKET.finditer(text)]
@@ -487,6 +490,14 @@ def extra(name):
     video (the look's number join) and never a waiting item (A32)."""
     n = identity(name)
     return n.special in NEVER_WAIT or bool(_EXTRA.search(n.stem))
+
+
+def from_audio(name):
+    """Hato-SP: is the made-from-audio mark among the re-timer's marks `_marks` takes off the name
+    (`<video>.ja.from-audio.srt`, either side of the language)? A subtitle made from its video's audio, by Surasura
+    (`no_subs`) or by another tool (hato's *Subtitles from the audio*): Connect tags the cards cut from it the same."""
+    raw = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    return FROM_AUDIO in _marks(_EXT.sub("", raw))[5]
 
 
 def dubbed(name):

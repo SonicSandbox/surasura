@@ -225,6 +225,26 @@ def connection(report=None, sync=None):
             "syncing": (False, "syncing")}.get(sync, (False, "unknown"))
 
 
+# S1 · Settings say why (Kantan-S1, PROVISIONAL): what a section needs while it's missing, from the Connection row's own
+# answer (no read of its own) — never while Anki is unread or a Check is under way (never a wrong line)
+NEEDS_ANKI = ("closed", "no_addon", "unsure", "denied", "failed", "busy")
+
+
+def section_needs(section_id, anki):
+    """(the needs line, the row its *Show me* reveals) for `section_id` while something stands in its way, else None.
+    `anki`: the Connection row's key (`connection`'s), None while unread."""
+    if section_id in S.SECTION_WHY and anki in NEEDS_ANKI:
+        return S.NEEDS_ANKI, "anki_connection"
+    return None
+
+
+def where(target):
+    """*Show me*'s words for where it goes: the section › the row ("Anki & mining › Connection")."""
+    section_id, row_id = catalog.locate(target)
+    name = next(section.name for section in catalog.SECTIONS if section.id == section_id)
+    return f"{name} › {catalog.ROW[row_id].label}" if row_id else name
+
+
 def _hours(hours):
     return f"{hours:.1f}".rstrip("0").rstrip(".") if hours < 10 else f"{round(hours):,}"
 
@@ -732,6 +752,8 @@ class Live(QObject):
             self.parts[row_id] = {"remove": door}                  # --- end W3.2 L3
         if row_id in self.lines and row_id not in SETUP and row_id != "level":
             self._words(row_id, self.lines[row_id], keep=False)
+        if row.section in S.SECTION_WHY:                # S1: its slab is there now: its needs line as Anki has it
+            self._paint_needs()
 
     # --- settings written, the language, the services' news ------------------------------------------------------ #
     def _written(self, keys):
@@ -899,6 +921,7 @@ class Live(QObject):
         return connection(self.facts.get("report"), self.facts.get("sync"))
 
     def _paint_anki(self):
+        self._paint_needs()
         parts = self.parts.get("anki_connection", {})
         mark = parts.get("mark")
         if mark is None:
@@ -918,6 +941,20 @@ class Live(QObject):
             report = self.facts.get("report") or {}
             # a sync's "closed" took no process look: as none seen, so an Anki opened without AnkiConnect is noticed
             watch.arm(key in ("closed", "no_addon", "unsure"), report.get("running", False))
+
+    def _paint_needs(self):
+        """S1: each why-section's needs line from Anki's answer as the Connection row has it (no read of its own);
+        kept as it is while a Check runs (no jump), and repainted only when its words change (S19)."""
+        if self._checking:
+            return
+        anki = self._anki_now()[1] if self._anki_known() else None
+        for section_id in S.SECTION_WHY:
+            slab = self.page.slabs.get(section_id)
+            need = section_needs(section_id, anki)
+            if slab is None or slab.needs_now == need:
+                continue
+            with self.page._keeping(self.page._last):
+                slab.set_needs(need, where(need[1]) if need else "")
 
     def _anki_url(self):
         from app import anki_connect

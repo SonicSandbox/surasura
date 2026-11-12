@@ -556,11 +556,12 @@ ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
 ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never finishes (G3.2)
-# Kantan-B1 (AUDIT B1, Sonic ✅; PROVISIONAL): the % counts the words you know AND the ones with nothing to learn (the
-# one-character grammar words の は を …, ignored words: the analyzer's coverage) — *37% known* beside *0 known* misread
-ROWS_HERO_KNOWN = "{pct}% of its words you'd know, grammar words included · "
-ROWS_HERO_PCT_TIP = ("The words you know, and the small grammar words (の, は, を, に…) that have nothing to learn: "
-                     "together {pct}% of this episode's words")
+# Kantan-B1 (AUDIT B1, Sonic ✅; PROVISIONAL): the % is the analyzer's coverage — the words you know AND those with
+# nothing to learn (ignored words; in Japanese with the one-character rule on, の は を …) — so *37% known* beside
+# *0 known* misread; "won't need to learn" is true in both languages, with the rule on or off
+ROWS_HERO_KNOWN = "{pct}% of its words you won't need to learn · "     # (view_rows' "pct_hero" says it the same)
+ROWS_HERO_PCT_TIP = ("The words you know, the words you ignore and, in Japanese, the small one-character words "
+                     "(の, は, を…) with nothing to learn: together {pct}% of its words")
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)

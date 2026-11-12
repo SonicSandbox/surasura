@@ -140,10 +140,14 @@ def test_up_nexts_percent_says_what_it_counts_and_a_click_on_it_still_opens_the_
     _kind, hero, _lines = lst.model().entries[0]
     nxt = hero.episodes[hero.next_index]
     pct = part(lst, 0, "pct")
+    said = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+    assert said == f"{round(nxt.pct)}% of its words you won't need to learn · "     # true in ja and zh, rule on or off
     assert len(pct) == 1 and pct[0][2] == strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct))
-    assert strings.ROWS_HERO_KNOWN.format(pct=37) == "37% of its words you'd know, grammar words included · "
+    hs = rows.TEXT.metrics("hero-sub")                                   # its hover covers the words drawn, no more
+    assert 0 < pct[0][1].width() <= hs.horizontalAdvance(said.rstrip(" ·"))
     journey = part(lst, 0, "journey")
-    assert not journey or not pct[0][1].intersects(journey[0][1])        # the link keeps its own place
+    assert journey and journey[0][1].left() >= pct[0][1].right()         # the link keeps its own place, after it
+    assert "you won't need to learn" in lst.model().data(lst.model().index(0, 0), Qt.ItemDataRole.AccessibleTextRole)
     QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=pct[0][1].center())
     assert wait_until(lambda: lst.model().open_key == hero.key)
 

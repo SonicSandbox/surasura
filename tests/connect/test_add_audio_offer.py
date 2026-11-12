@@ -545,3 +545,29 @@ def test_cards_made_while_it_waited_are_offered_and_a_jobs_line_up_says_so(book,
         assert now["id"] == offer["id"] and now["say"] == runner.ADD_AUDIO_ASK.format(title=title)
         rec = json.loads(runner._meta(ledger, f"{runner.ADD_AUDIO_ASKED}ja:{runner.book_key(book['book'], sha)}"))
         assert 500 in rec["notes"] and rec["stage"] == runner.ADD_AUDIO_LINED
+
+
+def test_anki_miner_absent_says_so_and_keeps_the_line(book, fake_miner, tmp_path, monkeypatch):  # noqa: F811
+    """Mutant A3: Anki Miner gone since the line came (it cuts the clips) — its words, nothing written, the line
+    stays."""
+    from app.connect import add_audio
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        _lined(book, ledger)
+        [offer] = _offers(ledger)
+    monkeypatch.setattr("app.cli.verbs._anki_miner_setup", lambda *a, **k: None)
+    got = actions.add_audio("ja", offer["id"], {"connect_enabled": True}, path=path)
+    assert got == {"ok": False, "say": add_audio.NO_MINER}
+    with Ledger(path) as ledger:
+        assert len(_offers(ledger)) == 1
+
+
+def test_a_line_up_given_up_is_never_offered(book, tmp_path, monkeypatch):  # noqa: F811
+    """Mutant W8: Anki Miner failed TRIES times running on it — given up, not offered (its press would ask for ever)."""
+    from app.connect import lineup
+    _waiting(book, monkeypatch)
+    lineup.write(book["rec"]["book"]["key"], {"status": lineup.FAILED, "tries": lineup.TRIES})
+    assert book["steps"].lineable("ja", book["book"]) is False
+    lineup.write(book["rec"]["book"]["key"], {"status": lineup.FAILED, "tries": lineup.TRIES - 1})
+    assert book["steps"].lineable("ja", book["book"]) is True

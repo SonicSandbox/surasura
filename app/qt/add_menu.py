@@ -145,13 +145,16 @@ def audiobook_folders(paths, language=None):
     folder to be read: they come with it, or, at a No, go on as before)."""
     from app import audiobooks
     from app import library_store as ls
-    found, rest = {}, []
+    found, rest, refused = {}, [], {}
     for p in map(os.path.normpath, paths):
         if os.path.isdir(p):
-            books, others = _look_into(p)
-            folder = p
+            folder = _disc_parent(p)
+            if refused.setdefault(folder, _refused(language, folder)):
+                rest.append(p)                           # (a drive, the user folder: never walked, as before)
+                continue
+            books, others = _look_into(folder)
         elif audiobooks.is_audio(p):
-            folder = os.path.dirname(p)
+            folder = _disc_parent(os.path.dirname(p))
             books = [a for a in _find(folder, folder) if ls.path_key(p) in {ls.path_key(f) for f in a.files}]
             others = None
         else:
@@ -159,21 +162,35 @@ def audiobook_folders(paths, language=None):
         if not books:
             rest.append(p)
             continue
-        e = found.setdefault(ls.path_key(folder), {"folder": folder, "books": {}, "others": False})
+        e = found.setdefault(ls.path_key(folder), {"folder": folder, "books": {}, "others": None})
         e["books"].update((tuple(a.files), a) for a in books)
         if others is not None:
-            e["others"] = e["others"] or others
+            e["others"] = bool(e["others"]) or others
     out = []
     for e in found.values():
         books = list(e["books"].values())
-        others = e["others"] or _look_into(e["folder"], audio=False)[1]
-        refused = _refused(language, e["folder"])
+        why = refused[e["folder"]] if e["folder"] in refused else _refused(language, e["folder"])
+        others = e["others"] if e["others"] is not None or why else _look_into(e["folder"], audio=False)[1]
         out.append({"folder": e["folder"], "name": (books[0].title if len(books) == 1 else "") or
-                    os.path.basename(e["folder"]) or e["folder"], "n": len(books), "others": others,
-                    "refused": refused})
+                    os.path.basename(e["folder"]) or e["folder"], "n": len(books), "others": bool(others),
+                    "refused": why})
     keys = [ls.path_key(e["folder"]).rstrip("/") + "/" for e in out if not e["refused"]]
     held = [p for p in rest if any(ls.path_key(p).startswith(k) for k in keys) and path_utils.file_kind(p)]
     return out, [p for p in rest if p not in held], held
+
+
+def may_hold_audiobook(path):
+    """By its name only (the window's thread): an audio file, or a path that is no file the library reads nor a video —
+    a folder, say. A drop with none of these never waits for `audiobook_folders`."""
+    from app import audiobooks
+    from app.connect.runner import video_name
+    return audiobooks.is_audio(path) or (path_utils.file_kind(path) is None and not video_name(path))
+
+
+def _disc_parent(folder):
+    """A disc folder (`CD1`, `Disc 2`) stands for its title's folder: the look joins the discs from there."""
+    from app import audiobooks
+    return os.path.dirname(folder) if audiobooks.disc_number(os.path.basename(folder)) is not None else folder
 
 
 def _find(folder, root):
@@ -365,14 +382,14 @@ class Adder(QObject):
 
         def listed(answer):
             found, rest, held = answer
+            if language != windows.language_of(self.shell):
+                return                                    # (another language's library now: nothing of it added)
             if rest:
                 rest_to(rest)
-            if language != windows.language_of(self.shell):
-                return                                    # (another language's library now: nothing asked of it)
             for f in found:
                 if f["refused"]:
-                    windows.say_in_bar(self.shell, strings.AUDIOBOOK_IN_REFUSED.format(name=f["name"],
-                                                                                        why=f["refused"]))
+                    why = f["refused"].split(";")[0].split(":")[0].strip().rstrip(".")
+                    windows.say_in_bar(self.shell, strings.AUDIOBOOK_IN_REFUSED.format(name=f["name"], why=why))
             ok = [f for f in found if not f["refused"]]
             if ok:
                 self.ask_audiobooks(ok, held, rest_to)

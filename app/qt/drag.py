@@ -53,7 +53,7 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QT
 from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
-from app import path_utils, settings_manager, theme
+from app import settings_manager, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
 from app.services import airing
@@ -3206,9 +3206,10 @@ class DragController(QObject):
 
     def files_dropped(self, event):
         """Files dropped on the list from Explorer (A2's toast *Added X at #N*): copied into the tier's folder and placed
-        beside the row under the hand, by the writer (`insert_at`). Kantan-B3: a drop holding more than texts and
-        subtitles is listed first on a worker (`Adder.audiobooks_apart`): an audiobook in it — a file, or a folder
-        holding one — is asked about on its own card (read where it is), never *left out*; the rest placed here."""
+        beside the row under the hand, by the writer (`insert_at`). Kantan-B3: a drop that may hold an audiobook (an
+        audio file, a folder: `add_menu.may_hold_audiobook`, by names) is listed first on a worker
+        (`Adder.audiobooks_apart`): an audiobook in it is asked about on its own card (read where it is), never *left
+        out*; the rest placed here."""
         paths = self._files(event)
         if not paths or self.running is not None or self.refused() is not None:
             return False
@@ -3230,8 +3231,9 @@ class DragController(QObject):
                 strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
             self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id,
                                                                      after_id=after_id, near=near, label=t))
+        from app.qt import add_menu
         adder = getattr(self.win, "adder", None)
-        if adder is not None and not all(path_utils.file_kind(p) == "text" for p in paths) and \
+        if adder is not None and any(add_menu.may_hold_audiobook(p) for p in paths) and \
                 adder.audiobooks_apart(paths, place):
             return True
         place(paths)

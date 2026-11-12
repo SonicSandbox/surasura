@@ -12927,6 +12927,8 @@ def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale
             if fields is None or book is not None or ask is not None:
                 ab.update(book=book if placed else None, ask=None if placed else ask)
             ab.update(mark or {})
+            for gone in [k for k, v in (mark or {}).items() if v is None]:
+                del ab[gone]                         # (Kantan-B3: a None takes that mark off — the newest word wins)
             self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                               (json.dumps(dict(rec, audiobook=ab), sort_keys=True, ensure_ascii=False), key))
         cmd.feed([item_id])
@@ -12957,7 +12959,8 @@ def _store_answer_audiobook(self, item_id, yes, key=None):
     if yes and self.pair_audiobook(item_id, book=dict(ask, how="answered"), answer=(ask["key"], True), by="user"):
         return True
     self.pair_audiobook(item_id, answer=(ask["key"], bool(yes)), stale=True, by="user",   # (Kantan-B3: a *Yes* whose
-                        mark={"placed": True} if yes else {"said_no": ask.get("title") or True})   # book was gone)
+                        mark={"placed": True, "said_no": None} if yes else    # book was gone: placed; the newest
+                        {"said_no": ask.get("title") or True, "placed": None})   # word replaces the other)
     return True
 
 
@@ -12977,8 +12980,8 @@ def _store_audiobook_finds(self):
                 continue
             seen.add(item_id)
             said = ab.get("said_no")
-            if ab.get("no_book") or ab.get("book") or ab.get("ask") or \
-                    (not said and (ab.get("placed") or ab.get("transcript"))) or \
+            if ab.get("no_book") or ab.get("book") or ab.get("ask") or ab.get("placed") or \
+                    (not said and ab.get("transcript")) or \
                     not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
                 continue
             out.append({"item_id": item_id, "title": ab.get("title") or "", "files": list(ab.get("files") or ()),
@@ -13248,7 +13251,8 @@ def _store_audiobook_separate(self, item_id, key=None, by="user"):
         said[book["key"]] = False
         self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         for content_key, _i, rec in rows:
-            one = dict(rec.get("audiobook") or {}, book=None, ask=None, placed=True)   # Kantan-B3: no Find card
+            one = dict(rec.get("audiobook") or {}, book=None, ask=None, placed=True)   # Kantan-B3: no Find card,
+            one.pop("said_no", None)                                                   # an older *No* replaced
             self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                               (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), content_key))
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (new, item_id))

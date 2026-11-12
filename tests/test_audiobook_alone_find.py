@@ -98,10 +98,14 @@ def test_separate_them_never_brings_the_card_you_said_where_it_belongs():
         if _record(store, item["id"])["ask"] is not None:
             assert store.answer_audiobook(item["id"], True)
         assert _record(store, item["id"])["book"] is not None
-        assert store.audiobook_separate(item["id"]) is not None
+        change = store.audiobook_separate(item["id"])
+        assert change is not None
         assert _record(store, item["id"])["book"] is None and _finds(store) == []
         _look(store, "ja", root, full=True)
         assert _finds(store) == []
+        store.undo(change)                                         # its Undo: paired again, its mark gone with it
+        rec = _record(store, item["id"])
+        assert rec["book"] is not None and "placed" not in rec
     finally:
         store.__exit__(None, None, None)
 
@@ -158,6 +162,21 @@ def test_a_separated_audiobook_renamed_keeps_its_word_and_stays_unasked():
         rec = _record(store, item["id"])
         assert rec["files"][0].endswith(os.path.join(GINGA + "（朗読）", "01.mp3")) and rec["placed"] is True
         assert _finds(store) == []
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_the_newest_word_wins_no_then_a_pick_then_separate_leaves_no_card():
+    """A *No* (said_no), then *Find its book…* picks another, then *Separate them*: placed — the older *No* never brings
+    the card back (round 2, S5)."""
+    from tests.test_audiobook_find import BOCCHAN, _said_no
+    store, _root, _src, item = _said_no()
+    try:
+        epub = next(b["epub"] for b in store.library_books() if b["title"] == BOCCHAN)
+        assert store.pick_audiobook_book(item["id"], epub) is not None
+        assert store.audiobook_separate(item["id"]) is not None
+        rec = _record(store, item["id"])
+        assert rec["placed"] is True and "said_no" not in rec and _finds(store) == []
     finally:
         store.__exit__(None, None, None)
 

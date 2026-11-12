@@ -139,9 +139,9 @@ PICK_FILE_TITLE = "Choose a file"
 PICK_FILE_FILTER = "Subtitles, videos, texts, books and audiobooks ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
 # Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook chosen as a file
-FILE_AUDIOBOOK = ("{name} is an audiobook: Surasura reads it in its folder, then asks which book it is. Choose its "
-                  "folder.")
-FILE_AUDIOBOOK_PLAIN = "{name} is an audiobook: Surasura reads it in its folder, then asks which book it is."
+FILE_AUDIOBOOK = ("{name} is audio: Surasura reads an audiobook in its folder, then asks which book it is. Choose "
+                  "its folder.")
+FILE_AUDIOBOOK_PLAIN = "{name} is audio: an audiobook comes in with its folder, from + Add → A folder… after setup."
 AUDIOBOOK_ITS_FOLDER_TIP = ("Read the audiobook's whole folder, as Choose a folder… does:\n"
                             "• It joins its book, or Surasura asks which book it is")
 # alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule

@@ -48,6 +48,8 @@ class Looks:
 
     def add(self, path, then=None, first=False):
         self.added.append(path)
+        if then is not None:                                     # its look's answer (one new item), as the worker's
+            then({"refused": None, "result": {"added": 1, "reachable": True}})
         return True
 
     def busy(self):
@@ -266,8 +268,22 @@ def test_a_folder_that_cant_be_read_where_it_is_is_said_never_offered(world, tmp
     monkeypatch.setattr(add_menu, "_refused", lambda language, folder: why)
     m4b = _m4b(os.path.join(tmp_path, f"{GINGA}.m4b"), 3600, tags={"album": GINGA})
     _drop(win, [m4b])
-    assert wait_until(lambda: win.bar_line.full() == strings.AUDIOBOOK_IN_REFUSED.format(name=GINGA, why=why), 5)
+    said = strings.AUDIOBOOK_IN_REFUSED.format(name=GINGA, why="A whole drive holds too much to read")
+    assert wait_until(lambda: win.bar_line.full() == said, 5)    # one instruction: its reason's first clause only
     assert getattr(win.adder, "question", None) is None and win.looks.added == [] and _inserted(writer) == []
+
+
+def test_a_dropped_folder_that_cant_be_read_where_it_is_is_never_walked_and_goes_on_as_before(world, tmp_path,
+                                                                                               monkeypatch):
+    win, writer = world()
+    folder, _mp3s = _audiobook(tmp_path)
+    walked = []
+    monkeypatch.setattr(add_menu, "_refused", lambda language, f: "Your user folder holds too much to read; x.")
+    monkeypatch.setattr(add_menu, "_look_into", lambda *a, **k: walked.append(a) or ([], False))
+    _drop(win, [folder])
+    assert wait_until(lambda: calls(writer, "insert_at"), 5)
+    assert _inserted(writer) == [[os.path.normpath(folder)]] and walked == []
+    assert getattr(win.adder, "question", None) is None
 
 
 def test_a_listing_that_fails_says_so_and_never_leaves_the_audio_out_as_a_text(world, tmp_path, monkeypatch):
@@ -282,6 +298,90 @@ def test_a_listing_that_fails_says_so_and_never_leaves_the_audio_out_as_a_text(w
     assert wait_until(lambda: calls(writer, "insert_at"), 5)
     assert _inserted(writer) == [[os.path.normpath(srt)]]        # the subtitle as before; the audio never "left out"
     assert wait_until(lambda: win.bar_line.full().startswith(f"{GINGA}.m4b couldn't be read"), 5)
+
+
+def test_a_chapter_from_a_disc_folder_reads_the_whole_title_both_discs(world, tmp_path):
+    win, _writer = world()
+    top = os.path.join(tmp_path, "Audiobooks", GINGA)
+    one = _mp3(os.path.join(top, "CD1", "01.mp3"), seconds=1500, frames={"TALB": GINGA})
+    _mp3(os.path.join(top, "CD2", "01.mp3"), seconds=1500, frames={"TALB": GINGA})
+    _drop(win, [one])
+    q = _asked(win)
+    assert q.body.text() == strings.AUDIOBOOK_IN_BODY.format(folders=f"「{GINGA}」")   # the title's folder, not CD1
+    q.yes.click()
+    assert wait_until(lambda: win.looks.added, 5) and win.looks.added == [os.path.normpath(top)]
+    _drop(win, [os.path.join(top, "CD2")])                       # the disc folder itself: its title's folder too
+    q = _asked(win)
+    q.yes.click()
+    assert wait_until(lambda: len(win.looks.added) == 2, 5) and win.looks.added[1] == os.path.normpath(top)
+
+
+def test_one_file_of_a_folder_holding_two_audiobooks_names_its_own(world, tmp_path):
+    win, _writer = world()
+    folder = os.path.join(tmp_path, "Audiobooks", "宮沢賢治")
+    mine = [_mp3(os.path.join(folder, f"g{i}.mp3"), seconds=900, frames={"TALB": GINGA}) for i in (1, 2)]
+    for i in (1, 2):
+        _mp3(os.path.join(folder, f"k{i}.mp3"), seconds=900, frames={"TALB": "風の又三郎"})
+    _drop(win, [mine[0]])
+    q = _asked(win)
+    assert q.title.text() == strings.AUDIOBOOK_IN_TITLE.format(name=GINGA)   # its album's, never "2 audiobooks"
+
+
+def test_a_picture_from_the_audiobooks_folder_goes_on_at_once_only_texts_wait(world, tmp_path):
+    win, writer = world()
+    folder, mp3s = _audiobook(tmp_path)
+    cover = os.path.join(folder, "cover.jpg")
+    with open(cover, "wb") as f:
+        f.write(b"\xff\xd8\xff\xe0")
+    _drop(win, [cover, mp3s[0]])
+    assert wait_until(lambda: calls(writer, "insert_at"), 5)
+    assert _inserted(writer) == [[os.path.normpath(cover)]]     # named as left out, as before: never held
+    assert _asked(win) is not None
+
+
+def test_a_store_refusing_while_it_was_listed_adds_nothing(world, tmp_path, monkeypatch):
+    """E4 meanwhile (the library turned read-only while the drop was listed): the subtitle isn't handed on late."""
+    win, writer = world()
+    srt = _subtitle(os.path.join(tmp_path, "Explorer"), "星降る街の工房 - 01.srt")
+    _folder, mp3s = _audiobook(tmp_path)
+    gate, real = threading.Event(), add_menu.audiobook_folders
+
+    def slow(paths, language=None):
+        gate.wait(5)
+        return real(paths, language)
+    monkeypatch.setattr(add_menu, "audiobook_folders", slow)
+    _drop(win, [srt, mp3s[0]])
+    writer.writable = False
+    gate.set()
+    assert _asked(win) is not None
+    assert _inserted(writer) == []
+
+
+def test_another_language_meanwhile_hands_nothing_on(world, tmp_path, monkeypatch):
+    win, writer = world()
+    srt = _subtitle(os.path.join(tmp_path, "Explorer"), "星降る街の工房 - 01.srt")
+    _folder, mp3s = _audiobook(tmp_path)
+    gate, real = threading.Event(), add_menu.audiobook_folders
+
+    def slow(paths, language=None):
+        gate.wait(5)
+        return real(paths, language)
+    monkeypatch.setattr(add_menu, "audiobook_folders", slow)
+    monkeypatch.setattr(add_menu, "pick_files", lambda _parent: [srt, mp3s[0]])
+    win.adder.run("files")
+    monkeypatch.setattr(add_menu.windows, "language_of", lambda shell: "zh")
+    gate.set()
+    assert not wait_until(lambda: calls(writer, "insert_at") or getattr(win.adder, "question", None), 1)
+
+
+def test_a_video_dropped_alone_goes_straight_to_the_writer(world, tmp_path):
+    win, writer = world()
+    video = os.path.join(tmp_path, "Explorer", "第1話.mkv")
+    os.makedirs(os.path.dirname(video))
+    with open(video, "wb") as f:
+        f.write(b"\x1aE\xdf\xa3")
+    _drop(win, [video])
+    assert _inserted(writer) == [[video]]                        # at once: never a worker's round trip for a video
 
 
 def test_a_second_cards_question_stays_when_the_first_is_answered(world, tmp_path):

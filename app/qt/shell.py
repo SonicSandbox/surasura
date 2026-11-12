@@ -2803,6 +2803,8 @@ class ShellWindow(QMainWindow):
         the sync is off by default, so it alone would leave 順 grey for good."""
         from app import replan_preview
         line = getattr(self._status_snap, "replan", None)
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return                                        # (the test suites, a developer's run: Anki is never reached)
         if (self.phase.anki_answers or self._anki_looking or not isinstance(line, replan_preview.InJunban)
                 or line == replan_preview.RESTORE_FIRST or time.monotonic() - self._anki_looked_at < ANKI_LOOK_EVERY):
             return

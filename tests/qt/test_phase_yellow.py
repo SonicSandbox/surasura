@@ -225,6 +225,10 @@ def test_junbans_deck_waits_grey_until_anki_answers_with_the_automatic_sync_off(
     monkeypatch.setattr(anki_connect, "probe", lambda url, required=(), timeout=5:
                         asked.append((url, threading.current_thread() is not main)) or {"ok": open_[0]})
     win = junban_world.win
+    win.show_status(win.services.status.snapshot()._replace(replan=rp.InJunban(rp.ONE_DECK)))
+    assert win._anki_looking is False and asked == []                         # the suites' switch: Anki never asked
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC")                               # (the probe above is a stand-in)
+    win.show_status(win.services.status.snapshot()._replace(replan=rp.UP_TO_DATE))
     assert wait_until(lambda: P.JUNBAN in win.phase.opens)
     assert not win.services.settings.get().get("anki_sync_auto")             # (the default)
     win.show_status(win.services.status.snapshot()._replace(replan=rp.InJunban(rp.ONE_DECK)))

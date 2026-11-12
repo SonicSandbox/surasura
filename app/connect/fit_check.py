@@ -14,7 +14,9 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   can't read) → not timed; no answer at all (it timed out, or couldn't start) → asked again at the runner's next look.
   Its offset (`_offset`: the answer's `offset`, else its one [start, offset] segment's) is the shift Anki Miner cuts
   the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → not timed (never cut at 0.0): tsubasa
-  checks with `--dry-run`, so the copy itself is never re-timed.
+  checks with `--dry-run`, so the check never re-times the copy. Two segments (`PART_WAY`: its timing changes
+  part-way, a broadcast cut otherwise) → the runner has tsubasa re-time the library copy once a job (`retime`, into
+  the job's own folder; Michi-NT2, based on Mattias's #364), and it is checked again.
 - **An audio file's own subtitle, heard** (Michi-AB AB-Q5, Sonic 2026-11-02, PROVISIONAL: `spot`, the runner's
   `lineup.spot_check` through Anki Miner's speech model): a few places of it heard and compared with its lines —
   they match → mine at its own times (no shift); they don't → not timed (never a wrong clip: *Mine anyway* stays
@@ -45,6 +47,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import namedtuple
 
 from app.connect import stopping
 
@@ -58,6 +61,10 @@ TRUST_LABEL = "Trust my subtitles’ timing"                         # Settings 
 NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards yet. If your subtitles are synced, "
               f"turn on {TRUST_LABEL} in Settings → Anki & mining.")
 SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `NOT_MATCHED`
+# tsubasa sure of the timing, but it changes part-way (two segments or more: a broadcast cut otherwise than the
+# subtitle's source) — one shift can't cut it: not timed, and the runner has tsubasa re-time the library copy itself
+# (`retime`; Michi-NT2, based on Mattias's #364)
+PART_WAY = "Its timing changes part-way through the {media}, so no cards."
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
                  "another line. Mine anyway only if you know it plays in time.")
 
@@ -198,7 +205,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
         return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
-        return NOT_TIMED, "tsubasa", f"Its timing changes part-way through the {_media(video)}, so no cards.", 0.0
+        return NOT_TIMED, "tsubasa", PART_WAY.format(media=_media(video)), 0.0
     if outcome == "CONFIDENT":
         return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
     reason = (answer or {}).get("reason")
@@ -210,6 +217,86 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def part_way(why):
+    """Is `why` `fit`'s reason for a subtitle whose timing changes part-way (`PART_WAY`)? Only that one can be
+    re-timed: a refusal, an error or no answer has no timing tsubasa could write."""
+    return isinstance(why, str) and why in (PART_WAY.format(media="video"), PART_WAY.format(media="audio"))
+
+
+RETIME_EXTENSIONS = (".srt", ".ass", ".ssa")     # what tsubasa writes back in its own format (place.EXTENSIONS)
+# tsubasa's re-timed copy: its path, and the cues it dropped (in a stretch the video doesn't hold, or before its
+# start: its answer's `dropped_in_gap` + `dropped_before_zero` — a cut broadcast's own)
+Retimed = namedtuple("Retimed", "path dropped undetermined")
+# `undetermined` (Tsu-U, from tsubasa 0.1.12's field; based on Mattias's Tsubasa-sync #2): [(lo, hi)] seconds of the
+# written file where a line may sit on the wrong side of a cut (`unsure_in_written`), so no card is cut from a line
+# starting inside one (`pick.pick`'s `unsure`). Empty from a tsubasa before 0.1.12.
+
+
+def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
+    """Michi-NT2 (based on Mattias's #364): tsubasa's re-timed copy of `subtitle` for `video` -> `Retimed`, else None;
+    RETRY when tsubasa gave no answer this time (it timed out, or couldn't start).
+    `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: every segment its own shift, written under `out_dir`
+    only (emptied first) — an explicit pair never trashes anything, `--out` never writes beside the video or over
+    the subtitle, `--no-results` records nothing of tsubasa's. None: not a text subtitle, no tsubasa, a refusal or
+    an error, a write that failed, or no file inside `out_dir` where it says it wrote one. The job's *Stop* ends it as
+    the check does (`stopping.Stopped`)."""
+    if not subtitle or os.path.splitext(subtitle)[1].lower() not in RETIME_EXTENSIONS:
+        return None
+    exe = tsubasa if tsubasa is not None else find_tsubasa()
+    if not exe:
+        return None
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir, exist_ok=True)
+    command = [exe, "--pair", video, subtitle, "--out", out_dir, "--json", "--no-results"]
+    try:
+        stdout = _run(command, timeout) if run is None else run(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+        return RETRY
+    answer = _answer(stdout) or {}
+    path = answer.get("output_path")
+    if answer.get("outcome") != "CONFIDENT" or answer.get("write_failed") or not isinstance(path, str) or not path:
+        return None
+    root = os.path.normcase(os.path.realpath(out_dir)).rstrip("\\/") + os.sep
+    if not os.path.normcase(os.path.realpath(path)).startswith(root) or not os.path.isfile(path):
+        return None                 # never a file outside the job's own folder
+    dropped = [answer.get(k) for k in ("dropped_in_gap", "dropped_before_zero")]
+    return Retimed(path, sum(n for n in dropped if isinstance(n, int) and not isinstance(n, bool) and n > 0),
+                   unsure_in_written(answer))
+
+
+def undetermined(answer):
+    """tsubasa's `undetermined` spans in its answer -> [(lo, hi)] seconds; anything not a pair of numbers, lo <= hi,
+    left out (never a guess at what it meant)."""
+    spans = answer.get("undetermined") if isinstance(answer, dict) else None
+    out = []
+    for span in spans if isinstance(spans, list) else ():
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            lo, hi = (_number(v) for v in span)
+            if lo is not None and hi is not None and lo <= hi:
+                out.append((lo, hi))
+    return out
+
+
+def unsure_in_written(answer):
+    """Where, in the file tsubasa WROTE, a line may sit on the wrong side of a cut -> [(lo, hi)] seconds. Per cut,
+    tsubasa's span (`undetermined`: the video's time) and that span moved by the jump (`d`, the next part's offset
+    minus this one's): a line given the other part's offset is written there (Tsu-U review: on a +40 s jump a line
+    written at 141 s for a span of 98-115 s). Segments that don't line up with the spans: the spans alone."""
+    spans = undetermined(answer)
+    segments = answer.get("segments") if isinstance(answer, dict) else None
+    offsets = [_number(s[1]) if isinstance(s, (list, tuple)) and len(s) == 2 else None
+               for s in (segments if isinstance(segments, list) else ())]
+    out = []
+    for i, (lo, hi) in enumerate(spans):
+        out.append((lo, hi))
+        if len(offsets) == len(spans) + 1 and None not in (offsets[i], offsets[i + 1]):
+            d = offsets[i + 1] - offsets[i]
+            if d:
+                out.append((lo + d, hi + d))
+    return out
 
 
 def _media(path):

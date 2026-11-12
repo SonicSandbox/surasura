@@ -317,6 +317,21 @@ def _reading(loaded, lang):
     return tokenizer, script
 
 
+def _sentence_length(loaded):
+    """The learner's *Length* and *Never longer than* for example sentences (logic.context min_chars /
+    preferred_max_chars / max_chars, the analyzer's own fallbacks 10 / 50 / 150) as a book's pick reads them -> (min,
+    preferred max, cap); a value that isn't a whole number ≥ 0 is its default, a max below the min the min, a cap of 0
+    none. Based on the approach in #372 by Mattias."""
+    context = ((loaded or {}).get("logic") or {}).get("context") or {}
+
+    def number(key, default):
+        value = context.get(key, default)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    high = max(low, high)
+    return low, high, max(high, cap) if cap else 0
+
+
 def _phrase_set(loaded, lang):
     if lang != "ja" or not (loaded.get("logic") or {}).get("phrase_rows", True):
         return None
@@ -1337,7 +1352,11 @@ def pick(args):
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
+                          # parts (never on the command line): no card from a line inside one
+                          unsure=getattr(args, "unsure", None) or (),
+                          sentence_length=_sentence_length(loaded) if book else None)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup
@@ -1356,7 +1375,8 @@ def pick(args):
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
                                           runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
-                                 run_config=runfile.config(mapping, info.get("app"), named))
+                                 run_config=runfile.config(mapping, info.get("app"), named,
+                                                           word_audio=runfile.word_audio_on(loaded, lang)))
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

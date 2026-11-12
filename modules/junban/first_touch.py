@@ -637,11 +637,11 @@ def _older_tags(settings):
 
 
 def _found(replies, action="findCards"):
-    from modules.junban import ankiconnect
+    from app import anki_connect
     out = []
     for reply in replies or []:
         if not isinstance(reply, dict) or reply.get("error") is not None or not isinstance(reply.get("result"), list):
-            raise ankiconnect.AnkiError(f"Anki refused '{action}': {(reply or {}).get('error')}", kind="action")
+            raise anki_connect.refusal(action, (reply or {}).get("error"))
         out.append(set(_ids(reply["result"])))
     return out
 

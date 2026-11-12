@@ -511,9 +511,9 @@ def test_patient_never_asks_again_after_a_real_refusal_or_anki_closed(no_naps):
 
 
 def test_patient_refuses_a_write_before_asking_anything():
-    # a write asked again could land twice: only a read waits out a busy Anki
+    # a write asked again could land twice: only a read waits out a busy Anki — refused even holding the write lock
     fake, patched = _run(_route())
-    with patched, pytest.raises(AnkiError) as caught:
+    with patched, anki_connect.writer("a test writer"), pytest.raises(AnkiError) as caught:
         anki_connect.patient("setSpecificValueOfCard", URL, card=1, keys=["due"], newValues=[3])
     assert caught.value.kind == "refused" and fake.requests == []
 

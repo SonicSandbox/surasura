@@ -389,3 +389,16 @@ def test_writes_stopped_by_a_busy_anki_say_so_and_are_quietly_not_now(tmp_path, 
         assert "Anki was busy" in report["message"] and "changed in Anki" not in report["message"], report["message"]
         assert auto.reorder(_auto())["outcome"] == "anki-busy"
     assert fake.writes == []
+
+
+def test_a_busy_slot_in_the_warm_maps_multi_is_busy():
+    # the fast re-plan's warm card map reads its profile and cards in one `multi` (`_look`): a slot refused while
+    # Anki syncs is Anki busy too (anki_busy: the host's "isn't answering"), never a refusal said
+    from app import anki_connect
+    from modules.junban import reposition
+    with pytest.raises(anki_connect.AnkiError) as caught:
+        reposition._answer({"result": None, "error": _SYNCING}, "findCards")
+    assert caught.value.kind == "action" and anki_connect.is_busy(caught.value)
+    with pytest.raises(anki_connect.AnkiError) as caught:
+        reposition._answer({"result": None, "error": "deck was not found: TheBank"}, "findCards")
+    assert not anki_connect.is_busy(caught.value)

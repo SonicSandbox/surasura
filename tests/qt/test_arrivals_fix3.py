@@ -64,33 +64,45 @@ class Library:
         return self.build(changed={item_id}, changed_works={self.items[item_id]["work_id"]})
 
 
-def _one_arrival_ms(make_tray, n, language):
-    lib = Library(n, language)
-    tray = make_tray(lib.view)
-    tray.open()
-    _filled(tray, n)
-    took = []
-    for k in range(5):
-        view = lib.arrive(k)
-        t = time.perf_counter()
-        tray.set_groups(view.arrival_groups)
-        took.append((time.perf_counter() - t) * 1000)
-        for _ in range(3):
-            QApplication.processEvents()
-        assert tray.keys()[0] == view.arrival_groups[0].rows[0].key        # the arrival is the top row
-    assert len(tray.keys()) == n + 5
-    took.sort()
-    return took[2]
+# The 20k arrival's cost against the 2k one's, both medians of PAIRS arrivals taken in turn (a 2k one, then a 20k one),
+# so a load spike lands on both sides alike (Tool-T, 2026-11-12; tests/FLAKES.md). Measured, ten rounds each: under
+# `timed` 2.82–3.15x (ja and zh), beside two core shards 2.60–4.40x; a 2x cost at 20k is >= 5.6x. Before, each size
+# was timed alone, minutes apart, against 3x + 2 ms: red under --all at 0.67 / 4.17 ms (Kura-AB3 hit the ja case too).
+PAIRS = 9
+RATIO = 5.0
+
+
+def _arrival_ms_in_turn(make_tray, language, sizes=(2_000, 20_000)):
+    """-> {n: the median of PAIRS arrivals' ms}, one tray per size, open and filled, an arrival on each in turn."""
+    sides = []
+    for n in sizes:
+        lib = Library(n, language)
+        tray = make_tray(lib.view)
+        tray.open()
+        _filled(tray, n)
+        sides.append((n, lib, tray, []))
+    for k in range(PAIRS):
+        for _n, lib, tray, took in sides:
+            view = lib.arrive(k)
+            t = time.perf_counter()
+            tray.set_groups(view.arrival_groups)
+            took.append((time.perf_counter() - t) * 1000)
+            for _ in range(3):
+                QApplication.processEvents()
+            assert tray.keys()[0] == view.arrival_groups[0].rows[0].key    # the arrival is the top row
+    for n, _lib, tray, _took in sides:
+        assert len(tray.keys()) == n + PAIRS
+    return {n: sorted(took)[PAIRS // 2] for n, _lib, _tray, took in sides}
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_one_arrival_with_the_tray_open_costs_about_the_same_at_20000_arrivals_as_at_2000(bare_tray, language):
     # finding 6: an arrival laid every row of the list out again and read every row's key on the window's thread —
     # 7–12 ms at 20,000 against ~1 at 2,000. A table's insert costs the rows inserted; the keys come from the reader.
-    small = _one_arrival_ms(bare_tray, 2_000, language)
-    big = _one_arrival_ms(bare_tray, 20_000, language)
-    print(f"one arrival, tray open: 2k {small:.2f} ms, 20k {big:.2f} ms (median of 5)")
-    assert big <= 3 * small + 2.0, (small, big)
+    ms = _arrival_ms_in_turn(bare_tray, language)
+    small, big = ms[2_000], ms[20_000]
+    print(f"one arrival, tray open: 2k {small:.2f} ms, 20k {big:.2f} ms (medians of {PAIRS}, in turn)")
+    assert big <= RATIO * small, (small, big)
 
 
 def test_the_reader_hands_each_group_its_rows_keys_in_order():

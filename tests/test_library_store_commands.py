@@ -1737,6 +1737,17 @@ def test_100k_moves_touch_only_the_moved_rows(language):
 # count may move off the move later if it ever matters).
 SETTLE = 0.0005
 WHOLE_TIER = 2.8   # s: 3.0's whole-tier move (2.2–2.4 s measured; 2.5's check was 1.67 s + 20 %, L3.1-1)
+# Bounds set from measured spread (Tool-T, 2026-11-12; tests/FLAKES.md): ten rounds under `timed` at 3.0.3's store,
+# a quiet C:. Each one still fails a 2x slowdown.
+P95_OF_ALLOWANCE = 3.0       # the paired work's p95 (each move less the flush timed just before it): at most 2.61x its
+#                              allowance in ten rounds (ja 2k 1-item 4.05 ms); before, the move's p95 against the
+#                              flush's p95 + 2x allowance, two percentiles of two streams: 18.4 ms over on a slow-disk
+#                              round, red 3 rounds in 10, and a 2x work slowdown moved it 0.7 ms
+WHOLE_TIER_PER_ITEM = 0.000055   # s an item, a whole tier moved (54,500 items at 100k: 3.0 s): work p50 2.24–2.55 s in
+#                                  ten rounds, 2.82 s at 3.0.3's cut (2.73 s allowed then); a 2x slowdown is ~4.8 s
+NUDGE_WORK = 0.001           # s: a nudge's own work, the median of 50 (each less the flush timed just before it: a
+#                              nudge ends in a move, so a commit): 0.54–0.80 ms a round in ten; one nudge timed raw
+#                              was 4.1–18.6 ms (the flush's phase), red 8 in 20
 
 
 def allowance(items, per_item=0.00005):
@@ -1779,17 +1790,19 @@ def _q(times, p):
 
 def _timed(label, run, items, per_item=0.00005):
     """Time a block with `run()` → (times, flushes) and check it against `allowance`: the work — each
-    command's time less the flush timed just before it — p50 above zero and ≤ the allowance, and p95 ≤ the
-    flush's p95 + twice it. Pairing, not two medians subtracted: the work reads the same in the disk's fast
+    command's time less the flush timed just before it — p50 above zero and ≤ the allowance, and its p95 ≤
+    `P95_OF_ALLOWANCE` times it. Pairing, not two percentiles subtracted: the work reads the same in the disk's fast
     phase (a flush ~0.83 ms) and its slow one (~0.8 or ~5 ms at random), where two medians swing by a flush.
     Work at or below zero means a command that committed nothing — a no-op timed as a save."""
     budget = allowance(items, per_item)
     times, flushes = run()
     p50, p95, f50, f95 = _q(times, 0.5), _q(times, 0.95), _q(flushes, 0.5), _q(flushes, 0.95)
-    work = _q([t - f for t, f in zip(times, flushes)], 0.5)
+    paired = [t - f for t, f in zip(times, flushes)]
+    work, work95 = _q(paired, 0.5), _q(paired, 0.95)
     _record(f"{label}: p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms | flush p50 {f50 * 1000:.2f} p95 "
-            f"{f95 * 1000:.2f} | work p50 {work * 1000:.2f} ms, allowance {budget * 1000:.2f}")
-    assert 0 < work <= budget and p95 <= f95 + 2 * budget, (label, work, p95, f95)
+            f"{f95 * 1000:.2f} | work p50 {work * 1000:.2f} ms, allowance {budget * 1000:.2f} | work p95 "
+            f"{work95 * 1000:.2f}")
+    assert 0 < work <= budget and work95 <= P95_OF_ALLOWANCE * budget, (label, work, work95, budget)
 
 
 def _commits_during(store, fn):
@@ -1812,8 +1825,9 @@ def _commits_during(store, fn):
 def test_the_full_move_command_timed(language, size):
     """The done condition (WP-L2 #14, L1.2-1): `move` as built — its reads, item rows and log rows, the
     commit, under the write lock — on the real schema, a reader registered, moving 1, 12 and 50 items and
-    the largest one move can carry (a whole tier: every Soon row dragged to 6+ Months and back): p50 ≤ the
-    flush measured beside it + `allowance(items)`, p95 ≤ the flush's p95 + twice that. Asserted in the
+    the largest one move can carry (a whole tier: every Soon row dragged to 6+ Months and back): each move less the
+    flush timed just before it, p50 ≤ `allowance(items)` and p95 ≤ `P95_OF_ALLOWANCE` times that (a whole tier at
+    `WHOLE_TIER_PER_ITEM` an item). Asserted in the
     timed run only (SURASURA_STORE_BENCH=1, under the test lock); otherwise a short functional pass at 2k."""
     if size > 2_000 and not BENCH:
         pytest.skip("the 100k timing runs in the timed proof only")
@@ -1863,7 +1877,8 @@ def test_the_full_move_command_timed(language, size):
                 times.append(time.perf_counter() - t0)
         return times, probe.times
     if BENCH:
-        _timed(f"14 {language} {size}: whole-tier move ({len(whole)} items)", there_and_back, len(whole))
+        _timed(f"14 {language} {size}: whole-tier move ({len(whole)} items)", there_and_back, len(whole),
+               per_item=WHOLE_TIER_PER_ITEM)
     else:
         there_and_back()
     assert store.ids(largest) == whole, "a whole tier keeps its order there and back"
@@ -2336,8 +2351,20 @@ def test_nudge_reads_only_the_rows_it_needs(language):
     assert not any("ORDER BY ord, id" in s and "LIMIT" not in s and "tier = " in s for s in rows_read), \
         "no statement reads the whole tier"
     if BENCH:
-        _record(f"nudge {language} 20k: {took * 1000:.2f} ms")
-        assert took < 0.010, took
+        # One nudge timed raw was mostly the disk's flush (its commit) and read 4–19 ms by the flush's phase: the
+        # nudge's own work is the median of 50, each less a bare flush timed just before it (`_FlushProbe`).
+        probe = _FlushProbe(os.path.dirname(store.db_path))
+        works = []
+        for k in range(50):
+            probe()
+            t0 = time.perf_counter()
+            store.nudge([target], "down" if k % 2 == 0 else "up")
+            works.append(time.perf_counter() - t0 - probe.times[-1])
+        probe.close()
+        work = statistics.median(works)
+        _record(f"nudge {language} 20k: first {took * 1000:.2f} ms raw; work median of 50 {work * 1000:.2f} ms "
+                f"(bound {NUDGE_WORK * 1000:.2f})")
+        assert work <= NUDGE_WORK, (work, sorted(works)[-5:])
     store.close()
 
 

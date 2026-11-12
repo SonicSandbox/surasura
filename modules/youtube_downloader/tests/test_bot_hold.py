@@ -307,3 +307,13 @@ def test_a_held_run_never_waits_for_the_turn_just_to_learn_it_is_held(ytdlp, tmp
     core._download_bucket([VIDEO], str(tmp_path / "out"), core.LANGS["Japanese"], "Japanese", False, True,
                           log.append, summary)
     assert log == [f"  ! {youtube_hold.words(youtube_hold.held())}"] and ytdlp["calls"] == []
+
+
+def test_a_held_backfill_never_waits_for_the_turn(ytdlp, tmp_path, monkeypatch):
+    # why (mutant D15): as a held download — no turn asked for, nothing fetched, said once
+    _transcripts(str(tmp_path), 2)
+    youtube_hold.hold()
+    monkeypatch.setattr(youtube_hold, "turn", lambda *a, **k: pytest.fail("asked for the turn while held"))
+    log = []
+    summary = core.backfill_cues(str(tmp_path), log=log.append, sleep=lambda s: None)
+    assert summary["stopped"] and summary["remaining"] == 2 and ytdlp["calls"] == []

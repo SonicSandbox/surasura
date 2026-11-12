@@ -1289,7 +1289,7 @@ def test_a_stalled_run_that_brought_videos_goes_on_at_once(main, rest_run):
     assert wait_until(lambda: not os.path.exists(view.rest_path("ja")), 5)
 
 
-def test_youtubes_bot_check_mid_run_hands_over_what_came_and_never_runs_again_at_once(main, rest_run):
+def test_youtubes_bot_check_mid_run_hands_over_what_came_and_never_runs_again_at_once(main, rest_run, monkeypatch):
     """(Yt-B) The bot check after two videos came: they reach New arrivals, the playlist stays with no fruitless try
     counted, and no run starts again now (that would ask YouTube again straight away): it goes on at a start after
     the hold, and the bar says when."""
@@ -1298,12 +1298,14 @@ def test_youtubes_bot_check_mid_run_hands_over_what_came_and_never_runs_again_at
     said = youtube_hold.words(youtube_hold.held())
     rest_run["say"] = [f"  ! video RestVid0002: {said}"]
     yt.bring_in_rest(main, "ja", [PLAYLIST])
+    again = []
+    monkeypatch.setattr(qt_window, "bring_in_rest", lambda *a, **k: again.append(a))    # (the run's own `again`)
     assert wait_until(lambda: rest_run["handed"], 10)
     assert wait_until(lambda: main.bar_line.full().endswith(S.REST_HELD.format(why=said)), 10)
-    assert wait_until(lambda: _rest("ja")["playlists"] == [PLAYLIST], 3)
-    time.sleep(0.5)
-    assert len(rest_run["calls"]) == 1, "never again at once"
-    assert _rest("ja") == {"playlists": [PLAYLIST], "unrouted": [], "tries": {}}
+    assert wait_until(lambda: _rest("ja") == {"playlists": [PLAYLIST], "unrouted": [], "tries": {}}, 5)
+    # (the hand-over's record written: its `again` answers on the window's thread, the event loop running)
+    assert not wait_until(lambda: again, 1.0), "never again at once"
+    assert len(rest_run["calls"]) == 1
 
 
 def test_a_start_during_the_hold_spends_no_try(main, rest_run):

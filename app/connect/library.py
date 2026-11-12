@@ -139,6 +139,26 @@ def audiobook_of_book(store, epub):
     return None
 
 
+def paired_books(store):
+    """Kura-AB3 A2: every book an audiobook is paired with (its record's `book`, sure or answered) -> [(the EPUB's
+    path, the audiobook's item id, the EPUB's sha256 or None)], each EPUB once (its first audiobook, as
+    `audiobook_of_book`). One read of the records, one of each book's parts."""
+    from app import library_store
+    with store._reading():
+        rows = store._audiobook_rows()
+    out, seen = [], set()
+    for _k, item_id, rec in sorted(rows, key=lambda r: r[1]):
+        book = (rec.get("audiobook") or {}).get("book")
+        epub = book.get("epub") if isinstance(book, dict) else None
+        if not isinstance(epub, str) or not epub:
+            continue
+        key = library_store.path_key(os.path.abspath(epub))
+        if key not in seen:
+            seen.add(key)
+            out.append((os.path.abspath(epub), item_id, (book_of(store, epub) or {}).get("sha256")))
+    return out
+
+
 def book_of(store, epub):
     """Kura-AB2: the book `epub` as the library holds it -> {item (its first part's id: the one the book's question is
     asked by, so every part asks the same one), sha256 (the EPUB's, from its parts' records: the answer survives a

@@ -71,6 +71,8 @@ from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PR
 log = logging.getLogger("surasura-cli")
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
+OFFER_EVERY = 5                 # Kura-AB3 A2 r2 S4: the paired books looked at for *Add audio* at the first look and
+                                # every this many after (about 10 min at LOOK_EVERY_S; by looks: no clock read)
 UPDATE_LOOK_S = 5               # K99: inside that pause, an update staged is looked for this often
 WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasura writer, a Generate)
 ALL_GONE_MIN = 10               # the deleted-card check: this many notes or more, all gone at once -> nothing marked
@@ -142,6 +144,23 @@ BOOK_AUDIO_NEED = "book-audiobook"
 BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry the narrator's voice: pick it, or mine the "
                   "book without audio.")
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
+# Kura-AB3 A2 (PROVISIONAL, spec `tracks/pipeline/work/AB3/add-audio-spec.md` L2): once a book first lines up with its
+# audiobook, the cards Connect made from it before — text-only — are offered the narrator's voice: ONE standing *Needs
+# you* line a book (on the audiobook's item, as AB-Q4's line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub,
+# item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`). Asked at
+# each paired book not asked yet, at `run`'s looks whatever the queue (`_add_audio_offers`, every OFFER_EVERY looks,
+# the lead's MUST, Mattias's books were all mined before — no part is picked again), and at a part's own line-up. Its
+# record keeps the book's Connect notes then (`notes`: made before it lined up, text-only) — the only ones offered. A press, from the line or the book row's ⋯,
+# keeps the notes it looked at (`ADD_AUDIO_SEEN<lang>:<book key>` -> [note ids]): the row offers only the others.
+ADD_AUDIO_NEED = "book-add-audio"
+ADD_AUDIO_ASK = ("「{title}」 is lined up with its audiobook now — add the narrator's voice to the cards Connect made "
+                 "from it before, where they have none?")
+ADD_AUDIO_ASKED = "add_audio_asked:"
+ADD_AUDIO_SEEN = "add_audio_seen:"
+ADD_AUDIO_WAIT = ("「{title}」 has its audiobook now: the cards Connect made from it before can get the narrator's "
+                  "voice — line it up and add it?")
+ADD_AUDIO_WAITING, ADD_AUDIO_LINED, ADD_AUDIO_GONE = "waiting", "lined", "gone"   # the record's stage: offered
+# before its line-up / after / it can't be lined up any more (its line fixed)
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
 # Iro-AA (PROVISIONAL): *Make AI audio (beta)* — mined as *Mine without audio*, then each part's new cards queued for the
 # AI voice (`modules.irodori`, the beta: off by default, absent in a build without it) when the part fills
@@ -313,6 +332,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if lang not in undos_looked:    # an undo a kill left half-way: finished whatever else runs (#5)
                     undos_looked.add(lang)
                     _finish_undos(steps, ledger, lang)
+                if (summary["looks"] - 1) % OFFER_EVERY == 0:     # Kura-AB3 A2 r2 B1: whatever the queue
+                    _add_audio_offers(steps, ledger, lang)          # (a book mined out has no job)
                 if not _open_jobs(ledger, lang, parked):
                     _gone_look(steps, lang)     # nothing to mine: the deleted-cards look all the same (once a run)
                     continue
@@ -677,6 +698,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
                     keep |= _failed_says(ledger, lang, job["item_id"])
                 elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
                     _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
+                keep |= _add_audio_says(ledger, lang, job["item_id"])     # Kura-AB3 A2 r1 S6: the book's line stays
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
@@ -1174,6 +1196,8 @@ def _line_up(steps, ledger, lang, job, book):
         raise Wait(got["ask"], look=False)
     if got.get("line") and got.get("item_id") is not None:
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
+    if got.get("lineup") and got.get("item_id") is not None:
+        _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
     return got.get("lineup")
 
 
@@ -1232,6 +1256,86 @@ def _ai_audio(steps, ledger, lang, parked, tried=()):
     except Exception:
         log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
     return bool(came)
+
+
+def _add_audio_says(ledger, lang, item):
+    """The words of `item`'s open *Add the narrator's voice* line (its job's end leaves it: r1 S6)."""
+    return {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND kind = ? AND item_id = ? "
+                                              "AND fixed_at IS NULL", (lang, ADD_AUDIO_NEED, item))}
+
+
+def _add_audio_offers(steps, ledger, lang):
+    """Kura-AB3 A2 (the lead's MUST): each book paired with its audiobook whose line isn't asked yet — or waits for its
+    line-up — looked at read only: lined up now (paired since, its own subtitle checked or trusted, a sync finished) →
+    its earlier cards offered (`_add_audio_offer`); able to be lined up, not yet → offered too, its press asking *Mine
+    now* on its first part (`actions.add_audio_book`), whose job lines it up, seen and stoppable on its row. Never a
+    listen or a sync started here (review A2 r4 B1). A book asked reads the ledger alone (S19). A busy library or a
+    file away: the next pass. Never fails the pass."""
+    books, lined_up = getattr(steps, "paired_books", None), getattr(steps, "lined_up", None)
+    lineable = getattr(steps, "lineable", None)
+    if books is None or lined_up is None:
+        return
+    try:
+        pairs = books(lang)
+    except Exception as e:                      # (a Wait: the library busy) the next pass
+        log.info("Connect: couldn't read the paired books (%s): %s", lang, e)
+        return
+    for epub, item, sha in pairs:
+        rec = _json_or_none(_meta(ledger, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"))
+        if rec is not None and rec.get("stage") != ADD_AUDIO_WAITING:
+            continue
+        try:
+            lined = lined_up(lang, epub)
+            able = bool(lined) or (lineable is not None and lineable(lang, epub))
+        except Exception as e:
+            log.info("Connect: couldn't look at a book's line-up (%s): %s", lang, e)
+            continue
+        if lined:
+            _add_audio_offer(steps, ledger, lang, epub, lined.get("item_id", item))
+        elif able and rec is None:
+            _add_audio_offer(steps, ledger, lang, epub, item, lined=False)
+        elif not able and rec is not None:      # waiting, and it can't be lined up any more (r5 S2): the line goes
+            _add_audio_gave_up(ledger, lang, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}", rec)
+
+
+def _add_audio_gave_up(ledger, lang, key, rec):
+    """A waiting book's line fixed: kept together, nothing found or given up since — never "line it up" for good."""
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                            (key, json.dumps(dict(rec, stage=ADD_AUDIO_GONE), sort_keys=True, ensure_ascii=False)))
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                            "fixed_at IS NULL", (_now(), lang, ADD_AUDIO_NEED, rec.get("item")))
+    log.info("Connect: a book's earlier cards can't get the narrator's voice now (%s, item %s)", lang, rec.get("item"))
+
+
+def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
+    """Kura-AB3 A2: the book `epub`'s cards Connect made before its line-up (the store's made words of its parts, kept
+    in its record at the first ask: `notes`) offered the narrator's voice once — ADD_AUDIO_NEED on the audiobook's
+    `item`, worded ADD_AUDIO_ASK once it is lined up, ADD_AUDIO_WAIT before (`lined` False: its record's stage
+    `waiting`, and the line says so again — counted again — when it lines up). A look that changes nothing reads the
+    ledger alone (S19). Never fails the mine."""
+    made = getattr(steps, "made_before", None)
+    try:
+        got = made(lang, epub) if made is not None else None
+    except Exception as e:                      # the offer is a nicety: the mine goes on
+        log.info("Connect: couldn't count a book's earlier cards (%s): %s", lang, e)
+        return
+    if got is None:
+        return
+    title, notes, sha = got
+    key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
+    rec = _json_or_none(_meta(ledger, key))
+    if rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
+        return
+    # (a waiting record's list is the cards so far — each made as the book, text-only: r5 S3 — frozen once lined up:
+    # the cards made since carry the narrator)
+    say = (ADD_AUDIO_ASK if lined else ADD_AUDIO_WAIT).format(title=title)
+    with ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": os.path.abspath(epub), "item": item, "title": title, "notes": notes,
+             "stage": ADD_AUDIO_LINED if lined else ADD_AUDIO_WAITING}, sort_keys=True, ensure_ascii=False)))
+        if notes and ledger.need(lang, ADD_AUDIO_NEED, say, item_id=item, standing=True):
+            log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
 
 
 def book_key(epub, sha256=None):
@@ -3469,6 +3573,49 @@ class Steps:
             lineup.write(ab["key"], dict(lineup.read(ab["key"]), own_stop=True))   # Connect's, never yours (r2 N5)
         return {"lineup": lineup.own(ab["key"], audio, srt), "line": None, "item_id": ab["item_id"]}
 
+    def lineable(self, lang, epub):
+        """Kura-AB3 A2 r4/r5: would a part's job line the book `epub` up with its audiobook (`line_up`'s own exits,
+        mirrored — review A2 r5 S1)? Paired; Anki Miner mines books (Z-9: else the job is set aside before its pick)
+        and lines them up (Z-17); not *Keep them together*, nothing found, a poor line-up kept, given up (TRIES), *Not
+        now* to the speech model; its audio and the book on this computer. Read only."""
+        from app.connect import anki_miner, library, lineup
+        if not self.mines(lang, "books") or not anki_miner.can_now(anki_miner.LINE_UP):
+            return False
+        with self._open(lang) as store:
+            ab = library.audiobook_of_book(store, epub)
+        if ab is None or ab["lineup"] in ("kept", "none") or not ab["key"]:
+            return False
+        state = lineup.read(ab["key"])
+        status = state.get("status")
+        if status == lineup.NONE or (status == lineup.DONE and not lineup.usable(state)) or (
+                status in (lineup.FAILED, lineup.NO_MODEL) and (state.get("tries") or 0) >= lineup.TRIES):
+            return False
+        if lineup.answer() == "no" and not (ab.get("timing") and self._settings(lang).get("connect_trust_timing")):
+            return False                        # (no listen, no sync: only a trusted own subtitle would line it up)
+        return all(_on_disk(f) for f in ab["files"]) and _on_disk(epub)
+
+    def first_part(self, lang, epub):
+        """Kura-AB3 A2 r4: the book's first part in the library (its *Mine now* lines the book up), or None."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return (library.book_of(store, epub) or {}).get("item")
+
+    def paired_books(self, lang):
+        """Kura-AB3 A2: [(EPUB, its audiobook's item)] the store pairs (`library.paired_books`), read only."""
+        from app.connect import library
+        with self._open(lang) as store:
+            return library.paired_books(store)
+
+    def made_before(self, lang, epub):
+        """Kura-AB3 A2: (the book's title, the notes Connect made from its parts so far — [ids] —, its EPUB's sha256
+        or None) — the store read only."""
+        from app.connect import add_audio, library
+        with self._open(lang) as store:
+            notes = add_audio.made_notes(store, add_audio.book_items(store, epub))
+            book = library.book_of(store, epub)
+        return ((book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], sorted(notes),
+                (book or {}).get("sha256"))
+
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its
         cues, as the pick hands them to the mine), "item_id" (the audiobook's), "title"}, or None (no audiobook paired,
@@ -3893,6 +4040,9 @@ def _wait_or_needs(error, resume, url=None):
         return Needs(context["need"], error.message, whole=True)
     if error.code in ("anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
         say = {"anki-busy": REVIEWING, "anki-miner-busy": _miner_busy()}.get(error.code, error.message)
+        if error.code == "anki-busy" and context.get("anki") == "busy":     # Anki busy with its sync (#370)
+            from app.connect import anki_session
+            say = anki_session.BUSY
         return Wait(say, resume=resume)
     return Needs(error.code, error.message)
 

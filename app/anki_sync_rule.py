@@ -158,6 +158,10 @@ def _session_sync(url, profile):
         return None
     answer = anki_connect.sync(url)
     now = time.time()
+    if answer == "busy":                            # Anki busy with a collection operation (its own sync): as a
+        state.update(session_due=True, profile=profile)                # review, the next write asks again
+        _write_state(state)
+        return None
     if answer.startswith("failed"):
         # The session stays due (the hour gap, the next write's `wrote()`, never clear it) until a sync runs.
         state.update(s1_failed_at=now, sync="failed", sync_error=answer, session_due=True, profile=profile)
@@ -237,6 +241,8 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
                 return None, due                        # a newer write restarted the wait
             answer = anki_connect.sync(url)
             now = time.time()
+            if answer == "busy":                        # Anki busy (its own sync, Check Database): still pending
+                return None, now + REVIEW_RETRY_S
             state = read_state()
             state.update(settled_at=now, front_pending=False, sync=answer.split(":")[0],
                          sync_error=answer if answer.startswith("failed") else "")

@@ -112,27 +112,26 @@ def _part(monkeypatch, qt_timer):
     try:
         yield got
     finally:
-        _let_go(got)
-
-
-def _let_go(got):
-    got.route.go.set()
-    _end(got.host)
+        got.route.go.set()
+        _end(got.host)
 
 
 def _end(host):
-    """Everything a test made ends here, on the window's thread, while its stand-ins still stand (#386's GitHub
-    crash, tests/FLAKES.md): the route's thread joined (its route let go first); the end it queued and the look that
-    end starts delivered; its `deleteLater`s run; the host — Python's, no parent: left to `deleteLater` and a yielded
-    class's cycle, a collection's timing deleted it, in a later test — deleted now; the test's install state, the
-    application's child (one a test, each with its timer and relays, else), deleted now."""
+    """What a test made ends here, on the window's thread, before its stand-ins and the window harness's own
+    teardown go (#386's GitHub crash, tests/FLAKES.md: the exact object not singled out): the route cancelled and its
+    thread joined; the end it queued delivered, and the look that end starts answered here — left, its answer reached
+    a later test (and on the real route, read the files of an ANKI_BASE no longer the test's); its `deleteLater`s run;
+    the host and the test's install state deleted now."""
     from PyQt6 import sip
+    st = addon_steps._STATE
+    if st is not None and not sip.isdeleted(st) and st.cancel is not None:
+        st.cancel.set()                                   # a test that failed mid-wait: its route ends, never lingers
     for thread in _install_threads():
         thread.join(5)
-    st = addon_steps._STATE
+    assert not _install_threads(), "the install's thread outlived its test"
     if st is not None and not sip.isdeleted(st):
-        wait_until(lambda: sip.isdeleted(st) or (not st.looking and st.phase not in (addon_steps.RUNNING,
-                                                                                     addon_steps.WAITING)))
+        assert wait_until(lambda: sip.isdeleted(st) or (not st.looking and st.phase not in (addon_steps.RUNNING,
+                                                                                            addon_steps.WAITING)))
     for _ in range(3):
         QApplication.processEvents()
     # a `deleteLater` of the test's (its parts, its own windows) runs now: processEvents never runs one — left, it ran in
@@ -479,11 +478,10 @@ def test_the_real_route_under_the_real_part_installs_once_anki_closes(qapp, tmp_
         _end(host)
 
 
-def test_a_part_leaves_nothing_of_its_own_alive_for_the_next_test(qapp, monkeypatch, qt_timer):
-    """#386's GitHub crash (0xC0000005 ×5 at the next test, never here alone; tests/FLAKES.md): what a test made — the
-    route's thread, its end and the look that end starts, the part's host (Python-owned, no parent), the test's
-    install state (the application's child) — outlived it and ended in a later test, when a collection's timing or
-    the next test's stand-ins said. Every one ends at the test's own end, on the window's thread."""
+def test_everything_a_part_test_made_ends_before_its_stand_ins_go(qapp, monkeypatch, qt_timer):
+    """#386's GitHub crash (0xC0000005 in this file's company, never here alone; tests/FLAKES.md): the route's thread,
+    its end and the look that end starts ended only after the test's stand-ins went (the look's answer reached the next
+    test). Each ends with the test's own teardown, on the window's thread, while they still stand."""
     from PyQt6 import sip
     with _part(monkeypatch, qt_timer) as got:
         steps = got.make()

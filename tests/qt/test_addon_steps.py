@@ -14,8 +14,8 @@ from tests.qt.conftest import wait_until
 
 @pytest.fixture
 def host(qapp):
-    """The test's host: Python's, no parent — deleted at the test's end, on the window's thread (#386's GitHub crash,
-    tests/FLAKES.md: a host and its part in a cycle were deleted when a later collection ran, in a later test)."""
+    """The test's host: Python's, no parent — deleted at the test's own end, on the window's thread (#386's GitHub
+    crash, tests/FLAKES.md), never left to the window harness's teardown or a collection."""
     from PyQt6 import sip
     widget = QWidget()
     yield widget

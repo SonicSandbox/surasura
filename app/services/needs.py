@@ -143,7 +143,9 @@ CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "
                    "speech-model": ("get_speech_model", "no_speech_model"),
                    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
                    # · *Mine without audio*
-                   "book-audiobook": ("pick_audiobook", "no_audiobook")}
+                   # Iro-AA (PROVISIONAL): *Make AI audio (beta)* between them, shown only while the AI voice's beta
+                   # is on and installed (`NeedsYou.has`)
+                   "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook")}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -189,6 +191,12 @@ STRINGS = {
     "no_subs_say_make": "Anki Miner can make each one's subtitle from its audio, on this computer, a show at a time: "
                         "a misheard word can happen.",
     "no_subs_say_hato": "hato can look for them online, by each show's title (jimaku.cc, with your jimaku key).",
+    # Zh-H (PROVISIONAL): a Chinese library's card — hato 1.3's Chinese sites, each on the learner's own free key
+    "no_subs_say_both_zh": "hato can look for them online, by each show's title (assrt.net, then OpenSubtitles, with "
+                           "your own keys in hato). Anki Miner can make each one's subtitle from its audio, on this "
+                           "computer: a misheard word can happen.",
+    "no_subs_say_hato_zh": "hato can look for them online, by each show's title (assrt.net, then OpenSubtitles, with "
+                           "your own keys in hato).",
     "miner_update_title": "Update Anki Miner to {version} to make cards from your {what}",
     "miner_update_say": "{n} for it. Surasura downloads Anki Miner {version} from its own GitHub release, checks it "
                         "and opens its installer: it asks first. Connect makes their cards by itself once it's updated.",
@@ -618,7 +626,8 @@ def no_subs_offer(view, settings):
     try:
         from app import no_subs
         make = no_subs.can_make(settings) is not None
-        hato = not (settings or {}).get(no_subs.SETTING) and no_subs.hato_finds() is not None
+        lang = getattr(view, "language", "ja")       # Zh-C / Zh-H: Chinese only from a hato that finds it (1.3)
+        hato = not (settings or {}).get(no_subs.setting(lang)) and no_subs.hato_finds(language=lang) is not None
     except Exception:
         return None
     return {"make": make, "hato": hato} if make or hato else None
@@ -641,11 +650,12 @@ def _no_subs_entry(view, offer, seen):
                   for g, (r, eps) in shows.items())
     ids = sorted(e.id for _r, e in hits)
     key = f"{NO_SUBS}:{_digest(sorted(e.id for _r, e in _no_subs_all(view)))}"
-    say = STRINGS["no_subs_say_both" if make and offer.get("hato") else "no_subs_say_make" if make else
-                  "no_subs_say_hato"]
+    zh = "_zh" if getattr(view, "language", "ja") == "zh" else ""      # Zh-H: the Chinese card's own sites and yes
+    say = STRINGS[f"no_subs_say_both{zh}" if make and offer.get("hato") else "no_subs_say_make" if make else
+                  f"no_subs_say_hato{zh}"]
     title = STRINGS["no_subs_title_one"] if len(ids) == 1 else STRINGS["no_subs_title"].format(n=len(ids))
     return Entry(key=key, kind=NO_SUBS, title=title, lines=lines,
-                 actions=("find_with_hato",) if offer.get("hato") else (), unseen=key not in seen, say=say,
+                 actions=(f"find_with_hato{zh}",) if offer.get("hato") else (), unseen=key not in seen, say=say,
                  data={"shows": {f"subs:{g}": tuple(e.id for e in eps) for g, (_r, eps) in shows.items()},
                        "item_ids": tuple(ids)})
 

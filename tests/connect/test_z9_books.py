@@ -108,13 +108,14 @@ def test_an_empty_text_has_no_sentence_and_no_word(tmp_path):
     assert list(read) == [] and tokens == [] and read.units
 
 
-def test_a_sentences_spaces_are_taken_out_as_anki_miner_joins_a_paragraph(tmp_path):
-    """A novel's paragraph indent (a full-width space) and a space inside a Japanese sentence are no part of the
-    sentence Anki Miner compares: the cue (the word's `line_text`) has none."""
+def test_a_sentences_indent_is_taken_out_and_a_space_inside_it_kept_as_anki_miners_unit_keeps_it(tmp_path):
+    """A novel's paragraph indent (a full-width space) is no part of the sentence; a full-width space inside a
+    Japanese sentence is, as the book writes it — Anki Miner's unit keeps it, and its cut to a named sentence is exact
+    (Michi-BS; `tests/connect/test_book_sentences.py`). The half-width one the tokenizer itself takes out."""
     book = tmp_path / "冒険.txt"
     book.write_text("　今夜は 冒険。\r\n　彼は毎日　冒険に出かけます。\r\n", encoding="utf-8")
     read, _tokens = cues.reading(str(book), "ja")
-    assert [c.text for c in read] == ["今夜は冒険。", "彼は毎日冒険に出かけます。"]
+    assert [c.text for c in read] == ["今夜は冒険。", "彼は毎日　冒険に出かけます。"]
 
 
 def test_a_reading_run_file_names_the_file_and_each_word_by_its_sentence(tmp_path):

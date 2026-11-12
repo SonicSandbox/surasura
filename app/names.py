@@ -376,7 +376,8 @@ def one_word(run):
     spelling = "".join(_read(t) for t in run)
     whole = _read_whole(spelling)
     if whole is not None:
-        return JoinedWord("".join(t.surface for t in run), whole, tuple((t.surface, t.feature) for t in run))
+        return JoinedWord("".join(t.surface for t in run), whole, tuple((t.surface, t.feature) for t in run),
+                          getattr(run[0], "white_space", ""))
     word = _joined(run, spelling, "名詞", (spelling, ""))
     word.is_unk = True
     return word
@@ -443,7 +444,8 @@ def name_lemma(word, sanitize=None):
     """The lemma under which `word` — one of join_affixes' words, read without the library's tables, as the token store
     reads a file — is a person's name, or None (§ Ignore names). A katakana name made one word here is one, keyed as
     a word its dictionary lacks — unless the lists carry its spelling as a word (ブシン: one word only because its
-    pieces are no words); so is a word the tagger's dictionary knows and tags as a person's name, two characters
+    pieces are no words) — never an unknown kanji word the analyzer made one (犍陀多: no tag says it is a name, as for
+    the word it was cut into); so is a word the tagger's dictionary knows and tags as a person's name, two characters
     or more — unless UniDic lists a common word spelled and said the same (ひかり is 光 'light') or keyed the same
     (麻衣 is keyed マイ, as マイ 'my' is). `sanitize` is the analyzer's lemma cleaning, as the tokenizer applies it."""
     f = word.feature
@@ -453,6 +455,8 @@ def name_lemma(word, sanitize=None):
             return None                     # a word the dictionary doesn't know: its tag is the tagger's guess
         if f.lemma in (katakana_headwords() or ()):
             return None                     # a word the lists carry, one word because its pieces are no words
+        if _HAN.search(word.surface):
+            return None                     # an unknown kanji word made one (analyzer._unknown_kanji): still a guess
         return sanitize(f.lemma) if sanitize else f.lemma
     if f.pos3 != "人名" or f.pos2 != _PROPER:
         return None

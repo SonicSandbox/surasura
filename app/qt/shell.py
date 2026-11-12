@@ -1756,9 +1756,15 @@ class ShellWindow(QMainWindow):
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach,
-                       settings_sources.attach,                        # --- SRC W1b: *Library folders*
-                       settings_io.attach):                            # --- a6: *Your settings*
+        attaches = [settings_connect.attach, settings_rules.attach, settings_store.attach,
+                    settings_sources.attach,                           # --- SRC W1b: *Library folders*
+                    settings_io.attach]                                # --- a6: *Your settings*
+        try:                                                           # --- Iro-AA: the AI voice's beta row
+            from modules.irodori import qt_settings
+            attaches.append(qt_settings.attach)
+        except ImportError:
+            pass
+        for attach in attaches:
             try:
                 attach(page)
             except Exception as e:                        # one package's rows never keep the page from opening
@@ -3547,14 +3553,20 @@ class ShellWindow(QMainWindow):
     # --- end SRC W1b
 
     # --- showing, closing, remembering -------------------------------------------------------------------- #
-    def bring_to_front(self, _args=None):
-        """A second start handed over: show this window, un-minimised (still maximised if it was), in front."""
+    def bring_to_front(self, args=None):
+        """A second start handed over: show this window, un-minimised (still maximised if it was), in front. Piyo's
+        *Send report* hands over its words this way (`practice.REPORT_ARG`, then the words and what was expected):
+        Report a problem opens with them in its form — the learner sends it, never this."""
         state = self.windowState()
         if state & Qt.WindowState.WindowMinimized:
             self.setWindowState(state & ~Qt.WindowState.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()
+        from app.practice import REPORT_ARG
+        if args and len(args) >= 2 and args[0] == REPORT_ARG:
+            from app.qt import report as qreport
+            qreport.open_from_piyo(self, args[1], args[2] if len(args) > 2 else "")
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -4056,6 +4068,9 @@ def connect_instance(window, instance):
     """A later start brings this window forward; closing stops listening before the window hides (single.py)."""
     instance.activated.connect(window.bring_to_front)
     window.closing.connect(instance.stop_listening)
+    replay = getattr(instance, "replay", None)        # the starts heard while setup or the gate showed: once it's up
+    if replay is not None:
+        window.first_frame.connect(replay)
 
 
 def main(argv=None, after_gate=None):

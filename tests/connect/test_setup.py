@@ -309,7 +309,7 @@ def test_a_surasura_profile_is_used_when_there_is_one(monkeypatch, fake_miner):
             {"name": "anki", "ok": True, "message": None}], "dictionary: No dictionary is installed.", True),
     ("zh", [{"name": "language_pack", "ok": False, "message": "The Chinese language pack isn't installed."},
             {"name": "resources", "ok": False, "message": "Its frequency list is out of date."}],
-     "The Chinese language pack isn't installed.", True),
+     "language_pack: its Chinese reading tools aren't downloaded yet", True),     # Zh-C: in Surasura's words
     # A4M1-2b: the deck is Surasura's to set too (Anki Miner's settings-import), with the dictionaries or alone
     ("ja", [{"name": "dictionary", "ok": False, "message": "No dictionary is installed."},
             {"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", "both"),

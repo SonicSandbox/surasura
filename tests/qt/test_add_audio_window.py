@@ -231,3 +231,14 @@ def test_the_rows_press_kicks_connect_and_a_second_press_meanwhile_runs_nothing(
     assert len([g for g in got if g[0] == "book"]) == 1
     assert all(on_worker for name, _a, on_worker in got if name == "kick")
     m.hide()
+
+
+def test_no_entry_while_a_press_for_that_book_runs(row_offer):
+    """Mutant I8: the book's cards are being given the narrator's voice now — ⋯ doesn't offer it again meanwhile."""
+    win, _row, got, answer, open_menu = row_offer
+    win.items._audio_running.add(answer["offer"]["epub"])
+    m = open_menu()
+    assert wait_until(lambda: [g for g in got if g[0] == "offer"], 5)
+    wait_until(lambda: False, 0.3)
+    assert _entry(m) is None
+    m.hide()

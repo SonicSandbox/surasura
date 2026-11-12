@@ -377,3 +377,21 @@ def test_a_press_stopped_part_way_answers_its_undo_in_the_windows_words(book, tm
     got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=str(tmp_path / "ledger.sqlite"))
     assert got["ok"] is False and got["id"] == "17-ab" and "Undo takes them back" in got["say"]
     assert "surasura-cli" not in got["say"] and "Anki isn't open" in got["say"]
+
+
+def test_a_press_with_nothing_to_fill_still_ends_the_rows_offer(book, fake_miner, tmp_path, monkeypatch):  # noqa: F811
+    """Mutant S3: every card already has audio (you added it yourself) — the one press says so, and the row offers
+    nothing more (that press looked at them all)."""
+    from app.connect import add_audio
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
+    path = str(tmp_path / "ledger.sqlite")
+    for k in range(5):
+        book["anki"].notes_[100 + k]["fields"]["SentenceAudio"]["value"] = "[sound:yours.mp3]"
+    with Ledger(path) as ledger:
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"])
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)["n"] == 8
+    got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)
+    assert got["ok"] is False and "6 have sentence audio already" in got["say"]
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None

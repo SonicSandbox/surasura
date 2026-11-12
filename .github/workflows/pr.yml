@@ -99,6 +99,22 @@ jobs:
         # tests/FLAKES.md; Tk's own start steadied as locally, tests/quiet_windows.py). Only SURASURA_SKIP_TK_TESTS=1
         # would skip them (tests/tk_on_github.py).
         run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+      - name: The same shard under procdump (PROBE)
+        if: ${{ always() && matrix.shard == 4 }}
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: |
+          Invoke-WebRequest https://download.sysinternals.com/files/Procdump.zip -OutFile D:\pd.zip
+          Expand-Archive D:\pd.zip -DestinationPath D:\pd -Force
+          New-Item -ItemType Directory -Force D:\dumps | Out-Null
+          $py = (Get-Command python).Source
+          $files = (python -c "import run_tests; print(' '.join(run_tests._shard_of('.', '4/4')))").Trim()
+          $args = @('-accepteula', '-mp', '-e', '-x', 'D:\dumps', $py, '-m', 'pytest') + $files.Split(' ') + @('-v', '-ra', '-p', 'no:cacheprovider')
+          & D:\pd\procdump64.exe @args
+          Get-ChildItem D:\dumps
       - name: Upload the dumps (PROBE)
         if: ${{ always() && matrix.shard == 4 }}
         uses: actions/upload-artifact@v4

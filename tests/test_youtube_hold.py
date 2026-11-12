@@ -197,3 +197,18 @@ def test_the_gap_is_waited_before_the_lock_is_taken(root, monkeypatch):
     with youtube_hold.turn():
         pass
     assert takes and takes[0] - started >= 0.45, "the lock was taken before the gap was over"
+
+
+def test_a_call_that_ended_while_the_lock_was_taken_gets_its_gap_first(monkeypatch):
+    # why (mutant H10): another program's call ending between the wait and the take still earns its gap
+    gaps = iter([0.0, 0.3, 0.0, 0.0])                 # free; taken — but a call just ended; its gap; free
+    monkeypatch.setattr(youtube_hold, "_gap", lambda: next(gaps, 0.0))
+    takes, real = [], locks.take
+
+    def take(*a, **k):
+        takes.append(1)
+        return real(*a, **k)
+    monkeypatch.setattr(locks, "take", take)
+    with youtube_hold.turn():
+        pass
+    assert len(takes) == 2, "let go, waited the gap, taken again"

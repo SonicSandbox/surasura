@@ -284,11 +284,6 @@ def _run_property(language, steps, seed, words):
     store.close()
 
 
-# PROVISIONAL (Hon-TR, 2026-11-11, for the lead): the store's nudge and the reference's diverge on most walks — with the
-# old fixture texts' names 10 of 14 seeds diverged (the pinned seed passed by luck); with the texts written for the
-# tests 23 of 24, this one included (a two-row nudge, an episode and a loose file apart, down past rows of hato's drop
-# folder). A defect of the store or of the reference, not of the data: strict, so the fix's run says so.
-@pytest.mark.xfail(strict=True, reason="nudge diverges from the reference on most seeds (pre-existing; Hon-TR's board NOTE)")
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_property_1000_random_steps_match_todays_code(language, monkeypatch):
     """WP-L2 #1: a fixed seed, 1,000 random moves, nudges, inserts, removes and tier changes on a library

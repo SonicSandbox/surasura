@@ -264,21 +264,17 @@ QWidget#levelpop QPushButton#generate[look="failed"] {{ border: 1px solid {c['wa
 QWidget#levelpop QPushButton#generate:disabled {{ color: {c['overlay-ink-faint']}; }}
 QWidget#levelpop QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
 """
-    # --- the feature guide (Hoshi-S, app/qt/guide.py): the ✦'s panel — its cards a cut in the overlay, a card for you
-    # marked by the accent along its left; the kinds as small pills (new: the accent, tweak: the second accent, fix: ok)
+    # --- the feature guide (Hoshi-S, app/qt/guide.py): the ✦'s panel — an item a cut in the overlay holding one line; a
+    # folded fix a quieter line alone
     rules += f"""
 QToolButton#headguide[glow="true"] {{ color: {c['ink']}; }}
 QScrollArea#guidescroll, QWidget#guidebody {{ background: transparent; border: 0; }}
 QLabel#guidever {{ color: {c['overlay-ink-faint']}; {font('row-sub')} font-weight: 400; }}
 QLabel#guidegroup {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} }}
 QWidget#guidecard {{ background: {c['overlay-cut']}; border-radius: {theme.RADII['r-sm']}px; }}
-QWidget#guidecard[mine="true"] {{ border-left: {px(3)} solid {c['accent']}; }}
-QLabel#guidetitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
-QLabel#guideline {{ color: {c['overlay-ink-dim']}; {font('row-sub')} font-weight: 400; }}
-QLabel#guidekind {{ border-radius: {px(8)}; padding: {px(1)} {px(7)}; {font('badge')} }}
-QLabel#guidekind[kind="new"] {{ background: {c['accent-wash']}; color: {c['accent']}; }}
-QLabel#guidekind[kind="tweak"] {{ background: {c['guide-tweak']}; color: {c['accent-2']}; }}
-QLabel#guidekind[kind="fix"] {{ background: {c['status-in']}; color: {c['ok']}; }}
+QWidget#guidefix {{ background: transparent; }}
+QLabel#guidetext {{ color: {c['ink']}; {font('body')} font-weight: 400; }}
+QWidget#guidefix QLabel#guidetext {{ color: {c['overlay-ink-dim']}; {font('row-sub')} }}
 QPushButton#guideshow {{ background: {c['overlay-hover']}; color: {c['ink']}; border: 1px solid {c['overlay-edge-top']};
   border-radius: {theme.RADII['button-sm']}px; min-height: {px(26)}; padding: 0 {px(10)}; {font('button')} }}
 QPushButton#guideshow:hover {{ border-color: {c['accent']}; }}

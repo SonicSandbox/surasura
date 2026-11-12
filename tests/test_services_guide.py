@@ -30,8 +30,8 @@ def _release(version, items, date="2026-11-12"):
     return {"version": version, "date": date, "items": items}
 
 
-def _item(id_, kind="new", tags=("everyone",), where=None, title="字幕が見つかる", line="hato で字幕を探す"):
-    out = {"id": id_, "kind": kind, "title": title, "line": line, "for": list(tags)}
+def _item(id_, kind="new", tags=("everyone",), where=None, text="hato で字幕が見つかる。"):
+    out = {"id": id_, "kind": kind, "text": text, "for": list(tags)}
     if where is not None:
         out["where"] = where
     return out
@@ -73,9 +73,15 @@ def test_every_shipped_notes_file_is_whole_and_every_show_me_names_a_real_place(
     (_item("a", where="settings:no_such_row"), "where"),
     (_item("a", where="help:nope"), "where"),
     (_item("a", where="current"), "where"),
-    (_item("a", title="  "), "title"),
+    (_item("a", text="  "), "text"),
+    (_item("a", text="一行目\n二行目"), "text"),
+    (_item("a", text="字" * 101), "text"),
+    (_item("a", kind="fix", where="tab:needs"), "fix"),
+    (dict(_item("a"), title="字幕"), "title"),
+    (dict(_item("a"), step="nope"), "step"),                # no path yet (PR 2): no step joins
 ])
-def test_a_wrong_kind_tag_or_place_is_named(item, wrong):
+def test_a_wrong_kind_tag_place_or_more_than_one_line_is_named(item, wrong):
+    # Sonic, 2026-11-12: "everything earns its place" — an item is one plain line; a fix is never something to try
     found = guide.problems(_release("3.0.4", [item]), has_card=help_cards.available, locate=_locate)
     assert len(found) == 1 and wrong in found[0]
 
@@ -101,7 +107,7 @@ def test_a_bad_file_is_left_out_and_said_and_never_takes_the_others_with_it(tmp_
 
 # --- which releases show ----------------------------------------------------------------------------------------- #
 def _releases():
-    return tuple(guide.Release(v, "2026-11-1" + str(n), (guide.Item(f"i{n}", "new", "t", "l", ("everyone",), None, v),))
+    return tuple(guide.Release(v, "2026-11-1" + str(n), (guide.Item(f"i{n}", "new", "t", ("everyone",), None, v),))
                  for n, v in enumerate(("3.1.0", "3.0.10", "3.0.4", "3.0.3", "3.0.2")))
 
 
@@ -119,16 +125,19 @@ def test_unseen_is_newer_than_seen_up_to_this_version_newest_first(seen, current
 
 
 # --- for you -------------------------------------------------------------------------------------------------------- #
-def test_for_you_comes_first_the_others_follow_and_only_fixes_not_for_you_fold():
-    items = (guide.Item("fix-mine", "fix", "t", "l", ("miner",), None, "3.0.4"),
-             guide.Item("fix-all", "fix", "t", "l", ("everyone",), None, "3.0.4"),
-             guide.Item("tweak-books", "tweak", "t", "l", ("books",), None, "3.0.4"),
-             guide.Item("new-zh", "new", "t", "l", ("zh", "miner"), None, "3.0.4"),
-             guide.Item("new-all", "new", "t", "l", ("everyone",), None, "3.0.4"))
+def test_only_what_leads_somewhere_is_shown_yours_first_and_the_rest_folds():
+    items = (guide.Item("fix-all", "fix", "t", ("everyone",), None, "3.0.4"),
+             guide.Item("fix-mine", "fix", "t", ("miner",), None, "3.0.4"),
+             guide.Item("tweak-books", "tweak", "t", ("books",), None, "3.0.4"),
+             guide.Item("tweak-miner", "tweak", "t", ("miner",), "tab:needs", "3.0.4"),
+             guide.Item("new-zh", "new", "t", ("zh", "miner"), None, "3.0.4"),
+             guide.Item("new-ja", "new", "t", ("ja", "miner"), None, "3.0.4"),
+             guide.Item("new-all", "new", "t", ("everyone",), None, "3.0.4"))
     shown = guide.arrange(guide.Release("3.0.4", "", items), {"everyone", "ja", "miner"})
-    assert [i.id for i in shown.for_you] == ["new-zh", "fix-mine"]          # new before fix
-    assert [i.id for i in shown.everyone] == ["new-all", "tweak-books"]     # nothing hidden
-    assert [i.id for i in shown.fixes] == ["fix-all"]
+    # Kantan-X's rule 2: shown only if it leads somewhere (a where); the rest folds, the learner's first
+    assert [i.id for i in shown.for_you] == ["tweak-miner"]                 # Chinese only: left out
+    assert [i.id for i in shown.others] == []
+    assert [i.id for i in shown.fixes] == ["new-ja", "fix-mine", "new-all", "tweak-books", "fix-all"]
 
 
 Row = __import__("collections").namedtuple("Row", "media audio")
@@ -206,3 +215,62 @@ def test_the_guide_makes_no_network_call(monkeypatch):
         raise AssertionError("the guide reached for the network")
     monkeypatch.setattr(socket.socket, "connect", refuse)
     assert guide.look("zh", {"connect_enabled": True}, current=__version__, base=SHIPPED).releases
+
+
+# --- the adversary's round (2026-11-12): the language gate, a new PC, seen only rises, the state's file ------------- #
+@pytest.mark.parametrize("item_tags, learner, mine", [
+    (("ja", "miner"), {"everyone", "ja"}, False),           # Japanese AND Connect: no Connect, not theirs
+    (("ja", "miner"), {"everyone", "ja", "miner"}, True),
+    (("zh", "miner"), {"everyone", "ja", "miner"}, False),  # the other language never theirs
+    (("zh",), {"everyone", "zh"}, True),
+    (("everyone",), {"everyone", "ja", "miner"}, False),    # everyone's is no one's in particular
+    (("books", "audiobooks"), {"everyone", "zh", "audiobooks"}, True),
+])
+def test_a_language_tag_is_a_gate_and_the_rest_must_meet(item_tags, learner, mine):
+    item = guide.Item("x", "new", "t", item_tags, None, "3.0.4")
+    assert guide.yours(item, learner) is mine
+
+
+def test_on_a_new_pc_setup_running_marks_this_version_seen_and_nothing_glows(tmp_path):
+    folder, state = str(tmp_path / "whats_new"), str(tmp_path / "guide.json")
+    _write(folder, _release("3.0.4", [_item("a")]))
+    _write(folder, _release("3.0.5", [_item("b")]))
+    first = guide.look("ja", {}, current="3.0.4", base=folder, path=state, fresh=True)
+    assert not first.glow and [s.release.version for s in first.releases] == ["3.0.4"]
+    assert guide.read_state(state)["seen"] == "3.0.4"
+    assert guide.look("ja", {}, current="3.0.5", base=folder, path=state, fresh=True).glow    # seen before: an update
+
+
+def test_going_back_a_version_never_lowers_seen(tmp_path):
+    state = str(tmp_path / "guide.json")
+    assert guide.mark_seen("3.0.5", path=state) is True
+    assert guide.mark_seen("3.0.4", path=state) is False and guide.read_state(state)["seen"] == "3.0.5"
+    assert guide.mark_seen("alpha7", path=state) is False
+
+
+def test_a_failed_write_leaves_the_old_state_whole_and_another_versions_file_is_not_ours(tmp_path, monkeypatch):
+    state = str(tmp_path / "guide.json")
+    guide.mark_seen("3.0.4", path=state)
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+    with monkeypatch.context() as patched:
+        patched.setattr(guide.json, "dump", broken)
+        with pytest.raises(OSError):
+            guide.mark_seen("3.0.5", path=state)
+    assert guide.read_state(state)["seen"] == "3.0.4"                       # the old file, whole (atomic replace)
+    with open(state, "w", encoding="utf-8") as f:
+        json.dump({"version": 99, "seen": "9.9.9"}, f)
+    assert guide.read_state(state) == {}                                    # a newer guide's file: not ours
+
+
+def test_hato_and_junban_count_only_when_there(monkeypatch):
+    from app import tools_entry
+    monkeypatch.setattr(tools_entry, "read", lambda tool: {"cli": "hato-cli.exe"} if tool == "hato" else None)
+    monkeypatch.setattr(help_cards, "module_present", lambda name: name == "junban")
+    tags = guide.profile("ja", {"enable_junban": True})
+    assert {"hato", "junban"} <= tags
+    assert "junban" not in guide.profile("ja", {"enable_junban": False})
+    monkeypatch.setattr(tools_entry, "read", lambda tool: None)
+    assert "hato" not in guide.profile("ja", {})
+    assert guide.media_tags(View((Row(None, ""),), (), None)) == {"shows"}   # no type: a video, as the store reads it

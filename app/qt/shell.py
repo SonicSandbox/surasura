@@ -2715,6 +2715,9 @@ class ShellWindow(QMainWindow):
         # the start) finds something to show; its panel a pop under it (Esc, Back, a press elsewhere close it)
         from app.qt import guide as guide_ui
         d.guide = guide_ui.GuideButton(self.header)
+        keep = d.guide.sizePolicy()
+        keep.setRetainSizeWhenHidden(True)                 # (its room kept: the header never shifts as it appears)
+        d.guide.setSizePolicy(keep)
         d.guide.setVisible(False)
         d.guide_panel = guide_ui.GuidePanel(self.centralWidget(), d.guide)
         d.guide.clicked.connect(lambda _c=False: d.guide_panel.toggle())
@@ -2722,6 +2725,8 @@ class ShellWindow(QMainWindow):
         d.guide_panel.show_me.connect(self.guide_show_me)
         self.register_overlay(d.guide_panel)
         header_row.insertWidget(header_row.indexOf(d.help), d.guide)
+        QWidget.setTabOrder(d.guide, d.help)                # Tab as the eye reads: ✦, then ?
+        self._guide_asked = 0                               # each look numbered: an older answer is dropped
         # --- end the feature guide
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
@@ -2798,28 +2803,32 @@ class ShellWindow(QMainWindow):
     # --- the feature guide (Hoshi-S, 2026-11-12; app/services/guide.py, app/qt/guide.py) ------------------------- #
     def _guide_look(self, seen=False):
         """What the ✦'s panel shows and whether it glows, read on a worker (`guide.look`: the notes, this PC's state,
-        each check a stat or one small read). `seen`: the panel opened — this version's notes are marked seen first."""
+        each check a stat or one small read). `seen`: the panel opened — this version's notes are marked seen first.
+        Setup running is a new PC: nothing to glow for (`fresh`)."""
         d = self.duties
         if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
             return
         from app.services import guide as guide_service
         language, settings, view = self.language, self.services.settings, getattr(self, "_guide_view", None)
+        fresh = self.services.setup_open.is_set()
+        self._guide_asked += 1
+        asked = self._guide_asked
 
         def job():
             lines = []
             if seen:
                 guide_service.mark_seen()
-            return guide_service.look(language, settings.get(), view, log=lines.append), lines
+            return asked, guide_service.look(language, settings.get(), view, log=lines.append, fresh=fresh), lines
         bridge.run_in_worker(job, then=self._guide_got,
-                             failed=lambda info: applog.log("guide", f"look: {info[1]}"))
+                             failed=lambda info: applog.log("guide", f"look: {type(info[0]).__name__}"))
 
     def _guide_got(self, answer):
-        look, lines = answer
+        asked, look, lines = answer
         for line in lines:
             applog.log("guide", line)
         d = self.duties
-        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
-            return
+        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel) or asked != self._guide_asked:
+            return                                          # (a newer look is on its way: this one says less)
         d.guide_panel.set_look(look)
         d.guide.setVisible(d.guide_panel.has_news())
         d.guide.set_glow(look.glow and not d.guide_panel.isVisible())
@@ -2844,6 +2853,9 @@ class ShellWindow(QMainWindow):
         now (a tab with nothing in it, a control not shown): the bar says so."""
         kind, _sep, name = str(where).partition(":")
         if kind == "settings":
+            if not self.mount_settings().shows(name):       # a row this learner's Settings doesn't show: never another
+                self.say(strings.GUIDE_NOT_HERE)
+                return
             self.open_setting(name)
             return
         if kind == "help":

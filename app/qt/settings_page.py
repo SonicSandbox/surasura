@@ -1579,6 +1579,19 @@ class SettingsPage(QWidget):
                 self._scroll_to(round(start + (end - start) * v))
         self._scroll_anim = motion.clock().animate(theme.SETTINGS_MOTION["page-scroll"], frame, kind="move", owner=self)
 
+    def shows(self, target):
+        """Whether `target` (a row id or key, a section id) is shown on this page now — for this learner's settings and
+        what was found — as `reveal` would light it, never a fallback's row (the feature guide's *Show me*)."""
+        located = catalog.locate(target)
+        if located is None:
+            return False
+        _section_id, row_id = located
+        if row_id is None:
+            return True
+        if row_id in FALLBACK and row_id in self.slots and not self.slots[row_id].layout().count():
+            return False
+        return bool(self._visible(catalog.ROW[row_id], self._settings(), self._ctx()))
+
     def reveal(self, target):
         """Bring a setting into view (W3.1a's three clicks; P7's `open_setting`): `target` a row id, a key, a section id
         or `known` / `mine_line` / `soon_line`. Its *More options* opened if needed, glided to the top third, washed

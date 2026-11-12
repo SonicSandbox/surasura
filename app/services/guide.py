@@ -4,17 +4,22 @@ an update and, with it, the header's ✦ that glows while something is unseen. Q
 paints what this says.
 
 - **The notes** — one small file per release beside the code, `app/assets/whats_new/<version>.json`, written at the
-  cut from the release notes (CUT.md's step): `{"version", "date", "items": [{"id", "kind", "title", "line", "for",
-  "where"}]}`. `kind` one of `KINDS`; `for` tags from `TAGS` (who it matters to); `where` (optional) one anchor of
-  `anchor_ok`'s: `tab:<tab>`, `settings:<row or section>`, `help:<card>`, `control:<control>` — where *Show me* goes.
+  cut from the release notes (CUT.md's step): `{"version", "date", "items": [{"id", "kind", "text", "for",
+  "where", "step"}]}`. Sonic (2026-11-12): "everything earns its place" — **an item is one plain line** (`text`, at
+  most `TEXT_MAX`), and (Kantan-X's rule 2, EXPERIENCE.md §6, PROVISIONAL) **it leads somewhere or it folds**: a
+  `where` gives it *Show me* — one anchor of `anchor_ok`'s: `tab:<tab>`, `settings:<row or section>`, `help:<card>`,
+  `control:<control>`; a `step` joins it to the path (one of `STEPS`: the path's step ids, empty until the path lands —
+  PR 2); everything else (every fix, every line that leads nowhere) folds into *N fixes and small changes*. A fix never
+  takes a `where`. `kind` one of `KINDS` (it orders them); `for` tags from `TAGS`.
   `problems()` names what's wrong with one; the tests hold every shipped file to it, and refuse a version without its
   file (`tests/test_services_guide.py`): the release PR's version bump stays red until the file is there.
 - **What shows** (`unseen`): the releases newer than the one this PC last saw, up to this version, newest first; with
   nothing seen yet (a fresh install, or the first version with the guide) only this version's.
 - **For you first** (`profile`, `arrange`): decided here, from what is already on this PC — the language, the library's
   kinds (shows, books, audiobooks: the window's newest view), a known-words sync from Anki, Connect on (Anki Miner),
-  hato's entry, a Piyo round kept, 順 on. An item whose tags meet the profile is *for you*; the rest is *everyone*;
-  the fixes not for you fold into one line. Nothing is hidden, only ordered.
+  hato's entry, a Piyo round kept, 順 on. An item whose tags meet the profile is *for you* and comes first (`yours`: a
+  language tag is a gate); every fix folds into one line (theirs first inside it). An item only for another language is
+  left out; nothing else is hidden, only ordered.
 - **The state** (`guide.json` in the local data folder, beside `window_state.json`: per PC, never settings.json, never
   exported, never sent): `seen`, the newest version whose notes were opened. Written atomically, on a worker.
 - **Never on the window's thread:** `look()` (the files and the checks: each a stat or one small read) and `mark_seen()`
@@ -24,7 +29,10 @@ import json
 import os
 from collections import namedtuple
 
-KINDS = ("new", "tweak", "fix")                 # the order inside a group
+KINDS = ("new", "tweak", "fix")                 # the order inside a group; a fix folds
+KEYS = ("id", "kind", "text", "for", "where", "step")    # an item's keys: nothing else
+STEPS = ()                                      # the path's step ids a notes item may join (Kantan-X's path: PR 2)
+TEXT_MAX = 100                                  # an item's one line, in characters
 TAGS = ("everyone", "ja", "zh", "shows", "books", "audiobooks", "anki", "miner", "hato", "piyo", "junban")
 TABS = ("current", "finished", "needs", "settings")
 CONTROLS = ("search", "add", "level", "journey", "arrivals", "known", "circles", "report", "help")
@@ -39,9 +47,9 @@ MEDIA_TAG = {"anime": "shows", "drama": "shows", "movie": "shows", "youtube": "s
              "book": "books", "lightnovel": "books", "manga": "books", "text": "books",
              "audiobook": "audiobooks", "podcast": "audiobooks"}
 
-Item = namedtuple("Item", "id kind title line tags where version")
+Item = namedtuple("Item", "id kind text tags where version step", defaults=(None,))
 Release = namedtuple("Release", "version date items")
-Shown = namedtuple("Shown", "release for_you everyone fixes")        # one release as the panel shows it
+Shown = namedtuple("Shown", "release for_you others fixes")          # one release as the panel shows it
 Look = namedtuple("Look", "current releases glow")                 # releases: (Shown, …) newest first
 
 
@@ -104,22 +112,29 @@ def problems(data, has_card=None, locate=None):
         if not item.get("id") or item.get("id") in seen:
             out.append(f"{at}: its id is missing or used twice")
         seen.add(item.get("id"))
+        extra = sorted(set(item) - set(KEYS))
+        if extra:
+            out.append(f"{at}: {', '.join(extra)} — an item is one line: {', '.join(KEYS)}")
         if item.get("kind") not in KINDS:
             out.append(f"{at}: kind {item.get('kind')!r} isn't one of {', '.join(KINDS)}")
-        for key in ("title", "line"):
-            if not isinstance(item.get(key), str) or not item.get(key).strip():
-                out.append(f"{at}: no {key}")
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip() or "\n" in text or len(text.strip()) > TEXT_MAX:
+            out.append(f"{at}: text must be one plain line of at most {TEXT_MAX} characters")
         tags = item.get("for")
         if not isinstance(tags, list) or not tags or any(t not in TAGS for t in tags):
             out.append(f"{at}: for {tags!r} isn't a list of {', '.join(TAGS)}")
-        if "where" in item and not anchor_ok(item["where"], has_card, locate):
+        if "step" in item and item.get("step") not in STEPS:
+            out.append(f"{at}: step {item.get('step')!r} isn't a step of the path")
+        if "where" in item and item.get("kind") == "fix":
+            out.append(f"{at}: a fix is information, never something to try: no where")
+        elif "where" in item and not anchor_ok(item["where"], has_card, locate):
             out.append(f"{at}: where {item['where']!r} names no place")
     return out
 
 
 def _release(data):
-    items = tuple(Item(i["id"], i["kind"], i["title"].strip(), i["line"].strip(), tuple(i["for"]), i.get("where"),
-                       data["version"]) for i in data["items"])
+    items = tuple(Item(i["id"], i["kind"], i["text"].strip(), tuple(i["for"]), i.get("where"), data["version"],
+                       i.get("step")) for i in data["items"])
     return Release(data["version"], data.get("date") or "", items)
 
 
@@ -228,15 +243,35 @@ def profile(language, settings, view=None):
     return tags
 
 
+LANGUAGES = ("ja", "zh")
+
+
+def yours(item, tags):
+    """Whether `item` is for this learner: its language tags (if any) are a gate — one of them theirs — and its other
+    tags (if any) must meet `tags`; an item tagged only `everyone` is no one's in particular."""
+    langs = set(item.tags) & set(LANGUAGES)
+    rest = set(item.tags) - set(LANGUAGES) - {"everyone"}
+    if langs and not langs & set(tags):
+        return False
+    if rest:
+        return bool(rest & set(tags))
+    return bool(langs)
+
+
 def arrange(release, tags):
-    """One release as the panel shows it: (for you, everyone, the folded fixes) — each kept in its kind's order. An
-    item is for you when a tag other than `everyone` meets `tags`; a fix for you stays in view, the others fold."""
+    """One release as the panel shows it: (for you, the others, the folded) — each in its kind's order (stable: the
+    file's order inside a kind). Sonic: "everything earns its place" — an item for another language only is left out;
+    only an item that leads somewhere (a `where` or a `step`, never a fix) is shown, the learner's own (`yours`) first;
+    the rest fold, theirs first."""
     order = {k: n for n, k in enumerate(KINDS)}
-    items = sorted(release.items, key=lambda i: order[i.kind])        # (stable: the file's order inside a kind)
-    mine = [i for i in items if set(i.tags) & (set(tags) - {"everyone"})]
-    rest = [i for i in items if i not in mine]
-    return Shown(release, tuple(mine), tuple(i for i in rest if i.kind != "fix"),
-                 tuple(i for i in rest if i.kind == "fix"))
+    learner = set(tags) & set(LANGUAGES)
+    items = [i for i in sorted(release.items, key=lambda i: order[i.kind])
+             if not (set(i.tags) & set(LANGUAGES)) or not learner or set(i.tags) & learner]
+    mine = {i.id for i in items if yours(i, tags)}
+    shown = [i for i in items if i.kind != "fix" and (i.where or i.step)]
+    fixes = [i for i in items if i not in shown]
+    return Shown(release, tuple(i for i in shown if i.id in mine), tuple(i for i in shown if i.id not in mine),
+                 tuple(sorted(fixes, key=lambda i: i.id not in mine)))
 
 
 # --- the state ------------------------------------------------------------------------------------------------------ #
@@ -269,10 +304,14 @@ def write_state(data, path=None):
 
 
 # --- the worker's two calls ---------------------------------------------------------------------------------------- #
-def look(language, settings, view=None, current=None, base=None, path=None, log=None):
-    """(A worker.) What the panel shows and whether the ✦ glows: `Look(current, releases, glow)`."""
+def look(language, settings, view=None, current=None, base=None, path=None, log=None, fresh=False):
+    """(A worker.) What the panel shows and whether the ✦ glows: `Look(current, releases, glow)`. `fresh`: setup is
+    running (a new PC) — with nothing seen yet, this version counts as seen: no glow for news of versions never had."""
     current = current or current_version()
     seen = read_state(path).get("seen")
+    if fresh and not seen and version_key(current) is not None:
+        mark_seen(current, path)
+        seen = current
     notes = read_notes(base, log)
     fresh = unseen(notes, seen, current)
     shown = fresh or unseen(notes, None, current)          # seen already: this version's, still there to read again
@@ -284,10 +323,12 @@ def look(language, settings, view=None, current=None, base=None, path=None, log=
 
 def mark_seen(current=None, path=None):
     """(A worker.) This version's notes were opened: the glow is over until the next update. Written only when it
-    changes (S19). -> True when written."""
+    raises `seen` (S19; a version gone back to never lowers it, so its notes don't glow again on the way up). -> True
+    when written."""
     current = current or current_version()
     state = read_state(path)
-    if state.get("seen") == current:
+    now, was = version_key(current), version_key(state.get("seen"))
+    if now is None or (was is not None and was >= now):
         return False
     write_state(dict(state, seen=current), path)
     return True

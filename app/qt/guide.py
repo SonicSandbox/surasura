@@ -6,9 +6,11 @@
   it carries the theme's glow (`theme.GLOW`'s ring on the accent wash) and a small iris dot — painted once, **still**
   (no loop on the clock: S19, a laptop's battery). The glow goes the moment the panel opens.
 - **The panel** (`GuidePanel`): a pop under the ✦ (the level ▾'s way: slate navy, its lit top edge; Esc, Back, a press
-  elsewhere and the ✦ again close it), the tray's width, scrolling inside past the window's height. Each release that
-  shows (`guide.Look`): its name and date, *For you*, *Everyone*, and the fixes folded into one line. An item with a
-  place has **Show me** (`show_me`, its `where`: the shell goes there and washes it).
+  elsewhere and the ✦ again close it), the tray's width, scrolling inside past the window's height. Sonic: "everything
+  earns its place" — *What's new in 3.0.4* (one release; several: each its version line), then one plain line an item:
+  the learner's own first (*For you* above them only when others follow), each something to try with **Show me**
+  (`show_me`, its `where`: the shell goes there and washes it); the rest folded into *N fixes and small changes*
+  (Kantan-X's rule 2). No Done tab (rule 3); *Your path* joins as a second tab with the path (PR 2).
 - **Built when the look changes, never on an open** (R5): `set_look` rebuilds only for a new answer; an open with the
   same answer makes no widget. Nothing here reads a file: the shell asks the service on a worker.
 """
@@ -32,8 +34,9 @@ def release_name(release):
         when = f"{d} {strings.GUIDE_MONTHS[m - 1]}"
     except (ValueError, IndexError, AttributeError):
         when = ""
-    name = strings.GUIDE_RELEASE.format(version=release.version, date=when)
-    return name if when else name.rsplit(" · ", 1)[0]
+    if not when:
+        return strings.GUIDE_RELEASE_NO_DATE.format(version=release.version)
+    return strings.GUIDE_RELEASE.format(version=release.version, date=when)
 
 
 class GuideButton(QToolButton):
@@ -91,48 +94,36 @@ class GuideButton(QToolButton):
 
 
 class _Card(QWidget):
-    """One item: its kind, its title and line, and *Show me* when it has a place."""
+    """One item: its one plain line and, when it is something to try, *Show me*. A fix is a line alone (folded)."""
 
-    def __init__(self, item, mine, on_show, parent=None):
+    def __init__(self, item, on_show, parent=None):
         super().__init__(parent)
-        self.setObjectName("guidecard")
+        self.setObjectName("guidefix" if item.kind == "fix" else "guidecard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setProperty("mine", "true" if mine else "false")
         self.item = item
         f = theme.text_factor(style.current()[1])
         row = QHBoxLayout(self)
-        row.setContentsMargins(round(12 * f), round(10 * f), round(10 * f), round(10 * f))
+        row.setContentsMargins(round(12 * f), round(8 * f), round(8 * f), round(8 * f))
         row.setSpacing(round(10 * f))
-        kind = QLabel(strings.GUIDE_KINDS[item.kind], self)
-        kind.setObjectName("guidekind")
-        kind.setProperty("kind", item.kind)
-        row.addWidget(kind, 0, Qt.AlignmentFlag.AlignTop)
-        words = QVBoxLayout()
-        words.setSpacing(round(2 * f))
-        self.title = QLabel(item.title, self)
-        self.title.setObjectName("guidetitle")
-        self.line = QLabel(item.line, self)
-        self.line.setObjectName("guideline")
-        for label in (self.title, self.line):
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setWordWrap(True)
-            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-            words.addWidget(label)
-        row.addLayout(words, 1)
+        self.text = QLabel(item.text, self)
+        self.text.setObjectName("guidetext")
+        self.text.setTextFormat(Qt.TextFormat.PlainText)
+        self.text.setWordWrap(True)
+        self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        row.addWidget(self.text, 1)
         self.show_me = None
         if item.where:
             b = QPushButton(strings.GUIDE_SHOW_ME, self)
             b.setObjectName("guideshow")
             b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
-            b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(title=item.title))
+            b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=item.text))
             b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _c=False, w=item.where: on_show(w))
-            row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
             self.show_me = b
-        self.setAccessibleName(strings.GUIDE_CARD_NAME.format(kind=strings.GUIDE_KINDS[item.kind], title=item.title,
-                                                              line=item.line))
+        self.setAccessibleName(item.text)
 
 
 class GuidePanel(motion.Overlay):
@@ -164,10 +155,11 @@ class GuidePanel(motion.Overlay):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.TabFocus)     # (its arrows and Page keys read every line)
         box.addWidget(self.scroll, 1)
         self.body = None
         self.look = None                    # the guide.Look shown
+        self._waiting = None                # a newer one, kept while the panel is open
         self.cards = []
         self.folds = []                     # (button, [fix cards], n)
         self.builds = 0                     # the body made (tests: once per new look, never per open)
@@ -179,7 +171,12 @@ class GuidePanel(motion.Overlay):
     # --- what it shows --------------------------------------------------------------------------------------------- #
     def set_look(self, look):
         """Paint `look` (a `guide.Look`). The same releases again change nothing (S19: the glow alone isn't the
-        panel's). -> True when rebuilt."""
+        panel's); while the panel is open a new answer waits for it to close — what the learner reads never changes
+        under them. -> True when rebuilt."""
+        if self.isVisible() or motion.opening_of(self) is not None:
+            self._waiting = look
+            return False
+        self._waiting = None
         same = self.look is not None and look is not None and look.releases == self.look.releases
         self.look = look
         if same:
@@ -200,17 +197,20 @@ class GuidePanel(motion.Overlay):
         col.setContentsMargins(0, 0, round(2 * f), 0)
         col.setSpacing(round(6 * f))
         self.cards, self.folds = [], []
-        for shown in (self.look.releases if self.look else ()):
-            col.addWidget(self._label("guidever", release_name(shown.release), body))
-            for heading, items, mine in ((strings.GUIDE_FOR_YOU, shown.for_you, True),
-                                         (strings.GUIDE_EVERYONE, shown.everyone, False)):
-                if not items:
-                    continue
-                col.addWidget(self._label("guidegroup", heading, body))
-                for item in items:
-                    card = _Card(item, mine, self._show, body)
-                    self.cards.append(card)
-                    col.addWidget(card)
+        releases = self.look.releases if self.look else ()
+        self.heading.setText(strings.GUIDE_HEADING_ONE.format(version=releases[0].release.version)
+                             if len(releases) == 1 else strings.GUIDE_HEADING)
+        for shown in releases:
+            if len(releases) > 1:                          # (one release: its version is the heading's)
+                col.addWidget(self._label("guidever", release_name(shown.release), body))
+            if shown.for_you and shown.others:             # "For you" only where it explains the order
+                col.addWidget(self._label("guidegroup", strings.GUIDE_FOR_YOU, body))
+            for n, item in enumerate(shown.for_you + shown.others):
+                if n == len(shown.for_you) and shown.for_you:
+                    col.addSpacing(round(6 * f))
+                card = _Card(item, self._show, body)
+                self.cards.append(card)
+                col.addWidget(card)
             if shown.fixes:
                 fold = QPushButton("", body)
                 fold.setObjectName("guidefold")
@@ -222,7 +222,7 @@ class GuidePanel(motion.Overlay):
                 col.addWidget(fold, 0, Qt.AlignmentFlag.AlignLeft)
                 fixes = []
                 for item in shown.fixes:
-                    card = _Card(item, False, self._show, body)
+                    card = _Card(item, self._show, body)
                     card.setVisible(False)
                     self.cards.append(card)
                     fixes.append(card)
@@ -306,7 +306,7 @@ class GuidePanel(motion.Overlay):
 
     def focusNextPrevChild(self, next_):
         """Tab and Shift+Tab go round the panel's own buttons (the window behind keeps its order)."""
-        ring = [b for b in self.findChildren(QPushButton) if b.isVisible() and b.isEnabled()]
+        ring = [self.scroll] + [b for b in self.findChildren(QPushButton) if b.isVisible() and b.isEnabled()]
         if not ring:
             return True
         now = QApplication.focusWidget()
@@ -322,8 +322,13 @@ class GuidePanel(motion.Overlay):
         self.opened.emit()
 
     def hideEvent(self, event):
+        held = self.isAncestorOf(QApplication.focusWidget()) if QApplication.focusWidget() is not None else False
         super().hideEvent(event)
         QApplication.instance().removeEventFilter(self._away)
+        if held and self.button.isVisible():
+            self.button.setFocus(Qt.FocusReason.OtherFocusReason)    # (the keyboard back where it opened the panel)
+        if self._waiting is not None:
+            self.set_look(self._waiting)
 
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():

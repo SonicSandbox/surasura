@@ -207,5 +207,6 @@ def test_after_a_no_the_card_keeps_its_own_words():
         [find] = _finds(store)
         assert find["said_no"] == NEKO
         assert _entry(store).title == f"Which book does the audiobook 「{NEKO}」 read?"
+        assert "placed" not in _record(store, item["id"])           # a No's mark takes `placed` off, never left as None
     finally:
         store.__exit__(None, None, None)

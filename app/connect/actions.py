@@ -66,7 +66,7 @@ def check_again(language, item_id, path=None):
     or its ⋯) -> True when its job was queued again; False (nothing written) when there's no ledger, the item has no
     open *not timed* entry in this language (listed or dismissed), or no job of it is waiting any more. The entry fixed
     and the job queued (its reason, resume step and timing-check count cleared; the subtitle beside its video looked
-    for again), so its next pick checks its timing anew — a subtitle you fixed since is seen; still not timed, a new
+    for again, and tsubasa may re-time its copy once more: Michi-NT2), so its next pick checks its timing anew — a subtitle you fixed since is seen; still not timed, a new
     entry counts in *Needs you* (its *Mine anyway*), a dismissed one included. The caller kicks Connect after."""
     path = path or book.path()
     if not os.path.exists(path):
@@ -82,7 +82,8 @@ def check_again(language, item_id, path=None):
             picked.pop(key, None)
         ledger.set_state(job["id"], "queued", picked=picked)       # its reason and resume step cleared: picks anew
         ledger.forget_stop(job["id"])       # your press is your go, as a newer *Mine now* is (a *Stop* it waited by)
-        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (f"fit_try:{int(job['id'])}",))   # runner.FIT_TRY
+        ledger.conn.execute("DELETE FROM meta WHERE key IN (?, ?)",      # runner.FIT_TRY, runner.RETIMED: your
+                            (f"fit_try:{int(job['id'])}", f"retimed:{int(job['id'])}"))     # press asks them anew
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND item_id = ? AND kind = 'not-timed' "
                             "AND fixed_at IS NULL", (book._now(), language, item_id))
     return True

@@ -354,7 +354,8 @@ def _add(settings, language, book, confirm, anki, ledger):
         if not found["field"]:
             raise CliError("needs-you", NO_AUDIO_FIELD)
         if not confirm or not found["can"]:
-            return dict(counts, confirm=False)
+            seen = sorted(set(found["has_audio"]) | set(found["unheard"]) | set(found["gone"]))
+            return dict(counts, confirm=False, **({"looked": seen} if confirm else {}))
         troubles = []
         clips = cut(anki_miner.find(settings), language, profile, found["can"], run_dir, troubles=troubles)
         done = sa.fill(anki, ledger, clips, field=found["field"], tag=TAG, by=BY)

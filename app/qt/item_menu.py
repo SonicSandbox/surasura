@@ -183,11 +183,11 @@ def unnamed(row):
 
 
 # --- K6 and Q7: *Never read this folder*, one rule for a list row's ⋯, New arrivals' ⋯ and Settings' *Skip a folder…* #
-def _connect_call(name):
-    """Connect's `actions.<name>`, or None (Connect not installed: no entry)."""
+def _connect_call(name, module="actions"):
+    """Connect's `<module>.<name>`, or None (Connect not installed: no entry)."""
     try:
-        from app.connect import actions
-        return getattr(actions, name, None)
+        mod = __import__(f"app.connect.{module}", fromlist=[name])
+        return getattr(mod, name, None)
     except Exception:
         return None
 
@@ -343,7 +343,9 @@ class ItemActions(QObject):
         self.add_audio_offer = _connect_call("add_audio_offer")
         self.add_audio_book = _connect_call("add_audio_book")
         self.add_audio_undo = _connect_call("add_audio_undo")
+        self.kick = _connect_call("kick", module="kick")
         self._audio_ask = 0
+        self._audio_running = set()                  # the books a press is adding to now (never offered meanwhile)
         # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
         self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
         register = getattr(win, "register_overlay", None)
@@ -819,8 +821,8 @@ class ItemActions(QObject):
         fill = getattr(m, "fills", None)
 
         def found(got):
-            if (got and ask == self._audio_ask and self.last_menu is m and not sip.isdeleted(m) and m.isVisible()
-                    and getattr(m, "fills", None) == fill):
+            if (got and got.get("epub") not in self._audio_running and ask == self._audio_ask and
+                    self.last_menu is m and not sip.isdeleted(m) and m.isVisible() and getattr(m, "fills", None) == fill):
                 self.add_audio_entry(m, got)
         bridge.run_in_worker(lambda: offer(lang, ids, read()), then=found)
         return True
@@ -842,9 +844,29 @@ class ItemActions(QObject):
         then its toast with *Undo* (`needs.audio_added`)."""
         from app.qt import needs as qneeds
         lang, read, epub, title = self.language, self._settings, got["epub"], got["title"]
+        add, kick = self.add_audio_book, self.kick
+        if epub in self._audio_running:
+            return
+        self._audio_running.add(epub)
         self.win.say(strings.NEEDS_AUDIO_RUNNING.format(title=title))
-        bridge.run_in_worker(lambda: self.add_audio_book(lang, epub, read()), then=lambda answer: qneeds.audio_added(
-            self.win, answer, title, self.win.say, self.add_audio_undo, lang, read))
+
+        def run():
+            answer = add(lang, epub, read())
+            if (answer or {}).get("id") and kick is not None:
+                kick(read())                         # Anki's sync it owes, sent by Connect (r2 S3)
+            return answer
+
+        def done(answer):
+            self._audio_running.discard(epub)
+            ny = getattr(self.win, "needs_you", None)
+            if ny is not None:
+                ny.refresh()                         # the book's line went with the press (r2 N13)
+            qneeds.audio_added(self.win, answer, title, self.win.say, self.add_audio_undo, lang, read)
+
+        def failed(info):
+            self._audio_running.discard(epub)
+            self.win.say(strings.NEEDS_AUDIO_GONE)
+        bridge.run_in_worker(run, then=done, failed=failed)
 
     def _offer_skip(self, row, m):
         """Asked on the looks' worker (`offer_skip`); the submenu goes in before *Open its folder* when the answer comes

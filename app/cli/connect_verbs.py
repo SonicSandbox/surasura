@@ -626,7 +626,8 @@ def add_audio(args):
     review."""
     loaded = settings()
     from app.connect import add_audio as adding
-    return adding.act(loaded, language(args, loaded), book=args.book, confirm=args.confirm, undo_id=args.undo)
+    got = adding.act(loaded, language(args, loaded), book=args.book, confirm=args.confirm, undo_id=args.undo)
+    return {k: v for k, v in got.items() if k != "looked"}      # (the notes a press looked at: Connect's own record)
 
 
 def _owe_sync(loaded):

@@ -49,11 +49,11 @@ def test_a_book_lined_up_after_cards_were_made_offers_them_the_narrators_voice_o
 def test_a_book_with_no_cards_yet_is_never_offered_and_never_asked_later(book, tmp_path, monkeypatch):  # noqa: F811
     """Nothing made before its line-up (its cards will carry the narrator from the start): no line, and none later
     either — the book was asked once."""
-    monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("星屑", 0, None))
+    monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("星屑", [], None))
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         _lined(book, ledger)
         assert _offers(ledger) == []
-        monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("星屑", 3, None))
+        monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("星屑", [100, 101, 102], None))
         _lined(book, ledger)
         assert _offers(ledger) == []
 
@@ -156,16 +156,23 @@ def test_a_fully_mined_book_lined_up_later_is_offered_without_any_part_being_min
                 ledger.conn.execute("SELECT * FROM meta").fetchall()) == before
 
 
-def test_connects_language_pass_offers_it_with_no_job_at_all(book, tmp_path, monkeypatch):  # noqa: F811
-    """The pass itself (`runner._language`) with an empty queue — Mattias's case after the update — raises the line."""
-    path = _mined_out(book, tmp_path)
-    monkeypatch.setattr(runner, "_blocked", lambda steps, lang, job, asked=False: None)
+def _quiet_run(book, monkeypatch):  # noqa: F811
+    """Connect's real loop (`runner.run`) on the book's steps, everything but the offer kept still."""
+    monkeypatch.setattr(runner, "_blocked", lambda steps, lang, job, asked=False: "held")
     monkeypatch.setattr(runner, "_after_mining", lambda *a, **k: False)
-    for name in ("mine_line", "store_id"):
-        monkeypatch.setattr(book["steps"], name, lambda lang: [])
-    monkeypatch.setattr(book["steps"], "prepare", lambda lang, ledger: None)
+    monkeypatch.setattr(runner, "_finish_undos", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_consume", lambda *a, **k: False)
+    monkeypatch.setattr(book["steps"], "update_staged", lambda: False)
+    monkeypatch.setattr(book["steps"], "enabled", lambda: True)
+
+
+def test_connects_run_offers_it_with_an_empty_queue(book, tmp_path, monkeypatch):  # noqa: F811
+    """r2 B1, through the real loop (`runner.run`): no job open at all — Mattias's case after the update — and the
+    line is raised at its first look."""
+    path = _mined_out(book, tmp_path)
+    _quiet_run(book, monkeypatch)
     with Ledger(path) as ledger:
-        runner._language(book["steps"], ledger, "ja", set(), set(), {"needs": []})
+        runner.run({}, ["ja"], steps=book["steps"], ledger=ledger, sleep=lambda s: None, looks=1)
         assert len(_offers(ledger)) == 1
 
 
@@ -334,3 +341,25 @@ def test_a_moved_book_is_the_same_book_asked_once(book, tmp_path, monkeypatch): 
         monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: real(lang, book["book"]))
         runner._add_audio_offers(book["steps"], ledger, "ja")
         assert _offers(ledger) == []
+
+
+def test_the_seen_record_is_merged_never_replaced_and_cards_mined_since_are_never_offered(  # noqa: F811
+        book, fake_miner, tmp_path, monkeypatch):  # noqa: F811
+    """r2 B2: a press, then a part mined after the line-up (its cards carry the narrator already), then a press that
+    finds nothing to fill — the row offers nothing, for good: the record kept what each press looked at, and only the
+    cards made before the line-up are ever offered."""
+    from app.connect import add_audio, library
+    _act_book(book, fake_miner, monkeypatch, tmp_path)
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        runner._add_audio_offers(book["steps"], ledger, "ja")         # asked: the 8 cards made before it lined up
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"])
+    assert actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)["filled"] == 5
+    with book["steps"]._open("ja") as store:                          # a part mined since, with the narrator's voice
+        library.record_batch(store, parts[0], {"later": [400]}, "2026-11-12T00:00:00Z")
+    book["anki"].add(400, book["lines"][9], book["lines"][9][:2], audio="[sound:surasura-sa-x.mp3]")
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None
+    got = actions.add_audio_book("ja", book["book"], {"connect_enabled": True}, path=path)
+    assert got["ok"] is False and "sentence audio already" in got["say"]
+    assert actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path) is None

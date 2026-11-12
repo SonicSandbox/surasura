@@ -238,13 +238,22 @@ def add_audio_book(language, epub, settings, path=None, title=None):
         answer = {"ok": False, "say": NONE_TO_ADD.format(title=title, why=", ".join(why) or "none is left")}
     key = runner.book_key(epub, runner_sha(settings, language, epub))
     with book.Ledger(path) as ledger, ledger.transaction():
-        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (
-            f"{runner.ADD_AUDIO_SEEN}{language}:{key}", json.dumps(sorted(int(n) for n in done.get("looked") or ()))))
+        seen_key = f"{runner.ADD_AUDIO_SEEN}{language}:{key}"
+        seen = set(_ids(runner._meta(ledger, seen_key))) | {int(n) for n in done.get("looked") or ()}   # merged (r2 B2)
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (seen_key, json.dumps(sorted(seen))))
         asked = runner._json_or_none(runner._meta(ledger, f"{runner.ADD_AUDIO_ASKED}{language}:{key}")) or {}
         if asked.get("item") is not None:
             ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
                                 "fixed_at IS NULL", (book._now(), language, runner.ADD_AUDIO_NEED, asked["item"]))
     return answer
+
+
+def _ids(text):
+    try:
+        got = json.loads(text or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [int(n) for n in got if isinstance(n, int) and not isinstance(n, bool)] if isinstance(got, list) else []
 
 
 def runner_sha(settings, language, epub):
@@ -263,12 +272,13 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
     Anki isn't asked (the press's plan says what each card holds)."""
     if not (settings or {}).get("connect_enabled") or not item_ids:
         return None
+    import sqlite3
     from app.connect import add_audio as adding
     from app.connect import library, runner
     steps = steps or runner.Steps(settings)
     want = set(item_ids)
     try:
-        with steps._open(language) as store:
+        with steps._open(language) as store:            # one open: the pairs, the book's parts, its notes, its title
             found = None
             for epub, _item, sha in library.paired_books(store):
                 parts = adding.book_items(store, epub)
@@ -278,20 +288,25 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
             if found is None:
                 return None
             notes = adding.made_notes(store, found[1])
+            title = (library.book_of(store, found[0]) or {}).get("title") or \
+                os.path.splitext(os.path.basename(found[0]))[0]
         if not notes or not steps.lined_up(language, found[0]):
             return None
-    except (runner.Wait, runner.Needs, OSError):
-        return None
-    path = path or book.path()
-    seen = []
-    if os.path.exists(path):
-        with book.Ledger(path) as ledger:
-            seen = json.loads(runner._meta(ledger, f"{runner.ADD_AUDIO_SEEN}{language}:"
-                                                   f"{runner.book_key(found[0], found[2])}") or "[]")
-    rest = set(notes) - {int(n) for n in seen}
+        path = path or book.path()
+        asked, seen = None, []
+        if os.path.exists(path):
+            key = runner.book_key(found[0], found[2])
+            with book.Ledger(path) as ledger:
+                asked = runner._json_or_none(runner._meta(ledger, f"{runner.ADD_AUDIO_ASKED}{language}:{key}"))
+                seen = _ids(runner._meta(ledger, f"{runner.ADD_AUDIO_SEEN}{language}:{key}"))
+    except (runner.Wait, runner.Needs, OSError, sqlite3.Error, ValueError):
+        return None                                     # (Connect writing, a record unread: no entry this time)
+    # the cards made before it lined up (the asked record's, else every one: not asked yet) — never those mined since,
+    # which carry the narrator already (r2 B2) — less what a press looked at
+    before = set(_ids(json.dumps(asked["notes"]))) if asked and isinstance(asked.get("notes"), list) else set(notes)
+    rest = (before & set(notes)) - set(seen)
     if not rest:
         return None
-    title = steps.made_before(language, found[0])[0]
     return {"epub": found[0], "title": title, "n": len(rest)}
 
 

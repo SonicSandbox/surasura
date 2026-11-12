@@ -1516,7 +1516,7 @@ NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence aud
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
 NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
-NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's ⋯ "
+NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")
 NEEDS_AUDIO_RUNNING = "Adding the narrator's voice to 「{title}」's cards…"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"

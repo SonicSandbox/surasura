@@ -458,7 +458,7 @@ def test_each_connect_kind_offers_its_own_action_and_dismiss_and_a_gap_waits_for
         (needs.GAP, ("make_cards", "leave_them"))]
     assert [e.data["need_id"] for e in out[:4]] == [9, 7, 5, 4]       # newest first, as the record lists them
     assert [e.unseen for e in out] == [True, False, True, True, True]
-    assert out[4].title == ("Connect lost track of your moves from 2026-10-01 to 2026-10-03: 2 episodes in the top 20 "
+    assert out[4].title == ("Surasura lost track of your moves from 2026-10-01 to 2026-10-03: 2 episodes in the top 20 "
                             "have no cards")
     assert "make_cards" in needs.WIRED_LATER and "leave_them" not in needs.WIRED_LATER
     assert "try_again" in needs.WIRED_LATER     # Mattias #5: the window's ask, hidden until `mine_actions` hooks it

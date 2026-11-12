@@ -137,6 +137,31 @@ def test_the_books_question_names_the_title_and_is_keyed_by_its_parts_bytes(spli
     assert "sync" not in fake_miner.commands()
 
 
+def test_parts_saved_in_shift_jis_or_with_a_bom_join_as_one_utf8_text(tmp_path):
+    """A part an old Windows editor saved (Shift_JIS; UTF-8 with a BOM): each read as a Generate reads it
+    (`path_utils.read_text`), the joined book one UTF-8 text with no BOM inside and no mojibake — what Anki Miner
+    lines up is the words the learner reads."""
+    store, data_dir = _empty("ja")
+    src = _drive("old-windows")
+    one, two = _part_text(1), _part_text(2)
+    for name, data in ((f"{TITLE}_01.txt", one.encode("cp932", errors="ignore")),
+                       (f"{TITLE}_02.txt", "\ufeff".encode("utf-8") + two.encode("utf-8"))):
+        path = _write(os.path.join(src, TITLE, name), "")
+        with open(path, "wb") as f:
+            f.write(data)
+        t = os.path.getmtime(path) - 60
+        os.utime(path, (t, t))
+    with store:
+        _look(store, "ja", store.add_source(src))
+        first = _parts_of(store)[0][0]
+        book = library.split_book(store, first, "ja")
+    with open(book, "rb") as f:
+        raw = f.read()
+    text = raw.decode("utf-8")
+    assert "\ufeff" not in text and "\ufffd" not in text
+    assert one.splitlines()[0][:20] in text and two.splitlines()[0][:20] in text
+
+
 def test_a_part_changed_in_the_library_joins_again_at_the_same_place_under_a_new_key(split):
     """The join is made again when a part's copy changes (its size or time): the same path — a pairing names it —,
     the new text, a new key (a new edition asks again, as an EPUB's does)."""

@@ -928,12 +928,9 @@ def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(ma
     assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
     gate.set()
     assert wait_until(lambda: made, 15)                                # the zip was made after the close
-    for _ in range(50):
-        QApplication.processEvents()
-    for t in threading.enumerate():
-        if t.name == "report-discard":
-            t.join(5)
-    assert _outbox_empty()
+    # its delete waited on, not a count of loop turns: the pool's answer that starts it can come later (GitHub,
+    # Flake-P2, tests/FLAKES.md)
+    assert wait_until(_outbox_empty, 10), "the zip made after the close is deleted"
     w = _press(main)
     assert wait_until(lambda: w.sender_line.text() != "")
     assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1
@@ -1574,6 +1571,28 @@ def test_fresh_u_a_short_screen_gets_a_window_that_fits_and_scrolls_to_the_priva
     QApplication.processEvents()
     top = w.promise.mapTo(w.body_scroll.viewport(), QPoint(0, 0)).y()
     assert 0 <= top and top + w.promise.height() <= w.body_scroll.viewport().height()
+
+
+def test_a_status_line_that_appears_after_the_window_is_sized_keeps_it_inside_a_short_screen(main, monkeypatch):
+    # The stress gate's red (train 27, round 20/20: 442 > 420): on a loaded machine the reports' line ('Nothing saved
+    # yet…') can land after the window was first laid out with its status line hidden. The body's room had been
+    # worked out without that line, the scroll area kept that height, and the window grew by the line past the
+    # screen. A line shown (or gone) works the body's room out again
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 420))
+    w = _press(main)
+    line = w.status.text()
+    assert line                                                       # the reports' line, said
+    for _ in range(3):                                                # (each turn a chance at the old order)
+        w.say("")                                                   # as if it had not landed yet:
+        w.body_scroll.updateGeometry()                                # (the body's content landing meanwhile)
+        w.layout().activate()                                         # the window laid out without it
+        w.resize(w.width(), w.sizeHint().height())
+        w.layout().activate()
+        w.say(line)                                                   # ... and then it lands
+        w.layout().activate()
+        assert w.sizeHint().height() <= 420 and w.minimumSizeHint().height() <= 420 and w.height() <= 420
+    assert w.body_scroll.verticalScrollBar().maximum() > 0
 
 
 def test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it(main, monkeypatch):

@@ -699,12 +699,49 @@ def first_cards(language, settings, data_dir=None):
     return ids
 
 
+NOTHING_TO_COUNT = {"empty": "library"}     # `level_numbers`' answers when nothing can be counted (Disc-T1): no
+ONLY_ARRIVALS = {"empty": "arrivals"}       # show or book at all · only New arrivals' (kept, never counted)
+
+
+def _nothing_to_count(language):
+    """NOTHING_TO_COUNT / ONLY_ARRIVALS when the library store is there and holds no title the count reads (Current,
+    Soon, 6+ Months: `library_store.ANALYSED`), else None — a title there, no store yet or one that can't be read (the
+    shows may still be coming: *Counting*). A read-only look, as `library_rows`'."""
+    from app import library_store
+    from app.path_utils import get_data_path, get_user_files_path
+    try:
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="reader")
+    except Exception:
+        return None
+    if store is None:
+        return None
+    try:
+        tiers = {t for (t,) in store.conn.execute(
+            f"SELECT DISTINCT tier FROM items WHERE tier IN ({', '.join('?' * len(LISTED_TIERS))})", LISTED_TIERS)}
+    except Exception:
+        return None
+    finally:
+        store.close()
+    if tiers & set(library_store.ANALYSED):
+        return None
+    return dict(ONLY_ARRIVALS if tiers else NOTHING_TO_COUNT)
+
+
 def level_numbers(settings, language):
     """(A worker.) The last page's numbers, from the Rarity slider's own recipe -> {"bands" [band keys, slider order],
     "chosen", "automatic", "auto_band" (the band Automatic picks: D13's rule, `word_selection.auto_band`), "words",
     "coverage" (0–100), "every_hours" (None when it can't be said) for the chosen band, and "numbers" {band: {"words",
-    "coverage", "every_hours"}} for every band}; None while nothing is counted yet (an empty library, the shows still
-    being read). `automatic` and the band are the page's preselects (`preselect`)."""
+    "coverage", "every_hours"}} for every band}; None while nothing is counted yet (the shows still being read);
+    NOTHING_TO_COUNT / ONLY_ARRIVALS when nothing could be: no show or book in the library, or only New arrivals'
+    (Disc-T1: never *Counting* for good). `automatic` and the band are the page's preselects (`preselect`)."""
+    numbers = _level_numbers(settings, language)
+    if numbers is None:
+        return _nothing_to_count(language)
+    return numbers
+
+
+def _level_numbers(settings, language):
     from app import analyzer, library_store, token_index, word_selection
     from app.path_utils import get_data_path, get_user_files_path
     from app.zh_script import effective

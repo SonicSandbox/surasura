@@ -47,7 +47,7 @@ Section = namedtuple("Section", "id icon name")
 Row = namedtuple("Row",
                  "id section kind keys label help tip words options adv group sub when door reaches target bounds")
 
-MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader")
+MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modules.irodori")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
 SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
@@ -85,6 +85,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
+    "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
 
 
@@ -232,6 +233,8 @@ ROWS = (
          group="from_library", when=_CONNECT),
     _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
+    # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
+    _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
@@ -395,6 +398,8 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
+    _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
     # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
     # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
     # Content's *Sort again or start over…* offers it)
@@ -415,12 +420,14 @@ NOT_SHOWN = {
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
+    "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
     "open_count": "state: a launch counter",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
+    "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",

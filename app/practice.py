@@ -33,6 +33,9 @@ NAME = "Piyo ぴよ"
 # The first message to send once it's added (Settings' *Copy a starter message*, the copied setup's last line): a plain
 # request any AI app understands with the server's instructions. A short story is a good first try (Sonic, 2026-10-30).
 STARTER = "Start a Surasura practice round: write me a short story with 5 of my words."
+# Piyo's *Send report*: what the server hands the open window (app/instance_name.ask_window) — this word, then the
+# report's words and what was expected — and the window opens Report a problem with them (app/qt/report.py)
+REPORT_ARG = "--piyo-report"
 MODES = ("chat", "reading")
 READING_SHARE = 0.03            # a reading's new words: under 3 % of its words (Sonic, P-1)
 RECENT = 100                    # the words a round practises first (`practise_terms`), at most

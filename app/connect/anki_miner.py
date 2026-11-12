@@ -247,6 +247,43 @@ def stamp(path):
         return None
 
 
+WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
+
+
+def window_open():
+    """True while Anki Miner's own window is open: a marker in its home (`home()`) still held — every window holds one
+    for its lifetime, one started past its "already running" warning included (3.11's `gui/app.py`
+    `_hold_window_marker`). On Windows a held QLockFile is open with reads shared only, so opening it to write is
+    refused while its window lives and allowed once it has gone (a killed window's marker naming a pid Windows gave
+    another program reads as closed, never "open" for good) and its pid must still run (a refused open alone is also a
+    read-only leftover's); elsewhere the pid in its name must still run. An older
+    Anki Miner without markers reads as closed. Never raises (a file read: a worker's)."""
+    from app import locks
+    try:
+        names = [e.name for e in os.scandir(home()) if e.is_file()]
+    except OSError:
+        return False
+    for name in names:
+        if not (name.startswith(WINDOW_MARKER) and name.endswith(".lock")):
+            continue
+        pid = name[len(WINDOW_MARKER):-len(".lock")]
+        if not pid.isdigit():
+            continue
+        if sys.platform != "win32":
+            if locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
+            continue
+        try:
+            with open(os.path.join(home(), name), "r+b"):
+                pass                                    # not held: its window has gone
+        except PermissionError:                         # held — or a read-only / refused leftover: its pid says which
+            if locks.holder_alive({"pid": int(pid)}) is not None:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def find(settings):
     """The path of Anki Miner's program, or None when it isn't installed (E7)."""
     chosen = str((settings or {}).get("connect_anki_miner_path") or "").strip()
@@ -880,7 +917,8 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None):
+               known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
+               word_audio=True):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -901,7 +939,9 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only). `from_audio` (Michi-NS, Q5): the
     episode's subtitle was made from its audio (`no_subs`): every card also carries `runfile.FROM_AUDIO_TAG`, so the
     learner can find and check them. `names` (Michi-YT): [folder, name] the cards' Source carries instead of the video's
-    (an online title's fetched video: its transcript's, `online.of`)."""
+    (an online title's fetched video: its transcript's, `online.of`). `word_audio` False (Zh-C: a Chinese run with
+    *Word audio from Google* off, `runfile.word_audio_on`): the run's word-audio field is sent unmapped
+    (`runfile.config`), so no word goes to Google."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -917,7 +957,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names)
+                              reading, from_audio, names, word_audio)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -956,13 +996,22 @@ def before_anki(run_dir, run_id, progress):
     return not os.path.exists(os.path.join(folder, PROGRESS)) and not os.path.exists(os.path.join(folder, "media"))
 
 
+# Zh-C (review SHOULD): Chinese cards are made only with the Anki Miner they were proven with (3.12.0: its Chinese
+# field fix, word audio only into a mapped field); an older one is the update's, said once for the language
+ZH_FROM = (3, 12, 0)
+ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner from Surasura (Settings → Anki & "
+             "mining).")
+
+
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None, from_audio=False, names=None):
+               show=None, reading=None, from_audio=False, names=None, word_audio=True):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
     asks, named = features(info), info.get("features")
+    if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
+        raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)     # nothing sent: the language waits for the update
     if "Z-1" not in asks:
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     if reading is not None and READING not in (named or ()):
@@ -982,7 +1031,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named), tags=tags,
                                   subtitle_offset=subtitle_offset, audio=audio, names=names)
     data = runfile.build(run_dir, language, [episode], profile=profile,
-                         run_config=runfile.config(mapping, info.get("app"), named))
+                         run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     try:            # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)

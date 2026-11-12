@@ -234,6 +234,10 @@ def _int(value):
 # moment's state, as `busy` is (exit 3: try later): the next Generate's stamp ends it. `list: unfinished` tells it from
 # a lock held (Connect waits for a current list, never *Needs you*)
 UNFINISHED = "The last Generate didn't finish, so its list may be cut short. Generate again."
+# Anki busy with a collection operation — its AnkiWeb sync (often the one Surasura asked for just before), Check
+# Database (`anki_connect.is_busy`, #370): a wait that clears by itself, never "failed" or "Anki stopped answering";
+# `anki: busy` tells it from a review (Connect waits on "it's busy", never "while you review")
+ANKI_BUSY = "Anki is busy (syncing, or another operation). Surasura {what} once it has finished."
 # A setting of the language's (Connect names it once for the language: `need`)
 JUNBAN_ONE_DECK = "The automatic reorder runs for one deck only: choose one in the 順 window."
 BACKFILL_ONE_DECK = "Backfill runs for one deck only: choose one in the Backfill window."
@@ -315,6 +319,21 @@ def _reading(loaded, lang):
     script = zh_script.effective(lang, loaded.get("zh_script", "asis"))
     tokenizer = analyzer.ChineseTokenizer(script=script) if lang == "zh" else analyzer.JapaneseTokenizer()
     return tokenizer, script
+
+
+def _sentence_length(loaded):
+    """The learner's *Length* and *Never longer than* for example sentences (logic.context min_chars /
+    preferred_max_chars / max_chars, the analyzer's own fallbacks 10 / 50 / 150) as a book's pick reads them -> (min,
+    preferred max, cap); a value that isn't a whole number ≥ 0 is its default, a max below the min the min, a cap of 0
+    none. Based on the approach in #372 by Mattias."""
+    context = ((loaded or {}).get("logic") or {}).get("context") or {}
+
+    def number(key, default):
+        value = context.get(key, default)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    high = max(low, high)
+    return low, high, max(high, cap) if cap else 0
 
 
 def _phrase_set(loaded, lang):
@@ -805,6 +824,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
         raise CliError("anki-busy", "You're reviewing in Anki. Surasura reorders once you've finished.")
+    if outcome == "anki-busy":
+        raise CliError("anki-busy", ANKI_BUSY.format(what="reorders"), anki="busy")
     if outcome == "busy":
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
@@ -1041,11 +1062,13 @@ def backfill(args):
     if anki_session is not None:
         anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
     try:
-        if anki_connect.invoke("guiReviewActive", url, timeout=5) is True:
+        if anki_connect.patient("guiReviewActive", url) is True:
             raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
         if ids is None:
             ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')
     except anki_connect.AnkiError as e:
+        if anki_connect.is_busy(e):
+            raise CliError("anki-busy", ANKI_BUSY.format(what="fills"), anki="busy") from None
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     out["notes"] = len(ids)
     if not ids:
@@ -1063,6 +1086,8 @@ def backfill(args):
     if report.get("busy"):
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
+    if report.get("anki_busy"):
+        raise CliError("anki-busy", ANKI_BUSY.format(what="fills"), anki="busy")
     if report.get("stands_aside"):
         # P4.1 N2 (FT-1): you put this deck's fields back — nothing filled, a plain line (Connect's step names it)
         return dict(out, skipped=(report.get("problems") or ["Backfill stands aside for this deck."])[0])
@@ -1337,7 +1362,11 @@ def pick(args):
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
                           send_grammar=bool(loaded.get("connect_send_grammar", True)),
-                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set,
+                          # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
+                          # parts (never on the command line): no card from a line inside one
+                          unsure=getattr(args, "unsure", None) or (),
+                          sentence_length=_sentence_length(loaded) if book else None)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup
@@ -1356,7 +1385,8 @@ def pick(args):
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
                                           runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
-                                 run_config=runfile.config(mapping, info.get("app"), named))
+                                 run_config=runfile.config(mapping, info.get("app"), named,
+                                                           word_audio=runfile.word_audio_on(loaded, lang)))
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

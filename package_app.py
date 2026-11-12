@@ -13,7 +13,7 @@ PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, TSUBASA_EXE_NAME, "updater.exe")  
 # The build's one configuration (S3.1 D15): the bundled modules, the Python and SQLite floors, UPX, the window's Qt
 # modules and update.json's parts. packaging/Surasura.spec reads the same file; neither reads a settings.json.
 BUILD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "build_config.json")
-OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect")
+OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect", "irodori")
 
 
 def load_build_config(path=BUILD_CONFIG):
@@ -38,6 +38,10 @@ def load_build_config(path=BUILD_CONFIG):
     never = config.get("never_bundle")
     if not isinstance(never, list) or not never or not all(isinstance(m, str) and m.isidentifier() for m in never):
         problems.append("never_bundle must list the top-level modules no build carries")
+    qt_never = config.get("qt_never_bundle")
+    if not isinstance(qt_never, list) or not all(isinstance(n, str) and n.lower().endswith(".dll") and
+                                                 n == os.path.basename(n) for n in qt_never):
+        problems.append("qt_never_bundle must list file names of the Qt DLLs no build carries")
     release = config.get("release")
     if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
                                                                                          "installer_min_from")):
@@ -118,6 +122,11 @@ def _included_module_test_dirs(modules):
     # Junban: bundled when named, so its suite runs before a build that ships it.
     if modules.get("junban") is True:
         d = os.path.join("modules", "junban", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # Irodori (the AI voice's beta, Iro-AA): bundled when named and present (private, like Koe; off at runtime).
+    if modules.get("irodori") is True:
+        d = os.path.join("modules", "irodori", "tests")
         if os.path.isdir(d):
             dirs.append(d)
     return dirs
@@ -691,6 +700,30 @@ def copy_default_lists(final_dist):
     return written
 
 
+HELP_NEEDS = ("Get started", "Known limits", "The guide", "Questions")    # the help's own docs: never built without them
+
+
+def write_help(final_dist, root=None):
+    """_internal/app/help_index.json: the help Piyo answers from (`app/help_docs.py`), made from the user docs of the
+    checkout being built (`root`, by default the one this code is in) and the window's own words (`app/qt/help_words`),
+    so a program's help is its own version's. -> True, or False (said why): never a build without it."""
+    from app import help_docs
+    path = os.path.join(final_dist, "_internal", help_docs.FILE)
+    try:
+        from app.qt import help_words                     # the window's own words (Settings, the help cards)
+        index = help_docs.write(path, root=os.path.abspath(root or help_docs.ROOT), window=help_words.topics())
+    except Exception as e:
+        print(f"Build failed: the help index couldn't be made ({type(e).__name__}: {e}).")
+        return False
+    topics = sum(len(t.get("topics") or ()) or 1 for t in index["topics"])
+    missing = [t for t in HELP_NEEDS if t not in {x["title"] for x in index["topics"]}]
+    if missing:
+        print(f"Build failed: the help index has no {', '.join(missing)} (its docs missing?).")
+        return False
+    print(f"Help: {topics} topics in _internal/{help_docs.FILE.replace(os.sep, '/')}")
+    return True
+
+
 def write_build_stamp(final_dist, version, build_id, data_name, shape):
     """_internal/build_stamp.json {version, build_id, data_name, install_shape} (S3.1 D18): each program compares its
     own with it at start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>);
@@ -807,6 +840,12 @@ def check_program(final_dist, config):
         extra = [m for m in pyds if m not in config["qt_modules"] and m != "sip"]
         if extra:
             failures.append(f"PyQt6 modules the window doesn't use were bundled: {extra}")
+        never = {n.lower() for n in config["qt_never_bundle"]}
+        carried_qt = sorted(os.path.relpath(os.path.join(d, n), internal).replace(os.sep, "/")
+                            for d, _dirs, files in os.walk(qt_folder) for n in files if n.lower() in never)
+        if carried_qt:
+            failures.append(f"the program carries {carried_qt}, which build_config's qt_never_bundle keeps out of "
+                            "every build (Qt-third-party-notices.txt doesn't list what they carry)")
     # The bundled software's licence texts: INDEX.txt names every part the program carries, each with its texts.
     failures += check_licences(final_dist)
     facts["licences"] = [f"{row[0]} {row[1]}" for row in read_licence_index(final_dist) or ()]
@@ -881,6 +920,9 @@ LICENCE_DIR = ("_internal", "licenses")
 LICENCE_INDEX = "INDEX.txt"
 LICENCE_FILE_NAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
 QT_LICENCES = ("PyQt6", "PyQt6-Qt6")            # the window's: a program with PyQt6 never ships without them
+# Qt's own third-party components (PCRE2, FreeType, HarfBuzz, libpng …), written by scripts/build_qt_notices.py for
+# the Qt version its first line names: PyQt6-Qt6's row carries it, at that version (check_licences).
+QT_NOTICES = "Qt-third-party-notices.txt"
 # Licence texts a bundled part's own files lack, as its upstream repository holds them (packaging/licenses/README.md
 # says where each came from): packaging/licenses/<name>/, added to that distribution's (or part's) files.
 SUPPLIED_LICENCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "licenses")
@@ -1147,7 +1189,28 @@ def check_licences(final_dist, dists=None):
     if os.path.isdir(os.path.join(final_dist, "_internal", "PyQt6")):
         failures += [f"{index} names no licence text of {dist}" for dist in QT_LICENCES
                      if not any(row[0] == dist and row[3] for row in rows)]
+        failures += _check_qt_notices(folder, index, rows)
     return failures + ([] if rows_only else [_STRAY.format(n) for n in unclaimed(final_dist, dists)])
+
+
+def _check_qt_notices(folder, index, rows):
+    """PyQt6-Qt6's row names Qt's third-party notices (QT_NOTICES), written for that Qt version -> the failures."""
+    for name, version, _licence, files in rows:
+        if name != "PyQt6-Qt6":
+            continue
+        notices = [rel for rel in files if rel.split("/")[-1] == QT_NOTICES]
+        if not notices:
+            return [f"{index} names no {QT_NOTICES} for PyQt6-Qt6 {version}: Qt's own third-party components' "
+                    "notices (packaging/licenses/PyQt6-Qt6/, scripts/build_qt_notices.py)"]
+        try:
+            with open(os.path.join(folder, *notices[0].split("/")), encoding="utf-8") as f:
+                first = f.readline()
+        except (OSError, UnicodeDecodeError):
+            return []                               # missing or empty: the row's files check says so
+        if first.split(" ", 2)[:2] != ["Qt", version]:
+            return [f"{QT_NOTICES} was written for {' '.join(first.split(' ', 2)[:2]) or 'no Qt version'}, but the "
+                    f"program carries PyQt6-Qt6 {version}: run scripts/build_qt_notices.py {version}"]
+    return []
 
 
 _STRAY = ("the program carries {}, which comes from neither this Python, nor a package it has installed, nor a part with "
@@ -1447,6 +1510,10 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             shutil.copy2(src, dst)
         else:
             print(f"Warning: Documentation file not found: {src}")
+
+    # 3a. Piyo's help: the user docs above (and the window's own words) as this version's help index.
+    if not write_help(final_dist):
+        return False
 
     # 3b. The bundled software's licence texts, into _internal/licenses/ with its INDEX.txt: a part without one stops
     #     the build here (unless LICENCE_EXCEPTIONS names it).

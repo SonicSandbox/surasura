@@ -28,6 +28,12 @@ Also in the app: **Settings › App › Data credits**.
 - [AniList](https://anilist.co) · covers, airing status
 - [YouTube](https://www.youtube.com) · video thumbnails
 
+## AI sentence audio (beta, only once installed)
+- [Irodori-TTS](https://github.com/Aratako/Irodori-TTS) v4.1 Small + [Irodori-TTS-Server](https://github.com/Aratako/Irodori-TTS-Server) · Aratako · MIT · no copying a real person's voice without consent
+- [Semantic-DACVAE-Japanese](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim) · Aratako · MIT
+- [SilentCipher](https://github.com/SesameAILabs/silentcipher) watermark · Sony · MIT
+- [uv](https://github.com/astral-sh/uv) · Astral · MIT / Apache 2.0 · PyTorch · BSD
+
 ## Logos
 - Anki® · Ankitects Pty Ltd · icon © Alex Fraser, AGPL-3.0 · not affiliated
 - [Anki Miner](https://github.com/0xzerolight/anki_miner) icon · © 0xzerolight · GPL-3.0

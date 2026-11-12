@@ -481,8 +481,8 @@ def _ep(st, n=5):
 
 def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
     """WF fix 3 (adversary S2 / IK S1), as amended by Sonic 2026-10-22 (laptop round 5, M-3 A): *Not timed* is a warn
-    *Waiting* with no *Mine now* (its way on is *Mine anyway* in Needs you) — its tip the wait's own, never "Click to
-    mine it now". A wait on the battery or on Anki is *Mine now* as every *Waiting* is: on battery the press is the
+    *Waiting* with no *Mine now* (its way on is *Mine anyway* in Needs you) — never "Click to mine it now"; since
+    Michi-NT (Mattias #XP44T6) its button is *Check again* (`tests/qt/test_nt_check_again.py`). A wait on the battery or on Anki is *Mine now* as every *Waiting* is: on battery the press is the
     yes for that one episode, waiting for Anki it goes first once Anki answers, and the tip says which. A *Waiting* for
     its turn stays the *Mine now* button."""
     from app.connect import runner
@@ -492,7 +492,7 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
                                                1, 0, 0), "video")
     assert (st.kind, st.tone) == ("waiting", "warn")
     name, tip, ask = rows.action_of(st, (_ep(st),))
-    assert (name, ask) == ("status", None) and tip == st.tip and "Click to mine it now" not in tip
+    assert name == rows.CHECK and ask.ids == (5,) and "Click to mine it now" not in tip
     for kind, reason, says in ((feed.ANKI, runner.ANKI_CLOSED, "goes first once Anki answers"),
                                (feed.BATTERY, runner.ON_BATTERY, "mine this one now, on battery")):
         st = view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
@@ -734,8 +734,9 @@ def test_row28_a_grey_waiting_episodes_menu_offers_mine_now_and_it_asks_for_that
 def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
     """IK-1: one rule with the pill — the episode's ⋯ offers *Mine now* exactly when `rows.action_of` says "mine-now"
     for that episode, whatever the stone's status (a grey *Waiting*, a wait on Anki or on the battery, …): asked of the
-    rule itself, so a change to what the rule offers needs no change here. *Not timed*, a file in Anki, one being mined
-    and no status at all are fixed cases: nothing to ask, no entry, nothing asked."""
+    rule itself, so a change to what the rule offers needs no change here. A file in Anki, one being mined and no
+    status at all are fixed cases: nothing to ask, no entry, nothing asked; *Not timed* offers *Check again* alone
+    (Michi-NT), never *Mine now*."""
     from app.connect import runner
     from app.services import view_rows
     _seed, win, writer = act()
@@ -752,7 +753,9 @@ def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
                                                       "not timed to its video", 1, 0, 0), "video")
     in_anki = _ep(view_rows.Status("in_anki", "In Anki", "Its cards are in Anki", "ok"))._replace(cards=4)
     mining = _ep(view_rows.Status("mining", "Mining", "Being mined now", "accent"))._replace(mining=True)
-    for ep in (_ep(not_timed), in_anki, mining, _ep(None)):
+    assert [e.name for e in win.mine.episode_entries(row, _ep(not_timed))] == ["ep-" + rows.CHECK]
+    assert _mine_now(win.items.episode_entries(row, _ep(not_timed))) == []
+    for ep in (in_anki, mining, _ep(None)):
         assert win.mine.episode_entries(row, ep) == [], ep.status
         assert _mine_now(win.items.episode_entries(row, ep)) == [], ep.status
     assert asks(writer) == []

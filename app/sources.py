@@ -976,6 +976,65 @@ def _drop(part):
         pass
 
 
+# --- S5's rules for writing a copy in `Library`: the look's, and Connect's re-timed subtitle's (Michi-NT2) -------- #
+
+def inside_library(data_dir, rel):
+    """The full path of `rel` (the store's `rel_path`) when it is inside the data folder's `Library` (through any
+    folder link too: a `Library` that leads elsewhere is never written), else None — a hato / 2.x file is never one."""
+    if not rel:
+        return None
+    parts = rel.split("/")
+    if len(parts) < 2 or ls.path_key(parts[0]) != ls.path_key(ls.CONTENT_FOLDER) or ".." in parts:
+        return None
+    full = os.path.join(data_dir, *parts)
+    home = ls.path_key(os.path.realpath(data_dir)).rstrip("/")
+    lib = ls.path_key(os.path.realpath(os.path.join(data_dir, ls.CONTENT_FOLDER))).rstrip("/")
+    real = ls.path_key(os.path.realpath(full))
+    if not lib.startswith(home + "/") or not real.startswith(lib + "/"):
+        return None
+    return full
+
+
+def trash_copy(data_dir, full):
+    """The old copy *copied* into the data folder's `.trash` (purged 30 days on: a fresh time — `copyfile`, never
+    the old copy's own — and its clock restarted) -> the trash file's path."""
+    trash = os.path.join(data_dir, ".trash")
+    os.makedirs(trash, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(full))
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    name, n = f"{base}_{stamp}{ext}", 1
+    while os.path.exists(os.path.join(trash, name)):
+        name, n = f"{base}_{stamp}_{n}{ext}", n + 1
+    dst = os.path.join(trash, name)
+    shutil.copyfile(full, dst)
+    restart_trash_clock(dst)
+    return dst
+
+
+def put_copy(data_dir, full, part):
+    """S5: new bytes, written whole in `part` beside the copy `full`, put in its place — the old copy *copied* into
+    the trash first (`trash_copy`), then `os.replace` at once -> True; False when the trash can't take it or the copy
+    is held open (the copy and the trash as they were, `part` removed)."""
+    try:                                                 # (a7) new bytes dated as the copy they replace — a v2
+        new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
+        if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
+            os.utime(part)                               # it keeps the copy's own time instead
+    except OSError:
+        pass
+    try:
+        kept = trash_copy(data_dir, full)
+    except OSError:
+        _drop(part)
+        return False
+    try:
+        os.replace(part, full)
+    except OSError:                                      # the copy held open: it stays as it was, the trash too
+        _drop(part)
+        _drop(kept)
+        return False
+    return True
+
+
 def _stat_of(path):
     """(size, mtime_ns) of a file, or None (gone, unreadable)."""
     try:
@@ -3195,20 +3254,8 @@ class _Look:
     # --- writing into Library -------------------------------------------------------------------------------------- #
 
     def _inside(self, rel):
-        """The full path of `rel` when it is inside the data folder's `Library` (through any folder link too: a
-        `Library` that leads elsewhere is never written), else None."""
-        if not rel:
-            return None
-        parts = rel.split("/")
-        if len(parts) < 2 or ls.path_key(parts[0]) != ls.path_key(ls.CONTENT_FOLDER) or ".." in parts:
-            return None
-        full = os.path.join(self.data_dir, *parts)
-        home = ls.path_key(os.path.realpath(self.data_dir)).rstrip("/")
-        lib = ls.path_key(os.path.realpath(os.path.join(self.data_dir, ls.CONTENT_FOLDER))).rstrip("/")
-        real = ls.path_key(os.path.realpath(full))
-        if not lib.startswith(home + "/") or not real.startswith(lib + "/"):
-            return None
-        return full
+        """`inside_library` for this look's data folder."""
+        return inside_library(self.data_dir, rel)
 
     def _checked_copy(self, path, st, part):
         """The original into `part`, as listed: its sha256, or None (it changed while copied: `part` removed)."""
@@ -3256,21 +3303,6 @@ class _Look:
         self.made.add(rel)
         return rel
 
-    def _trash_copy(self, full):
-        """The old copy *copied* into the data folder's `.trash` (purged 30 days on: a fresh time — `copyfile`, never
-        the old copy's own — and its clock restarted) -> the trash file's path."""
-        trash = os.path.join(self.data_dir, ".trash")
-        os.makedirs(trash, exist_ok=True)
-        base, ext = os.path.splitext(os.path.basename(full))
-        stamp = time.strftime("%Y%m%d%H%M%S")
-        name, n = f"{base}_{stamp}{ext}", 1
-        while os.path.exists(os.path.join(trash, name)):
-            name, n = f"{base}_{stamp}_{n}{ext}", n + 1
-        dst = os.path.join(trash, name)
-        shutil.copyfile(full, dst)
-        restart_trash_clock(dst)
-        return dst
-
     def _refuses(self, rel, st):
         """S5's refusals, before anything is read: a copy outside `Library` (a hato / 2.x file is never rewritten),
         none there, an empty original or one under half the copy's size."""
@@ -3298,24 +3330,7 @@ class _Look:
         if sha == old_sha:
             _drop(part)
             return "same", sha
-        try:                                                 # (a7) new bytes dated as the copy they replace — a v2
-            new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
-            if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
-                os.utime(part)                               # it keeps the copy's own time instead
-        except OSError:
-            pass
-        try:
-            kept = self._trash_copy(full)
-        except OSError:
-            _drop(part)
-            return "wait", None
-        try:
-            os.replace(part, full)
-        except OSError:                                      # the copy held open: it stays as it was, the trash too
-            _drop(part)
-            _drop(kept)
-            return "wait", None
-        return "done", sha
+        return ("done", sha) if put_copy(self.data_dir, full, part) else ("wait", None)
 
     def _restore(self, known):
         """Item 8a: a live item (any place) whose copy in `Library` is gone — the store says 'missing' (the data folder

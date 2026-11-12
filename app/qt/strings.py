@@ -104,6 +104,10 @@ ITEM_MENU = {
     "split": ("Split here…", "Make the episodes after this point a part of its own (one Undo joins them back)"),
     "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
     "cover": ("Change cover…", "Choose the picture it shows"),
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    "add-audio": ("Add the narrator's voice…", "{n} of its cards Connect made can get their sentence in the narrator's "
+                                               "voice: only an empty sentence-audio field is filled, nothing else on "
+                                               "the card changes. Undo takes it back"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
     # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
@@ -476,6 +480,15 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 ROWS_ACTION_NAMES["try-again"] = "Try again"
 ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
                       False: "{tip}\n• Click to try its {n} files again: their cards made so far are kept"}
+# Michi-NT (Mattias #XP44T6; PROVISIONAL words): a *Not timed* pill checks its timing again — its subtitle, or the same
+# subtitle re-timed beside its video (where tsubasa writes one it fixed)
+ROWS_ACTION_NAMES["check-again"] = "Check again"
+ROWS_CHECK_AGAIN_TIP = {True: "{tip}\n• Click to check its timing again: a subtitle you re-timed beside its video "
+                              "counts too",
+                        False: "{tip}\n• Click to check the timing of its {n} episodes again: a subtitle you re-timed "
+                               "beside its video counts too"}
+CHECK_AGAIN_NOTHING = "Nothing to check again: its episode isn't waiting on its timing any more."
+CHECK_AGAIN_FAILED = "Its timing couldn't be checked again: {why}"
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -1370,6 +1383,13 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                              "takes it back"),
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
+    # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
+    "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
+                                         "card's sentence. Its audiobook, if you have it, sounds better"),
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    "add_audio": ("Add the narrator's voice", "Each of those cards gets its sentence in the narrator's voice: only an "
+                                              "empty sentence-audio field is filled, nothing else on the card changes, "
+                                              "your reviews stay as they are. Undo takes it back"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1377,6 +1397,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
     # Mattias's field report (3.0.0, #5; PROVISIONAL words)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
+    # Michi-RM3 (PROVISIONAL words)
+    "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki & mining"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
@@ -1420,6 +1442,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_with_hato": ("Find them with hato", "hato looks for their subtitles on jimaku.cc by each show's title, with "
                                               "your jimaku key, and fits each one to its video. From then on it looks "
                                               "for every new video with no subtitle by itself"),
+    # Zh-H (PROVISIONAL): the Chinese library's card — hato 1.3's Chinese sites, on the learner's own keys
+    "find_with_hato_zh": ("Find them with hato", "hato looks for their subtitles on assrt.net, then OpenSubtitles, by "
+                                                 "each show's title, with your own free keys (hato's Settings), and "
+                                                 "fits each one to its video. From then on it looks for every new "
+                                                 "video with no subtitle by itself"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1507,6 +1534,15 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
+NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
+NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
+NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
+                    "tries them again")
+NEEDS_AUDIO_RUNNING = "Connect is looking at 「{title}」's cards for the narrator's voice…"
+NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
+NEEDS_AUDIO_GONE = "Nothing to add there any more"
+NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
+NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
@@ -1523,6 +1559,9 @@ NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, t
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
+NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
+NEEDS_SKIPPED_OWES = "Skipped: its other words still wait, Try again on its row tries them"     # (PROVISIONAL)
 NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"
@@ -1629,6 +1668,11 @@ REPORT_SAVE_TIP = "Keep this report on your list (Ctrl+Enter). Send them all at 
 REPORT_SAVED = "Saved to your list. Note the next one whenever you like"
 REPORT_SAVE_FAILED = "That report couldn't be saved: {why}"
 REPORT_WHERE = "the {tab} tab"
+# Piyo's *Send report*: the learner's AI wrote the report with them and asked to send it; the window
+# shows it in the form for them to read, change and send — nothing is sent until they press Send on What goes
+REPORT_FROM_PIYO = ("Your AI wrote this report with you (Piyo). Read it, change anything, then press Send report: "
+                    "you'll see exactly what goes before anything is sent")
+REPORT_FROM_PIYO_WHERE = "{where}, written with Piyo"
 REPORT_LIST_HEADING = "Your list ({n})"
 REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until they're sent or zipped"
 REPORT_LIST_NAME = "Your saved reports"

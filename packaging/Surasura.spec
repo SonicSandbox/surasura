@@ -61,6 +61,7 @@ enable_youtube = modules.get("youtube_downloader") is True
 enable_koe = modules.get("koe") is True
 enable_reels = modules.get("reels") is True
 enable_junban = modules.get("junban") is True
+enable_irodori = modules.get("irodori") is True
 
 # The Immersion Architect (悟) is deprecated (RD-D9) and out of every build from 2.5 on: kept on disk with
 # its own suite, dormant. The dashboard's button hides itself when the import fails. Revival steps:
@@ -94,6 +95,15 @@ if not enable_reels:
 if not enable_junban:
     print("BUILD CONFIG: Excluding Junban module (build_config: junban off)")
     excluded_modules.append('modules.junban')
+
+# Irodori (Iro-AA, the AI voice's beta; private, like Koe): bundled when the build config names it and its folder
+# exists; off at runtime (`enable_irodori`). Its runtime (Python, PyTorch, the model) is never bundled: the learner's
+# *Install* downloads it into their own local data folder.
+irodori_dir = os.path.join(project_root, 'modules', 'irodori')
+enable_irodori = enable_irodori and os.path.isdir(irodori_dir)
+if not enable_irodori:
+    print("BUILD CONFIG: Irodori module off or not present - excluding")
+    excluded_modules.append('modules.irodori')
 
 
 # -----------------------------------------------------------------------------
@@ -180,6 +190,13 @@ if enable_reels:
 if enable_junban:
     hiddenimports.append('modules.junban.patterns_build')
 
+# Irodori's files that are run or read, never imported: the host its own Python runs, the server's pins, the packs.
+if enable_irodori:
+    for name in ('host.py', 'requirements-server.txt', 'requirements-torch-cpu.txt'):
+        datas.append((os.path.join(irodori_dir, name), 'modules/irodori'))
+    datas.append((os.path.join(irodori_dir, 'voices'), 'modules/irodori/voices'))
+    hiddenimports += ['modules.irodori.' + m for m in ('runtime', 'server', 'voice', 'make', 'queue', 'writer')]
+
 # The transcripts preview's scoring child (`youtube_preview`, app_entry.py): the 3.0 window runs it as its own process.
 if enable_youtube:
     hiddenimports.append('modules.youtube_downloader.preview')
@@ -201,6 +218,14 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Qt files the window never uses (Minato-SM, 2026-11-12): build_config's qt_never_bundle — Qt6Pdf.dll and the image
+# plugin that reads a PDF through it, Mesa's software OpenGL — left out, so the program's Qt carries only what
+# packaging/licenses/PyQt6-Qt6/Qt-third-party-notices.txt lists. package_app.py --check refuses a program carrying one.
+qt_never_bundle = build_config.get("qt_never_bundle") if isinstance(build_config, dict) else None
+qt_never = {n.lower() for n in qt_never_bundle if isinstance(n, str)} if isinstance(qt_never_bundle, list) else set()
+a.binaries = [b for b in a.binaries if not (b[0].replace('\\', '/').startswith('PyQt6/')
+                                            and os.path.basename(b[0]).lower() in qt_never)]
 
 pyz = PYZ(a.pure)
 

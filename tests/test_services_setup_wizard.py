@@ -445,9 +445,17 @@ def _index(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_shows(language):
-    assert SW.level_numbers({}, language) is None, "nothing counted: 'Counting your shows…'"
+    assert SW.level_numbers({}, language) is None, "no library store yet: 'Counting your shows…'"
+    from app import library_store
+    data_dir, user_files_dir = roots(language)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(user_files_dir, exist_ok=True)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    # Disc-T1 (Mattias, 2026-11-10): a library with nothing in it is never 'Counting your shows…' for good
+    assert SW.level_numbers({}, language) == SW.NOTHING_TO_COUNT, "an empty library: 'Add a show first'"
     assert not os.path.exists(token_index.store_path_for(language)), "never a store made just to look"
     h.seed_library(language)
+    assert library_store.sync_process(language) == library_store.EXIT_DONE     # found, as the window's sync finds them
     _index(language)
     settings = settings_manager.load_settings()
     numbers = SW.level_numbers(settings, language)
@@ -475,6 +483,34 @@ def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_s
     manual = SW.level_numbers(again, language)
     assert manual["automatic"] is False and manual["chosen"] == "rare" and manual["words"] == previews["rare"][
         "word_count"], "Set up again with a band of your own: that band"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_library_of_only_new_arrivals_is_nothing_to_count_never_counting_for_good(language):
+    """Disc-T1 (the adversary's MUST): Setup's read puts every folder in New arrivals, and *Done* on the sort screen
+    leaves them there — kept, never counted (`token_index`), so the count has nothing to read. That is said
+    (ONLY_ARRIVALS), never *Counting your shows…* for good; one title in Current brings the numbers back."""
+    from app import library_store
+    h.seed_library(language)
+    data_dir, user_files_dir = roots(language)
+    assert library_store.maintain(language, data_dir, user_files_dir, from_folders=True) == library_store.EXIT_DONE
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        ids = [i for (i,) in store.conn.execute("SELECT id FROM items")]
+        assert ids, "the seeded shows are in the store"
+        assert store.set_tier(ids, "arrivals") is not None              # as Setup's read leaves them
+    finally:
+        store.close()
+    _index(language)
+    assert SW.level_numbers(settings_manager.load_settings(), language) == SW.ONLY_ARRIVALS
+    store = library_store.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.set_tier(ids[:1], "now") is not None
+    finally:
+        store.close()
+    _index(language)
+    numbers = SW.level_numbers(settings_manager.load_settings(), language)
+    assert numbers is not None and numbers.get("bands"), "a title in Current: counted"
 
 
 # --- the Content Manager and Generate --------------------------------------------------------------------------- #

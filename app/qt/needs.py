@@ -243,13 +243,14 @@ def _label(text, name, parent, wrap=True):
 # round 8 row 45: the buttons whose press turns an arc (`app/qt/press.py`, `NeedsYou._press`) — a card's answers that
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
-ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
+ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "skip_words", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them", "no_audiobook")
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
-                     "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
+                     "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
+                     "add_audio")                                                  # Kura-AB3 A2: Anki written
 
 
 class NeedsCards(QWidget):
@@ -504,6 +505,46 @@ class NeedsCards(QWidget):
 
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
+def audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
+    """(See below.) A book not lined up yet (`line_up`: its first part) → that part's *Mine now* through the window's
+    own path (`MineActions.ask_items`: its row turns, its job lines the book up, seen and stoppable there)."""
+    got = got or {}
+    mine = getattr(getattr(win, "mine", None), "ask_items", None)
+    if got.get("line_up") is not None and mine is not None:
+        mine(got.get("say") or "", [got["line_up"]])
+        return
+    _audio_added(win, got, title, say, undo, lang, read_settings, failed)
+
+
+def _audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
+    """Kura-AB3 A2: *Add the narrator's voice*'s answer (`actions.add_audio` / `add_audio_book`, from the book's line
+    or its row's ⋯) shown: a toast with its *Undo* (`undo`, `actions.add_audio_undo`, on a worker) whenever something
+    was written — a press stopped part-way too —, else its plain words in the bar (`say`)."""
+    got = got or {}
+    if not got.get("id"):
+        say(got.get("say") or strings.NEEDS_AUDIO_GONE)
+        return
+    title, n = got.get("title") or title, got.get("filled") or 0
+    if not got.get("ok"):
+        text = got.get("say") or strings.NEEDS_AUDIO_GONE
+    elif got.get("not_cut") and got.get("why"):
+        text = strings.NEEDS_AUDIO_SOME.format(n=n, title=title, m=got["not_cut"], why=got["why"])
+    else:
+        text = strings.NEEDS_AUDIO_ADDED.format(n=n, title=title)
+
+    def undone(back):
+        back = back or {}
+        if not back.get("ok"):
+            say(back.get("say") or strings.NEEDS_AUDIO_GONE)
+        elif back.get("kept"):
+            say(strings.NEEDS_AUDIO_UNDONE_KEPT.format(n=back["emptied"], k=back["kept"]))
+        else:
+            say(strings.NEEDS_AUDIO_UNDONE.format(n=back["emptied"]))
+    rid = got["id"]
+    win.toasts.show(text, undo=lambda: bridge.run_in_worker(lambda: undo(lang, rid, read_settings() or {}),
+                                                            then=undone, failed=failed))
+
+
 def _connect_callable(module, name):
     """Connect's call for an action, or None (Connect not installed: its button hidden)."""
     try:
@@ -511,6 +552,17 @@ def _connect_callable(module, name):
         return getattr(mod, name, None)
     except Exception:
         return None
+
+
+def _ai_audio_on(settings, language):
+    """(A worker.) Iro-AA: the AI voice's beta on, installed, its writer there and the language Japanese
+    (`modules.irodori.on`: settings + a file look) — the book's *Make AI audio (beta)* shown; the module absent or
+    failing: never."""
+    try:
+        from modules import irodori
+        return bool(irodori.on(settings, language))
+    except Exception:
+        return False
 
 
 def _find_miner(settings):
@@ -767,7 +819,13 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick"),
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
                               "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
-                              "book_audiobook": _connect_callable("actions", "book_audiobook")}     # Kura-AB2
+                              "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
+                              "book_ai_audio": _connect_callable("actions", "book_ai_audio"),       # Iro-AA
+                              "skip_words": _connect_callable("actions", "skip_refused"),     # Michi-RM3
+                              "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
+                              "add_audio_undo": _connect_callable("actions", "add_audio_undo")}
+        self.ai_audio_on = _ai_audio_on          # Iro-AA (a worker; tests replace it)
+        self._ai_audio = False                   # ... its last answer, left by the gather for `has`
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -937,7 +995,7 @@ class NeedsYou(QObject):
         view, failures, lang, data_dir = self.view, self.failures, self.language, self.data_dir
         read_connect, read_asks, find_offline, read_settings = (self.read_connect, self.read_asks,
                                                                  self.find_offline, self.read_settings)
-        find_miner = self.find_miner
+        find_miner, ai_audio_on = self.find_miner, self.ai_audio_on
         gone_folders = self.gone_folders
         library = self._library()
         emptied = self._emptied()
@@ -946,6 +1004,8 @@ class NeedsYou(QObject):
         def gather():
             settings = read_settings() or {}
             connect = read_connect(lang) if settings.get("connect_enabled") else None
+            # Iro-AA: read here, on the worker; the window's thread reads only the bool it leaves (`has`)
+            self._ai_audio = bool(ai_audio_on(settings, lang)) if connect is not None else False
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()
@@ -1047,12 +1107,17 @@ class NeedsYou(QObject):
             return name in self.hooks
         if name in self.WRITES:
             return getattr(self.win, "moves", None) is not None
-        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
+        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki", "skip_words"):
             return self.connect_calls.get(name) is not None
         if name in ("get_speech_model", "no_speech_model"):
             return self.connect_calls.get("speech_model") is not None
         if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
             return self.connect_calls.get("book_audiobook") is not None
+        if name == "ai_audio":                       # Iro-AA: ... and the AI voice's, while its beta is on + installed
+            return self._ai_audio and self.connect_calls.get("book_ai_audio") is not None
+        if name == "add_audio":                      # Kura-AB3 A2: Connect's, its Undo too
+            return self.connect_calls.get("add_audio") is not None and \
+                self.connect_calls.get("add_audio_undo") is not None
         if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
@@ -1579,6 +1644,47 @@ class NeedsYou(QObject):
             self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("no_audiobook", entry, run, then=done)
 
+    def _do_ai_audio(self, entry, _line):
+        """Iro-AA *Make AI audio (beta)*: the book's answer kept (`actions.book_ai_audio`), Connect kicked."""
+        answer, kick, lang, read_settings = (self.connect_calls["book_ai_audio"], self.connect_calls.get("kick"),
+                                             self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = answer(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("ai_audio", entry)
+            self._connect_done(strings.NEEDS_AI_AUDIO if ok else strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press("ai_audio", entry, run, then=done)
+
+    # Kura-AB3 A2 (PROVISIONAL): a book lined up after some of its cards were made — the narrator's voice on them
+    def _do_add_audio(self, entry, _line):
+        """*Add the narrator's voice*: `actions.add_audio` on a worker (the arc turns meanwhile: Anki Miner cuts the
+        clips, Anki's empty sentence-audio fields are filled under the one writer), then a toast with its *Undo* (the
+        record's own: `actions.add_audio_undo`, on a worker too). A "couldn't" leaves the line, pressed again it asks
+        again."""
+        add, kick = self.connect_calls["add_audio"], self.connect_calls.get("kick")
+        lang, read_settings, need_id = self.language, self.read_settings, entry.data["need_id"]
+
+        def run():
+            got = add(lang, need_id, read_settings() or {})
+            if (got or {}).get("id") and kick is not None:
+                kick(read_settings() or {})          # Anki's sync it owes, sent by Connect (r1 N4)
+            return got
+
+        def done(got):
+            if not (got or {}).get("ok"):
+                self._stays("add_audio", entry)
+            self.refresh()
+            audio_added(self.win, got, entry.title, self._say, self.connect_calls["add_audio_undo"], lang,
+                        read_settings, self._failed)
+        self._press("add_audio", entry, run, then=done)
+
     # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
     def _do_get_speech_model(self, entry, _line):
         self._speech_model(entry, True)
@@ -1889,6 +1995,26 @@ class NeedsYou(QObject):
             self._connect_done(strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("mine_anyway", entry, run, then=done)
 
+    def _do_skip_words(self, entry, _line):
+        """Michi-RM3: *Skip this word* — those words left out for good (`actions.skip_refused`), the part's other cards
+        filled at Connect's next look (kicked); the card goes. Nothing to skip any more: said, the card stays."""
+        skip, kick, lang, read_settings = (self.connect_calls["skip_words"], self.connect_calls.get("kick"),
+                                           self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+
+        def run():
+            ok = skip(lang, need_id)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays("skip_words", entry)
+            self._connect_done(strings.NEEDS_SKIPPED if ok == "on" else strings.NEEDS_SKIPPED_OWES if ok
+                               else strings.NEEDS_SKIPPED_NOT)       # (review r2 N1: never "made next" untrue)
+        self._press("skip_words", entry, run, then=done)
+
     def _do_ask_hato(self, entry, _line):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
         self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
@@ -1993,13 +2119,15 @@ class NeedsYou(QObject):
         self._press("make_from_audio", entry, lambda: make(registry, lang, ids, read_settings() or {}, title, install,
                                                            cancel), line=line, then=done, goes=False)
 
-    def _do_find_with_hato(self, entry, _line):
-        """*Find them with hato* (NS-2: the one press, the first time): the yes kept (`no_subs.SETTING`, through the
-        settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look — after it
-        the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+    def _do_find_with_hato(self, entry, _line, press="find_with_hato", language="ja"):
+        """*Find them with hato* (NS-2: the one press, the first time): its card's library's yes kept
+        (`no_subs.setting`: the action names the library — Zh-H — never the page's library of the moment, which a switch
+        changes before the old cards go), through the settings service; Surasura's tools entry written again (hato's
+        `register` listed: Q3), then a look — after it the waiting videos go to hato on its own worker, after
+        the look's track fill (`SourceLooks._ask_hato`)."""
         from app import no_subs
         settings = self.win.services.settings
-        settings.set({no_subs.SETTING: True})
+        settings.set({no_subs.setting(language): True})
         looks = getattr(self.win, "looks", None)
         read_settings = self.read_settings
 
@@ -2017,7 +2145,11 @@ class NeedsYou(QObject):
             if looks is not None and hasattr(looks, "asked"):
                 looks.asked(refreshed=True)
             self.refresh()
-        self._press("find_with_hato", entry, run, then=done, goes=False)
+        self._press(press, entry, run, then=done, goes=False)
+
+    def _do_find_with_hato_zh(self, entry, line):
+        """Zh-H: the Chinese library's *Find them with hato* (its own words; the same press)."""
+        self._do_find_with_hato(entry, line, press="find_with_hato_zh", language="zh")
 
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until

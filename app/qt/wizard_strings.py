@@ -61,8 +61,7 @@ LANGUAGE_HINT = "← → to choose · Enter to go on"
 LANGUAGE_GLYPHS = {"ja": "日本語", "zh": "中文"}
 LANGUAGE_WORDS = {"ja": "Japanese", "zh": "Chinese"}
 LANGUAGE_TIPS = {"ja": "Japanese: your list, your example sentences and your cards in Japanese.",
-                 "zh": "Chinese: your list and your example sentences in Chinese. Cards are made in Japanese only "
-                       "for now."}
+                 "zh": "Chinese: your list, your example sentences and your cards in Chinese."}
 LANGUAGE_CHOICE_NAME = "Language"
 
 # --- 2 · what you know ------------------------------------------------------------------------------------------------ #
@@ -249,7 +248,8 @@ BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. T
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"
 CARDS_LINE = "From the episode you're watching: the line, its audio and a picture."
-CARDS_LINE_ZH = "Surasura makes cards in Japanese only for now: Chinese cards come later. You can skip this step."
+# Zh-C (2026-11-12; words PROVISIONAL): Chinese cards are made too — the line's audio and picture, the word's pinyin
+CARDS_LINE_ZH = "From the episode you're watching: the line, its audio, a picture and the word's pinyin."
 CARDS_PICTURE_NAME = "A line from an episode becomes an Anki card with its audio and a picture"
 CARDS_LINE_SAMPLE = {"ja": ("この店のラーメンは本当に絶品だ", "ぜっぴん", "絶品"),
                      "zh": ("这家店的拉面真是绝品", "juépǐn", "绝品")}
@@ -310,6 +310,34 @@ MINER_ASK_NEW_DECK = ("Which deck should Anki Miner put your new cards in? A new
                       "deck. Choose it, then press Finish its setup again.")
 MINER_ASK_NOTE = ("Which note type should Anki Miner make your cards with? Choose it, then press Finish its setup "
                   "again.")
+# Zh-C (PROVISIONAL words): Chinese offers Anki Miner Note first (`miner_settings.AM_NOTE`), and a note type of your
+# own is mapped here, field by field (`miner_settings.MAPPED`)
+MINER_ASK_NOTE_ZH = ("Which note type should Anki Miner make your Chinese cards with? Anki Miner Note shows the pinyin "
+                     "in tone colours, the measure word and the other script: get it, import it into Anki, then press "
+                     "Finish its setup again — or choose your own note type.")
+GET_AM_NOTE = "Get Anki Miner Note…"
+GET_AM_NOTE_TIP = ("Opens Anki Miner Note's page in your browser: download its .apkg file and open it to add it to "
+                   "Anki.\n• Free, made by Anki Miner's author")
+MINER_ASK_MAP = "Which of “{note}”'s fields gets what? Check each one, then press Finish its setup again."
+MAP_PROBLEMS = {"sentence": "Choose a field for the sentence: every card needs one.",
+                "word": "The first field holds the word: choose other fields for the rest.",
+                "gone": "That note type has changed: check the fields again.",
+                "twice": "A field is chosen twice: give each its own."}
+MAP_NONE = "— none —"
+MAP_ROLES = {"word": "Word", "sentence": "Sentence", "expression_reading": "Pinyin", "expression_pinyin":
+             "Pinyin in tone colours", "definition": "Meaning", "glossary": "Dictionary entry", "audio":
+             "Sentence audio", "picture": "Picture", "expression_audio": "Word audio", "measure_word": "Measure word",
+             "expression_traditional": "Other script", "source": "Where it's from"}
+MAP_WORD_TIP = "Anki Miner always puts the word in the note type's first field."
+MAP_ROLE_TIP = "The field Anki Miner fills with this. None: left out."
+MAP_ROLE_TIPS = {"expression_reading": "The word's pinyin with tone marks (yín háng). None: left out.",
+                 "expression_pinyin": "The word's pinyin, each syllable in its tone's colour. None: left out.",
+                 "expression_audio": "The word read aloud: only while Word audio from Google is on (Settings). "
+                                     "None: left out.",
+                 "measure_word": "The word's measure word, from CC-CEDICT. None: left out.",
+                 "expression_traditional": "The word in Traditional characters (or Simplified), when they differ. "
+                                           "None: left out.",
+                 "source": "The episode or book the card comes from. None: left out."}
 MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't make your cards with it. Choose another "
                     "note type, then press Finish its setup again.")
 SETUP_SAID = {"set-up": "Anki Miner's setup is finished.{detail}",
@@ -347,6 +375,7 @@ COUNTING = "Counting your shows…"
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
 DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."
+NO_SORTED = "Your shows wait in New arrivals: sort one into Current, and the numbers show here."  # Disc-T1, PROVISIONAL
 # a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
 MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."
 MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."

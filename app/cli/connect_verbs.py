@@ -210,7 +210,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     if loaded is None:
         loaded = settings()
     from app import tools_entry
-    if not tools_entry.registers(loaded):       # set-up, not automation (P4.1 row 4.1.1): registers with it off too
+    if not tools_entry.registers(loaded, lang):     # set-up, not automation (P4.1 row 4.1.1): registers with it off
         return {"file_id": None, "landed": "skipped", "tier": None, "position": None, "pairing": None,
                 "content_key": key, "skipped": PREVIEW_OFF}
     require_set_up(lang)
@@ -457,7 +457,8 @@ def _woken_since(summary):
 
 def _loop(loaded, languages, looks=None):
     """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
-    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
+    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits —
+    and a run stopped for a newer build in the program folder starts that build's Connect (Haya-CL)."""
     from app import batch_gc, locks
     from app.connect import kick, runner
     from app.connect.ledger import TooNew
@@ -472,8 +473,14 @@ def _loop(loaded, languages, looks=None):
                 summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
         except TooNew as e:
             raise CliError("needs-you", str(e), ask="Update Surasura") from None
-        if not summary.get("stopped") and (any(_pending(lang) for lang in languages) or _woken_since(summary)):
-            _kick(loaded)               # logged after its last read: the next Connect reads it
+        if summary.get("stopped") == runner.REPLACED:
+            _kick(loaded)               # Haya-CL: a newer build under it: the folder's own Connect takes over
+        elif not summary.get("stopped") and (_woken_since(summary) or (
+                not summary.get("inbox_unread") and any(_pending(lang) for lang in languages))):
+            # logged after its last read: the next Connect reads it. Ended with no window open and an inbox it couldn't
+            # read (Haya-CL): only a kick since its last look starts one — that inbox waits for the next start, never
+            # a Connect started again and again with no window to wait for
+            _kick(loaded)
         return summary
     finally:
         _release_finish(summary, runner)
@@ -609,6 +616,25 @@ def undo(args):
     # the window's sequence too (P3.1 row 3.1.5): the checks, the plain words and the owed sync live in one place
     return undoing.act(loaded, language(args, loaded), job=args.job, shelf_run=args.shelf, confirm=args.confirm,
                        sync=_owe_sync)
+
+
+def add_audio_args(parser):
+    add_language(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--book", metavar="EPUB", help="the book (its EPUB in the library) whose cards get its audiobook's audio")
+    which.add_argument("--undo", metavar="ID", help="take back one *Add audio* (its id, as the answer gave it)")
+    parser.add_argument("--confirm", action="store_true", help="do it; without it, only how many cards it would fill")
+
+
+def add_audio(args):
+    """*Add audio to these cards* (Kura-AB3): the narrator's clip into the empty sentence-audio field of each card
+    Connect made from `--book`, once the book is lined up with its audiobook (`app/connect/add_audio.py`). Without
+    `--confirm`, the counts only (nothing written). `--undo ID` takes one back. Only with Connect on; never while you
+    review."""
+    loaded = settings()
+    from app.connect import add_audio as adding
+    got = adding.act(loaded, language(args, loaded), book=args.book, confirm=args.confirm, undo_id=args.undo)
+    return {k: v for k, v in got.items() if k != "looked"}      # (the notes a press looked at: Connect's own record)
 
 
 def _owe_sync(loaded):

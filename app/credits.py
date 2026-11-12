@@ -66,6 +66,24 @@ COVER_CREDITS = """Covers (only with Download covers on)
 • YouTube — a video's own thumbnail (i.ytimg.com)."""
 
 
+# The AI voice's beta (Iro-AA, `modules/irodori`): downloaded on the learner's *Install* only, never shipped; shown
+# while the module is in the program
+AI_VOICE_CREDITS = """AI sentence audio (beta, only once installed)
+
+• Irodori-TTS v4.1 Small and Irodori-TTS-Server (https://github.com/Aratako/Irodori-TTS) — Aratako, MIT. Its model card asks that no real person's voice be copied without their consent.
+• Semantic-DACVAE-Japanese (the voice's codec) — Aratako, MIT.
+• SilentCipher (the inaudible watermark on every AI clip) — Sony, MIT.
+• Installed with uv (Astral, MIT / Apache 2.0), its own Python and PyTorch (BSD)."""
+
+
+def _ai_voice_here():
+    import importlib.util
+    try:
+        return importlib.util.find_spec("modules.irodori") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 # The user's own content (Sonic, 2026-11-02): the installer's agreement page (packaging/agreement.txt) and README's
 # *Your content* say it in full; the Data credits card ends with it in one line.
 CONTENT_NOTE = """Your content
@@ -80,7 +98,7 @@ SOFTWARE_NOTE = """Surasura and the software it bundles
 
 • Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). It comes with no warranty. Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
 • The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0.
-• Every library and part it bundles keeps its own licence — among them tsubasa (GPL-3.0-or-later), pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0). Each one's licence text is in the program's _internal\\licenses folder, listed in its INDEX.txt with its version; Qt's own third-party components are listed at https://doc.qt.io/qt-6/licenses-used-in-qt.html.
+• Every library and part it bundles keeps its own licence — among them tsubasa (GPL-3.0-or-later), pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0). Each one's licence text is in the program's _internal\\licenses folder, listed in its INDEX.txt with its version; Qt's own third-party components (PCRE2, FreeType, HarfBuzz, libpng and the rest), each with its licence, are in its PyQt6-Qt6 folder there, Qt-third-party-notices.txt.
 • The source code of each bundled library is its own project's, at the version INDEX.txt names: the Python packages' on PyPI (https://pypi.org), Qt's at https://download.qt.io/archive/qt/."""
 
 # The build's list of the bundled software (package_app.py step 3b): <the program's _internal>\licenses\INDEX.txt, one
@@ -120,8 +138,9 @@ def all_credits():
     """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the software it
     bundles (`software_note()`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
     shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + software_note() + "\n\n" + \
-        CONTENT_NOTE
+    voice = AI_VOICE_CREDITS + "\n\n" if _ai_voice_here() else ""
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + voice + software_note() + \
+        "\n\n" + CONTENT_NOTE
 
 
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #
@@ -203,5 +222,5 @@ def readme_sources(readme_text):
 
 def missing_from_credits(readme_text):
     """The credits text's sources the in-app credits (data, covers, logos) don't name: [] when the app covers them."""
-    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS
+    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS + "\n" + AI_VOICE_CREDITS
     return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in named]

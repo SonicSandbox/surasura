@@ -1,13 +1,16 @@
 """Sentence audio put on cards that have none — ONE field-writing path (Kura-AB3, 2026-11-11; shared on purpose with
 Iro-AA's AI sentence audio): `fill`, and its one `undo`. *Add audio to these cards* (a book's text-only cards, once its
 audiobook is lined up: spec `tracks/pipeline/work/AB3/add-audio-spec.md`) calls it with Anki Miner's clips; the AI audio
-calls it with its own. Neither ever writes the field another way.
+calls it with its own. Neither ever writes the field another way. **Any field, a text** (Piyo-TR, 2026-11-12): `texts`
+in place of `clips` writes a text as given — Piyo's translations into the field the card's 翻訳 toggle shows
+(`app/card_translations.py`) — by the same contract, and `field` may name each note's own field ({note id: field}: one
+batch across note types is still one call and one Undo). One writer for every field Surasura fills on a card.
 
-**The contract** — `fill(anki, ledger, clips, field=FIELD, tag=TAG, by=...)`:
-- **In:** `clips` {note id: an audio file on this computer} (who made the clip is the caller's business); `field`: the
-  note field the card layout plays as its sentence's audio (`SentenceAudio`, `Anki_Card_Layout_Spec.md` row 4R — the
-  caller's field mapping may name another); `tag`: put on every note filled (which path filled it); `by`: who asked,
-  kept in the record.
+**The contract** — `fill(anki, ledger, clips, field=FIELD, tag=TAG, by=..., texts=None, verb=VERB)`:
+- **In:** `clips` {note id: an audio file on this computer} (who made the clip is the caller's business) — or `texts`
+  {note id: the field's new value, as written}, never both; `field`: the note field the card layout plays as its
+  sentence's audio (`SentenceAudio`, `Anki_Card_Layout_Spec.md` row 4R — the caller's field mapping may name another),
+  or {note id: field}; `tag`: put on every note filled (which path filled it); `by`: who asked, kept in the record.
 - **Only an empty field is filled:** each note read again under Anki's write lock just before it is written; a note
   gone, one whose type has no such field, or one whose field holds anything (sound, text, a space) is skipped with its
   why — never overwritten. Nothing else of a note is written: one `updateNoteFields` naming that field alone, then
@@ -39,6 +42,7 @@ CHUNK = 50                            # notes written between two looks at wheth
 WRITING, DONE, UNDONE = "writing", "done", "undone"
 GONE, NO_FIELD, HAS_AUDIO, NO_CLIP = ("not in Anki", "its note type has no {field} field",
                                       "it has sentence audio already", "its clip isn't on this computer")
+HAS_TEXT, NO_TEXT = "its {field} has something in it already", "nothing to write"     # `texts` (Piyo-TR)
 
 
 class Reviewing(Exception):
@@ -97,7 +101,7 @@ def clip_name(path):
     return f"surasura-sa-{hashlib.sha1(data).hexdigest()[:16]}{ext}", base64.b64encode(data).decode("ascii")
 
 
-def _why_not(note, field):
+def _why_not(note, field, full=HAS_AUDIO):
     """Why `note` (a notesInfo entry, or None) isn't filled, or None when its `field` is there and empty."""
     if not isinstance(note, dict) or not note.get("noteId"):
         return GONE
@@ -105,7 +109,12 @@ def _why_not(note, field):
     if field not in fields:
         return NO_FIELD.format(field=field)
     value = fields[field].get("value") if isinstance(fields[field], dict) else fields[field]
-    return HAS_AUDIO if str(value or "") != "" else None
+    return full.format(field=field) if str(value or "") != "" else None
+
+
+def _field_of(field, n):
+    """The field note `n` is written in: `field` itself, or its entry when `field` is {note id: field}."""
+    return field.get(n) if isinstance(field, dict) else field
 
 
 def _by_id(notes):
@@ -141,40 +150,55 @@ def record(ledger, rid):
     return got if isinstance(got, dict) else None
 
 
-def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect"):
+def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect", texts=None, verb=VERB):
     """The contract above -> {"id" (None when nothing was written), "filled", "skipped"}. Raises Reviewing, the
-    writer's Busy, AnkiConnect's errors (a record already written is undone as any)."""
-    clips = {int(n): p for n, p in (clips or {}).items()}
-    skipped = {n: NO_CLIP for n, p in clips.items() if not (isinstance(p, str) and os.path.isfile(p))}
-    ready = {n: p for n, p in clips.items() if n not in skipped}
+    writer's Busy, AnkiConnect's errors (a record already written is undone as any). `texts` in place of `clips`: each
+    note's field gets its text as given, no media; `verb`: what the write lock says is writing."""
+    if clips and texts:
+        raise ValueError("fill writes clips or texts, never both in one call")
+    if isinstance(field, dict):
+        field = {int(n): f for n, f in field.items()}
+    if texts:
+        texts = {int(n): v for n, v in texts.items()}
+        skipped = {n: NO_TEXT for n, v in texts.items() if not (isinstance(v, str) and v.strip())}
+        ready, full = {n: v for n, v in texts.items() if n not in skipped}, HAS_TEXT
+    else:
+        clips = {int(n): p for n, p in (clips or {}).items()}
+        skipped = {n: NO_CLIP for n, p in clips.items() if not (isinstance(p, str) and os.path.isfile(p))}
+        ready, full = {n: p for n, p in clips.items() if n not in skipped}, HAS_AUDIO
     if not ready:
         return {"id": None, "filled": [], "skipped": skipped}
     if anki.reviewing():
         raise Reviewing()
-    with anki.writer(VERB):
+    with anki.writer(verb):
         if anki.reviewing():
             raise Reviewing()
         info = _by_id(anki.notes(sorted(ready)))              # read again under the lock: only an empty field
         todo = {}
         for n, p in sorted(ready.items()):
-            why = _why_not(info.get(n), field)
+            why = _why_not(info.get(n), _field_of(field, n), full)
             if why:
                 skipped[n] = why
             else:
                 todo[n] = p
         if not todo:
             return {"id": None, "filled": [], "skipped": skipped}
-        named = {n: clip_name(p) for n, p in todo.items()}
+        named = {} if texts else {n: clip_name(p) for n, p in todo.items()}
         rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
-        rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "field": field, "tag": tag, "by": by,
-               "notes": {str(n): sound(named[n][0]) for n in todo}, "media": sorted({v[0] for v in named.values()}),
-               "state": WRITING}
+        rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "field": _field_of(field, min(todo)),
+               "tag": tag, "by": by, "notes": {str(n): todo[n] if texts else sound(named[n][0]) for n in todo},
+               "media": sorted({v[0] for v in named.values()}), "state": WRITING}
+        if isinstance(field, dict):                           # each note's own field, for its Undo
+            rec["fields"] = {str(n): field[n] for n in todo}
         _write_record(ledger, rid, rec, new=True)             # before Anki: a kill after a write is undone as any
         try:
             stored = {}
             for k, n in enumerate(sorted(todo)):
                 if k and k % CHUNK == 0 and anki.reviewing():
                     raise Reviewing()                         # you started reviewing meanwhile: the rest wait
+                if texts:
+                    anki.update(n, {_field_of(field, n): todo[n]})
+                    continue
                 name, data = named[n]
                 if name not in stored:
                     got = anki.store(name, data)
@@ -184,7 +208,7 @@ def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect"):
                     rec = dict(rec, notes=dict(rec["notes"], **{str(n): value}),
                                media=sorted(set(rec["media"]) | {stored[name]}))
                     _write_record(ledger, rid, rec)
-                anki.update(n, {field: value})
+                anki.update(n, {_field_of(field, n): value})
             anki.tag(sorted(todo), tag)
         except BaseException as e:
             e.sentence_audio_id = rid                         # the caller's way to its Undo (`pending` too: r2 S4)
@@ -209,10 +233,11 @@ def undo(anki, ledger, rid):
         rec = record(ledger, rid)                             # read again under the lock: two Undos, one runs (r2 N4)
         if rec is None or rec.get("state") == UNDONE:
             return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
-        field, wrote = rec["field"], {int(n): v for n, v in (rec.get("notes") or {}).items()}
+        wrote = {int(n): v for n, v in (rec.get("notes") or {}).items()}
+        fields = {int(n): f for n, f in (rec.get("fields") or {}).items()}      # a batch across note types
         info = _by_id(anki.notes(sorted(wrote)))
         for n, value in sorted(wrote.items()):
-            note = info.get(n)
+            note, field = info.get(n), fields.get(n) or rec["field"]
             if note is None:
                 kept[n] = GONE
                 continue

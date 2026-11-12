@@ -44,9 +44,12 @@ def test_a_window_that_never_rests_holds_a_step_back_cap_s_at_most(monkeypatch):
         window_idle.rest()
 
 
+MINE = "window-idle-test"     # the name of each thread this file starts for a piece (`_SeenIdle` counts only these)
+
+
 def _in_a_worker(fn):
     out = []
-    t = threading.Thread(target=lambda: out.append(fn()))
+    t = threading.Thread(target=lambda: out.append(fn()), name=MINE)
     t.start()
     t.join(5)
     return out[0]
@@ -73,15 +76,19 @@ class _Clock:
 
 
 class _SeenIdle(threading.Event):
-    """window_idle's idle event, keeping each wait's timeout and saying when a wait has begun."""
+    """window_idle's idle event, keeping each wait's timeout and saying when a wait has begun — the waits of this
+    file's own pieces (threads named MINE) only: a worker another test file left running (a move's write, a look,
+    a bridge job: `window_idle.wait()`, CAP_S) waits on the same event and isn't the piece (train 29's GitHub core
+    1/4: `[0.015, 0.05]`)."""
     def __init__(self):
         super().__init__()
         self.set()
         self.timeouts, self.waiting = [], threading.Event()
 
     def wait(self, timeout=None):
-        self.timeouts.append(timeout)
-        self.waiting.set()
+        if threading.current_thread().name == MINE:
+            self.timeouts.append(timeout)
+            self.waiting.set()
         return super().wait(timeout)
 
 
@@ -111,7 +118,7 @@ def test_a_pause_inside_a_step_waits_out_a_young_window_stretch_and_never_an_old
     window_idle.busy()                                         # (a minute's stretch: only the rest can end the wait)
     try:
         seen.waiting.clear()
-        worker = threading.Thread(target=window_idle.pause)
+        worker = threading.Thread(target=window_idle.pause, name=MINE)
         worker.start()
         assert seen.waiting.wait(5)                            # (the piece waits...)
         assert seen.timeouts[-1] == pytest.approx(60.0)

@@ -354,6 +354,8 @@ NOT_AN_INSTALL = {
                                                     "per clip, never a path or one install's code",
     ("app/connect/media_names.py", "fingerprint"): "a subtitle line's words",
     ("app/connect/media_names.py", "line_name"): "a line's key, times and fingerprint",
+    ("app/connect/swap.py", "line_id"): "one subtitle line's path, start and words: one per line, the journey page's "
+                                        "id for it and its ▶ clip's name (3.1's Swap), never one install's code",
     ("app/library_store.py", "line_fingerprint"): "a subtitle line's words",
     ("app/names.py", "stamp_of"): "the name tables' content",
     ("app/plan_rules.py", "file_digest"): "one file's path with its stat: one per file, never one install's code",

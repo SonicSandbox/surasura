@@ -71,12 +71,19 @@ def open_report(app_mode=False, file=None):
     default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
     at that fragment. Written at each such open (~200 bytes; cheaper than checking whether it already holds the name),
     and left beside the report. A name the report doesn't hold opens where it opens by itself; a page that can't be
-    written (results read-only, a lock) opens the report itself."""
+    written (results read-only, a lock) opens the report itself.
+
+    With the journey's door open in this process (the window's, `app/door.py`; 3.1's ⇄ Swap), it opens through the
+    door's one-time page instead, which hands the report the door's address and token (and `file=` after them)."""
     path = os.path.join(get_user_file("results"), REPORT_NAME)
     if not os.path.exists(path):
         return False
-    if file:
-        from urllib.parse import quote
+    from urllib.parse import quote
+    from app import door
+    launched = door.launch_page(os.path.dirname(path), REPORT_NAME, f"file={quote(file, safe='')}" if file else "")
+    if launched:
+        path = launched
+    elif file:
         target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
         page = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
         try:

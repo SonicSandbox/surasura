@@ -205,6 +205,19 @@ def test_the_rows_show_their_tag_and_their_what_you_get_line_in_sight(qapp, fake
     assert others and not any(v.tag.isVisibleTo(page) for v in others)
 
 
+def test_a_rows_tag_fits_in_its_words_width_so_the_label_wraps_and_never_runs_under_it(qapp, fakes):  # noqa: F811
+    # (adversary r2, seen at text size L, 1000 px: the tag sat over the label and squeezed the status) the label's
+    # least width leaves the tag's room inside the words' least width
+    page, store, shell = make(fakes, ALL_ON)
+    for row_id in S.ROW_TAGS:
+        view = page.rows[row_id]
+        view._fit_title()
+        view._least = view.label.maximumWidth()           # the words held to the label's own width (a narrow row)
+        view._fit_title()
+        room = view.label.minimumWidth() + view.title.spacing() + view.tag.sizeHint().width()
+        assert room <= view._least, row_id
+
+
 @pytest.mark.parametrize("row_id, found", [("connect_enabled", True), ("connect_needs_miner", False)])
 def test_cards_made_for_you_says_what_you_get_in_sight(qapp, fakes, row_id, found):  # noqa: F811
     from tests.qt.test_settings_page import EVERYTHING

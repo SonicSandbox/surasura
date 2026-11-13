@@ -336,6 +336,10 @@ BAR_LEVEL_AUTO_NONE = "Auto"
 BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
 BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the commonest band whose list holds enough words, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
+# Kantan-B1 (B1, Sonic ✅ 2026-11-12; PROVISIONAL): the list's size, never a band's name ("Native" to a beginner)
+BAR_LEVEL_AUTO_WORDS = "Auto · ≈{words:,} words"
+BAR_LEVEL_AUTO_WORDS_TIP = ("Your level, chosen for you: your list holds ≈{words:,} words, the commonest band with "
+                            "enough of them ({band} now)")
 # W3.5 row 7: the journey dot (the re-order's and Connect's lines are 順's and Anki Miner's hovers since alpha 3).
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
@@ -556,7 +560,12 @@ ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
 ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never finishes (G3.2)
-ROWS_HERO_KNOWN = "{pct}% known · "
+# Kantan-B1 (AUDIT B1, Sonic ✅; PROVISIONAL): the % is the analyzer's coverage — the words you know AND those with
+# nothing to learn (ignored words; in Japanese with the one-character rule on, の は を …) — so *37% known* beside
+# *0 known* misread; "won't need to learn" is true in both languages, with the rule on or off
+ROWS_HERO_KNOWN = "{pct}% of its words you won't need to learn · "     # (view_rows' "pct_hero" says it the same)
+ROWS_HERO_PCT_TIP = ("The words you know, the words you ignore and, in Japanese, the small one-character words "
+                     "(の, は, を…) with nothing to learn: together {pct}% of its words")
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
@@ -572,6 +581,7 @@ FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync rea
 # one's hover its name and what it does, what it is doing now, then the last thing that ended. Alpha 3 (Sonic
 # 2026-10-24: "I'd actually prefer if pressing it opened up their settings"): a press opens the circle's settings.
 PHASE_STRIP_NAME = "What's running"
+PHASE_DECK_WHEN_ANKI = "Card order: pick your deck once Anki is open"    # Kantan-B1 (B3, PROVISIONAL): 順 grey
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
@@ -1470,6 +1480,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                   "again"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # Kantan-B1 (A1, PROVISIONAL): a failed Generate's way on
+    "generate_again": ("Generate again", "Make your list again now, as the Generate button at the top does"),
+    "report": ("Report a problem", "Tell us what went wrong: Report a problem opens with this line written in, for "
+                                   "you to add to and send"),
     # T6: a gone source folder's card (Sonic 2026-10-24)
     "find_folder": ("Find its new folder…", "Choose where the folder is now. Surasura reads it there and joins its "
                                             "episodes to the shows you have, never as a second copy, then stops "
@@ -1647,6 +1661,7 @@ NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed befor
 NEEDS_MINER_BUSY = "Anki Miner is in use (Surasura is making cards with it, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
+NEEDS_FAILURE_LOG_TIP = "The last Generate's details are in {path}"             # Kantan-B1 (A1): a failed Generate's path, hover only
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
 NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
 NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"

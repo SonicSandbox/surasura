@@ -90,7 +90,8 @@ WRITER_JOIN_MARGIN = 1.0
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
-REFRESH_CAP_S = 120.0                  # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
+ANKI_LOOK_EVERY = 10.0                 # Kantan-B1 (B3): s between two looks at Anki while 順's deck to pick waits for it
+REFRESH_CAP_S = 120.0                 # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
 # W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
 # closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
 # Python as the process ends can crash it (row 6's find).
@@ -658,9 +659,9 @@ class Services:
             self.closing.wait(0.1)
 
     def level(self):
-        """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
+        """(A worker.) The level chip's (band, automatic, its list's words) (`automation.level`, Kantan-B1)."""
         from app.services import automation as automation_module
-        return automation_module.level(settings_service.thaw(self.settings.get()), self.language)
+        return automation_module.level(settings_service.thaw(self.settings.get()), self.language, words=True)
 
     def _close_duties(self):
         """The duties' close but the store's trigger (`_close_store`): their timers and workers, Koe, Connect's
@@ -1473,6 +1474,7 @@ class ShellWindow(QMainWindow):
         self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
+        self._anki_looking, self._anki_looked_at = False, float("-inf")    # Kantan-B1 (B3): `_look_for_anki`
         self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
         self._d29 = True                                  # D29 for the journey dot's tooltip, read on a worker
         self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
@@ -2270,6 +2272,7 @@ class ShellWindow(QMainWindow):
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
         self.phase.set_status(snap)
+        self._look_for_anki()                              # Kantan-B1 (B3): a deck to pick waits: does Anki answer?
         self._paint_slot()
         if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
             self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
@@ -2989,6 +2992,33 @@ class ShellWindow(QMainWindow):
         if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self.duties is not None
                 and self.services.started):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
+            self._look_for_anki()                           # Kantan-B1 (B3): Anki opened meanwhile?
+
+    # --- Kantan-B1 (B3, Sonic ✅ 2026-11-12): 順's deck to pick is amber only once Anki answers ------------------------ #
+    def _look_for_anki(self):
+        """While 順's deck to pick waits (`InJunban`, never the Undo) and Anki isn't known to answer: AnkiConnect asked
+        once (`anki_connect.probe`, loopback, on a worker; one at a time, at most every ANKI_LOOK_EVERY s) — at a status
+        change and as the window comes to the front. The automatic sync's own answers count too (`_show_automation`):
+        the sync is off by default, so it alone would leave 順 grey for good."""
+        from app import replan_preview
+        line = getattr(self._status_snap, "replan", None)
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return                                        # (the test suites, a developer's run: Anki is never reached)
+        if (self.phase.anki_answers or self._anki_looking or not isinstance(line, replan_preview.InJunban)
+                or line == replan_preview.RESTORE_FIRST or time.monotonic() - self._anki_looked_at < ANKI_LOOK_EVERY):
+            return
+        self._anki_looking, self._anki_looked_at = True, time.monotonic()
+        settings = settings_service.thaw(self.services.settings.get())
+
+        def look():
+            from app import anki_connect
+            return bool(anki_connect.probe(anki_connect.address(settings), timeout=2).get("ok"))
+        bridge.run_in_worker(look, then=self._anki_looked, failed=lambda _info: self._anki_looked(False))
+
+    def _anki_looked(self, answers):
+        self._anki_looking = False
+        if not sip.isdeleted(self.phase):
+            self.phase.set_anki(answers)
 
     def _duty_settings(self, keys):
         """A write landed: Koe's switch, a language switch, a change that makes the journey stale, the level."""
@@ -3227,6 +3257,9 @@ class ShellWindow(QMainWindow):
         # hover. *N waiting* (W31A-2) comes from the status service's `backlog`, in `show_status`.
         if d.anki.show_state(key, words, tip):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
+        sync = getattr(state, "sync", None)                # Kantan-B1 (B3): 順's deck amber only once Anki answers —
+        if sync in ("syncing", "synced", "anki-closed"):   # ... the sync's own answer (with the switch off too: a
+            self.phase.set_anki(sync != "anki-closed")     # ... sync you asked), else `_look_for_anki`'s
 
     def _known_clicked(self):
         """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
@@ -3301,9 +3334,12 @@ class ShellWindow(QMainWindow):
 
     def _show_level(self, level):
         from app import word_selection
-        band, automatic = level
+        band, automatic, words = (tuple(level) + (None,))[:3]
         name = word_selection.band_label(band) if band else ""
-        if automatic:
+        if automatic and name and words is not None:       # Kantan-B1 (B1): its list's size, the band in the menu
+            text = strings.BAR_LEVEL_AUTO_WORDS.format(words=words)
+            tip = strings.BAR_LEVEL_AUTO_WORDS_TIP.format(words=words, band=name)
+        elif automatic:
             text = strings.BAR_LEVEL_AUTO.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE
             tip = strings.BAR_LEVEL_AUTO_TIP.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE_TIP
         else:

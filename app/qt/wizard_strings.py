@@ -129,6 +129,7 @@ PICK_ANOTHER = "Add another folder…"
 PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads them where they are.\n"
                    "• You sort it show by show next; the rest wait in New arrivals (Surasura 2 tiers are kept)\n"
                    "• Nothing in it is changed; each new episode joins your library by itself")
+PICK_WHERE_THEY_ARE = "Read where they are: nothing in your folders is moved or changed."   # Kantan-B1, PROVISIONAL
 PICK_TITLE = "Where are your shows and books?"
 # Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
 PICK_FILE = "Choose a file…"
@@ -236,6 +237,10 @@ OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone i
 ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
 ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
 ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
+# Kantan-B1 (A2, PROVISIONAL): Anki closed — *Next* stays, and goes on as *Skip* does (nothing written)
+ORDER_WHEN_OPEN = "Once Anki is open, 順 turns amber: pick your deck there."
+ORDER_NEXT_TIP = ("Go on without Card order for now: once Anki is open, pick your deck in 順. Nothing is "
+                  "changed.\n• Enter")
 # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the deck's new cards — the first sentence is *Needs you*'s
 # (`app/services/needs.backlog_head`: *Your 2,300 new cards come from 14 shows; 12 are on this PC.*), then one of these
 BEHIND_LOOKING = "Looking at where your new cards came from…"
@@ -375,6 +380,7 @@ EVERY_N = "{h:.0f} h"
 EVERY_MIN = "{m:.0f} min"
 NONE_YET = "—"
 COUNTING = "Counting your shows…"
+READING_FILES = ("Reading 1 file…", "Reading {n:,} files…")   # Kantan-B1 (A2, PROVISIONAL): the indexer's, while it reads
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
 DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."

@@ -450,7 +450,8 @@ def test_every_row_answers_its_accessible_text_and_the_hero_reads_its_next_episo
     assert view.rows[1].description == "Ep 1–2"
     # the hero is painted from Up next (its next episode), so it reads that way too (IK-12); its status is its row's
     # (Q33), said as the whole's, never with the episode's numbers (AD-9)
-    assert view.rows[0].accessible == "Up next: 星降る街の小さな工房 Ep 1 · 95% known · 4 new · all of it: Waiting"
+    assert view.rows[0].accessible == ("Up next: 星降る街の小さな工房 Ep 1 · 95% of its words you won't need to learn · "
+                                       "4 new · all of it: Waiting")     # Kantan-B1: the % as Up next paints it
 
 
 def test_the_first_screen_round_trips_through_the_cache():

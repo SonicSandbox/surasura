@@ -1516,6 +1516,8 @@ class RowDelegate(QStyledItemDelegate):
                             Ask(nxt.id, (nxt.id,), nxt)))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
+            if g["pct"] is not None:                       # Kantan-B1: what the % counts
+                out.append(("pct", g["pct"], strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct)), None))
             is_open = self.view.model().open_key == payload.key
             if not is_open and self._sheet_there() and not view_rows.audio_only(payload):    # G16 / L4; a5-2
                 s = g["string"]
@@ -1913,6 +1915,11 @@ class RowDelegate(QStyledItemDelegate):
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)
         g["journey"] = None                                   # (every file watched: *Watched it*, no link: Fresh-U 5)
+        g["pct"] = None                                       # Kantan-B1: the % says what it counts in its hover
+        if nxt.pct is not None and not nxt.watched and not view_rows.audio_only(row):
+            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+            hs = TEXT.metrics("hero-sub")
+            g["pct"] = QRect(main.left(), y, min(hs.horizontalAdvance(known.rstrip(" ·")), main.width()), stats_h)
         if nxt.pct is not None and nxt.n_new is not None and not nxt.watched:   # *N new words ↗*: the journey (A3; S6);
             known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))   # no number, no link (row 36)
             link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new)
@@ -4588,8 +4595,8 @@ class RowsView(QListView):
         if name == "play" and payload is not None:
             if payload.can_play:
                 self.play_requested.emit(payload)
-        elif name in ("open", "title", "audio"):     # a5-2: the 🎧 before a title is the title's
-            self.toggle(idx)
+        elif name in ("open", "title", "audio", "pct"):     # a5-2: the 🎧 before a title is the title's; Kantan-B1:
+            self.toggle(idx)                                # ... the % only adds its hover over the card's own click
         else:
             self._act(idx, part)
 

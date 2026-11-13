@@ -186,17 +186,27 @@ def moves_level(keys):
     return any(key == "logic" or any(key == k or key.startswith(k + ".") for k in LEVEL_KEYS) for key in keys)
 
 
-def level(settings, language):
+def level(settings, language, words=False):
     """The bar's level chip (W3.5 row 5): (band, automatic) — `logic.selection.band`, or with Automatic rarity on the
     band `word_selection.auto_band` picks over the Rarity slider's numbers (the Tk `_compute_band_previews` +
     `_auto_band_choice`: the rule Generate applies, I3), band None while there are none yet. Reads the token store: a
-    worker's call."""
+    worker's call. `words` (Kantan-B1, B1: the header said *Auto · Native* to a beginner): (band, automatic, how many
+    words its list holds) — Automatic's band only, from the numbers it read anyway (None otherwise: never a read more)."""
+    band, automatic, previews = _level(settings, language)
+    if not words:
+        return band, automatic
+    n = ((previews or {}).get(band) or {}).get("word_count") if automatic else None
+    return band, automatic, int(n) if isinstance(n, (int, float)) else None
+
+
+def _level(settings, language):
+    """`level`'s (band, automatic, the bands' numbers it read — None when it read none)."""
     from app import word_selection
     from app.settings_manager import DEFAULT_SETTINGS
     settings = settings or {}
     sel = ((settings.get("logic") or {}).get("selection") or {})
     if not sel.get("auto"):
-        return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], False
+        return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], False, None
     try:
         from app import analyzer, library_store, token_index
         from app.path_utils import get_data_path, get_user_files_path
@@ -212,7 +222,7 @@ def level(settings, language):
         try:
             freqs = token_index.preview_frequencies(store, language, get_user_files_path(language), script)
             if freqs is None:
-                return None, True
+                return None, True, None
             previews = word_selection.band_previews(
                 freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
                 freqs["total_tokens"] / (store.file_count() or 1),
@@ -221,14 +231,14 @@ def level(settings, language):
             store.close()
         try:
             return word_selection.auto_band(previews, sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS),
-                                            remembered=remembered), True
+                                            remembered=remembered), True, previews
         except (TypeError, ValueError):
             # A line the rule can't compare with ("850" in quotes, hand-edited into settings.json) makes the analyzer
             # keep your own band: so that is the band shown (the Tk `_auto_band_choice`).
-            return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], True
+            return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], True, previews
     except Exception as e:
         print(f"Automation: the level couldn't be read: {e}")
-        return None, True
+        return None, True, None
 
 
 def backlog_shows(language, settings, url):

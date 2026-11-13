@@ -330,6 +330,22 @@ def test_an_older_level_answer_never_moves_the_slider(world, monkeypatch):
     assert world.d.pop.slider.value() == "very_rare"
 
 
+def test_the_header_shows_automatics_word_count_never_the_bands_name(world, monkeypatch):
+    """Kantan-B1 (B1, Sonic ✅ 2026-11-12; the walk's `walk2/21-after-generate.png`): a beginner's first screen said
+    *Auto · Native* — a band's name reads as a verdict on them. With Automatic on, the header says how many words the
+    list holds; the band's name is in the hover and the menu. Your own band keeps its name (you chose it there)."""
+    monkeypatch.setattr(world.services, "level", lambda: ("native", True, 616))
+    world.win._read_level()
+    assert wait_until(lambda: world.d.level.text() == "Auto · ≈616 words")
+    assert "Native" not in world.d.level.text() and "Native" in world.d.level.toolTip()
+    monkeypatch.setattr(world.services, "level", lambda: ("native", True, None))   # no count to say: as before
+    world.win._read_level()
+    assert wait_until(lambda: world.d.level.text() == "Auto · Native")
+    monkeypatch.setattr(world.services, "level", lambda: ("rare", False, None))
+    world.win._read_level()
+    assert wait_until(lambda: world.d.level.text() == "Rare")
+
+
 def test_automatic_with_no_numbers_yet_shows_the_written_band(world):
     # `automation.level` gives no band while there is no store: the slider shows the band settings.json holds
     world.services.settings.set({"logic.selection.band": "uncommon", "logic.selection.auto": True}, now=True)

@@ -618,6 +618,38 @@ def test_the_level_of_a_hand_edited_line_is_your_own_band(monkeypatch):
     assert A.level({"logic": {"selection": selection}}, "ja") == ("uncommon", True)
 
 
+def test_the_levels_words_are_automatics_own_band_count_from_the_numbers_it_read(monkeypatch):
+    """Kantan-B1 (B1, Sonic ✅ 2026-11-12: the header told a beginner *Auto · Native*): asked for its words, the level
+    gives the list's size for the band Automatic picked — from the numbers it read anyway, never a read more; your own
+    band (Automatic off) and no numbers yet give none."""
+    from app import analyzer, library_store, token_index, word_selection
+    for key in ("names_recurring", "names_kanji", "names_work_terms"):
+        monkeypatch.setitem(analyzer.LOGIC, key, analyzer.LOGIC.get(key, True))
+    reads = []
+
+    class Store:
+        def file_count(self):
+            return 4
+
+        def close(self):
+            pass
+    monkeypatch.setattr(token_index, "open_store", lambda language: reads.append(language) or Store())
+    monkeypatch.setattr(token_index, "preview_frequencies", lambda *a, **k: {"total_tokens": 4000})
+    monkeypatch.setattr(word_selection, "band_previews", lambda *a, **k: {
+        band: {"word_count": 616 * (n + 1)} for n, band in enumerate(word_selection.BANDS_ORDER)})
+    monkeypatch.setattr(library_store, "read_auto_band", lambda *a, **k: None)
+    selection = {"auto": True, "band": "uncommon", "auto_max_words": 1000}
+    assert A.level({"logic": {"selection": selection}}, "ja", words=True) == ("common", True, 1232)
+    assert A.level({"logic": {"selection": selection}}, "ja") == ("common", True)      # (the 2-tuple, as before)
+    assert len(reads) == 2                                                           # one read a call
+    selection["auto"] = False
+    assert A.level({"logic": {"selection": selection}}, "ja", words=True) == ("uncommon", False, None)
+    assert len(reads) == 2                                                           # your own band: nothing read
+    selection["auto"] = True
+    monkeypatch.setattr(token_index, "preview_frequencies", lambda *a, **k: None)   # nothing indexed yet
+    assert A.level({"logic": {"selection": selection}}, "ja", words=True) == (None, True, None)
+
+
 @pytest.mark.parametrize("keys, moves", [
     (["logic.selection.band"], True), (["logic.selection.auto_max_words"], True), (["logic.names_kanji"], True),
     (["zh_script"], True), (["logic"], True), (["logic.ignore_names"], False), (["logic.phrase_rows"], False),

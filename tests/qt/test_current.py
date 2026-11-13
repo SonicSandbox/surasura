@@ -131,6 +131,27 @@ def test_the_hero_is_the_first_row_and_its_play_says_where_it_opens(seeded):
         "Up next: " + hero.title)
 
 
+def test_up_nexts_percent_says_what_it_counts_and_a_click_on_it_still_opens_the_card(seeded):
+    """Kantan-A's walk (AUDIT B1, Sonic ✅): Up next said *37% known* beside the footer's *0 known*. The number is the
+    analyzer's coverage — the words you know AND those with nothing to learn (one-character grammar words: の, は, を…
+    are ~34% of 蜘蛛の糸's tokens) — so its label says so, and its hover explains; the % still opens the card on a click."""
+    seed, win = seeded()
+    lst = current(win)
+    _kind, hero, _lines = lst.model().entries[0]
+    nxt = hero.episodes[hero.next_index]
+    pct = part(lst, 0, "pct")
+    said = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+    assert said == f"{round(nxt.pct)}% of its words you won't need to learn · "     # true in ja and zh, rule on or off
+    assert len(pct) == 1 and pct[0][2] == strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct))
+    hs = rows.TEXT.metrics("hero-sub")                                   # its hover covers the words drawn, no more
+    assert 0 < pct[0][1].width() <= hs.horizontalAdvance(said.rstrip(" ·"))
+    journey = part(lst, 0, "journey")
+    assert journey and journey[0][1].left() >= pct[0][1].right()         # the link keeps its own place, after it
+    assert "you won't need to learn" in lst.model().data(lst.model().index(0, 0), Qt.ItemDataRole.AccessibleTextRole)
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=pct[0][1].center())
+    assert wait_until(lambda: lst.model().open_key == hero.key)
+
+
 def test_a_click_on_a_row_opens_its_episodes_and_a_second_closes_it(seeded):
     """A2 #4: a click on a row opens its episodes (8)."""
     seed, win = seeded()
@@ -1373,8 +1394,12 @@ def test_a4_a_change_to_finished_waits_until_finished_shows_or_the_window_rests(
 def test_finished_hidden_through_a_burst_of_changes_lists_once_after_the_window_rests(seeded):
     """A4A-10: Finished's "listed once the window rests" timer started at the first view it owed and was never pushed
     back, so through a burst a hidden Finished still listed about every quarter second — a page nobody looks at diffing
-    as often as the reader builds. Ten shows finished 100 ms apart while the learner is on Current: Finished lists
-    nothing while they land, then once, with the newest view, after the window rests."""
+    as often as the reader builds. Ten shows finished while the learner is on Current: every view Finished owes restarts
+    its wait, it lists nothing while they land, then once, with the newest view, after the window rests.
+    Kantan-B1 (tests/FLAKES.md): asked by the condition, never the clock — the burst's 100 ms steps raced the 250 ms
+    rest, and under load a view built more than 250 ms after the last one IS the window resting (listed, rightly). So
+    the rest is one no burst reaches while the views land, each view's restart is counted, then the window rests."""
+    from PyQt6.QtCore import QTimer
     seed, win = seeded()
     fin_page = win.page_widgets["finished"]
     fin = fin_page.list
@@ -1382,19 +1407,24 @@ def test_finished_hidden_through_a_burst_of_changes_lists_once_after_the_window_
     listed = []
     real = fin.set_entries
     fin.set_entries = lambda entries: listed.append(time.monotonic()) or real(entries)
+    timer, restarts = fin_page._owed_timer, []
+    timer.setInterval(60_000)                                      # a rest no burst reaches
+    timer.start = lambda *a: restarts.append(1) or QTimer.start(timer, *a)
     left = [r for r in seed.items if r["tier"] in ("soon", "goal")][:10]
     assert len(left) == 10
     for k, row in enumerate(left):
+        owed = fin_page.owed
         seed.library.commit(items=[{"id": row["id"], "tier": "graduated", "ord": 10.0 + k,
                                     "graduated_at": f"2026-10-27T09:{k:02d}:00Z"}], order=True)
-        QTest.qWait(100)
-    during = len(listed)
+        assert wait_until(lambda: fin_page.owed is not None and fin_page.owed is not owed, 5)   # its view, owed
+    assert listed == [] and timer.isActive()                       # nothing listed while the changes landed
+    assert len(restarts) >= len(left), restarts                    # each view owed restarted the wait (A4A-10)
+    timer.setInterval(rows.WARM_IDLE_MS)
+    QTimer.start(timer)                                            # the window rests
     last = left[-1]["id"]
     assert wait_until(lambda: any(e[0] == rows.FINISHED and last in (x.id for x in e[1].episodes)
                                   for e in fin.model().entries), 5)
-    QTest.qWait(rows.WARM_IDLE_MS + 100)
-    assert during == 0, during                                     # nothing listed while the changes landed
-    assert len(listed) == 1, listed                                # once, after the rest, with the newest
+    assert len(listed) == 1 and fin_page.owed is None and not timer.isActive(), listed   # once, with the newest
 
 
 def test_the_same_status_snapshot_published_again_paints_no_widget_and_no_row(seeded, qapp):

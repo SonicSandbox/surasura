@@ -252,6 +252,47 @@ def test_plain_ankiconnect_back_at_a_remembered_address_is_written_the_plain_way
     assert URL not in ankiconnect._REPOSITION_NATIVELY
 
 
+@pytest.mark.usefixtures("anki_writer")
+def test_an_add_on_that_refuses_both_ways_fails_each_card_once_and_never_loops():
+    """Positions refused as protected state, and `repositionNewCards` unsupported too: each card fails once, with
+    Anki's own words — the plain way is tried again only for an address remembered from before, and only once."""
+    cards, notes, _ = _collection(["須藤", "散歩"])
+
+    class Neither(FakeCollection):
+        def _multi(self, actions):
+            return [{"result": None, "error": REFUSAL if entry.get("action") == "setSpecificValueOfCard"
+                     else "unsupported action"} for entry in actions]
+    fake = Neither(cards, notes)
+    ids = sorted(fake.cards)
+    for remembered in (False, True):
+        fake.requests = []
+        with _patched(fake):
+            written, failures = ankiconnect.set_due(URL, [(ids[0], 5), (ids[1], 6)])
+        assert written == [] and failures == [(ids[0], "unsupported action"), (ids[1], "unsupported action")]
+        assert len(fake.requests) <= 3, fake.requests
+        assert remembered or URL in ankiconnect._REPOSITION_NATIVELY
+
+
+@pytest.mark.usefixtures("anki_writer")
+def test_anki_going_away_during_the_native_request_stops_the_rest_honestly():
+    """Anki closed while the refused positions go out the native way: those cards and every later batch are named
+    failures — never sent to a dead socket, never counted as written."""
+    import urllib.error
+    cards, notes, _ = _collection(["須藤", "散歩", "図書館", "冒険"])
+
+    class Closing(ExtendedCollection):
+        def _multi(self, actions):
+            if any(entry.get("action") == "repositionNewCards" for entry in actions):
+                raise urllib.error.URLError("[WinError 10054] connection forcibly closed")
+            return super()._multi(actions)
+    fake = Closing(cards, notes)
+    ids = sorted(fake.cards)
+    with _patched(fake):
+        written, failures = ankiconnect.set_due(URL, [(card_id, 40 + n) for n, card_id in enumerate(ids)], chunk=2)
+    assert written == [] and [card_id for card_id, _why in failures] == ids
+    assert len(fake.requests) == 2, "the refused request, the native one that died — nothing after"
+
+
 # --------------------------------------------------------------------------- #
 # Undo stays exact on Extended
 # --------------------------------------------------------------------------- #

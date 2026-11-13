@@ -1974,20 +1974,21 @@ def test_page_six_says_reading_n_files_while_the_indexer_reads_never_counting_ov
     assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
 
 
-def test_page_three_says_nothing_is_moved_and_asks_every_core_only_once_a_folder_is_picked(make, ja_resources_dir):
+def test_page_three_says_nothing_is_moved_and_never_asks_every_core(make, ja_resources_dir):
     """Kantan-A's walk (11-12): *will it move my files?* (Mattias, 11-10) was answered only in *Choose a folder…*'s
     hover, and *Use every core* — a reading speed — was asked before any folder. The first is a line under the
-    buttons; the second shows once a folder is picked, and goes with it. Showing them writes nothing."""
+    buttons; the second is the load screen's now (Fresh-U 19a, Mado-FU2: `test_wizard_load.py`). Showing writes
+    nothing."""
     wiz, _shell, api, settings, _m = make()
     go_to(wiz, "shows")
     page = wiz.page
     settings.calls.clear()
     assert page.where_line.isVisibleTo(wiz) and page.where_line.text() == S.PICK_WHERE_THEY_ARE
-    assert not page.every_core.isVisibleTo(wiz)
+    assert not hasattr(page, "every_core")
     wiz.choose_folder(ja_resources_dir)                             # (no store rule here: listed at once)
-    assert page.has_folder(ja_resources_dir) and page.every_core.isVisibleTo(wiz)
+    assert page.has_folder(ja_resources_dir)
     page.remove_folder(page.folders[0])
-    assert not page.every_core.isVisibleTo(wiz) and page.where_line.isVisibleTo(wiz)
+    assert page.where_line.isVisibleTo(wiz)
     assert settings.calls == []
 
 

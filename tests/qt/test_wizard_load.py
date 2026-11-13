@@ -419,3 +419,71 @@ def test_the_load_asks_the_real_windows_chores_never_an_attribute_the_window_lac
         assert run._chores() is world.services.chores and run._chores() is not None
     finally:
         world.close()
+
+
+# --- Mado-FU2: *Use every core* asked at the load screen's first long read (Fresh-U 19a, Sonic 2026-11-13 yes) ----- #
+def _core(wiz):
+    screen = wiz.covered
+    row = getattr(screen, "offer", None) if isinstance(screen, sort_screen.LoadScreen) else None
+    return row if row is not None and not row.isHidden() else None
+
+
+def test_fresh_u_use_every_core_is_asked_on_the_load_screen_once_a_read_is_long_and_saved_at_once(make, empty_library,
+                                                                                                 tmp_path):
+    """Why (Fresh-U 19a): page 3 asked a reading speed before anything was added. It is asked where reading happens:
+    on the load screen, once a read is long enough for every core to matter (`token_index.POOL_MIN_FILES` files: fewer
+    are read by one process whatever it says), shown as saved, saved the moment it flips (the indexer's pools read the
+    key as they open), and kept on screen to the load's end; no visible line under it (its words in the hover)."""
+    from app import token_index
+    wiz, shell, log = _start(make, tmp_path)
+    assert not hasattr(wiz.page, "every_core"), "page 3 no longer asks it"
+    settings = shell.services.settings
+    settings.calls.clear()
+    asked = _covers(shell, hold=threading.Event())
+    wiz.next()
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
+    assert _core(wiz) is None, "a short read never asks it"
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(f"Indexer: starting (ja)\nIndexer: 3 of {token_index.POOL_MIN_FILES - 1}\n")
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=token_index.POOL_MIN_FILES - 1), 5)
+    QTest.qWait(700)
+    assert _core(wiz) is None
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(f"Indexer: starting (ja)\nIndexer: 4 of {token_index.POOL_MIN_FILES}\n")
+    assert wait_until(lambda: _core(wiz) is not None, 5)
+    row = _core(wiz)
+    assert row.name.text() == S.EVERY_CORE and row.line.isHidden(), "no visible explainer line"
+    assert row.switch.toolTip().endswith(S.EVERY_CORE_TIP) and not row.switch.isChecked()
+    cores = lambda: [c for c in settings.calls if "use_every_core" in c]
+    assert cores() == [], "shown as saved: nothing written by showing it"
+    row.switch.click()
+    assert cores() == [{"use_every_core": True}]
+    shell.services.chores.running = False                                     # on to the covers: still there
+    assert wait_until(lambda: _task(wiz) == S.LOAD_COVERS.format(done=2, total=2), 5)
+    assert _core(wiz) is row and row.switch.isChecked() and asked == [1]
+
+
+def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):
+    """Why: a big library's first look (or its copy) is the first long read — the indexer comes after it, so a flip
+    then counts for every file the words are read from; the switch is made once, whatever counts come after."""
+    from app import token_index
+    from app.qt import wizard
+    made, covered = [], []
+    run = sort_screen.LoadRun(None, covered.append, door="setup", long_read=made.append)
+    screen = run.begin()
+    try:
+        run.said((token_index.POOL_MIN_FILES - 1, 2))
+        assert made == []
+        run.said(("copy", 10, token_index.POOL_MIN_FILES))
+        run.said((token_index.POOL_MIN_FILES + 5, 3))
+        assert made == [screen]
+        outside = sort_screen.LoadRun(None, covered.append, door="again", long_read=made.append)
+        outside.begin()
+        outside.said((token_index.POOL_MIN_FILES * 10, 9))
+        assert made == [screen], "Sort my library again never asks it (setup's own, as before)"
+        row = wizard.SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
+        screen.add_offer(row)
+        assert screen.offer is row and row.parent() is screen and not row.isHidden()
+    finally:
+        run.ended = True
+        outside.ended = True

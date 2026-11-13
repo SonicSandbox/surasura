@@ -273,3 +273,26 @@ def test_d_a_copy_of_the_same_bytes_removed_elsewhere_stays_removed(split):
         assert store.trash_rows([trash[audio]])[0]["restored_at"], "the book's own: put back"
         _look(store, "ja", dl_root, full=True)
         assert all(os.path.abspath(copy) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+
+
+def test_d_renamed_since_with_a_copy_of_its_bytes_removed_elsewhere_takes_its_own_row_only(split):
+    """Review r2 S2: as above, and the book's `.m4b` renamed since its Remove — found by its files' sizes, which the
+    Downloads copy's row carries too: only the newest such row (the book's own Remove) is put back."""
+    import shutil
+    _reading, book = _joined(split)
+    folder, m4b, audio = _copy_paired(split)
+    dl = _drive("downloads")
+    copy = shutil.copy2(m4b, os.path.join(dl, "colorful.m4b"))
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", store.add_source(dl), full=True)
+        theirs = _audio_of(store, copy)["id"]
+        store.remove([theirs])
+        store.remove([i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))])
+        trash = dict(store.conn.execute("SELECT item_id, id FROM trash"))
+    renamed = os.path.join(folder, "カラフル 朗読.m4b")
+    os.rename(m4b, renamed)
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, renamed)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert store.trash_rows([trash[theirs]])[0]["restored_at"] is None and _kept_out(store, copy)
+        assert store.trash_rows([trash[audio]])[0]["restored_at"]

@@ -206,7 +206,8 @@ class Follower(QWidget):
     def _target_gone(self, *_args):
         """Its overlay gone: it goes too (Qt-C2 — one was left on the window for good per card, a confirmation's or the
         paste card's, holding the card's Python half)."""
-        from app.qt import press as qpress
+        from app.qt import press as qpress             # (press imports motion, which imports this module)
+        self.hide()
         qpress.let_go(self)
 
     def follow(self):

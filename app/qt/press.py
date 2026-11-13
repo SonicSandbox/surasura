@@ -339,11 +339,14 @@ def _let_go(mark):
 def let_go(obj):
     """`obj.deleteLater()`, its Python half (and its children's) kept until its C++ object goes — the one way the window
     deletes later a Python Qt object that C++ may still call into before the loop deletes it: an event filter on
-    something that outlives it (a card's scrim on its window, a cover's `_Cover` on the central area), an `event()` of
-    its own (it hears the DeferredDelete itself), a painted part still shown. A wrapper in reference cycles (any
-    `connect(lambda: self…)`) is otherwise freed by the next collection, and one inside such a call crashes the process
-    (`_let_go`'s 0xC0000005; Qt-C2's sweep, tests/qt/test_let_go.py)."""
+    something that outlives it (a card's scrim on its window, a cover's `_Cover` on the central area — or a part of it,
+    a shown `motion.Spinner` / `Turn` filtering its top window), a filter one of its parts put on it (a window's bar arc
+    `_Follow`: it hears the window's own DeferredDelete), an `event()` of its own, a painted part still shown. A wrapper
+    in reference cycles (any `connect(lambda: self…)`) is otherwise freed by the next collection, and one inside such a
+    call crashes the process (`_let_go`'s 0xC0000005; Qt-C2's sweep, tests/qt/test_let_go.py). Twice is once."""
     key = id(obj)
+    if _going.get(key) is obj:
+        return
     _going[key] = obj
     obj.destroyed.connect(lambda _o=None, k=key: _going.pop(k, None))
     obj.deleteLater()

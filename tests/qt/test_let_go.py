@@ -24,7 +24,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication, QEvent, QObject, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
-from app.qt import add_menu, confirm, first_run, shadow, sort_screen
+from app.qt import add_menu, confirm, first_run, shadow, sort_screen, style
 from tests.qt.test_first_run import _host, window  # noqa: F401  (the real main window, the wizard's stand-in api)
 from tests.qt.test_search import ask, world  # noqa: F401  (a window on the seed with its search and a writer)
 from tests.qt.test_drag import _stones_sheet  # noqa: F401  (autouse: the stones drawn before the window opens)
@@ -241,4 +241,41 @@ def test_the_drags_controller_a_language_switch_leaves_is_kept_until_it_goes(wor
     del old, resting
     win._show_switched(win._reader_shown, writer)
     assert refs["controller"]() is not win.moves
+    _kept_then_let_go(refs)
+
+
+# --- a part's filter on its top window, or on the object itself (the adversary's two, Qt-C2 round 2) -------------- #
+def test_a_tool_icon_its_window_left_is_kept_until_it_goes(world, monkeypatch):  # noqa: F811
+    # a ported window's icon in the bottom bar: its Turn, shown, filters the main window (a Spinner's top-window filter)
+    from app.qt import windows
+    from tests.qt.test_tool_icons import Tool
+    _seed, win, _writer = world()
+    tool = windows.show(win, "junban", lambda s: Tool(s, "Junban 順"))
+    QApplication.processEvents()
+    icon = win.tool_icons.icons[id(tool)]
+    refs = {"icon": weakref.ref(icon), "turn": weakref.ref(icon._turn)}
+    del icon
+    monkeypatch.setattr(windows, "open_tools", lambda shell: [])       # its window gone from the open ones
+    win.tool_icons.refresh()
+    assert win.tool_icons.icons == {}
+    _kept_then_let_go(refs)
+
+
+def test_the_report_window_kept_in_another_look_is_kept_until_it_goes(world):  # noqa: F811
+    # Send report's window kept at its close, let go when the look changed: its bar arc's `_Follow` filters the window
+    # itself, so it hears the window's own DeferredDelete
+    from app.qt import press, report, windows
+    _seed, win, _writer = world()
+    w = windows.SecondaryWindow(win, "Send report")                    # (the window as its base makes it: something
+    w.made_in = style.current()                                        # ... of the report's own holds it today, the
+    w.show()                                                           # ... base's parts alone are cycles)
+    QApplication.processEvents()
+    follows = [c for c in w.findChildren(QObject) if isinstance(c, press._Follow)]
+    assert follows, "setup: the report window has no bar arc"
+    refs = {"window": weakref.ref(w), "follow": weakref.ref(follows[0])}
+    w.made_in = ("day",) + tuple(w.made_in[1:])                        # as if the look changed while it was kept
+    w.hide()
+    setattr(win, report.KEPT, w)
+    del w, follows
+    assert report._kept(win, [], False) is None                        # a new one would be made: this one let go
     _kept_then_let_go(refs)

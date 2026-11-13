@@ -291,6 +291,37 @@ def test_the_audiobooks_show_me_lands_on_current_and_the_bar_says_the_press(lib_
     assert wait_until(lambda: win.bar_line.accessibleDescription() == strings.PATH_THEN["audiobook"])
 
 
+def test_a_question_marks_line_stays_inside_its_window_even_at_the_windows_top(qapp):
+    # (lead's check: Settings' Fill your cards ? at 100 % put its two-line bubble above the page, cut by the window's
+    # top) a ?'s bubble keeps to its window: no room above → below the ?, never outside
+    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtWidgets import QWidget
+    from app.qt import tooltip
+    host = QWidget()
+    host.resize(700, 400)
+    tips = tooltip.Tooltips(host)
+    host.tooltips = tips
+    mark = tooltip.AboutMark(strings.HELP_MARK, host)
+    mark.set_about("About Fill your cards", "Adds to your Anki cards how each word is usually used (パターン) and "
+                                            "two more sentences from your own content (例文). Restore puts every card back")
+    mark.move(300, 6)                                                           # right at the window's top
+    host.move(200, 300)                         # room above on the screen, none in the window (the 100 % capture's case)
+    host.show()
+    try:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        QTest.mouseClick(mark, Qt.MouseButton.LeftButton)                      # a press reveals (the bubble's rules)
+        assert wait_until(tips.bubble.isVisible)
+        window = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
+        bubble = tips.bubble.geometry()
+        assert window.contains(bubble), (window, bubble)
+        assert bubble.top() > mark.mapToGlobal(QPoint(0, 0)).y()                # flipped below the ?
+    finally:
+        tips.hide()
+        tips.bubble.deleteLater()
+        host.close()
+
+
 def test_a_title_refits_when_the_text_size_changes_so_its_question_mark_stays_beside_it(card):
     # (adversary r1 #6) the text size changes live: a title held to its old width would wrap its last word
     from PyQt6.QtGui import QFont

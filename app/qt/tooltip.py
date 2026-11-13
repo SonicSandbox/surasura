@@ -184,6 +184,11 @@ class Tooltips(QObject):
         else:
             target = QRect(w.mapToGlobal(rect.topLeft()), rect.size())
         screen = (w.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        if getattr(w, "keeps_to_window", False):     # a ?'s line stays inside its window (no room above: below it)
+            top = w.window()
+            inside = screen.intersected(QRect(top.mapToGlobal(QPoint(0, 0)), top.size()))
+            if inside.width() >= self.bubble.width() and inside.height() >= self.bubble.height():
+                screen = inside
         self.bubble.move(place(self.bubble.size(), target, screen))
         self.bubble.show()
         self.shown = (w, rect)
@@ -247,7 +252,11 @@ class FitTitle(QLabel):
 class AboutMark(QLabel):
     """A small ? that reveals one succinct line (the module's note): its tooltip in the bubble on hover, on keyboard
     focus (Tab) and on a click or Enter / Space (the press hid the bubble: the release shows it again). `mark`: its glyph
-    (the caller's strings table). Hidden while it has no line. Settings' rows build on it (`settings_page.HelpMark`)."""
+    (the caller's strings table). Hidden while it has no line. Settings' rows build on it (`settings_page.HelpMark`).
+    Its bubble keeps inside its window as well as the screen (`keeps_to_window`: a section's ? at the page's top put
+    its line above the window at 100 %), unless the window is smaller than the bubble."""
+
+    keeps_to_window = True
 
     def __init__(self, mark, parent=None):
         super().__init__(mark, parent)

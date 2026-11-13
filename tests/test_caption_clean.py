@@ -36,7 +36,7 @@ def test_the_rows_of_one_caption_are_one_line_and_two_speakers_stay_two(copy):
     read = cues.read(copy, "ja")
     texts = [c.text for c in read]
     assert "《門番は城への侵入者を 厳しく取り調べた》" in texts
-    assert "え…養父様を？" in texts and "うむ。" in texts       # one time, two colours: two people
+    assert "え…お父様を？" in texts and "うむ。" in texts       # one time, two colours: two people
     joined = next(c for c in read if c.text.startswith("《門番"))
     assert (joined.start, joined.end) == (5100, 8400)
 

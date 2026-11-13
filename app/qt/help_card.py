@@ -316,6 +316,7 @@ class HelpCard(motion.Overlay):
         self.host = host
         self.has_module = has_module
         self.card_id = None                 # the card shown (None: *All help*)
+        self.target = None                  # its *Open its settings*' target, as things are now (Kantan-B2)
         self.cause = None
         self.tour = None                    # (ids, index) while the tour runs
         self._done = []                     # callbacks for the close (a toast's paused time)
@@ -414,6 +415,12 @@ class HelpCard(motion.Overlay):
             self._done.append(done)
         self.card_id, self.cause, self.tour = card_id, cause, tour
         title, line, after = strings.HELP_CARDS[card_id]
+        card = help_cards.BY_ID[card_id]
+        on, shown, switch = _live(self.host)                                # Kantan-B2 (AUDIT A3): what's on now
+        off, show_after = help_cards.live(card_id, on, shown)
+        if off:
+            line = strings.HELP_CARDS_OFF.get(card_id, line)
+        self.target = (help_cards.OFF_SETTINGS if not switch else "automation") if off else card.settings
         self.setAccessibleName(title)
         self.title.setText(title)
         said = causes_service.said(cause, None, strings.HELP_CAUSE_WHY, strings.HELP_CAUSE_WHY_AT) \
@@ -424,18 +431,20 @@ class HelpCard(motion.Overlay):
         self.line.setText(line)
         self.line.show()
         files = help_cards.files(card_id)
-        card = help_cards.BY_ID[card_id]
         self.clip.set_clip(files["clip"], files["poster"], after)
         self._still(None if files["clip"] or files["poster"] else (files["stills"] or [None])[0])
         self.after.setText(after)
-        self.after.setVisible(bool(after))
-        also = strings.HELP_ALSO.get(card_id, "")
+        self.after.setVisible(bool(after) and show_after)
+        also = (strings.HELP_CARDS_OFF_ALSO if not switch else strings.HELP_CARDS_AUTO_OFF_ALSO) if off else \
+            strings.HELP_ALSO.get(card_id, "")
         self.also.setText(also)
         self.also.setVisible(bool(also))
         self._list(self._lines(card_id))
         self._all_visible(False)
         self._try_it(card)
-        self.settings.setVisible(bool(card.settings))
+        if off:
+            self.missing.hide()                 # (cards off is said once, in its line above)
+        self.settings.setVisible(bool(self.target))
         self._tour_parts()
         self._open()
         return self
@@ -578,13 +587,13 @@ class HelpCard(motion.Overlay):
             run(card.try_it, self.try_it)
 
     def _settings(self):
-        card = help_cards.BY_ID.get(self.card_id)
-        if card is None or not card.settings:
+        if self.card_id is None or not self.target:
             return
+        target = self.target
         self.close()
         opener = getattr(self.host, "open_setting", None)
         if opener is not None:
-            opener(card.settings)
+            opener(target)
 
     def _guide(self):
         opener = getattr(self.host, "_open_guide", None)
@@ -671,6 +680,28 @@ class HelpCard(motion.Overlay):
         radius = theme.RADII["dialog"]
         p.drawRoundedRect(QRectF(self.rect()), radius, radius)
         p.end()
+
+
+def _live(host):
+    """Kantan-B2 (AUDIT A3, finding 3): (cards are made by themselves — the card switch and D29's *Run things by
+    themselves* both on: `settings_manager.connect_on` —, Current draws its top-cards line, the card switch itself is
+    on) for `help_cards.live` — the settings in memory and Current's view as last given: GUI-only reads, no file. A
+    host that has neither says (True, True, True): the cards' words as ever."""
+    on = shown = switch = True
+    settings = getattr(getattr(host, "services", None), "settings", None)
+    if settings is not None:
+        try:
+            from app import settings_manager
+            now = settings.get()
+            switch = bool(now.get("connect_enabled"))
+            on = settings_manager.connect_on(now)
+        except Exception:
+            on = switch = True
+    pages = getattr(host, "page_widgets", None)
+    if pages is not None:
+        view = getattr(pages.get("current"), "view_model", None)
+        shown = any(getattr(ln, "kind", None) == "top" for ln in (getattr(view, "lines", None) or ()))
+    return on, shown, switch
 
 
 def lit_lines(strip):

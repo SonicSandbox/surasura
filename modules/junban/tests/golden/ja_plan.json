@@ -44,13 +44,13 @@
    },
    "1789712000006": {
     "Patterns": {
-     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 46%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
      "before": ""
     }
    },
    "1789712000007": {
     "Patterns": {
-     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">長さ 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
      "before": ""
     }
    },
@@ -179,7 +179,7 @@
     "持つ",
     "Patterns",
     "fill",
-    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 46%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
     "patterns"
    ],
    [
@@ -195,7 +195,7 @@
     "長い",
     "Patterns",
     "fill",
-    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">長さ 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
     "patterns"
    ],
    [
@@ -335,7 +335,7 @@
     "長い|ナガイ": [
      [
       "長い",
-      "柄"
+      "さ"
      ]
     ]
    },
@@ -451,7 +451,7 @@
     "長い|ナガイ": [
      [
       "長い",
-      "柄"
+      "さ"
      ]
     ]
    },
@@ -542,7 +542,7 @@
    },
    "1789712000007": {
     "Patterns": {
-     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">長さ 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
      "before": ""
     }
    },
@@ -655,7 +655,7 @@
     "長い",
     "Patterns",
     "fill",
-    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">長さ 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
     "patterns"
    ],
    [

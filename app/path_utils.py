@@ -859,6 +859,7 @@ PARTS = (
     ("roaming", "report_sent", "reports", MOVES, STAYS),         # the sent zips, kept 90 days
     ("roaming", "report_send.json", "report_send", MOVES, STAYS),    # the Discord name and sender code: as settings
     ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
+    ("roaming", "youtube_hold.json*", "youtube_hold", STAYS, STAYS),    # Yt-B: YouTube's answer to this computer
     ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
     ("local", "installs.json", "installs_note", STAYS, STAYS),
     ("local", "installs.lock", "installs_note", STAYS, STAYS),

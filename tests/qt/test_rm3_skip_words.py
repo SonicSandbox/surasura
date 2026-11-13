@@ -29,10 +29,14 @@ def _entry(need_id=21):
     return next(e for e in service.entries(None, connect=rec) if e.kind == runner.MINE_REFUSED)
 
 
-def test_the_refused_line_offers_skip_this_word_then_try_again():
+def test_the_refused_line_offers_skip_this_word_and_never_try_again():
+    # Kantan-B2 (AUDIT B5, Sonic's yes 2026-11-12): Anki refuses the word for good (Anki Miner's MINING_FAILED, not
+    # transient: #ZHFKV0's 24 identical failures) — *Try again* would fail the same way, so the line offers only *Skip
+    # this word*, says why, and never tells him to try again
     entry = _entry()
-    assert entry.actions[:2] == ("skip_words", "try_again")
+    assert entry.actions[0] == "skip_words" and "try_again" not in entry.actions
     assert "{{c1::" in entry.title and "塗れ" in entry.title
+    assert "Try again" not in entry.title and "Try again" not in runner.MINE_REFUSED_SAY
     assert strings.NEEDS_ACTIONS["skip_words"][0] == "Skip this word"
 
 

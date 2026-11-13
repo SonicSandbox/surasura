@@ -517,6 +517,25 @@ def reorder_work(settings, language, answers, progress=None, cancel=None, on_wai
                 "warnings": [], "written": [], "failures": []}
 
 
+def put_back_then_reorder_work(settings, language, answers, runs, progress=None, cancel=None, on_wait=None):
+    """*Put that one back, then reorder* (Junban-X2, Sonic 2026-11-13): a Reorder refused only for other decks' stopped
+    runs of Connect's (`put_back_first`). Each of those runs put back exactly (`reposition.restore_run`: only the cards
+    still where it put them — another deck's, so this deck's preview still holds), then Reorder's own job. One that
+    can't be put back stops it there: nothing reordered, said. Never past a traceback. -> the report."""
+    for run in runs or ():
+        try:
+            done = reposition.restore_run(settings, run, wait=None, cancel=cancel, on_wait=on_wait)
+        except Exception as e:                      # a window must never lose a write to a traceback
+            done = {"ok": False, "problems": [str(e)]}
+        if not done.get("ok"):
+            return dict(done, ok=False, message=PUT_BACK_FIRST_FAILED, warnings=done.get("warnings") or [],
+                        written=[], failures=done.get("failures") or [])
+    return reorder_work(settings, language, answers, progress=progress, cancel=cancel, on_wait=on_wait)
+
+
+PUT_BACK_FIRST_FAILED = "The stopped reorder couldn't be put back, so nothing was reordered."      # PROVISIONAL
+
+
 def try_work(settings, language, answers, progress=None, cancel=None, on_wait=None):
     """*Try it on my cards*' job (backlog onboarding): the answers first, as Reorder's (the order on screen is the one
     it reads), then `reposition.try_front` with the window's job — the preview's order, the sync rule as a Reorder —

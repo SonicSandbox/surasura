@@ -204,6 +204,7 @@ class JunbanWindow(windows.SecondaryWindow):
         self._auto_previewed = False
         self._ft = None                         # (language, anything kept to put back?) — asked on a worker (C21)
         self._picture = None                    # backlog onboarding: the backlog's picture shown (None: hidden)
+        self._put_back_first = None             # Junban-X2: other decks' stopped runs a refused Reorder named
         self._ft_asking = None
         self._touch_open = False
         self._controller_hooked = None
@@ -536,6 +537,19 @@ class JunbanWindow(windows.SecondaryWindow):
 
         self.messages = Lines(self, qs.JUNBAN_MESSAGES_NAME)
         self.body.addWidget(self.messages)
+        # Junban-X2: a Reorder refused only for other decks' stopped runs offers one press (its ? holds the one line)
+        from app.qt.settings_page import HelpMark
+        self.put_back_row = QWidget(self)
+        line = QHBoxLayout(self.put_back_row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.addStretch(1)
+        self.btn_put_back_first = _button(self.put_back_row, qs.JUNBAN_PUT_BACK_FIRST, qs.JUNBAN_PUT_BACK_FIRST_TIP,
+                                          self.on_put_back_first)
+        line.addWidget(self.btn_put_back_first)
+        self.put_back_mark = HelpMark(self.put_back_row)
+        line.addWidget(self.put_back_mark)
+        self.put_back_row.setVisible(False)
+        self.body.addWidget(self.put_back_row)
         self.progress = QProgressBar(self)
         self.progress.setAccessibleName(qs.JUNBAN_PROGRESS_NAME)
         self.progress.setTextVisible(False)
@@ -702,6 +716,9 @@ class JunbanWindow(windows.SecondaryWindow):
                            (self.btn_show_known, b["recheck"] or showing)):
             if widget.isEnabled() != on:
                 widget.setEnabled(on)
+        offer = bool(self._put_back_first) and b["reorder"]     # Junban-X2: only while its preview is this one
+        if self.put_back_row.isHidden() == offer:
+            self.put_back_row.setVisible(offer)
         backfill = self._backfill_opener()
         show = backfill is not None and windows.available(backfill, self._saved(), self.language)
         if self.btn_backfill.isHidden() == show:
@@ -797,6 +814,7 @@ class JunbanWindow(windows.SecondaryWindow):
         if self.session.must_generate(self.can_generate()):
             return self._generate()
         generation = self.session.ask()                 # the old preview and every one on its way are thrown away
+        self._put_back_first = None                     # Junban-X2: its one press was for the preview before
         self._clear_preview()
         self.progress.setValue(0)
         self.match.setText(qs.JUNBAN_MATCH_WORKING)
@@ -1052,10 +1070,19 @@ class JunbanWindow(windows.SecondaryWindow):
             self._sync()
 
     # --- Reorder ------------------------------------------------------------------------------------------------- #
-    def on_reorder(self):
-        """Write the order. Reachable only with a preview of this exact key on screen (I5)."""
+    def on_put_back_first(self):
+        """*Put that one back, then reorder* (Junban-X2, Sonic 2026-11-13): the other decks' stopped runs the refused
+        Reorder named, put back, then the Reorder itself — the same preview, still this deck's (I5)."""
+        runs = self._put_back_first
+        if runs and self.session.ready(self.key(), self.is_busy()):
+            self.on_reorder(runs=runs)
+
+    def on_reorder(self, runs=None):
+        """Write the order. Reachable only with a preview of this exact key on screen (I5). `runs` (Junban-X2): other
+        decks' stopped runs of Connect's put back first (`junban_view.put_back_then_reorder_work`)."""
         if not self.session.ready(self.key(), self.is_busy()):
             return
+        self._put_back_first = None
         self._save()
         answers = view.answers_to_record(self.session.stats, self.session.ticked)
         settings = self.engine_settings()            # the settings the key above was just checked against
@@ -1079,6 +1106,9 @@ class JunbanWindow(windows.SecondaryWindow):
                     relay.call(("status", qs.JUNBAN_REORDERING))
                 job.progress(qs.JUNBAN_REORDERING, done, total)
                 progress(done, total)
+            if runs:
+                return dict(view.put_back_then_reorder_work(settings, language, answers, runs, progress=placed,
+                                                            cancel=stop, on_wait=on_wait), job="reorder")
             return dict(view.reorder_work(settings, language, answers, progress=placed, cancel=stop,
                                           on_wait=on_wait), job="reorder")
         self._submit(qs.JUNBAN_LABEL_REORDER, work)
@@ -1256,7 +1286,15 @@ class JunbanWindow(windows.SecondaryWindow):
         on screen, inert, until the next preview."""
         self._stops.discard(stop)
         self._jobs = [job for job in self._jobs if job.state not in ("done", "failed")]
-        self.session.clear()
+        # Junban-X2: a Reorder refused only for other decks' stopped runs wrote nothing — its preview still holds, and
+        # one press puts those runs back and reorders it
+        runs = report.get("put_back_first") if report.get("job") == "reorder" and not report.get("written") else None
+        self._put_back_first = list(runs) if runs else None
+        if self._put_back_first:
+            decks = report.get("put_back_decks") or qs.JUNBAN_PUT_BACK_FIRST_ELSEWHERE
+            self.put_back_mark.set_about(qs.JUNBAN_PUT_BACK_FIRST, qs.JUNBAN_PUT_BACK_FIRST_HELP.format(decks=decks))
+        else:
+            self.session.clear()
         self.say("")
         for text, tone in view.report_lines(report):
             self.messages.add(text, tone)

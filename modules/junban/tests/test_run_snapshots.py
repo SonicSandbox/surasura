@@ -136,8 +136,11 @@ def test_your_reorder_asks_for_the_undo_first_while_a_cut_runs_record_isnt_compl
     """Not prepped, not ready: a cut run whose snapshot can't be read just now (an antivirus or cloud folder holds
     it), or one for another deck or the other scope mode, which your reorder's snapshot couldn't hold the way back
     from. Your Reorder asks for its Undo first, as before, and nothing is written — with something to write, and with
-    nothing (the take-over that only saves)."""
+    nothing (the take-over that only saves). Junban-X2: a held file is read once more first (a quiet retry), and only
+    another deck's run is offered as one press (`put_back_first`)."""
     fake = scene(tmp_path)
+    waits = []
+    monkeypatch.setattr(reposition, "_held_wait", lambda: waits.append(1))
     run_id = _cut_connect_run(fake)
     path = undo.snapshot_path("ja", run_id=run_id)
     if why == "unreadable":
@@ -163,6 +166,8 @@ def test_your_reorder_asks_for_the_undo_first_while_a_cut_runs_record_isnt_compl
             yours = reposition.run(chosen, refresh=False)
         assert not yours["ok"] and yours["restore_first"] and yours["unfinished"] == run_id, yours
         assert fake.writes == [] and fake.suspend_calls == [] and not os.path.exists(undo.snapshot_path("ja"))
+        assert yours.get("put_back_first") == (None if why == "unreadable" else [run_id]), yours
+    assert len(waits) == (2 if why == "unreadable" else 0), "one quiet retry a press, only for a held file"
     with open(path, encoding="utf-8") as handle:
         assert handle.read() == cut_file, "left exactly as it was"
 
@@ -517,6 +522,107 @@ def test_a_fields_true_original_survives_a_take_over_whichever_snapshot_is_older
         assert touched[str(note)]["FreqSort"] == {"before": "u", "after": "m"}
         alone = reposition._carried_fields(handed, None)
         assert alone[str(note)]["FreqSort"] == {"before": "u", "after": "a1"}
+
+
+# --------------------------------------------------------------------------- #
+# Junban-X2 (Sonic 2026-11-13): a held file read again once; another deck's stopped run put back in one press
+# --------------------------------------------------------------------------- #
+def test_a_run_file_held_for_a_moment_is_read_again_once_and_your_reorder_goes_on(tmp_path, monkeypatch):
+    """An antivirus or a cloud folder holds the cut run's file as your Reorder reads it: a quiet retry a moment later
+    reads it, and the Reorder takes the run over as if it had never been held — no ask, nothing said."""
+    fake = scene(tmp_path)
+    before = _state(fake)
+    run_id = _cut_connect_run(fake)
+    held = {"now": True}
+    real = undo.load
+    monkeypatch.setattr(undo, "load", lambda language="ja", kind="reorder", run_id=None:
+                        None if held["now"] and run_id is not None else real(language, kind, run_id))
+    waits = []
+    monkeypatch.setattr(reposition, "_held_wait", lambda: (waits.append(1), held.update(now=False)))
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert report["ok"] and not report.get("restore_first") and waits == [1], report
+    assert undo.load("ja", run_id=run_id).get("taken_over_at")
+    with _patched(fake):
+        assert reposition.restore(settings())["ok"]
+    assert _state(fake) == before
+
+
+def test_the_quiet_retry_waits_about_a_second():
+    assert 0.5 <= reposition.HELD_RETRY <= 2.0
+
+
+def _other_deck_cut(fake, half=7):
+    """A card in deck Kanji and one of Connect's runs for Kanji, cut after it moved that card to `half` -> (card id,
+    its number before, the run id)."""
+    note_id, card_id = max(fake.notes) + 1, max(fake.cards) + 1
+    fake.notes[note_id] = {"noteId": note_id, "modelName": "Lapis", "tags": [], "fields": {
+        "Expression": {"value": "漢字", "order": 0}, "Sentence": {"value": "<b>漢字</b>を書く。", "order": 1},
+        "FreqSort": {"value": "500", "order": 2}, "MiscInfo": {"value": "", "order": 3}}}
+    fake.cards[card_id] = {"cardId": card_id, "note": note_id, "due": 5000, "type": 0, "queue": 0, "deckName": "Kanji"}
+    run_id = undo.new_run_id("reorder")
+    undo.save([(card_id, 5000)], ["Kanji"], language="ja", run_id=run_id, after=[(card_id, half)])
+    fake.cards[card_id]["due"] = half
+    return card_id, 5000, run_id
+
+
+def test_another_decks_stopped_run_is_offered_as_one_press_named(tmp_path, monkeypatch):
+    fake = scene(tmp_path)
+    _card_id, _was, run_id = _other_deck_cut(fake)
+    monkeypatch.setattr(reposition, "_held_wait", lambda: None)
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert not report["ok"] and report["restore_first"] and fake.writes == [], report
+    assert report["put_back_first"] == [run_id] and report["put_back_decks"] == "Kanji"
+    assert report["problems"] == [reposition.UNFINISHED_ELSEWHERE.format(decks="Kanji")]
+
+
+def test_a_held_file_beside_another_decks_run_is_never_offered_as_one_press(tmp_path, monkeypatch):
+    """A held run can't be put back just now: the plain ask, never a press that would fail half way."""
+    fake = scene(tmp_path)
+    _other_deck_cut(fake)
+    held_id = _cut_connect_run(fake)
+    real = undo.load
+    monkeypatch.setattr(undo, "load", lambda language="ja", kind="reorder", run_id=None:
+                        None if run_id == held_id else real(language, kind, run_id))
+    monkeypatch.setattr(reposition, "_held_wait", lambda: None)
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert not report["ok"] and report["restore_first"] and not report.get("put_back_first"), report
+
+
+def test_put_that_one_back_then_reorder_puts_back_only_the_other_deck_and_reorders_this_one(tmp_path, monkeypatch):
+    """The one press: Kanji's stopped run put back exactly (its card where it was, the run marked put back), then this
+    deck's Reorder — and its own Undo afterwards puts back this deck alone, Kanji untouched."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    before = _state(fake)
+    card_id, was, run_id = _other_deck_cut(fake)
+    monkeypatch.setattr(reposition, "_held_wait", lambda: None)
+    with _patched(fake):
+        refused = reposition.run(settings(), refresh=False)
+        assert refused["put_back_first"] == [run_id]
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, refused["put_back_first"])
+    assert report["ok"] and report["written"], report
+    assert fake.cards[card_id]["due"] == was
+    assert undo.load("ja", run_id=run_id).get("restored_at") and undo.unfinished("ja", "reorder") is None
+    with _patched(fake):
+        assert reposition.restore(settings())["ok"]
+    assert {c: v for c, v in _state(fake).items() if c != card_id} == before
+    assert fake.cards[card_id]["due"] == was
+
+
+def test_a_stopped_run_that_cant_be_put_back_stops_the_press_before_any_reorder(tmp_path, monkeypatch):
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    _card_id, _was, run_id = _other_deck_cut(fake)
+    monkeypatch.setattr(reposition, "restore_run", lambda settings, run, **kw:
+                        {"ok": False, "message": "Nothing was restored.", "problems": ["Anki isn't answering."]})
+    fake.writes = []
+    with _patched(fake):
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert not report["ok"] and report["message"] == junban_view.PUT_BACK_FIRST_FAILED, report
+    assert report["problems"] == ["Anki isn't answering."] and fake.writes == []
 
 
 def test_a_restore_puts_back_what_the_run_moved_and_leaves_a_card_you_moved_since(tmp_path):

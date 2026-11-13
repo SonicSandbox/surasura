@@ -2338,17 +2338,26 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     # start (順's Reorder) takes over every such run too when their record is complete (`_connect_cuts`: each readable,
     # for this deck and scope mode) — else it asks for their Undo first, as before.
     unfinished = undo.unfinished(_language(settings), "reorder")
-    connect_cuts = []                   # [(run id, its snapshot)] this run takes over
+    connect_cuts, blocked = [], None    # [(run id, its snapshot)] this run takes over; the runs it can't (`_connect_cuts`)
     if unfinished is not None and automatic and run_id is None:
         connect_cut = undo.load(_language(settings), run_id=unfinished)
         connect_cuts = [(unfinished, connect_cut)] if connect_cut else []
     elif unfinished is not None and not automatic:
-        connect_cuts = _connect_cuts(settings, decks)
-    if unfinished is not None and not automatic and connect_cuts is None:
-        return _report(False, "Junban did not make any changes.",
-                       problems=[f"An automatic reorder ({unfinished}) did not finish, and its saved order is the "
-                                 "only way back from it. Press Undo the last reorder first, then reorder again."],
-                       warnings=checks["warnings"], decks=decks, unfinished=unfinished, restore_first=True)
+        connect_cuts, blocked = _connect_cuts(settings, decks)
+        if blocked and blocked["held"]:     # Junban-X2 (Sonic 2026-11-13): a file held a moment (an antivirus, a cloud
+            _held_wait()                    # folder) is read again once, quietly, before you're asked for its Undo
+            connect_cuts, blocked = _connect_cuts(settings, decks)
+    if unfinished is not None and not automatic and blocked:
+        # Junban-X2: only other decks' runs in the way (none held) -> the window offers one press, *Put that one back,
+        # then reorder* (`put_back_first`: their ids; their decks named)
+        elsewhere = [] if blocked["held"] else blocked["elsewhere"]
+        named = _decks_named(settings, elsewhere) if elsewhere else ""
+        problem = (UNFINISHED_ELSEWHERE.format(decks=named) if elsewhere else
+                   f"An automatic reorder ({unfinished}) did not finish, and its saved order is the only way back "
+                   "from it. Press Undo the last reorder first, then reorder again.")
+        return _report(False, "Junban did not make any changes.", problems=[problem], warnings=checks["warnings"],
+                       decks=decks, unfinished=unfinished, restore_first=True,
+                       **({"put_back_first": elsewhere, "put_back_decks": named} if elsewhere else {}))
     went_on = None if automatic or cut is not None else _went_on(previous, connect_cuts, decks, settings)
     # Backlog onboarding: Try it's numbers from before, carried (`carry_forward_tried`) — only while no automatic write
     # came after it (today's baseline newer than the window's snapshot): that write's baseline is the way back then.
@@ -2906,25 +2915,53 @@ def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previou
 
 def _connect_cuts(settings, decks):
     """Junban-X (Sonic 2026-11-13: "a manual would be a priority BUT if the data until that point isn't prepped than the
-    manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `[(run id, its snapshot)]`,
-    newest first; or None when one can't be, its record not complete — a file that can't be read just now
-    (`undo.runs`' unreadable), or an unfinished run for another deck or scope mode, whose way back this run's snapshot
-    wouldn't hold. Every unfinished one, never only the newest (an older one left would put its half writes back), and
-    every finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own
-    next runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
+    manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `(taken, blocked)`: `taken`
+    `[(run id, its snapshot)]`, newest first; `blocked` None, or — when one can't be taken, its record not complete —
+    `{"held": [...], "elsewhere": [...]}`, the run ids of the files that can't be read just now (`undo.runs`'
+    unreadable) and of the unfinished runs for another deck or scope mode, whose way back this run's snapshot wouldn't
+    hold. Every unfinished one, never only the newest (an older one left would put its half writes back), and every
+    finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own next
+    runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
     runs = undo.runs(_language(settings), "reorder")
     cuts = [index for index, (_cut_id, saved) in enumerate(runs) if saved.get("complete") is False]
-    taken = []
+    taken, held, elsewhere = [], [], []
     for cut_id, saved in runs[:max(cuts) + 1] if cuts else ():
         if saved.get("complete") is False:
-            if (saved.get("unreadable") or not isinstance(saved.get("cards"), dict)
-                    or not _same_scope(saved, decks, settings)):
-                return None
+            if saved.get("unreadable") or not isinstance(saved.get("cards"), dict):
+                held.append(cut_id)
+                continue
+            if not _same_scope(saved, decks, settings):
+                elsewhere.append(cut_id)
+                continue
         elif (saved.get("restored_at") or saved.get("taken_over_at") or not isinstance(saved.get("cards"), dict)
               or not _same_scope(saved, decks, settings)):
             continue                    # put back, taken over, or another deck's: nothing of this deck to go back past
         taken.append((cut_id, saved))
-    return taken
+    return taken, ({"held": held, "elsewhere": elsewhere} if held or elsewhere else None)
+
+
+# Junban-X2: how long a run you start waits before it reads a held run's file once more (Sonic 2026-11-13: "a quiet
+# retry a second later, then the same ask")
+HELD_RETRY = 1.0
+# Junban-X2: what a run you start says when only other decks' stopped runs are in its way (PROVISIONAL)
+UNFINISHED_ELSEWHERE = "An automatic reorder of {decks} stopped part way. Put it back first, then reorder."
+
+
+def _held_wait():
+    time.sleep(HELD_RETRY)
+
+
+def _decks_named(settings, run_ids):
+    """The decks of these runs of Connect's, for a sentence: "Kanji", "Kanji and Mining", or "all decks"."""
+    names = []
+    for run_id in run_ids:
+        saved = undo.load(_language(settings), run_id=run_id) or {}
+        for name in (["all decks"] if saved.get("mode") == "all" else undo.normalize_scope(saved.get("scope"))):
+            if name not in names:
+                names.append(name)
+    if not names:
+        return "another deck"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def _went_on(previous, connect_cuts, decks, settings):

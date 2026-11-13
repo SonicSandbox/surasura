@@ -105,6 +105,9 @@ ITEM_MENU = {
     "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
     "cover": ("Change cover…", "Choose the picture it shows"),
     # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
+    # Kura-TX (PROVISIONAL; the audit's ask 2): any book's row names its audiobook up front
+    "audiobook": ("Its audiobook…", "Pick the audiobook that reads this book aloud: its cards get their sentences in "
+                                    "the narrator's voice"),
     "add-audio": ("Add the narrator's voice…", "{n} of its cards made for you can get their sentence in the narrator's "
                                                "voice: only an empty sentence-audio field is filled, nothing else on "
                                                "the card changes. Undo takes it back"),

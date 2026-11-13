@@ -63,6 +63,7 @@ import shutil
 import time
 from types import SimpleNamespace
 
+from app import youtube_hold
 from app.connect import fit_check, inbox, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, STOPPED_REASON,
@@ -2582,8 +2583,11 @@ class Steps:
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
         (`library.waits_for`), else None (`connect.reading.source`: the EPUB a part was cut from, else the item's own
-        text). A busy store is a Wait."""
+        text). A busy store is a Wait. Kura-TX: a part of a book 2.x split into `.txt` parts is read as itself, its
+        book the parts' joined `.txt` (`library.split_book`), which stands where an EPUB's path stands — joined after
+        the store is let go (review S3: `_held` only around its reads)."""
         from app.connect import library, reading
+        split = None
         with _held():
             with self._open(lang) as store:
                 item = store.item(job["item_id"]) or {}
@@ -2591,9 +2595,14 @@ class Steps:
                     return None
                 pairing = library.pairing_of(store, job["item_id"])
             path = self.subtitle(lang, job)
-        if not path:
-            return None
-        found, book = reading.source(path, pairing)
+            if not path:
+                return None
+            found, book = reading.source(path, pairing)
+            if book is None and str(found).lower().endswith(".txt"):
+                with self._open(lang) as store:
+                    split = store.split_book(job["item_id"])
+        if split is not None:
+            book = library.join_book(split, lang)
         return reading.as_text(found, self.run_dir(job), lang), book
 
     def subtitle(self, lang, job):
@@ -2693,7 +2702,8 @@ class Steps:
             raise
         except online.Trouble as t:
             if t.standing:
-                if t.say in online.HELD:    # offline, a bot check, no room: no other fetch this run (review r2 S1)
+                if t.say in online.HELD or youtube_hold.is_words(t.say):    # offline, a bot check (its hold,
+                    # Yt-B), no room: no other fetch this run (review r2 S1)
                     self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
                 raise Needs(online.KIND, t.say, standing=True) from None
             raise own(t.say) from None
@@ -3703,6 +3713,10 @@ class Steps:
                 pairing = library.pairing_of(store, job["item_id"])
             path = self.subtitle(lang, job)
             epub = reading.source(path, pairing)[1] if path else None
+            if path and epub is None:
+                with self._open(lang) as store:         # Kura-TX: a split book's joined `.txt`, as it is now
+                    got = store.split_book(job["item_id"])
+                epub = got["path"] if got else None
             if epub:
                 with self._open(lang) as store:
                     ab = library.audiobook_of_book(store, epub)

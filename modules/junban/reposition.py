@@ -2405,7 +2405,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
             # #50: the order stands, but a card's show label is behind it (a list moved, a show renamed): only those
             # labels, never a snapshot (one of nothing would replace your route back from the last run)
             labelled, label_failures = show_tags.apply(url, labels, _chunk_size(settings))
-            _finish_cut(settings, cut, automatic, decks, stats, connect_cuts)
+            _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot)
             return _report(True, "Every card is already in the right place — nothing to change." +
                            _labels_clause(labelled), warnings=checks["warnings"] + _labels_warning(label_failures),
                            decks=decks, stats=stats)
@@ -2413,7 +2413,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # order with an empty one would throw away the user's only route back from the *previous*
         # run, and they would not find out until they pressed Restore. (With the cards not on the
         # list still to tag, flag or suspend, the run goes ahead, snapshot first, positions or not.)
-        _finish_cut(settings, cut, automatic, decks, stats, connect_cuts)
+        _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot)
         return _report(True, "Every card is already in the right place — nothing to change.",
                        warnings=checks["warnings"], decks=decks, stats=stats)
 
@@ -2461,7 +2461,8 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # reaches the wire, not after it. FT (K8): this run's own field writes in the first-touch journal first.
         first_touch.note(_language(settings), "reorder", profile, decks, fields=touchups.get("fields"))
         return undo.save(original, decks, language=_language(settings),
-                         fields=_cut_fields(connect_cuts, undo.carry_forward_fields(previous, touchups.get("fields"))),
+                         fields=_carried_fields([previous] + [saved for _cut_id, saved in connect_cuts],
+                                                touchups.get("fields")),
                          profile=profile,
                          tags=touchups.get("tags"),
                          tag=touchups.get("tag"),
@@ -2487,7 +2488,8 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         if run_id is not None or not automatic or acting or taking:
             snapshot = save_snapshot(touchups, later)
         for cut_id, _saved in connect_cuts:     # the window's snapshot now holds their way back: never refused or
-            undo.mark_complete(_language(settings), run_id=cut_id, taken_over=True)     # offered again
+            if not undo.mark_complete(_language(settings), run_id=cut_id, taken_over=True):     # offered again
+                raise OSError(f"Connect's run {cut_id} could not be marked as taken over")
     except OSError as e:
         # Refusing here is the entire point of I3. A reposition with no undo file is a one-way door:
         # AnkiConnect writes no undo entry, and Anki's own Undo would revert the wrong thing.
@@ -2870,19 +2872,22 @@ def _same_scope(snapshot, decks, settings):
             and (snapshot.get("mode") == "all") == (_scope_mode(settings) == "all"))
 
 
-def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=()):
+def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previous=None, window_snapshot=None):
     """Disc-T1: a run you start that takes over a cut automatic run and finds nothing left to write still ends it —
     a snapshot of its own takes the cut run over, as one with writes does (every card in scope where it is, the cut
     run's originals winning), saved complete and `finished_automatic`, and today's baseline ended. Newest, it is what
     Undo offers: never a baseline a positions-only job wrote after the cut (the adversary's MUST: that one knows
     nothing of the cut run's tags, flags and suspends). Not saved: the cut snapshot stays unfinished, as it was.
-    Junban-X: Connect's cut runs it takes over (`connect_cuts`) the same way, each then marked taken over."""
+    Junban-X: Connect's cut runs it takes over (`connect_cuts`) the same way, each then marked taken over; and, as the
+    writes path does, the fields' true originals of the window's snapshot it replaces (`previous`) and Try it's numbers
+    from before (`window_snapshot`) carried."""
     if (cut is None and not connect_cuts) or automatic:
         return
     language = _language(settings)
     try:
-        undo.save([(row.card_id, row.due) for row in stats.get("order") or []], decks, language=language,
-                  fields=_cut_fields(connect_cuts, undo.carry_forward_fields(cut, None)), mode=_scope_mode(settings),
+        pairs = undo.carry_forward_tried(window_snapshot, [(row.card_id, row.due) for row in stats.get("order") or []])
+        undo.save(pairs, decks, language=language, mode=_scope_mode(settings),
+                  fields=_carried_fields([previous or cut] + [saved for _cut_id, saved in connect_cuts], None),
                   cut=[cut] + [saved for _cut_id, saved in connect_cuts], finished_automatic=True)
     except OSError:
         return
@@ -2894,25 +2899,34 @@ def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=()):
 
 def _connect_cuts(settings, decks):
     """Junban-X (Sonic 2026-11-13: "a manual would be a priority BUT if the data until that point isn't prepped than the
-    manual isn't ready to run yet"): Connect's unfinished reorder runs a run you start takes over -> `[(run id, its
-    snapshot)]`, newest first; or None when one of them can't be, its record not complete — a file that can't be read
-    just now (`undo.runs`' unreadable), or a run for another deck or scope mode, whose way back this run's snapshot
-    wouldn't hold. Every one, never only the newest: an older one left unfinished would put its half writes back."""
+    manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `[(run id, its snapshot)]`,
+    newest first; or None when one can't be, its record not complete — a file that can't be read just now
+    (`undo.runs`' unreadable), or an unfinished run for another deck or scope mode, whose way back this run's snapshot
+    wouldn't hold. Every unfinished one, never only the newest (an older one left would put its half writes back), and
+    every finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own
+    next runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
+    runs = undo.runs(_language(settings), "reorder")
+    cuts = [index for index, (_cut_id, saved) in enumerate(runs) if saved.get("complete") is False]
     taken = []
-    for cut_id, saved in undo.runs(_language(settings), "reorder"):
-        if saved.get("complete") is not False:
-            continue
-        if (saved.get("unreadable") or not isinstance(saved.get("cards"), dict)
-                or not _same_scope(saved, decks, settings)):
-            return None
+    for cut_id, saved in runs[:max(cuts) + 1] if cuts else ():
+        if saved.get("complete") is False:
+            if (saved.get("unreadable") or not isinstance(saved.get("cards"), dict)
+                    or not _same_scope(saved, decks, settings)):
+                return None
+        elif (saved.get("restored_at") or saved.get("taken_over_at") or not isinstance(saved.get("cards"), dict)
+              or not _same_scope(saved, decks, settings)):
+            continue                    # put back, taken over, or another deck's: nothing of this deck to go back past
         taken.append((cut_id, saved))
     return taken
 
 
-def _cut_fields(connect_cuts, fields):
-    """`fields` with each field's true original from Connect's cut runs carried forward, the oldest run's winning."""
-    for _cut_id, saved in connect_cuts:             # newest first (`undo.runs`): the oldest is carried last and wins
-        fields = undo.carry_forward_fields(saved, fields)
+def _carried_fields(snapshots, fields):
+    """`fields` for a snapshot that replaces or takes over `snapshots` (the window's last one, Connect's cut runs): each
+    field's true original carried back through every one of them, newest first, so the oldest's wins — one that
+    carried an earlier one first would stop at a value Surasura wrote (the adversary's BLOCKER, Junban-X)."""
+    for earlier in sorted((snapshot for snapshot in snapshots if snapshot),
+                          key=lambda snapshot: snapshot.get("written_at") or "", reverse=True):
+        fields = undo.carry_forward_fields(earlier, fields)
     return fields
 
 

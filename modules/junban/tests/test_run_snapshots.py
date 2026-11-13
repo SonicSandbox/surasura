@@ -218,6 +218,113 @@ def test_your_reorder_with_nothing_left_to_write_still_takes_a_cut_run_over(tmp_
     assert {c: due for c, (due, _q, _f) in _state(fake).items()} == {c: due for c, (due, _q, _f) in before.items()}
 
 
+def test_an_older_cut_runs_number_wins_where_a_newer_cut_run_moved_the_same_card(tmp_path):
+    """Two cut runs moved the same card: the older one's number from before it is the way back (`_take_over`, oldest
+    last). The newest's would be the older run's half write."""
+    fake = scene(tmp_path)
+    before = _state(fake)
+    first = _cut_connect_run(fake)
+    card_id, half = next(iter(fake.writes))
+    newer = undo.new_run_id("reorder")                  # Connect's next run moved it again and was cut too
+    undo.save([(card_id, half)], ["TheBank"], language="ja", run_id=newer, after=[(card_id, half + 1000)])
+    fake.cards[card_id]["due"] = half + 1000
+    assert {run_id for run_id, saved in undo.runs("ja") if saved["complete"] is False} == {first, newer}
+    with _patched(fake):
+        assert reposition.run(settings(), refresh=False)["ok"]
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
+
+
+def test_a_finished_run_after_the_cut_one_is_taken_over_with_it_so_undo_never_mixes_the_two(tmp_path):
+    """Connect's run cut, then its own next run finished the job (the adversary's SHOULD 3): your Reorder — nothing left
+    to write — takes over both, the finished one too (never put back on its own afterwards, nor its half), and one
+    Undo puts back the deck from before them both: never the cut run's cards before it and the rest after the next."""
+    fake = scene(tmp_path)
+    before = _state(fake)
+    cut = _cut_connect_run(fake)
+    finished, done = _connect_run(fake)
+    assert done["outcome"] == "ran" and undo.load("ja", run_id=finished)["complete"] is True
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert report["ok"] and not report.get("restore_first"), report
+    assert all(undo.load("ja", run_id=run_id).get("taken_over_at") for run_id in (cut, finished))
+    assert not undo.load("ja", run_id=finished).get("restored_at")
+    with _patched(fake):
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
+
+
+def test_a_finished_run_already_put_back_or_for_another_deck_is_never_taken_over(tmp_path):
+    fake = scene(tmp_path)
+    cut = _cut_connect_run(fake)
+    for name, extra in (("restored", {"restored_at": "2026-11-13T10:00:00"}), ("other", {"scope": ["Another deck"]})):
+        run_id = undo.new_run_id("reorder")
+        undo.save([(next(iter(fake.cards)), 1)], ["TheBank"], language="ja", run_id=run_id, after=[])
+        assert undo.mark_complete("ja", run_id=run_id)
+        path = undo.snapshot_path("ja", run_id=run_id)
+        with open(path, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        saved.update(extra)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(saved, handle)
+    with _patched(fake):
+        assert reposition.run(settings(), refresh=False)["ok"]
+    taken = [run_id for run_id, saved in undo.runs("ja") if saved.get("taken_over_at")]
+    assert taken == [cut]
+
+
+def test_a_cut_run_that_cant_be_marked_taken_over_stops_your_reorder_before_any_write(tmp_path, monkeypatch):
+    """Its file held as it is marked (the adversary's SHOULD 4): the run would stay unfinished, offered first by Undo
+    on top of your writes. Nothing is written, and the run is still the way back."""
+    fake = scene(tmp_path)
+    run_id = _cut_connect_run(fake)
+    real = undo.mark_complete
+    monkeypatch.setattr(undo, "mark_complete", lambda language="ja", kind="reorder", run_id=None, **kw:
+                        False if kw.get("taken_over") else real(language, kind, run_id, **kw))
+    fake.writes, fake.suspend_calls, fake.tag_calls = [], [], []
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert not report["ok"] and "nothing was changed" in report["problems"][0], report
+    assert fake.writes == [] and fake.suspend_calls == [] and fake.tag_calls == []
+    assert undo.unfinished("ja", "reorder") == run_id
+
+
+def test_your_reorder_takes_over_the_windows_own_cut_run_and_connects_together(tmp_path):
+    """The window's own automatic run cut (Disc-T1) and one of Connect's cut too: your Reorder takes over both, and one
+    Undo puts back every card either moved."""
+    fake = scene(tmp_path)
+    before = _state(fake)
+    _cut_connect_run(fake)
+    moved = {card_id for card_id, _due in fake.writes}
+    other = next(card_id for card_id in sorted(fake.cards) if card_id not in moved and fake.cards[card_id]["queue"] == 0)
+    undo.save([(other, before[other][0])], ["TheBank"], language="ja", automatic=True)     # the window's cut run
+    fake.cards[other]["due"] = 1                                                           # ...had moved this one
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+        assert report["ok"] and not report.get("restore_first"), report
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
+
+
+def test_a_fields_true_original_survives_a_take_over_whichever_snapshot_is_older():
+    """The adversary's BLOCKER: your last reorder (older) wrote FreqSort u -> p1, a cut run of Connect's (newer) p1 ->
+    a1, and this run writes a1 -> m. Carried back newest first, the way back is u — whichever order they're handed in;
+    and a field this run leaves alone keeps u too, ready for Undo while the note holds a1."""
+    note = 1789712000300
+
+    def snapshot(written_at, before, after):
+        return {"written_at": written_at, "fields": {str(note): {"FreqSort": {"before": before, "after": after}}}}
+    older, newer = snapshot("2026-11-13T09:00:00", "u", "p1"), snapshot("2026-11-13T09:30:00", "p1", "a1")
+    for handed in ([older, newer], [newer, older]):
+        touched = reposition._carried_fields(handed, {note: {"FreqSort": {"before": "a1", "after": "m"}}})
+        assert touched[str(note)]["FreqSort"] == {"before": "u", "after": "m"}
+        alone = reposition._carried_fields(handed, None)
+        assert alone[str(note)]["FreqSort"] == {"before": "u", "after": "a1"}
+
+
 def test_a_restore_puts_back_what_the_run_moved_and_leaves_a_card_you_moved_since(tmp_path):
     fake = scene(tmp_path)
     before = {card_id: card["due"] for card_id, card in fake.cards.items()}

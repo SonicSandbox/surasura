@@ -294,10 +294,11 @@ class Results(motion.Overlay):
         try:
             self._fill()
         finally:
+            from app.qt import press as qpress
             for gone in self._kept.values():
                 for w in gone:
                     w.hide()
-                    w.deleteLater()
+                    qpress.let_go(w)                      # (a HitRow hears its own DeferredDelete: Qt-C2)
             self._kept = {}
         self.place()
         if not self.isVisible() and motion.opening_of(self) is None:

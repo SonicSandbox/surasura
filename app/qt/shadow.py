@@ -200,7 +200,14 @@ class Follower(QWidget):
         self.setObjectName("shadowFollower")
         self._watch = _Watch(self)
         target.installEventFilter(self._watch)
+        target.destroyed.connect(self._target_gone)
         self.follow()
+
+    def _target_gone(self, *_args):
+        """Its overlay gone: it goes too (Qt-C2 — one was left on the window for good per card, a confirmation's or the
+        paste card's, holding the card's Python half)."""
+        from app.qt import press as qpress
+        qpress.let_go(self)
 
     def follow(self):
         t = self.target

@@ -59,7 +59,7 @@ _painted = {}                   # Press -> (control or None, its mark or None: a
 _at = {}                        # Press -> what it marks on screen (`at`: a row, a widget, the bar's arc)
 _busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
 _due = {}                       # Press -> [its words, or None] until it has been live `moves.SAVING_AFTER_S` (IK-1)
-_going = {}                     # id -> a mark taken off, its Python half kept until its C++ object goes (`_let_go`)
+_going = {}                     # id -> a Python Qt object deleted later, kept until its C++ object goes (`let_go`)
 
 
 def room(control, end=False):
@@ -333,10 +333,20 @@ def _let_go(mark):
     (0xC0000005 after the install press, Qt-C; tests/FLAKES.md)."""
     mark.set_running(False)
     mark.hide()
-    key = id(mark)
-    _going[key] = mark
-    mark.destroyed.connect(lambda _o=None, k=key: _going.pop(k, None))
-    mark.deleteLater()
+    let_go(mark)
+
+
+def let_go(obj):
+    """`obj.deleteLater()`, its Python half (and its children's) kept until its C++ object goes — the one way the window
+    deletes later a Python Qt object that C++ may still call into before the loop deletes it: an event filter on
+    something that outlives it (a card's scrim on its window, a cover's `_Cover` on the central area), an `event()` of
+    its own (it hears the DeferredDelete itself), a painted part still shown. A wrapper in reference cycles (any
+    `connect(lambda: self…)`) is otherwise freed by the next collection, and one inside such a call crashes the process
+    (`_let_go`'s 0xC0000005; Qt-C2's sweep, tests/qt/test_let_go.py)."""
+    key = id(obj)
+    _going[key] = obj
+    obj.destroyed.connect(lambda _o=None, k=key: _going.pop(k, None))
+    obj.deleteLater()
 
 
 def _restore(p, win):

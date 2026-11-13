@@ -3743,7 +3743,7 @@ class SetupWizard(QWidget):
             widget.setFocus(Qt.FocusReason.OtherFocusReason)
         if old is not None and old is not widget and not sip.isdeleted(old):
             old.hide()
-            old.deleteLater()
+            qpress.let_go(old)                            # (a sort screen hears its own DeferredDelete: Qt-C2)
         QApplication.postEvent(self, QEvent(QEvent.Type.LayoutRequest))   # the window's room asked again (`_Cover`)
 
     def minimumSizeHint(self):

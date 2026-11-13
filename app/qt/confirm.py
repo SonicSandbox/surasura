@@ -229,8 +229,9 @@ class Confirm(motion.Overlay):
             self._window.removeEventFilter(self.scrim)
         else:
             self.keep = False
-            self.scrim.deleteLater()
-            self.deleteLater()
+            from app.qt import press as qpress            # (both still filter the window until the loop deletes them:
+            qpress.let_go(self.scrim)                     # ... kept until they go, Qt-C2)
+            qpress.let_go(self)
         before = self._before
         try:
             back = alive and before is not None and before.window() is self._window and before.isVisible()

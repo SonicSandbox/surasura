@@ -560,8 +560,8 @@ class PasteCard(motion.Overlay):
         super().closeEvent(event)
         if _alive(self.scrim):
             self.scrim.hide()
-            self.scrim.deleteLater()
-        self.deleteLater()
+            qpress.let_go(self.scrim)                     # (both still filter the window until the loop deletes them:
+        qpress.let_go(self)                               # ... kept until they go, Qt-C2)
 
     def eventFilter(self, obj, event):
         if obj is self._window and event.type() == QEvent.Type.Resize and self.isVisible():

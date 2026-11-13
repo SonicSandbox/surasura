@@ -1230,8 +1230,9 @@ def open_over(win):
 
     def closed(_how):
         if not sip.isdeleted(screen):
+            from app.qt import press as qpress
             screen.hide()
-            screen.deleteLater()
+            qpress.let_go(screen)                         # (its `_Cover` filters the area until it goes: Qt-C2)
     screen.closed.connect(closed)
     screen.show()
     screen.raise_()
@@ -1499,7 +1500,8 @@ def cover_window(shell):
         if old is not None and old is not widget and not sip.isdeleted(old):
             if shell.__dict__.get("_sort_screen") is old:
                 del shell.__dict__["_sort_screen"]
+            from app.qt import press as qpress
             old.hide()
-            old.deleteLater()
+            qpress.let_go(old)                            # (its `_Cover` filters the area until it goes: Qt-C2)
     cover.covered = lambda: held["w"]
     return cover

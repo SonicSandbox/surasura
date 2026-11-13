@@ -146,7 +146,8 @@ def _open(shell, api, miner, back="current", resort=None):
         _release(held)                                    # never a window held under a wizard that isn't there
         _say_held(shell, False)
         if wiz is not None and not sip.isdeleted(wiz):
-            wiz.deleteLater()
+            from app.qt import press as qpress
+            qpress.let_go(wiz)                            # (its `_Cover` filters the area until it goes)
         raise
     shell.__dict__[ATTR] = wiz
     wiz.show()
@@ -192,8 +193,9 @@ def _closed(shell, wiz, held, how, back="current"):
     if shell.__dict__.get(ATTR) is wiz:
         shell.__dict__.pop(ATTR, None)
     if not sip.isdeleted(wiz):
+        from app.qt import press as qpress
         wiz.hide()
-        wiz.deleteLater()
+        qpress.let_go(wiz)                                # (its `_Cover` filters the area until it goes: Qt-C2)
     try:
         shell.show_tab(back)                              # first run: Current; *Set up again*: where it came from
         rest = getattr(shell, "_rest", None)

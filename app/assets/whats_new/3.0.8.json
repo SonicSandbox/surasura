@@ -1,0 +1,14 @@
+{
+  "version": "3.0.8",
+  "date": "2026-11-13",
+  "items": [
+    {"id": "change-its-video", "kind": "new", "for": ["shows", "miner"], "where": "tab:needs",
+     "text": "An episode linked to the wrong video: Change its video… lets you pick again."},
+    {"id": "pick-audiobook-again", "kind": "tweak", "for": ["audiobooks", "books"], "where": "tab:needs",
+     "text": "Pick its audiobook… can now fix a wrong pairing."},
+    {"id": "audiobook-joins-book", "kind": "fix", "for": ["audiobooks", "books"],
+     "text": "An audiobook picked for a book joins that book, never New arrivals."},
+    {"id": "piyo-steps-aside", "kind": "fix", "for": ["piyo"],
+     "text": "Piyo's helper steps aside by itself when an update is ready."}
+  ]
+}

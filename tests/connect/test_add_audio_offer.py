@@ -706,3 +706,32 @@ def test_a_book_asked_with_no_card_not_lined_up_now_is_left_as_it_was(book, tmp_
         ledger.conn.commit()
         runner._add_audio_offers(book["steps"], ledger, "ja")
         assert runner._meta(ledger, key) == was and _offers(ledger) == []
+
+
+def test_a_book_asked_with_its_own_cards_is_asked_once_more_when_an_earlier_copy_had_more(book, tmp_path,  # noqa: F811
+                                                                                          monkeypatch):
+    """Review r1 S4: the EPUB made two cards before it lined up, so 3.0.8 froze the record with those — the 2.x copy's
+    cards were never counted. Looked at once more: the earlier copy's are added to its list, the line asked again, and
+    the row's ⋯ counts them; a pass after writes nothing."""
+    from app.connect import add_audio
+    _removed_parts(book, STAR, [400, 401])
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        key, _none = _asked(book, ledger)
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": book["book"], "item": book["item"], "title": STAR, "notes": [100, 101],
+             "stage": runner.ADD_AUDIO_LINED})))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [_offer] = _offers(ledger)
+        _key, rec = _asked(book, ledger)
+        assert rec["notes"] == [100, 101, 400, 401] and rec["earlier"] is True
+        before = (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                  ledger.conn.execute("SELECT * FROM meta").fetchall())
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                ledger.conn.execute("SELECT * FROM meta").fetchall()) == before
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"], earlier=False)
+    got = actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)
+    assert got["n"] == 4

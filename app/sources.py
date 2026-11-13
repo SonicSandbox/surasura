@@ -1623,7 +1623,9 @@ class _Look:
                 f = self._audio_found(ab, clean_name, item_id=same, pair=old)
                 if f is not None:
                     batch.append(f)
-        meant = self._meant(fresh + back, held_in)
+        meant = self._meant(fresh, held_in)
+        if back and not any(self._in_book_folder(ab.files) for ab in fresh):    # never over a new one there
+            meant.update(self._meant(back, held_in))
         for ab in back:                                      # the learner's word to have it again: only the one that
             if id(ab) in meant:                              # joins the book that asked (else kept out, as before)
                 fresh.append(ab)

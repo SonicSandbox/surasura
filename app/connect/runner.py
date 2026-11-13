@@ -1328,13 +1328,16 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
     title, notes, sha = got
     key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
     rec = _json_or_none(_meta(ledger, key))
-    if lined and _earlier_due(rec):             # Kura-AB5 (#431): asked with no card, before an earlier copy's counted:
-        early = getattr(steps, "earlier_before", None)      # asked once more, for that copy's cards alone (those
-        try:                                    # mined since its line-up carry the narrator)
-            notes = early(lang, epub) if early is not None else []
+    ask = bool(notes)
+    if lined and _earlier_due(rec):             # Kura-AB5 (#431): asked before an earlier copy's cards counted: once
+        early = getattr(steps, "earlier_before", None)      # more, for that copy's cards (never those mined since its
+        try:                                    # line-up: they carry the narrator)
+            more = set(early(lang, epub) if early is not None else ())
         except Exception as e:
             log.info("Connect: couldn't count a book's earlier copy's cards (%s): %s", lang, e)
             return
+        frozen = {n for n in rec.get("notes") or () if isinstance(n, int)}
+        notes, ask = sorted(frozen | more), bool(more - frozen)
     elif rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
         return
     # (a waiting record's list is the cards so far — each made as the book, text-only: r5 S3 — frozen once lined up:
@@ -1345,15 +1348,14 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
             {"epub": os.path.abspath(epub), "item": item, "title": title, "notes": notes,
              "stage": ADD_AUDIO_LINED if lined else ADD_AUDIO_WAITING, "earlier": True},
             sort_keys=True, ensure_ascii=False)))
-        if notes and ledger.need(lang, ADD_AUDIO_NEED, say, item_id=item, standing=True):
+        if ask and ledger.need(lang, ADD_AUDIO_NEED, say, item_id=item, standing=True):
             log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
 
 
 def _earlier_due(rec):
-    """Kura-AB5 (#431): a book's record asked, lined up, with no card — written before an earlier copy's cards counted
-    (`earlier` unset): asked once more for those."""
-    return isinstance(rec, dict) and rec.get("stage") == ADD_AUDIO_LINED and rec.get("notes") == [] and \
-        not rec.get("earlier")
+    """Kura-AB5 (#431): a book's record asked and lined up before an earlier copy's cards counted (`earlier` unset,
+    3.0.8's): looked at once more for those."""
+    return isinstance(rec, dict) and rec.get("stage") == ADD_AUDIO_LINED and not rec.get("earlier")
 
 
 def book_key(epub, sha256=None):

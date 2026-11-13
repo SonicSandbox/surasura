@@ -10164,26 +10164,28 @@ def _store_let_origins_back(self, keys):
 
 def _store_let_audiobook_back(self, key, sha256, out):
     """Inside `take_in` (Kura-AB5, based on the diagnosis in #429 by Mattias): an audiobook removed earlier whose
-    folder the learner picked for its book (`sources._Look._meant`) — the Remove's exclusions of it go (its path `key`,
-    and its files' sizes `sha256` for one found moved), as Put back's do, and the trash rows of that Remove which held
-    it are marked put back: it is in again, so the Removed list never offers a second. Nothing on disk is touched; `out`
-    (the batch's kept-out sets) forgets them. -> how many exclusions went."""
-    rows = [(i, p) for i, p, note in self.conn.execute("SELECT id, pattern, note FROM exclusions WHERE kind = ?",
-                                                       ("removed",))
-            if p == key[len(SOURCE_KEY):] or (sha256 and (_json_dict(note) or {}).get("sha256") == sha256)]
-    if not rows:
-        return 0
-    self.conn.executemany("DELETE FROM exclusions WHERE id = ?", [(i,) for i, _p in rows])
-    gone = {SOURCE_KEY + p for _i, p in rows}
-    out["patterns"].difference_update(p for _i, p in rows)
-    if sha256:
-        out["sha256"].discard(sha256)
-    now = _now()
+    folder the learner picked for its book (`sources._Look._meant`) is in again — as Put back would have it, by the
+    Remove's own trash row: the row holding its origin `key` (else, found moved, the one whose records name its files'
+    sizes `sha256`) is marked put back (the Removed list never offers a second) and every origin it held is let back
+    (`_let_origins_back`: an adopted transcript too); a keep-out of `key` with no row goes as well. Never another
+    Remove's row; nothing on disk is touched; `out` (the batch's kept-out sets) forgets what went. -> the rows."""
+    held = []
     for trash_id, raw in self.conn.execute("SELECT id, item_state FROM trash WHERE restored_at IS NULL").fetchall():
-        held = (_json_dict(raw) or {}).get("pairings") or ()
-        if any(isinstance(k, (list, tuple)) and k and k[0] in gone for k in held):
-            self.conn.execute("UPDATE trash SET restored_at = ? WHERE id = ?", (now, trash_id))
-    return len(rows)
+        pairs = [p for p in (_json_dict(raw) or {}).get("pairings") or ()
+                 if isinstance(p, (list, tuple)) and len(p) == 3 and isinstance(p[0], str)]
+        held.append((trash_id, pairs))
+    mine = [(i, pairs) for i, pairs in held if any(k == key for k, _t, _a in pairs)] or \
+        [(i, pairs) for i, pairs in held if sha256 and any((_json_dict(t) or {}).get("sha256") == sha256
+                                                           for _k, t, _a in pairs)]
+    keys = {key} | {k for _i, pairs in mine for k, _t, _a in pairs}
+    self._let_origins_back(sorted(keys))
+    now = _now()
+    self.conn.executemany("UPDATE trash SET restored_at = ? WHERE id = ?", [(now, i) for i, _p in mine])
+    out["patterns"].difference_update(k[len(SOURCE_KEY):] for k in keys if k.startswith(SOURCE_KEY))
+    if sha256 and not any((_json_dict(n) or {}).get("sha256") == sha256 for (n,) in self.conn.execute(
+            "SELECT note FROM exclusions WHERE kind = 'removed'")):
+        out["sha256"].discard(sha256)
+    return [i for i, _p in mine]
 
 
 # --- K2 (alpha 4, Mattias's note 6): the Removed list — his own Removes, to put back ------------------------------- #

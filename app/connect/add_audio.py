@@ -95,10 +95,10 @@ def place(sentence, form, found):
     return hits[0] if len(hits) == 1 else None
 
 
-def book_items(store, epub):
+def book_items(store, epub, earlier=True):
     """The book's live parts in the library (origins `<epub>#<n>`; a split book's joined `.txt`: every item of it, a
-    copy left out of the join too — its cards are the book's: Kura-TX, review r2 S1), and an earlier copy's removed
-    ones (`earlier_copies`: its cards are the book's too) -> [item ids]."""
+    copy left out of the join too — its cards are the book's: Kura-TX, review r2 S1), and, `earlier`, an earlier
+    copy's removed ones (`earlier_copies`: its cards are the book's too) -> [item ids]."""
     from app import library_store
     joined = store.joined_book(epub)
     if joined is not None:
@@ -108,7 +108,7 @@ def book_items(store, epub):
         live = {r[0] for r in store.conn.execute(
             f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND "
             f"{library_store._LIVE_ORIGIN}", (lo, lo[:-1] + "$"))}
-    return sorted(live | set(earlier_copies(store, epub))) if live else []
+    return sorted(live | set(earlier_copies(store, epub))) if live and earlier else sorted(live)
 
 
 def earlier_copies(store, epub):

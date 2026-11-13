@@ -232,3 +232,18 @@ def test_d_a_removed_audiobook_renamed_since_comes_back_by_its_files_sizes(split
         _look(store, "ja", root, full=True, book={"folder": folder, "epub": book, "title": TITLE})
         assert _record(store, _audio_of(store, renamed)["id"])["book"]["epub"] == os.path.abspath(book)
         assert not _kept_out(store, m4b), "the old name's keep-out gone too"
+
+
+def test_d_a_new_audiobook_in_the_folder_joins_and_the_removed_one_stays_removed(split):
+    """Review r1 S3: he removed one reading and put another (unabridged, the same title) in that folder — the new one
+    joins the book; the removed one never outranks it, nor ties it out, and stays removed."""
+    _reading, book = _joined(split)
+    folder, m4b, _audio = _removed_with_its_copy(split)
+    new = _m4b(os.path.join(folder, f"{TITLE} 完全版.m4b"), audiobooks.MIN_SECONDS + 900,
+               tags={"album": TITLE, "title": "完全版"})          # (other bytes: never the removed one's sizes)
+    _settle(new)
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, new)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert all(os.path.abspath(m4b) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+        assert _kept_out(store, m4b)

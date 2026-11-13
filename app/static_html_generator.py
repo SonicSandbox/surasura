@@ -527,11 +527,15 @@ def _group_label(rel_path):
     return "/".join(parts) if parts else str(rel_path)
 
 
+_YOUTUBE_ID = re.compile(r"\[[0-9A-Za-z_-]{11}\]\s*$")    # a downloaded video's `[id]`: a title, never an episode
+
+
 def shown_name(filename):
     """Fresh-U 13 (Sonic 2026-11-13; PROVISIONAL): what the journey shows for a file — its show and its episode as the
     window's rows say them (`Hoshikuzu Station S01E01.ja.srt` → *Hoshikuzu Station · Ep 1*; a text's part *· Part 1*; a
     book's part named by its chapter, that chapter), read from the name alone (LM1a's `episode_names.identity`, the
-    rows' `view_rows.chapter_part`); a special or a name with no number, its stem without its marks; nothing to read,
+    rows' `view_rows.chapter_part`); a special, a YouTube video (its `[id]`: a title — `Top 10 …` is no episode 10, as
+    on the window's rows) or a name with no number, its stem without its marks; nothing to read,
     the name as it is. Never raises. Shown only: the file name stays the report's key."""
     name = filename or ""
     try:
@@ -542,7 +546,7 @@ def shown_name(filename):
         show = (n.show or "").strip()
         if chapter is not None:
             return f"{show} · {chapter[1]}" if show else chapter[1]
-        if n.special or n.episode is None:
+        if n.special or n.episode is None or _YOUTUBE_ID.search(n.stem):
             return view_rows.stem(n.stem).strip() or name
         number = int(n.episode) if float(n.episode).is_integer() else n.episode
         label = view_rows.STRINGS["part" if name.lower().endswith(".txt") else "ep"].format(n=number)

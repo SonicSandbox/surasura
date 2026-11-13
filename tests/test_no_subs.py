@@ -1146,7 +1146,7 @@ def test_fresh_u_a_tidy_beside_a_waiting_run_keeps_next_in_line(tmp_path):
 def test_fresh_u_a_video_made_from_its_audio_while_it_waited_keeps_saying_so_when_hatos_search_starts(tmp_path):
     """Why (mutant M7): a run may wait hours behind another hato; the learner can press *Make them from the audio*
     meanwhile. When hato's search starts, *Looking* never writes over that MAKING (nor does its end drop it)."""
-    store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
+    store, data_dir, src, root, videos = _library("ja", names=("01", "02", "03"))
     cli = str(tmp_path / "hato-cli.exe")
     open(cli, "wb").close()
     _hato(["find"], cli)
@@ -1157,6 +1157,7 @@ def test_fresh_u_a_video_made_from_its_audio_while_it_waited_keeps_saying_so_whe
 
     def started(command, **_k):
         no_subs._change(store, "ja", notes={rels[1]: no_subs.MAKING})         # a make began while it was queued
+        no_subs._change(store, "ja", notes={rels[2]: no_subs.NO_SPEECH})      # (F1) another's make ended meanwhile
         runs.append(_Paced(lines, command, []))
         return runs[-1]
 
@@ -1173,10 +1174,22 @@ def test_fresh_u_a_video_made_from_its_audio_while_it_waited_keeps_saying_so_whe
         side.start()
         no_subs.find(store, "ja", {no_subs.SETTING: True}, popen=started)
         side.join(20)
-        assert said == [[no_subs.LOOKING, no_subs.MAKING]]
+        assert said == [[no_subs.LOOKING, no_subs.MAKING, no_subs.NO_SPEECH]]
         assert no_subs.note(rels[1], "ja") == no_subs.MAKING and no_subs.note(rels[0], "ja") is None
+        assert no_subs.note(rels[2], "ja") == no_subs.NO_SPEECH, "never offered for Make again"
     finally:
         for r in runs:
             r.step(len(r.lines) + 1)
         side.join(20)
         store.__exit__(None, None, None)
+
+
+def test_fresh_u_only_hatos_own_search_ends_next_in_line():
+    """Why (the adversary's F7): hato's wait (`phase: waiting`) and its `busy` answer (its --wait gave up) are no
+    search; anything else hato says is; a line that isn't JSON is nothing."""
+    import json as _j
+    waiting = _j.dumps({"type": "progress", "phase": "waiting", "stage": "waiting for another hato run to finish"})
+    assert not no_subs._searching([waiting, _j.dumps({"type": "busy"}), "not json"], 0)
+    assert no_subs._searching([waiting, _j.dumps({"type": "progress", "phase": "start"})], 0)
+    assert not no_subs._searching([waiting, _j.dumps({"type": "progress", "phase": "start"})], 2)
+

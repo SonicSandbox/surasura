@@ -485,14 +485,17 @@ class LoadScreen(QWidget):
     def add_offer(self, widget):
         """Mado-FU2 (Fresh-U 19a): one control the load asks while it reads (setup's *Use every core*), centred
         under the gentle line, kept to the load's end; a second one takes the first one's place."""
-        if self.offer is not None and not sip.isdeleted(self.offer):
-            self.offer.hide()
-            self.offer.deleteLater()
+        box, old = self.layout(), self.offer
+        if old is not None and not sip.isdeleted(old):
+            box.removeWidget(old)
+            old.hide()
+            old.deleteLater()
+        else:
+            box.insertSpacing(self._offer_at, _px(22))
         self.offer = widget
         widget.setParent(self)
         widget.setMaximumWidth(_px(480))
-        self.layout().insertSpacing(self._offer_at, _px(22))
-        self.layout().insertWidget(self._offer_at + 1, widget, 0, Qt.AlignmentFlag.AlignHCenter)
+        box.insertWidget(self._offer_at + 1, widget, 0, Qt.AlignmentFlag.AlignHCenter)
         widget.show()
 
     def stopping(self):
@@ -1341,9 +1344,11 @@ class LoadRun(QObject):
             self._reading(said[0])
 
     def _reading(self, files):
-        """Mado-FU2 (Fresh-U 19a, Sonic 2026-11-13): the load's first long read — a count of at least
-        `token_index.POOL_MIN_FILES` files (fewer are read by one process, whatever *Use every core* says) — asks the
-        caller's `long_read(screen)` once (setup's *Use every core*)."""
+        """Mado-FU2 (Fresh-U 19a, Sonic 2026-11-13): the load's first long read — the scan's or the copy's count of
+        at least `token_index.POOL_MIN_FILES` files (fewer are read by one process, whatever *Use every core* says) —
+        asks the caller's `long_read(screen)` once (setup's *Use every core*). Never the indexer's count: its pool is
+        sized before its first count, so a flip then would speed nothing on screen; asked during the scan, it counts
+        for the copy's pools and the indexer after it."""
         ask = self._long_read
         screen = self.loading
         if ask is None or screen is None or sip.isdeleted(screen):
@@ -1421,7 +1426,6 @@ class LoadRun(QObject):
         def shown(count):
             if count is not None and self.state is load and load["step"] == "index":
                 self.task(S.LOAD_INDEX.format(done=count[0], total=count[1]))
-                self._reading(count[1])
         bridge.run_in_worker(setup_load.read_count, chores.index_log(), load["since"], then=self._guard(shown),
                              failed=lambda info: applog.log("load", f"indexer count: {info[0]}"))
         QTimer.singleShot(500, self._guard(self.tick))

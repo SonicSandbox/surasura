@@ -431,36 +431,49 @@ def _core(wiz):
 def test_fresh_u_use_every_core_is_asked_on_the_load_screen_once_a_read_is_long_and_saved_at_once(make, empty_library,
                                                                                                  tmp_path):
     """Why (Fresh-U 19a): page 3 asked a reading speed before anything was added. It is asked where reading happens:
-    on the load screen, once a read is long enough for every core to matter (`token_index.POOL_MIN_FILES` files: fewer
-    are read by one process whatever it says), shown as saved, saved the moment it flips (the indexer's pools read the
-    key as they open), and kept on screen to the load's end; no visible line under it (its words in the hover)."""
+    on the load screen, once the scan's count is long enough for every core to matter (`token_index.POOL_MIN_FILES`
+    files: fewer are read by one process whatever it says), shown as saved, saved the moment it flips (the copy's and
+    the indexer's pools after the scan read the key as they open), and kept on screen to the load's end; no visible
+    line under it (its words in the hover)."""
     from app import token_index
     wiz, shell, log = _start(make, tmp_path)
     assert not hasattr(wiz.page, "every_core"), "page 3 no longer asks it"
     settings = shell.services.settings
-    settings.calls.clear()
     asked = _covers(shell, hold=threading.Event())
     wiz.next()
-    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
+    assert wiz._load["step"] == "scan" and _core(wiz) is None
+    wiz._load_said((token_index.POOL_MIN_FILES - 1, 3))
     assert _core(wiz) is None, "a short read never asks it"
-    with open(log, "w", encoding="utf-8") as f:
-        f.write(f"Indexer: starting (ja)\nIndexer: 3 of {token_index.POOL_MIN_FILES - 1}\n")
-    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=token_index.POOL_MIN_FILES - 1), 5)
-    QTest.qWait(700)
-    assert _core(wiz) is None
-    with open(log, "w", encoding="utf-8") as f:
-        f.write(f"Indexer: starting (ja)\nIndexer: 4 of {token_index.POOL_MIN_FILES}\n")
-    assert wait_until(lambda: _core(wiz) is not None, 5)
+    wiz._load_said((token_index.POOL_MIN_FILES, 3))                          # the look's count, as page 3 hears it
     row = _core(wiz)
+    assert row is not None
     assert row.name.text() == S.EVERY_CORE and row.line.isHidden(), "no visible explainer line"
     assert row.switch.toolTip().endswith(S.EVERY_CORE_TIP) and not row.switch.isChecked()
     cores = lambda: [c for c in settings.calls if "use_every_core" in c]
     assert cores() == [], "shown as saved: nothing written by showing it"
     row.switch.click()
     assert cores() == [{"use_every_core": True}]
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)          # the scan ended: still there
+    assert _core(wiz) is row
     shell.services.chores.running = False                                     # on to the covers: still there
     assert wait_until(lambda: _task(wiz) == S.LOAD_COVERS.format(done=2, total=2), 5)
     assert _core(wiz) is row and row.switch.isChecked() and asked == [1]
+
+
+def test_fresh_u_the_indexers_count_never_asks_it_too_late_to_help(make, empty_library, tmp_path):
+    """Why (the adversary's F3): the indexer sizes its pool before its first count, so a switch offered then would
+    speed nothing on screen; a short scan followed by a long index asks nothing."""
+    from app import token_index
+    wiz, shell, log = _start(make, tmp_path)
+    _covers(shell, hold=threading.Event())
+    wiz.next()
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
+    total = token_index.POOL_MIN_FILES * 10
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(f"Indexer: starting (ja)\nIndexer: 3 of {total}\n")
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5)
+    QTest.qWait(700)
+    assert _core(wiz) is None
 
 
 def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):
@@ -484,6 +497,10 @@ def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):
         row = wizard.SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
         screen.add_offer(row)
         assert screen.offer is row and row.parent() is screen and not row.isHidden()
+        items = screen.layout().count()
+        again = wizard.SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
+        screen.add_offer(again)                                   # (F9) it takes the first one's place, no second gap
+        assert screen.offer is again and screen.layout().count() == items and screen.layout().indexOf(row) == -1
     finally:
         run.ended = True
         outside.ended = True

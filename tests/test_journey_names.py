@@ -36,6 +36,11 @@ def _template(name):
     ("novel.txt", "novel"),                                                       # nothing to read: its stem
     ("01.srt", "Ep 1"),                                                           # a bare number: the episode alone
     ("Show - OVA 01.srt", "Show - OVA 01"),                                       # a special is never *Ep 1*
+    # (the adversary's F4) a YouTube video's title is no episode, as on the window's rows; a release's 8-character
+    # hash tag is no YouTube id
+    ("Top 10 Japanese Phrases [dQw4w9WgXcQ].ja.vtt", "Top 10 Japanese Phrases"),
+    ("Comprehensible Japanese 128 Lets talk about cats [abc_DEF-123].ja.vtt",
+     "Comprehensible Japanese 128 Lets talk about cats"),
 ])
 def test_fresh_u_a_file_is_shown_as_its_show_and_episode(filename, shown):
     assert gen.shown_name(filename) == shown

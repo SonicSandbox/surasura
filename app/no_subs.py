@@ -816,8 +816,8 @@ def _find(store, language, cli, stop, now, away, popen):
     run_dir = os.path.join(os.path.dirname(state_path(language)), f"no-subs-hato-{language}")
     os.makedirs(run_dir, exist_ok=True)
     handed = {v.rel: QUEUED for videos in by_root.values() for v in videos}
-    _change(store, language, notes=handed, unless=(MAKING,))    # Mado-FU2: *Next in line* until its search starts
     try:
+        _change(store, language, notes=handed, unless=(MAKING,))    # Mado-FU2: *Next in line* until its search starts
         for root, videos in by_root.items():
             for n in range(0, len(videos), BATCH):
                 if stop():
@@ -849,7 +849,8 @@ def _searching(lines, start):
             obj = json.loads(line)
         except ValueError:
             continue
-        if isinstance(obj, dict) and not (obj.get("type") == "progress" and obj.get("phase") == "waiting"):
+        if isinstance(obj, dict) and obj.get("type") != "busy" and not (
+                obj.get("type") == "progress" and obj.get("phase") == "waiting"):
             return True
     return False
 
@@ -876,9 +877,11 @@ def _hato_run(store, language, cli, folder, batch, run_dir, stop, now, out, pope
     while reader.is_alive():
         reader.join(0.5)
         if not searching:                   # Mado-FU2: *Next in line* → *Looking* once hato's own search begins
-            searching, seen = _searching(lines, seen), len(lines)
-            if searching:
-                _change(store, language, notes={v.rel: LOOKING for v in batch}, unless=(MAKING,))
+            n = len(lines)
+            searching, seen = _searching(lines[:n], seen), n
+            if searching:                   # (only a note still QUEUED: a make's answer meanwhile stays, F1)
+                _change(store, language, notes={v.rel: LOOKING for v in batch}, unless=(MAKING, MADE, NOT_FOUND)
+                        + DONE_NOTES)
         if stop() or time.monotonic() - heard[0] > HATO_SILENT_S:
             _end(proc)
             break

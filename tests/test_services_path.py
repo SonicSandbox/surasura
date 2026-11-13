@@ -310,3 +310,8 @@ def test_a_ticked_step_is_never_read_again(monkeypatch):
     P.facts("ja", {}, view, {})
     P.facts("ja", {}, view, {"done": {"hato": "2026-11-12"}})
     assert calls == ["ja"]
+
+
+def test_manga_and_plain_text_are_not_books_an_audiobook_lines_up_with():
+    assert not P._view_facts(View((Row("manga", 0), Row("text", 0)), Counts(0, 0), ()))[2]
+    assert P._view_facts(View((Row("lightnovel", 0),), Counts(0, 0), ()))[2]

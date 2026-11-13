@@ -268,3 +268,10 @@ def test_the_tabs_are_one_stop_and_the_arrows_move_between_them(world):
     assert policies["path"] == Qt.FocusPolicy.TabFocus and policies["news"] != Qt.FocusPolicy.StrongFocus, policies
     assert QApplication.focusWidget() is panel.tab_buttons["path"]
     panel.close()
+
+
+def test_the_journey_really_opening_ticks_step_one(lib_world, monkeypatch):
+    win = lib_world
+    monkeypatch.setattr(win.services, "open_journey", lambda *file: True)        # the browser asked: it opened
+    win._open_journey()
+    assert wait_until(lambda: "journey" in (guide.read_state().get("moments") or {}))

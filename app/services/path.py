@@ -35,6 +35,7 @@ Facts = namedtuple("Facts", "has_library journey_opened episodes_done cards_made
                             "journey_ready", defaults=(True,))
 # journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's Show me has a place
 Step = namedtuple("Step", "id chapter when done where")
+PIYO_AFTER = 3                                  # episodes Done before Piyo is offered
 
 # The table (EXPERIENCE.md §3). `when` / `done`: Facts -> bool. Chapter 1's steps are useful as soon as a library is.
 STEPS = (
@@ -47,10 +48,9 @@ STEPS = (
          lambda f: f.backfilled, "settings:backfill_patterns"),
     Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current"),
     Step("hato", READY, lambda f: f.video_waiting, lambda f: f.hato_paired, "settings:hato"),
-    Step("piyo", READY, lambda f: f.episodes_done >= 3, lambda f: f.piyo_round, "settings:practice_ai"),
+    Step("piyo", READY, lambda f: f.episodes_done >= PIYO_AFTER, lambda f: f.piyo_round, "settings:practice_ai"),
 )
 BY_ID = {s.id: s for s in STEPS}
-PIYO_AFTER = 3                                  # episodes Done before Piyo is offered
 
 Status = namedtuple("Status", "step useful done")                 # one step for this learner now
 Path = namedtuple("Path", "steps first_done card glow")            # what the card and the panel show

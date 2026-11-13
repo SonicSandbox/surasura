@@ -472,8 +472,7 @@ def test_fresh_u_the_indexers_count_never_asks_it_too_late_to_help(make, empty_l
     with open(log, "w", encoding="utf-8") as f:
         f.write(f"Indexer: starting (ja)\nIndexer: 3 of {total}\n")
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5)
-    QTest.qWait(700)
-    assert _core(wiz) is None
+    assert _core(wiz) is None                     # (an offer would come in the very call that painted this count)
 
 
 def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):

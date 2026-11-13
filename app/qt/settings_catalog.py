@@ -534,6 +534,8 @@ def help_line(row, settings, language):
             line = f"{line}. {S.KNOWN_SYNC_TOO}" if line else S.KNOWN_SYNC_TOO
         if line:
             return line
+    if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
+        return S.NEEDS_MINER
     return row.help
 
 

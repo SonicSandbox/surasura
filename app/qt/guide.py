@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QP
 from app import theme
 from app.qt import motion, shadow, strings, style
 from app.qt.frame import _Away, _iris
+from app.qt.tooltip import AboutMark, FitTitle
 
 EDGE = 8                            # px the panel keeps from the window's edges
 FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
@@ -138,15 +139,19 @@ class _Card(QWidget):
 
 
 class _StepRow(QWidget):
-    """One step of the path: its tick, its title and line, and *Show me* while it isn't done. `line` alone: chapter 1
-    folded into one ticked line."""
+    """One step of the path: its tick, its title with its line behind a ? (Kantan-S2, Sonic 2026-11-13: no subtitles),
+    and *Show me* while the step applies — done ones too, to try again (Sonic: "they would need to be able to see past
+    ones to try again"). `later`: a step that can't apply yet (*Not for now*): no tick, no *Show me* (never a dead end),
+    its ? says when it will (`strings.PATH_WHEN`)."""
 
-    def __init__(self, status, on_show, parent=None, line=None):
+    def __init__(self, status, on_show, parent=None, later=False):
         super().__init__(parent)
         self.setObjectName("pathrow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.status = status
-        done = status is None or status.done
+        self.later = later
+        done = status.done and not later
+        step_id = status.step.id
         f = theme.text_factor(style.current()[1])
         row = QHBoxLayout(self)
         row.setContentsMargins(round(10 * f), round(8 * f), round(8 * f), round(8 * f))
@@ -154,35 +159,31 @@ class _StepRow(QWidget):
         self.tick = QLabel(strings.PATH_TICK if done else "", self)
         self.tick.setObjectName("pathtick")
         self.tick.setProperty("done", "true" if done else "false")
+        self.tick.setProperty("later", "true" if later else "false")
         self.tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
         side = round(20 * f)
         self.tick.setFixedSize(side, side)
-        row.addWidget(self.tick, 0, Qt.AlignmentFlag.AlignTop)
-        words = QVBoxLayout()
-        words.setSpacing(round(2 * f))
-        if status is not None:
-            title, text = strings.PATH_STEPS[status.step.id]
-        else:
-            title, text = None, line
-        self.title = None
-        if title:
-            self.title = QLabel(title, self)
-            self.title.setObjectName("pathtitle")
-            words.addWidget(self.title)
-        self.line = QLabel(text, self)
-        self.line.setObjectName("pathline")
-        for label in (self.title, self.line):
-            if label is not None:
-                label.setTextFormat(Qt.TextFormat.PlainText)
-                label.setWordWrap(True)
-                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-        words.addWidget(self.line)
-        row.addLayout(words, 1)
+        row.addWidget(self.tick, 0, Qt.AlignmentFlag.AlignVCenter)
+        title, text = strings.PATH_STEPS[step_id]
+        if later:
+            text = strings.PATH_WHEN[step_id]
+        self.title = FitTitle(title, self)
+        self.title.setObjectName("pathtitle")
+        self.title.setProperty("later", "true" if later else "false")
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
+        self.title.setWordWrap(True)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        row.addWidget(self.title, 1000, Qt.AlignmentFlag.AlignVCenter)
+        self.about = AboutMark(strings.HELP_MARK, self)
+        self.about.set_about(strings.PATH_ABOUT_NAME.format(title=title), text)
+        row.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
         self.show_me = None
-        if status is not None and not done:
+        if not later and status.useful:
             b = QPushButton(strings.GUIDE_SHOW_ME, self)
             b.setObjectName("guideshow")
-            b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
+            b.setToolTip(strings.PATH_AGAIN_TIP if done else
+                         strings.PATH_SHOW_ME_TIPS.get(step_id, strings.GUIDE_SHOW_ME_TIP))
             b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=title))
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
@@ -190,8 +191,11 @@ class _StepRow(QWidget):
             b.clicked.connect(lambda _c=False, w=status.step.where: on_show(w))
             row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
             self.show_me = b
-        name = title or text
-        self.setAccessibleName((strings.PATH_TICK_NAME if done else strings.PATH_OPEN_NAME).format(title=name))
+        if later:
+            self.setAccessibleName(strings.PATH_LATER_NAME.format(title=title, when=text))
+        else:
+            self.setAccessibleName((strings.PATH_TICK_NAME if done else strings.PATH_OPEN_NAME).format(title=title))
+            self.setAccessibleDescription(text)
 
 
 class GuidePanel(motion.Overlay):
@@ -379,9 +383,9 @@ class GuidePanel(motion.Overlay):
         self._start("news", body, pieces)
 
     def _build_path(self):
-        """The *Your path* body, in pieces as the news body is: *Your first cards* (its three steps, or one ticked line
-        once done), *When you're ready* (the steps useful now or done, and *n of m*), a closing line while more steps
-        may still come."""
+        """The *Your path* body, in pieces as the news body is (`path.listed`, Kantan-S2): *Your first cards* (its three
+        steps, done ones kept with *Show me* to try again), *When you're ready* (the steps useful now or done, and
+        *n of m*), then *Not for now* (the steps that can't apply yet, each saying when behind its ?)."""
         from app.services import path as path_service
         f = self._f
         body = QWidget()
@@ -396,27 +400,25 @@ class GuidePanel(motion.Overlay):
         def header(chapter, right):
             pieces.append(lambda: col.addWidget(self._chapter(chapter, right, body)))
 
-        def row(st):
+        def row(st, later=False):
             def make():
-                r = _StepRow(st, self._show, body)
+                r = _StepRow(st, self._show, body, later=later)
                 self.rows.append(r)
                 col.addWidget(r)
             pieces.append(make)
 
-        first = [st for st in p.steps if st.step.chapter == path_service.FIRST]
-        ready = [st for st in p.steps if st.step.chapter == path_service.READY and (st.useful or st.done)]
+        first, ready, later = path_service.listed(p.steps)
         header("first", strings.PATH_DONE if p.first_done else "")
-        if p.first_done:
-            pieces.append(lambda: col.addWidget(_StepRow(None, self._show, body, line=strings.PATH_FIRST_LINE)))
-        else:
-            for st in first:
-                row(st)
+        for st in first:
+            row(st)
         if ready:
             header("ready", strings.PATH_COUNT.format(n=sum(st.done for st in ready), total=len(ready)))
             for st in ready:
                 row(st)
-        if any(st.step.chapter == path_service.READY and not st.useful and not st.done for st in p.steps):
-            pieces.append(lambda: col.addWidget(self._label("pathmore", strings.PATH_MORE, body)))
+        if later:
+            pieces.append(lambda: col.addWidget(self._label("guidegroup", strings.PATH_LATER, body)))
+            for st in later:
+                row(st, later=True)
         pieces.append(lambda: col.addStretch(1))
         self._start("path", body, pieces)
 
@@ -600,8 +602,10 @@ class GuidePanel(motion.Overlay):
             self.open()
 
     def focusNextPrevChild(self, next_):
-        """Tab and Shift+Tab go round the panel's own buttons (the window behind keeps its order)."""
-        ring = [self.scroll] + [b for b in self.findChildren(QPushButton) if b.isVisible() and b.isEnabled()]
+        """Tab and Shift+Tab go round the panel's own buttons and ?s, in their rows' order (the window behind keeps its
+        order; a not-for-now step's ? is its only control: Kantan-S2 r1 #2)."""
+        ring = [self.scroll] + [b for b in self.findChildren(QWidget) if isinstance(b, (QPushButton, AboutMark))
+                                and b.isVisible() and b.isEnabled()]
         if not ring:
             return True
         now = QApplication.focusWidget()

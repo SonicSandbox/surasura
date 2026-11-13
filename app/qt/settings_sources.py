@@ -185,8 +185,24 @@ def add_folder(shell, parent, folder=None):
     if adder is None or why_not(shell) is not None:
         return False
     if folder is None:
-        folder = QFileDialog.getExistingDirectory(parent, S.SOURCES_PICK_TITLE)
+        folder = QFileDialog.getExistingDirectory(parent, S.SOURCES_PICK_TITLE, pick_start(shell))
     return adder.read_folder(folder) if folder else False
+
+
+def pick_start(shell):
+    """Kantan-B2 (AUDIT A3, finding 14; Fresh-U row 11): where *Add a folder…* opens — the folder added last of those
+    being read and reachable now (the newest source: a dead share would stall the dialog), else the Videos folder, else Documents (Qt's answers: never looked at on the
+    window's thread; the dialog falls back by itself when one isn't there)."""
+    rows = [r for r in getattr(shell, "sources", None) or ()
+            if r.get("on", True) and r.get("path") and r.get("reachable") is not False]
+    if rows:
+        return max(rows, key=lambda r: r.get("id") or 0)["path"]
+    from PyQt6.QtCore import QStandardPaths
+    for where in (QStandardPaths.StandardLocation.MoviesLocation, QStandardPaths.StandardLocation.DocumentsLocation):
+        path = QStandardPaths.writableLocation(where)
+        if path:
+            return path
+    return ""
 
 
 def look_again(shell, control=None):

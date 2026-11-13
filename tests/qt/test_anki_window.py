@@ -104,7 +104,7 @@ def _trash(language="ja"):
 
 
 def _migaku(ja_resources_dir):
-    """A real Migaku export slice: KNOWN, LEARNING, UNKNOWN and IGNORED entries."""
+    """A slice of the Migaku-shaped export: KNOWN, LEARNING, UNKNOWN and IGNORED entries."""
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)
     picked = [w for w in data["words"] if w["knownStatus"] == "KNOWN"][:20]

@@ -26,7 +26,7 @@ python run_tests.py
 ### Integrations
 - **`test_migaku_importer.py`**
   - **Purpose**: Verifies that Migaku database exports (`.db` files) are correctly converted to JSON.
-  - **How**: Takes a real Migaku DB file from `Test Resources/` and checks if the output JSON contains the expected word counts and fields.
+  - **How**: Takes the Migaku-shaped DB file in `Test Resources/` (written for the tests) and checks if the output JSON contains the expected word counts and fields.
 
 - **`test_anki_loader.py`**
   - **Purpose**: Ensures Anki decks (`.apkg`) can be opened and read.

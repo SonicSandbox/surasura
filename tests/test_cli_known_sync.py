@@ -21,7 +21,7 @@ from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 from tests.test_anki_sync import FakeCollection
 
-WORDS = ["老婆", "図書館", "引きずる", "隠れ家"]      # none of them in the seeded known words yet
+WORDS = ["老婆", "図書館", "頬杖", "金平糖"]      # none of them in the seeded known words yet
 URL = "http://127.0.0.1:18765"              # nothing listens here: only the patched transport answers
 
 

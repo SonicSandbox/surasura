@@ -203,7 +203,7 @@ def test_the_steps_generate_failing_is_a_wait_or_needs_you_and_clears_the_mark(m
     with pytest.raises(raised) as got:
         steps.generate_after("ja", None)
     if raised is runner.Needs:
-        assert got.value.kind == "generate" and "after Connect made its cards" in got.value.say
+        assert got.value.kind == "generate" and "after its cards were made" in got.value.say
     assert steps._after == {}
 
 

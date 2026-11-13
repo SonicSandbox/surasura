@@ -499,7 +499,7 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
                           "item": None, "seen_at": "2026-10-15T07:00:00Z", "at": "2026-10-15T07:00:00Z"}]}
     seed, win, writer, ny = world(connect=connect, connect_calls=calls)
     by_id = {e.data.get("need_id"): e for e in ny.entries if (e.data or {}).get("connect")}
-    assert {b.property("action") for b in ny.cards.buttons(by_id[11].key)} == {"mine_anyway", "dismiss"}
+    assert {b.property("action") for b in ny.cards.buttons(by_id[11].key)} == {"check_again", "mine_anyway", "dismiss"}
     button(ny, by_id[11].key, "mine_anyway").click()
     assert wait_until(lambda: [g[0] for g in got] == ["mine_anyway", "kick"], 5)
     assert got[0][1] == ("ja", 11) and got[0][2] and got[1][2]      # on a worker, then Connect kicked
@@ -520,6 +520,36 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
     ny.connect_calls["mine_anyway"] = None
     ny.rewire()
     assert button(ny, by_id[11].key, "mine_anyway") is None and button(ny, by_id[11].key, "dismiss") is not None
+
+
+def test_not_timed_offers_check_again_first_and_its_press_checks_that_episode_on_a_worker(world):
+    # Kantan-B2 (AUDIT B4, Sonic's yes 2026-11-12; Mattias #XP44T6, #7J3960): he re-timed the subtitle beside the video
+    # and the card offered only *Mine anyway*. *Check again* (the row's own, `actions.check_again`: the subtitle beside
+    # the video read first) comes first; its press checks that episode on a worker, then kicks Connect. Nothing to
+    # check again: the bar says so and the card stays.
+    main = threading.main_thread()
+    got, answer = [], {"ok": True}
+
+    def check(language, item_id):
+        got.append(("check_again", (language, item_id), threading.current_thread() is not main))
+        return answer["ok"]
+    calls = {"check_again": check, "mine_anyway": lambda *a: True, "dismiss": lambda *a: True,
+             "kick": lambda *a: got.append(("kick", a, threading.current_thread() is not main))}
+    connect = {"jobs": [], "gaps": [],
+               "needs": [{"id": 11, "kind": "not-timed", "say": "海辺の図書室 Ep 3 isn't timed to its video",
+                          "item": 3, "seen_at": None, "at": "2026-10-15T09:00:00Z"}]}
+    seed, win, writer, ny = world(connect=connect, connect_calls=calls)
+    entry = next(e for e in ny.entries if (e.data or {}).get("need_id") == 11)
+    assert [b.property("action") for b in ny.cards.buttons(entry.key)][:2] == ["check_again", "mine_anyway"]
+    b = button(ny, entry.key, "check_again")
+    assert b.text() == strings.NEEDS_ACTIONS["check_again"][0] and b.toolTip()
+    b.click()
+    assert wait_until(lambda: [g[0] for g in got] == ["check_again", "kick"], 5)
+    assert got[0][1] == ("ja", 3) and got[0][2] and got[1][2]          # that episode, on a worker; then Connect kicked
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_CHECK_AGAIN, 5)
+    ny.connect_calls["check_again"] = None                               # no callable: never a button that does nothing
+    ny.rewire()
+    assert button(ny, entry.key, "check_again") is None
 
 
 def test_failures_keep_open_the_logs_folder_and_save_logs_to_a_file(world, tmp_path):

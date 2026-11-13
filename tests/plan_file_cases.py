@@ -85,10 +85,10 @@ def _rp2(language):
     return [
         ("now", "zh_high_1.txt", _read(os.path.join(s, "HighPriority", "孔乙己（鲁迅）.txt"))),
         ("now", "zh_high_2.txt", _read(os.path.join(s, "HighPriority", "从百草园到三味书屋（鲁迅）.txt"))),
-        ("now", "bbc_part1.txt", c1[0]),
+        ("now", "news_part1.txt", c1[0]),
         ("soon", "zh_low_1.txt", _read(os.path.join(s, "LowPriority", "故乡（鲁迅）.txt"))),
         ("soon", "zh_low_2.txt", _read(os.path.join(s, "LowPriority", "风筝（鲁迅）.txt"))),
-        ("soon", "bbc_part2.txt", c1[1]),
+        ("soon", "news_part2.txt", c1[1]),
         ("soon", "traditional_news.txt", _read(os.path.join(r, "traditional_news.txt"))),
         ("goal", "mixed_script_transcript.txt", _read(os.path.join(r, "mixed_script_transcript.txt"))),
         ("goal", "patterns_zh_sample.txt", _read(os.path.join(r, "patterns_zh_sample.txt"))),
@@ -264,7 +264,7 @@ SIGNATURE_INPUTS = {
                         ["C:/library/data/ja/HighPriority/小説 第1巻.txt", "LowPriority", 5, "text"],
                         ["C:/library/data/ja/GoalContent/動画.srt", "GoalContent", 2, "youtube"]], []),
     "zh-ordered": ("zh", [["C:/library/data/zh/HighPriority/新闻.txt", "HighPriority", 10, "text"],
-                          ["C:/library/data/zh/GoalContent/bbc.txt", "GoalContent", 2, "text"]], ["--zh-script", "s"]),
+                          ["C:/library/data/zh/GoalContent/news.txt", "GoalContent", 2, "text"]], ["--zh-script", "s"]),
     "ja-empty": ("ja", [], ["--min-freq", "3", "--only-i-plus-one"]),
 }
 

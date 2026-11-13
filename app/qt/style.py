@@ -289,7 +289,7 @@ QPushButton#guidetab:checked {{ background: {c['overlay-cut']}; color: {c['ink']
   border-bottom: 2px solid {c['accent']}; }}
 QPushButton#guidetab:focus {{ border: 2px solid {c['accent']}; }}
 QWidget#pathrow {{ background: {c['overlay-cut']}; border-radius: {theme.RADII['r-sm']}px; }}
-QLabel#pathtick {{ border: 1px solid {c['overlay-ink-faint']}; border-radius: {px(10)}; color: {fixed['on-accent']};
+QLabel#pathtick {{ border: 1px solid {c['overlay-ink-faint']}; border-radius: {round(20 * f) // 2}px; color: {fixed['on-accent']};
   {font('badge')} }}
 QLabel#pathtick[done="true"] {{ background: {c['ok']}; border-color: {c['ok']}; }}
 QLabel#pathtitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}

@@ -329,19 +329,34 @@ def test_an_automatic_job_that_cant_mark_a_run_goes_on_as_before(tmp_path, monke
         undo.load("ja")["cards"]
 
 
+def _backdate(run_id, written_at):
+    path = undo.snapshot_path("ja", run_id=run_id)
+    with open(path, encoding="utf-8") as handle:
+        saved = json.load(handle)
+    saved["written_at"] = written_at
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(saved, handle)
+
+
 def test_your_reorder_takes_over_an_automatic_job_that_went_on_past_the_oldest_cut_run(tmp_path):
-    """Round 2's SHOULD 3: Connect's run cut, its next run cut too; the re-plan's automatic job goes on and takes the
-    newer one over (the window's snapshot, lead 2026-11-07). Your Reorder takes over the older one — and that window
-    snapshot with it, whose way back (and the newer run's) is in it alone — so one Undo puts back the deck from before
-    them all, never the older run's cards alone."""
+    """Round 2's SHOULD 3: Connect's run cut (it had moved 散歩), its next run cut too (it had moved 図書館); the re-plan's
+    automatic job goes on and takes the newer one over (the window's snapshot, lead 2026-11-07). Your Reorder takes
+    over the older one — and that window snapshot with it, which alone holds the way back for 図書館 — so one Undo puts
+    back the deck from before them all, never the older run's cards alone."""
     from modules.junban import spaced
     fake = scene(tmp_path)
     before = _state(fake)
-    older = _cut_connect_run(fake)
-    newer = _cut_connect_run(fake, at=1)
+    walk, library = fake.card_of("散歩")["cardId"], fake.card_of("図書館")["cardId"]
+    older, newer = "reorder-20260102-030405-000-1", "reorder-20260102-030406-000-1"
+    undo.save([(walk, before[walk][0])], ["TheBank"], language="ja", run_id=older, after=[(walk, 1)])
+    fake.cards[walk]["due"] = 1
+    undo.save([(library, before[library][0])], ["TheBank"], language="ja", run_id=newer, after=[(library, 2)])
+    fake.cards[library]["due"] = 2
+    _backdate(older, "2026-01-02T03:04:05")
+    _backdate(newer, "2026-01-02T03:04:06")
     with _patched(fake):
         job = reposition.run(settings(), refresh=False, job=spaced.Job(automatic=True))
-    assert job["ok"] and undo.load("ja", run_id=newer).get("taken_over_at"), job
+    assert job["ok"] and job["written"] and undo.load("ja", run_id=newer).get("taken_over_at"), job
     assert undo.unfinished("ja", "reorder") == older
     with _patched(fake):
         mine = reposition.run(settings(), refresh=False)
@@ -351,6 +366,17 @@ def test_your_reorder_takes_over_an_automatic_job_that_went_on_past_the_oldest_c
         put_back = reposition.restore(settings())
     assert put_back["ok"], put_back["problems"]
     assert _state(fake) == before
+
+
+def test_your_last_reorder_older_than_the_cut_run_is_replaced_as_ever(tmp_path):
+    """Only an automatic job's snapshot that went on past the cut run is taken over: your own last reorder, older,
+    is replaced as every reorder replaces it (one Undo goes back one reorder of yours)."""
+    fake = scene(tmp_path)
+    with _patched(fake):
+        assert reposition.run(settings(), refresh=False)["ok"]         # your last reorder
+    yours = undo.load("ja")
+    run_id = _cut_connect_run(fake)
+    assert reposition._went_on(yours, [(run_id, undo.load("ja", run_id=run_id))], ["TheBank"], settings()) is None
 
 
 def test_your_reorder_takes_over_the_windows_own_cut_run_and_connects_together(tmp_path):

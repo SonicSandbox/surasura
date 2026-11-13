@@ -2931,7 +2931,7 @@ def _went_on(previous, connect_cuts, decks, settings):
     where it put them (round 2's SHOULD 3). A snapshot older than the cut run is your last reorder: replaced as ever."""
     cuts = [saved.get("written_at") or "" for _cut_id, saved in connect_cuts if saved.get("complete") is False]
     if (not previous or previous.get("automatic") is not True or not cuts or not _same_scope(previous, decks, settings)
-            or (previous.get("written_at") or "") <= min(cuts)):
+            or (previous.get("written_at") or "") < min(cuts)):    # the same second: taken, never left half
         return None
     return previous
 

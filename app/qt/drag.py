@@ -3206,7 +3206,10 @@ class DragController(QObject):
 
     def files_dropped(self, event):
         """Files dropped on the list from Explorer (A2's toast *Added X at #N*): copied into the tier's folder and placed
-        beside the row under the hand, by the writer (`insert_at`)."""
+        beside the row under the hand, by the writer (`insert_at`). Kantan-B3: a drop that may hold an audiobook (an
+        audio file, a folder: `add_menu.may_hold_audiobook`, by names) is listed first on a worker
+        (`Adder.audiobooks_apart`): an audiobook in it is asked about on its own card (read where it is), never *left
+        out*; the rest placed here."""
         paths = self._files(event)
         if not paths or self.running is not None or self.refused() is not None:
             return False
@@ -3219,11 +3222,21 @@ class DragController(QObject):
         tier, before_id, after_id, near = placement(rows_, None, slot)
         if tier not in ("now", "soon"):
             tier = "now"
-        name = os.path.basename(paths[0])
-        text = strings.DRAG_ADDED.format(name=name, n=slot + 1) if len(paths) == 1 else \
-            strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
-        self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id, after_id=after_id,
-                                                                 near=near, label=t))
+
+        def place(paths):
+            if self._closed or self.refused() is not None:
+                return                                   # (a language switch or E4 while it was listed)
+            name = os.path.basename(paths[0])
+            text = strings.DRAG_ADDED.format(name=name, n=slot + 1) if len(paths) == 1 else \
+                strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
+            self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id,
+                                                                     after_id=after_id, near=near, label=t))
+        from app.qt import add_menu
+        adder = getattr(self.win, "adder", None)
+        if adder is not None and any(add_menu.may_hold_audiobook(p) for p in paths) and \
+                adder.audiobooks_apart(paths, place):
+            return True
+        place(paths)
         return True
 
     def _slot_outside(self, y):

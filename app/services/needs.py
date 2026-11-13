@@ -171,6 +171,10 @@ STRINGS = {
                       "Surasura it has none: it won't ask again.",
     "abook_find_say_none": "{files}. Not that book, you said. Find its book in your library or on your computer, or "
                            "tell Surasura it has none: it won't ask again.",
+    # Kantan-B3 (PROVISIONAL; Mattias 2026-11-12): an audiobook brought in alone, asked about at once
+    "abook_alone_title": "「{audio}」 is an audiobook. Which book is it?",
+    "abook_alone_say": "{files}. Find its book in your library or on your computer, or tell Surasura it has none: it "
+                       "won't ask again.",
     # Hon (a6, H-13 PROVISIONAL): a transcript beside an audiobook that its book doesn't hold — never used in silence
     "abook_transcript_title": "The transcript beside 「{audio}」 doesn't match 「{book}」",
     "abook_transcript_say": "Only {share} of its lines are in that book, so it's another edition's or another "
@@ -1501,15 +1505,18 @@ def _audiobook_files(ask):
 def _audiobook_find_entry(ask, seen):
     """a5-2's card, after a *No* left an audiobook alone: *Which book does the audiobook 「…」 read?* — *Find its
     book…* (`find_book`: the library's books, likeliest first, then an EPUB on the computer; the pick pairs as a *Yes*
-    does, with Undo) · *It has no book* (`no_book`: alone, never asked again). Keyed by its item."""
+    does, with Undo) · *It has no book* (`no_book`: alone, never asked again). Keyed by its item. Kantan-B3: one alone
+    nobody answered about (`said_no` None) — *「…」 is an audiobook. Which book is it?*, the same two answers."""
     if ask.get("item_id") is None:
         return None
     key = f"find:{_digest(['audiobook-find', str(ask['item_id'])])}"
     files = _audiobook_files(ask)
-    say = STRINGS["abook_find_say"].format(files=files, book=ask["said_no"]) if ask.get("said_no") else \
+    alone = ask.get("said_no") is None
+    say = STRINGS["abook_alone_say"].format(files=files) if alone else \
+        STRINGS["abook_find_say"].format(files=files, book=ask["said_no"]) if ask.get("said_no") else \
         STRINGS["abook_find_say_none"].format(files=files)
-    return Entry(key=key, kind=AUDIOBOOK_FIND,
-                 title=STRINGS["abook_find_title"].format(audio=ask.get("title") or "?"), lines=(),
+    title = STRINGS["abook_alone_title" if alone else "abook_find_title"].format(audio=ask.get("title") or "?")
+    return Entry(key=key, kind=AUDIOBOOK_FIND, title=title, lines=(),
                  actions=("find_book", "no_book"), unseen=key not in seen, say=say,
                  data={"item_id": ask["item_id"], "title": ask.get("title") or ""})
 

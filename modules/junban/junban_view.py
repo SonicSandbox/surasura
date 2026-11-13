@@ -524,24 +524,24 @@ def put_back_then_reorder_work(settings, language, answers, runs, progress=None,
     can't be put back stops it there: nothing reordered, said. Never past a traceback. -> the report."""
     runs = [run for run in runs or ()                # one put back or taken over since: nothing left to do for it
             if (undo.load(language, run_id=run) or {"complete": False}).get("complete") is False]
-    try:
-        if runs and reposition.runs_reach(settings, runs):     # a card of theirs in this deck now: the plain ask
-            return {"ok": False, "message": "Junban did not make any changes.", "problems": [PUT_BACK_FIRST_MOVED],
-                    "warnings": [], "written": [], "failures": [], "restore_first": True}
-    except Exception as e:                          # Anki not answering the read: nothing put back, nothing reordered
-        return {"ok": False, "message": "Junban did not make any changes.", "problems": [str(e)], "warnings": [],
-                "written": [], "failures": []}
     said = []                                       # each put-back's own line, shown above whatever comes next
     for run in runs:
-        try:
-            done = reposition.restore_run(settings, run, wait=None, cancel=cancel, on_wait=on_wait)
+        try:                                        # `away`: a card of its in this deck now refuses it untouched (I5)
+            done = reposition.restore_run(settings, run, wait=None, cancel=cancel, on_wait=on_wait, away=True)
         except Exception as e:                      # a window must never lose a write to a traceback
             done = {"ok": False, "problems": [str(e)]}
         if not done.get("ok"):
-            message = (PUT_BACK_FIRST_FAILED if not said else
-                       PUT_BACK_FIRST_PART.format(n=len(said), total=len(runs)))
+            if done.get("written"):                 # it wrote some before it stopped: said, never "couldn't"
+                said.append(done.get("message") or "")
+                message = PUT_BACK_FIRST_SOME
+            elif done.get("reaches") and not said:
+                message = "Junban did not make any changes."
+            else:
+                message = (PUT_BACK_FIRST_PART.format(n=len(said), total=len(runs)) if said else
+                           PUT_BACK_FIRST_FAILED)
             return dict(done, ok=False, message=message, put_back_done=said, warnings=done.get("warnings") or [],
-                        written=[], failures=done.get("failures") or [])
+                        restore_first=True if done.get("reaches") else done.get("restore_first", False),
+                        failures=done.get("failures") or [])
         said.append(done.get("message") or "")
     report = reorder_work(settings, language, answers, progress=progress, cancel=cancel, on_wait=on_wait)
     return dict(report, put_back_done=said)
@@ -549,8 +549,8 @@ def put_back_then_reorder_work(settings, language, answers, runs, progress=None,
 
 PUT_BACK_FIRST_FAILED = "The stopped reorder couldn't be put back, so nothing was reordered."      # PROVISIONAL
 PUT_BACK_FIRST_PART = "Put back {n} of {total} stopped reorders; the rest couldn't be, so nothing was reordered."
-PUT_BACK_FIRST_MOVED = ("Some of that reorder's cards are in this deck now. Undo the last reorder, then preview "
-                        "again.")
+PUT_BACK_FIRST_MOVED = reposition.PUT_BACK_REACHES
+PUT_BACK_FIRST_SOME = "A stopped reorder was put back only in part, so nothing was reordered."
 
 
 def try_work(settings, language, answers, progress=None, cancel=None, on_wait=None):

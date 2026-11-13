@@ -683,20 +683,58 @@ def test_two_runs_the_second_failing_says_how_many_went_back(tmp_path, monkeypat
     assert len(report["put_back_done"]) == 1 and not undo.load("ja", run_id=second).get("restored_at")
 
 
-def test_a_card_of_that_run_moved_into_this_deck_since_stops_the_press_before_anything(tmp_path, monkeypatch):
-    """The adversary's SHOULD 3: one of Kanji's run's cards now sits in this deck (you changed its deck since). Putting
-    the run back would move it under this deck's preview (I5): nothing is put back, nothing reordered, the plain ask."""
+@pytest.mark.parametrize("how", ["moved", "suspended"])
+def test_a_card_of_that_run_in_this_deck_now_stops_the_press_before_any_write(tmp_path, monkeypatch, how):
+    """Adversaries 1 and 2: one of Kanji's run's cards now sits in this deck — a card it moved whose deck you changed
+    since, or one it suspended. Putting the run back would move or unsuspend it under this deck's preview (I5). Read
+    holding Anki's writer, right before the put-back: nothing put back, nothing reordered, the plain ask."""
     from modules.junban import junban_view
     fake = scene(tmp_path)
     card_id, _was, run_id = _other_deck_cut(fake)
-    fake.cards[card_id]["deckName"] = "TheBank::Kanji"
-    calls = []
-    monkeypatch.setattr(reposition, "restore_run", lambda *a, **kw: calls.append(a) or {"ok": True})
-    fake.writes = []
+    if how == "moved":
+        fake.cards[card_id]["deckName"] = "TheBank::Kanji"
+    else:
+        own = fake.card_of("須藤")["cardId"]                # in this deck: the run had suspended it
+        path = undo.snapshot_path("ja", run_id=run_id)
+        with open(path, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        saved["suspended"] = [own]
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(saved, handle)
+        fake.cards[own]["queue"] = -1
+    fake.writes, fake.suspend_calls = [], []
     with _patched(fake):
         report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
     assert not report["ok"] and report["problems"] == [junban_view.PUT_BACK_FIRST_MOVED] and report["restore_first"]
-    assert calls == [] and fake.writes == []
+    assert fake.writes == [] and fake.suspend_calls == [] and undo.unfinished("ja", "reorder") == run_id
+
+
+def test_a_run_file_held_at_the_press_puts_nothing_back_and_reorders_nothing(tmp_path, monkeypatch):
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    _card_id, _was, run_id = _other_deck_cut(fake)
+    real = undo.load
+    monkeypatch.setattr(undo, "load", lambda language="ja", kind="reorder", run_id=None:
+                        None if run_id is not None else real(language, kind, run_id))
+    fake.writes = []
+    with _patched(fake):
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert not report["ok"] and report["message"] == junban_view.PUT_BACK_FIRST_FAILED and fake.writes == []
+
+
+def test_a_put_back_that_wrote_part_before_it_stopped_says_so(tmp_path, monkeypatch):
+    """The adversary's SHOULD 2: the run's put-back moved a card, then stopped — said as put back in part, its own line
+    kept, never "couldn't be put back"."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    _card_id, _was, run_id = _other_deck_cut(fake)
+    monkeypatch.setattr(reposition, "restore_run", lambda settings, run, **kw: {
+        "ok": False, "message": "Restore stopped part way. Press Restore again.", "problems": ["Anki closed."],
+        "written": [1789712099000]})
+    report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert report["message"] == junban_view.PUT_BACK_FIRST_SOME, report
+    assert report["put_back_done"] == ["Restore stopped part way. Press Restore again."]
+    assert report["written"] == [1789712099000]
 
 
 def test_a_run_put_back_since_the_offer_is_skipped_and_the_reorder_goes_on(tmp_path, monkeypatch):

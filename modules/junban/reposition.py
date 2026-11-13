@@ -2965,22 +2965,25 @@ def _apart(saved, decks, settings):
     return bool(undo.normalize_scope(saved.get("scope")))
 
 
-def runs_reach(settings, run_ids):
-    """Junban-X2 (adversary SHOULD 3): does any card these runs of Connect's changed sit in the window's deck (or a
-    subdeck) now — moved there since the run stopped? Putting such a run back would move a card under this deck's
-    preview (I5). Read from Anki (`cardsInfo`), no write; raises `AnkiError`."""
-    url = _url(settings)
+def _reaches(settings, url, snapshot):
+    """Junban-X2 (adversaries 1 and 2): does a card this run of Connect's changed sit in the window's deck (or a
+    subdeck) now — moved there since it stopped? -> "" when none does, else the line that says so (or why it can't be
+    told). Read from Anki (`cardsInfo`), no write; raises `AnkiError`."""
     decks, problems = _resolve_decks(settings, url)
-    if problems or _scope_mode(settings) == "all":
-        return True
-    ids = set()
-    for run_id in run_ids or ():
-        saved = undo.load(_language(settings), run_id=run_id) or {}
-        ids |= {int(card_id) for card_id in saved.get("cards") or {} if str(card_id).isdigit()}
-        ids |= set(undo.restore_suspended(saved)) | set(undo.restore_unsuspended(saved))
+    if problems:
+        return problems[0]
+    if _scope_mode(settings) == "all":
+        return PUT_BACK_REACHES
+    ids = {int(card_id) for card_id in snapshot.get("cards") or {} if str(card_id).isdigit()}
+    ids |= set(undo.restore_suspended(snapshot)) | set(undo.restore_unsuspended(snapshot))
     rows = ankiconnect.cards_info(url, sorted(ids)) if ids else []
-    return any(str(row.get("deckName") or "") == deck or str(row.get("deckName") or "").startswith(deck + "::")
-               for row in rows for deck in decks)
+    inside = any(str(row.get("deckName") or "") == deck or str(row.get("deckName") or "").startswith(deck + "::")
+                 for row in rows for deck in decks)
+    return PUT_BACK_REACHES if inside else ""
+
+
+PUT_BACK_REACHES = ("Some of that reorder's cards are in this deck now. Undo the last reorder, then preview "
+                    "again.")                                                                      # PROVISIONAL
 
 
 def _decks_named(settings, run_ids):
@@ -3598,14 +3601,14 @@ def _restore(settings, progress=None, asked=None):
                              [reason for _id, reason in (list(failures) + note_failures)[:1]]))
 
 
-def restore_run(settings, run_id, progress=None, wait=0.0, cancel=None, on_wait=None, verb="順 restore"):
+def restore_run(settings, run_id, progress=None, wait=0.0, cancel=None, on_wait=None, verb="順 restore", away=False):
     """Put back exactly what one of Connect's runs changed (P1.4 row 1.4.2): `_restore_run`, holding the Anki-write
-    lock as `restore` does."""
+    lock as `restore` does. `away` (Junban-X2's one press): only while none of its cards sits in the window's decks."""
     held, problem = anki_connect.take_writer(verb, _url(settings), wait, cancel, on_wait)
     if held is None:
         return _report(False, "Nothing was restored.", problems=[problem], busy=True)
     with held:
-        return _restore_run(settings, run_id, progress)
+        return _restore_run(settings, run_id, progress, away=away)
 
 
 # The window asked about one thing to put back, and by the time it held Anki's writer that had changed (P1.4).
@@ -3613,7 +3616,7 @@ RESTORE_CHANGED = ("What Restore would put back changed while it waited (an auto
                    "back). Press Restore again to see it.")
 
 
-def _restore_run(settings, run_id, progress=None):
+def _restore_run(settings, run_id, progress=None, away=False):
     """Undo one of Connect's runs, and nothing after it. Its snapshot (`undo.load(run_id=)`) names what it changed:
 
       * the cards it suspended (3.0) are unsuspended — only those;
@@ -3622,7 +3625,9 @@ def _restore_run(settings, run_id, progress=None):
       * the returning words' cards it unsuspended (MR-R3) are suspended again, only those still new and unsuspended;
       * its tags and flags come off as the window's Restore takes them off — never a field or flag you changed since.
 
-    Never raises; a run already put back, or not one of Junban's reorders, is refused untouched."""
+    Never raises; a run already put back, or not one of Junban's reorders, is refused untouched. `away` (Junban-X2,
+    the adversary's SHOULD 1): first, holding the writer, its cards read — one that sits in the window's deck (or a
+    subdeck) now refuses it untouched (`reaches`): putting it back would move a card under this deck's preview (I5)."""
     url = _url(settings)
     language = _language(settings)
     snapshot = undo.load(language, run_id=run_id)
@@ -3635,6 +3640,13 @@ def _restore_run(settings, run_id, progress=None):
     if not report.get("ok"):
         return _report(False, "Nothing was restored.",
                        problems=[report.get("error") or f"Could not reach Anki at {url}."])
+    if away:
+        try:
+            reaches = _reaches(settings, url, snapshot)
+        except AnkiError as e:
+            return _report(False, "Nothing was restored.", problems=[str(e)])
+        if reaches:
+            return _report(False, "Nothing was restored.", problems=[reaches], reaches=True)
     chunk = _chunk_size(settings)
     unsuspended, unsuspend_failures = ankiconnect.unsuspend(url, undo.restore_suspended(snapshot), chunk=chunk)
     stopped = "Nothing was restored." if not unsuspended else "Restore stopped part way. Press Restore again."

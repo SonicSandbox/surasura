@@ -399,6 +399,50 @@ def test_with_nothing_left_to_write_your_reorder_still_takes_over_the_automatic_
     assert _state(fake) == before
 
 
+def test_a_take_over_with_nothing_to_write_that_cant_mark_a_run_changes_nothing(tmp_path, monkeypatch):
+    """Round 3's SHOULD 2: the nothing-to-write take-over, a run's file held as it is marked: every file back as it
+    was, so the next Reorder takes over all of them again — never a snapshot that lost the automatic job's way back."""
+    fake = scene(tmp_path)
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items() if card["queue"] == 0]
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["written"]
+    run_id = undo.new_run_id("reorder")
+    undo.save(pairs, ["TheBank"], language="ja", run_id=run_id, after=[])
+    paths = [undo.snapshot_path("ja"), undo.snapshot_path("ja", run_id=run_id)]
+    before = _files(*paths)
+    real = undo.mark_complete
+    monkeypatch.setattr(undo, "mark_complete", lambda language="ja", kind="reorder", run_id=None, **kw:
+                        False if kw.get("taken_over") else real(language, kind, run_id, **kw))
+    with _patched(fake):
+        report = reposition.run(quiet, refresh=False)
+    assert report["ok"] and _files(*paths) == before, report
+    assert undo.unfinished("ja", "reorder") == run_id
+
+
+def test_an_automatic_snapshot_written_in_the_cut_runs_second_counts_as_gone_on():
+    cut = {"complete": False, "written_at": "2026-11-13T10:00:00", "scope": ["TheBank"]}
+    window = {"automatic": True, "complete": True, "written_at": "2026-11-13T10:00:00", "scope": ["TheBank"]}
+    assert reposition._went_on(window, [("reorder-x", cut)], ["TheBank"], settings()) is window
+    assert reposition._went_on(dict(window, written_at="2026-11-13T09:59:59"), [("reorder-x", cut)], ["TheBank"],
+                               settings()) is None
+
+
+def test_a_positions_only_automatic_job_taking_a_connect_run_over_keeps_the_windows_cut_run_too(tmp_path):
+    """Round 3's SHOULD 1 (kept, now tested): the window's own automatic run cut (what it suspended in its snapshot) and
+    one of Connect's cut too; a positions-only automatic job takes Connect's over in the window's snapshot — which
+    takes the window's cut run over with it (before, it was written over: that run's suspends had no way back)."""
+    from modules.junban import spaced
+    fake = scene(tmp_path)
+    _cut_connect_run(fake)
+    parked = fake.card_of("須藤")["cardId"]
+    undo.save([(parked, 2800)], ["TheBank"], language="ja", automatic=True, suspended=[parked])
+    with _patched(fake):
+        job = reposition.run(settings(), refresh=False, job=spaced.Job(automatic=True))
+    assert job["ok"], job
+    assert parked in undo.load("ja").get("suspended", []), "the window's cut run's suspend still has its way back"
+
+
 def test_your_last_reorder_older_than_the_cut_run_is_replaced_as_ever(tmp_path):
     """Only an automatic job's snapshot that went on past the cut run is taken over: your own last reorder, older,
     is replaced as every reorder replaces it (one Undo goes back one reorder of yours)."""

@@ -2889,16 +2889,19 @@ def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previou
         return
     language = _language(settings)
     try:
+        held = _held_files(language, connect_cuts)
         pairs = undo.carry_forward_tried(window_snapshot, [(row.card_id, row.due) for row in stats.get("order") or []])
         undo.save(pairs, decks, language=language, mode=_scope_mode(settings),
                   fields=_carried_fields([saved for _cut_id, saved in connect_cuts] + [previous or cut], None),
                   cut=[cut, went_on] + [saved for _cut_id, saved in connect_cuts], finished_automatic=True)
     except OSError:
         return
+    for cut_id, _saved in connect_cuts:         # one not marked: every file back as it was, nothing changed (as the
+        if not undo.mark_complete(language, run_id=cut_id, taken_over=True):           # writes path, round 3)
+            _put_back_files(held)
+            return
     undo.end_baseline(language)
     undo.mark_complete(language)
-    for cut_id, _saved in connect_cuts:
-        undo.mark_complete(language, run_id=cut_id, taken_over=True)
 
 
 def _connect_cuts(settings, decks):

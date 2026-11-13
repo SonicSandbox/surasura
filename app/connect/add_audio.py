@@ -97,16 +97,50 @@ def place(sentence, form, found):
 
 def book_items(store, epub):
     """The book's live parts in the library (origins `<epub>#<n>`; a split book's joined `.txt`: every item of it, a
-    copy left out of the join too — its cards are the book's: Kura-TX, review r2 S1) -> [item ids]."""
+    copy left out of the join too — its cards are the book's: Kura-TX, review r2 S1) and the parts of an earlier copy
+    of it removed since (`earlier_copies`) -> [item ids]."""
     from app import library_store
     joined = store.joined_book(epub)
     if joined is not None:
-        return sorted(joined["all"])
+        return sorted(set(joined["all"]) | set(earlier_copies(store, epub)))
     lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
     with store._reading():
-        return sorted({r[0] for r in store.conn.execute(
+        live = {r[0] for r in store.conn.execute(
             f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND "
-            f"{library_store._LIVE_ORIGIN}", (lo, lo[:-1] + "$"))})
+            f"{library_store._LIVE_ORIGIN}", (lo, lo[:-1] + "$"))}
+    return sorted(live | set(earlier_copies(store, epub)))
+
+
+def earlier_copies(store, epub):
+    """Mattias's field report (3.0.8 preview): his カラフル was mined as 2.x `.txt` parts (40 cards), then those parts
+    were removed and the book added again as its EPUB, which found every word carded already — so *Add the narrator's
+    voice* had no card of "this book" to offer. The parts of an earlier copy of the book, removed and not put back (the
+    trash's rows), named as 2.x split it — `<the EPUB's name>_NN.txt` (`library_store._SPLIT_PART`) — are this book's
+    too: the cards Connect made from them get the narrator's voice the same way (each still placed by its sentence in
+    the line-up, never by its part). -> [item ids]; [] with no trash table or none alike. Never raises."""
+    from app import library_store
+    import unicodedata
+
+    def fold(name):
+        return unicodedata.normalize("NFKC", name or "").strip().casefold()
+    stem = fold(os.path.splitext(os.path.basename(str(epub or "")))[0])
+    if not stem:
+        return []
+    try:
+        with store._reading():
+            if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trash'").fetchone():
+                return []
+            rows = store.conn.execute("SELECT item_id, rel_path FROM trash WHERE restored_at IS NULL AND item_id IS NOT "
+                                      "NULL").fetchall()
+    except Exception:
+        return []
+    out = set()
+    for item_id, rel in rows:
+        name = str(rel or "").replace("\\", "/").rpartition("/")[2]
+        m = library_store._SPLIT_PART.fullmatch(name)
+        if m and fold(m.group(1)) == stem:
+            out.add(int(item_id))
+    return sorted(out)
 
 
 def made_notes(store, items):

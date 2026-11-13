@@ -571,3 +571,59 @@ def test_a_line_up_given_up_is_never_offered(book, tmp_path, monkeypatch):  # no
     assert book["steps"].lineable("ja", book["book"]) is False
     lineup.write(book["rec"]["book"]["key"], {"status": lineup.FAILED, "tries": lineup.TRIES - 1})
     assert book["steps"].lineable("ja", book["book"]) is True
+
+
+# --- Mattias, 3.0.8 preview: his カラフル's cards were made from 2.x `.txt` parts, removed since; the book came back as
+# its EPUB, found every word carded already, and *Add the narrator's voice* had no card of "this book" to offer ------ #
+def test_a_book_asked_with_no_card_is_asked_again_for_an_earlier_copys_cards(book, tmp_path, monkeypatch):  # noqa: F811
+    """Asked once with nothing to offer (every word carded by the earlier copy): the line comes once that copy's cards
+    are counted (`earlier_before`) — those, text-only — and never for cards mined since its line-up."""
+    monkeypatch.setattr(book["steps"], "made_before", lambda lang, epub: ("カラフル", [], None))
+    monkeypatch.setattr(book["steps"], "earlier_before", lambda lang, epub: [])
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        _lined(book, ledger)
+        assert _offers(ledger) == []
+        monkeypatch.setattr(book["steps"], "earlier_before", lambda lang, epub: [700, 701, 702])
+        _lined(book, ledger)
+        [offer] = _offers(ledger)
+        assert offer["item_id"] == book["item"]
+        key = [k for (k,) in ledger.conn.execute("SELECT key FROM meta WHERE key LIKE ?", (runner.ADD_AUDIO_ASKED + "%",))]
+        rec = json.loads(ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key[0],)).fetchone()[0])
+        assert rec["notes"] == [700, 701, 702], "the earlier copy's cards, the only ones offered"
+        before = ledger.conn.execute("SELECT * FROM needs").fetchall()
+        _lined(book, ledger)
+        assert ledger.conn.execute("SELECT * FROM needs").fetchall() == before, "asked once"
+
+
+def test_the_parts_of_an_earlier_copy_are_the_removed_2x_parts_of_the_epubs_name():
+    """`add_audio.earlier_copies`: removed parts not put back, named as 2.x split the book (`<the EPUB's name>_NN.txt`),
+    NFKC and case alike; another book's parts, a part put back, or a name that only starts alike: never."""
+    import contextlib
+    import sqlite3
+    from app.connect import add_audio
+
+    class Store:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.execute("CREATE TABLE trash (item_id INTEGER, rel_path TEXT, restored_at TEXT)")
+
+        @contextlib.contextmanager
+        def _reading(self):
+            yield
+
+    s = Store()
+    s.conn.executemany("INSERT INTO trash VALUES (?, ?, ?)", [
+        (353, "Library/カラフル (文春文庫) - 森 絵都/カラフル (文春文庫) - 森 絵都_01.txt", None),
+        (354, "Library/カラフル (文春文庫) - 森 絵都/カラフル (文春文庫) - 森 絵都_02.txt", None),
+        (355, "Library/カラフル (文春文庫) - 森 絵都/カラフル (文春文庫) - 森 絵都_03.txt", "2026-11-13T08:00:00Z"),
+        (400, "Library/かがみの孤城/かがみの孤城_01.txt", None),
+        (401, "Library/カラフル (文春文庫) - 森 絵都 2/カラフル (文春文庫) - 森 絵都 2_01.txt", None),
+        (402, "Library/カラフル/カラフル (文春文庫) - 森 絵都.m4b", None)])
+    epub = r"\hemma\data\Japanese\Book Sync\カラフル\カラフル (文春文庫) - 森 絵都.epub"
+    assert add_audio.earlier_copies(s, epub) == [353, 354]
+    assert add_audio.earlier_copies(s, "") == []
+
+    class NoTrash(Store):
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+    assert add_audio.earlier_copies(NoTrash(), epub) == []

@@ -1282,8 +1282,8 @@ def _add_audio_offers(steps, ledger, lang):
         return
     for epub, item, sha in pairs:
         rec = _json_or_none(_meta(ledger, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"))
-        if rec is not None and rec.get("stage") != ADD_AUDIO_WAITING:
-            continue
+        if rec is not None and rec.get("stage") != ADD_AUDIO_WAITING and rec.get("notes"):
+            continue                            # (asked with no card to offer: looked at again — an earlier copy's)
         try:
             lined = lined_up(lang, epub)
             able = bool(lined) or (lineable is not None and lineable(lang, epub))
@@ -1296,6 +1296,19 @@ def _add_audio_offers(steps, ledger, lang):
             _add_audio_offer(steps, ledger, lang, epub, item, lined=False)
         elif not able and rec is not None:      # waiting, and it can't be lined up any more (r5 S2): the line goes
             _add_audio_gave_up(ledger, lang, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}", rec)
+
+
+def _earlier_notes(steps, lang, epub):
+    """The notes Connect made from an earlier copy of the book, removed since (`add_audio.earlier_copies`), or [] —
+    through `Steps.earlier_before` (a stand-in without it: none). Never raises."""
+    earlier = getattr(steps, "earlier_before", None)
+    if earlier is None:
+        return []
+    try:
+        return list(earlier(lang, epub) or ())
+    except Exception as e:
+        log.info("Connect: couldn't count an earlier copy's cards (%s): %s", lang, e)
+        return []
 
 
 def _add_audio_gave_up(ledger, lang, key, rec):
@@ -1325,7 +1338,15 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
     title, notes, sha = got
     key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
     rec = _json_or_none(_meta(ledger, key))
-    if rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
+    # a book asked with no card to offer then — every word carded already, by an earlier copy of it removed since
+    # (Mattias's カラフル: 2.x `.txt` parts, then the EPUB) — is asked again for THAT copy's cards, which are
+    # text-only; never for cards mined since its line-up (they carry the narrator), never once asked with cards
+    if rec is not None and lined and not rec.get("notes") and rec.get("stage") != ADD_AUDIO_WAITING:
+        earlier = _earlier_notes(steps, lang, epub)
+        if not earlier:
+            return
+        notes = earlier
+    elif rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
         return
     # (a waiting record's list is the cards so far — each made as the book, text-only: r5 S3 — frozen once lined up:
     # the cards made since carry the narrator)
@@ -3624,6 +3645,13 @@ class Steps:
             book = library.book_of(store, epub)
         return ((book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], sorted(notes),
                 (book or {}).get("sha256"))
+
+    def earlier_before(self, lang, epub):
+        """The notes Connect made from an earlier copy of the book, removed since (`add_audio.earlier_copies`: 2.x's
+        `.txt` parts of its name) -> [ids] — the store read only."""
+        from app.connect import add_audio
+        with self._open(lang) as store:
+            return sorted(add_audio.made_notes(store, add_audio.earlier_copies(store, epub)))
 
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its

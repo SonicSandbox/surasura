@@ -391,6 +391,7 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
             if found is None:
                 return None
             notes = adding.made_notes(store, found[1])
+            earlier = adding.made_notes(store, adding.earlier_copies(store, found[0]))
             title = (library.book_of(store, found[0]) or {}).get("title") or \
                 os.path.splitext(os.path.basename(found[0]))[0]
         if not notes or not (steps.lined_up(language, found[0]) or steps.lineable(language, found[0])):
@@ -408,6 +409,8 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
     # which carry the narrator already (r2 B2) — less what a press looked at
     frozen = asked and asked.get("stage") != runner.ADD_AUDIO_WAITING and isinstance(asked.get("notes"), list)
     before = set(_ids(json.dumps(asked["notes"]))) if frozen else set(notes)
+    if frozen and not before:
+        before = set(earlier)           # asked with none: an earlier copy's cards, text-only (Mattias's カラフル)
     rest = (before & set(notes)) - set(seen)
     if not rest:
         return None

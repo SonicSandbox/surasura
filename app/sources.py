@@ -1638,6 +1638,11 @@ class _Look:
                 continue
             if any(ab is b for b in back):
                 f["let_back"] = True                         # its Remove's exclusions go in the take-in (`take_in`)
+                if _key(ab.files[0]) not in self.ex_paths:   # renamed since: the one removed origin of these bytes
+                    gone = [p for p in self.ex_by_sha.get(audiobooks.sizes_key(ab), ())   # gone from disk (a copy
+                            if not os.path.exists(p)]                    # still there is another Remove's: r3, r4)
+                    if len(gone) == 1:
+                        f["let_back_from"] = gone[0]
             if f.get("rel") and ls.path_key(f["rel"]) in heard_at:
                 f["item_id"] = heard_at[ls.path_key(f.pop("rel"))]
                 old = records.get(f["item_id"]) or {}        # its records kept alike (`pair_audiobook`'s rule)

@@ -10162,25 +10162,24 @@ def _store_let_origins_back(self, keys):
                           chunk)
 
 
-def _store_let_audiobook_back(self, key, sha256, out):
+def _store_let_audiobook_back(self, key, was, out):
     """Inside `take_in` (Kura-AB5, based on the diagnosis in #429 by Mattias): an audiobook removed earlier whose
     folder the learner picked for its book (`sources._Look._meant`) is in again — as Put back would have it, by the
-    Remove's own trash row: the row holding its origin `key` (else, found renamed, the one row whose records name its
-    files' sizes `sha256` and whose files are gone from disk; two such: none) is marked put back (the Removed list never offers a second) and every origin it held is
+    Remove's own trash row: the row holding its origin `key`, else (found renamed) the one row holding `was`, the
+    removed origin of its bytes the look found gone from disk (the look stats, outside this write: review r4) — two
+    such rows: none. That row is marked put back (the Removed list never offers a second) and every origin it held is
     let back (`_let_origins_back`: an adopted transcript too); a keep-out of `key` with no row goes as well. Never
     another Remove's row — a copy of the same bytes removed elsewhere keeps its sizes' keep-out, which `take_in` then
-    doesn't weigh for this file (the learner picked it by its folder); nothing on disk is touched; `out` (the batch's
-    kept-out paths) forgets what went. -> the rows."""
+    doesn't weigh for this file (the learner picked it by its folder); nothing on disk is touched or read; `out` (the
+    batch's kept-out paths) forgets what went. -> the rows."""
     held = []
     for trash_id, raw in self.conn.execute("SELECT id, item_state FROM trash WHERE restored_at IS NULL").fetchall():
         pairs = [p for p in (_json_dict(raw) or {}).get("pairings") or ()
                  if isinstance(p, (list, tuple)) and len(p) == 3 and isinstance(p[0], str)]
         held.append((trash_id, pairs))
     mine = [(i, pairs) for i, pairs in held if any(k == key for k, _t, _a in pairs)]
-    if not mine and sha256:                              # renamed: the one row of these bytes whose files are gone
-        moved = [(i, pairs) for i, pairs in held                 # (a copy still on disk is another Remove's: review r3)
-                 if any((_json_dict(t) or {}).get("sha256") == sha256 for _k, t, _a in pairs) and
-                 not any(k.startswith(SOURCE_KEY) and os.path.exists(k[len(SOURCE_KEY):]) for k, _t, _a in pairs)]
+    if not mine and was:                                 # renamed: its old origin's row (review r3)
+        moved = [(i, pairs) for i, pairs in held if any(k == SOURCE_KEY + was for k, _t, _a in pairs)]
         mine = moved if len(moved) == 1 else []
     keys = {key} | {k for _i, pairs in mine for k, _t, _a in pairs}
     self._let_origins_back(sorted(keys))
@@ -10709,7 +10708,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
-                self._let_audiobook_back(key, f.get("sha256"), out)
+                self._let_audiobook_back(key, f.get("let_back_from"), out)
             if key[len(SOURCE_KEY):] in out["patterns"] or \
                     (not back and f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):

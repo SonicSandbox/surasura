@@ -1021,3 +1021,86 @@ def test_B4_r2_a_failure_after_the_name_was_freed_still_names_the_new_name(tmp_p
     monkeypatch.setattr(extract, "_write_and_add", broken)
     result = extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False, as_new=True)
     assert result.code == extract.EXIT_FAILED and result.note == "error" and result.freed == "消滅世界 2"
+
+
+def test_B4_rename_removed_never_renames_a_title_that_still_holds_items(tmp_path):
+    """Mutant S3 (the store's own guard, under Extract's): `Store.rename_removed` moves the trash rows' place, but a
+    title that still holds an item keeps its name, its names and its folder key."""
+    _store_library("ja")
+    src, trash_ids, _old = _removed_book(tmp_path, "ja")
+    store = _open("ja")
+    try:
+        work = json.loads(store.trash_rows(trash_ids)[0]["item_state"])["columns"]["work_id"]
+        with store._writing():
+            item = store.conn.execute("SELECT id FROM items ORDER BY id LIMIT 1").fetchone()[0]
+            store.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item))   # (planted: one title)
+        before = store.conn.execute("SELECT title, titles, folder_key FROM works WHERE id = ?", (work,)).fetchone()
+        assert sorted(store.rename_removed("消滅世界", "消滅世界 2", ["Processed", ls.CONTENT_FOLDER])) == sorted(trash_ids)
+        after = store.conn.execute("SELECT title, titles, folder_key FROM works WHERE id = ?", (work,)).fetchone()
+    finally:
+        store.close()
+    assert after == before
+
+
+def test_B4_without_as_new_a_removed_titles_name_is_refused_and_nothing_renamed(tmp_path):
+    """Mutant F9: a plain Extract (no *Add as new*) of a removed title's name is refused as before: its folders, its
+    trash rows and its title stay as they are."""
+    data_dir, _uf = _store_library("ja")
+    src, trash_ids, old = _removed_book(tmp_path, "ja")
+    result = extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False)
+    assert result.code == extract.EXIT_REFUSED and result.note == "taken" and result.freed is None
+    assert _snapshot(os.path.join(data_dir, "Processed", "消滅世界")) == old
+    assert not os.path.exists(os.path.join(data_dir, "Processed", "消滅世界 2"))
+    store = _open("ja")
+    try:
+        assert all(r["rel_path"].startswith(f"{ls.CONTENT_FOLDER}/消滅世界/") for r in store.trash_rows(trash_ids))
+    finally:
+        store.close()
+
+
+def test_B4_add_as_new_of_a_name_only_processed_holds_frees_nothing(tmp_path):
+    """Mutant F2: the child asked to add as new under a name only an old Processed split holds (nothing removed):
+    taken as before — the folder never renamed, never "busy"."""
+    data_dir, _uf = _store_library("ja")
+    os.makedirs(os.path.join(data_dir, "Processed", "旅の本"))
+    result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="now", value="300", spawn=False,
+                             as_new=True)
+    assert result.note == "taken" and result.freed is None
+    assert os.path.isdir(os.path.join(data_dir, "Processed", "旅の本"))
+    assert not os.path.exists(os.path.join(data_dir, "Processed", "旅の本 2"))
+
+
+def test_B4_a_skipped_folders_rows_are_never_freed_even_once_purged(tmp_path):
+    """Mutant R1: rows a skipped folder left (why "skip"), their files purged since: still never his Remove — never
+    freed, never called a title he removed."""
+    data_dir, _uf = _store_library("ja")
+    src, trash_ids, _old = _removed_book(tmp_path, "ja")
+    store = _open("ja")
+    try:
+        with store._writing():
+            for r in store.trash_rows(trash_ids):
+                state = json.loads(r["item_state"])
+                state["why"] = "skip"
+                store.conn.execute("UPDATE trash SET item_state = ? WHERE id = ?", (json.dumps(state), r["id"]))
+                os.remove(os.path.join(data_dir, *r["trashed_path"].split("/")))
+    finally:
+        store.close()
+    answer = extract.check_name("消滅世界", "ja", src)
+    assert answer.removed is None and not answer.free
+
+
+def test_B4_rows_out_of_the_list_whose_files_are_still_there_are_never_freed(tmp_path):
+    """Mutant R2: his rows dropped from the Removed list for another reason (here: written before Removes kept their
+    reason, their origins no longer kept out) while their files are still in the trash — never freed: Put back may
+    still bring them."""
+    _store_library("ja")
+    src, trash_ids, _old = _removed_book(tmp_path, "ja")
+    store = _open("ja")
+    try:
+        with store._writing():
+            store.conn.execute("DELETE FROM exclusions WHERE kind = 'removed'")
+        assert store.removed() == []
+    finally:
+        store.close()
+    answer = extract.check_name("消滅世界", "ja", src)
+    assert answer.removed is None and not answer.free

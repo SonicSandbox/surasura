@@ -1006,3 +1006,202 @@ def test_a_second_choose_while_the_first_file_is_read_opens_no_dialog(main, runs
     assert len(picks) == 1
     gate.set()
     assert wait_until(lambda: _card(w) is not None)
+
+
+
+# --- Kantan-B4 (Mattias, #testers 2026-11-12): a removed title added again is offered back, never only "taken" ----- #
+def _removed_epub(tmp_path, name="消滅世界"):
+    """A real store with the book extracted into Current and then removed whole (its files to the trash) -> (the
+    EPUB's path, the trash ids)."""
+    from tests.test_extract import _epub, _removed_book, _store_library
+    _store_library("ja")
+    src, trash_ids, _old = _removed_book(tmp_path, "ja", name)
+    return src, trash_ids
+
+
+def _library_is(main, monkeypatch, language):
+    """The main window's writer's library, as Put back reads it (`give_back` is the test's own)."""
+    monkeypatch.setattr(importers.ExtractWindow, "_writing_library", lambda _self: language)
+
+
+def _offered(w, src):
+    w.path.setText(src)
+    w.choose(src)
+    w.go.click()
+    assert wait_until(lambda: w.back_door.isVisibleTo(w), 10)
+
+
+def test_B4_a_removed_titles_name_offers_put_back_and_add_as_new_never_only_taken(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    assert w.status.text() == strings.EXTRACT_IN_REMOVED.format(title="消滅世界", left="30 days left")
+    assert w.new_door.isVisibleTo(w) and w.name.text() == "消滅世界"        # his name kept, never "消滅世界 2"
+    assert "消滅世界 2" in w.new_door.toolTip() and "消滅世界" in w.back_door.toolTip()
+    assert runs.calls == [] and not w.busy()
+    assert problems(w)[0] == []                                    # the doors wired, tipped and named
+
+
+def test_B4_put_back_is_the_removed_lists_own_command_with_this_titles_trash_ids(main, runs, tmp_path, monkeypatch):
+    from app.qt import removed
+    src, trash_ids = _removed_epub(tmp_path)
+    given = []
+
+    def give_back(shell, ids, text, told=None):
+        given.append((list(ids), text))
+        told("saved")
+        return 1
+    monkeypatch.setattr(removed, "give_back", give_back)
+    _library_is(main, monkeypatch, "ja")
+    w = importers.open_extract(main)
+    _offered(w, src)
+    said = []
+    monkeypatch.setattr(removed, "give_back", lambda *a, **k: (said.append(w.status.text()), give_back(*a, **k))[1])
+    w.back_door.click()
+    assert said == [strings.EXTRACT_PUTTING_BACK.format(title="消滅世界")]     # the press's answer, before the write
+    assert given == [(sorted(trash_ids), strings.REMOVED_BACK.format(title="消滅世界"))]
+    assert w.status.text() == strings.EXTRACT_PUT_BACK_DONE.format(title="消滅世界")
+    assert not w.back_door.isVisibleTo(w) and not w.new_door.isVisibleTo(w) and runs.calls == []
+
+
+def test_B4_put_back_in_another_language_writes_nothing_and_says_where_removed_is(main, runs, tmp_path, monkeypatch):
+    """The window's library is Chinese now: these trash ids are the Japanese store's — never given to that writer."""
+    from app.qt import removed
+    src, _ids = _removed_epub(tmp_path)
+    monkeypatch.setattr(removed, "give_back", lambda *a, **k: pytest.fail("given to another library's writer"))
+    _library_is(main, monkeypatch, "zh")
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.back_door.click()
+    assert w.status.text() == strings.EXTRACT_PUT_BACK_FAILED.format(title="消滅世界")
+
+
+def test_B4_add_as_new_starts_extract_with_as_new_under_his_name(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.new_door.click()
+    [call] = runs.calls
+    assert call.argv[:5] == ["extract.py", "--language", "ja", f"--file={src}", "--name=消滅世界"]
+    assert call.argv[-1] == "--as-new"
+    runs.end(0, extract.result_line(extract.Result(0, 4, "消滅世界", "now", True, None, None, "消滅世界 2")))
+    assert w.status.text() == strings.EXTRACT_DONE.format(parts=4, section="Current", name="消滅世界") + \
+        strings.EXTRACT_FREED.format(freed="消滅世界 2")
+
+
+def test_B4_the_same_book_under_a_new_name_is_offered_back_and_add_as_new_frees_nothing(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    w.name.setText("消滅世界 新版")
+    _offered(w, src)
+    assert w.new_door.isVisibleTo(w)
+    w.new_door.click()
+    [call] = runs.calls
+    assert "--name=消滅世界 新版" in call.argv and "--as-new" not in call.argv
+
+
+def test_B4_another_name_or_file_takes_the_offer_away(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.name.setText("別の名前")
+    assert not w.back_door.isVisibleTo(w) and not w.new_door.isVisibleTo(w)
+    w.new_door.click()                                             # (hidden: nothing to add as new)
+    assert runs.calls == []
+    _offered(w, src)
+    w.choose(_text(tmp_path))
+    assert not w.back_door.isVisibleTo(w)
+
+
+
+def test_B4_r1_a_language_switch_takes_the_offer_away(main, runs, tmp_path):
+    """r1 #5: the offer was the other library's — a switch drops it, so Add as new never writes there."""
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.language_changed("zh")
+    assert w.offer is None and not w.new_door.isVisibleTo(w) and not w.back_door.isVisibleTo(w)
+    w._add_new()
+    assert runs.calls == []
+
+
+def test_B4_r1_add_as_new_takes_the_options_as_they_are_at_the_press(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.section.setCurrentIndex(2)
+    w.value.setText("0")
+    w.new_door.click()
+    assert w.status.text() == strings.EXTRACT_FAULTS["length"] and runs.calls == []
+    w.value.setText("800")
+    _offered(w, src)
+    w.value.setText("400")                                         # changed after the offer: the press's own
+    w.new_door.click()
+    [call] = runs.calls
+    assert "goal" in call.argv and "--value=400" in call.argv and call.argv[-1] == "--as-new"
+
+
+def test_B4_r1_a_name_that_couldnt_be_freed_says_so_never_taken(main, runs, tmp_path):
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.new_door.click()
+    runs.end(2, extract.result_line(extract.Result(2, 0, "消滅世界", "now", False, "busy")))
+    assert w.status.text() == strings.EXTRACT_FREE_BUSY.format(name="消滅世界")
+
+
+def test_B4_r1_a_purged_removed_title_offers_add_as_new_alone(main, runs, tmp_path):
+    """r1 #3: its files left the trash (past 30 days): no Put back to offer, but Add as new takes the name."""
+    from app import library_store as ls
+    src, trash_ids = _removed_epub(tmp_path)
+    data_dir = get_data_path("ja")
+    store = ls.open_store("ja", data_dir, get_user_files_path("ja"))
+    try:
+        for r in store.trash_rows(trash_ids):
+            os.remove(os.path.join(data_dir, *r["trashed_path"].split("/")))
+    finally:
+        store.close()
+    w = importers.open_extract(main)
+    w.path.setText(src)
+    w.choose(src)
+    w.go.click()
+    assert wait_until(lambda: w.new_door.isVisibleTo(w), 10)
+    assert not w.back_door.isVisibleTo(w)
+    assert w.status.text() == strings.EXTRACT_REMOVED_GONE.format(name="消滅世界")
+
+
+
+def test_B4_r2_add_as_new_follows_extracts_own_gate(main, runs, tmp_path, monkeypatch):
+    """r2 S-2: what greys Extract greys Add as new (here: busy with another child)."""
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.begin_write()
+    w.refresh()
+    assert not w.go.isEnabled() and not w.new_door.isEnabled()
+    w._add_new()
+    assert runs.calls == []
+    w.end_write()
+    w.refresh()
+    assert w.new_door.isEnabled()
+
+
+def test_B4_r2_another_file_typed_since_the_offer_is_checked_again(main, runs, tmp_path):
+    """r2 N-2: the path field edited without leaving it: Add as new asks the check again, never extracts it on the
+    first file's answer."""
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.path.setText(_text(tmp_path))                     # (no editingFinished: the field kept the focus)
+    w.new_door.click()
+    assert runs.calls == [] or "--as-new" not in runs.calls[-1].argv
+
+
+def test_B4_r2_the_trash_moving_elsewhere_takes_the_offer_away(main, runs, tmp_path):
+    """r2 N-3: put back from the Removed list (or a Remove's Undo) while the offer shows: it goes, with its line."""
+    from app.qt import removed
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    removed.trash_heard(main, SimpleNamespace(trash_ids=[1], restored=[]))
+    assert w.offer is None and not w.back_door.isVisibleTo(w) and w.status.text() == ""

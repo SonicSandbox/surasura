@@ -164,6 +164,12 @@ def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None):
     return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
 
 
+def removed_door(win):
+    """Kantan-B4: a Remove's toast's *Removed…* (`removed.door`; imported when asked, as the menus do)."""
+    from app.qt import removed
+    return removed.door(win)
+
+
 def _later(seconds, fn):
     t = threading.Timer(seconds, fn)
     t.daemon = True
@@ -2099,6 +2105,7 @@ class ArrivalsTray(motion.Overlay):
             if not yes or moves.refused() is not None:
                 return
             ticket = drag.Ticket(strings.TRAY_REMOVED.format(title=title), ids=ids)
+            ticket.buttons = removed_door(self.win)             # Kantan-B4: the way to Put back, at the Remove
             moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         self.question = confirm.ask(
             self.win, strings.TRAY_REMOVE_TITLE.format(title=title),
@@ -2191,6 +2198,7 @@ class ArrivalsTray(motion.Overlay):
             if not yes or moves.refused() is not None:
                 return
             ticket = drag.Ticket(strings.TRAY_REMOVED.format(title=arrival.title), ids=ids)
+            ticket.buttons = removed_door(self.win)             # Kantan-B4: the way to Put back, at the Remove
             moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         self.question = confirm.ask(
             self.win, strings.TRAY_REMOVE_TITLE.format(title=arrival.title),

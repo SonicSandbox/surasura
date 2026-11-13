@@ -1571,3 +1571,20 @@ def test_open_its_folder_says_when_its_own_folder_is_gone(world, monkeypatch, tm
     tray_of(win).act(row.arrival, "folder")
     assert wait_until(lambda: opened == [there], 5)
     assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["up"], 3) and calls(writer) == []
+
+
+def test_B4_a_tray_removes_toast_carries_the_removed_door(world):
+    """Kantan-B4: New arrivals' Remove toast names Removed and carries its door too."""
+    from app.qt import removed, windows
+    seed, win, writer = world()
+    open_tray(win)
+    arrival = tray_rows(win)[1].arrival
+    tray = tray_of(win)
+    tray.act(arrival, "remove")
+    tray.question.yes.click()
+    card = win.toasts.card
+    assert card.base == strings.TRAY_REMOVED.format(title=arrival.title) and "in Removed" in card.base
+    door = next(b for b in card.buttons if b.isVisibleTo(card) and b.text() == strings.REMOVED_TOAST_OPEN)
+    door.click()
+    assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
+    windows.opened(win, removed.WINDOW).close()

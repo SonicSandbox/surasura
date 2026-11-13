@@ -730,9 +730,12 @@ class GoalSheet(motion.Overlay):
         if moves is None:
             return None
         ids = list(work.item_ids)
+        from app.qt import removed
         text = strings.GOAL_REMOVED_ONE.format(title=work.title) if len(ids) == 1 else \
             strings.GOAL_REMOVED.format(title=work.title, n=len(ids))
-        return moves._give(Ticket(text, ids=ids), lambda t: writer.remove(ids, label=t))
+        ticket = Ticket(text, ids=ids)
+        ticket.buttons = removed.door(self.win)                 # Kantan-B4: the way to Put back, at the Remove
+        return moves._give(ticket, lambda t: writer.remove(ids, label=t))
 
     def open_folder(self, work, tile=None):
         """⋯ *Open folder*: a press (`press.open`, round 8 row 45) — the tile's ⋯ turns (IK-2), and the folder opens

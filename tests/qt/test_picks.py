@@ -364,6 +364,8 @@ def test_A4_remove_on_the_picks_asks_first_naming_the_files_and_no_writes_nothin
     settle()
     assert writer.calls == [("remove", ids, {})]
     assert win.toasts.card.base == strings.PICKS_REMOVED.format(title=strings.PICKS_TITLES.format(n=2))
+    assert any(b.isVisibleTo(win.toasts.card) and b.text() == strings.REMOVED_TOAST_OPEN      # Kantan-B4
+               for b in win.toasts.card.buttons)
     assert not lst.picked_rows
 
 

@@ -178,7 +178,7 @@ ITEM_REMOVE_BODY_ONE = "Its file goes to the trash for 30 days. Undo puts it bac
 ITEM_REMOVE_YES = "Remove {n} files"
 ITEM_REMOVE_YES_ONE = "Remove 1 file"
 ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash for 30 days"
-ITEM_REMOVED = "Removed {title}"
+ITEM_REMOVED = "{title} is in Removed for 30 days"     # Kantan-B4: + the toast's *Removed…*
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
@@ -813,7 +813,7 @@ TRAY_REMOVE_BODY_ONE = "Its file goes to the trash, kept there for 30 days. Undo
 TRAY_REMOVE_YES = "Remove {n} files"
 TRAY_REMOVE_YES_ONE = "Remove 1 file"
 TRAY_REMOVE_YES_TIP = "Send them to the trash. Undo on the next message puts them back"
-TRAY_REMOVED = "{title} removed · in the trash for 30 days"
+TRAY_REMOVED = "{title} is in Removed for 30 days"
 TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
 TRAY_NUMBER_NONE = "—"
 TRAY_NUMBER_UNIT = "new / {unit}"
@@ -863,8 +863,8 @@ GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts 
 GOAL_REMOVE_YES = "Remove {n} files"
 GOAL_REMOVE_YES_ONE = "Remove 1 file"
 GOAL_REMOVE_YES_TIP = "Send them to the trash (kept 30 days); the toast's Undo puts them back"
-GOAL_REMOVED = "{title} removed · {n} files in the trash for 30 days"
-GOAL_REMOVED_ONE = "{title} removed · its file is in the trash for 30 days"
+GOAL_REMOVED = "{title} is in Removed for 30 days · {n} files"
+GOAL_REMOVED_ONE = "{title} is in Removed for 30 days"
 GOAL_FOLDER_FAILED = "Couldn't open the folder of {title}"
 # --- end W3.2 Q2
 
@@ -1105,6 +1105,22 @@ EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"
 EXTRACT_CHECKING = "Checking the name…"
 EXTRACT_BAD_NAME = "That name can't be a folder's name: try another"
 EXTRACT_TAKEN = "“{name}” is taken in your library, so nothing would be replaced: “{proposal}” is filled in"
+# Kantan-B4 (Mattias 2026-11-12: a removed book added again said only "taken"; words PROVISIONAL): what he adds is a
+# title in Removed (by its name or its bytes) → Put back (the Removed list's command, with its Undo) or Add as new
+EXTRACT_IN_REMOVED = "「{title}」 is in Removed ({left})"
+EXTRACT_IN_REMOVED_TAKEN = "「{title}」 is in Removed ({left}) · its name is taken too: “{proposal}” is filled in"
+EXTRACT_PUT_BACK = "Put back"
+EXTRACT_PUT_BACK_TIP = "Put 「{title}」 back where it was, with its progress\n• Undo sends it back to Removed"
+EXTRACT_ADD_NEW = "Add as new"
+EXTRACT_ADD_NEW_TIP = "Add this file as a new title\n• The removed one stays in Removed"
+EXTRACT_ADD_NEW_FREE_TIP = ("Add this file as a new title named “{name}”\n• The removed one stays in Removed, "
+                            "renamed “{proposal}”")
+EXTRACT_PUT_BACK_DONE = "「{title}」 is back in your library"
+EXTRACT_PUT_BACK_FAILED = "「{title}」 wasn't put back: open 🗑 Removed… in Settings › Sources"
+EXTRACT_FREED = " · the removed one is “{freed}” in Removed"
+EXTRACT_REMOVED_GONE = "“{name}” was a title you removed; its files have left Removed since"
+EXTRACT_PUTTING_BACK = "Putting 「{title}」 back…"
+EXTRACT_FREE_BUSY = "The removed 「{name}」 couldn't give up its name (a file of it open?): nothing was added · try again"
 EXTRACT_FAULTS = {"length": "The length must be a whole number of at least 1",
                   "pattern": "The pattern isn't a usable regular expression",
                   "parts": "The number of folders must be a whole number of at least 1"}
@@ -1875,6 +1891,9 @@ NEEDS_FIND_DROPPED_ARRIVAL = ("None of {show}'s episodes were there: {folder} is
 REMOVED_NAME = "Removed"
 REMOVED_OPEN = "🗑"                # the icon alone (Sonic, 2026-10-27 late: "Too many words"): its words are its name + tip
 REMOVED_OPEN_NAME = "Removed…"
+REMOVED_TOAST_OPEN = "Removed…"                     # Kantan-B4: a Remove's toast, the door to the list (PROVISIONAL)
+REMOVED_TOAST_OPEN_TIP = ("Open Removed: what you removed in the last 30 days, each with Put back\n"
+                          "• Also in Settings › Sources › 🗑")
 REMOVED_OPEN_TIP = ("Removed in the last 30 days\nWhat you removed, each with Put back. Removed files wait in the trash "
                     "for 30 days, then they're gone for good")
 REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."
@@ -1934,7 +1953,7 @@ PICKS_REMOVE_ASK = "Remove {title}?"
 PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
 PICKS_REMOVE_YES = "Remove {n} files"
 PICKS_REMOVE_YES_TIP = "Take them out of your library: their files go to the trash for 30 days"
-PICKS_REMOVED = "Removed {title} · in the trash for 30 days"
+PICKS_REMOVED = "{title} are in Removed for 30 days"
 # --- end A4 picks
 
 # --- the help cards (Sonic 2026-11-06 "Ok do it", into 3.0; spec tracks/window/work/help-cards; HG-1…HG-5, HC-1…HC-5,

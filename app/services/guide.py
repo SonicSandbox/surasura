@@ -27,6 +27,7 @@ paints what this says.
 """
 import json
 import os
+import threading
 from collections import namedtuple
 
 KINDS = ("new", "tweak", "fix")                 # the order inside a group; a fix folds
@@ -41,6 +42,7 @@ ANCHOR_KINDS = ("tab", "settings", "help", "control")
 FOLDER = os.path.join("app", "assets", "whats_new")
 STATE_FILE = "guide.json"
 STATE_VERSION = 1
+_STATE_LOCK = threading.Lock()                  # one writer at a time: the seen mark, the path's ticks and answers
 
 # the library's media types (`library_store.MEDIA_TYPES`, `view_rows.MEDIA_WORD`) -> the profile's tag
 MEDIA_TAG = {"anime": "shows", "drama": "shows", "movie": "shows", "youtube": "shows", None: "shows",
@@ -321,14 +323,28 @@ def look(language, settings, view=None, current=None, base=None, path=None, log=
     return Look(current, tuple(arrange(r, tags) for r in shown), bool(fresh))
 
 
+def update_state(change, path=None):
+    """(A worker.) Read the state, apply `change(state) -> state`, write it only if it changed (S19) — under one lock,
+    so two workers (the seen mark, the path's ticks) never lose each other's write. -> True when written."""
+    with _STATE_LOCK:
+        state = read_state(path)
+        new = change(dict(state))
+        if new == state:
+            return False
+        write_state(new, path)
+        return True
+
+
 def mark_seen(current=None, path=None):
     """(A worker.) This version's notes were opened: the glow is over until the next update. Written only when it
     raises `seen` (S19; a version gone back to never lowers it, so its notes don't glow again on the way up). -> True
     when written."""
     current = current or current_version()
-    state = read_state(path)
-    now, was = version_key(current), version_key(state.get("seen"))
-    if now is None or (was is not None and was >= now):
+    now = version_key(current)
+    if now is None:
         return False
-    write_state(dict(state, seen=current), path)
-    return True
+
+    def raise_seen(state):
+        was = version_key(state.get("seen"))
+        return state if was is not None and was >= now else dict(state, seen=current)
+    return update_state(raise_seen, path)

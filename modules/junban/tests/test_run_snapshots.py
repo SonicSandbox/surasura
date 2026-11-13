@@ -286,15 +286,17 @@ def _files(*paths):
     return out
 
 
-def test_a_cut_run_that_cant_be_marked_taken_over_stops_your_reorder_and_changes_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("last", [True, False])
+def test_a_cut_run_that_cant_be_marked_taken_over_stops_your_reorder_and_changes_nothing(tmp_path, monkeypatch, last):
     """A run's file held as it is marked (round 1's SHOULD 4; round 2's SHOULD 1): left unfinished, it would be offered
     first by Undo on top of your writes. Your Reorder stops before any write — and changes nothing at all: your last
     snapshot and every run's file byte for byte as they were (one already marked put back too), so once the file is
     free the same Reorder takes them over."""
     fake = scene(tmp_path)
     quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
-    with _patched(fake):
-        assert reposition.run(quiet, refresh=False)["written"]         # your last reorder: its snapshot
+    if last:
+        with _patched(fake):
+            assert reposition.run(quiet, refresh=False)["written"]     # your last reorder: its snapshot
     older = _cut_connect_run(fake)
     newer = _cut_connect_run(fake, at=1)
     paths = [undo.snapshot_path("ja"), undo.snapshot_path("ja", run_id=older), undo.snapshot_path("ja", run_id=newer)]
@@ -364,6 +366,35 @@ def test_your_reorder_takes_over_an_automatic_job_that_went_on_past_the_oldest_c
     assert undo.load("ja", run_id=older).get("taken_over_at")
     with _patched(fake):
         put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
+
+
+def test_with_nothing_left_to_write_your_reorder_still_takes_over_the_automatic_job_that_went_on(tmp_path):
+    """As above, but the automatic job left nothing for your Reorder to write (its actions off): the take-over's own
+    snapshot still holds the job's way back, and one Undo puts back the deck from before them all."""
+    from modules.junban import spaced
+    fake = scene(tmp_path)
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    before = _state(fake)
+    walk, library = fake.card_of("散歩")["cardId"], fake.card_of("図書館")["cardId"]
+    older, newer = "reorder-20260102-030405-000-1", "reorder-20260102-030406-000-1"
+    undo.save([(walk, before[walk][0])], ["TheBank"], language="ja", run_id=older, after=[(walk, 1)])
+    fake.cards[walk]["due"] = 1
+    undo.save([(library, before[library][0])], ["TheBank"], language="ja", run_id=newer, after=[(library, 2)])
+    fake.cards[library]["due"] = 2
+    _backdate(older, "2026-01-02T03:04:05")
+    _backdate(newer, "2026-01-02T03:04:06")
+    with _patched(fake):
+        job = reposition.run(quiet, refresh=False, job=spaced.Job(automatic=True))
+    assert job["ok"] and job["written"], job
+    writes = list(fake.writes)
+    with _patched(fake):
+        mine = reposition.run(quiet, refresh=False, job=spaced.Job())
+    assert mine["ok"] and fake.writes == writes, ("nothing written", mine)
+    assert undo.load("ja", run_id=older).get("taken_over_at") and undo.load("ja")["complete"] is True
+    with _patched(fake):
+        put_back = reposition.restore(quiet)
     assert put_back["ok"], put_back["problems"]
     assert _state(fake) == before
 

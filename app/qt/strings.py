@@ -2157,7 +2157,10 @@ PATH_OPEN_NAME = "{title}: not done yet"
 PATH_ABOUT_NAME = "About {title}"                    # a step's ? (its line), for screen readers
 PATH_AGAIN_TIP = "Done. Do it again any time\n• Click: go there, lit up"
 PATH_SHOW_ME_TIPS = {    # a step whose own press is elsewhere than where Show me lands: its tip names it (S2 r1 #4)
-    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there, lit up",
+    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go to Current",
+}
+PATH_THEN = {            # said in the bar once Show me lands, where the step's own press is elsewhere (S2 r2 #1)
+    "audiobook": "Open the book's ⋯ → Its audiobook… to line it up",
 }
 PATH_LATER = "NOT FOR NOW"                           # chapter 2's steps that can't apply yet
 PATH_LATER_NAME = "{title}: not for now. {when}"
@@ -2193,8 +2196,8 @@ NEXT_SET_UP_MINER_TIP = "Anki Miner makes your cards\n• Click: its place in Se
 NEXT_OWN_CARDS = "I make my own cards"
 NEXT_OWN_CARDS_TIP = "You mine cards by hand\n• Click: this step counts as done"
 NEXT_MADE = "✓ YOUR FIRST CARDS ARE MADE"
-NEXT_MADE_WHERE = "Later steps wait under ✦"         # in sight: where the path lives once this card is put away
-NEXT_MADE_LINE ="From here, Surasura shows a next step only when one becomes useful. The rest is under ✦."
+NEXT_MADE_WHERE = "Later steps: ✦ → Your path"      # in sight: where the path lives once this card is put away
+NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes useful. The rest is under ✦."
 NEXT_OK = "OK"
 NEXT_OK_TIP = "Put this card away"
 # --- end the feature guide's path

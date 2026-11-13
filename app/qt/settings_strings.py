@@ -234,7 +234,8 @@ ROWS = {
     # (`catalog.help_line`); *Set up Anki Miner ›* is its Show me
     "connect_needs_miner": ("Cards made for you", CARDS_WHY,
                             "Surasura makes your cards with Anki Miner. Once it is installed, this switch "
-                            "appears here", "connect make cards mine automatically anki miner needs"),
+                            "appears here", "connect make cards mine automatically anki miner needs "
+                            + NEEDS_MINER),
     "connect_mine_words": ("Words to make cards from",
                            "“Your list” uses i+1 lines where it can and takes the other words too. “Only i+1” skips "
                            "them",

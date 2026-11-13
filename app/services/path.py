@@ -58,7 +58,7 @@ STEPS = (
          lambda f: f.junban_ordered, "settings:junban", lambda f: f.junban),
     Step("backfill", READY, lambda f: f.junban and (f.cards_made or (f.own_cards and f.anki_synced)),
          lambda f: f.backfilled, "settings:backfill_patterns", lambda f: f.junban),
-    Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current"),
+    Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current@audiobook"),
     Step("hato", READY, lambda f: f.video_waiting, lambda f: f.hato_paired, "settings:hato"),
     Step("piyo", READY, lambda f: f.episodes_done >= PIYO_AFTER, lambda f: f.piyo_round, "settings:practice_ai"),
 )
@@ -106,8 +106,13 @@ def _miner_cards(language):
     if os.environ.get("SURASURA_TEST_ROOT") and not os.environ.get("ANKI_MINER_HOME"):
         return False
     from app.connect import anki_miner
-    return _one(os.path.join(anki_miner.home(), "stats.db"),
-                "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND language = ? LIMIT 1", (language,))
+    db = os.path.join(anki_miner.home(), "stats.db")
+    if _one(db, "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND language = ? LIMIT 1", (language,)):
+        return True
+    # an Anki Miner from before its `language` column mined Japanese only (its migration fills the old rows 'ja')
+    return language == "ja" and _one(db, "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND NOT EXISTS "
+                                         "(SELECT 1 FROM pragma_table_info('mining_sessions') WHERE name = 'language') "
+                                         "LIMIT 1")
 
 
 def _hato_paired(language):

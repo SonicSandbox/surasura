@@ -348,6 +348,21 @@ def test_cards_made_with_anki_miner_before_the_guide_count_as_done(tmp_path, mon
     assert way.first_done and way.card != ("step", "words", 1, 3)               # no beginner's step 1
 
 
+def test_an_old_anki_miner_stats_db_without_a_language_column_counts_for_japanese(tmp_path, monkeypatch):
+    # (re-check r2 #4) before its migration Anki Miner mined Japanese only and kept no language: a long-time miner
+    home = str(tmp_path / ".anki_miner")
+    monkeypatch.setenv("ANKI_MINER_HOME", home)
+    os.makedirs(home)
+    con = sqlite3.connect(os.path.join(home, "stats.db"))
+    con.execute("CREATE TABLE mining_sessions (id INTEGER PRIMARY KEY, series_name TEXT, episode_name TEXT, "
+                "cards_created INTEGER NOT NULL DEFAULT 0)")
+    con.execute("INSERT INTO mining_sessions (series_name, episode_name, cards_created) VALUES ('葬送のフリーレン', "
+                "'第1話', 5)")
+    con.commit()
+    con.close()
+    assert P._miner_cards("ja") and not P._miner_cards("zh")
+
+
 def test_a_test_run_never_reads_the_developers_own_anki_miner(monkeypatch):
     monkeypatch.delenv("ANKI_MINER_HOME", raising=False)
     assert not P._miner_cards("ja")                                             # (under SURASURA_TEST_ROOT: never ~)

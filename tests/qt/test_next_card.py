@@ -283,6 +283,14 @@ def test_the_audiobooks_show_me_names_the_press_that_does_it(card, world):
     panel.close()
 
 
+def test_the_audiobooks_show_me_lands_on_current_and_the_bar_says_the_press(lib_world):
+    # (re-check r2 #1) a click without a hover: Current lit, and the bar names the ⋯ entry that does it
+    win = lib_world
+    assert guide.anchor_ok(P.BY_ID["audiobook"].where)
+    win.guide_show_me(P.BY_ID["audiobook"].where)
+    assert wait_until(lambda: win.bar_line.accessibleDescription() == strings.PATH_THEN["audiobook"])
+
+
 def test_a_title_refits_when_the_text_size_changes_so_its_question_mark_stays_beside_it(card):
     # (adversary r1 #6) the text size changes live: a title held to its old width would wrap its last word
     from PyQt6.QtGui import QFont

@@ -136,7 +136,8 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
 WIRED_LATER = frozenset(("make_cards", "try_again"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 # Kantan-B2 (AUDIT B4, Sonic's yes 2026-11-12): *Not timed* offers *Check again* first — a subtitle re-timed by hand
-CONNECT_ACTIONS = {"not-timed": ("check_again", "mine_anyway"), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
+# Mattias's 3.0.6 field report: *Not timed* may be a subtitle linked to another episode's video — *Choose its video…*
+CONNECT_ACTIONS = {"not-timed": ("check_again", "change_video", "mine_anyway"), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    # Mattias #5: a part Anki Miner stopped on twice — *Try again* (the rows' own ask, `mine_actions`)
                    "mine-failed": ("try_again", "open_logs"), "error": ("open_logs",),
                    # Michi-RM3: words Anki refused alone — *Skip this word* (`connect.actions.skip_refused`). Kantan-B2
@@ -465,7 +466,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         title = n.get("say") or ""
         out.append(Entry(key=f"connect:{n['id']}", kind=kind, title=title, lines=(),
                          actions=CONNECT_ACTIONS.get(kind, ()) + ("dismiss",), unseen=not n.get("seen_at"), say="",
-                         data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at")}))
+                         data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at"),
+                               "label": n.get("title")}))
     for gap in reversed((connect or {}).get("gaps") or ()):
         entry = _gap_entry(gap, seen)
         if entry.key not in answered:

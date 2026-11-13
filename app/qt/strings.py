@@ -510,6 +510,10 @@ MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
 # --- end R47
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
+# Mattias's 3.0.6 field report (PROVISIONAL words): an episode linked to the wrong video picks again
+ROWS_CHANGE_VIDEO = "Change its video…"
+ROWS_CHANGE_VIDEO_TIP = ("Pick another video for it, if this one is another episode's: its timing is checked again "
+                         "against it (Undo puts the old one back)")
 # MV-2 (Sonic: yes, 2026-10-23): an episode whose video left the folder it was in (Connect's line names it). The
 # folder you pick is added as one Surasura reads (Settings' *Add a folder…*, the one way in); the show then finds its
 # episodes there, never as a second show (MV-1)
@@ -543,6 +547,8 @@ SESSION_JOB_LABEL = "Looking at Anki"
 MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Surasura makes these cards by itself once it can "
                    "mine audio")
 LINK_TITLE = "Choose the video for {label}"
+CHANGE_VIDEO_TITLE = "Choose the right video for {label}"
+NEEDS_THIS_EPISODE = "this episode"
 LINK_FILTER = "Videos ({patterns})"
 LINKING_ONE = "Linking {label}'s video"
 # --- end P4.1 L2
@@ -1419,6 +1425,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
     # Kantan-B2 (AUDIT B4, Sonic's yes; PROVISIONAL words): *Not timed*'s *Check again*, the row's own
     "check_again": ("Check again", "Check its timing again: a subtitle you re-timed beside its video is read first"),
+    # Mattias's 3.0.6 field report (PROVISIONAL words): the video it was linked to may be another episode's
+    "change_video": ("Choose its video…", "Pick the episode's own video, if this one is another's: its timing is "
+                                          "checked again against it (Undo puts the old one back)"),
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"

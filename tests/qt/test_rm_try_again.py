@@ -71,7 +71,7 @@ def test_the_episodes_menu_offers_try_again_where_its_pill_is_try_again(act):
     st = _retry()
     ep = row.episodes[0]._replace(status=st, cards=2)
     entries = win.mine.episode_entries(row, ep)
-    assert [e.name for e in entries] == ["ep-try-again"]
+    assert [e.name for e in entries] == ["ep-try-again", "ep-change-video"]
     assert entries[0].label == strings.ROWS_ACTION_NAMES["try-again"]
     entries[0].payload()
     settle(50)

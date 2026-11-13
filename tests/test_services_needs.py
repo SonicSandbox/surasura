@@ -453,7 +453,7 @@ def test_each_connect_kind_offers_its_own_action_and_dismiss_and_a_gap_waits_for
                   "noticed": 1}]}
     out = needs.entries(None, connect=rec)
     assert [(e.kind, e.actions) for e in out] == [
-        ("no-pairing", ("ask_hato", "dismiss")), ("not-timed", ("check_again", "mine_anyway", "dismiss")),
+        ("no-pairing", ("ask_hato", "dismiss")), ("not-timed", ("check_again", "change_video", "mine_anyway", "dismiss")),
         ("mine-failed", ("try_again", "open_logs", "dismiss")), ("known-sync", ("dismiss",)),
         (needs.GAP, ("make_cards", "leave_them"))]
     assert [e.data["need_id"] for e in out[:4]] == [9, 7, 5, 4]       # newest first, as the record lists them

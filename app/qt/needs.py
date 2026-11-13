@@ -1119,6 +1119,8 @@ class NeedsYou(QObject):
         if name == "add_audio":                      # Kura-AB3 A2: Connect's, its Undo too
             return self.connect_calls.get("add_audio") is not None and \
                 self.connect_calls.get("add_audio_undo") is not None
+        if name == "change_video":                   # the episode's own *Change its video…* (the writer's Undo)
+            return getattr(self.win, "moves", None) is not None and getattr(self.win, "mine", None) is not None
         if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
@@ -2014,6 +2016,15 @@ class NeedsYou(QObject):
                 self._stays("check_again", entry)
             self._connect_done(strings.NEEDS_CHECK_AGAIN if ok else strings.CHECK_AGAIN_NOTHING)
         self._press("check_again", entry, run, then=done)
+
+    def _do_change_video(self, entry, _line):
+        """Mattias's 3.0.6 field report: *Not timed*'s *Choose its video…* — the episode's ⋯ *Change its video…*
+        (`MineActions.change_video`: the picker at the video it has now, the link with its Undo, its timing checked
+        again once saved). The card stays until that check moves it."""
+        item_id, mine = entry.data.get("item_id"), getattr(self.win, "mine", None)
+        if item_id is None or mine is None:
+            return
+        mine.change_video(item_id, entry.data.get("label") or strings.NEEDS_THIS_EPISODE)
 
     def _do_skip_words(self, entry, _line):
         """Michi-RM3: *Skip this word* — those words left out for good (`actions.skip_refused`), the part's other cards

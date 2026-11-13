@@ -71,6 +71,29 @@ def connect_off(settings):
     return feed._off(settings).line
 
 
+def _current_video_folder(opener, item_id):
+    """(A worker.) The folder of the video the episode has now — its pairing's `video_path` (a link's, hato's) — or
+    None (none named, no store to read). Never raises."""
+    if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+        return None
+    try:
+        store = opener.handle()
+        if store is None:
+            return None
+        from app.connect import library
+        video = (library.pairing_of(store, item_id) or {}).get("video_path")
+        return os.path.dirname(video) if isinstance(video, str) and video else None
+    except Exception:
+        return None
+    finally:
+        close = getattr(opener, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def _video_patterns():
     """(A worker.) The picker's filter: the videos Connect can make cards from."""
     from app.connect import runner
@@ -398,15 +421,27 @@ class MineActions(QObject):
             return [item_menu.Entry("ep-find-folder", strings.ROWS_FIND_FOLDER,
                                     strings.ROWS_FIND_FOLDER_TIP.format(folder=moved), True,
                                     payload=lambda: self.find_folder(ep), writes=True)]
+        change = self._change_entry(row, ep, name)
         if name == rows.STOP:                        # --- R47
             return [item_menu.Entry("ep-stop", strings.MINE_STOP_ENTRY, tip, True, payload=lambda: self.stop(ask))]
         if name == rows.CHECK:                       # --- Michi-NT: no store write, so never greyed for one
             return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
-                                    payload=lambda: self.check_again(ask))]
+                                    payload=lambda: self.check_again(ask))] + change
         if name not in ("mine-now", "try-again"):       # (Mattias #5: *Try again* where its pill is *Try again*)
-            return []
+            return change
         return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
-                                payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)]
+                                payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)] + change
+
+    def _change_entry(self, row, ep, name):
+        """*Change its video…* (Mattias's 3.0.6 field report: E07's subtitle linked by hand to E08's video, tsubasa
+        rightly said "not the same episode", and nothing let him pick again — *Link…* is offered only while there is
+        no video): on an episode that has its video (a video's, never a book's or an audio file's), never while it is
+        being mined (its *Stop*), nor once its cards are in Anki (a video picked then changes none of them). -> [Entry]
+        or []."""
+        if name in ("no-media", rows.STOP) or getattr(ep.status, "kind", None) in ("in_anki", "mining") or                 (ep.media_word or row.media_word or "video") != "video":
+            return []
+        return [item_menu.Entry("ep-change-video", strings.ROWS_CHANGE_VIDEO, strings.ROWS_CHANGE_VIDEO_TIP, True,
+                                payload=lambda: self.change_video(ep.id, ep.label, ep.rel_path), writes=True)]
     # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #
@@ -434,6 +469,41 @@ class MineActions(QObject):
                         lambda t: writer.link_video(ep.id, path, label=t))
         qpress.run(None, ("link", ep.id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
+
+    def change_video(self, item_id, label, rel_path=None):
+        """*Change its video…* (the episode's ⋯, and *Not timed*'s card): the picker opens in the folder of the video it
+        has now (`_current_video_folder`), else its content's own; the video picked is linked as *Link…* links one
+        (the writer's `link_video`: one change, its toast's Undo; the newest link is the episode's), and once saved its
+        timing is checked anew against it (`check_job`: Connect's `check_again`, Connect kicked). -> True when the
+        picker was asked for."""
+        if self.win.moves is None:
+            return False
+        from app.services import own_folder
+        data, opener = path_utils.get_data_path(self.win.language), own_folder.opener_of(self.win)
+        lang = getattr(self.win, "language", "")
+
+        def look():                                 # (the worker) the types, and where the picker starts
+            return _video_patterns(), (_current_video_folder(opener, item_id) or
+                                       own_folder.read(opener, data, (item_id,), (rel_path,) if rel_path else ()))
+
+        def pick(found):
+            patterns, folder = found
+            moves = self.win.moves
+            path = self.pick_file(strings.CHANGE_VIDEO_TITLE.format(label=label), folder, patterns)
+            if not path or moves is None or moves.refused() is not None:
+                return
+            writer = moves.writer
+            ticket = drag.Ticket(strings.LINKING_ONE.format(label=label), (), (item_id,))
+            get = self.win.services.settings.get
+
+            def told(event):                         # saved: its timing checked anew against the video picked
+                if event == "saved":
+                    bridge.run_in_worker(self.check_job, lang, [item_id], get)
+            ticket.told = told
+            moves._give(ticket, lambda t: writer.link_video(item_id, path, label=t))
+        qpress.run(None, ("change-video", item_id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
+                   win=self.win)
+        return True
 
     # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #
     def find_folder(self, ep):

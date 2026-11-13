@@ -499,7 +499,8 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
                           "item": None, "seen_at": "2026-10-15T07:00:00Z", "at": "2026-10-15T07:00:00Z"}]}
     seed, win, writer, ny = world(connect=connect, connect_calls=calls)
     by_id = {e.data.get("need_id"): e for e in ny.entries if (e.data or {}).get("connect")}
-    assert {b.property("action") for b in ny.cards.buttons(by_id[11].key)} == {"check_again", "mine_anyway", "dismiss"}
+    assert {b.property("action") for b in ny.cards.buttons(by_id[11].key)} == {"check_again", "change_video", "mine_anyway",
+                                                                              "dismiss"}
     button(ny, by_id[11].key, "mine_anyway").click()
     assert wait_until(lambda: [g[0] for g in got] == ["mine_anyway", "kick"], 5)
     assert got[0][1] == ("ja", 11) and got[0][2] and got[1][2]      # on a worker, then Connect kicked
@@ -540,7 +541,8 @@ def test_not_timed_offers_check_again_first_and_its_press_checks_that_episode_on
                           "item": 3, "seen_at": None, "at": "2026-10-15T09:00:00Z"}]}
     seed, win, writer, ny = world(connect=connect, connect_calls=calls)
     entry = next(e for e in ny.entries if (e.data or {}).get("need_id") == 11)
-    assert [b.property("action") for b in ny.cards.buttons(entry.key)][:2] == ["check_again", "mine_anyway"]
+    assert [b.property("action") for b in ny.cards.buttons(entry.key)][:3] == ["check_again", "change_video",
+                                                                              "mine_anyway"]
     b = button(ny, entry.key, "check_again")
     assert b.text() == strings.NEEDS_ACTIONS["check_again"][0] and b.toolTip()
     b.click()

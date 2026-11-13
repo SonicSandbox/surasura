@@ -2106,6 +2106,9 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
         page = win.page_widgets["current"]
         assert wait_until(lambda: page.view_model is not None and any(
             e.can_play for r in page.view_model.rows for e in r.episodes), 10)
+        # Up Next's own look answers in its batch, which can land after the first ▶ (the 3.0.6 cut's red under
+        # load: looking was still True): wait for that answer too
+        assert wait_until(lambda: not (lambda h: h.episodes[h.next_index].looking)(lst.model().entries[0][1]), 10)
         for _ in range(50):
             QApplication.processEvents()
         fired = []

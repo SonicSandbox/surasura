@@ -164,8 +164,8 @@ def test_the_writer_puts_the_pick_on_the_undo_stack_and_replays_it_from_its_jour
     said = []
 
     class Store:
-        def pick_audiobook_book(self, item_id, epub):
-            said.append(("pick", item_id, epub))
+        def pick_audiobook_book(self, item_id, epub, replace=False):
+            said.append(("pick", item_id, epub) + (("replace",) if replace else ()))
             return "change"
 
         def audiobook_no_book(self, item_id):
@@ -173,10 +173,11 @@ def test_the_writer_puts_the_pick_on_the_undo_stack_and_replays_it_from_its_jour
             return True
     writer = moves.Writer.__new__(moves.Writer)
     for cmd in ({"op": "audiobook_pick", "ids": [42], "path": "D:/Books/x.epub", "label": "x"},
-                {"op": "audiobook_no_book", "ids": [43], "label": "y"}):
+                {"op": "audiobook_no_book", "ids": [43], "label": "y"},
+                {"op": "audiobook_pick", "ids": [44], "path": "D:/Books/x.epub", "label": "z", "replace": True}):
         replay = moves._from_entry(json.loads(json.dumps(moves._entry(cmd))))
         assert writer._w32(Store(), replay) == ("change" if cmd["op"] == "audiobook_pick" else None)
-    assert said == [("pick", 42, "D:/Books/x.epub"), ("none", 43)]
+    assert said == [("pick", 42, "D:/Books/x.epub"), ("none", 43), ("pick", 44, "D:/Books/x.epub", "replace")]   # (Kura-AB4: replace kept)
     assert {"audiobook_pick", "audiobook_no_book"} <= set(moves.JOURNALLED)
 
 

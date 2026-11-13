@@ -251,7 +251,8 @@ PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "sa
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
-                     "add_audio")                                                  # Kura-AB3 A2: Anki written
+                     "add_audio",                                                  # Kura-AB3 A2: Anki written
+                     "change_video")                                               # Kantan-B5: a picker's start
 
 
 class NeedsCards(QWidget):
@@ -757,6 +758,19 @@ def _find_none(answer):
     head, _folder, tail = source_looks.FIND_NONE.partition("{folder}")
     return isinstance(refused, str) and len(refused) > len(head) + len(tail) and refused.startswith(head) and \
         refused.endswith(tail)
+
+def audiobook_line(ab):
+    """*Pick its audiobook…*'s line for one audiobook: its title and files — and, one now with another book of this
+    title (Kura-AB4, #419's diagnosis), *· now with 「…」*: picking it takes it from that book."""
+    line = strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"])
+    return line + strings.NEEDS_AUDIOBOOK_ELSEWHERE.format(book=ab["elsewhere"]) if ab.get("elsewhere") else line
+
+
+def taken(ab):
+    """The pick's own argument for that line: `replace` only for one with another book (older callers keep their
+    shape)."""
+    return {"replace": True} if ab.get("elsewhere") else {}
+
 
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
@@ -1600,15 +1614,15 @@ class NeedsYou(QObject):
             return
         m = drag.list_menu(self.cards, entry.title)
         for ab in (got.get("audiobooks") or [])[:BOOKS_SHOWN]:
-            act = QAction(strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]), m)
+            act = QAction(audiobook_line(ab), m)
             act.triggered.connect(lambda _c=False, ab=ab: self._pick_audiobook(entry, ab["item_id"], got["epub"],
-                                                                               got["title"]))
+                                                                               got["title"], **taken(ab)))
             m.addAction(act)
         if got.get("audiobooks"):
             m.addSeparator()
         act = QAction(strings.NEEDS_AUDIOBOOK_FOLDER, m)
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
-        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"]))
+        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"], got["epub"]))
         m.addAction(act)
         self.last_menu = m
         control = self._control("pick_audiobook", entry)
@@ -1616,26 +1630,31 @@ class NeedsYou(QObject):
             m.popup(control.mapToGlobal(QPoint(0, control.height())))
         return m
 
-    def _pick_audiobook(self, entry, audio_id, epub, title):
+    def _pick_audiobook(self, entry, audio_id, epub, title, replace=False):
         writer, kick, read_settings = self.win.services.writer, self.connect_calls.get("kick"), self.read_settings
 
         def told(_ticket, event):                    # saved: Connect lines them up at once, not at its next look
             if event == "saved" and kick is not None:
                 bridge.run_in_worker(lambda: kick(read_settings() or {}))
         self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
-                   lambda t: writer.pick_audiobook(audio_id, epub, label=t), told=told)
+                   lambda t: writer.pick_audiobook(audio_id, epub, label=t, **({"replace": True} if replace else {})),
+                   told=told)
 
-    def _audiobook_folder(self, title):
+    def _audiobook_folder(self, title, epub=None):
         """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,
-        `Adder.read_folder`); its look pairs the audiobook by itself when it is sure, else asks, else it is listed
-        here for the pick."""
+        `Adder.read_folder`) and the audiobook in it is this book's (Kura-AB4, Mattias 3.0.6: its look paired it only
+        when its names said so — else it sat in New arrivals): its look pairs the one it finds there with `epub`'s book
+        at its take-in, whatever its names (`sources.scan`'s `book`); one already in your library is picked for it
+        (`_pick_audiobook`, its toast's Undo) — the read's answer says which (`Adder._audiobooks_said`)."""
         adder = getattr(self.win, "adder", None)
         if adder is None:
             return
         from app.qt import windows                       # (Fresh-U row 11: never the program's own folder)
         folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), windows.content_folder())
-        if folder and adder.read_folder(folder):
-            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
+        book = {"epub": epub, "title": title} if epub else None
+        if folder and adder.read_folder(folder, book=book):
+            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder)),
+                                                             book=title))
 
     def _do_no_audiobook(self, entry, _line):
         answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),
@@ -2247,6 +2266,9 @@ class NeedsYou(QObject):
 
     def _do_try_again(self, entry, _line):             # Mattias #5: the rows' own ask (`mine_actions`)
         self.hooks["try_again"](entry)
+
+    def _do_change_video(self, entry, _line):          # Kantan-B5 (PR 421): the episode's own (`mine_actions`)
+        self.hooks["change_video"](entry)
 
     # setup's first cards (SRC D1)
     def _do_first_cards(self, entry, _line):

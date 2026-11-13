@@ -19,6 +19,9 @@ The originals are the store's live origin records (`Store.origins(items=…)`: n
 file moved on). An item with none (Surasura 2's, a sample) is its stored copy: 4. Relinking a gone copy (Needs you's
 *Choose file…* for a file gone, *Choose a folder…*) is not this: the store takes only a file inside the library
 (`Store.relink`), so those pickers start at the stored copy's side (`library_side`).
+
+*Change its video…* (Kantan-B5, `read_video`) opens at the video the episode is linked to now first: picking again
+starts beside the one picked before.
 """
 import os
 
@@ -130,6 +133,38 @@ def read_how(opener, data_dir, ids=(), rels=(), folders=()):
             print(f"Open its folder: the library couldn't be opened: {e!r}")
     try:
         return find_how(store, data_dir, ids, rels, folders)
+    finally:
+        close = getattr(opener, "close", None) if store is not None else None
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def read_video(opener, data_dir, item_id, rel=None):
+    """(A worker.) Kantan-B5 (*Change its video…*): where its picker opens — the folder of the video the item is linked
+    to now (its newest pairing's `video_path`, `connect.library.pairing_of`: the one Connect reads), else `read`'s rule
+    for the item -> (that folder, that video's path or None). Nothing written."""
+    store = None
+    if opener is not None and getattr(opener, "mode", None) == "store" and hasattr(opener, "handle"):
+        try:
+            store = opener.handle()
+        except Exception as e:                      # noqa: BLE001
+            print(f"Change its video: the library couldn't be opened: {e!r}")
+    try:
+        video = None
+        if store is not None:
+            from app.connect import library
+            try:
+                named = (library.pairing_of(store, item_id) or {}).get("video_path")
+            except Exception as e:                  # noqa: BLE001 — an unreadable pairing: the item's own folder
+                print(f"Change its video: its pairing couldn't be read: {e!r}")
+                named = None
+            video = named if isinstance(named, str) and named else None
+        if video is not None and _isdir(os.path.dirname(video)):
+            return os.path.dirname(video), video
+        return find_how(store, data_dir, (item_id,), (rel,) if rel else ())[0], video
     finally:
         close = getattr(opener, "close", None) if store is not None else None
         if close is not None:

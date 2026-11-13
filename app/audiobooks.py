@@ -557,6 +557,13 @@ def book_of(epub, book_id=None, chars=None, sha256=None):
 SAME, NONE, ONE_SIDED, DIFFER = "same", "none", "one", "differ"     # what the two sides' volumes say (`score`)
 
 
+def same_book_title(a, b):
+    """Kura-AB4 (r2 B1): do two books' titles name the same book — an exact title, and no volume that differs
+    (「カラフル（上）」 is never 「カラフル（下）」, as `decide` never pairs them)?"""
+    (fa, va), (fb, vb) = _forms([a or ""]), _forms([b or ""])
+    return bool(fa) and _title_level(fa, fb) == EXACT and not (va and vb and not va & vb)
+
+
 def _forms(names):
     out, vols = set(), set()
     for n in names:

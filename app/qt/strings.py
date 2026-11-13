@@ -549,6 +549,15 @@ MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Surasura ma
 LINK_TITLE = "Choose the video for {label}"
 LINK_FILTER = "Videos ({patterns})"
 LINKING_ONE = "Linking {label}'s video"
+# Kantan-B5 (Mattias's PR 421, PROVISIONAL words): an episode linked to the wrong video picks again — *Not timed*'s
+# *Needs you* card and its ⋯; the pick is linked (Undo puts the old one back), then its timing is checked again
+ROWS_CHANGE_VIDEO = "Change its video…"
+ROWS_CHANGE_VIDEO_TIP = ("Linked to the wrong video? Choose the right one: its timing is checked again. Undo puts the "
+                         "old video back")
+CHANGE_VIDEO_SAME = "That's the video it has already: nothing changed"
+CHANGE_VIDEO_LINKED = "Its new video is linked: its timing is checked when its turn comes"
+CHANGE_VIDEO_LINKED_OFF = "Its new video is linked · {why}"
+CHANGE_VIDEO_EPISODE = "this episode"           # (a card whose episode the view doesn't list just now)
 # --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
@@ -1458,6 +1467,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
     # Kantan-B2 (AUDIT B4, Sonic's yes; PROVISIONAL words): *Not timed*'s *Check again*, the row's own
     "check_again": ("Check again", "Check its timing again: a subtitle you re-timed beside its video is read first"),
+    # Kantan-B5 (Mattias's PR 421, PROVISIONAL words): the episode's own ⋯ entry, the same press
+    "change_video": (ROWS_CHANGE_VIDEO, ROWS_CHANGE_VIDEO_TIP),
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
@@ -1609,12 +1620,22 @@ NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
 NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+NEEDS_AUDIOBOOK_ELSEWHERE = " · now with 「{book}」"        # Kura-AB4 (PROVISIONAL): picked, it leaves that book
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
-NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
-                              "name says so, else pick it here")
+NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the audiobook in it joins this book "
+                              "(of several, the one named like it)")         # Kura-AB4 (PROVISIONAL)
 NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
-NEEDS_AUDIOBOOK_READING = "Reading {name}: once its audiobook is in your library, it joins the book or is listed here"
+NEEDS_AUDIOBOOK_READING = "Reading {name} for 「{book}」's audiobook…"
+# Kura-AB4 (PROVISIONAL): what the folder picked for a book's audiobook held, once it was read
+NEEDS_AUDIOBOOK_WITH = ("The audiobook in {name} is with 「{other}」: pick it for 「{book}」 under Pick its "
+                        "audiobook…")
+NEEDS_AUDIOBOOK_NONE_IN = "No audiobook in {name} yet: once one is there, it joins 「{book}」"
+NEEDS_AUDIOBOOK_SEVERAL_IN = ("{n} audiobooks in {name}: pick 「{book}」's under Pick its audiobook… (or the book's "
+                              "⋯ → Its audiobook…)")
+# Kura-AB4 (PROVISIONAL): + Add → A folder…, an audiobook in it whose names are like a book's (H-8's question open)
+ADD_AUDIOBOOK_PAIR = "Is this 「{book}」's audiobook?"
+ADD_AUDIOBOOK_PAIR_IT = ("Pair it", "The audiobook joins 「{book}」: one entry, the book's chapters and its audio")
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"

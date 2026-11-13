@@ -932,15 +932,28 @@ def _counted(tool, calls):
             def counted(*a, **kw):
                 with calls.call(writes):
                     out = fn(*a, **kw)
-                if calls.leaving:
-                    if isinstance(out, dict):
-                        out = dict(out, note=UPDATING)
-                    elif isinstance(out, str):
-                        out = f"{out}\n{UPDATING}"
-                return out
+                return _with_updating(out) if calls.leaving else out
             return decorate(counted)
         return wrap
     return register
+
+
+def _with_updating(out):
+    """A call's answer, the server stepping aside: UPDATING as its own key (`updating`: a tool's `note` stays), in a
+    JSON text answer too (diagnose, the cards: it stays JSON), else as the text's last line."""
+    import json
+    if isinstance(out, dict):
+        return dict(out, updating=UPDATING)
+    if isinstance(out, str):
+        if out.startswith("{"):
+            try:
+                data = json.loads(out)
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                return json.dumps(dict(data, updating=UPDATING), ensure_ascii=False, separators=(",", ":"))
+        return f"{out}\n{UPDATING}"
+    return out
 
 
 def setup_mutex_name():
@@ -989,27 +1002,32 @@ def why_step_aside():
 
 
 def step_aside(why=why_step_aside, calls=CALLS, every=LOOK_EVERY_S, sleep=time.sleep, end=None):
-    """(Its own daemon thread, while serving.) Looks every `every` s; once `why()` names a reason: no new call, the
-    ones under way finished (`Calls.leave`), the reason logged, the running mark let go, a moment for the last answer
-    to reach the AI app, then the process ends (`end`, default `os._exit(0)`: the stdio loop is blocked reading the
-    AI app's pipe, and nothing of the server's is left to save). The mutex goes with the process. -> the reason (a
-    test's `end` returns)."""
+    """(Its own daemon thread, while serving.) Looks every `every` s; once `why()` names the same reason at two looks
+    in a row (a build stamp read amid a virus scan is no update): no new call, the ones under way finished
+    (`Calls.leave`), the reason logged, the running mark let go, a moment for the last answer to reach the AI app,
+    then the process ends (`end`, default `os._exit(0)`: the stdio loop is blocked reading the AI app's pipe, and
+    nothing of the server's is left to save) — whatever fails on the way: a server refusing every call and keeping
+    the mutex would be the report again. The mutex goes with the process. -> the reason (a test's `end` returns)."""
+    seen = None
     while True:
-        sleep(every)
         reason = why()
-        if reason:
+        if reason and reason == seen:
             break
-    drained = calls.leave()
-    contract.log.info("mcp: %s, so it ends now%s (the AI app starts it again with its next session)", reason,
-                      "" if drained else f" (a read was still under way after {READ_WAIT_S:.0f} s)")
+        seen = reason
+        sleep(every)
     try:
-        from app import locks
-        locks.release_running()
-    except Exception:
-        contract.log.exception("mcp: the running mark wasn't let go")
-    sleep(ANSWER_GRACE_S)
-    contract.close_log()
-    (end or (lambda: os._exit(0)))()
+        drained = calls.leave()
+        contract.log.info("mcp: %s, so it ends now%s (the AI app starts it again with its next session)", reason,
+                          "" if drained else f" (a read was still under way after {READ_WAIT_S:.0f} s)")
+        try:
+            from app import locks
+            locks.release_running()
+        except Exception:
+            contract.log.exception("mcp: the running mark wasn't let go")
+        sleep(ANSWER_GRACE_S)
+        contract.close_log()
+    finally:
+        (end or (lambda: os._exit(0)))()
     return reason
 
 
@@ -1017,6 +1035,11 @@ def main(argv):
     """Serve until the AI app closes stdin, or until an update needs this program gone (`step_aside`). -> exit code."""
     contract.open_log()
     try:
+        reason = why_step_aside()
+        if reason:          # started into an update (a reconnect mid-swap): never holds the program a moment more
+            contract.log.info("mcp: %s, so it doesn't start", reason)
+            sys.stderr.write(f"surasura-cli mcp: {UPDATING}\n")
+            return contract.EXIT_CODES["update-staged"]
         try:
             server, _state = build(serving=True)
         except ImportError:

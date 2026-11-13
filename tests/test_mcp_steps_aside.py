@@ -60,9 +60,11 @@ def _until(test, timeout=10.0):
 
 
 # --- the look: when it ends, and never before ------------------------------------------------------------------ #
-def test_it_ends_at_the_first_look_that_names_a_reason_never_before():
-    """Two quiet looks, then an update: it ends at the third — once — and lets go of its running mark first."""
-    answers = iter([None, None, "an update is staged"])
+def test_it_ends_once_two_looks_in_a_row_name_the_reason_never_before():
+    """Two quiet looks, a reason seen once (a stamp read amid a virus scan), quiet, then an update at two looks in a
+    row: it ends there — once."""
+    staged = "an update is staged"
+    answers = iter([None, None, "another build is in its program folder", None, staged, staged])
     looks, ended, waits = [], [], []
 
     def why():
@@ -70,10 +72,33 @@ def test_it_ends_at_the_first_look_that_names_a_reason_never_before():
         return next(answers)
     reason = mcp_server.step_aside(why=why, calls=mcp_server.Calls(), sleep=waits.append,
                                    end=lambda: ended.append(True))
-    assert reason == "an update is staged"
-    assert len(looks) == 3 and ended == [True]
-    # a look every LOOK_EVERY_S, then a moment for the last answer to reach the AI app before the process ends
-    assert waits == [mcp_server.LOOK_EVERY_S] * 3 + [mcp_server.ANSWER_GRACE_S]
+    assert reason == staged
+    assert len(looks) == 6 and ended == [True]
+    # the first look at once, then one every LOOK_EVERY_S, then a moment for the last answer to reach the AI app
+    assert waits == [mcp_server.LOOK_EVERY_S] * 5 + [mcp_server.ANSWER_GRACE_S]
+
+
+def test_it_still_ends_when_something_on_the_way_out_fails(monkeypatch):
+    """A server that refuses every call and keeps the mutex would be the report again: the end is in a finally."""
+    def boom():
+        raise OSError("the log's disk went away")
+    monkeypatch.setattr(mcp_server.contract, "close_log", boom)
+    ended = []
+    with pytest.raises(OSError):
+        mcp_server.step_aside(why=lambda: "an update is staged", calls=mcp_server.Calls(), sleep=lambda s: None,
+                              end=lambda: ended.append(True))
+    assert ended == [True]
+
+
+def test_it_never_starts_into_an_update(monkeypatch):
+    """A reconnect mid-swap (the line tells the learner to reconnect): the server answers update-staged at once and
+    never builds — the program file and the mutex are not held a moment longer than the start."""
+    def never(**_kw):
+        raise AssertionError("built while an update was staged")
+    monkeypatch.setattr(mcp_server, "build", never)
+    monkeypatch.setattr(mcp_server.threading, "Thread", lambda **kw: pytest.fail("a watcher started"))
+    _stage_marker()
+    assert mcp_server.main([]) == mcp_server.contract.EXIT_CODES["update-staged"] == 3
 
 
 def test_it_lets_go_of_its_running_mark_before_it_ends():
@@ -205,7 +230,7 @@ def test_a_write_under_way_finishes_with_one_line_and_a_new_call_is_refused(monk
     assert out["ended_mid_write"] is False
     assert not _error(out["write"])
     import json
-    assert json.loads(_text(out["write"])) == {"saved": "r-0001", "note": mcp_server.UPDATING}
+    assert json.loads(_text(out["write"])) == {"saved": "r-0001", "updating": mcp_server.UPDATING}
     assert ended.wait(5)
 
 
@@ -253,6 +278,18 @@ def test_a_str_answer_under_way_ends_with_the_line():
         calls.leaving = True            # the update is staged while it answers
         return "Help topics: …"
     assert registered["fn"]() == "Help topics: …\n" + mcp_server.UPDATING
+
+
+def test_the_line_never_replaces_a_note_or_breaks_a_json_answer():
+    """practice_start's "no list yet" note stays; diagnose and the cards answer JSON text, and it stays JSON."""
+    import json
+    note = {"words": [], "note": "There is no list yet: run Generate first."}
+    assert mcp_server._with_updating(note) == dict(note, updating=mcp_server.UPDATING)
+    text = json.dumps({"version": "3.0.7", "logs": ["「第3話」…"]}, ensure_ascii=False, separators=(",", ":"))
+    got = json.loads(mcp_server._with_updating(text))
+    assert got == {"version": "3.0.7", "logs": ["「第3話」…"], "updating": mcp_server.UPDATING}
+    assert mcp_server._with_updating("{not json") == "{not json\n" + mcp_server.UPDATING
+    assert mcp_server._with_updating(None) is None
 
 
 # --- the real process: Setup's AppMutex free once an update is staged ------------------------------------------ #

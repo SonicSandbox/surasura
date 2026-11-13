@@ -94,8 +94,12 @@ class NextCard(QWidget):
         row.addLayout(words, 1)
         self.primary = self._button(row, "primary")
         self.secondary = self._button(row, "link")
+        self.later = self._button(row, "link")             # step 3's *Not now* (beside *I make my own cards*)
+        self._set(self.later, strings.NEXT_NOT_NOW, strings.NEXT_NOT_NOW_TIP)
         self.primary.clicked.connect(lambda _c=False: self._primary())
         self.secondary.clicked.connect(lambda _c=False: self._secondary())
+        self.later.clicked.connect(lambda _c=False: self.card and self.not_now.emit(self.card[1]))
+        self.later.hide()
         self.hide()
 
     def _button(self, row, kind):
@@ -130,6 +134,7 @@ class NextCard(QWidget):
             self.line.setText(strings.NEXT_MADE_LINE)
             self._set(self.primary, strings.NEXT_OK, strings.NEXT_OK_TIP)
             self.secondary.hide()
+            self.later.hide()
         else:
             _kind, step_id, n, total = card
             title, line = strings.PATH_STEPS[step_id]
@@ -147,6 +152,7 @@ class NextCard(QWidget):
                 self._set(self.primary, strings.NEXT_SHOW_ME, strings.NEXT_SHOW_ME_TIP)
                 self._set(self.secondary, strings.NEXT_NOT_NOW, strings.NEXT_NOT_NOW_TIP)
             self.secondary.show()
+            self.later.setVisible(step_id == "cards")
         self.setAccessibleDescription(" ".join(t for t in (self.eyebrow.text(), self.title.text() if
                                                              self.title.isVisible() else "", self.line.text()) if t))
         self.style().unpolish(self)

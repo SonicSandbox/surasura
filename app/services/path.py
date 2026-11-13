@@ -28,19 +28,21 @@ from collections import namedtuple
 
 FIRST, READY = "first", "ready"
 CHAPTERS = (FIRST, READY)
-BOOKS = ("book", "lightnovel", "manga", "text")
+BOOKS = ("book", "lightnovel")                   # a book an audiobook can line up with (never manga or text)
 
 Facts = namedtuple("Facts", "has_library journey_opened episodes_done cards_made own_cards junban anki_synced "
-                            "junban_ordered backfilled book_in_current lined_up video_waiting hato_paired piyo_round")
+                            "junban_ordered backfilled book_in_current lined_up video_waiting hato_paired piyo_round "
+                            "journey_ready", defaults=(True,))
+# journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's Show me has a place
 Step = namedtuple("Step", "id chapter when done where")
 
 # The table (EXPERIENCE.md §3). `when` / `done`: Facts -> bool. Chapter 1's steps are useful as soon as a library is.
 STEPS = (
-    Step("words", FIRST, lambda f: f.has_library, lambda f: f.journey_opened, "control:journey"),
+    Step("words", FIRST, lambda f: f.has_library and f.journey_ready, lambda f: f.journey_opened, "control:journey"),
     Step("watch", FIRST, lambda f: f.has_library, lambda f: f.episodes_done >= 1, "help:current"),
-    Step("cards", FIRST, lambda f: f.has_library, lambda f: f.cards_made or f.own_cards, "settings:connect_enabled"),
+    Step("cards", FIRST, lambda f: f.has_library, lambda f: f.cards_made or f.own_cards, "settings:anki_miner"),
     Step("junban", READY, lambda f: f.junban and f.anki_synced and (f.cards_made or f.own_cards),
-         lambda f: f.junban_ordered, "settings:enable_junban"),
+         lambda f: f.junban_ordered, "settings:junban"),
     Step("backfill", READY, lambda f: f.junban and (f.cards_made or (f.own_cards and f.anki_synced)),
          lambda f: f.backfilled, "settings:backfill_patterns"),
     Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current"),
@@ -90,8 +92,8 @@ def _hato_paired(language):
         store = library_store.library_db_path(language, path_utils.get_data_path(language))
     except Exception:
         return False
-    return _one(store, "SELECT 1 FROM pairings WHERE coalesce(trim(json_extract(pairing, '$.producer')), 'hato') "
-                       "= 'hato' LIMIT 1")
+    return _one(store, "SELECT 1 FROM pairings WHERE json_valid(pairing) AND "
+                       "coalesce(trim(json_extract(pairing, '$.producer')), 'hato') = 'hato' LIMIT 1")
 
 
 def _lined_up():
@@ -103,13 +105,30 @@ def _lined_up():
         return False
     import json
     for key in keys[:200]:
+        if key == lineup.SPEECH:                       # the speech model's setup: a "line-up" of its own, no book's
+            continue
         try:
             with open(os.path.join(root, key, lineup.STATE), encoding="utf-8") as f:
-                if (json.load(f) or {}).get("status") == lineup.DONE:
-                    return True
-        except (OSError, ValueError, AttributeError):
+                state = json.load(f) or {}
+            if isinstance(state, dict) and lineup.usable(state):
+                return True
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
     return False
+
+
+def _junban(language, kind):
+    """順's or Backfill's real run on this language: Junban's own answer for a reorder (`undo.has_reordered`: never a
+    *Try it*, the automatic ones too), the window's Backfill snapshot, or a run of Connect's (its runs folder's names)."""
+    from modules.junban import undo
+    if kind == "reorder" and undo.has_reordered(language):
+        return True
+    if kind == "backfill" and _user_file(language, undo.FILENAMES["backfill"]):
+        return True
+    try:
+        return any(name.startswith(kind + "-") for name in os.listdir(undo.runs_folder(language)))
+    except OSError:
+        return False
 
 
 def _piyo_round(language):
@@ -140,21 +159,27 @@ def _view_facts(view):
     episodes = sum(getattr(r, "n_watched", 0) or 0 for r in rows) + finished
     book = any(getattr(r, "media", None) in BOOKS for r in rows)
     waiting = any((getattr(a, "waiting", 0) or 0) > 0 for a in getattr(view, "arrivals", ()) or ())
-    has = bool(rows) or bool(finished) or bool(getattr(counts, "goal_titles", 0))
+    has = (bool(rows) or bool(finished) or bool(getattr(counts, "goal_titles", 0))
+           or bool(getattr(view, "arrivals", ())))
     return has, episodes, book, waiting
 
 
-def facts(language, settings, view, state):
-    """(A worker.) This learner's `Facts` now. Each check that fails reads as not done / not useful — never a crash."""
+def facts(language, settings, view, state, journey_ready=True):
+    """(A worker.) This learner's `Facts` now. Each check that fails reads as not done / not useful — never a crash. A
+    step ticked already is never read again (S19): its record's check is skipped."""
     from app.services import help_cards
     settings, state = settings or {}, state or {}
     has, episodes, book, waiting = _view_facts(view)
+    ticked = state.get("done") or {}
 
     def safe(fn, *args):
         try:
             return bool(fn(*args))
         except Exception:
             return False
+
+    def unless(step_id, fn, *args):
+        return True if step_id in ticked else safe(fn, *args)
 
     try:
         from app import anki_sync
@@ -165,10 +190,11 @@ def facts(language, settings, view, state):
     return Facts(
         has_library=has, journey_opened="journey" in (state.get("moments") or {}), episodes_done=episodes,
         cards_made=safe(_cards_made, language), own_cards=bool(state.get("own_cards")), junban=junban,
-        anki_synced=synced, junban_ordered=junban and safe(_user_file, language, "junban_undo.json"),
-        backfilled=junban and safe(_user_file, language, "junban_backfill_undo.json"), book_in_current=book,
-        lined_up=book and safe(_lined_up), video_waiting=waiting, hato_paired=safe(_hato_paired, language),
-        piyo_round=safe(_piyo_round, language))
+        anki_synced=synced, junban_ordered=junban and unless("junban", _junban, language, "reorder"),
+        backfilled=junban and unless("backfill", _junban, language, "backfill"), book_in_current=book,
+        lined_up=book and unless("audiobook", _lined_up), video_waiting=waiting,
+        hato_paired=waiting and unless("hato", _hato_paired, language),
+        piyo_round=episodes >= PIYO_AFTER and unless("piyo", _piyo_round, language), journey_ready=journey_ready)
 
 
 # --- the path (pure) ------------------------------------------------------------------------------------------------- #
@@ -202,6 +228,8 @@ def next_card(sts, state, later=()):
     if not state.get("first_ack"):
         return ("made",)
     aside = set(state.get("not_now") or ())
+    if READY in later:                                 # a later step set aside this run: no other card until the next
+        return None
     for st in sts:
         if st.step.chapter == READY and st.useful and not st.done and st.step.id not in aside:
             return ("step", st.step.id, 0, 0)
@@ -215,13 +243,15 @@ def path(f, state, later=()):
     return Path(sts, first_done, next_card(sts, state, later), bool(newly_useful(sts, state)))
 
 
-def look(language, settings, view, fresh=False, later=(), seen=False):
+def look(language, settings, view, fresh=False, later=(), seen=False, journey_ready=True):
     """(A worker.) The path now, with what changed recorded (newly done steps kept): -> `Path`, or None while there is
     no library (no path to walk yet). `fresh`: a first run (setup running) — nothing glows; `seen`: the panel opened —
     the useful steps' glow is over; `later`: chapter 1's steps set aside this run."""
     from app.services import guide
     state = guide.read_state()
-    f = facts(language, settings, view, state)
+    f = facts(language, settings, view, state, journey_ready)
+    if "path_started" not in state and f.has_library:
+        state = _first_look(f)
     sts = statuses(f, state)
     done = newly_done(sts, state)
     if done:
@@ -236,6 +266,25 @@ def look(language, settings, view, fresh=False, later=(), seen=False):
     if not f.has_library:
         return None
     return path(f, state, later)
+
+
+def _first_look(f):
+    """The path's first look on this PC. A learner who was here before the path (an update) is no beginner: cards made
+    → *Your first cards* done and acknowledged; episodes Done → its first two steps done (the journey was there all
+    along). A new learner starts at step 1. -> the state."""
+    from app.services import guide
+    day = time.strftime("%Y-%m-%d")
+    first = [s.id for s in STEPS if s.chapter == FIRST]
+
+    def start(s):
+        out = dict(s, path_started=day)
+        if f.cards_made:
+            out.update(done=dict(s.get("done") or {}, **{i: day for i in first}), first_ack=True)
+        elif f.episodes_done >= 1:
+            out.update(done=dict(s.get("done") or {}, words=day, watch=day))
+        return out
+    guide.update_state(start)
+    return guide.read_state()
 
 
 # --- the learner's answers (a worker's writes) ---------------------------------------------------------------------- #

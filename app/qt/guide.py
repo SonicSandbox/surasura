@@ -128,7 +128,7 @@ class _Card(QWidget):
             b.setObjectName("guideshow")
             b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
             b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=item.text))
-            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _c=False, w=item.where: on_show(w))
@@ -151,7 +151,7 @@ class _StepRow(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(round(10 * f), round(8 * f), round(8 * f), round(8 * f))
         row.setSpacing(round(10 * f))
-        self.tick = QLabel("✓" if done else "", self)
+        self.tick = QLabel(strings.PATH_TICK if done else "", self)
         self.tick.setObjectName("pathtick")
         self.tick.setProperty("done", "true" if done else "false")
         self.tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -184,7 +184,7 @@ class _StepRow(QWidget):
             b.setObjectName("guideshow")
             b.setToolTip(strings.GUIDE_SHOW_ME_TIP)
             b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=title))
-            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _c=False, w=status.step.where: on_show(w))
@@ -233,10 +233,11 @@ class GuidePanel(motion.Overlay):
             b.setCheckable(True)
             b.setToolTip(tip)
             b.setAccessibleName(text)
-            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _c=False, n=name: self.show_tab(n))
+            b.installEventFilter(self)                     # ← → between the two (one Tab stop's way: the guide §3)
             self.tab_group.addButton(b)
             self.tab_buttons[name] = b
             tabs.addWidget(b, 1)
@@ -350,7 +351,7 @@ class GuidePanel(motion.Overlay):
                 b.setObjectName("guidefold")
                 b.setProperty("kind", "link")
                 b.setToolTip(strings.GUIDE_FIXES_TIP)
-                b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
                 b.setAutoDefault(False)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
                 col.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
@@ -629,6 +630,12 @@ class GuidePanel(motion.Overlay):
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
             self.place()
+        if event.type() == QEvent.Type.KeyPress and obj in self.tab_buttons.values() and \
+                event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            other = "path" if self.tab == "news" else "news"
+            self.show_tab(other)
+            self.tab_buttons[self.tab].setFocus(Qt.FocusReason.TabFocusReason)
+            return True
         return False
 
     def sizeHint(self):

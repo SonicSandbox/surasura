@@ -77,10 +77,16 @@ def test_a_chapter_one_card_says_its_step_its_place_and_has_show_me_and_not_now(
 def test_step_three_offers_anki_miner_or_i_make_my_own_cards(card):
     own = []
     card.own_cards.connect(lambda: own.append(True))
+    later = []
+    card.not_now.connect(later.append)
     card.set_card(("step", "cards", 3, 3))
     assert card.primary.text() == strings.NEXT_SET_UP_MINER and card.secondary.text() == strings.NEXT_OWN_CARDS
+    assert card.later.isVisibleTo(card) and card.later.text() == strings.NEXT_NOT_NOW   # no Anki: set it aside
     card.secondary.click()
-    assert own == [True]
+    card.later.click()
+    assert own == [True] and later == ["cards"]
+    card.set_card(("step", "words", 1, 3))
+    assert not card.later.isVisibleTo(card)
 
 
 def test_the_first_cards_made_card_has_only_ok_and_a_later_step_says_new_for_you(card):
@@ -133,6 +139,7 @@ def test_i_make_my_own_cards_is_kept_and_the_next_look_says_your_first_cards_are
     win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False),
                     _path(facts(journey_opened=True, episodes_done=1)), []))
     win.duties.next_card.secondary.click()
+    assert not win.duties.next_card.isVisible()                                  # at once, before the write
     assert wait_until(lambda: guide.read_state().get("own_cards") is True)
 
 
@@ -181,3 +188,83 @@ def test_without_a_library_the_panel_is_whats_new_alone(world):
 def test_the_journey_opening_is_kept_as_the_first_steps_moment(world):
     world.win._guide_moment("journey")
     assert wait_until(lambda: "journey" in (guide.read_state().get("moments") or {}))
+
+
+# --- the adversary's round 1 ------------------------------------------------------------------------------------- #
+def test_every_chapter_one_settings_place_shows_for_a_new_learner(lib_world):
+    page = lib_world.mount_settings()
+    for step in P.STEPS:
+        kind, _sep, name = step.where.partition(":")
+        if kind == "settings" and step.chapter == P.FIRST:
+            assert page.shows(name), step.id                                     # Show me never dead-ends here
+
+
+def test_the_card_never_comes_mid_drag_and_ok_goes_at_once(lib_world):
+    win = lib_world
+    c = win.duties.next_card
+    win.toasts.dragging = True
+    try:
+        win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+        assert not c.isVisible() and win._guide_soon.isActive()                 # waits: the rows would jump
+    finally:
+        win.toasts.dragging = False
+    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False),
+                    _path(facts(journey_opened=True, episodes_done=1, own_cards=True)), []))
+    assert c.card == ("made",)
+    c.primary.click()
+    assert not c.isVisible()
+    assert wait_until(lambda: guide.read_state().get("first_ack") is True)
+
+
+def test_a_later_steps_not_now_is_kept_and_no_other_later_card_follows_this_run(lib_world):
+    win = lib_world
+    c = win.duties.next_card
+    useful = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, book_in_current=True)
+    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(useful, {"first_ack": True}), []))
+    assert c.card == ("step", "audiobook", 0, 0)
+    c.secondary.click()
+    assert not c.isVisible() and P.READY in win._path_later
+    assert wait_until(lambda: "audiobook" in (guide.read_state().get("not_now") or ()))
+
+
+def test_a_view_that_moved_asks_a_path_look_and_one_that_didnt_asks_none(lib_world):
+    win = lib_world
+    view = View((Row("anime", 0),), Counts(0, 0), ())
+    win._guide_view_moved(view)
+    win._guide_soon.stop()
+    win._guide_view_moved(view)
+    assert not win._guide_soon.isActive()                                        # the same numbers: nothing (S19)
+    win._guide_view_moved(View((Row("anime", 1),), Counts(0, 0), ()))           # a Done
+    assert win._guide_soon.isActive()
+
+
+def test_a_step_rows_show_me_goes_there(world):
+    went = []
+    panel = world.d.guide_panel
+    panel.show_me.connect(went.append)                                          # (the shell's slot runs too: harmless)
+    panel.set_path(_path(facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True),
+                         {"first_ack": True}))
+    assert wait_until(lambda: not panel.building())
+    panel.open(tab="path")
+    assert wait_until(panel.isVisible)
+    hato = next(r for r in panel.rows if r.status is not None and r.status.step.id == "hato")
+    hato.show_me.click()
+    assert went == ["settings:hato"] and not panel.isVisible()
+
+
+def test_the_tabs_are_one_stop_and_the_arrows_move_between_them(world):
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QKeyEvent
+    panel = world.d.guide_panel
+    panel.set_path(_path(facts()))
+    panel.open(tab="news")
+    assert wait_until(panel.isVisible)
+    QApplication.sendEvent(panel.tab_buttons["news"], QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
+                                                                 Qt.KeyboardModifier.NoModifier))
+    assert panel.tab == "path"
+    # one Tab stop (the guide §3): the checked tab takes Tab; Qt's exclusive group drops the other from the chain once
+    # the arrows have moved the focus (its own way), and every tab is made a Tab-focus button, never a click's ring
+    policies = {n: b.focusPolicy() for n, b in panel.tab_buttons.items()}
+    assert policies["path"] == Qt.FocusPolicy.TabFocus and policies["news"] != Qt.FocusPolicy.StrongFocus, policies
+    assert QApplication.focusWidget() is panel.tab_buttons["path"]
+    panel.close()

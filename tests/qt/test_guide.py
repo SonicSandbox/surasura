@@ -221,10 +221,10 @@ def test_the_glow_never_relights_with_the_panel_open_and_an_older_answer_is_drop
     _looked(world, notes)
     look = world.d.guide_panel.look._replace(glow=True)
     _open(world)
-    world.win._guide_got((world.win._guide_asked, look, []))
+    world.win._guide_got((world.win._guide_asked, look, None, []))
     assert not world.d.guide.glow                                           # open: never lit again
     world.d.guide_panel.close()
-    world.win._guide_got((world.win._guide_asked - 1, look, []))            # an older look, arriving late
+    world.win._guide_got((world.win._guide_asked - 1, look, None, []))      # an older look, arriving late
     assert not world.d.guide.glow
 
 

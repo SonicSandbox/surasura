@@ -163,18 +163,17 @@ def test_a_finished_line_up_and_the_undo_snapshots_and_a_kept_piyo_round_count()
     from app import practice_rounds
     from app.connect import lineup
     assert not P._lined_up()
-    os.makedirs(os.path.join(lineup.root(), "k1"), exist_ok=True)
-    with open(os.path.join(lineup.root(), "k1", lineup.STATE), "w", encoding="utf-8") as f:
-        json.dump({"status": lineup.RUNNING}, f)
+
+    def state(key, data):
+        os.makedirs(os.path.join(lineup.root(), key), exist_ok=True)
+        with open(os.path.join(lineup.root(), key, lineup.STATE), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    state(lineup.SPEECH, {"status": lineup.DONE})                               # the speech model: no book's line-up
+    state("k1", {"status": lineup.RUNNING})
+    state("k2", {"status": lineup.DONE, "grade": "C"})                          # the wrong edition: no line-up for cards
     assert not P._lined_up()
-    with open(os.path.join(lineup.root(), "k1", lineup.STATE), "w", encoding="utf-8") as f:
-        json.dump({"status": lineup.DONE}, f)
+    state("k3", {"status": lineup.DONE, "grade": "A"})
     assert P._lined_up()
-    assert not P._user_file("ja", "junban_undo.json")
-    os.makedirs(path_utils.get_user_files_path("ja"), exist_ok=True)
-    with open(os.path.join(path_utils.get_user_files_path("ja"), "junban_undo.json"), "w", encoding="utf-8") as f:
-        f.write("{}")
-    assert P._user_file("ja", "junban_undo.json")
     assert not P._piyo_round("ja")
     practice_rounds.save("ja", practice_rounds.new_id(), start={"role": "friend", "words": [["猫", "ねこ"]]})
     assert P._piyo_round("ja")
@@ -237,3 +236,77 @@ def test_two_workers_writing_at_once_lose_nothing():
     for t in threads:
         t.join()
     assert set(names) <= set(guide.read_state()["moments"])
+
+
+# --- the adversary's round 1 ------------------------------------------------------------------------------------- #
+def test_junban_and_backfill_tick_by_junbans_own_answer_and_connects_runs():
+    pytest.importorskip("modules.junban.undo")
+    from modules.junban import undo
+    assert not P._junban("ja", "reorder") and not P._junban("ja", "backfill")
+    os.makedirs(path_utils.get_user_files_path("ja"), exist_ok=True)
+    with open(os.path.join(path_utils.get_user_files_path("ja"), undo.FILENAMES["baseline"]), "w",
+              encoding="utf-8") as f:
+        f.write("{}")                                                            # an automatic reorder's baseline
+    assert P._junban("ja", "reorder") and not P._junban("ja", "backfill")
+    os.makedirs(undo.runs_folder("zh"), exist_ok=True)
+    with open(os.path.join(undo.runs_folder("zh"), "backfill-20261112-120000-000-1.json"), "w", encoding="utf-8") as f:
+        f.write("{}")                                                            # Connect's Backfill run
+    assert P._junban("zh", "backfill") and not P._junban("zh", "reorder")
+
+
+def test_step_one_waits_for_a_journey_on_disk_and_step_three_points_at_anki_miners_card():
+    assert P.path(facts(journey_ready=False), {}).card is None                  # no journey yet: nothing to show
+    assert BY("cards").where == "settings:anki_miner"
+
+
+def BY(step_id):
+    return P.BY_ID[step_id]
+
+
+def test_one_later_card_a_run_after_not_now():
+    done = facts(journey_opened=True, episodes_done=3, own_cards=True, video_waiting=True, book_in_current=True)
+    state = {"first_ack": True, "not_now": ["audiobook"]}
+    assert P.path(done, state).card == ("step", "hato", 0, 0)
+    assert P.path(done, state, later=(P.READY,)).card is None
+
+
+def test_an_update_from_before_the_path_is_no_beginner():
+    _ledger_made("ja")
+    way = P.look("ja", {}, SHOWS)
+    assert way.first_done and (way.card is None or way.card[0] == "step" and way.card[3] == 0)   # never chapter 1
+    assert guide.read_state()["first_ack"] is True
+    guide.write_state({})
+    way = P.look("ja", {}, View((Row("anime", 2),), Counts(0, 0), ()))           # ja's ledger has cards: done again
+    assert way.first_done
+
+
+def test_an_update_with_episodes_but_no_cards_starts_at_step_three():
+    way = P.look("zh", {}, View((Row("anime", 2),), Counts(0, 0), ()))
+    assert way.card == ("step", "cards", 3, 3)
+
+
+def test_a_malformed_pairing_never_hides_hatos_and_youtube_isnt_hato():
+    from app import library_store
+    _pairing("ja", "youtube")
+    assert not P._hato_paired("ja")
+    path = library_store.library_db_path("ja", path_utils.get_data_path("ja"))
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO pairings VALUES ('bad', 1, '{ 壊れた', '2026-11-12')")
+    con.commit()
+    con.close()
+    _pairing("ja", "hato")
+    assert P._hato_paired("ja")
+
+
+def test_new_arrivals_alone_is_a_library_and_piyo_waits_for_three_episodes():
+    assert P._view_facts(View((), Counts(0, 0), (Arrival(0),)))[0]
+    assert not BY("piyo").when(facts(episodes_done=2)) and BY("piyo").when(facts(episodes_done=3))
+
+
+def test_a_ticked_step_is_never_read_again(monkeypatch):
+    calls = []
+    monkeypatch.setattr(P, "_hato_paired", lambda language: calls.append(language) or True)
+    view = View((Row("anime", 0),), Counts(0, 0), (Arrival(1),))
+    P.facts("ja", {}, view, {})
+    P.facts("ja", {}, view, {"done": {"hato": "2026-11-12"}})
+    assert calls == ["ja"]

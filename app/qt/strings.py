@@ -2051,6 +2051,7 @@ GUIDE_TAB_PATH = "Your path"
 GUIDE_TAB_PATH_TIP = "The steps to your first cards, and what's worth trying next"
 PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
 PATH_DONE = "✓ DONE"
+PATH_TICK = "✓"
 PATH_COUNT = "{n} OF {total}"
 PATH_FIRST_LINE = "Set up · See the words · Watch and Done · Cards made for you"
 PATH_MORE = "More steps show up when they're useful to you."

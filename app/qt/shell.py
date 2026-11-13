@@ -2736,7 +2736,7 @@ class ShellWindow(QMainWindow):
         self._guide_soon = QTimer(self)                     # ... a look a moment after they change (one per burst)
         self._guide_soon.setSingleShot(True)
         self._guide_soon.setInterval(guide_ui.RELOOK_MS)
-        self._guide_soon.timeout.connect(self._guide_look)
+        self._guide_soon.timeout.connect(lambda: self._guide_look(notes=False))
         self._guide_focus_at = 0.0                          # the last look on the window's activation
         self._guide_focus_s = guide_ui.FOCUS_RELOOK_S       # ... at most this often
         # the path's Next card (PR 2), above Up Next on Current: in the page's own strip, one place (Kantan-X §6)
@@ -2750,6 +2750,8 @@ class ShellWindow(QMainWindow):
             d.next_card.not_now.connect(self._path_not_now)
             d.next_card.own_cards.connect(lambda: self._guide_answer("own_cards"))
             d.next_card.made_ok.connect(lambda: self._guide_answer("first_ack"))
+            QWidget.setTabOrder(d.next_card.primary, d.next_card.secondary)
+            QWidget.setTabOrder(d.next_card.secondary, d.next_card.later)
         # --- end the feature guide
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
@@ -2807,9 +2809,9 @@ class ShellWindow(QMainWindow):
             if self.duties is not None and self.duties.next_card is not None:
                 self.duties.next_card.set_card(None)       # the path's card waits for setup to end
         elif self.services.setup_open.is_set():
-            bridge.run_in_worker(self.services.setup_ended)
-            if self.duties is not None and self.duties.guide_panel is not None:
-                self._guide_look()
+            guided = self.duties is not None and self.duties.guide_panel is not None
+            bridge.run_in_worker(self.services.setup_ended,       # the path's look once setup has truly ended
+                                 then=(lambda _r: self._guide_look(notes=False)) if guided else None)
         if not up and self.__dict__.pop("_tour_after_setup", False):
             QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
@@ -2828,10 +2830,11 @@ class ShellWindow(QMainWindow):
         QTimer.singleShot(guide_ui.FIRST_LOOK_MS, self._guide_look)
 
     # --- the feature guide (Hoshi-S, 2026-11-12; app/services/guide.py, app/qt/guide.py) ------------------------- #
-    def _guide_look(self, seen=False):
+    def _guide_look(self, seen=False, notes=True):
         """What the ✦'s panel shows and whether it glows, read on a worker (`guide.look`: the notes, this PC's state,
         each check a stat or one small read). `seen`: the panel opened — this version's notes are marked seen first.
-        Setup running is a new PC: nothing to glow for (`fresh`)."""
+        Setup running is a new PC: nothing to glow for (`fresh`). `notes` False: the path alone (its re-looks after a
+        Done, an answer, the window's activation — the notes don't change while the window is open)."""
         d = self.duties
         if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
             return
@@ -2840,6 +2843,7 @@ class ShellWindow(QMainWindow):
         language, settings, view = self.language, self.services.settings, getattr(self, "_guide_view", None)
         fresh = self.services.setup_open.is_set()
         later = tuple(self._path_later)
+        journey = d.journey_button is not None and not d.journey_button.isHidden()   # a journey on disk: step 1's place
         self._guide_asked += 1
         asked = self._guide_asked
 
@@ -2848,8 +2852,8 @@ class ShellWindow(QMainWindow):
             if seen:
                 guide_service.mark_seen()
             got = settings.get()
-            look = guide_service.look(language, got, view, log=lines.append, fresh=fresh)
-            way = path_service.look(language, got, view, fresh=fresh, later=later, seen=seen)
+            look = guide_service.look(language, got, view, log=lines.append, fresh=fresh) if (notes or seen) else None
+            way = path_service.look(language, got, view, fresh=fresh, later=later, seen=seen, journey_ready=journey)
             return asked, look, way, lines
         bridge.run_in_worker(job, then=self._guide_got,
                              failed=lambda info: applog.log("guide", f"look: {type(info[0]).__name__}"))
@@ -2861,11 +2865,13 @@ class ShellWindow(QMainWindow):
         d = self.duties
         if d is None:
             return
+        if what in ("own_cards", "first_ack") and d.next_card is not None:
+            d.next_card.set_card(None)                      # every press reacts at once: the card goes now
         useful = [st.step.id for st in (d.guide_panel.path.steps if d.guide_panel.path else ())
                   if st.step.chapter == path_service.READY and st.useful and not st.done]
         write = {"own_cards": path_service.own_cards, "first_ack": path_service.first_ack,
                  "not_now": lambda: path_service.not_now(step_id), None: lambda: path_service.seen_useful(useful)}[what]
-        bridge.run_in_worker(write, then=lambda _w: self._guide_look(),
+        bridge.run_in_worker(write, then=lambda _w: self._guide_look(notes=False),
                              failed=lambda info: applog.log("guide", f"path: {type(info[0]).__name__}"))
 
     def _path_not_now(self, step_id):
@@ -2876,14 +2882,15 @@ class ShellWindow(QMainWindow):
             d.next_card.set_card(None)
         if path_service.BY_ID[step_id].chapter == path_service.FIRST:
             self._path_later.add(step_id)
-            self._guide_look()
+            self._guide_look(notes=False)
         else:
+            self._path_later.add(path_service.READY)        # one later step's card a run: never a chain of them
             self._guide_answer("not_now", step_id)
 
     def _guide_moment(self, name):
         """A guide moment the app keeps no record of (the journey opened): kept on a worker, then a fresh look."""
         from app.services import path as path_service
-        bridge.run_in_worker(path_service.note_moment, name, then=lambda _w: self._guide_look(),
+        bridge.run_in_worker(path_service.note_moment, name, then=lambda _w: self._guide_look(notes=False),
                              failed=lambda info: applog.log("guide", f"moment: {type(info[0]).__name__}"))
 
     def _guide_view_moved(self, view):
@@ -2906,13 +2913,21 @@ class ShellWindow(QMainWindow):
         d = self.duties
         if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel) or asked != self._guide_asked:
             return                                          # (a newer look is on its way: this one says less)
-        d.guide_panel.set_look(look)
+        if look is None:                                    # the path alone: the notes as they were
+            look = d.guide_panel.look
+        else:
+            d.guide_panel.set_look(look)
         d.guide_panel.set_path(way)
         d.guide.setVisible(d.guide_panel.has_news() or way is not None)
         d.guide.setToolTip(strings.GUIDE_TIP_PATH if way is not None else strings.GUIDE_TIP)
-        d.guide.set_glow((look.glow or (way is not None and way.glow)) and not d.guide_panel.isVisible())
-        if d.next_card is not None:                         # never during setup (Kantan-X §7)
-            d.next_card.set_card(None if (way is None or self.services.setup_open.is_set()) else way.card)
+        news = look is not None and look.glow
+        d.guide.set_glow((news or (way is not None and way.glow)) and not d.guide_panel.isVisible())
+        if d.next_card is not None and not sip.isdeleted(d.next_card):
+            card = None if (way is None or self.services.setup_open.is_set()) else way.card
+            if card != d.next_card.card and card is not None and self.hints.blocked(toast_ok=True):
+                self._guide_soon.start()                    # never mid-drag or under a help card: the rows would jump
+            else:                                           # (Kantan-X §7, the hints' wait rule)
+                d.next_card.set_card(card)
 
     def _guide_opened(self):
         """The panel opened: the glow ends at once; the seen mark and a fresh look go to a worker."""
@@ -2964,7 +2979,7 @@ class ShellWindow(QMainWindow):
                 if self.duties is not None and self.duties.guide_panel is not None and \
                         time.monotonic() - self._guide_focus_at > self._guide_focus_s:
                     self._guide_focus_at = time.monotonic()  # the path on coming back (cards made meanwhile, Anki)
-                    self._guide_look()
+                    self._guide_look(notes=False)
             else:
                 self.looks.set_shown(self.in_front())    # behind / minimized: nothing looked at, watches' reports held
         if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self.duties is not None

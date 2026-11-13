@@ -2338,17 +2338,26 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     # start (順's Reorder) takes over every such run too when their record is complete (`_connect_cuts`: each readable,
     # for this deck and scope mode) — else it asks for their Undo first, as before.
     unfinished = undo.unfinished(_language(settings), "reorder")
-    connect_cuts = []                   # [(run id, its snapshot)] this run takes over
+    connect_cuts, blocked = [], None    # [(run id, its snapshot)] this run takes over; the runs it can't (`_connect_cuts`)
     if unfinished is not None and automatic and run_id is None:
         connect_cut = undo.load(_language(settings), run_id=unfinished)
         connect_cuts = [(unfinished, connect_cut)] if connect_cut else []
     elif unfinished is not None and not automatic:
-        connect_cuts = _connect_cuts(settings, decks)
-    if unfinished is not None and not automatic and connect_cuts is None:
-        return _report(False, "Junban did not make any changes.",
-                       problems=[f"An automatic reorder ({unfinished}) did not finish, and its saved order is the "
-                                 "only way back from it. Press Undo the last reorder first, then reorder again."],
-                       warnings=checks["warnings"], decks=decks, unfinished=unfinished, restore_first=True)
+        connect_cuts, blocked = _connect_cuts(settings, decks)
+        if blocked and blocked["held"]:     # Junban-X2 (Sonic 2026-11-13): a file held a moment (an antivirus, a cloud
+            _held_wait()                    # folder) is read again once, quietly, before you're asked for its Undo
+            connect_cuts, blocked = _connect_cuts(settings, decks)
+    if unfinished is not None and not automatic and blocked:
+        # Junban-X2: only other decks' runs in the way (none held) -> the window offers one press, *Put that one back,
+        # then reorder* (`put_back_first`: their ids; their decks named)
+        elsewhere = [] if blocked["held"] or blocked["overlapping"] else blocked["elsewhere"]
+        named = _decks_named(settings, elsewhere) if elsewhere else ""
+        problem = (UNFINISHED_ELSEWHERE.format(decks=named) if elsewhere else
+                   f"An automatic reorder ({unfinished}) did not finish, and its saved order is the only way back "
+                   "from it. Press Undo the last reorder first, then reorder again.")
+        return _report(False, "Junban did not make any changes.", problems=[problem], warnings=checks["warnings"],
+                       decks=decks, unfinished=unfinished, restore_first=True,
+                       **({"put_back_first": elsewhere, "put_back_decks": named} if elsewhere else {}))
     went_on = None if automatic or cut is not None else _went_on(previous, connect_cuts, decks, settings)
     # Backlog onboarding: Try it's numbers from before, carried (`carry_forward_tried`) — only while no automatic write
     # came after it (today's baseline newer than the window's snapshot): that write's baseline is the way back then.
@@ -2906,25 +2915,88 @@ def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previou
 
 def _connect_cuts(settings, decks):
     """Junban-X (Sonic 2026-11-13: "a manual would be a priority BUT if the data until that point isn't prepped than the
-    manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `[(run id, its snapshot)]`,
-    newest first; or None when one can't be, its record not complete — a file that can't be read just now
-    (`undo.runs`' unreadable), or an unfinished run for another deck or scope mode, whose way back this run's snapshot
-    wouldn't hold. Every unfinished one, never only the newest (an older one left would put its half writes back), and
-    every finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own
-    next runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
+    manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `(taken, blocked)`: `taken`
+    `[(run id, its snapshot)]`, newest first; `blocked` None, or — when one can't be taken, its record not complete —
+    `{"held": [...], "elsewhere": [...], "overlapping": [...]}`, the run ids of the files that can't be read just now
+    (`undo.runs`' unreadable) and of the unfinished runs for another deck or scope mode, whose way back this run's
+    snapshot wouldn't hold — `elsewhere` those sharing no card with this run's decks (`_apart`), whose put-back leaves
+    this deck's preview as it is (Junban-X2's one press), `overlapping` the rest (all decks, a parent or a subdeck). Every unfinished one, never only the newest (an older one left would put its half writes back), and every
+    finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own next
+    runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
     runs = undo.runs(_language(settings), "reorder")
     cuts = [index for index, (_cut_id, saved) in enumerate(runs) if saved.get("complete") is False]
-    taken = []
+    taken, held, elsewhere, overlapping = [], [], [], []
     for cut_id, saved in runs[:max(cuts) + 1] if cuts else ():
         if saved.get("complete") is False:
-            if (saved.get("unreadable") or not isinstance(saved.get("cards"), dict)
-                    or not _same_scope(saved, decks, settings)):
-                return None
+            if saved.get("unreadable") or not isinstance(saved.get("cards"), dict):
+                held.append(cut_id)
+                continue
+            if not _same_scope(saved, decks, settings):
+                (elsewhere if _apart(saved, decks, settings) else overlapping).append(cut_id)
+                continue
         elif (saved.get("restored_at") or saved.get("taken_over_at") or not isinstance(saved.get("cards"), dict)
               or not _same_scope(saved, decks, settings)):
             continue                    # put back, taken over, or another deck's: nothing of this deck to go back past
         taken.append((cut_id, saved))
-    return taken
+    blocked = held or elsewhere or overlapping
+    return taken, ({"held": held, "elsewhere": elsewhere, "overlapping": overlapping} if blocked else None)
+
+
+# Junban-X2: how long a run you start waits before it reads a held run's file once more (Sonic 2026-11-13: "a quiet
+# retry a second later, then the same ask")
+HELD_RETRY = 1.0
+# Junban-X2: what a run you start says when only other decks' stopped runs are in its way (PROVISIONAL)
+UNFINISHED_ELSEWHERE = "An automatic reorder of {decks} stopped part way. Put it back first, then reorder."
+
+
+def _held_wait():
+    time.sleep(HELD_RETRY)
+
+
+def _apart(saved, decks, settings):
+    """Do this run of Connect's and a run on `decks` share no card? Never across All decks; a deck's search holds its
+    subdecks (`new_card_query`), so a parent or a subdeck of one of `decks` is not apart."""
+    if saved.get("mode") == "all" or _scope_mode(settings) == "all":
+        return False
+    for one in undo.normalize_scope(saved.get("scope")):
+        for other in undo.normalize_scope(decks):
+            if one == other or one.startswith(other + "::") or other.startswith(one + "::"):
+                return False
+    return bool(undo.normalize_scope(saved.get("scope")))
+
+
+def _reaches(settings, url, snapshot):
+    """Junban-X2 (adversaries 1 and 2): does a card this run of Connect's changed sit in the window's deck (or a
+    subdeck) now — moved there since it stopped? -> "" when none does, else the line that says so (or why it can't be
+    told). Read from Anki (`cardsInfo`), no write; raises `AnkiError`."""
+    decks, problems = _resolve_decks(settings, url)
+    if problems:
+        return problems[0]
+    if _scope_mode(settings) == "all":
+        return PUT_BACK_REACHES
+    ids = {int(card_id) for card_id in snapshot.get("cards") or {} if str(card_id).isdigit()}
+    ids |= set(undo.restore_suspended(snapshot)) | set(undo.restore_unsuspended(snapshot))
+    rows = ankiconnect.cards_info(url, sorted(ids)) if ids else []
+    inside = any(str(row.get("deckName") or "") == deck or str(row.get("deckName") or "").startswith(deck + "::")
+                 for row in rows for deck in decks)
+    return PUT_BACK_REACHES if inside else ""
+
+
+PUT_BACK_REACHES = ("Some of that reorder's cards are in this deck now. Undo the last reorder, then preview "
+                    "again.")                                                                      # PROVISIONAL
+
+
+def _decks_named(settings, run_ids):
+    """The decks of these runs of Connect's, for a sentence: "Kanji", "Kanji and Mining", or "all decks"."""
+    names = []
+    for run_id in run_ids:
+        saved = undo.load(_language(settings), run_id=run_id) or {}
+        for name in (["all decks"] if saved.get("mode") == "all" else undo.normalize_scope(saved.get("scope"))):
+            if name not in names:
+                names.append(name)
+    if not names:
+        return "another deck"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def _went_on(previous, connect_cuts, decks, settings):
@@ -3529,14 +3601,14 @@ def _restore(settings, progress=None, asked=None):
                              [reason for _id, reason in (list(failures) + note_failures)[:1]]))
 
 
-def restore_run(settings, run_id, progress=None, wait=0.0, cancel=None, on_wait=None, verb="順 restore"):
+def restore_run(settings, run_id, progress=None, wait=0.0, cancel=None, on_wait=None, verb="順 restore", away=False):
     """Put back exactly what one of Connect's runs changed (P1.4 row 1.4.2): `_restore_run`, holding the Anki-write
-    lock as `restore` does."""
+    lock as `restore` does. `away` (Junban-X2's one press): only while none of its cards sits in the window's decks."""
     held, problem = anki_connect.take_writer(verb, _url(settings), wait, cancel, on_wait)
     if held is None:
         return _report(False, "Nothing was restored.", problems=[problem], busy=True)
     with held:
-        return _restore_run(settings, run_id, progress)
+        return _restore_run(settings, run_id, progress, away=away)
 
 
 # The window asked about one thing to put back, and by the time it held Anki's writer that had changed (P1.4).
@@ -3544,7 +3616,7 @@ RESTORE_CHANGED = ("What Restore would put back changed while it waited (an auto
                    "back). Press Restore again to see it.")
 
 
-def _restore_run(settings, run_id, progress=None):
+def _restore_run(settings, run_id, progress=None, away=False):
     """Undo one of Connect's runs, and nothing after it. Its snapshot (`undo.load(run_id=)`) names what it changed:
 
       * the cards it suspended (3.0) are unsuspended — only those;
@@ -3553,7 +3625,9 @@ def _restore_run(settings, run_id, progress=None):
       * the returning words' cards it unsuspended (MR-R3) are suspended again, only those still new and unsuspended;
       * its tags and flags come off as the window's Restore takes them off — never a field or flag you changed since.
 
-    Never raises; a run already put back, or not one of Junban's reorders, is refused untouched."""
+    Never raises; a run already put back, or not one of Junban's reorders, is refused untouched. `away` (Junban-X2,
+    the adversary's SHOULD 1): first, holding the writer, its cards read — one that sits in the window's deck (or a
+    subdeck) now refuses it untouched (`reaches`): putting it back would move a card under this deck's preview (I5)."""
     url = _url(settings)
     language = _language(settings)
     snapshot = undo.load(language, run_id=run_id)
@@ -3566,6 +3640,13 @@ def _restore_run(settings, run_id, progress=None):
     if not report.get("ok"):
         return _report(False, "Nothing was restored.",
                        problems=[report.get("error") or f"Could not reach Anki at {url}."])
+    if away:
+        try:
+            reaches = _reaches(settings, url, snapshot)
+        except AnkiError as e:
+            return _report(False, "Nothing was restored.", problems=[str(e)])
+        if reaches:
+            return _report(False, "Nothing was restored.", problems=[reaches], reaches=True)
     chunk = _chunk_size(settings)
     unsuspended, unsuspend_failures = ankiconnect.unsuspend(url, undo.restore_suspended(snapshot), chunk=chunk)
     stopped = "Nothing was restored." if not unsuspended else "Restore stopped part way. Press Restore again."

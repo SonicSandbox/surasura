@@ -135,6 +135,7 @@ SHOW_ME = "Show me ›"
 SHOW_ME_TIP = "Goes to {where}"
 WHERE = "{section} › {row}"
 SHOW_ME_PLAIN = "Goes to the setting it needs"
+SHOW_ME_NAME = "{need}: {show}"                                 # *Show me*, for screen readers
 
 # --- the group names inside a section ------------------------------------------------------------------------------ #
 GROUPS = {

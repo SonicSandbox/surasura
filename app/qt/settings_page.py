@@ -362,7 +362,7 @@ class Slab(QWidget):
         if need is not None:
             self.needs_line.setText(need[0])
             self.show_me.setToolTip(S.SHOW_ME_TIP.format(where=where))
-            self.show_me.setAccessibleName(f"{need[0]}: {S.SHOW_ME}")
+            self.show_me.setAccessibleName(S.SHOW_ME_NAME.format(need=need[0], show=S.SHOW_ME))
         if self.needs.isHidden() == (need is not None):
             self.needs.setVisible(need is not None)
 

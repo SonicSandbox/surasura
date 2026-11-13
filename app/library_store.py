@@ -10166,9 +10166,11 @@ def _store_let_audiobook_back(self, key, sha256, out):
     """Inside `take_in` (Kura-AB5, based on the diagnosis in #429 by Mattias): an audiobook removed earlier whose
     folder the learner picked for its book (`sources._Look._meant`) is in again — as Put back would have it, by the
     Remove's own trash row: the row holding its origin `key` (else, found moved, the one whose records name its files'
-    sizes `sha256`) is marked put back (the Removed list never offers a second) and every origin it held is let back
-    (`_let_origins_back`: an adopted transcript too); a keep-out of `key` with no row goes as well. Never another
-    Remove's row; nothing on disk is touched; `out` (the batch's kept-out sets) forgets what went. -> the rows."""
+    sizes `sha256`, the newest) is marked put back (the Removed list never offers a second) and every origin it held is
+    let back (`_let_origins_back`: an adopted transcript too); a keep-out of `key` with no row goes as well. Never
+    another Remove's row — a copy of the same bytes removed elsewhere keeps its sizes' keep-out, which `take_in` then
+    doesn't weigh for this file (the learner picked it by its folder); nothing on disk is touched; `out` (the batch's
+    kept-out paths) forgets what went. -> the rows."""
     held = []
     for trash_id, raw in self.conn.execute("SELECT id, item_state FROM trash WHERE restored_at IS NULL").fetchall():
         pairs = [p for p in (_json_dict(raw) or {}).get("pairings") or ()
@@ -10176,15 +10178,12 @@ def _store_let_audiobook_back(self, key, sha256, out):
         held.append((trash_id, pairs))
     mine = [(i, pairs) for i, pairs in held if any(k == key for k, _t, _a in pairs)] or \
         [(i, pairs) for i, pairs in held if sha256 and any((_json_dict(t) or {}).get("sha256") == sha256
-                                                           for _k, t, _a in pairs)]
+                                                           for _k, t, _a in pairs)][-1:]   # (renamed: its newest)
     keys = {key} | {k for _i, pairs in mine for k, _t, _a in pairs}
     self._let_origins_back(sorted(keys))
     now = _now()
     self.conn.executemany("UPDATE trash SET restored_at = ? WHERE id = ?", [(now, i) for i, _p in mine])
     out["patterns"].difference_update(k[len(SOURCE_KEY):] for k in keys if k.startswith(SOURCE_KEY))
-    if sha256 and not any((_json_dict(n) or {}).get("sha256") == sha256 for (n,) in self.conn.execute(
-            "SELECT note FROM exclusions WHERE kind = 'removed'")):
-        out["sha256"].discard(sha256)
     return [i for i, _p in mine]
 
 
@@ -10705,9 +10704,11 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
-            if f.get("let_back") and f.get("audiobook"):     # Kura-AB5 (#429): its folder picked for its book
+            back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
+            if back:
                 self._let_audiobook_back(key, f.get("sha256"), out)
-            if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
+            if key[len(SOURCE_KEY):] in out["patterns"] or \
+                    (not back and f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):
                 change.skipped["excluded"].append(origin)
                 if p:

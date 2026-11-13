@@ -735,3 +735,16 @@ def test_a_book_asked_with_its_own_cards_is_asked_once_more_when_an_earlier_copy
         parts = add_audio.book_items(store, book["book"], earlier=False)
     got = actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)
     assert got["n"] == 4
+
+
+def test_earlier_copies_never_count_a_part_of_this_very_epub_given_up(book):  # noqa: F811
+    """Review r2 N1: the EPUB's own parts are named `<name>_NN.txt` too — one removed is no earlier copy (its cards
+    were counted while it was live; those mined since its line-up carry the narrator)."""
+    from app import library_store as ls
+    from app.connect import add_audio
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"], earlier=False)
+        rel = store.conn.execute("SELECT rel_path FROM items WHERE id = ?", (parts[-1],)).fetchone()[0]
+        assert ls._SPLIT_PART.fullmatch(rel.replace("\\", "/").rpartition("/")[2]), rel
+        store.remove([parts[-1]])
+        assert add_audio.earlier_copies(store, book["book"]) == []

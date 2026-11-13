@@ -247,3 +247,29 @@ def test_d_a_new_audiobook_in_the_folder_joins_and_the_removed_one_stays_removed
         assert _record(store, _audio_of(store, new)["id"])["book"]["epub"] == os.path.abspath(book)
         assert all(os.path.abspath(m4b) not in _record(store, i["id"])["files"] for i in _audio_items(store))
         assert _kept_out(store, m4b)
+
+
+def test_d_a_copy_of_the_same_bytes_removed_elsewhere_stays_removed(split):
+    """Review r2 S1/S2: the same `.m4b` also sat in Downloads under another name, removed on its own. Picking the
+    book's folder brings back the one there (its own Remove's row only), joined to the book; the Downloads copy keeps
+    its keep-out and its Removed line, and a plain look of Downloads still leaves it out."""
+    import shutil
+    _reading, book = _joined(split)
+    folder, m4b, audio = _copy_paired(split)
+    dl = _drive("downloads")
+    copy = shutil.copy2(m4b, os.path.join(dl, "colorful.m4b"))
+    with split["steps"]._open("ja") as store:
+        dl_root = store.add_source(dl)
+        _look(store, "ja", dl_root, full=True)
+        theirs = _audio_of(store, copy)["id"]
+        assert theirs != audio, "two items: the same bytes under two names"
+        store.remove([theirs])                                          # its own Remove
+        store.remove([i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))])
+        trash = dict(store.conn.execute("SELECT item_id, id FROM trash"))
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, m4b)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert _kept_out(store, copy), "the Downloads copy: still removed"
+        assert store.trash_rows([trash[theirs]])[0]["restored_at"] is None, "its Removed line kept"
+        assert store.trash_rows([trash[audio]])[0]["restored_at"], "the book's own: put back"
+        _look(store, "ja", dl_root, full=True)
+        assert all(os.path.abspath(copy) not in _record(store, i["id"])["files"] for i in _audio_items(store))

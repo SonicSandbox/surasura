@@ -2105,7 +2105,8 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
     missing". The window's reader carries ▶'s looker (`play.Looks`, its lookup a stand-in here: every other episode
     found, never Up Next's): an opened row's found episode has ▶ drawn and pressable; one not found has neither — its
     column stays, blank — and a press there asks for nothing; Up Next's *No video* is plain muted words (R55-B, Sonic:
-    no dashed frame, no triangle, nothing button-shaped), which say why on hover and are no button."""
+    no dashed frame, no triangle, nothing button-shaped), which say why on hover. Kantan-B2 (AUDIT A3, finding 15):
+    they read *No video · Link…* and a press there offers *Link…* (the status's own menu), never a play."""
     from app.services import play, view_rows
     seed = window_seed.build()
     first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
@@ -2130,29 +2131,35 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
             QApplication.processEvents()
         fired = []
         lst.play_requested.connect(fired.append)
-        # Up Next (R55-B): plain muted words *No video* that say why on hover; no ▶ part, and a press opens nothing
+        # Up Next (R55-B): plain muted words that say why on hover; no ▶ part. Kantan-B2: *No video · Link…*, its
+        # press the status's *Link…*
         hero = lst.model().entries[0][1]
         nxt = hero.episodes[hero.next_index]
         assert not nxt.can_play and not nxt.looking
-        assert lst.delegate._watch_label(hero) == strings.ROWS_NO_MEDIA_BUTTON.format(word="video")
-        assert part(lst, 0, "play") == [] and part(lst, 0, "no-play")[0][2] == hero.play_tip
-        words = part(lst, 0, "no-play")[0][1]
+        assert lst.delegate._watch_label(hero) == strings.ROWS_NO_MEDIA_LINK_BUTTON.format(word="video")
+        assert part(lst, 0, "play") == [] and part(lst, 0, "no-play") == []
+        link = part(lst, 0, "no-media")[-1]                   # (listed last: → reaches the row's status first)
+        assert link[2] == strings.ROWS_NO_MEDIA_TIP.format(tip=hero.play_tip) and link[3].episode.id == nxt.id
+        words = link[1]
         rect, arr = grab(lst, 0)
         box = arr[words.top() - rect.top():words.bottom() - rect.top() + 1,
                   words.left() - rect.left():words.right() - rect.left() + 1]
         ground = box[0, 0]
+        # R55-B's look kept for the *Link…* words (lead, 2026-11-12; PROVISIONAL, Sonic to confirm): plain muted text,
+        # no frame, no triangle, nothing button-shaped — only the hover says a press opens *Link…*
         for edge in (box[0], box[-1], box[:, 0], box[:, -1]):            # no frame, dashed or whole, on any side
             assert not (edge != ground).any(axis=-1).any()
         assert not (box[:, :13] != ground).any(), "no triangle where the trillion stood"
         assert (box != ground).any(axis=-1).sum() > 20, "the words are drawn"
+        linked = []
+        lst.link_requested.connect(lambda row, ep: linked.append(ep.id))
         QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=words.center())
-        # ... and no button's place: the words are the card's — a press there drags Up Next as its title does, and
-        # `_act` does nothing with them
-        title = part(lst, 0, "title")[0][1].center()
-        lst.drag = lst.drag or object()                       # (no writer here: a stand-in, `drag_from` asks only that)
-        assert lst.drag_from((0, "title", None, title, hero.key))
-        assert lst.drag_from((0, "no-play", nxt, words.center(), hero.key))
-        assert "no-play" not in rows.NO_DRAG
+        menu = lst.action_menu                                # the press: *Link…*'s menu at once, never a play
+        assert menu is not None and [a.text() for a in menu.actions()] == [strings.ROWS_LINK]
+        menu.actions()[0].trigger()
+        menu.close()
+        assert linked == [nxt.id]
+        assert "no-media" in rows.NO_DRAG                     # a button's place now, as the status's is
         # an opened row with both
         i, (_kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and
                                    len({ep.can_play for ep in e[1].episodes}) == 2)
@@ -2183,6 +2190,23 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
     finally:
         win.close()
         services.shutdown(0.5)
+
+
+@pytest.mark.parametrize("media, word, ep, links", [
+    ("video", "video", {}, True),                                   # a subtitle whose video was found nowhere
+    ("video", "video", {"can_play": True}, False),                  # found: ▶ Watch
+    ("video", "video", {"looking": True}, False),                   # still being looked for: *Looking…*
+    ("youtube", "video", {}, False),                                # online: *Online*
+    ("video", "audio", {}, False),                                  # an audiobook's: *Link…* links a video
+    ("video", "EPUB", {}, False),                                   # a book
+    ("video", "video", {"missing": True}, False),                   # its own file is gone: nothing to link it to
+    ("video", "video", {"waiting": True}, False),                   # its video is there, waiting for its subtitle
+])
+def test_kantan_b2_up_next_offers_link_only_for_a_video_found_nowhere(media, word, ep, links):
+    from types import SimpleNamespace
+    nxt = SimpleNamespace(**dict({"can_play": False, "looking": False, "missing": False, "waiting": False}, **ep))
+    row = SimpleNamespace(episodes=(nxt,), next_index=0, media=media, media_word=word)
+    assert rows.links_video(row) is links
 
 
 def test_row55_up_next_says_looking_until_the_check_answers_never_no_video_first(qapp, monkeypatch):

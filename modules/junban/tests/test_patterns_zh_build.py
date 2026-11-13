@@ -5,7 +5,7 @@ The failure that matters most here is silent: if the builder keys a word differe
 every lookup misses and a Chinese card says "not found" for words plainly there (§17 #1). So the first
 test holds the builder to `ChineseTokenizer`'s keys over every Chinese fixture, both segmentation
 settings — the day the analyzer's tokenizer changes, it trips. Real sentences throughout
-(`tests/Test Resources/zh`: BBC news, the 冒险 lines, Taiwanese news, a mixed-script transcript, and the
+(`tests/Test Resources/zh`: a news-style piece written for the tests, the 冒险 lines, Taiwanese news, a mixed-script transcript, and the
 two パターン samples written for this, CRLF and Traditional).
 """
 import os

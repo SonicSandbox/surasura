@@ -32,7 +32,7 @@ from tests.qt.test_settings_connect import make as make_settings, miner_result, 
 from tests.qt.test_wizard import FakeMiner, go_to, make, miner_look  # noqa: F401  (make: the wizard fixture)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PATH = r"C:\Users\Michael\AppData\Local\Houseki\Surasura\connect\whitelist-ja.txt"
+PATH = r"C:\Users\Takashi\AppData\Local\Houseki\Surasura\connect\whitelist-ja.txt"
 STEPS = "In Anki Miner: Manage profiles… → New, name it Surasura; then in its Settings, Whitelist → choose file: " + PATH
 # the fix exactly as Sonic saw it (3.0-dev 7d8cc74, Anki Miner 3.5)
 SEEN = {"say": 'Anki Miner has no profile called "Surasura". Make it once in Anki Miner (a copy of your profile, its '
@@ -41,7 +41,7 @@ SEEN = {"say": 'Anki Miner has no profile called "Surasura". Make it once in Ank
 BEFORE_37 = dict(SEEN, update=True)
 # a footer line as long as the wizard says (a save that failed, with its file)
 LONG_SAY = ("Your choices on this page couldn't be saved: [Errno 13] Permission denied: "
-            r"'C:\Users\Michael\AppData\Roaming\SonicSandbox\Surasura\settings.json'")
+            r"'C:\Users\Takashi\AppData\Roaming\SonicSandbox\Surasura\settings.json'")
 WINDOWS = ((1000, 620), (1333, 860))           # the window's least size (theme.WINDOW_MIN); a 150 % laptop's
 # what a learner's own names look like at their longest: a nested deck, a show's folder deep on a drive
 DECKS = [("日本語::Mining::Anime::Sentence cards from subtitles", 2140), ("Core 2k/6k Optimized Japanese Vocabulary",

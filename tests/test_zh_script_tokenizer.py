@@ -73,7 +73,7 @@ def test_t_reads_simplified_content_as_traditional(zh_resources_dir):
     got = list(analyzer.ChineseTokenizer(script="t").tokenize_sentences(text))
     assert [s for s, _ in got] == [zh_script.convert(s, "t") for s in asis]
     words = [t[0] for _s, toks in got for t in toks]
-    assert "臺灣" in words and "習近平" in words
+    assert "臺灣" in words and "孫中山" in words
     assert all(zh_script.to_traditional(w) == w for w in words), "a Simplified character survived"
     # The token tuple keeps its shape: (lemma, reading, surface, orth), all the same word.
     _s, toks = got[5]

@@ -41,7 +41,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   *Save logs to a file…*; one card per text, *· 2 times* when it came again (Kantan-B1); a failed Generate's (the
   window's, `source` `generate`) offers *Generate again* · *Report a problem* first, its log's path in its hover.
 - **Connect's entries** (`read_connect`: `connect.status`'s record, newest first, plus the ledger's gaps): its own words
-  and its kind's action — `not-timed` *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
+  and its kind's action — `not-timed` *Check again* (`connect.actions.check_again`, the row's own: Kantan-B2, AUDIT
+  B4) then *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
   (`connect.hato.backfill`), a failure Connect logged *Open the logs folder*; every one *Dismiss* (`status.dismiss`). A
   gap (*lost track*) offers *Make their cards* (no callable yet: hidden, `WIRED_LATER`) and *Leave them* (answered here).
 - **Known from Anki's one-time question** (laptop round 7 #43, ⭐ B3-1 A): the cards you had already suspended / marked
@@ -136,11 +137,14 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
 WIRED_LATER = frozenset(("make_cards", "try_again"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 GENERATE_ACTIONS = ("generate_again", "report")      # Kantan-B1 (A1): a failed Generate's way on, before its logs
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
-CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
+# Kantan-B2 (AUDIT B4, Sonic's yes 2026-11-12): *Not timed* offers *Check again* first — a subtitle re-timed by hand
+CONNECT_ACTIONS = {"not-timed": ("check_again", "mine_anyway"), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    # Mattias #5: a part Anki Miner stopped on twice — *Try again* (the rows' own ask, `mine_actions`)
                    "mine-failed": ("try_again", "open_logs"), "error": ("open_logs",),
-                   # Michi-RM3: words Anki refused alone — *Skip this word* first (`connect.actions.skip_refused`)
-                   "mine-refused": ("skip_words", "try_again"),
+                   # Michi-RM3: words Anki refused alone — *Skip this word* (`connect.actions.skip_refused`). Kantan-B2
+                   # (AUDIT B5, Sonic's yes): never *Try again* — Anki refused them for good (not transient), so a try
+                   # fails the same way (#ZHFKV0: 24 of them); the row's own *Try again* stays for the part
+                   "mine-refused": ("skip_words",),
                    # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
                    "speech-model": ("get_speech_model", "no_speech_model"),
                    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
@@ -156,7 +160,7 @@ _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloa
 STRINGS = {
     # a6 settings import (SI-3, PROVISIONAL)
     "settings_folder_title": "A video folder in your imported settings isn't on this computer: {path}",
-    "settings_folder_say": "Connect looks there for an episode's video. Find where it is on this computer, or stop "
+    "settings_folder_say": "Surasura looks there for an episode's video. Find where it is on this computer, or stop "
                            "looking there.",
     # Hon (H-8 PROVISIONAL): an audiobook Surasura isn't sure reads that book
     "abook_title": "Is this audiobook 「{audio}」 the book 「{book}」?",
@@ -203,7 +207,7 @@ STRINGS = {
                            "your own keys in hato).",
     "miner_update_title": "Update Anki Miner to {version} to make cards from your {what}",
     "miner_update_say": "{n} for it. Surasura downloads Anki Miner {version} from its own GitHub release, checks it "
-                        "and opens its installer: it asks first. Connect makes their cards by itself once it's updated.",
+                        "and opens its installer: it asks first. Surasura makes their cards by itself once it's updated.",
     "miner_update_one": "1 title waits", "miner_update_n": "{n:,} titles wait",
     "bulk_title_files": "{n:,} files are gone in {m:,} shows",
     "bulk_title_videos": "{n:,} episodes in {m:,} shows have no video",
@@ -245,7 +249,7 @@ STRINGS = {
                    "again. Keep my old library carries on with it: its places, and the files you removed stay out.",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
-    "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
+    "gap_title": "Surasura lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
     "gap_span": "from {a} to {b}", "gap_until": "until {b}",
     "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
@@ -276,7 +280,7 @@ STRINGS = {
     "reason_offline": "{n} drives or folders are offline", "reason_failure": "{n} things didn't finish",
     "reason_not_timed": "{n} episodes' subtitles aren't timed to their video",
     "reason_no_pairing": "{n} episodes wait for hato's videos", "reason_cards": "{n} cards couldn't be made",
-    "reason_gap": "{n} times Connect lost track of your moves",
+    "reason_gap": "{n} times Surasura lost track of your moves",
     "reason_say": "One answer for all of them, or answer each card below on its own.",
     # Kantan-B1 (A1, PROVISIONAL): the same failure again is one card, counted
     "failure_times": "{text} · {n} times",

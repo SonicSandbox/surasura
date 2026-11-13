@@ -38,7 +38,7 @@ import time
 from app import path_utils
 
 # The names one Windows user shares across installs (see the module docstring).
-SHARED = frozenset({"anki-writer"})
+SHARED = frozenset({"anki-writer", "youtube"})      # youtube (Yt-B): one address asks YouTube, whatever the install
 
 # How often a wait looks again (P0.3 04 §2: `--wait` polls every 250 ms).
 POLL = 0.25

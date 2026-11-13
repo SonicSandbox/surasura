@@ -38,7 +38,7 @@ CALL_SITES = {
     "app/import_2x.py": 2,
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
     "app/instance_name.py": 1,
-    "app/library_store.py": 3,
+    "app/library_store.py": 4,
     "app/locks.py": 8,
     "app/path_utils.py": 19,
     "app/profile_reset.py": 1,
@@ -63,6 +63,7 @@ CALL_SITES = {
     "app/services/needs.py": 1,
     "app/services/settings_io.py": 1,
     "app/telemetry.py": 3,
+    "app/youtube_hold.py": 1,         # Yt-B: YouTube's hold, the persistent folder
     "app/token_index.py": 1,
     "app/updater.py": 3,
     "modules/irodori/make.py": 1,     # Iro-AA: the runs' Undo list (install: irodori-runs-*.json)
@@ -108,7 +109,7 @@ def _part_of(path, parts=None):
 
 def _writers():
     """(what writes it, its path, a folder?) — each from the code's own path function under the test root."""
-    from app import report, send_report, telemetry, updater
+    from app import report, send_report, telemetry, updater, youtube_hold
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
@@ -126,6 +127,7 @@ def _writers():
         ("the speech model's progress", os.path.join(anki_miner.setup_folder(), anki_miner.PROGRESS), False),
         ("the line-up's heartbeat", os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT), False),
         ("Connect's line-ups", lineup.root(), True),
+        ("a split book's joined text (Kura-TX)", ls.joined_book_path("ja", "0123456789abcdef"), False),
         ("the folder-time cache", os.path.join(ledger.folder(), "sources_ja.json"), False),
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),
         ("the airing cache", airing.cache_path("ja"), False),
@@ -147,6 +149,7 @@ def _writers():
         ("Send report's name and code", send_report._state_path(), False),
         ("the telemetry id", os.path.join(path_utils.get_persistent_user_data_path(), "telemetry_id.json"), False),
         ("the telemetry URL", os.path.join(path_utils.persistent_root(), telemetry.URL_CACHE), False),
+        ("YouTube's hold", youtube_hold._path(), False),       # Yt-B: the computer's, not the profile's
         ("the start gate's note", first_run.note_path(), False),
         ("the import's note", os.path.join(path_utils.local_data_root(), "import.json"), False),
         ("the library move's note", os.path.join(path_utils.local_data_root(), "library_move.json"), False),
@@ -183,7 +186,8 @@ def _writers():
 # What each writer's part must be: the parts that stay (the rest move)
 STAYS = {"the one-window lock", "the update's state", "the update's folder", "the CLI's log", "the CLI's events",
          "a lock", "the telemetry id", "the telemetry URL", "the start gate's note", "the import's note", "the library move's note",
-         "the installs note", "the library note", "the update marker", "the update lock", "the journal", "yt-dlp"}
+         "the installs note", "the library note", "the update marker", "the update lock", "the journal", "yt-dlp",
+         "YouTube's hold"}
 
 
 def test_every_place_the_code_names_a_data_root_is_counted_here():

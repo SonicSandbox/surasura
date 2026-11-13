@@ -548,6 +548,17 @@ def asked_files(kind, episodes):
     return with_status or open_
 
 
+def links_video(row):
+    """Kantan-B2 (AUDIT A3, finding 15): Up Next's *No video* reads *No video · Link…* and is a press offering the
+    status's own *Link…* (`_press_action`'s menu) — a video row whose next episode's video was found nowhere on this
+    computer: never one still being looked for, online, whose own file is gone, or a video waiting for its subtitle
+    (it is there: SRC W1b). Its words stay plain (R55-B)."""
+    nxt = row.episodes[row.next_index]
+    return (not nxt.can_play and not nxt.looking and row.media != "youtube"
+            and getattr(row, "media_word", None) == "video" and not getattr(nxt, "missing", False)
+            and not getattr(nxt, "waiting", False))
+
+
 def asks_connect(name, word="video"):
     """Whether a status's button is an ask for Connect (refused while Connect is off): *Mine now* / *Mine this* on a
     video. *No video*'s *Link…* and a non-video item's *Mine this* (the bar says it waits: alpha 4 M1) need no
@@ -1491,13 +1502,18 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             g = self._hero_geometry(payload, rect, lines)
             nxt = payload.episodes[payload.next_index]
-            out.append(("play" if nxt.can_play else "no-play", g["play"], payload.play_tip, nxt))   # row 55
+            link = links_video(payload)             # Kantan-B2 (AUDIT A3, finding 15): *No video · Link…*, a press
+            if not link:                            # (listed last: the keyboard's → reaches the row's status first)
+                out.append(("play" if nxt.can_play else "no-play", g["play"], payload.play_tip, nxt))   # row 55
             all_tip = strings.ROWS_DONE_ALL_MIX_TIP if payload.source == "hato" else strings.ROWS_DONE_ALL_TIP
             out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if payload.status is not None:                 # --- P4.1 L2: the row's status, a button as a row's (Q33)
                 out.append(self._status_part(payload, payload.episodes, g["status"], payload.media_word))
+            if link:
+                out.append(("no-media", g["play"], strings.ROWS_NO_MEDIA_TIP.format(tip=payload.play_tip),
+                            Ask(nxt.id, (nxt.id,), nxt)))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             if g["pct"] is not None:                       # Kantan-B1: what the % counts
@@ -2881,6 +2897,8 @@ class RowDelegate(QStyledItemDelegate):
             return strings.ROWS_LOOKING_BUTTON
         if row.media == "youtube":
             return strings.ROWS_ONLINE_BUTTON
+        if links_video(row):
+            return strings.ROWS_NO_MEDIA_LINK_BUTTON.format(word=row.media_word)
         return strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
 
     def _paint_play(self, p, r, row, nxt, dpr, sheet):
@@ -4656,7 +4674,7 @@ class RowsView(QListView):
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
         offers = ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),)      # alpha 4 M1: no *Mine text*
-        moved = getattr(getattr(ask.episode, "status", None), "moved", None)
+        moved = getattr(getattr(ask.episode, "status", None), "moved", None) or getattr(ask.episode, "moved", None)
         if moved:                                       # MV-2: its video left its folder — find that folder first
             offers = ((strings.ROWS_FIND_FOLDER, strings.ROWS_FIND_FOLDER_TIP.format(folder=moved),
                        self.find_folder_requested),) + offers

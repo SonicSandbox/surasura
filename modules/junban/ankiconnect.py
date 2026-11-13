@@ -141,6 +141,38 @@ def _write_action(card_id, due, key="due"):
             "params": {"card": card_id, "keys": [key], "newValues": [due]}}
 
 
+# AnkiConnect Extended (add-on 1635024181, a replacement for AnkiConnect) refuses `setSpecificValueOfCard` for every
+# key outside its own few — `due` among them — with this message, and offers `repositionNewCards` (Anki's own
+# `sort_cards`) instead (Mattias's field report, 3.0.6: "Junban did not make any changes: Use native scheduling
+# commands for protected state.").
+NATIVE_REFUSAL = "native scheduling commands"
+# The AnkiConnect addresses that refused it this run: their positions go by `repositionNewCards` from then on
+_NATIVE = set()
+
+
+def _native_action(card_id, due):
+    """`repositionNewCards` for ONE new card: `startPosition` its position, no shift — Anki's `sort_cards` puts it at
+    exactly that position and moves nothing else, as `setSpecificValueOfCard`'s `due` does."""
+    return {"action": "repositionNewCards",
+            "params": {"orderedCardIds": [card_id], "startPosition": due, "step": 1, "shift": False}}
+
+
+def _native_verdict(reply):
+    """Did one `repositionNewCards` move its card? "" when it did, else why not (not new any more, gone)."""
+    if not isinstance(reply, dict):
+        return "Anki sent no reply for this card."
+    if reply.get("error") is not None:
+        return str(reply["error"])
+    result = reply.get("result")
+    if isinstance(result, dict) and result.get("repositioned") == 1:
+        return ""
+    if isinstance(result, dict) and result.get("skippedNotNew"):
+        return "It is no longer a new card."
+    if isinstance(result, dict) and result.get("skippedNotFound"):
+        return "Anki no longer has this card."
+    return f"Anki didn't move the card: {result!r}"
+
+
 def _verdict(reply):
     """Did this one sub-action actually write? Returns "" for success, else why not.
 
@@ -252,20 +284,41 @@ def set_due(url, pairs, chunk=150, progress=None):
             # Anki went away mid-run. Report the rest honestly instead of hammering a dead socket.
             failures.extend((card_id, stopped) for card_id, _due in batch)
             continue
+        native = url in _NATIVE
         try:
-            replies = multi([_write_action(card_id, due) for card_id, due in batch], url)
+            if native:
+                replies = multi([_native_action(card_id, due) for card_id, due in batch], url)
+            else:
+                replies = multi([_write_action(card_id, due) for card_id, due in batch], url)
         except AnkiError as e:
             stopped = str(e)
             failures.extend((card_id, stopped) for card_id, _due in batch)
             continue
 
-        for index, (card_id, _due) in enumerate(batch):
+        again = []                          # refused as protected state: sent again the native way, below
+        for index, (card_id, due) in enumerate(batch):
             reply = replies[index] if index < len(replies) else None
-            reason = _verdict(reply)
-            if reason:
+            reason = _native_verdict(reply) if native else _verdict(reply)
+            if reason and not native and NATIVE_REFUSAL in reason.casefold():
+                again.append((card_id, due))
+            elif reason:
                 failures.append((card_id, reason))
             else:
                 written.append(card_id)
+        if again:
+            _NATIVE.add(url)
+            try:
+                replies = multi([_native_action(card_id, due) for card_id, due in again], url)
+            except AnkiError as e:
+                stopped = str(e)
+                failures.extend((card_id, stopped) for card_id, _due in again)
+                replies = None
+            for index, (card_id, _due) in enumerate(again if replies is not None else ()):
+                reason = _native_verdict(replies[index] if index < len(replies) else None)
+                if reason:
+                    failures.append((card_id, reason))
+                else:
+                    written.append(card_id)
 
         done += len(batch)
         if progress is not None:

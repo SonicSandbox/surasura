@@ -75,13 +75,13 @@ def test_pick_its_audiobook_reads_on_a_worker_and_a_pick_pairs_that_audiobook_wi
 def test_a_folder_on_your_computer_becomes_a_library_folder(ask):
     win, _writer, ny, entry, _got, _read = ask
     folders = []
-    win.adder.read_folder = lambda folder, first=False: folders.append(folder) or True
+    win.adder.read_folder = lambda folder, first=False, book=None: folders.append((folder, book)) or True
     ny.pick_folder = lambda _title, _start: "D:/Audio/I Am a Cat"
     menu = ny._audiobooks_menu(entry, {"epub": "D:/Books/b.epub", "title": NEKO, "audiobooks": []})
     [only] = [a for a in menu.actions() if not a.isSeparator()]
     assert only.text() == strings.NEEDS_AUDIOBOOK_FOLDER
     only.trigger()
-    assert folders == ["D:/Audio/I Am a Cat"]
+    assert folders == [("D:/Audio/I Am a Cat", {"epub": "D:/Books/b.epub", "title": NEKO})]   # Kura-AB4: the book told
 
 
 def test_mine_without_audio_answers_connect_on_a_worker_then_kicks_it(ask):

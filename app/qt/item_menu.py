@@ -879,12 +879,14 @@ class ItemActions(QObject):
             return None
         m = drag.list_menu(self.lst, got["title"])
         for ab in (got.get("audiobooks") or [])[:qneeds.BOOKS_SHOWN]:
-            m.addAction(drag.menu_action(m, strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]),
+            m.addAction(drag.menu_action(m, qneeds.audiobook_line(ab),
                                          lambda ab=ab: ny._pick_audiobook(None, ab["item_id"], got["epub"],
-                                                                          got["title"])))
+                                                                          got["title"],
+                                                                          replace=bool(ab.get("elsewhere")))))
         if got.get("audiobooks"):
             m.addSeparator()
-        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FOLDER, lambda: ny._audiobook_folder(got["title"]))
+        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FOLDER,
+                               lambda: ny._audiobook_folder(got["title"], got.get("item_id"), got["epub"]))
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         m.addAction(act)
         self.audiobook_list = self.last_menu = m

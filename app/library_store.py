@@ -13069,7 +13069,9 @@ def _store_book_audiobooks(self, item_id):
     Hon asks about for this very book (H-8) first, then those with no question open, the likeliest first for this book
     (`audiobooks`' title levels), one told *No* about it or *It has no book* last, then by title; None when the item is
     no live part of an EPUB — nor of a split book (Kura-TX: `epub` its joined `.txt`, `split_book`). `paired`: an
-    audiobook reads this book already (⋯ → *Its audiobook…* is offered only while none does). One read."""
+    audiobook reads this book already (⋯ → *Its audiobook…* is offered only while none does). One read. An audiobook
+    paired with another copy of this very book (the same title, exactly) is listed too, its `elsewhere` that book's
+    title (its pick moves it: `pick_audiobook_book(replace=True)`); each one's `folder` is where its first file is."""
     from app import audiobooks
     with self._reading():
         origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
@@ -13092,7 +13094,7 @@ def _store_book_audiobooks(self, item_id):
                     f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
                 title = None                             # two books in one title: this one named by its file
             title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
-        lone, seen, paired = [], set(), False
+        lone, seen, paired, elsewhere = [], set(), False, []
         for _k, ab_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
             ask = ab.get("ask")
@@ -13101,14 +13103,21 @@ def _store_book_audiobooks(self, item_id):
                                 path_key(os.path.abspath(book["epub"])) == path_key(os.path.abspath(epub)))
             asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
                 path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
-            if ab_id in seen or ab.get("book") or (ask and not asked_here):
+            other = isinstance(book, dict) and isinstance(book.get("epub"), str) and                 path_key(os.path.abspath(book["epub"])) != path_key(os.path.abspath(epub))
+            if ab_id in seen or (ab.get("book") and not other) or (ask and not asked_here):
                 continue
             seen.add(ab_id)
             if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
-                lone.append((ab_id, ab))
+                (elsewhere if other else lone).append((ab_id, ab))
     answers = self.audiobook_answers() if lone else {}
     book = audiobooks.Book(id=item_id, path=os.path.abspath(epub), sha256=origin.get("sha256"))
     forms, _vols = audiobooks._forms([title, os.path.splitext(os.path.basename(epub))[0]])
+    # Mattias's 3.0.6 field report: an audiobook paired with ANOTHER copy of this very book (the same title, exactly:
+    # an EPUB found beside it in the folder this book's question read) is offered too — its pick moves it here
+    for ab_id, ab in elsewhere:
+        a_forms, _v = audiobooks._forms(list(ab.get("titles") or ()) + ([ab["title"]] if ab.get("title") else []))
+        if audiobooks._title_level(forms, a_forms) == audiobooks.EXACT:
+            lone.append((ab_id, dict(ab, elsewhere=ab["book"].get("title") or ab["book"].get("epub"))))
 
     def rank(entry):
         ab_id, ab = entry
@@ -13117,9 +13126,11 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
+    return {"epub": os.path.abspath(epub), "title": title, "paired": paired, "item_id": item_id,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
-                            "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)]}
+                            "seconds": ab.get("seconds"), "elsewhere": ab.get("elsewhere"),
+                            "folder": os.path.dirname(str((ab.get("files") or [""])[0])) or None}
+                           for ab_id, ab in sorted(lone, key=rank)]}
 
 
 # Kura-TX (B1; PROVISIONAL, the lead 2026-11-12 — Mattias's migrated books): a book 2.x split into `.txt` parts
@@ -13215,17 +13226,23 @@ def _store_joined_book(self, path):
     return None
 
 
-def _store_pick_audiobook_book(self, item_id, epub, by="user"):
+def _store_pick_audiobook_book(self, item_id, epub, by="user", replace=False):
     """a5-2 *Find its book…*: the learner's pick — `epub` (a book of the library, by its EPUB's path) is the book this
     audiobook reads. Paired exactly as a *Yes* pairs (`pair_audiobook`: the records' `book`, the answer kept True, the
     item after the book's last part, in its title) in ONE command whose Change (`audiobook_pick`) Undo takes back: the
     records as they were, the answer as it was, the item in its title and place again. -> the Change, or None (no such
-    audiobook item, already paired, or the book has no part in the library)."""
+    audiobook item, already paired, or the book has no part in the library). `replace` (Mattias's 3.0.6 field report):
+    an audiobook paired with another book is moved to this one — the book's own question picked it, the other book
+    was another copy of it found beside the audiobook; its Undo pairs it back as it was."""
     from app import audiobooks
     joined = self.joined_book(epub)          # Kura-TX: a split book's joined `.txt` (its sidecar read before the lock)
     with self._command("audiobook_pick", by) as cmd:
         rows = self._audiobook_rows(item_id)
-        if not rows or isinstance((rows[0][2].get("audiobook") or {}).get("book"), dict):
+        if not rows:
+            return None
+        had = (rows[0][2].get("audiobook") or {}).get("book")
+        if isinstance(had, dict) and (not replace or path_key(os.path.abspath(str(had.get("epub") or ""))) ==
+                                      path_key(os.path.abspath(epub))):
             return None
         if joined is not None:
             split = self.split_book(joined["parts"][0])

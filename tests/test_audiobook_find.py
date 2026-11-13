@@ -438,3 +438,35 @@ def test_up_next_and_the_watched_count_read_the_books_own_files_never_its_audiob
     alone = view_rows._row(0, "now", [dict(audio, work_id=9)], {9: {"id": 9, "title": NEKO}}, {}, {}, set(), set(),
                            20)
     assert alone.next_index == 0 and view_rows.audio_only(alone) == view_rows.heard_only(alone.episodes) is True
+
+
+# --- Mattias's 3.0.6 field report: an audiobook paired with another copy of the book that asked ------------------- #
+def test_an_audiobook_paired_elsewhere_is_offered_to_the_book_of_its_exact_title_and_moved_by_the_pick(said_no):
+    """The folder a book's question read held the book's EPUB too: the look paired the audiobook with that other copy
+    and left the book that asked without it. Its own book's list offers it (`elsewhere`: the book it is with now), and
+    the pick moves it (`replace`); its Undo pairs it back as it was."""
+    store, _root, _src, item = said_no
+    assert store.pick_audiobook_book(item["id"], _book_epub(store, BOCCHAN)) is not None    # with the wrong book
+    _work, rows = _book_items(store, NEKO)
+    part = next(r[0] for r in rows if r[0] != item["id"])
+    got = store.book_audiobooks(part)
+    [offered] = [ab for ab in got["audiobooks"] if ab["item_id"] == item["id"]]
+    assert offered["elsewhere"] == BOCCHAN and offered["folder"]
+    assert got["item_id"] == part
+    epub = _book_epub(store, NEKO)
+    assert store.pick_audiobook_book(item["id"], epub) is None, "never moved without being asked to"
+    change = store.pick_audiobook_book(item["id"], epub, replace=True)
+    assert change is not None
+    assert _record(store, item["id"])["book"]["epub"] == os.path.abspath(epub)
+    assert store.item(item["id"])["work_id"] == _book_items(store, NEKO)[0]
+    assert store.pick_audiobook_book(item["id"], epub, replace=True) is None, "its own book already: nothing"
+    store.undo(change)
+    assert _record(store, item["id"])["book"]["title"] == BOCCHAN
+
+
+def test_an_audiobook_paired_with_a_book_of_another_title_is_never_offered(said_no):
+    store, _root, _src, item = said_no
+    assert store.pick_audiobook_book(item["id"], _book_epub(store, NEKO)) is not None
+    _work, rows = _book_items(store, BOCCHAN)
+    got = store.book_audiobooks(rows[0][0])
+    assert item["id"] not in [ab["item_id"] for ab in got["audiobooks"]]

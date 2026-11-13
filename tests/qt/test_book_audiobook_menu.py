@@ -36,9 +36,9 @@ def book_menu(qapp, monkeypatch):
         got.append((item_id, threading.current_thread() is not main))
         return answer["book"]
     win.items.read_audiobook = read
-    monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda entry, audio, epub, title: picked.append(
+    monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda entry, audio, epub, title, replace=False: picked.append(
         ("pick", entry, audio, epub, title)))
-    monkeypatch.setattr(win.needs_you, "_audiobook_folder", lambda title: picked.append(("folder", title)))
+    monkeypatch.setattr(win.needs_you, "_audiobook_folder", lambda title, item_id=None, epub=None: picked.append(("folder", title)))
     row = rows_of(win)[4]
     from app.qt import item_menu
     monkeypatch.setattr(item_menu, "book_row", lambda r: r is row)      # (the seed's rows are videos: this, a book's)

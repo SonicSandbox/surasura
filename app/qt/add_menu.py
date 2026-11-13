@@ -263,10 +263,12 @@ class Adder(QObject):
                        name=name, why=info[0])), win=self.shell)
 
     # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #
-    def read_folder(self, folder, first=False):
+    def read_folder(self, folder, first=False, done=None):
         """`folder` becomes a source: `add_source` and its first look, on the looks' worker; what it found (or why it
         can't be read there) said in the bar, `given` once it landed. `first`: setup's own first scan (Current, SRC-1).
-        Without the looks, copied in (`add_folder`). -> True when it was asked."""
+        Without the looks, copied in (`add_folder`). `done(answer)`: called on the GUI thread once its look has
+        answered and it was read (a book's question pairs what it found: `NeedsYou._audiobook_folder`). -> True when
+        it was asked."""
         if not folder:
             return False
         looks = getattr(self.shell, "looks", None)
@@ -281,7 +283,7 @@ class Adder(QObject):
         if p is None:                                                                    # until its look answers
             return True                                   # its look asked already, still running: asked once
         relay = bridge.Relay(self)
-        relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p))
+        relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p, done))
         busy = looks.busy() if hasattr(looks, "busy") else False
         try:
             asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
@@ -298,7 +300,7 @@ class Adder(QObject):
         if p is not None and p.live():
             qpress.end(p, self.shell, failed=failed)
 
-    def _read(self, name, answer, relay, folder=None, p=None):
+    def _read(self, name, answer, relay, folder=None, p=None, done=None):
         relay.deleteLater()
         self._read_ended(p, failed=bool(answer.get("refused")))
         refused = answer.get("refused")
@@ -329,6 +331,8 @@ class Adder(QObject):
             windows.say_in_bar(self.shell, text)
         if not refused:
             self.given.emit(text)
+        if done is not None and not refused and not answer.get("later") and result.get("reachable", True):
+            done(answer)
 
     def paste(self):
         if self.card is not None and _alive(self.card) and self.card.isVisible():

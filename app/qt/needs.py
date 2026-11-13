@@ -693,6 +693,29 @@ def _default_audiobooks(opener, item_id):
                 pass
 
 
+def audiobook_line(ab):
+    """One audiobook's line in *Pick its audiobook…* (and the row's ⋯ → *Its audiobook…*): its title and files, and the
+    book it is with now when that is another copy of this one (`elsewhere`)."""
+    if ab.get("elsewhere"):
+        return strings.NEEDS_AUDIOBOOK_ELSEWHERE.format(title=ab["title"], n=ab["n"], book=ab["elsewhere"])
+    return strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"])
+
+
+def in_folder(got, folder):
+    """The first of `got`'s audiobooks (`Store.book_audiobooks`) whose files are in `folder` (or below it), or None."""
+    if not got or not folder:
+        return None
+    root = os.path.normcase(os.path.abspath(folder)).rstrip("\\/")
+    for ab in got.get("audiobooks") or ():
+        where = ab.get("folder")
+        if not where:
+            continue
+        here = os.path.normcase(os.path.abspath(where)).rstrip("\\/")
+        if here == root or here.startswith(root + os.sep):
+            return ab
+    return None
+
+
 def _held_book(books, path):
     """(A worker.) *An EPUB on your computer…*: the library's book that IS this file — its path, else its bytes (sha256)
     — or None."""
@@ -1591,15 +1614,16 @@ class NeedsYou(QObject):
             return
         m = drag.list_menu(self.cards, entry.title)
         for ab in (got.get("audiobooks") or [])[:BOOKS_SHOWN]:
-            act = QAction(strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]), m)
+            act = QAction(audiobook_line(ab), m)
             act.triggered.connect(lambda _c=False, ab=ab: self._pick_audiobook(entry, ab["item_id"], got["epub"],
-                                                                               got["title"]))
+                                                                               got["title"],
+                                                                               replace=bool(ab.get("elsewhere"))))
             m.addAction(act)
         if got.get("audiobooks"):
             m.addSeparator()
         act = QAction(strings.NEEDS_AUDIOBOOK_FOLDER, m)
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
-        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"]))
+        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"], got.get("item_id"), got["epub"]))
         m.addAction(act)
         self.last_menu = m
         control = self._control("pick_audiobook", entry)
@@ -1607,25 +1631,53 @@ class NeedsYou(QObject):
             m.popup(control.mapToGlobal(QPoint(0, control.height())))
         return m
 
-    def _pick_audiobook(self, entry, audio_id, epub, title):
+    def _pick_audiobook(self, entry, audio_id, epub, title, replace=False):
+        """A pick pairs the audiobook with the book (`writer.pick_audiobook`, its toast's Undo); `replace`: one paired
+        with another copy of this book (`elsewhere`) is moved to it."""
         writer, kick, read_settings = self.win.services.writer, self.connect_calls.get("kick"), self.read_settings
 
         def told(_ticket, event):                    # saved: Connect lines them up at once, not at its next look
             if event == "saved" and kick is not None:
                 bridge.run_in_worker(lambda: kick(read_settings() or {}))
         self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
-                   lambda t: writer.pick_audiobook(audio_id, epub, label=t), told=told)
+                   lambda t: writer.pick_audiobook(audio_id, epub, label=t, replace=replace), told=told)
 
-    def _audiobook_folder(self, title):
+    def _audiobook_folder(self, title, item_id=None, epub=None):
         """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,
-        `Adder.read_folder`); its look pairs the audiobook by itself when it is sure, else asks, else it is listed
-        here for the pick."""
+        `Adder.read_folder`). Picked from a book's question (`item_id`, `epub`: Mattias's 3.0.6 field report — the
+        look paired the audiobook with an EPUB copy of the book found beside it, never the book that asked, and left
+        it in New Arrivals): once its look has answered, an audiobook it found in that folder joins THIS book
+        (`_folder_audiobook`), whatever the look paired it with; none there: listed here for the pick, as before."""
         adder = getattr(self.win, "adder", None)
         if adder is None:
             return
         folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), "")
-        if folder and adder.read_folder(folder):
+        done = None
+        if folder and item_id is not None and epub:
+            done = lambda _answer: self._folder_audiobook(folder, item_id, epub, title)    # noqa: E731
+        if folder and adder.read_folder(folder, done=done):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
+
+    def _folder_audiobook(self, folder, item_id, epub, title):
+        """(GUI) The folder a book's question read has been looked at: the book's audiobooks read again on a plain
+        thread (`read_audiobooks`), and the first found in `folder` paired with the book (`replace` when the look
+        paired it with another copy of it). None found there: nothing, the question stays for the pick."""
+        read = self.read_audiobooks
+        relay = bridge.Relay(self)
+
+        def back(got):
+            relay.deleteLater()
+            ab = in_folder(got, folder)
+            if ab is not None and self._alive():
+                self._pick_audiobook(None, ab["item_id"], epub, title, replace=bool(ab.get("elsewhere")))
+        relay.said.connect(back)
+
+        def ask():
+            try:
+                relay.call(read(item_id))
+            except Exception:
+                relay.call(None)
+        threading.Thread(target=ask, name="folder-audiobook", daemon=True).start()
 
     def _do_no_audiobook(self, entry, _line):
         answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),

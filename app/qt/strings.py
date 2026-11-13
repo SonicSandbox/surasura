@@ -1566,6 +1566,8 @@ NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
 NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+# Mattias's 3.0.6 field report: an audiobook paired with another copy of the same book (an EPUB found beside it)
+NEEDS_AUDIOBOOK_ELSEWHERE = "{title} · {n} files · now with 「{book}」"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
 NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "

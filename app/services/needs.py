@@ -41,7 +41,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   *Save logs to a file…*.
 - **Connect's entries** (`read_connect`: `connect.status`'s record, newest first, plus the ledger's gaps): its own words
   and its kind's action — `not-timed` *Check again* (`connect.actions.check_again`, the row's own: Kantan-B2, AUDIT
-  B4) then *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
+  B4), *Change its video…* (Kantan-B5, Mattias's #421: the window's `mine_actions.change_video`, hidden until it is
+  hooked — `WIRED_LATER`) then *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
   (`connect.hato.backfill`), a failure Connect logged *Open the logs folder*; every one *Dismiss* (`status.dismiss`). A
   gap (*lost track*) offers *Make their cards* (no callable yet: hidden, `WIRED_LATER`) and *Leave them* (answered here).
 - **Known from Anki's one-time question** (laptop round 7 #43, ⭐ B3-1 A): the cards you had already suspended / marked
@@ -133,10 +134,13 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
          BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
-WIRED_LATER = frozenset(("make_cards", "try_again"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
+WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 # Kantan-B2 (AUDIT B4, Sonic's yes 2026-11-12): *Not timed* offers *Check again* first — a subtitle re-timed by hand
-CONNECT_ACTIONS = {"not-timed": ("check_again", "mine_anyway"), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
+# Kantan-B5 (Mattias's #421; PROVISIONAL): then *Change its video…* — an episode linked to another episode's video picks
+# again (the rows' own `mine_actions.change_video`: the pick linked, its timing checked again), before *Mine anyway*
+CONNECT_ACTIONS = {"not-timed": ("check_again", "change_video", "mine_anyway"), "no-pairing": ("ask_hato",),
+                   "repick": ("open_logs",),
                    # Mattias #5: a part Anki Miner stopped on twice — *Try again* (the rows' own ask, `mine_actions`)
                    "mine-failed": ("try_again", "open_logs"), "error": ("open_logs",),
                    # Michi-RM3: words Anki refused alone — *Skip this word* (`connect.actions.skip_refused`). Kantan-B2
@@ -465,7 +469,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         title = n.get("say") or ""
         out.append(Entry(key=f"connect:{n['id']}", kind=kind, title=title, lines=(),
                          actions=CONNECT_ACTIONS.get(kind, ()) + ("dismiss",), unseen=not n.get("seen_at"), say="",
-                         data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at")}))
+                         data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at"),
+                               **_episode_of(by_id, n.get("item"))}))
     for gap in reversed((connect or {}).get("gaps") or ()):
         entry = _gap_entry(gap, seen)
         if entry.key not in answered:
@@ -473,6 +478,13 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out = [e for e in out if e.kind == BULK or e.key not in hidden]
     out[lines_at:lines_at] = _reason_lines(out)
     return out
+
+
+def _episode_of(by_id, item_id):
+    """Kantan-B5: a Connect entry's episode as the view lists it — {"label", "rel_path"} (*Change its video…*'s picker
+    title and its copy), else {}."""
+    found = by_id.get(item_id) if item_id is not None else None
+    return {"label": found[1].label, "rel_path": found[1].rel_path} if found is not None else {}
 
 
 def _reason_lines(cards):

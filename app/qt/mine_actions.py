@@ -44,6 +44,10 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   and the episode's ⋯ check its timing anew — `connect.actions.check_again` on a worker (the entry fixed, the job
   queued), then Connect kicked. Pressed, its pill turns at once (`check:<language>:<id>`, as *Mine now*'s) until its
   status moves; nothing to check again (the episode no longer waits on its timing): the bar says so.
+- ***Change its video…*** (Kantan-B5, based on the approach in #421 by Mattias; PROVISIONAL words): a *Not timed*
+  episode linked to another episode's video picks again — on its ⋯ beside *Check again* and on its *Needs you* card
+  (`change_video`): the picker at the linked video's folder, the pick linked by the writer (one change, Undo), then its
+  timing checked again once that change is saved. Nothing on disk moves.
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -140,6 +144,7 @@ class MineActions(QObject):
         if needs is not None:
             needs.hooks["make_cards"] = self._needs_make_cards
             needs.hooks["try_again"] = self._needs_try_again      # Mattias #5
+            needs.hooks["change_video"] = self._needs_change_video    # Kantan-B5 (#421)
             needs.rewire()
         items = getattr(win, "items", None)
         if items is not None:                        # --- row 28 (Michi's row 24b ask): an episode's ⋯ offers *Mine now*
@@ -402,7 +407,10 @@ class MineActions(QObject):
             return [item_menu.Entry("ep-stop", strings.MINE_STOP_ENTRY, tip, True, payload=lambda: self.stop(ask))]
         if name == rows.CHECK:                       # --- Michi-NT: no store write, so never greyed for one
             return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
-                                    payload=lambda: self.check_again(ask))]
+                                    payload=lambda: self.check_again(ask)),
+                    # Kantan-B5 (#421): linked to the wrong video, it picks again — a write (greyed while read-only)
+                    item_menu.Entry("ep-change-video", strings.ROWS_CHANGE_VIDEO, strings.ROWS_CHANGE_VIDEO_TIP, True,
+                                    payload=lambda: self.change_video(ep.id, ep.label, ep.rel_path), writes=True)]
         if name not in ("mine-now", "try-again"):       # (Mattias #5: *Try again* where its pill is *Try again*)
             return []
         return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
@@ -434,6 +442,79 @@ class MineActions(QObject):
                         lambda t: writer.link_video(ep.id, path, label=t))
         qpress.run(None, ("link", ep.id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
+
+    # --- Kantan-B5 (Mattias's #421): *Change its video…* ------------------------------------------------------ #
+    def change_video(self, item_id, label, rel_path=None, control=None, key=None):
+        """*Not timed*'s way out when the episode was linked to another episode's video (*Link…* shows only while it
+        has none): the system's picker, videos only, opened at the folder of the video it is linked to now
+        (`own_folder.read_video`, a worker); the pick linked as *Link…* links one (the writer's `link_video`: one
+        change, its toast's Undo and Ctrl+Z; the newest link is the one Connect reads, `link.link`); once saved, its
+        timing checked again at once (`check_job`: Connect's `check_again`, then kicked) and the bar says so. The
+        video it has already: said, nothing written; refused by the store: the writer's note says why. Nothing on
+        disk moves. `control` / `key`: the button pressed and its press (*Needs you*'s card); None: the bar's arc.
+        -> the press, or None (pressed already, or no writer)."""
+        if self.win.moves is None:
+            return None
+        from app.services import own_folder
+        lang = getattr(self.win, "language", "")
+        data, opener = path_utils.get_data_path(lang), own_folder.opener_of(self.win)
+
+        def look():                                 # (the worker) the types, and the video it has now
+            return _video_patterns(), own_folder.read_video(opener, data, item_id, rel_path)
+
+        def pick(found):
+            patterns, (folder, current) = found
+            if sip.isdeleted(self) or self.win.moves is None or getattr(self.win, "language", None) != lang:
+                return                              # (the window switched library meanwhile: nothing asked)
+            if self.win.moves.refused() is not None:
+                return                              # the store takes no change now: said (`refused`), no picker
+            path = self.pick_file(strings.LINK_TITLE.format(label=label), folder, patterns)
+            moves = self.win.moves
+            if not path or moves is None or moves.refused() is not None or getattr(self.win, "language", None) != lang:
+                return
+            if current and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(current)):
+                self.win.say(strings.CHANGE_VIDEO_SAME)
+                return
+            ticket = drag.Ticket(strings.LINKING_ONE.format(label=label), (), (item_id,))
+            ticket.told = lambda event: self._video_changed(event, ticket, lang, item_id)
+            writer = moves.writer
+            moves._give(ticket, lambda t: writer.link_video(item_id, path, label=t))
+        return qpress.run(control, key or ("change-video", lang, item_id), look, then=pick,
+                          failed=lambda info: self.win.say(str(info[1])), win=self.win)
+
+    def _video_changed(self, event, ticket, lang, item_id):
+        """The new link saved (never one refused, undone or let go): its timing checked again now, on a worker
+        (`check_job`); the bar says so, and the feed and *Needs you* are read again (the card goes)."""
+        if event != "saved" or ticket.change is None or sip.isdeleted(self):
+            return
+        get = self.win.services.settings.get
+
+        def done(queued):
+            if sip.isdeleted(self):
+                return
+            self.win.say(self.off or (strings.NEEDS_CHECK_AGAIN if queued else strings.CHANGE_VIDEO_LINKED))
+            refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
+            if refresh is not None:
+                refresh("connect")
+            needs = getattr(self.win, "needs_you", None)
+            if needs is not None:
+                needs.refresh()
+
+        def broke(info):
+            if not sip.isdeleted(self):
+                self.win.say(strings.CHECK_AGAIN_FAILED.format(why=info[0] if info else ""))
+        bridge.run_in_worker(self.check_job, lang, [item_id], get, then=done, failed=broke)
+
+    def _needs_change_video(self, entry, _line=None):
+        """*Not timed*'s card's *Change its video…*: the episode's own `change_video` (its label and copy from the
+        entry, `services.needs`), its arc on the card's button. Another language's card: nothing asked."""
+        data, needs = entry.data or {}, self.win.needs_you
+        item_id = data.get("item_id")
+        if item_id is None or needs is None or getattr(needs, "language", None) not in (None, self.win.language):
+            return None
+        return self.change_video(item_id, data.get("label") or strings.CHANGE_VIDEO_EPISODE, data.get("rel_path"),
+                                 control=needs._control("change_video", entry),
+                                 key=needs._press_key("change_video", entry))
 
     # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #
     def find_folder(self, ep):

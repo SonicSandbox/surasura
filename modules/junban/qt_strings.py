@@ -10,6 +10,7 @@ JUNBAN_NAME = "順番 (Junban)"
 JUNBAN_HEADER = "順番 (Junban)"
 JUNBAN_HEADER_TIP = ("Puts the new cards waiting in Anki into Surasura's learn order. Nothing is added, deleted or "
                      "rescheduled.")
+JUNBAN_LEAD = "Put your new cards in the order you'll meet them?"        # Fresh-U 14 (PROVISIONAL): its one question
 JUNBAN_BACKFILL = "Backfill…"
 JUNBAN_BACKFILL_TIP = "Fill fields on your cards from Surasura."
 JUNBAN_RECHECK_NAME = "Check Anki again"

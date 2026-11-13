@@ -1514,3 +1514,18 @@ def test_fresh_u_on_a_short_screen_the_window_fits_and_its_body_scrolls(main, en
     QApplication.sendEvent(win.deck_box, e)
     assert win.deck_box.currentIndex() == at and picked == []
     assert win.body_scroll.verticalScrollBar().value() > 0
+
+
+def test_fresh_u_the_window_leads_with_its_one_question_before_any_option(main, engine):
+    # Fresh-U 14 (Sonic 2026-11-13 yes; words PROVISIONAL): the window opened on *By leverage*, ⚖︎, 文, i+1 and a
+    # check waiting with nothing saying what it is for; it now asks its one question first, in plain words, under the
+    # header and above Scope · Order (laid out before them), as plain text and read by a screen reader
+    win = opened(main)
+    lead = win.lead
+    assert lead.text() == qs.JUNBAN_LEAD == "Put your new cards in the order you'll meet them?"
+    assert lead.textFormat() == Qt.TextFormat.PlainText and lead.objectName() == "windowlead"
+    assert lead.isVisibleTo(win)
+    assert lead.accessibleName() == qs.JUNBAN_LEAD
+    order = [win.header, lead, win.rb_deck, win.rb_met, win.rb_leverage]
+    tops = [w.mapTo(win, w.rect().topLeft()).y() for w in order]
+    assert tops[0] < tops[1] < min(tops[2:]), "the question sits between the header and the first option"

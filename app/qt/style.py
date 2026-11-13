@@ -310,6 +310,7 @@ QLabel#nextline {{ color: {c['ink-dim']}; {font('row-sub')} font-weight: 400; }}
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#windowheading {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#windowline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#windowlead {{ color: {c['ink']}; {font('body')} }}
 QPushButton#windowlink {{ background: transparent; color: {c['ink-dim']}; border: 2px solid transparent;
   border-radius: 6px; padding: 0 {2 * room}px 0 2px; min-height: 0; text-decoration: underline; {font('body')}
   font-weight: 400; }}

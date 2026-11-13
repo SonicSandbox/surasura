@@ -884,6 +884,7 @@ class ReportWindow(SecondaryWindow):
         self.include_results.setToolTip(strings.REPORT_RESULTS_TIP)
         self.include_results.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.include_results.toggled.connect(lambda _on: self._contents_stale())
+        self.include_results.toggled.connect(lambda _on: self._promise_said())
         row.addWidget(self.include_results)
         row.addStretch(1)
         self.show_button = self._button(strings.REPORT_SHOW, strings.REPORT_SHOW_NONE_TIP, self.show_contents, row,
@@ -899,11 +900,20 @@ class ReportWindow(SecondaryWindow):
         self.promise = self._line(strings.REPORT_PROMISE)
         self.promise.setAlignment(Qt.AlignmentFlag.AlignRight)
         box.addWidget(self.promise)
+        self._promise_said()
         self.name_goes = self._line(strings.REPORT_NAME_GOES)
         self.name_goes.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.name_goes.setVisible(False)
         box.addWidget(self.name_goes)
         return box
+
+    def _promise_said(self):
+        """Fresh-U 18: Sonic's line as written, and while *Include my last lists* is ticked that the lists name the
+        library's titles (`REPORT_PROMISE_LISTS`, PROVISIONAL), on the same line."""
+        text = strings.REPORT_PROMISE + (strings.REPORT_PROMISE_LISTS if self.include_results.isChecked() else "")
+        if self.promise.text() != text:
+            self.promise.setText(text)
+        self.promise.setAccessibleName(text)
 
     def _after_rows(self):
         """The sender code and *New code*; after a send, the #ID with *Copy* and the invite, and *Sent reports* right

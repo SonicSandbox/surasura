@@ -2049,3 +2049,26 @@ HINT_WHY = {"first_card_wait": "Anki Miner makes cards only while Anki is open a
             "first_amber": "Amber means only you can decide something: the circle takes you to it",
             "first_auto_generate": "After a move, new known words or a new file, your journey catches up by itself"}
 # --- end help cards
+
+# --- the feature guide (Hoshi-S, 2026-11-12; app/qt/guide.py — every word PROVISIONAL, on Sonic's after-launch list)
+GUIDE_MARK = "✦"
+GUIDE_NAME = "What's new"
+GUIDE_TIP = "What's new in this update\n• Click: see it, with yours first"
+GUIDE_GLOW_NAME = "What's new: something new for you"
+GUIDE_PANEL_NAME = "What's new"
+GUIDE_HEADING = "What's new"
+GUIDE_HEADING_ONE = "What's new in {version}"
+GUIDE_RELEASE = "Surasura {version} · {date}"
+GUIDE_RELEASE_NO_DATE = "Surasura {version}"
+GUIDE_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+GUIDE_FOR_YOU = "FOR YOU"
+GUIDE_FIXES = "▸ {n} fixes and small changes"
+GUIDE_FIXES_ONE = "▸ 1 fix or small change"
+GUIDE_FIXES_OPEN = "▾ {n} fixes and small changes"
+GUIDE_FIXES_OPEN_ONE = "▾ 1 fix or small change"
+GUIDE_FIXES_TIP = "Fixes and small changes in this update\n• Click: show or hide them"
+GUIDE_SHOW_ME = "Show me"
+GUIDE_SHOW_ME_TIP = "Where to try it\n• Click: go there, lit up"
+GUIDE_SHOW_ME_NAME = "Show me: {text}"
+GUIDE_NOT_HERE = "That isn't on this screen right now."
+# --- end the feature guide

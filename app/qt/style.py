@@ -264,6 +264,22 @@ QWidget#levelpop QPushButton#generate[look="failed"] {{ border: 1px solid {c['wa
 QWidget#levelpop QPushButton#generate:disabled {{ color: {c['overlay-ink-faint']}; }}
 QWidget#levelpop QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
 """
+    # --- the feature guide (Hoshi-S, app/qt/guide.py): the ✦'s panel — an item a cut in the overlay holding one line; a
+    # folded fix a quieter line alone
+    rules += f"""
+QToolButton#headguide[glow="true"] {{ color: {c['ink']}; }}
+QScrollArea#guidescroll, QWidget#guidebody {{ background: transparent; border: 0; }}
+QLabel#guidever {{ color: {c['overlay-ink-faint']}; {font('row-sub')} font-weight: 400; }}
+QLabel#guidegroup {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} }}
+QWidget#guidecard {{ background: {c['overlay-cut']}; border-radius: {theme.RADII['r-sm']}px; }}
+QWidget#guidefix {{ background: transparent; }}
+QLabel#guidetext {{ color: {c['ink']}; {font('body')} font-weight: 400; }}
+QWidget#guidefix QLabel#guidetext {{ color: {c['overlay-ink-dim']}; {font('row-sub')} }}
+QPushButton#guideshow {{ background: {c['overlay-hover']}; color: {c['ink']}; border: 1px solid {c['overlay-edge-top']};
+  border-radius: {theme.RADII['button-sm']}px; min-height: {px(26)}; padding: 0 {px(10)}; {font('button')} }}
+QPushButton#guideshow:hover {{ border-color: {c['accent']}; }}
+QPushButton#guideshow:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(10 * f) - 1}px; }}
+"""
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
     rules += f"""
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}

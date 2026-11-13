@@ -14,6 +14,7 @@ Why these matter: a tester's own vol 1 (an M4B, its `.srt` and its EPUB side by 
 book's and the transcript's. Every look here runs on real files built on disk (an EPUB of real text, M4Bs and MP3s
 with real tags and lengths, transcripts of real sentences) and proves the source folders are never written to.
 """
+import json
 import logging
 import os
 import unicodedata
@@ -606,25 +607,6 @@ def test_which_subtitle_is_an_audiobooks_transcript(found, names, want):
     assert audiobooks.transcripts(found, names) == want
 
 
-def test_the_in_order_share_is_the_plain_scans_on_real_text():
-    """The index (`found_in_order`) finds exactly what a plain scan in order finds — the book's own lines shuffled,
-    repeated and mixed with another text's."""
-    import random
-    book = audiobooks.clean_text("".join(_lines("ja")) * 3)
-    lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
-    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
-    random.Random(7).shuffle(lines)
-
-    def plain(cues, text):
-        at, n = 0, 0
-        for c in cues:
-            i = text.find(c, at)
-            if i >= 0:
-                n, at = n + 1, i + len(c)
-        return n / len(cues)
-    assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
-
-
 def test_cues_and_the_in_order_share():
     srt = "1\n00:00:01,000 --> 00:00:02,000\n吾輩は猫である。\n名前はまだ無い。\n\n2\n00:00:03,000 --> 00:00:04,000\nにゃ\n"
     assert audiobooks.cues(srt) == ["吾輩は猫である名前はまだ無い"]                # short cues are never looked for
@@ -642,8 +624,86 @@ def test_what_a_transcript_is_for():
     assert audiobooks.transcript_use({"book": None}) is None
     assert audiobooks.transcript_use({"transcript": said, "book": None}) == audiobooks.TEXT
     assert audiobooks.transcript_use({"transcript": said, "book": book}) == audiobooks.UNCHECKED
-    found = lambda share, mark="s1": dict(said, found={"book": mark, "share": share})  # noqa: E731
+    found = lambda share, mark="s1": dict(said, found={"book": mark, "share": share,  # noqa: E731
+                                                   "rule": audiobooks.FOUND_RULE})
     assert audiobooks.transcript_use({"transcript": found(0.6), "book": book}) == audiobooks.TIMING
     assert audiobooks.transcript_use({"transcript": found(0.59), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(None), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(1.0, "s2"), "book": book}) == audiobooks.UNCHECKED
+
+
+# --- Kura-AB5: the in-order share is the longest run (based on the diagnosis in #432 by Mattias; 本好きの下剋上 vol 3) - #
+def _colophon_case(language):
+    """The narrator reads the title first; the book's text holds it only in its colophon, at the very end (its cover
+    an image) -> (cues, book text)."""
+    title = {"ja": "本好きの下剋上第一部兵士の娘III", "zh": "西游记第一回灵根育孕源流出"}[language]
+    lines = [audiobooks.clean_text(x) for x in _lines(language)]
+    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
+    book = audiobooks.clean_text("".join(_lines(language)) + "奥付" + title + "発行")
+    return [audiobooks.clean_text(title)] + lines, book, len(lines)
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_a_title_read_first_but_found_only_in_the_colophon_costs_only_itself(language):
+    """#432: the first cue found at the book's end moved the search past every other cue — 15 of 6548 found (0.0023)
+    though 99.88 % are in the book. Now one cue found far off costs only itself."""
+    cues, book, n = _colophon_case(language)
+    assert audiobooks.found_in_order(cues, book) == n / (n + 1)
+    assert audiobooks.found_in_order(cues, book) >= audiobooks.CONTENT_SHARE
+
+
+def test_the_in_order_share_is_the_longest_run_on_real_text():
+    """The index (`found_in_order`) finds exactly the longest run of cues in the book's order a plain search over
+    every place finds — the book's own lines shuffled, repeated and mixed with another text's; a cue repeated in the
+    transcript but once in the book counts once."""
+    import random
+    book = audiobooks.clean_text("".join(_lines("ja")) * 3)
+    lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
+    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
+    random.Random(7).shuffle(lines)
+
+    def plain(cues, text):
+        ends = []                                       # [(place, the longest run ending there)]
+        for c in cues:
+            here = [i for i in range(len(text)) if text.startswith(c, i)]
+            ends += [(i, 1 + max([k for j, k in ends if j < i], default=0)) for i in here]
+        return max([k for _i, k in ends], default=0) / len(cues)
+    assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
+    once = audiobooks.clean_text("".join(_lines("ja")))
+    twice = [lines[0], lines[0]] if lines[0] in once else [audiobooks.clean_text(_lines("ja")[0])] * 2
+    assert audiobooks.found_in_order(twice, once) == 0.5
+
+
+def test_a_book_judged_under_the_first_rule_and_found_wanting_is_judged_again_once():
+    """3.0.8's checks went by the first rule (no `rule`): one found wanting is checked again under this one; one found
+    the book's stays (the longest run is never shorter); one judged by this rule stays judged."""
+    said = {"origin": "x.srt", "rel": "Library/x (audio)/x.srt"}
+    book = {"epub": "b.epub", "sha256": "s1"}
+    old = lambda share: dict(said, found={"book": "s1", "share": share})  # noqa: E731
+    now = lambda share: dict(said, found={"book": "s1", "share": share, "rule": audiobooks.FOUND_RULE})  # noqa: E731
+    assert audiobooks.transcript_use({"transcript": old(0.0023), "book": book}) == audiobooks.UNCHECKED
+    assert audiobooks.transcript_use({"transcript": old(0.9), "book": book}) == audiobooks.TIMING
+    assert audiobooks.transcript_use({"transcript": now(0.0023), "book": book}) == audiobooks.OTHER
+
+
+def test_a_transcript_judged_wanting_by_the_first_rule_is_its_books_at_the_next_look():
+    """Store and look: his vol 3 as 3.0.8 left it — its transcript found wanting (no `rule`). The next look of its
+    folder checks it again: the book's (TIMING), recorded under this rule, and never checked again after."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        _work, rows = _book_items(store, STAR)
+        item = [r for r in rows if r[3] == "audio"][0][0]
+        with store._writing():
+            for key, text in store.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                                (item,)).fetchall():
+                rec = json.loads(text)
+                found = rec["audiobook"]["transcript"]["found"]
+                rec["audiobook"]["transcript"]["found"] = {"book": found["book"], "share": 0.0023}   # as 3.0.8's
+                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (json.dumps(rec), key))
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+        _look(store, "ja", root, full=True)
+        rec = _record(store, item)
+        assert audiobooks.transcript_use(rec) == audiobooks.TIMING
+        assert rec["transcript"]["found"] == {"book": found["book"], "share": 1.0, "rule": audiobooks.FOUND_RULE}

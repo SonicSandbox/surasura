@@ -87,10 +87,9 @@ def _audiobooks_read(store, folder, book=None):
     top = ls.path_key(os.path.normpath(folder)).rstrip("/") + "/"
     epub = ls.path_key(os.path.abspath(book["epub"])) if book and book.get("epub") else None
     from app import audiobooks
-    forms = audiobooks._forms([book.get("title") or ""])[0] if book else set()
 
     def same_title(title):                               # a book of this very title (a copy), never another book
-        return bool(forms) and audiobooks._title_level(forms, audiobooks._forms([title or ""])[0]) == audiobooks.EXACT
+        return bool(book) and audiobooks.same_book_title(book.get("title"), title)      # (nor another volume)
     out = {"joined": [], "alone": [], "asks": [], "elsewhere": []}   # joined: [{item_id, key}] (*Separate them*'s)
     for r in store.audiobooks():
         ab = r["audiobook"] or {}
@@ -102,7 +101,8 @@ def _audiobooks_read(store, folder, book=None):
                     ls.path_key(os.path.abspath(paired["epub"])) == epub:
                 out["joined"].append({"item_id": r["item_id"], "key": paired.get("key")})
             elif epub is not None and same_title(paired.get("title")):   # (#419's diagnosis: paired with another
-                out["elsewhere"].append({"item_id": r["item_id"], "book": paired.get("title") or ""})   # copy of it)
+                out["elsewhere"].append({"item_id": r["item_id"], "book": paired.get("title") or "",   # copy of it)
+                                         "how": paired.get("how")})
         elif isinstance(ask, dict) and ask.get("key"):
             out["asks"].append({"item_id": r["item_id"], "key": ask["key"], "book": ask.get("title") or "",
                                 "epub": ask.get("epub")})

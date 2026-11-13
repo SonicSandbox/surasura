@@ -132,7 +132,8 @@ def test_one_with_a_copy_of_this_title_is_taken_from_it_with_its_undo(window, mo
     """Kura-AB4, based on the diagnosis in #419 by Mattias: the folder's audiobook was paired by a look with a copy of
     this very book (the EPUB beside it); picked again for the book that asked, it is taken from the copy — the pick
     with `replace`, its Undo pairing it back."""
-    looks = AnsweringLooks({"joined": [], "alone": [], "asks": [], "elsewhere": [{"item_id": 53, "book": TITLE}]})
+    looks = AnsweringLooks({"joined": [], "alone": [], "asks": [],
+                            "elsewhere": [{"item_id": 53, "book": TITLE, "how": "sure"}]})
     win, _writer = window(looks)
     picked = []
     monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda entry, audio, epub, title, replace=False:
@@ -140,6 +141,24 @@ def test_one_with_a_copy_of_this_title_is_taken_from_it_with_its_undo(window, mo
     assert win.adder.read_folder(_folder(), book={"epub": EPUB, "title": TITLE})
     assert wait_until(lambda: picked, 5)
     assert picked == [(None, 53, EPUB, TITLE, True)]
+
+
+@pytest.mark.parametrize("taken, line", [
+    ([{"item_id": 53, "book": TITLE, "how": "answered"}],
+     strings.NEEDS_AUDIOBOOK_WITH.format(name="audiobook", other=TITLE, book=TITLE)),
+    ([{"item_id": 53, "book": TITLE, "how": "sure"}, {"item_id": 54, "book": TITLE, "how": "sure"}],
+     strings.NEEDS_AUDIOBOOK_SEVERAL_IN.format(n=2, name="audiobook", book=TITLE)),
+], ids=["yours", "two"])
+def test_one_you_paired_yourself_or_several_is_never_taken_and_said(window, monkeypatch, taken, line):
+    """r2 S2 / S4: a pair you made (*Yes*, a pick: `answered`) is never taken by a folder picked again — said, for the
+    pick; two with copies: said as several, never 'none'."""
+    looks = AnsweringLooks({"joined": [], "alone": [], "asks": [], "elsewhere": taken})
+    win, writer = window(looks)
+    picked = []
+    monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda *a, **k: picked.append(a))
+    assert win.adder.read_folder(_folder(), book={"epub": EPUB, "title": TITLE})
+    assert wait_until(lambda: win.bar_line.full() == line, 5), win.bar_line.full()
+    assert picked == []
 
 
 def test_the_pick_menus_line_says_which_book_it_is_with_now():

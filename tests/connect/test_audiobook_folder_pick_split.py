@@ -90,13 +90,17 @@ def test_c_pick_its_audiobook_lists_one_paired_with_a_copy_of_this_title_and_the
         lines = [(a["item_id"], a.get("elsewhere")) for a in offered["audiobooks"]]
         assert lines == [(split["audio"], None), (audio, TITLE)], "the free one first, then the copy's"
         assert store.pick_audiobook_book(audio, book) is None, "never taken from a book unasked"
+        copy_key = _record(store, audio)["book"]["key"]
+        was = store.audiobook_answers().get(copy_key)
         change = store.pick_audiobook_book(audio, book, replace=True)
         assert change is not None
+        assert store.audiobook_answers()[copy_key] is False, "the copy's pair kept No: never given back by a weighing"
         assert _record(store, audio)["book"]["epub"] == os.path.abspath(book)
         assert _work(store, audio) == _work(store, split["parts"][0])
         assert store.pick_audiobook_book(audio, book, replace=True) is None, "never to the book it is with"
         store.undo(change)
         assert _record(store, audio)["book"]["epub"] == copy and _work(store, audio) == copy_work
+        assert store.audiobook_answers().get(copy_key) == was, "its answer as it was"
 
 
 def test_c_an_audiobook_with_a_book_of_another_title_is_never_offered(split):
@@ -119,7 +123,8 @@ def test_c_the_same_folder_picked_again_names_the_audiobook_with_the_copy(split)
     folder, _m4b_path, audio = _copy_paired(split)
     with split["steps"]._open("ja") as store:
         said = source_looks._audiobooks_read(store, folder, {"epub": book, "title": TITLE})
-    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": [{"item_id": audio, "book": TITLE}]}
+    assert said == {"joined": [], "alone": [], "asks": [],
+                    "elsewhere": [{"item_id": audio, "book": TITLE, "how": audiobooks.SURE}]}   # a look's own pair
     with split["steps"]._open("ja") as store:
         said = source_looks._audiobooks_read(store, folder, {"epub": book, "title": GINGA})
     assert said["elsewhere"] == [], "another title's book: never named to be taken"

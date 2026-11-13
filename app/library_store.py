@@ -13122,8 +13122,7 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere
-              if audiobooks._title_level(forms, audiobooks._forms([other])[0]) == audiobooks.EXACT]
+    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere if audiobooks.same_book_title(title, other)]
     return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
                             "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)] +
@@ -13256,6 +13255,12 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user", replace=False):
         moved = old != placed[0]
         change.works = {"rows": [self._work_row(old)] if moved and old is not None else [],
                         "items": [(item_id, old, placed[0])] if moved else [], "fields": [], "created": []}
+        if isinstance(paired, dict) and paired.get("key") and paired["key"] != key:
+            # r2 S3: taken from that book — its pair's answer kept *No* (a later weighing never gives it back to it);
+            # Undo puts the answer back as it was
+            change.audiobook["taken"] = (paired["key"], said.get(paired["key"]))
+            said[paired["key"]] = False
+            self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         if not self.pair_audiobook(item_id, book=book, answer=(key, True), by=by):
             return None
         return change
@@ -13446,10 +13451,11 @@ def _store_undo_audiobook_pick(self, cmd, change):
     self.conn.executemany("UPDATE pairings SET pairing = ? WHERE content_key = ?", back)
     row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
     answers = (_json_dict(row[0]) if row else None) or {}
-    if said["answer"][1] is None:
-        answers.pop(key, None)
-    else:
-        answers[key] = said["answer"][1]
+    for k, v in [said["answer"]] + ([said["taken"]] if said.get("taken") else []):
+        if v is None:                                    # (Kura-AB4: a taken pair's answer back too)
+            answers.pop(k, None)
+        else:
+            answers[k] = v
     self._set_meta({AUDIOBOOK_ANSWERS: _dumps(answers), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
     cmd.feed([said["item"]])
     self._audio_state(cmd, said["item"])                 # a6: alone again, its transcript is its content again

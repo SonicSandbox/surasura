@@ -1574,6 +1574,8 @@ NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the 
 NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
 NEEDS_AUDIOBOOK_READING = "Reading {name} for 「{book}」's audiobook…"
 # Kura-AB4 (PROVISIONAL): what the folder picked for a book's audiobook held, once it was read
+NEEDS_AUDIOBOOK_WITH = ("The audiobook in {name} is with 「{other}」: pick it for 「{book}」 under Pick its "
+                        "audiobook…")
 NEEDS_AUDIOBOOK_NONE_IN = "No audiobook in {name} yet: once one is there, it joins 「{book}」"
 NEEDS_AUDIOBOOK_SEVERAL_IN = ("{n} audiobooks in {name}: pick 「{book}」's under Pick its audiobook… (or the book's "
                               "⋯ → Its audiobook…)")

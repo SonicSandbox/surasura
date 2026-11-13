@@ -183,6 +183,33 @@ def test_of_several_another_volume_never_joins_the_book():
         assert [_record(store, i["id"])["title"] for i in joined] == [title]
 
 
+def test_another_volumes_audiobook_paired_with_its_own_book_is_never_offered_nor_named_to_be_taken():
+    """r2 B1 (#419's case, volumes): the book is 下巻; the folder picked holds 上巻's EPUB and its audiobook, paired with
+    上巻. Never offered under 下巻's *Pick its audiobook…*, never named to be taken — a right pair stays whole."""
+    language = "ja"
+    down = f"{NEKO} 下巻"
+    store, epub = _book_in(language, down, "source")
+    up = os.path.join(_drive("audio"), "up")
+    _epub(os.path.join(up, f"{NEKO} 上巻.epub"), f"{NEKO} 上巻", language)
+    _audio_folder(os.path.join(up, f"{NEKO} 上巻"), f"{NEKO} 上巻", _fit(language))
+    with store:
+        _look(store, language, store.add_source(up), full=True)
+        (item,) = _audio_items(store)
+        assert _record(store, item["id"])["book"]["title"] == f"{NEKO} 上巻"
+        parts, _heard = _joined(store, down)
+        assert [a["item_id"] for a in store.book_audiobooks(parts[0][0])["audiobooks"]] == []
+        said = source_looks._audiobooks_read(store, up, {"epub": epub, "title": down})
+        assert said["elsewhere"] == [] and said["joined"] == []
+
+
+@pytest.mark.parametrize("a, b, same", [
+    ("カラフル", "カラフル", True), ("カラフル（上）", "カラフル（下）", False), ("SAO 3", "SAO 4", False),
+    (f"{NEKO} 上巻", NEKO, True), ("カラフル", "銀河鉄道の夜", False), ("", "", False)])
+def test_same_book_title_is_an_exact_title_with_no_volume_that_differs(a, b, same):
+    from app import audiobooks
+    assert audiobooks.same_book_title(a, b) is same
+
+
 def test_a_disc_folder_picked_brings_its_whole_audiobook_to_the_book():
     """The learner picks `CD1` of a two-disc rip: the audiobook is the title's folder's (the look joins its discs) and
     it joins the book whole."""

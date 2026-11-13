@@ -10165,8 +10165,8 @@ def _store_let_origins_back(self, keys):
 def _store_let_audiobook_back(self, key, sha256, out):
     """Inside `take_in` (Kura-AB5, based on the diagnosis in #429 by Mattias): an audiobook removed earlier whose
     folder the learner picked for its book (`sources._Look._meant`) is in again — as Put back would have it, by the
-    Remove's own trash row: the row holding its origin `key` (else, found moved, the one whose records name its files'
-    sizes `sha256`, the newest) is marked put back (the Removed list never offers a second) and every origin it held is
+    Remove's own trash row: the row holding its origin `key` (else, found renamed, the one row whose records name its
+    files' sizes `sha256` and whose files are gone from disk; two such: none) is marked put back (the Removed list never offers a second) and every origin it held is
     let back (`_let_origins_back`: an adopted transcript too); a keep-out of `key` with no row goes as well. Never
     another Remove's row — a copy of the same bytes removed elsewhere keeps its sizes' keep-out, which `take_in` then
     doesn't weigh for this file (the learner picked it by its folder); nothing on disk is touched; `out` (the batch's
@@ -10176,9 +10176,12 @@ def _store_let_audiobook_back(self, key, sha256, out):
         pairs = [p for p in (_json_dict(raw) or {}).get("pairings") or ()
                  if isinstance(p, (list, tuple)) and len(p) == 3 and isinstance(p[0], str)]
         held.append((trash_id, pairs))
-    mine = [(i, pairs) for i, pairs in held if any(k == key for k, _t, _a in pairs)] or \
-        [(i, pairs) for i, pairs in held if sha256 and any((_json_dict(t) or {}).get("sha256") == sha256
-                                                           for _k, t, _a in pairs)][-1:]   # (renamed: its newest)
+    mine = [(i, pairs) for i, pairs in held if any(k == key for k, _t, _a in pairs)]
+    if not mine and sha256:                              # renamed: the one row of these bytes whose files are gone
+        moved = [(i, pairs) for i, pairs in held                 # (a copy still on disk is another Remove's: review r3)
+                 if any((_json_dict(t) or {}).get("sha256") == sha256 for _k, t, _a in pairs) and
+                 not any(k.startswith(SOURCE_KEY) and os.path.exists(k[len(SOURCE_KEY):]) for k, _t, _a in pairs)]
+        mine = moved if len(moved) == 1 else []
     keys = {key} | {k for _i, pairs in mine for k, _t, _a in pairs}
     self._let_origins_back(sorted(keys))
     now = _now()

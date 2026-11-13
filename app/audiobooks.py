@@ -727,7 +727,7 @@ def length_text(seconds):
 TRANSCRIPT_EXTENSIONS = (".srt", ".ass", ".ssa")     # a timed subtitle the library reads (never a `.txt`: a book's)
 CUE_MIN = 8                     # a cue this long (clean characters) or longer is looked for in the book
 CONTENT_SHARE = 0.6             # this share of its cues found in the book, in order, and the transcript is the book's
-FOUND_PLACES = 64               # a cue's places in the book weighed at most (`found_in_order`)
+FOUND_PLACES = 64               # a cue the book holds more often than this is a stock line: never weighed (`found_in_order`)
 FOUND_RULE = 2                  # `found_in_order`'s rule, kept with each check (#432: 1 = each cue after the last found)
 TEXT, TIMING, OTHER, UNCHECKED, ASKED = "text", "timing", "other", "unchecked", "asked"   # `transcript_use`
 _RUBY = re.compile(r"<rt>.*?</rt>|<rp>.*?</rp>", re.S | re.I)
@@ -802,29 +802,33 @@ def found_in_order(lines, book_text):
     longest run of cues each found further on than the one before (FOUND_RULE 2) -> 0.0–1.0; None when the transcript
     has no cue to look for. Based on the diagnosis in #432 by Mattias: rule 1 looked for each cue only after the last
     one found, so a title read first that the book holds only in its colophon lost every cue after it (15 of 6548);
-    now a cue found far off costs only itself. One pass over the book (its CUE_MIN-character runs' places), each cue
-    tried only where its first run sits (its first FOUND_PLACES places: a stock line costs only itself), then a patience
-    sort over those places: milliseconds even for a long book or another book's transcript."""
+    now a cue found far off costs only itself. A stock line the book holds more than FOUND_PLACES times tells neither
+    the order nor the book: out of both the run and the count (in the count alone it would lower the right book's
+    share; counted found, raise a wrong book's). One pass over the book (its CUE_MIN-character runs' places), each cue
+    checked whole at every place its first run sits, then a patience sort over its places, latest first."""
     if not lines:
         return None
     places = {}
     for i in range(len(book_text) - CUE_MIN + 1):
         places.setdefault(book_text[i:i + CUE_MIN], []).append(i)
-    ends = []                                            # ends[k]: the earliest place a run of k + 1 cues ends at
+    ends, weighed = [], 0                                # ends[k]: the earliest place a run of k + 1 cues ends at
     for line in lines:
         found = []
-        for i in places.get(line[:CUE_MIN]) or ():
+        for i in places.get(line[:CUE_MIN]) or ():       # (the whole line checked at each place its start sits)
             if book_text.startswith(line, i):
                 found.append(i)
-                if len(found) == FOUND_PLACES:
+                if len(found) > FOUND_PLACES:
                     break
+        if len(found) > FOUND_PLACES:                    # a stock line, all through the book: it says nothing about
+            continue                                     # the order, nor which book — out of the run and the count
+        weighed += 1
         for i in reversed(found):                        # (latest first: one cue lengthens a run once)
             k = bisect.bisect_left(ends, i)
             if k == len(ends):
                 ends.append(i)
             else:
                 ends[k] = i
-    return len(ends) / len(lines)
+    return len(ends) / weighed if weighed else None
 
 
 def transcript_use(rec):
@@ -845,7 +849,7 @@ def transcript_use(rec):
     share = found.get("share")
     if isinstance(share, (int, float)) and share >= CONTENT_SHARE:
         return TIMING
-    # (found wanting by rule 1, 3.0.8's: checked once more by this one — never shorter, so a TIMING one stays — #432)
+    # (found wanting by rule 1, 3.0.8's: checked once more by this one — #432; a TIMING one stays)
     return OTHER if found.get("rule") == FOUND_RULE or share is None else UNCHECKED
 
 

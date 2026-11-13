@@ -707,3 +707,60 @@ def test_a_transcript_judged_wanting_by_the_first_rule_is_its_books_at_the_next_
         rec = _record(store, item)
         assert audiobooks.transcript_use(rec) == audiobooks.TIMING
         assert rec["transcript"]["found"] == {"book": found["book"], "share": 1.0, "rule": audiobooks.FOUND_RULE}
+
+
+def _story(language, name):
+    folder = {"ja": "samples/ja", "zh": "samples/zh"}[language]
+    for tier in ("HighPriority", "LowPriority"):
+        path = os.path.join(os.path.dirname(RESOURCES), os.pardir, folder, tier, name)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8-sig") as f:
+                return f.read()
+    raise FileNotFoundError(name)
+
+
+def _story_cues(text):
+    import re
+    return [x for x in (audiobooks.clean_text(s) for s in re.split(r"(?<=[。！？!?])|\n", text))
+            if len(x) >= audiobooks.CUE_MIN]
+
+
+def test_a_cue_whose_opening_is_common_still_finds_its_late_place():
+    """The lead's check on #432: a cue's every place is checked whole — never only the first places its opening sits
+    at — so a line starting like a hundred earlier ones still finds its one place late in the book."""
+    text = _story("ja", "蜘蛛の糸（芥川龍之介）.txt")
+    cues = _story_cues(text)
+    last = cues[-1]
+    filler = audiobooks.clean_text(_story("ja", "ごん狐（新美南吉）.txt"))[:40]
+    book = audiobooks.clean_text(text.replace(text.rstrip()[-len(text.rstrip()) // 3:], ""))   # its first two thirds
+    book = "".join(last[:audiobooks.CUE_MIN] + filler for _ in range(300)) + book + last         # 300 alike openings
+    assert book.count(last) == 1 and book.count(last[:audiobooks.CUE_MIN]) > 300
+    head = [c for c in cues[:-1] if c in book]
+    assert audiobooks.found_in_order(head + [last], book) == 1.0
+
+
+def test_a_stock_line_all_through_the_book_is_out_of_the_run_and_the_count():
+    """A line the book holds more than FOUND_PLACES times tells neither the order nor the book: never weighed — the
+    right book's share is not lowered by it, a wrong book's never raised; only such lines: no share (None)."""
+    cues = _story_cues(_story("ja", "蜘蛛の糸（芥川龍之介）.txt"))
+    stock = audiobooks.clean_text(_story("ja", "ごん狐（新美南吉）.txt"))[:20]
+    book = (stock * (audiobooks.FOUND_PLACES + 1)) + "".join(cues)
+    assert audiobooks.found_in_order([stock] + cues + [stock], book) == 1.0
+    assert audiobooks.found_in_order([stock, stock], book) is None
+    other = _story_cues(_story("ja", "注文の多い料理店（宮沢賢治）.txt"))
+    assert audiobooks.found_in_order([stock] * 50 + other, book) < 0.1
+
+
+@pytest.mark.parametrize("language,stories", (
+    ("ja", ("蜘蛛の糸（芥川龍之介）.txt", "注文の多い料理店（宮沢賢治）.txt", "ごん狐（新美南吉）.txt")),
+    ("zh", ("故乡（鲁迅）.txt", "孔乙己（鲁迅）.txt", "从百草园到三味书屋（鲁迅）.txt")),     # one author: alike lines
+))
+def test_another_books_transcript_still_scores_low_under_the_longest_run(language, stories):
+    """The other side of #432's rule: the longest run must never let chance matches of short common lines chain into
+    a wrong book's transcript passing — each real story's cues against every other story (one author's, in zh) stay far
+    under CONTENT_SHARE; against its own book, all of them."""
+    for t in stories:
+        cues = _story_cues(_story(language, t))
+        for b in stories:
+            share = audiobooks.found_in_order(cues, audiobooks.clean_text(_story(language, b)))
+            assert share == 1.0 if t == b else share < 0.1, (t, b, share)

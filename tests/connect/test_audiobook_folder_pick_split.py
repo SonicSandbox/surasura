@@ -275,9 +275,11 @@ def test_d_a_copy_of_the_same_bytes_removed_elsewhere_stays_removed(split):
         assert all(os.path.abspath(copy) not in _record(store, i["id"])["files"] for i in _audio_items(store))
 
 
-def test_d_renamed_since_with_a_copy_of_its_bytes_removed_elsewhere_takes_its_own_row_only(split):
-    """Review r2 S2: as above, and the book's `.m4b` renamed since its Remove — found by its files' sizes, which the
-    Downloads copy's row carries too: only the newest such row (the book's own Remove) is put back."""
+@pytest.mark.parametrize("book_first", (False, True))
+def test_d_renamed_since_with_a_copy_of_its_bytes_removed_elsewhere_takes_its_own_row_only(split, book_first):
+    """Review r2 S2 / r3 S1: as above, and the book's `.m4b` renamed since its Remove — found by its files' sizes,
+    which the Downloads copy's row carries too: only the book's own Remove (its file gone from disk; the copy's still
+    there) is put back, whichever was removed first."""
     import shutil
     _reading, book = _joined(split)
     folder, m4b, audio = _copy_paired(split)
@@ -286,8 +288,9 @@ def test_d_renamed_since_with_a_copy_of_its_bytes_removed_elsewhere_takes_its_ow
     with split["steps"]._open("ja") as store:
         _look(store, "ja", store.add_source(dl), full=True)
         theirs = _audio_of(store, copy)["id"]
-        store.remove([theirs])
-        store.remove([i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))])
+        mine = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))]
+        for ids in ([mine, [theirs]] if book_first else [[theirs], mine]):
+            store.remove(ids)
         trash = dict(store.conn.execute("SELECT item_id, id FROM trash"))
     renamed = os.path.join(folder, "カラフル 朗読.m4b")
     os.rename(m4b, renamed)

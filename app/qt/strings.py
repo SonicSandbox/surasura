@@ -1126,7 +1126,7 @@ EXTRACT_ADD_NEW_TIP = "Add this file as a new title\n• The removed one stays i
 EXTRACT_ADD_NEW_FREE_TIP = ("Add this file as a new title named “{name}”\n• The removed one stays in Removed, "
                             "renamed “{proposal}”")
 EXTRACT_PUT_BACK_DONE = "「{title}」 is back in your library"
-EXTRACT_PUT_BACK_FAILED = "「{title}」 wasn't put back: open 🗑 Removed… in Settings › Sources"
+EXTRACT_PUT_BACK_FAILED = "「{title}」 wasn't put back: open 🗑 Removed… in Settings › Content › Library folders"
 EXTRACT_FREED = " · the removed one is “{freed}” in Removed"
 EXTRACT_REMOVED_GONE = "“{name}” was a title you removed; its files have left Removed since"
 EXTRACT_PUTTING_BACK = "Putting 「{title}」 back…"
@@ -1908,7 +1908,7 @@ REMOVED_OPEN = "🗑"                # the icon alone (Sonic, 2026-10-27 late: "
 REMOVED_OPEN_NAME = "Removed…"
 REMOVED_TOAST_OPEN = "Removed…"                     # Kantan-B4: a Remove's toast, the door to the list (PROVISIONAL)
 REMOVED_TOAST_OPEN_TIP = ("Open Removed: what you removed in the last 30 days, each with Put back\n"
-                          "• Also in Settings › Sources › 🗑")
+                          "• Also in Settings › Content › Library folders › 🗑")
 REMOVED_OPEN_TIP = ("Removed in the last 30 days\nWhat you removed, each with Put back. Removed files wait in the trash "
                     "for 30 days, then they're gone for good")
 REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."

@@ -37,6 +37,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QProgressBar, QPushButton
 
+from app import youtube_hold
 from app.qt import bridge, confirm, windows
 from app.qt import press as qpress
 from app.services import jobs as jobs_module
@@ -635,7 +636,9 @@ def bring_in_rest(shell, language, playlists=()):
     How a run ends (PROVISIONAL, Mado-P): every video read -> done; Cancel in the bar -> the rest of it dropped
     (the YouTube window can bring it in any time); the app's quit -> goes on at the next start; no connection, YouTube
     refusing for now, a stall or a run past its time -> kept (at once again when it brought something; after
-    `view.REST_TRIES` runs in a row that brought nothing, dropped and said)."""
+    `view.REST_TRIES` runs in a row that brought nothing, dropped and said); YouTube's bot check holding every YouTube
+    call (Yt-B, `app.youtube_hold`) -> kept, never a try spent and never again at once: it goes on at a start after
+    the hold."""
 
     def recorded(state):
         if not state["playlists"] and not state["unrouted"]:
@@ -681,6 +684,8 @@ def _run_rest(shell, language, state):
             done = playlists if entry["outcome"] == "cancel" else ()
         elif entry["yielded"]:
             entry["outcome"], entry["again"] = "yield", True
+        elif any(youtube_hold.is_words(p) for p in problems):     # (Yt-B) held for a day: no try spent, no rerun
+            entry["outcome"], entry["again"] = "held", False
         elif view.rest_kept(problems, False):
             entry["outcome"] = "progress" if created else "wait"
             entry["again"] = entry["again"] or bool(created)
@@ -699,8 +704,10 @@ def _run_rest(shell, language, state):
         if runs.get(language) is entry:
             runs.pop(language, None)
         paths = list(dict.fromkeys(list(created) + unrouted))
-        why = _plain(next((p for p in problems if p != S.STOPPED), ""))
+        why = _plain(next((p for p in problems if youtube_hold.is_words(p)), "")
+                     or next((p for p in problems if p != S.STOPPED), ""))
         tail = {"wait": S.REST_LATER.format(why=why), "quit": S.REST_LATER.format(why=S.REST_STOPPED),
+                "held": S.REST_HELD.format(why=why),
                 "spent": S.REST_SPENT.format(why=why, tries=view.REST_TRIES), "cancel": S.REST_CANCELLED,
                 "yield": S.REST_YIELDED, "progress": S.REST_MORE}.get(entry["outcome"], "")
 

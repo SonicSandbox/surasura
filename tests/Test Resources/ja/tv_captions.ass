@@ -15,7 +15,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:05.10,0:00:08.40,Default,,0,0,0,,{\pos(700,880)\fscx50\fscy50}もんばん
 Dialogue: 0,0:00:05.10,0:00:08.40,Default,,0,0,0,,《門番は城への侵入者を
 Dialogue: 0,0:00:05.10,0:00:08.40,Default,,0,0,0,,厳しく取り調べた》
-Dialogue: 0,0:00:09.00,0:00:11.20,Yellow,,0,0,0,,え…養父様を？
+Dialogue: 0,0:00:09.00,0:00:11.20,Yellow,,0,0,0,,え…お父様を？
 Dialogue: 0,0:00:09.00,0:00:11.20,Default,,0,0,0,,うむ。
 Dialogue: 0,0:00:11.50,0:00:14.00,Ruby,,0,0,0,,ちょうろう
 Dialogue: 0,0:00:11.50,0:00:14.00,Default,,0,0,0,,長老の話によれば➡

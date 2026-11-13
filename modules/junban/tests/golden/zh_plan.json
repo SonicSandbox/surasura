@@ -86,7 +86,7 @@
     "before": ""
    },
    "Patterns": {
-    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">没问题 · 难的问题 · 问题重要 · 带问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜</div>",
     "before": ""
    }
   },
@@ -106,7 +106,7 @@
     "before": ""
    },
    "Patterns": {
-    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+    "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">打电话</div>",
     "before": ""
    }
   },
@@ -116,7 +116,7 @@
     "before": ""
    },
    "Patterns": {
-    "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜们</div>",
+    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">不同的朋友 · 好朋友</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜们</div>",
     "before": ""
    }
   },
@@ -147,7 +147,7 @@
    "问题",
    "Patterns",
    "fill",
-   "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">没问题 · 难的问题 · 问题重要 · 带问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜</div>",
    "patterns"
   ],
   [
@@ -179,7 +179,7 @@
    "电话",
    "Patterns",
    "fill",
-   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">打电话</div>",
    "patterns"
   ],
   [
@@ -195,7 +195,7 @@
    "朋友",
    "Patterns",
    "fill",
-   "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜们</div>",
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">不同的朋友 · 好朋友</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜们</div>",
    "patterns"
   ],
   [

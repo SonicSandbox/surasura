@@ -531,7 +531,7 @@ def test_one_origin_is_taken_in_once_across_overlapping_sources_and_within_a_bat
     with store:
         wide = store.add_source(src)
         f = _found(language, data_dir, src, show, "ep1.srt", 1)
-        narrow = store.add_source(os.path.join(src, show))                 # S:\Video and S:\Video\Anime
+        narrow = store.add_source(os.path.join(src, show))                 # E:\Video and E:\Video\Anime
         change = store.take_in(wide, [f, dict(f)], first=True)
         assert len(change.added) == 1 and len(change.skipped["known"]) == 1
         again = store.take_in(narrow, [dict(f, origin=os.path.join(src, show, "EP1.srt") if sys.platform == "win32"

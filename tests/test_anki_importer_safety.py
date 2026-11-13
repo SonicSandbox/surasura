@@ -12,7 +12,7 @@ user's known words in four quiet ways — each of them passed every existing tes
 data rules are tested without a window. The window checks (colour, tooltips, the explanatory line,
 the error shown on a corrupt file) share ONE Tk root for the whole file (`testing.md` §5.4).
 
-Real Japanese entries taken from `tests/Test Resources/ja/KnownWord.json` (a real Migaku export).
+Real Japanese entries taken from `tests/Test Resources/ja/KnownWord.json` (a Migaku-shaped export written for the tests).
 """
 import json
 import os
@@ -38,7 +38,7 @@ def _read_bytes(path):
 
 @pytest.fixture
 def migaku_file(ja_resources_dir):
-    """A slice of the real Migaku export — one entry per status — in the sandboxed User Files/ja/."""
+    """A slice of the Migaku-shaped export — one entry per status — in the sandboxed User Files/ja/."""
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)
     picked = {}

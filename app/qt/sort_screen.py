@@ -1348,7 +1348,7 @@ class LoadRun(QObject):
         at least `token_index.POOL_MIN_FILES` files (fewer are read by one process, whatever *Use every core* says) —
         asks the caller's `long_read(screen)` once (setup's *Use every core*). Never the indexer's count: its pool is
         sized before its first count, so a flip then would speed nothing on screen; asked during the scan, it counts
-        for the copy's pools and the indexer after it."""
+        for the indexer after it, and for the copy's pools when the scan is long."""
         ask = self._long_read
         screen = self.loading
         if ask is None or screen is None or sip.isdeleted(screen):

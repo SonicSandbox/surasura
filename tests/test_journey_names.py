@@ -41,6 +41,11 @@ def _template(name):
     ("Top 10 Japanese Phrases [dQw4w9WgXcQ].ja.vtt", "Top 10 Japanese Phrases"),
     ("Comprehensible Japanese 128 Lets talk about cats [abc_DEF-123].ja.vtt",
      "Comprehensible Japanese 128 Lets talk about cats"),
+    # (R2-1) a release's 11-character tag is no YouTube id: a strong episode mark still names the episode
+    ("Show - 05 [HEVC-Main10].srt", "Show · Ep 5"),
+    ("Show S01E05 [WEBRip-1080].srt", "Show · Ep 5"),
+    ("葬送のフリーレン 第05話 [1080p-WEBDL].srt", "葬送のフリーレン · Ep 5"),
+    ("[Lilith-Raws] Show - 05 [Lilith-Raws].srt", "Show · Ep 5"),
 ])
 def test_fresh_u_a_file_is_shown_as_its_show_and_episode(filename, shown):
     assert gen.shown_name(filename) == shown

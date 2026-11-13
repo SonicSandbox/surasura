@@ -836,8 +836,10 @@ def _find(store, language, cli, stop, now, away, popen):
                     _change(store, language, offline_until=(time.time() if now is None else now) + OFFLINE_S)
                     return out
     finally:
-        _change(store, language, drop_if=dict.fromkeys(handed, QUEUED))   # a batch never run: no *Next in line* left
-        shutil.rmtree(run_dir, ignore_errors=True)
+        try:
+            _change(store, language, drop_if=dict.fromkeys(handed, QUEUED))   # a batch never run: no *Next in line*
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
     return out
 
 

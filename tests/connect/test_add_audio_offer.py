@@ -678,3 +678,19 @@ def test_earlier_copies_are_the_removed_2x_parts_of_this_book_only(book):  # noq
         assert add_audio.earlier_copies(store, book["book"]) == sorted(mine), "put back: live, never an earlier copy"
         assert not set(alike + other) & set(add_audio.book_items(store, book["book"]))
         assert add_audio.earlier_copies(store, os.path.join(os.path.dirname(book["book"]), "nothing.epub")) == []
+
+
+def test_a_book_asked_with_no_card_not_lined_up_now_is_left_as_it_was(book, tmp_path, monkeypatch):  # noqa: F811
+    """Its line-up gone meanwhile (separated, a sync failed): the once-more ask waits for it — the record is never
+    given up for that (it would never be asked again) and nothing is written."""
+    _removed_parts(book, STAR, [400])
+    monkeypatch.setattr(book["steps"], "lined_up", lambda lang, epub: None)
+    monkeypatch.setattr(book["steps"], "lineable", lambda lang, epub: False)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        key, _none = _asked(book, ledger)
+        was = json.dumps({"epub": book["book"], "item": book["item"], "title": STAR, "notes": [],
+                          "stage": runner.ADD_AUDIO_LINED})
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, was))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert runner._meta(ledger, key) == was and _offers(ledger) == []

@@ -47,6 +47,8 @@ import time
 if __name__ == "__main__" and __package__ is None:     # the helper from source: `python app/replan_preview.py …`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.services import window_idle   # noqa: E402  (Qt-free: the hand-over's one owner, `_share_the_window`)
+
 SWITCH = "junban_replan_preview"
 LANGUAGE = "junban_replan_language"     # the language 順's switch was turned on in (its deck's): "" reads as "ja"
 DECK = "junban_replan_deck"             # the deck it was turned on for: 順's deck changed since -> it stands aside
@@ -1110,30 +1112,16 @@ def helper_processes():
 # shares the window's interpreter lock, which Python hands between threads every 5 ms by default — the window's thread
 # waited up to that long behind a job step (R6's timer probe: 5–6 ms against 5). While one runs there, the lock changes
 # hands every 1 ms at most (the 3.0 window's own process sets a finer one, `app.qt.shell.SWITCH_INTERVAL_S`); the last
-# one's stop puts back what was set before.
+# one's stop puts back what was set before (`services.window_idle.hold`).
 WINDOW_SWITCH_S = 0.001
-_SHARING = {"hosts": 0, "was": None}
-_SHARING_LOCK = threading.Lock()
 
 
 def _share_the_window():
-    with _SHARING_LOCK:
-        if _SHARING["hosts"] == 0:
-            _SHARING["was"] = sys.getswitchinterval()
-            if _SHARING["was"] > WINDOW_SWITCH_S:
-                sys.setswitchinterval(WINDOW_SWITCH_S)
-        _SHARING["hosts"] += 1
+    window_idle.hold(WINDOW_SWITCH_S)       # (the hand-over's one owner: the window's own, a save's, these)
 
 
 def _leave_the_window():
-    with _SHARING_LOCK:
-        if _SHARING["hosts"] <= 0:
-            return
-        _SHARING["hosts"] -= 1
-        if _SHARING["hosts"] == 0 and _SHARING["was"] is not None:
-            if sys.getswitchinterval() == WINDOW_SWITCH_S:     # (someone else's own setting since: theirs stays)
-                sys.setswitchinterval(_SHARING["was"])
-            _SHARING["was"] = None
+    window_idle.let_go(WINDOW_SWITCH_S)
 
 
 def _in_the_window(host):

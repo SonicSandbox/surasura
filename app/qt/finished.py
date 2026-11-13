@@ -594,9 +594,9 @@ class FinishedActions(QObject):
 
     def _choose(self, how):
         if how == "files":
-            paths, _f = QFileDialog.getOpenFileNames(self.page, strings.FIN_IMPORT_PICK, "")
+            paths, _f = QFileDialog.getOpenFileNames(self.page, strings.FIN_IMPORT_PICK, windows.content_folder())
         else:
-            folder = QFileDialog.getExistingDirectory(self.page, strings.FIN_IMPORT_PICK, "")
+            folder = QFileDialog.getExistingDirectory(self.page, strings.FIN_IMPORT_PICK, windows.content_folder())
             paths = [folder] if folder else []
         if paths:
             self.import_paths(paths)

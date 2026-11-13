@@ -59,6 +59,7 @@ _painted = {}                   # Press -> (control or None, its mark or None: a
 _at = {}                        # Press -> what it marks on screen (`at`: a row, a widget, the bar's arc)
 _busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
 _due = {}                       # Press -> [its words, or None] until it has been live `moves.SAVING_AFTER_S` (IK-1)
+_going = {}                     # id -> a Python Qt object deleted later, kept until its C++ object goes (`let_go`)
 
 
 def room(control, end=False):
@@ -321,9 +322,34 @@ def _unmark(got):
         got.stop()
         return
     if not sip.isdeleted(got):
-        got.set_running(False)
-        got.hide()
-        got.deleteLater()
+        _let_go(got)
+
+
+def _let_go(mark):
+    """A press's spinner taken off: still, hidden and deleted later — its Python half (and its `_Follow`'s, under it)
+    kept until its C++ object goes. PyQt6's `deleteLater()` lets go of the parent's hold on the wrapper, and a mark is
+    in reference cycles (its `_Follow`'s place): a collection meanwhile freed its Python half while its C++ objects
+    still filtered the control's events, and one inside sip's call into `_Follow.eventFilter` crashed the process
+    (0xC0000005 after the install press, Qt-C; tests/FLAKES.md)."""
+    mark.set_running(False)
+    mark.hide()
+    let_go(mark)
+
+
+def let_go(obj):
+    """`obj.deleteLater()`, its Python half (and its children's) kept until its C++ object goes — the one way the window
+    deletes later a Python Qt object that C++ may still call into before the loop deletes it: an event filter on
+    something that outlives it (a card's scrim on its window, a cover's `_Cover` on the central area — or a part of it,
+    a shown `motion.Spinner` / `Turn` filtering its top window), a filter one of its parts put on it (a window's bar arc
+    `_Follow`: it hears the window's own DeferredDelete), an `event()` of its own, a painted part still shown. A wrapper
+    in reference cycles (any `connect(lambda: self…)`) is otherwise freed by the next collection, and one inside such a
+    call crashes the process (`_let_go`'s 0xC0000005; Qt-C2's sweep, tests/qt/test_let_go.py). Twice is once."""
+    key = id(obj)
+    if _going.get(key) is obj:
+        return
+    _going[key] = obj
+    obj.destroyed.connect(lambda _o=None, k=key: _going.pop(k, None))
+    obj.deleteLater()
 
 
 def _restore(p, win):
@@ -506,9 +532,7 @@ class _WidgetMark:
     def off(self):
         s, self.spinner = self.spinner, None
         if s is not None and not sip.isdeleted(s):
-            s.set_running(False)
-            s.hide()
-            s.deleteLater()
+            _let_go(s)
 
 
 def widget_mark(widget):

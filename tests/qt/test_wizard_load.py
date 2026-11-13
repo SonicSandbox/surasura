@@ -81,7 +81,7 @@ def _start(make, tmp_path, chores=True, runs=True, folders=1):
     wiz, shell, api, settings, _m = make(api=SourcesApi())
     log = str(tmp_path / "indexer-window.log")
     if chores:
-        shell.chores = Chores(log, runs=runs)
+        shell.services.chores = Chores(log, runs=runs)
     go_to(wiz, "shows")
     _pick(wiz, _folder("anime", SHOWS), *([_folder("dramas", LOOSE, start=100)] if folders > 1 else []))
     return wiz, shell, log
@@ -104,13 +104,13 @@ def test_the_steps_run_in_order_each_with_its_count_then_the_sort_screen(make, e
     wiz.next()
     assert isinstance(wiz.covered, sort_screen.LoadScreen)
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)            # the look ended: the words
-    assert shell.chores.asked == [True]
+    assert shell.services.chores.asked == [True]
     QTest.qWait(1200)
     assert _task(wiz) == S.LOAD_INDEX_START, "never the earlier run's count"
     with open(log, "w", encoding="utf-8") as f:
         f.write("Indexer: starting (ja)\nIndexer: 3 of 7\n")
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=7), 5)
-    shell.chores.running = False                                               # the indexer's run ended
+    shell.services.chores.running = False                                               # the indexer's run ended
     assert wait_until(lambda: _task(wiz) == S.LOAD_COVERS.format(done=2, total=2), 5)
     assert asked == [1]
     hold.set()
@@ -130,7 +130,7 @@ def test_runs_that_keep_coming_end_the_step_after_three(make, empty_library, tmp
     wiz, shell, _log = _start(make, tmp_path)
     wiz.next()
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
-    assert shell.chores.running
+    assert shell.services.chores.running
     wiz._indexed("zh")                                                         # another language's run: not this one
     wiz._indexed("ja")
     wiz._indexed("ja")
@@ -154,7 +154,7 @@ def test_an_index_ask_that_brings_no_run_ends_the_step(make, empty_library, tmp_
     wiz, shell, _log = _start(make, tmp_path, runs=False)
     wiz.next()
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 30)
-    assert shell.chores.asked == [True]
+    assert shell.services.chores.asked == [True]
 
 
 def test_the_last_step_waits_for_page_twos_sync_and_goes_on_when_it_ends(make, empty_library, tmp_path):
@@ -191,7 +191,7 @@ def test_stop_while_reading_keeps_what_came_in_and_goes_to_the_sorting(make, emp
     assert not load.btn_stop.isEnabled() and wiz.reading.is_set()
     release.set()
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 30)
-    assert shell.chores.asked == []                                            # stopped: no indexing asked
+    assert shell.services.chores.asked == []                                            # stopped: no indexing asked
     items = _items()
     assert taken[0] and sorted(i for i, *_r in items) == sorted(taken[0])
     assert {t for _i, t, _o, _r in items} == {"arrivals"}
@@ -207,7 +207,7 @@ def test_stop_while_the_words_are_read_goes_to_the_sorting_at_once(make, empty_l
     QTest.mouseClick(wiz.covered.btn_stop, Qt.MouseButton.LeftButton)
     assert isinstance(wiz.covered, sort_screen.SortScreen)
     wiz._indexed("ja")                                                         # the run ending later changes nothing
-    shell.chores.running = False
+    shell.services.chores.running = False
     QTest.qWait(100)
     assert isinstance(wiz.covered, sort_screen.SortScreen)
 
@@ -405,3 +405,17 @@ def test_a_covers_write_that_failed_is_tried_again_at_the_next_next(make, empty_
     wiz.page.folders.clear()
     wiz.next()
     assert settings.data.get("covers_download") is True and wiz.index == 3
+
+
+def test_the_load_asks_the_real_windows_chores_never_an_attribute_the_window_lacks(qapp, tmp_path):
+    """Kantan-B1 (its adversary's find, 2026-11-12): the load read `shell.chores`, which the real window doesn't have
+    (its chores are its services'), so in the app the words step was passed by and setup never said *Reading the
+    words*; the stand-in shells here had one. The load built on the real window finds the window's own chores."""
+    from tests.qt.test_jobs_bar import World
+    world = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        assert not hasattr(world.win, "chores")
+        run = sort_screen.LoadRun(world.win, lambda widget: None)
+        assert run._chores() is world.services.chores and run._chores() is not None
+    finally:
+        world.close()

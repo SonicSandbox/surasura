@@ -1,0 +1,20 @@
+{
+  "version": "3.0.3",
+  "date": "2026-11-11",
+  "items": [
+    {"id": "skip-word", "kind": "new", "for": ["miner"], "where": "tab:needs",
+     "text": "A word Anki won't take: Skip this word, and the rest of its cards are made."},
+    {"id": "retimed-seen", "kind": "tweak", "for": ["shows", "miner"],
+     "text": "A subtitle you re-timed beside its video is seen: Check again on its row."},
+    {"id": "closes-with-you", "kind": "tweak", "for": ["everyone"],
+     "text": "Surasura's helpers close when you close it."},
+    {"id": "miner-twice", "kind": "fix", "for": ["miner"],
+     "text": "Open Anki Miner no longer starts a second copy."},
+    {"id": "empty-setup", "kind": "fix", "for": ["everyone"],
+     "text": "Setup on an empty library says what to add first."},
+    {"id": "bring-back", "kind": "fix", "for": ["everyone"],
+     "text": "Removed's Bring back shows even while the library is busy."},
+    {"id": "report-short-screen", "kind": "fix", "for": ["everyone"],
+     "text": "Report a problem fits a short screen."}
+  ]
+}

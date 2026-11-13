@@ -90,7 +90,8 @@ WRITER_JOIN_MARGIN = 1.0
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
-REFRESH_CAP_S = 120.0                  # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
+ANKI_LOOK_EVERY = 10.0                 # Kantan-B1 (B3): s between two looks at Anki while 順's deck to pick waits for it
+REFRESH_CAP_S = 120.0                 # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
 # W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
 # closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
 # Python as the process ends can crash it (row 6's find).
@@ -658,9 +659,9 @@ class Services:
             self.closing.wait(0.1)
 
     def level(self):
-        """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
+        """(A worker.) The level chip's (band, automatic, its list's words) (`automation.level`, Kantan-B1)."""
         from app.services import automation as automation_module
-        return automation_module.level(settings_service.thaw(self.settings.get()), self.language)
+        return automation_module.level(settings_service.thaw(self.settings.get()), self.language, words=True)
 
     def _close_duties(self):
         """The duties' close but the store's trigger (`_close_store`): their timers and workers, Koe, Connect's
@@ -977,7 +978,10 @@ def fit_on_screens(rect, screens, default=DEFAULT_SIZE):
     if best is None:
         first = screens[0] if screens else QRect(0, 0, *default)
         w, h = min(default[0], first.width()), min(default[1], first.height() - CAPTION)
-        return QRect(first.center().x() - w // 2, first.center().y() - h // 2 + CAPTION // 2, w, h)
+        # inside the screen to the pixel, its title strip too (Fresh-U row 21: `center()` is half a pixel short, so a
+        # window as wide as the screen began at x -1, on the screen beside it)
+        return QRect(first.left() + (first.width() - w) // 2, first.top() + CAPTION + (first.height() - CAPTION - h) // 2,
+                     w, h)
     w, h = min(rect.width(), best.width()), min(rect.height(), best.height() - CAPTION)
     x = max(best.left(), min(rect.left(), best.right() - w + 1))
     y = max(best.top() + CAPTION, min(rect.top(), best.bottom() - h + 1))
@@ -1366,6 +1370,8 @@ class _Duties:
         self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
+        self.guide = self.guide_panel = None                      # the feature guide: the ✦ and its panel
+        self.next_card = None                                      # ... and the path's Next card on Current
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
         self.previews_busy = self.previews_again = False           # W3.1b: the pop's numbers, one read at a time,
         self.previews_dirty = True                                 # and only when what they read moved
@@ -1471,6 +1477,7 @@ class ShellWindow(QMainWindow):
         self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
+        self._anki_looking, self._anki_looked_at = False, float("-inf")    # Kantan-B1 (B3): `_look_for_anki`
         self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
         self._d29 = True                                  # D29 for the journey dot's tooltip, read on a worker
         self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
@@ -1785,6 +1792,9 @@ class ShellWindow(QMainWindow):
         store catches up (no flash back)."""
         if getattr(view, "language", self.language) != self.language:
             return                                  # W3.2 P0: a view of the language left, queued before the switch
+        self._guide_view = view                     # the feature guide's *for you* reads its kinds (on a worker)
+        if self.duties is not None and self.duties.guide_panel is not None:
+            self._guide_view_moved(view)            # ... and its path follows a Done, a title, an arrival
         moves = getattr(self, "moves", None)
         if moves is not None:
             view = moves.view_in(view)
@@ -1986,7 +1996,7 @@ class ShellWindow(QMainWindow):
             moves.undo_key.setEnabled(False)        # (the window's own Ctrl+Z goes to the new controller's)
             moves.undo_key.deleteLater()
             moves.unwire()                          # a write still in hand past the switch's wait tells no one
-            moves.deleteLater()
+            qpress.let_go(moves)                    # (its `_Resting` filters the list until it goes: Qt-C2)
         lst = getattr(self.page_widgets.get("current"), "list", None)
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
@@ -2265,6 +2275,7 @@ class ShellWindow(QMainWindow):
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
         self.phase.set_status(snap)
+        self._look_for_anki()                              # Kantan-B1 (B3): a deck to pick waits: does Anki answer?
         self._paint_slot()
         if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
             self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
@@ -2604,10 +2615,17 @@ class ShellWindow(QMainWindow):
         if self.duties is not None and self._status_snap is not None:
             self._paint_journey_dot()
 
+    def _journey_owed(self):
+        """The journey's sentences catching up: the bar's last snapshot says a Generate is owed AND there is a journey
+        to catch up (its *Journey ↗* shown). Fresh-U row 16: on a first start, behind setup, the store's order moved
+        before any Generate, so an empty window said *Your journey's sentences are catching up* with no journey."""
+        snap = self._status_snap
+        return bool(snap is not None and snap.journey and self.duties.journey_button.isEnabled())
+
     def _paint_journey_dot(self):
         """The journey dot from the bar's last snapshot; its tooltip promises a Generate by itself only while D29 is on
         (the keeper runs one), else says to press Generate — D29 as last read on a worker (`_read_d29`)."""
-        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
+        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._journey_owed() else "",
                           strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
         self._paint_level()                                    # W3.1a: the dot is a mark on the ▾ too
 
@@ -2713,6 +2731,45 @@ class ShellWindow(QMainWindow):
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_dot)       # a9.1: its dot beside it
         header_row.insertWidget(header_row.indexOf(self.report_button), d.help)          # ? before the bug
         # --- end W3.2 Q3
+        # --- the feature guide (Hoshi-S, 2026-11-12): the ✦ just left of the ?, shown once a look (a worker's, after
+        # the start) finds something to show; its panel a pop under it (Esc, Back, a press elsewhere close it)
+        from app.qt import guide as guide_ui
+        d.guide = guide_ui.GuideButton(self.header)
+        keep = d.guide.sizePolicy()
+        keep.setRetainSizeWhenHidden(True)                 # (its room kept: the header never shifts as it appears)
+        d.guide.setSizePolicy(keep)
+        d.guide.setVisible(False)
+        d.guide_panel = guide_ui.GuidePanel(self.centralWidget(), d.guide)
+        d.guide.clicked.connect(lambda _c=False: d.guide_panel.toggle())
+        d.guide_panel.opened.connect(self._guide_opened)
+        d.guide_panel.show_me.connect(self.guide_show_me)
+        d.guide_panel.path_shown.connect(lambda: self._guide_answer(None))
+        self.register_overlay(d.guide_panel)
+        header_row.insertWidget(header_row.indexOf(d.help), d.guide)
+        QWidget.setTabOrder(d.guide, d.help)                # Tab as the eye reads: ✦, then ?
+        self._guide_asked = 0                               # each look numbered: an older answer is dropped
+        self._path_later = set()                            # chapter 1's steps set aside this run (*Not now*)
+        self._guide_key = None                              # the view's few numbers a path look follows
+        self._guide_soon = QTimer(self)                     # ... a look a moment after they change (one per burst)
+        self._guide_soon.setSingleShot(True)
+        self._guide_soon.setInterval(guide_ui.RELOOK_MS)
+        self._guide_soon.timeout.connect(lambda: self._guide_look(notes=False))
+        self._guide_focus_at = 0.0                          # the last look on the window's activation
+        self._guide_focus_s = guide_ui.FOCUS_RELOOK_S       # ... at most this often
+        # the path's Next card (PR 2), above Up Next on Current: in the page's own strip, one place (Kantan-X §6)
+        page = self.page_widgets.get("current")
+        if page is not None and getattr(page, "state_bar", None) is not None:
+            from app.qt import next_card as next_card_ui
+            d.next_card = next_card_ui.NextCard(page)
+            box = page.layout().itemAt(0).layout()
+            box.insertWidget(box.indexOf(page.state_bar) + 1, d.next_card)
+            d.next_card.show_me.connect(self.guide_show_me)
+            d.next_card.not_now.connect(self._path_not_now)
+            d.next_card.own_cards.connect(lambda: self._guide_answer("own_cards"))
+            d.next_card.made_ok.connect(lambda: self._guide_answer("first_ack"))
+            QWidget.setTabOrder(d.next_card.primary, d.next_card.secondary)
+            QWidget.setTabOrder(d.next_card.secondary, d.next_card.later)
+        # --- end the feature guide
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
         # Settings; the level chip gave way to the ▾); the update chip in the status line's slot while it applies
@@ -2766,8 +2823,12 @@ class ShellWindow(QMainWindow):
         asks again, on a worker."""
         if up:
             self.services.setup_open.set()
+            if self.duties is not None and self.duties.next_card is not None:
+                self.duties.next_card.set_card(None)       # the path's card waits for setup to end
         elif self.services.setup_open.is_set():
-            bridge.run_in_worker(self.services.setup_ended)
+            guided = self.duties is not None and self.duties.guide_panel is not None
+            bridge.run_in_worker(self.services.setup_ended,       # the path's look once setup has truly ended
+                                 then=(lambda _r: self._guide_look(notes=False)) if guided else None)
         if not up and self.__dict__.pop("_tour_after_setup", False):
             QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
@@ -2782,6 +2843,149 @@ class ShellWindow(QMainWindow):
         self._read_level()
         from app.qt import windows
         windows.resume_youtube(self)
+        from app.qt import guide as guide_ui                # the feature guide: its first look, once the start settles
+        QTimer.singleShot(guide_ui.FIRST_LOOK_MS, self._guide_look)
+
+    # --- the feature guide (Hoshi-S, 2026-11-12; app/services/guide.py, app/qt/guide.py) ------------------------- #
+    def _guide_look(self, seen=False, notes=True):
+        """What the ✦'s panel shows and whether it glows, read on a worker (`guide.look`: the notes, this PC's state,
+        each check a stat or one small read). `seen`: the panel opened — this version's notes are marked seen first.
+        Setup running is a new PC: nothing to glow for (`fresh`). `notes` False: the path alone (its re-looks after a
+        Done, an answer, the window's activation — the notes don't change while the window is open)."""
+        d = self.duties
+        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel):
+            return
+        from app.services import guide as guide_service
+        from app.services import path as path_service
+        language, settings, view = self.language, self.services.settings, getattr(self, "_guide_view", None)
+        fresh = self.services.setup_open.is_set()
+        later = tuple(self._path_later)
+        journey = d.journey_button is not None and not d.journey_button.isHidden()   # a journey on disk: step 1's place
+        self._guide_asked += 1
+        asked = self._guide_asked
+
+        def job():
+            lines = []
+            if seen:
+                guide_service.mark_seen()
+            got = settings.get()
+            look = guide_service.look(language, got, view, log=lines.append, fresh=fresh) if (notes or seen) else None
+            way = path_service.look(language, got, view, fresh=fresh, later=later, seen=seen, journey_ready=journey)
+            return asked, look, way, lines
+        bridge.run_in_worker(job, then=self._guide_got,
+                             failed=lambda info: applog.log("guide", f"look: {type(info[0]).__name__}"))
+
+    def _guide_answer(self, what, step_id=None):
+        """The learner answered the path (*I make my own cards*, *OK* on the first cards, *Not now* on a later step, or
+        the path's tab seen: `what` None): written on a worker, then a fresh look."""
+        from app.services import path as path_service
+        d = self.duties
+        if d is None:
+            return
+        if what in ("own_cards", "first_ack") and d.next_card is not None:
+            d.next_card.set_card(None)                      # every press reacts at once: the card goes now
+        useful = [st.step.id for st in (d.guide_panel.path.steps if d.guide_panel.path else ())
+                  if st.step.chapter == path_service.READY and st.useful and not st.done]
+        write = {"own_cards": path_service.own_cards, "first_ack": path_service.first_ack,
+                 "not_now": lambda: path_service.not_now(step_id), None: lambda: path_service.seen_useful(useful)}[what]
+        bridge.run_in_worker(write, then=lambda _w: self._guide_look(notes=False),
+                             failed=lambda info: applog.log("guide", f"path: {type(info[0]).__name__}"))
+
+    def _path_not_now(self, step_id):
+        """*Not now* on the Next card: gone at once; chapter 1's step until the next start, a later one for good."""
+        from app.services import path as path_service
+        d = self.duties
+        if d is not None and d.next_card is not None:
+            d.next_card.set_card(None)
+        if path_service.BY_ID[step_id].chapter == path_service.FIRST:
+            self._path_later.add(step_id)
+            self._guide_look(notes=False)
+        else:
+            self._path_later.add(path_service.READY)        # one later step's card a run: never a chain of them
+            self._guide_answer("not_now", step_id)
+
+    def _guide_moment(self, name):
+        """A guide moment the app keeps no record of (the journey opened): kept on a worker, then a fresh look."""
+        from app.services import path as path_service
+        bridge.run_in_worker(path_service.note_moment, name, then=lambda _w: self._guide_look(notes=False),
+                             failed=lambda info: applog.log("guide", f"moment: {type(info[0]).__name__}"))
+
+    def _guide_view_moved(self, view):
+        """(show_library) A view whose few path numbers moved — a Done, a title in or out, an arrival waiting — asks a
+        path look a moment later (one per burst; S19: an unchanged view asks nothing)."""
+        counts = getattr(view, "counts", None)
+        key = (len(getattr(view, "rows", ()) or ()), getattr(counts, "finished", None),
+               sum(getattr(r, "n_watched", 0) or 0 for r in (getattr(view, "rows", ()) or ())[:200]),
+               len(getattr(view, "arrivals", ()) or ()))
+        if key != self._guide_key:
+            first = self._guide_key is None
+            self._guide_key = key
+            if not first and self.duties is not None and self.duties.guide_panel is not None:
+                self._guide_soon.start()
+
+    def _guide_got(self, answer):
+        asked, look, way, lines = answer
+        for line in lines:
+            applog.log("guide", line)
+        d = self.duties
+        if d is None or d.guide_panel is None or sip.isdeleted(d.guide_panel) or asked != self._guide_asked:
+            return                                          # (a newer look is on its way: this one says less)
+        if look is None:                                    # the path alone: the notes as they were
+            look = d.guide_panel.look
+        else:
+            d.guide_panel.set_look(look)
+        d.guide_panel.set_path(way)
+        d.guide.setVisible(d.guide_panel.has_news() or way is not None)
+        d.guide.setToolTip(strings.GUIDE_TIP_PATH if way is not None else strings.GUIDE_TIP)
+        news = look is not None and look.glow
+        d.guide.set_glow((news or (way is not None and way.glow)) and not d.guide_panel.isVisible())
+        if d.next_card is not None and not sip.isdeleted(d.next_card):
+            card = None if (way is None or self.services.setup_open.is_set()) else way.card
+            if card != d.next_card.card and card is not None and self.hints.blocked(toast_ok=True):
+                self._guide_soon.start()                    # never mid-drag or under a help card: the rows would jump
+            else:                                           # (Kantan-X §7, the hints' wait rule)
+                d.next_card.set_card(card)
+
+    def _guide_opened(self):
+        """The panel opened: the glow ends at once; the seen mark and a fresh look go to a worker."""
+        self.duties.guide.set_glow(False)
+        self._guide_look(seen=True)
+
+    def _guide_control(self, name):
+        """The header's or the bar's control `name` (`guide.CONTROLS`), or None."""
+        d = self.duties
+        return {"search": getattr(self, "search", None), "add": getattr(self, "add_stone", None),
+                "level": d and d.level, "journey": d and d.journey_button,
+                "arrivals": getattr(self, "arrivals_inset", None), "known": getattr(self, "known", None),
+                "circles": getattr(self, "phase", None), "report": getattr(self, "report_button", None),
+                "help": d and d.help}.get(name)
+
+    def guide_show_me(self, where):
+        """*Show me* (the panel closed already): go to `where` and light it — a Settings row as Settings reveals one,
+        a help card opened, a tab or a control washed as a decision's place is (`motion.wash`). A place not on screen
+        now (a tab with nothing in it, a control not shown): the bar says so."""
+        kind, _sep, name = str(where).partition(":")
+        if kind == "settings":
+            if not self.mount_settings().shows(name):       # a row this learner's Settings doesn't show: never another
+                self.say(strings.GUIDE_NOT_HERE)
+                return
+            self.open_setting(name)
+            return
+        if kind == "help":
+            self.open_help(name)
+            return
+        widget = None
+        if kind == "tab":
+            widget = self.tab_buttons.get(name)
+            if widget is not None and not widget.isHidden():
+                self.show_tab(name)
+        elif kind == "control":
+            widget = self._guide_control(name)
+        if widget is None or sip.isdeleted(widget) or not widget.isVisible():
+            self.say(strings.GUIDE_NOT_HERE)
+            return
+        motion.wash(widget, theme.RADII["icon-button"])
+    # --- end the feature guide -------------------------------------------------------------------------------- #
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -2789,11 +2993,42 @@ class ShellWindow(QMainWindow):
                 getattr(self, "looks", None) is not None:                  # --- SRC W1b: a look on focus (throttled)
             if event.type() == QEvent.Type.ActivationChange and self.in_front():
                 self.look_at_sources(focused=True)
+                if self.duties is not None and self.duties.guide_panel is not None and \
+                        time.monotonic() - self._guide_focus_at > self._guide_focus_s:
+                    self._guide_focus_at = time.monotonic()  # the path on coming back (cards made meanwhile, Anki)
+                    self._guide_look(notes=False)
             else:
                 self.looks.set_shown(self.in_front())    # behind / minimized: nothing looked at, watches' reports held
         if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self.duties is not None
                 and self.services.started):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
+            self._look_for_anki()                           # Kantan-B1 (B3): Anki opened meanwhile?
+
+    # --- Kantan-B1 (B3, Sonic ✅ 2026-11-12): 順's deck to pick is amber only once Anki answers ------------------------ #
+    def _look_for_anki(self):
+        """While 順's deck to pick waits (`InJunban`, never the Undo) and Anki isn't known to answer: AnkiConnect asked
+        once (`anki_connect.probe`, loopback, on a worker; one at a time, at most every ANKI_LOOK_EVERY s) — at a status
+        change and as the window comes to the front. The automatic sync's own answers count too (`_show_automation`):
+        the sync is off by default, so it alone would leave 順 grey for good."""
+        from app import replan_preview
+        line = getattr(self._status_snap, "replan", None)
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return                                        # (the test suites, a developer's run: Anki is never reached)
+        if (self.phase.anki_answers or self._anki_looking or not isinstance(line, replan_preview.InJunban)
+                or line == replan_preview.RESTORE_FIRST or time.monotonic() - self._anki_looked_at < ANKI_LOOK_EVERY):
+            return
+        self._anki_looking, self._anki_looked_at = True, time.monotonic()
+        settings = settings_service.thaw(self.services.settings.get())
+
+        def look():
+            from app import anki_connect
+            return bool(anki_connect.probe(anki_connect.address(settings), timeout=2).get("ok"))
+        bridge.run_in_worker(look, then=self._anki_looked, failed=lambda _info: self._anki_looked(False))
+
+    def _anki_looked(self, answers):
+        self._anki_looking = False
+        if not sip.isdeleted(self.phase):
+            self.phase.set_anki(answers)
 
     def _duty_settings(self, keys):
         """A write landed: Koe's switch, a language switch, a change that makes the journey stale, the level."""
@@ -2967,6 +3202,8 @@ class ShellWindow(QMainWindow):
                 b.setEnabled(exists)
                 b.setVisible(exists)                       # W3.1a: shown only while there is one to open
                 b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
+                if self._status_snap is not None:
+                    self._paint_journey_dot()          # Fresh-U row 16: the dot only beside a journey
         if self.duties.pop.isVisible():
             self.duties.pop.place()
 
@@ -2979,6 +3216,8 @@ class ShellWindow(QMainWindow):
         journey*; Sonic 2026-10-24): the report opens ON it, its panel shown (`journey_file`); every other way in opens
         where the report opens by itself. -> the press, or None."""
         def done(opened):
+            if opened and self.duties is not None and self.duties.guide_panel is not None:
+                self._guide_moment("journey")       # the path's first step: the journey really opened
             if opened == JOURNEY_LACKS:             # JO-1: opened where it opens by itself; the bar says why
                 self.say(strings.JOURNEY_NOT_YET.format(ep=episode.label))
                 return
@@ -3030,6 +3269,9 @@ class ShellWindow(QMainWindow):
         # hover. *N waiting* (W31A-2) comes from the status service's `backlog`, in `show_status`.
         if d.anki.show_state(key, words, tip):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
+        sync = getattr(state, "sync", None)                # Kantan-B1 (B3): 順's deck amber only once Anki answers —
+        if sync in ("syncing", "synced", "anki-closed"):   # ... the sync's own answer (with the switch off too: a
+            self.phase.set_anki(sync != "anki-closed")     # ... sync you asked), else `_look_for_anki`'s
 
     def _known_clicked(self):
         """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
@@ -3104,9 +3346,12 @@ class ShellWindow(QMainWindow):
 
     def _show_level(self, level):
         from app import word_selection
-        band, automatic = level
+        band, automatic, words = (tuple(level) + (None,))[:3]
         name = word_selection.band_label(band) if band else ""
-        if automatic:
+        if automatic and name and words is not None:       # Kantan-B1 (B1): its list's size, the band in the menu
+            text = strings.BAR_LEVEL_AUTO_WORDS.format(words=words)
+            tip = strings.BAR_LEVEL_AUTO_WORDS_TIP.format(words=words, band=name)
+        elif automatic:
             text = strings.BAR_LEVEL_AUTO.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE
             tip = strings.BAR_LEVEL_AUTO_TIP.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE_TIP
         else:
@@ -3199,10 +3444,9 @@ class ShellWindow(QMainWindow):
         (amber), stale, or the journey's sentences catching up (`frame.level_mark`); repainted only on a change."""
         d = self.duties
         gen, state = d.module.gen, d.generate_state
-        snap = self._status_snap
         mark = frame.level_mark(state is not None and state.state == gen.FAILED,
                                 state is not None and state.state == gen.STALE,
-                                bool(snap is not None and snap.journey))
+                                self._journey_owed())
         tip = (strings.LEVEL_TIP_MARK.format(level=d.level_tip, mark=strings.LEVEL_MARKS[mark]) if mark
                else strings.LEVEL_TIP.format(level=d.level_tip))
         changed = d.level.set_level(d.level_text, tip)

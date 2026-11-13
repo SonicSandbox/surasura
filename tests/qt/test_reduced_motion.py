@@ -87,8 +87,8 @@ SITES = {
 # "file:Class" -> each overlay (a `motion.Overlay` no other overlay builds on) opened at least once
 OVERLAYS = {
     "add_menu.py:PasteCard", "arrivals.py:ArrivalsTray", "confirm.py:Confirm", "duties.py:UpdateSheet",
-    "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "help_card.py:HelpCard",
-    "search.py:Results",
+    "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "guide.py:GuidePanel",
+    "help_card.py:HelpCard", "search.py:Results",
     "settings_live.py:FormatPop", "settings_live.py:CreditsCard", "toast.py:ToastCard",
 }
 STARTS = ("animate", "spring", "open_overlay", "fall_into_place")
@@ -454,9 +454,10 @@ def test_sweep_arrivals_the_covers_rest_the_tray_opens_in_place_and_fades_within
 
 
 @drives("add_menu.py:AddStone._rise", "add_menu.py:PasteCard.open", "add_menu.py:PasteCard", "confirm.py:Confirm.open",
-        "confirm.py:Confirm", "frame.py:LevelPop", "duties.py:UpdateSheet", "finished.py:WhatIfCard")
+        "confirm.py:Confirm", "frame.py:LevelPop", "duties.py:UpdateSheet", "finished.py:WhatIfCard",
+        "guide.py:GuidePanel")
 def test_sweep_the_windows_cards_and_pops_open_in_place(sweep, world):
-    from app.qt import add_menu, confirm, duties, finished, frame
+    from app.qt import add_menu, confirm, duties, finished, frame, guide
     seed, win, writer = _reduced_window(sweep, world)
     central = win.centralWidget()
     sweep.on()
@@ -466,8 +467,9 @@ def test_sweep_the_windows_cards_and_pops_open_in_place(sweep, world):
     stone._rise(0.0)
     sweep.still()
     level = win.duties.pop if win.duties is not None else frame.LevelPop(central, frame.LevelButton(central))
+    panel = win.duties.guide_panel if win.duties is not None else guide.GuidePanel(central, guide.GuideButton(central))
     cards = [add_menu.PasteCard(win, lambda *_a: None), level, duties.UpdateSheet(central),
-             finished.WhatIfCard(central)]
+             finished.WhatIfCard(central), panel]
     for card in cards:
         card.open()
         sweep.still()

@@ -1,0 +1,26 @@
+{
+  "version": "3.0.7",
+  "date": "2026-11-13",
+  "items": [
+    {"id": "your-path", "kind": "new", "for": ["everyone"], "where": "tab:current",
+     "text": "Your path: a Next card on Current shows one useful step at a time."},
+    {"id": "audiobook-alone", "kind": "new", "for": ["audiobooks", "books"], "where": "tab:needs",
+     "text": "An audiobook brought in alone is named, and Needs you asks which book it is."},
+    {"id": "settings-say-why", "kind": "tweak", "for": ["everyone"], "where": "tab:settings",
+     "text": "Settings say what each part does for you, and what it still needs."},
+    {"id": "level-in-words", "kind": "tweak", "for": ["everyone"], "where": "control:level",
+     "text": "The header's level reads as about how many words you know."},
+    {"id": "removed-again", "kind": "tweak", "for": ["books", "shows"],
+     "text": "A removed title added again offers Put back or Add as new."},
+    {"id": "generate-failed", "kind": "tweak", "for": ["everyone"],
+     "text": "A failed Generate says why, with Generate again and Report a problem."},
+    {"id": "press-crash", "kind": "fix", "for": ["everyone"],
+     "text": "A rare crash just after a press is fixed."},
+    {"id": "save-at-once", "kind": "fix", "for": ["everyone"],
+     "text": "A move saves at once, even while Surasura reads your library."},
+    {"id": "pickers-videos", "kind": "fix", "for": ["everyone"],
+     "text": "File pickers for shows and books open in your Videos folder."},
+    {"id": "menu-faster", "kind": "fix", "for": ["everyone"],
+     "text": "The ⋯ menu opens faster at high scaling."}
+  ]
+}

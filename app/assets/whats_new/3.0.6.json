@@ -1,0 +1,18 @@
+{
+  "version": "3.0.6",
+  "date": "2026-11-13",
+  "items": [
+    {"id": "ai-translations", "kind": "new", "for": ["piyo", "anki"], "where": "settings:practice_ai",
+     "text": "Your own AI can fill your cards' empty translations through Piyo, with one Undo."},
+    {"id": "txt-books-audiobook", "kind": "new", "for": ["books", "audiobooks"], "where": "tab:current",
+     "text": "A 2.x book in .txt parts is one book, and can be lined up with its audiobook."},
+    {"id": "youtube-pace", "kind": "tweak", "for": ["shows"],
+     "text": "YouTube is asked one thing at a time, and left alone for a day after a bot check."},
+    {"id": "one-cards-name", "kind": "tweak", "for": ["miner"],
+     "text": "One name everywhere for the cards Surasura makes: Cards made for you."},
+    {"id": "help-says-off", "kind": "fix", "for": ["everyone"],
+     "text": "Help says plainly when cards or Run things by themselves are off."},
+    {"id": "no-video-link", "kind": "fix", "for": ["shows"],
+     "text": "Up Next says No video · Link… for a video it can't find."}
+  ]
+}

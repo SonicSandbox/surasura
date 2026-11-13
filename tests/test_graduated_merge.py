@@ -8,7 +8,7 @@ KnownWord.json is the user's (CLAUDE.md §4), so what a wrong answer would cost,
   * a second start doing anything at all;
   * Replace (the Anki sync) dropping the merged words, which then turn into unknowns.
 
-Real Japanese (`tests/Test Resources/ja/`: context_test.txt's words, a slice of the real Migaku KnownWord.json) and
+Real Japanese (`tests/Test Resources/ja/`: context_test.txt's words, a slice of the Migaku-shaped KnownWord.json) and
 real Chinese (`tests/Test Resources/zh/`: context_test.txt's words, KnownWords.json). The autouse
 `_isolate_user_data_root` fixture puts `User Files/` in a temp root."""
 import json
@@ -75,7 +75,7 @@ def _snapshot(language):
 
 @pytest.fixture
 def ja_known(ja_resources_dir):
-    """A slice of the real Migaku export: KNOWN, LEARNING, UNKNOWN and IGNORED entries, other top-level keys kept."""
+    """A slice of the Migaku-shaped export: KNOWN, LEARNING, UNKNOWN and IGNORED entries, other top-level keys kept."""
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)
     words = data["words"]

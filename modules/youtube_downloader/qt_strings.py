@@ -82,6 +82,7 @@ REST_CAME = "YouTube · the rest of your playlist: {what}"
 REST_NOTHING = "YouTube · the rest of your playlist: nothing new to bring in"
 REST_NOTHING_BUT = "YouTube · the rest of your playlist didn't come in: {why}"
 REST_LATER = "the rest of your playlist waits ({why}): it goes on the next time Surasura starts"
+REST_HELD = "the rest of your playlist waits — {why} It goes on when Surasura starts after that"    # Yt-B, PROVISIONAL
 REST_STOPPED = "stopped"
 REST_CANCELLED = "cancelled: the YouTube window can bring in the rest of the playlist any time"
 REST_YIELDED = "the rest of your playlist goes on after your other YouTube run"

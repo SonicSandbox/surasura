@@ -21,7 +21,7 @@ or `+`), and the window lock's (every character outside `[A-Za-z0-9_.-]` written
 of them (JSON, a repr, JSON in JSON), `/`, `%5C`, `%2F`, `\\x5c` or `\\u005c`, and its drive `C:` or Git Bash's `/c`.
 Case never matters but for an Anki profile's. A name made only of ASCII letters and digits is replaced only as a whole
 word — no ASCII letter or digit beside it (an escape such as `%20`, `\\n` or `\\u00e9` counts as a gap) — so
-`Michaelson` beside the user `Michael` stays; a name with any other letter (田中, Zoë) everywhere; a one-letter name only as a home
+`Takashison` beside the user `Takashi` stays; a name with any other letter (田中, Zoë) everywhere; a one-letter name only as a home
 folder's last part. The price (⚖️, accepted): a user named like an everyday word (`user`, `anime`) is replaced wherever
 the word stands alone.
 

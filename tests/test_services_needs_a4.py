@@ -34,7 +34,7 @@ def view(language, n=4, missing=None, start=0):
 
 
 def folder_rows(language, n):
-    return [{"id": 10 + i, "path": f"C:\\Users\\Michael\\Downloads\\{names(language)[i]}", "items": 3,
+    return [{"id": 10 + i, "path": f"C:\\Users\\Takashi\\Downloads\\{names(language)[i]}", "items": 3,
              "shows": [names(language)[i]], "finished": False, "found_in": []} for i in range(n)]
 
 
@@ -58,7 +58,7 @@ def test_the_seen_file_is_never_lost_when_it_is_read_while_it_is_written(languag
     for t in threads:
         t.start()
     try:
-        keys = [f"line:offline:c:\\users\\michael\\{names(language)[i % 10]}\\{i}" for i in range(150)]
+        keys = [f"line:offline:c:\\users\\takashi\\{names(language)[i % 10]}\\{i}" for i in range(150)]
         for k in keys:
             needs.answer(language, [k])          # *Keep waiting*'s write, one at a time as pressed
     finally:

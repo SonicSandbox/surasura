@@ -304,7 +304,7 @@ def test_read_gives_the_lines_as_written_in_order_comments_and_blanks_left_out()
 
 @pytest.fixture
 def known_file(ja_resources_dir):
-    """The real Migaku export (11,176 entries, 46 IGNORED) as this language's KnownWord.json."""
+    """The Migaku-shaped export (11,582 entries, 18 IGNORED) as this language's KnownWord.json."""
     dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), dst)
@@ -484,9 +484,9 @@ def test_words_in_marks_listed_known_and_left_out(known_file):
 
 def test_words_in_reads_chinese_as_the_library_cuts_it(zh_resources_dir):
     with open(os.path.join(zh_resources_dir, "chinese_text_1.txt"), encoding="utf-8") as f:
-        line = next(l for l in f.read().splitlines() if "特朗普" in l)
+        line = next(l for l in f.read().splitlines() if "孙中山" in l)
     words = [c.word for c in word_lists.words_in(line, "zh", "blacklist")]
-    assert "特朗普" in words and "台湾" in words
+    assert "孙中山" in words and "台湾" in words
     assert "，" not in words and "：" not in words                    # punctuation is no word
     _put("台湾\n".encode("utf-8"), "blacklist", "zh")
     found = {c.word: c.status for c in word_lists.words_in(line, "zh", "blacklist")}

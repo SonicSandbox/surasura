@@ -395,6 +395,8 @@ class ArrivalsInset(QToolButton):
         self.paints = 0                      # repaints asked (S19)
         self.arrivals_played = 0             # arrival motions started (tests)
         self.kept = 0                        # alpha 4 (Mattias #8): files a look kept out (the tray's foot says so)
+        self.short = (0, "")                 # Kantan-B2 (AUDIT A3): short texts left out, and their line
+        self.short_seen = 0                  # ... the count the tray last showed (it lights the inset only above it)
         self.setVisible(False)
         qcovers.notifier().ready.connect(self._cover_ready)        # --- W3.2 L3
 
@@ -440,15 +442,22 @@ class ArrivalsInset(QToolButton):
         """Its tooltip, its name and whether it shows: with an arrival, or with files a look kept out (alpha 4: the
         tray's foot says so and brings them back — no arrival waiting, the inset is the way to it)."""
         count = self.count
-        if count == 0 and self.kept:
-            line = kept_out_words(self.kept)
-            self.setToolTip(strings.ARRIVALS_KEPT_OUT_INSET_TIP.format(line=line))
-            self.setAccessibleName(strings.ARRIVALS_KEPT_OUT_NAME.format(arrivals=strings.ARRIVALS, line=line))
+        short = self.short[1] if self.short[0] else ""          # Kantan-B2: short texts left out, one line more
+        if count == 0 and (self.kept or self._short_new()):
+            lines = ([kept_out_words(self.kept)] if self.kept else []) + ([short] if short else [])
+            if self.kept:
+                tip = strings.ARRIVALS_KEPT_OUT_INSET_TIP.format(line=lines[0]) + ("\n" + short if short else "")
+            else:
+                tip = strings.ARRIVALS_SHORT_INSET_TIP.format(line=short)
+            self.setToolTip(tip)
+            self.setAccessibleName(strings.ARRIVALS_KEPT_OUT_NAME.format(arrivals=strings.ARRIVALS,
+                                                                         line=" · ".join(lines)))
         else:
             one = count == 1
-            self.setToolTip(strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count))
+            tip = strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count)
+            self.setToolTip(tip + ("\n" + short if short else ""))
             self.setAccessibleName(strings.ARRIVALS_NAME_ONE if one else strings.ARRIVALS_NAME.format(n=count))
-        shown = count > 0 or self.kept > 0
+        shown = count > 0 or self.kept > 0 or self._short_new()
         if self.isHidden() == shown:
             self.setVisible(shown)
 
@@ -461,6 +470,37 @@ class ArrivalsInset(QToolButton):
         self.kept = n
         self._describe()
         if not self.count:                   # it paints the kept-out files only with no arrival (S19, review)
+            self.paints += 1
+            self.updateGeometry()
+            self.update()
+        return True
+
+    def _short_new(self):
+        """Short texts left out that the tray hasn't shown yet: only they light the inset on their own."""
+        return self.short[0] > self.short_seen
+
+    def short_shown(self):
+        """The tray showed the short texts' line: their count no longer lights the inset by itself (a readme never
+        holds it lit for good); a later look leaving more out lights it again."""
+        if self.short[0] <= self.short_seen:
+            return
+        self.short_seen = self.short[0]
+        self._describe()
+        if not self.count:
+            self.paints += 1
+            self.updateGeometry()
+            self.update()
+
+    def set_short(self, n, line):
+        """Kantan-B2 (AUDIT A3, finding 9): how many loose texts the looks left out as too short, and their line. -> True
+        when it changed (only then is anything set or repainted, S19)."""
+        held = (max(0, int(n or 0)), line if n else "")
+        if held == self.short:
+            return False
+        self.short = held
+        self.short_seen = min(self.short_seen, held[0])         # fewer now: a later rise is news again
+        self._describe()
+        if not self.count:
             self.paints += 1
             self.updateGeometry()
             self.update()
@@ -528,8 +568,9 @@ class ArrivalsInset(QToolButton):
         return 0 if not n else m["cw"] + (n - 1) * (m["cw"] - m["over"])
 
     def _counted(self):
-        """Its count is drawn — never a 0 when it shows only for the files kept out (alpha 4, review)."""
-        return bool(self.count) or not self.kept
+        """Its count is drawn — never a 0 when it shows only for the files kept out (alpha 4, review) or the short
+        texts left out (Kantan-B2)."""
+        return bool(self.count) or not (self.kept or self._short_new())
 
     def sizeHint(self):
         m = self._metrics()
@@ -1419,6 +1460,16 @@ class ArrivalsTray(motion.Overlay):
         foot.addWidget(self.bring_back, 0, Qt.AlignmentFlag.AlignVCenter)
         self.kept_box.hide()
         box.addWidget(self.kept_box)
+        # Kantan-B2 (AUDIT A3, finding 9): under it, the short texts the looks left out — words only, nothing to press
+        self.short_line = QLabel(self)
+        self.short_line.setObjectName("traykeptout")
+        self.short_line.setTextFormat(Qt.TextFormat.PlainText)
+        self.short_line.setToolTip(strings.ARRIVALS_SHORT_TIP)
+        self.short_line.setWordWrap(True)
+        self.short_line.setContentsMargins(round(6 * f), 0, 0, 0)
+        self.short_line.hide()
+        box.addWidget(self.short_line)
+        self.short = (0, "")
         self.kept_out = (0, (), ())         # (how many, the Removes' trash ids, the folders they were kept out of)
         self.giving = None                  # a Bring back saving: the looks' last word on them, held meanwhile
         self.groups = ()                    # the view's arrival_groups last given (shown, or waiting for `open`)
@@ -1761,6 +1812,9 @@ class ArrivalsTray(motion.Overlay):
         want = margins.top() + head + lay.spacing() + content + margins.bottom() + 2
         if not self.kept_box.isHidden():                   # alpha 4: the kept-out foot under the rows
             want += lay.spacing() + self.kept_box.sizeHint().height()
+        if not self.short_line.isHidden():                 # Kantan-B2: the short texts' line under it
+            m = lay.contentsMargins()
+            want += lay.spacing() + self.short_line.heightForWidth(max(1, width - m.left() - m.right()))
         b = self.inset
         at = b.mapTo(p, QPoint(b.width(), b.height()))
         y = at.y() + 6
@@ -1777,6 +1831,8 @@ class ArrivalsTray(motion.Overlay):
         if self.kept_out[0]:
             self._turn_bring_back()
         self.place()
+        if self.short[0]:
+            self.inset.short_shown()     # Kantan-B2: seen once, the short texts no longer light the inset alone
         return super().open()
 
     # --- alpha 4 (Mattias #8, A4K-6): files the looks kept out, and *Bring back* -------------------------------- #
@@ -1793,6 +1849,21 @@ class ArrivalsTray(motion.Overlay):
             self._turn_bring_back()
         if self.kept_box.isHidden() == bool(n):
             self.kept_box.setVisible(bool(n))
+            if self.isVisible():
+                self.place()
+        return True
+
+    def short_said(self, n, line):
+        """Kantan-B2 (AUDIT A3, finding 9): the looks' short texts left out, and their line, for the foot. -> True when it
+        changed (only then is the foot touched, S19)."""
+        held = (max(0, int(n or 0)), line if n else "")
+        if held == self.short:
+            return False
+        self.short = held
+        if held[0]:
+            self.short_line.setText(held[1])
+        if self.short_line.isHidden() == bool(held[0]):
+            self.short_line.setVisible(bool(held[0]))
             if self.isVisible():
                 self.place()
         return True

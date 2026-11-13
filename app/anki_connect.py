@@ -92,6 +92,7 @@ READ_ACTIONS = frozenset({
     "findCards", "findNotes", "cardsInfo", "notesInfo", "cardsToNotes", "getDeckConfig", "areSuspended",
     "cardsModTime", "notesModTime",         # the fast re-plan's warm card map (E1.1 03 §3.2): reads only
     "guiReviewActive", "getActiveProfile", "getProfiles",
+    "modelTemplates",                       # Piyo's translations: which field a card's front shows (card_translations)
     "reloadCollection", "guiDeckBrowser",
     "guiBrowse", "guiSelectCard",           # 順's *Try it* / *Show them in Anki*: Anki's browser opened (sorted by
                                             # due, which it remembers); no card or note changed

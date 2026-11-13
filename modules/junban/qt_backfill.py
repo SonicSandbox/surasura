@@ -21,6 +21,7 @@ window, its Fields window and its パターン data window. It paints what `back
 * **It follows the main window's language when idle** (🧭 IK-12, the Tk window's tested behaviour): the preview goes,
   what is offered is read again, the session is made again for the new language on its next use.
 """
+import json
 import os
 import threading
 
@@ -246,6 +247,18 @@ class BackfillWindow(windows.SecondaryWindow):
                 self.btn_copy = self._button(S.BF_COPY_STYLE, S.BF_COPY_STYLE_TIP, self.on_copy_style)
                 row.addWidget(self.btn_copy)
             self.body.addLayout(row)
+        # Translations (Piyo-TR): how many cards have none, and the next step — counted on a worker, never an AI call
+        self.tr_sep = style.separator(self)
+        self.body.addWidget(self.tr_sep)
+        row = QHBoxLayout()
+        self.tr_line = self._label("", "windowline")
+        self.tr_line.setWordWrap(True)
+        row.addWidget(self.tr_line, 1)
+        self.btn_tr_copy = self._button(S.BF_TR_COPY, S.BF_TR_COPY_TIP, self.on_copy_translate)
+        row.addWidget(self.btn_tr_copy)
+        self.body.addLayout(row)
+        self.tr_count = None
+        self._show_translations(None)
         self.body.addWidget(style.separator(self))
 
         line = QHBoxLayout()
@@ -550,6 +563,8 @@ class BackfillWindow(windows.SecondaryWindow):
             self._read_readiness()
         elif tag == "written":
             self._on_written(item[1])
+        elif tag == "translations":
+            self._show_translations(*item[1:])
 
     def _status(self, line):
         """A slow step's line on the summary, and its numbers on the bar (a worker's call)."""
@@ -578,6 +593,8 @@ class BackfillWindow(windows.SecondaryWindow):
             except Exception as e:
                 self.relay.call(("message", S.BF_DECKS_FAILED.format(e=e)))
         self.relay.call(("conn", report, decks))
+        if report.get("ok"):
+            self._translations_worker(settings, self.language)
 
     def _on_connection(self, report, decks):
         self.connected = bool(report.get("ok"))
@@ -588,6 +605,7 @@ class BackfillWindow(windows.SecondaryWindow):
         else:
             self._set_text(self.conn, S.BF_CONN_NO)
             self._write(S.BF_START_ANKI)
+            self._show_translations(None)
         state = "ok" if self.connected else "bad"
         if self.conn.property("state") != state:
             self.conn.setProperty("state", state)
@@ -636,6 +654,7 @@ class BackfillWindow(windows.SecondaryWindow):
             self.relay.call(("summary", ""))
             return
         self.relay.call(("preview", result, key, V.shown(result, choices)))
+        self._translations_worker(settings, self.language)    # the deck may have changed: its count (no worker of its own)
 
     def _show_preview(self, result, key, shown):
         """One preview, as its worker made it (`V.shown`) — unless the choices or the language changed while it ran:
@@ -865,6 +884,34 @@ class BackfillWindow(windows.SecondaryWindow):
     def on_copy_style(self):
         QApplication.clipboard().setText(V.CARD_STYLE)
         self._write(S.BF_COPIED)
+
+    def on_copy_translate(self):
+        """The prompt names Backfill's deck when one is chosen: the AI translates the cards the line counted (r1 S8)."""
+        deck = backfill._deck(self._engine())
+        named = json.dumps(deck, ensure_ascii=False) if deck else None
+        QApplication.clipboard().setText(S.BF_TR_PROMPT_DECK.format(deck=named) if deck else S.BF_TR_PROMPT)
+        self._write(S.BF_TR_COPIED)
+
+    def _translations_worker(self, settings, language):
+        """How many cards in Backfill's deck have no translation (`card_translations.count`) — called on the
+        connection check's worker and each preview's (a slot hands no work over but through a press)."""
+        from app import card_translations
+        deck = backfill._deck(settings)
+        try:
+            n = card_translations.count(card_translations.AnkiReads(backfill._url(settings)), deck or None, language)
+        except Exception:
+            n = None                            # Anki stopped answering: the line goes, nothing else says it
+        self.relay.call(("translations", n, deck, language))
+
+    def _show_translations(self, n, deck=None, language=None):
+        if language is not None and (deck != backfill._deck(self._engine()) or language != self.language):
+            return                              # a count for a deck or language no longer on screen (r1 N12)
+        self.tr_count = n
+        shown = bool(n)
+        if shown:
+            self._set_text(self.tr_line, S.BF_TR_COUNT.format(n=n))
+        for w in (self.tr_sep, self.tr_line, self.btn_tr_copy):
+            w.setVisible(shown)
 
     def on_fields(self, fill):
         """Where one fill goes, per note type — its own small window, one at a time."""

@@ -167,7 +167,7 @@ def test_empty_context_is_safe():
 def test_window_contains_the_word_and_respects_the_cap():
     """The whole point: the learner must still see the word they're studying."""
     text = _runaway()
-    for word in ("今日", "資本主義", "暗黙", "親髄"):
+    for word in ("今日", "資本主義", "暗黙", "醍醐味"):
         out = trim_context(text, word, CAP)
         assert out["trimmed"] is True, f"{word}: a {len(text)}-char sentence must be trimmed"
         assert word in out["text"], f"{word}: trimmed window lost the target word"
@@ -178,8 +178,8 @@ def test_window_contains_the_word_and_respects_the_cap():
 def test_ellipses_mark_only_the_sides_actually_cut():
     text = _runaway()
 
-    # 親髄 opens the sentence -> nothing cut on the left, so no leading ellipsis.
-    head = trim_context(text, "親髄", CAP)
+    # 醍醐味 opens the sentence -> nothing cut on the left, so no leading ellipsis.
+    head = trim_context(text, "醍醐味", CAP)
     assert not head["text"].startswith("…")
     assert head["text"].endswith("…")
 
@@ -197,7 +197,7 @@ def test_every_cut_lands_on_a_clause_boundary():
     """Japanese speech is comma-dense. A raw character slice produced "…の中には" (cutting 世の中 in
     half); building the window out of whole clauses is what fixed that."""
     text = _runaway()
-    for word in ("今日", "資本主義", "暗黙", "虚務感"):
+    for word in ("今日", "資本主義", "暗黙", "早起き感"):
         body = trim_context(text, word, CAP)["text"].strip("…")
         idx = text.index(body)
         if idx > 0:

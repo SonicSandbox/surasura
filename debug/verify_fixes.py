@@ -4,6 +4,7 @@ import sys
 import subprocess
 
 # Add project root to path
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo's top folder
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.static_html_generator import generate_static_html
@@ -76,7 +77,7 @@ if "obfReading" in zen_content:
 else:
     print("SUCCESS: undefined obfReading variable NOT found in Zen App")
 
-with open(r"c:\Users\Michael\WorldDomination\Surasura - Readability Analyzer\surasura\templates\web_app.html", "r", encoding="utf-8") as f:
+with open(os.path.join(ROOT, 'templates', 'web_app.html'), "r", encoding="utf-8") as f:
     web_content = f.read()
 
 if 'body.theme-world-class' in web_content and '--primary: #bb86fc !important;' in web_content:
@@ -95,7 +96,7 @@ if 'margin-left: 20px;' in zen_content and 'border-left: 3px solid #444;' in zen
 else:
     print("FAILURE: Enhanced Sentence Indentation NOT found")
 
-with open(r"c:\Users\Michael\WorldDomination\Surasura - Readability Analyzer\surasura\app\main.py", "r", encoding="utf-8") as f:
+with open(os.path.join(ROOT, 'app', 'main.py'), "r", encoding="utf-8") as f:
     main_content = f.read()
 
 if 'length=300' in main_content and 'textvariable=self.var_zen_limit' in main_content:
@@ -127,7 +128,7 @@ else:
     print("SUCCESS: No malformed HTML comments found")
 
 # Session 10 Checks
-with open(r"c:\Users\Michael\WorldDomination\Surasura - Readability Analyzer\surasura\app\static_html_generator.py", "r", encoding="utf-8") as f:
+with open(os.path.join(ROOT, 'app', 'static_html_generator.py'), "r", encoding="utf-8") as f:
     gen_content = f.read()
 
 if "applied_theme = theme_map.get(raw_theme, 'default')" in gen_content:

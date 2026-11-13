@@ -31,6 +31,7 @@ CONTEXT_ITEMS = 6               # of each, its newest lines and notes
 CONTEXT_CHARS = 1500            # everything a brief carries back, at most
 CONTEXT_SCAN = 30               # the newest round files looked in for it (a round kept with nothing added is passed)
 LIST_LIMIT = 50                 # past rounds one listing may give
+LAST_SCAN = 5                   # round files `last_round` reads at most, newest first (unreadable ones passed over)
 # A round file's shape: `round` is there and every key that is there holds this type, else the file "isn't a round" and is left alone (a save
 # never writes over it, a listing and a read-back pass it over).
 _SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list))
@@ -147,6 +148,21 @@ def _newest(language):
     except OSError:
         return []
     return sorted(entries, reverse=True)
+
+
+def last_round(language):
+    """Kantan-B2 (AUDIT A4, finding 10): the newest saved round as Settings' Piyo row (and Things to try's Piyo quest)
+    reads it -> (when it was last saved: a datetime, its file's time; how many words it had), or None when no round is
+    kept. A file that can't be read is passed over for the next (LAST_SCAN at most). One folder listing and a small read:
+    a worker's call."""
+    for mtime, path in _newest(language)[:LAST_SCAN]:
+        try:
+            data = _read(path, language)
+        except ValueError:
+            continue
+        if data:
+            return datetime.fromtimestamp(mtime), len(words(data))
+    return None
 
 
 def rounds(language, limit=10):

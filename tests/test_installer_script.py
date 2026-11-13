@@ -522,7 +522,7 @@ def test_the_install_proof_refuses_this_users_own_profile(tmp_path, monkeypatch,
     """`--profile C:\\Users\\<name>` made the "stand-in" the real profile: the real program folder, the real
     Houseki folders removed by `uninstall`. Refused before anything is moved or made (`isolate` never runs)."""
     proof = _install_proof()
-    me = tmp_path / "Users" / "Michael"
+    me = tmp_path / "Users" / "Takashi"
     monkeypatch.setenv("USERPROFILE", str(me))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
@@ -538,7 +538,7 @@ def test_the_install_proof_refuses_this_users_own_profile(tmp_path, monkeypatch,
 @pytest.mark.skipif(sys.platform != "win32", reason="the install proof runs on Windows only")
 def test_the_install_proof_takes_a_stand_in_profile(tmp_path, monkeypatch):
     proof = _install_proof()
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "Users" / "Michael"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "Users" / "Takashi"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
 
@@ -546,7 +546,7 @@ def test_the_install_proof_takes_a_stand_in_profile(tmp_path, monkeypatch):
         raise RuntimeError(f"isolated in {profile}")
     monkeypatch.setattr(proof, "isolate", stop_here)
     with pytest.raises(RuntimeError, match="isolated in"):
-        proof.main(["uninstall", "--profile", str(tmp_path / "Users" / "Michael" / "stand-in")])
+        proof.main(["uninstall", "--profile", str(tmp_path / "Users" / "Takashi" / "stand-in")])
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the install proof runs on Windows only")

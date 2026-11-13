@@ -176,7 +176,7 @@ def ja_words(ja_resources_dir):
 
 @pytest.fixture
 def migaku_file(ja_resources_dir):
-    """A real Migaku export (a slice of tests/Test Resources/ja/KnownWord.json): databaseFile header,
+    """A Migaku-shaped export (a slice of tests/Test Resources/ja/KnownWord.json): databaseFile header,
     KNOWN / LEARNING / UNKNOWN / IGNORED entries. Written into the sandboxed User Files/ja/."""
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)

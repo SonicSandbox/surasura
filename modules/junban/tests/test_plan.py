@@ -210,7 +210,7 @@ def test_duplicate_cards_of_one_word_land_consecutively(rank_of):
     backlog, share a rank — so `due` only breaks their tie and they arrive together, which is the
     behaviour the user explicitly asked for."""
     rouba = [_card(10, 2900, "極楽"), _card(11, 2802, "極楽"), _card(12, 2999, "極楽")]
-    others = [_card(20, 2801, "御釈迦様"), _card(21, 2803, "血の池"), _card(22, 2804, "栗")]
+    others = [_card(20, 2801, "御釈迦様"), _card(21, 2803, "血の池"), _card(22, 2804, "暗")]   # (栗 until 2026-11-11)
     assert all(c["word"] in rank_of for c in rouba + others)
 
     _writes, stats = plan(rouba + others, rank_of)

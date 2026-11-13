@@ -173,7 +173,9 @@ def test_a_users_own_name_on_the_title_that_goes_is_the_name_kept(language):
     folder name, which stays findable among the titles."""
     store, data_dir = _empty(language)
     src = _source_root()
-    show, mine = names(language)[64], names(language)[65]
+    # The join keeps the longest name (`Show!`): the user's name no longer than the show's, so the bang title is kept
+    # (two neighbouring real words that are so; the texts' words used to give it at 64 / 65)
+    show, mine = next((a, b) for a, b in zip(names(language)[64:], names(language)[65:]) if len(b) <= len(a))
     with store:
         root = store.add_source(src)
         rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})

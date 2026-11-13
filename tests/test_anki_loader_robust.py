@@ -31,9 +31,9 @@ def test_anki_loader_modern_zstd_testAnki2(ja_resources_dir):
     try:
         fields, notes, model_map, temp_dir = load_anki_data(apkg_path)
     
-        # Verify content matches actual deck (ずんぐりむっくり)
+        # Verify content matches actual deck (ぶらぶら)
         text = extract_field_text(notes, model_map, "Front")
-        assert "ずんぐりむっくり" in text
+        assert "ぶらぶら" in text
         assert "Update Anki" not in text
         
         # Verify field filtering (case-insensitive in map)
@@ -53,10 +53,10 @@ def test_anki_loader_modern_zstd_ankiTest3(ja_resources_dir):
     try:
         fields, notes, model_map, temp_dir = load_anki_data(apkg_path)
     
-        # Verify content matches actual deck (よこ糸)
+        # Verify content matches actual deck (一人ぼっち)
         text = extract_field_text(notes, model_map, "Front")
-        assert "よこ糸" in text
-        assert "所信" in text
+        assert "一人ぼっち" in text
+        assert "蠢く" in text
         assert "Update Anki" not in text
         
         # Verify field filtering

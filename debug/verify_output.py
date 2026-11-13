@@ -1,7 +1,8 @@
 
 import os
 
-file_path = r"c:\Users\Michael\WorldDomination\Surasura - Readability Analyzer\surasura\results\reading_list_static.html"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo's top folder
+file_path = os.path.join(ROOT, 'results', 'reading_list_static.html')
 
 if not os.path.exists(file_path):
     print("File not found")

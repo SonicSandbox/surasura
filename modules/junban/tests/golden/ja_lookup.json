@@ -10,7 +10,7 @@
   "balanced"
  ],
  "人": [
-  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜が 45%</div><div class=\"pat-form pat-src-balanced pat-thin\">人な 9%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">人があつまる · 人にたべさせる · 人を殺す · 人がつれだつ</div><div class=\"pat-frame pat-src-balanced pat-thin\">えらい〜 · 〜たち</div>",
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜が 42%</div><div class=\"pat-form pat-src-balanced pat-thin\">人な 8%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">人があつまる · 人にたべさせる · 人を殺す · 人がつれだつ</div><div class=\"pat-frame pat-src-balanced pat-thin\">えらい〜 · 〜たち</div>",
   null,
   "balanced"
  ],
@@ -40,7 +40,7 @@
   "balanced"
  ],
  "待つ": [
-  "<div class=\"pat-form pat-src-balanced pat-thin\">待たせる 50%</div><div class=\"pat-form pat-src-balanced pat-thin\">待っている 38%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">冒険が待つ · お客さま方を待つ</div>",
+  "<div class=\"pat-form pat-src-balanced pat-thin\">待たせる 44%</div><div class=\"pat-form pat-src-balanced pat-thin\">待っている 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">冒険が待つ · お客さま方を待つ</div>",
   null,
   "balanced"
  ],
@@ -50,7 +50,7 @@
   "balanced"
  ],
  "持つ": [
-  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 46%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
   null,
   "balanced"
  ],
@@ -80,7 +80,7 @@
   "balanced"
  ],
  "立つ": [
-  "<div class=\"pat-particle pat-src-balanced pat-thin\">に〜 75%</div><div class=\"pat-form pat-src-balanced pat-thin\">立っている 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">ふちに立つ · のぼりが立つ · 玄関に立つ · 中に立つ</div>",
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">に〜 80%</div><div class=\"pat-form pat-src-balanced pat-thin\">立っている 20%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">役に立つ · のぼりが立つ · ふちに立つ · 玄関に立つ</div>",
   null,
   "balanced"
  ],
@@ -105,7 +105,7 @@
   "balanced"
  ],
  "見る": [
-  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 39%</div><div class=\"pat-form pat-src-balanced pat-thin\">見ている 6%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">アニメを見る · 御目から見る · 紅葉を見る · 顔つきを見る</div>",
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 38%</div><div class=\"pat-form pat-src-balanced pat-thin\">みたい 6%</div><div class=\"pat-form pat-src-balanced pat-thin\">見ている 6%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">アニメを見る · 御目から見る · 紅葉を見る · 顔つきを見る</div>",
   null,
   "balanced"
  ],
@@ -115,7 +115,7 @@
   null
  ],
  "長い": [
-  "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+  "<div class=\"pat-form pat-src-balanced pat-thin\">長さ 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
   null,
   "balanced"
  ],

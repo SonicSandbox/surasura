@@ -83,15 +83,15 @@ UNTIMED_WARNING = ("hato matched this subtitle to its video by name only: it may
                    "only once you've checked it plays in time.")
 WORDS["untimed"] = UNTIMED_WARNING
 # The line while Connect may not run (IK N4: it says why nothing runs)
-OFF_CONNECT = "Make cards for me is off: Connect makes no cards."
-OFF_AUTOMATION = "Automation is off: Connect makes no cards until you turn it back on."
-UNREADABLE = "Connect's status can't be read just now."
+OFF_CONNECT = "Cards made for you is off: no cards are made."
+OFF_AUTOMATION = "Run things by themselves is off: no cards are made until you turn it back on."
+UNREADABLE = "The cards' status can't be read just now."
 # A waiting episode with no reason of its own, nothing in flight (alpha 2's try, T2: its words were the kind's alone):
 # queued since Connect's last look — read at its next look while it runs (`runner.LOOK_EVERY_S`, or at once after a
 # kick), else at its next start (a press such as *Mine now* starts it); while Connect updates your list, that
-NEXT_LOOK = "Waiting for Connect to come to it: within 2 minutes."   # runner.LOOK_EVERY_S (a test holds them equal)
-NEXT_START = "Waiting for Connect's next start: Mine now starts it."
-NEXT_UPDATING = "Waiting while Connect updates your list."
+NEXT_LOOK = "Waiting its turn: within 2 minutes."   # runner.LOOK_EVERY_S (a test holds them equal)
+NEXT_START = "Waiting for Surasura to start making cards: Mine now starts it."
+NEXT_UPDATING = "Waiting while Surasura updates your list."
 # Before the window's first look (laptop fixes B2-8, Michi's call): Connect not known to be on — `on` False, so the rows
 # show no top line and no *Waiting* until a look finds it on (no flash of them with Connect off). Its `line` None: the
 # status line never shows it (that line is the look's own)

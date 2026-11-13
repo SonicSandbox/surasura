@@ -3153,7 +3153,7 @@ def _captions(events, language='ja'):
     lines of one caption, read as one cue like an .srt cue's two lines (a broadcast .ja.ass writes
     《門番は城への侵入者を / 厳しく取り調べた》 as two events; each was closed with 。 mid-clause) — one caption
     per colour: Japanese TV captions (字幕放送) tell speakers apart by colour, so two colours on screen at once
-    are two people speaking (え…養父様を？ in yellow, うむ。 in white; in the library every pair of events with
+    are two people speaking (え…お父様を？ in yellow, うむ。 in white; in the library every pair of events with
     one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
     at once — Netflix writes two speakers talking together so (two cues with one timing, each with its own

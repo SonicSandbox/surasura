@@ -56,8 +56,10 @@ class Fakes:
         self.export_gate = None                      # an Event the export waits on (a running export, held)
         self.logs = "C:\\logs"
         self.data = "C:\\data\\ja"
+        self.piyo = None                             # Kantan-B2: Piyo's last round (None: none yet)
         for name in ("read_known", "read_level", "read_hato", "read_licence", "read_credits", "probe_anki",
-                     "read_skipped", "read_status", "logs_folder", "data_folder", "ready_to_export", "run_export"):
+                     "read_skipped", "read_status", "logs_folder", "data_folder", "ready_to_export", "run_export",
+                     "read_piyo"):
             monkeypatch.setattr(live, name, self._fake(name))
 
     def _fake(self, name):
@@ -85,6 +87,8 @@ class Fakes:
                 return self.logs
             if name == "data_folder":
                 return self.data
+            if name == "read_piyo":
+                return self.piyo
             if name == "ready_to_export":
                 return self.ready
             if name == "run_export":
@@ -1114,3 +1118,44 @@ def test_ankiconnect_missing_offers_install_ankiconnect_for_me_above_copy_code(q
     fakes.probe = dict(fakes.probe, running=False)
     page.live.check()
     assert wait_until(lambda: steps.isHidden())
+
+
+# --- Kantan-B2 (AUDIT A4, finding 10): Piyo's row says its last round ------------------------------------------------- #
+# What a wrong answer would cost: the only sign Piyo worked is *Copied* for 2 s, so a learner who played a round can't
+# tell it connected; a read on the window's thread (a folder listing and a JSON file) would stall the page.
+def test_piyo_says_no_round_yet_then_the_last_rounds_date_and_words_read_on_a_worker(qapp, fakes):
+    from datetime import datetime, timedelta
+    from app.services import causes
+    page, store, shell = make(fakes)
+    line = page.live.parts["practice_then"]["round"]
+    assert wait_until(lambda: "read_piyo" in fakes.names() and line.text() == S.PIYO_NO_ROUND)
+    assert line.isVisibleTo(page) and line.toolTip()
+    assert {args for name, _gui, args in fakes.calls if name == "read_piyo"} == {("ja",)}
+    played = datetime.now() - timedelta(days=9)
+    fakes.piyo = (played, 5)
+    page.set_language("zh")                                              # a language switch reads it again
+    assert wait_until(lambda: line.text() == S.PIYO_LAST_ROUND.format(date=causes.when(played.timestamp()), n=5))
+    fakes.piyo = (datetime.now(), 1)
+    page.set_language("ja")
+    assert wait_until(lambda: line.text() == S.PIYO_LAST_ROUND_ONE.format(date=causes.when(fakes.piyo[0].timestamp())))
+    assert "read_piyo" not in fakes.on_gui() and store.calls == []       # never the window's thread; nothing written
+
+
+def test_piyo_reads_its_last_round_again_when_settings_shows_again_and_says_when_rounds_arent_kept(qapp, fakes):
+    # review (BLOCKING 2): he copies the setup, plays a round in his AI, comes back to Settings — the row says it then,
+    # never only after a restart. With *Keep practice rounds* off, no round is kept: never "No round yet".
+    from datetime import datetime
+    page, store, shell = make(fakes, {"practice_keep_rounds": False})
+    line = page.live.parts["practice_then"]["round"]
+    assert wait_until(lambda: line.text() == S.PIYO_NOT_KEPT)
+    store.file["practice_keep_rounds"] = True
+    fakes.piyo = (datetime.now(), 3)
+    reads = fakes.names().count("read_piyo")
+    page.hide()
+    page.show()                                                           # Settings in view again
+    assert wait_until(lambda: fakes.names().count("read_piyo") > reads and line.text().endswith("3 words"))
+
+
+def test_read_piyo_is_practice_rounds_own_read():
+    from app import practice_rounds
+    assert live.read_piyo("ja") == practice_rounds.last_round("ja")

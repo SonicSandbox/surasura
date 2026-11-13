@@ -190,7 +190,7 @@ def test_one_card_anki_refuses_never_holds_back_the_parts_other_words(tmp_path):
         assert [j["state"] for j in ledger.jobs("ja")] == ["failed"]
         say = [n["say"] for n in ledger.needs("ja") if n["kind"] in runner.FAILED_KINDS]
     assert len(say) == 1 and WORDS[1][0] in say[0] and "cannot create note for unknown reason" in say[0]
-    assert WORDS[0][0] not in say[0] and "Try again" in say[0]
+    assert WORDS[0][0] not in say[0] and "Skip this word" in say[0] and "Try again" not in say[0]   # (AUDIT B5)
     item = feed.build(_record(path), "ja").items[1]
     assert item.kind == feed.FAILED and (item.made, item.total) == (2, 3)
 

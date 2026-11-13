@@ -712,6 +712,10 @@ def fetch_here(target_url, url, lang, ws, should_stop=None, extract=None, ensure
                 should_stop=should_stop)
     txts = sorted(glob.glob(os.path.join(ws, "**", "*.txt"), recursive=True))
     if not txts:
+        from app import youtube_hold
+        until = youtube_hold.held() if core.site_of(target_url) == 'youtube' else None
+        if until:                                       # (Yt-B) YouTube's bot check: when it is asked again
+            return [], youtube_hold.words(until)
         return [], NO_TRANSCRIPT_BILIBILI if core.site_of(url) == 'bilibili' else NO_TRANSCRIPT
     return txts, None
 

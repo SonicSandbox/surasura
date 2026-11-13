@@ -313,14 +313,14 @@ STRINGS = {
     "books_wait": "Waits for Anki Miner",
     # Michi-U (alpha 9.1 try: the tip said "once a later update lets it read books" when 3.11 already did): what's
     # true now (`_wait_tip`) — the update that opens it and where its button is; else the Anki Miner it waits for
-    "tip_wait_update": "Needs Anki Miner {version} to make cards from {what}. Connect makes these cards by itself "
+    "tip_wait_update": "Needs Anki Miner {version} to make cards from {what}. Surasura makes these cards by itself "
                        "once it's updated\n• Update it in Needs you",
-    "tip_books_wait": "Waits for an Anki Miner that reads books and texts, {version} or later. Connect makes these "
+    "tip_books_wait": "Waits for an Anki Miner that reads books and texts, {version} or later. Surasura makes these "
                       "cards by itself once it finds one",
     # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Surasura mines audio
-    "tip_audio_wait": "This Surasura doesn't make cards from audio yet: once an update of Surasura does, Connect makes "
+    "tip_audio_wait": "This Surasura doesn't make cards from audio yet: once an update of Surasura does, it makes "
                       "these cards by itself. Nothing to do meanwhile.",
-    "tip_audio_wait_miner": "Waits for an Anki Miner that mines audiobooks and podcasts, {version} or later. Connect "
+    "tip_audio_wait_miner": "Waits for an Anki Miner that mines audiobooks and podcasts, {version} or later. Surasura "
                             "makes these cards by itself once it finds one",
     # Michi-AB (Z-16, PROVISIONAL): an audiobook with no text while Anki Miner mines audio — it waits on its text
     "tip_heard_wait": "Nothing to mine here yet: it holds no words until it has a text — a subtitle file beside its "

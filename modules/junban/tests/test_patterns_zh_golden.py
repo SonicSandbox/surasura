@@ -32,11 +32,11 @@ from modules.junban.tests.test_side_by_side import URL, _fake, _zh
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 ZH = os.path.join("tests", "Test Resources", "zh")
 # The real fixtures, by the store they build: talk (the 冒险 lines, a mixed-script transcript, the two
-# パターン samples written for this) and writing (BBC news, Taiwanese news); balanced holds both.
+# パターン samples written for this) and writing (a news-style piece written for the tests, Taiwanese news); balanced holds both.
 TALK = ["context_test.txt", "mixed_script_transcript.txt", "patterns_zh_sample.txt", "patterns_zh_sample_trad.txt"]
 WRITING = ["chinese_text_1.txt", "traditional_news.txt"]
-WORDS = ["问题", "問題", "学习", "學習", "电话", "電話", "朋友", "喜欢", "重要", "关系", "关税", "合作", "桌子",
-         "冒险", "通话", "强调", "希望", "表示", "谈判", "非常", "中文", "台湾", "特朗普", "可能", "没有的词"]
+WORDS = ["问题", "問題", "学习", "學習", "电话", "電話", "朋友", "喜欢", "重要", "关系", "展览", "合作", "桌子",
+         "冒险", "通话", "强调", "希望", "表示", "谈判", "非常", "中文", "台湾", "孙中山", "可能", "没有的词"]
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def test_the_chinese_builders_rows_are_unchanged(zh_stores):
 
 def test_the_chinese_lookups_fields_are_unchanged(zh_stores):
     # (b) The card's field for 25 words — Simplified and Traditional cards of one word (问题 / 問題), nouns,
-    # verbs, an adjective, an adverb (非常), names (台湾, 特朗普), a word not in the texts — through the fill
+    # verbs, an adjective, an adverb (非常), names (台湾, 孙中山), a word not in the texts — through the fill
     # order the app uses, in the user's script s and in t.
     sources = patterns.open_sources("zh")
     try:

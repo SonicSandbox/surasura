@@ -120,11 +120,15 @@ def test_every_output_is_byte_identical_with_and_without_the_flag(lang):
     """The flag changes stdout only. Same root, same files: a forced run without it, then with it."""
     h.seed_library(lang)
     h.write_settings({"target_language": lang, "anki_connect_url": "http://127.0.0.1:9"})
-    plain = _analyzer(lang, env={"SURASURA_FORCE_RUN": "1"})
+    # One hash seed for both runs: word_stats.json and file_words.json list a word's files from a set, so their bytes
+    # follow the seed (as plan_file_cases.py fixes it) — the flag is what this compares (Hon-TR, 2026-11-11: the
+    # fixtures' run-on transcript shares words with the other files, which the old one never did)
+    seed = {"SURASURA_FORCE_RUN": "1", "PYTHONHASHSEED": "0"}
+    plain = _analyzer(lang, env=seed)
     assert plain.returncode == 0
     assert not _records(plain), "without the flag the analyzer prints no protocol line"
     without = _outputs()
-    flagged = _analyzer(lang, "--progress-json", env={"SURASURA_FORCE_RUN": "1"})
+    flagged = _analyzer(lang, "--progress-json", env=seed)
     assert flagged.returncode == 0
     assert _outputs() == without
     assert len(without) == 13

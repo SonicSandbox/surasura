@@ -71,8 +71,10 @@ def test_the_ai_app_sees_the_read_only_tools_one_that_keeps_rounds_one_that_asks
     names = [t.name for t in tools.tools]
     assert names == ["surasura_practice_start", "surasura_check_text", "surasura_words", "surasura_rounds",
                      "surasura_save_round", "surasura_help_topics", "surasura_help", "surasura_help_search",
-                     "surasura_diagnose", "surasura_send_report"]
-    acts = ("surasura_save_round", "surasura_send_report")   # Surasura's own round file; Report a problem's window
+                     "surasura_diagnose", "surasura_send_report", "surasura_cards_to_translate",
+                     "surasura_write_translations", "surasura_undo_translations"]
+    # Surasura's own round file; Report a problem's window; a card's empty translation field (Piyo-TR) and its Undo
+    acts = ("surasura_save_round", "surasura_send_report", "surasura_write_translations", "surasura_undo_translations")
     for tool in tools.tools:
         a = tool.annotations
         assert a.read_only_hint is (tool.name not in acts)

@@ -154,7 +154,7 @@ ROWS = {
     # Your setup (five live summaries; each line is P4's)
     "setup_known": ("Known words", "", "Go to Known words", "known words sync anki import"),
     "setup_anki": ("Anki", "", "Go to Anki & mining", "anki connected deck waiting"),
-    "setup_mining": ("Mining", "", "Go to Anki & mining", "mining mine cards top"),
+    "setup_mining": ("Cards made for you", "", "Go to Anki & mining", "cards made for you mining mine cards top"),
     "setup_level": ("Level", "", "Go to Level", "level band automatic"),
     "setup_cards": ("Cards in Anki", "", "Go to Junban", "cards in anki ordered filled junban backfill"),
 
@@ -203,14 +203,14 @@ ROWS = {
                         "Anki's new cards a day for the deck, and the pace behind the “reach your target in N days” "
                         "line",
                         "new cards a day anki per day limit deck pace words per day"),
-    "connect_enabled": ("Make cards for me",
+    "connect_enabled": ("Cards made for you",
                         "Episodes you place at the top of Current get Anki cards made by Anki Miner, by themselves",
-                        "Surasura Connect: when you place an episode at the top of Current, Anki Miner makes its cards "
+                        "Cards made for you: when you place an episode at the top of Current, Anki Miner makes its cards "
                         "and Surasura orders them. Needs Anki and Anki Miner. Nothing placed before you turn it on",
-                        "connect make cards mine automatically anki miner"),
-    # row 13 (laptop fixes): *Make cards for me* while Anki Miner isn't found (and Connect is off)
-    "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
-                            "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
+                        "cards made for you connect make cards mine automatically anki miner"),
+    # row 13 (laptop fixes): *Cards made for you* while Anki Miner isn't found (and Connect is off)
+    "connect_needs_miner": ("Cards made for you", "Needs Anki Miner: set it up in Connections",
+                            "Surasura makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
     "connect_mine_words": ("Words to make cards from",
                            "“Your list” uses i+1 lines where it can and takes the other words too. “Only i+1” skips "
@@ -253,20 +253,20 @@ ROWS = {
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
     # Q29: one choice — where your own cards go — and the tag that marks them under it
     "junban_order_all": ("Your own cards", "The cards you make yourself, never marked or suspended as not on your list",
-                         "First: the cards you made yourself go ahead of the ones Surasura Connect makes, in the order "
-                         "you made them. In your list's order: they go among Connect's, by your list. Either way they "
+                         "First: the cards you made yourself go ahead of the cards made for you, in the order "
+                         "you made them. In your list's order: they go among the cards made for you, by your list. Either way they "
                          "are never marked or suspended as not on your list", "own cards first order all list manual "
                          "yomitan"),
     "junban_own_tag": ("Their tag", "Every card carrying it is yours too, whenever you made it",
                        "Type a tag (immersion): every card carrying it counts as your own, even one made before "
-                       "Connect's first card, so it goes as chosen above and is never suspended. Empty: your own cards "
-                       "are the ones you made after Connect's first", "own cards tag immersion manual yomitan"),
+                       "the first card made for you, so it goes as chosen above and is never suspended. Empty: your own cards "
+                       "are the ones you made after the first card made for you", "own cards tag immersion manual yomitan"),
     "anki_sync_delay_min": ("Sync Anki after tomorrow's cards change",
                             "Surasura asks Anki to sync before its first write of a session, then this long after a "
                             "change",
                             "Surasura asks Anki to sync with AnkiWeb before its first write of a session, so reviews "
                             "from your phone arrive first. After a re-order that changes tomorrow's cards it syncs again "
-                            "this long after, while the automation or Connect is on. Otherwise Anki's own sync on close "
+                            "this long after, while the automation or Cards made for you is on. Otherwise Anki's own sync on close "
                             "sends it. Only your own AnkiWeb account, through Anki",
                             "sync ankiweb delay minute phone"),
     "automation": ("Run things by themselves",
@@ -279,8 +279,8 @@ ROWS = {
     "journey_settle_battery_s": ("…on battery", "The same wait while a laptop runs on its battery",
                                  "Seconds after your last move before your journey updates, on battery",
                                  "journey settle battery laptop seconds"),
-    "connect_anki_miner_profile": ("Anki Miner profile", "The Anki Miner profile Connect mines with",
-                                   "The Anki Miner profile Connect mines with", "anki miner profile"),
+    "connect_anki_miner_profile": ("Anki Miner profile", "The Anki Miner profile your cards are made with",
+                                   "The Anki Miner profile the cards made for you use", "anki miner profile"),
     "anki_connect_url": ("AnkiConnect address", "Only this computer’s own address (127.0.0.1) is used",
                          "AnkiConnect on this computer only: any other address is refused", "address url ankiconnect"),
 
@@ -658,8 +658,8 @@ OPTION_TIPS = {
     "junban_only_markers": {"star": "High leverage: the words your journey stars",
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
-    "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
-                         True: "Your own cards go among Connect's, in your list's order"},
+    "junban_order_all": {False: "Your own cards go ahead of the cards made for you, in the order you made them",
+                         True: "Your own cards go among the cards made for you, in your list's order"},
     "open_video": {"default": "▶ opens a video in the program Windows opens it with",
                    "program": "▶ opens a video in a program you choose"},       # once chosen: its path
     "open_book": {"default": "▶ opens an EPUB in the program Windows opens it with",
@@ -675,7 +675,7 @@ SEP = " · "
 SETUP_KNOWN = "{n:,} known"
 SETUP_FROM_ANKI = "from Anki ({decks})"
 SETUP_IMPORTED = "from an imported list"
-SETUP_CONNECT_OFF = "Connect is off: you make your cards yourself"
+SETUP_CONNECT_OFF = "Off: you make your cards yourself"
 SETUP_AUTOMATIC = "Automatic"
 SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
@@ -737,25 +737,25 @@ EXPORT_BUSY = "Another export is running: one at a time"
 
 # --- P8: Connect's switch, the Anki Miner card, *New cards a day* (settings_connect.py) ------------------------------ #
 # Connect's switch: its outcome in the bar (the Tk log's words, `app/connect/switch.py`) and 2.x's two questions
-SWITCH_NOT_ON = "Connect wasn't switched on: {}. Nothing changed; try again."
-SWITCH_NOT_OFF = "Connect wasn't switched off: {}. It stays on; try again."
-SWITCH_BROKE = "Connect's switch didn't finish: {}. It shows what is saved."
-SWITCH_ALREADY_ON = "Connect was already on (switched on in another window): nothing else changed."
+SWITCH_NOT_ON = "Cards made for you wasn't switched on: {}. Nothing changed; try again."
+SWITCH_NOT_OFF = "Cards made for you wasn't switched off: {}. It stays on; try again."
+SWITCH_BROKE = "Cards made for you's switch didn't finish: {}. It shows what is saved."
+SWITCH_ALREADY_ON = "Cards made for you was already on (switched on in another window): nothing else changed."
 PUT_BACK_ASK = "Put the {n} shelved {cards} back into your new cards?"
-PUT_BACK_BODY = ("Connect turns off either way, on Leave them or Esc too: the cards then stay on the shelf, suspended "
+PUT_BACK_BODY = ("Cards made for you turns off either way, on Leave them or Esc too: the cards then stay on the shelf, suspended "
                  "until you put them back.")
 PUT_BACK_YES = "Put them back"
-PUT_BACK_YES_TIP = "Your shelved cards go back into your new cards, then Connect turns off"
+PUT_BACK_YES_TIP = "Your shelved cards go back into your new cards, then Cards made for you turns off"
 PUT_BACK_NO = "Leave them"
-PUT_BACK_NO_TIP = "Connect turns off; the shelved cards stay suspended (Esc does the same)"
-OFF_ANYWAY_ASK = "Turn Connect off anyway?"
+PUT_BACK_NO_TIP = "Cards made for you turns off; the shelved cards stay suspended (Esc does the same)"
+OFF_ANYWAY_ASK = "Turn Cards made for you off anyway?"
 OFF_ANYWAY_BODY = ("Some shelved cards weren't put back:\n{failed}\n\nThe cards on the shelf stay suspended until you "
                    "put them back.")
-OFF_ANYWAY_YES = "Turn Connect off"
-OFF_ANYWAY_YES_TIP = "Connect turns off; the cards still on the shelf stay suspended"
+OFF_ANYWAY_YES = "Turn it off"
+OFF_ANYWAY_YES_TIP = "Cards made for you turns off; the cards still on the shelf stay suspended"
 OFF_ANYWAY_NO = "Keep it on"
-OFF_ANYWAY_NO_TIP = "Connect stays on (Esc does the same)"
-STAYS_ON = "Connect stays on: put the shelved cards back from its window, or turn it off again."
+OFF_ANYWAY_NO_TIP = "Cards made for you stays on (Esc does the same)"
+STAYS_ON = "Cards made for you stays on: put the shelved cards back from its window, or turn it off again."
 # The Anki Miner card (U5, U6; AM★: the star line beside Install). The Tk panel's words.
 MINER_CHECKING = "Checking…"
 MINER_NOT_CHECKED = "Couldn't check Anki Miner: {}"
@@ -792,6 +792,12 @@ PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this comput
 PRACTICE_STARTER = "Copy a starter message"
 PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
                         "A story is a good first try")
+# Kantan-B2 (AUDIT A4, finding 10; PROVISIONAL): Piyo's row says its last round, so a learner sees it worked
+PIYO_LAST_ROUND = "Last round: {date} · {n:,} words"
+PIYO_LAST_ROUND_ONE = "Last round: {date} · 1 word"
+PIYO_NO_ROUND = "No round yet: paste the setup into your AI."
+PIYO_NOT_KEPT = "Rounds aren't kept: Keep practice rounds is off"
+PIYO_ROUND_TIP = "Your newest practice round with Piyo, as kept on this computer"
 PRACTICE_STARTER_COPIED_LINE = "The starter message is copied: paste it to your AI."
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
@@ -811,14 +817,14 @@ OPEN_MINER = "Open Anki Miner"
 # (Sonic, 2026-11-09: "say so in hover"): the profile Connect mines with, as the card's check found it
 # (`setup.checks`' `anki_miner.profile_name`; `choose_profile`: the setting's, else your usual one), named once checked
 OPEN_MINER_TIP_PLAIN = ("Start Anki Miner's own window, for its own settings.\n"
-                        "• Surasura never needs it open: Connect runs Anki Miner by itself")
+                        "• Surasura never needs it open: it runs Anki Miner by itself")
 OPEN_MINER_TIP = ("Start Anki Miner's own window, for its own settings.\n"
-                  "• Connect makes cards with its “{profile}” profile: change that profile's settings — another "
+                  "• Your cards are made with its “{profile}” profile: change that profile's settings — another "
                   "profile's don't apply\n"
-                  "• Surasura never needs it open: Connect runs Anki Miner by itself")
+                  "• Surasura never needs it open: it runs Anki Miner by itself")
 OPEN_MINER_TIP_CURRENT = ("Start Anki Miner's own window, for its own settings.\n"
-                          "• Connect makes cards with the settings its window shows\n"
-                          "• Surasura never needs it open: Connect runs Anki Miner by itself")
+                          "• Your cards are made with the settings its window shows\n"
+                          "• Surasura never needs it open: it runs Anki Miner by itself")
 FINISH_MINER_SETUP = "Finish its setup…"
 FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and press Finish its setup again."
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries, or its deck and note type: Surasura sets them "
@@ -1030,5 +1036,5 @@ RULE_TYPE_NAME = "A source for a new rule"
 RULE_NEW_TIP = "A new rule for {source}: pick where its arrivals go. Nothing is saved while it says Wait here"
 
 # --- round 8 row 45 (P5): a press whose wait is worth naming — its words held in the bar while it runs ------------- #
-SWITCH_TURNING_ON = "Turning on Make cards for me…"
-SWITCH_TURNING_OFF = "Turning off Make cards for me…"
+SWITCH_TURNING_ON = "Turning on Cards made for you…"
+SWITCH_TURNING_OFF = "Turning off Cards made for you…"

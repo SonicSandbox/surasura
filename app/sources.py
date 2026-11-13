@@ -1135,18 +1135,27 @@ def _junk(name):
 
 def notes(language, store):
     """Alpha 4: what the looks found to say about each source, from the look cache (one read, no folder looked at) ->
-    {root id: {"not_read": [{"path", "why"}], "kept_out": {a file's path key: [the removed origins' keys it matches]}}}
-    — `not_read`: a folder in it no look reads (`NOT_READ_*`: a link to nothing, a shortcut, one Windows wouldn't
-    open…); `kept_out`: a new file left out because its bytes or its video are an item's he removed (a copy in another
-    folder: Remove keeps its bytes out, S6). The window's lines: `source_looks._publish`."""
+    {root id: {"not_read": [{"path", "why"}], "kept_out": {a file's path key: [the removed origins' keys it matches]},
+    "short": n}} — `not_read`: a folder in it no look reads (`NOT_READ_*`: a link to nothing, a shortcut, one Windows
+    wouldn't open…); `kept_out`: a new file left out because its bytes or its video are an item's he removed (a copy in
+    another folder: Remove keeps its bytes out, S6); `short` (Kantan-B2, AUDIT A3): how many loose texts the last look
+    left out as too short (T2-B4: remembered by their stats, `books`). The window's lines: `source_looks._publish`."""
     meta = store.meta()
     cache = _load_cache(language, (meta.get("store_id"), meta.get("epoch")))
     out = {}
     for root, entry in (cache.get("roots") or {}).items():
         held = entry.get("notes") if isinstance(entry, dict) else None
+        books = entry.get("books") if isinstance(entry, dict) else None
+        short = sum(1 for v in books.values() if isinstance(v, list) and v[2:] == ["short"]) \
+            if isinstance(books, dict) else 0
         if not isinstance(held, dict):
+            if short:
+                try:
+                    out[int(root)] = {"not_read": [], "kept_out": {}, "short": short}
+                except ValueError:
+                    pass
             continue
-        said = {"not_read": [], "kept_out": {}}
+        said = {"not_read": [], "kept_out": {}, "short": short}
         for folder in sorted(held):
             for path, (kind, what) in sorted((held[folder] or {}).items()):
                 if kind == "not_read":

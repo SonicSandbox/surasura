@@ -7,9 +7,13 @@ last id and the pairings, read with the store's own queries (`_mine_ids`, `_log_
 
 Light (02 §5): the standard library and the store only.
 """
+import hashlib
 import json
+import logging
 import os
 from collections import namedtuple
+
+log = logging.getLogger(__name__)
 
 READER = "connect"          # the placement log's reader for Connect (✅ G1.1-2: its watermark is set at switch-on)
 
@@ -159,14 +163,80 @@ def paired_books(store):
     return out
 
 
+def split_book(store, item_id, language):
+    """Kura-TX B1 (PROVISIONAL): the joined `.txt` of the book 2.x split into `.txt` parts that the item is a part of
+    (`Store.split_book`'s rule, then `join_book`) -> its path, or None. Holds the store only for its read: call
+    `join_book` yourself where the store is held for other reads (`runner.Steps.reading`, review S3)."""
+    return join_book(store.split_book(item_id), language)
+
+
+def join_book(got, language):
+    """Kura-TX B1: a split book (`Store.split_book`'s answer, or None) -> its joined `.txt`'s path: the parts' library
+    copies in order, each read as a Generate reads it (`path_utils.read_text`), a line between, written in UTF-8 in
+    Connect's folder (the app's own file: the learner's files and the library's copies are only read), with its sidecar
+    (`<joined>.json`: each part's item, copy, size, time and sha256, and their key — the sha256 of the parts' sha256s
+    in order). Made again only when a part's copy changed (its size or time), a part came or went, or the file is
+    gone; each through a temporary file, removed when it fails. None when `got` is None, or a copy can't be read or the
+    file written now (the part is mined as a text, as before)."""
+    from app.path_utils import get_data_path, read_text
+    if got is None:
+        return None
+    path = got["path"]
+    side = os.path.splitext(path)[0] + ".json"
+    data_dir = get_data_path(language)
+    parts, tmp = [], None
+    try:
+        for item, rel in zip(got["parts"], got["rels"]):
+            st = os.stat(os.path.join(data_dir, *rel.replace("\\", "/").split("/")))
+            parts.append({"item": item, "rel": rel, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
+        try:
+            with open(side, encoding="utf-8") as f:
+                kept = json.load(f)
+        except (OSError, ValueError):
+            kept = None
+        if isinstance(kept, dict) and os.path.isfile(path) and \
+                [{k: p.get(k) for k in ("item", "rel", "size", "mtime_ns")} for p in kept.get("parts") or ()] == parts:
+            return path
+        texts = []
+        for p in parts:
+            copy = os.path.join(data_dir, *p["rel"].replace("\\", "/").split("/"))
+            with open(copy, "rb") as f:
+                p["sha256"] = hashlib.sha256(f.read()).hexdigest()
+            texts.append(read_text(copy, language).replace("\r\n", "\n").rstrip("\n"))
+        key = hashlib.sha256("\n".join(p["sha256"] for p in parts).encode("ascii")).hexdigest()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for name, body in ((path, "\n".join(texts) + "\n"),
+                           (side, json.dumps({"id": got["id"], "title": got["title"], "parts": parts, "sha256": key},
+                                             ensure_ascii=False, indent=1, sort_keys=True))):
+            tmp = f"{name}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(body)
+            os.replace(tmp, name)
+            tmp = None
+    except (OSError, UnicodeError) as e:
+        log.info("Connect: a split book's parts couldn't be joined now (%s): %s", got.get("title"), e)
+        if tmp is not None:
+            try:
+                os.remove(tmp)                  # (Anki Miner holding the joined file: review N4)
+            except OSError:
+                pass
+        return None
+    return path
+
+
 def book_of(store, epub):
     """Kura-AB2: the book `epub` as the library holds it -> {item (its first part's id: the one the book's question is
     asked by, so every part asks the same one), sha256 (the EPUB's, from its parts' records: the answer survives a
     move), title (its title's — its file's when the title holds another book too, `Store.library_books`' rule)}; None
-    when no live part of it is in the library. One range read of the pairings."""
+    when no live part of it is in the library. One range read of the pairings. Kura-TX: a split book's joined `.txt`
+    (`split_book`) — its first part and its title; no sha256 (review S1: its answers are kept by its path, which an
+    edited part never moves — a learner's numbered notes, answered once, stay answered)."""
     from app import library_store
     if not epub:
         return None
+    joined = store.joined_book(epub)
+    if joined is not None:
+        return {"item": joined["parts"][0], "sha256": None, "title": joined["title"]}
     lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
     with store._reading():
         rows = store.conn.execute(
@@ -193,8 +263,11 @@ def book_of(store, epub):
 def book_parts(store, epub):
     """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
     `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read
-    of the pairings, the store's own key order."""
+    of the pairings, the store's own key order. A split book's joined `.txt` (Kura-TX): {} — no chapters, its cards
+    stay on the part they were picked from."""
     from app import library_store
+    if store.joined_book(epub) is not None:
+        return {}
     lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
     out = {}
     with store._reading():

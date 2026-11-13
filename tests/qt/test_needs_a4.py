@@ -118,7 +118,7 @@ def test_a_card_asked_for_far_down_is_built_with_those_before_it_and_the_rest_wa
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_gone_folder_card_is_on_top_so_todokes_press_opens_the_page_at_it_whatever_follows(world, language):
     seed, win, writer, ny = world(language, looks=Looks())
-    folder = {"id": 13, "path": os.path.join("C:\\Users\\Michael\\Downloads", names(language)[71]), "items": 12,
+    folder = {"id": 13, "path": os.path.join("C:\\Users\\Takashi\\Downloads", names(language)[71]), "items": 12,
               "shows": [names(language)[71]], "finished": False, "found_in": []}
     entries = service.entries(many(language, 3000), gone_folders=[folder])
     hand_in(ny, entries)
@@ -257,7 +257,7 @@ def test_a_seen_file_that_cant_be_written_puts_the_card_back_and_says_why(world,
 
 # --- D2: one line over many cards that share a reason ------------------------------------------------------------- #
 def _folders(language, n):
-    return [{"id": 10 + i, "path": os.path.join("C:\\Users\\Michael\\Downloads", names(language)[i]), "items": 3,
+    return [{"id": 10 + i, "path": os.path.join("C:\\Users\\Takashi\\Downloads", names(language)[i]), "items": 3,
              "shows": [names(language)[i]], "finished": False, "found_in": []} for i in range(n)]
 
 

@@ -613,7 +613,7 @@ def test_connect_is_named_by_its_lock_and_has_no_stop(procs, tmp_path):
     other = subprocess.Popen([str(cli), "-c", "import time; time.sleep(30)"])     # hato's command line, say
     procs.append(other)
     children = {c["pid"]: c for c in updater.running_children([], images=[str(cli)])}
-    assert children[p.pid]["name"] == "Surasura Connect — stops after this batch of cards"
+    assert children[p.pid]["name"] == "Cards made for you — stops after this batch of cards"
     assert children[p.pid]["stop"] is None, "Connect's row has no stop"
     assert children[other.pid]["name"] == "Surasura's command line" and children[other.pid]["stop"] is not None
 
@@ -665,7 +665,7 @@ def test_stop_all_stops_the_others_and_the_update_waits_for_connect(dash, procs,
     monkeypatch.setattr(backfill, "_PROCESS", build)
     monkeypatch.setattr(updater, "_install_images", lambda: [str(cli.parent / "Surasura.exe"), str(cli)])
     dash._do_auto_update(MagicMock())
-    connect_row = "Surasura Connect — stops after this batch of cards"
+    connect_row = "Cards made for you — stops after this batch of cards"
     assert _pump(dash, lambda: _wait_window(dash) is not None and connect_row in _texts(_wait_window(dash)))
     win = _wait_window(dash)
     assert "Building パターン data" in _texts(win)

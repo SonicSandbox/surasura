@@ -230,6 +230,7 @@ def test_try_it_for_generate_is_the_learners_own_request_never_a_quiet_one(world
 
 
 def test_a_try_it_that_cant_run_says_whats_missing_instead(world):
+    world.services.settings.set({"connect_enabled": True})     # (cards on, Anki Miner not here: off says it once, below)
     card = world.win.open_help("cards")
     assert not card.try_it.isVisibleTo(card)
     assert card.missing.isVisibleTo(card) and card.missing.text() == strings.HELP_TRY_MISSING["mine_top"]
@@ -429,3 +430,81 @@ def test_the_circles_question_mark_is_the_strips_own_last_mark_so_the_bars_line_
     assert mark.parentWidget() is strip and strip.rect().contains(mark.geometry())
     assert mark.geometry().left() > strip.rect_of("anki").right()           # after the five circles
     assert strip.circle_at(mark.geometry().center()) is None               # never read as a circle
+
+
+# --- Kantan-B2 (AUDIT A3, finding 3): the cards that speak of cards being made say what is on ----------------------- #
+# What a wrong answer would cost: a learner with cards off reads "the top rows get cards by themselves", waits for cards
+# that never come, and is pointed at the top-cards line his Current doesn't draw.
+from types import SimpleNamespace  # noqa: E402
+
+from app.services import view_rows  # noqa: E402
+
+
+def test_live_says_off_for_the_two_card_cards_and_the_drag_only_while_the_line_is_drawn():
+    for card_id in help_cards.LINE_CARDS:
+        assert help_cards.live(card_id, cards_on=False, line_shown=True) == (True, False)    # off: never the drag
+        assert help_cards.live(card_id, cards_on=True, line_shown=False) == (False, False)   # on, no line drawn
+        assert help_cards.live(card_id, cards_on=True, line_shown=True) == (False, True)
+    assert help_cards.live("level", cards_on=False, line_shown=False) == (False, True)        # every other card: as ever
+    assert set(help_cards.LINE_CARDS) <= set(strings.HELP_CARDS_OFF)
+
+
+def _current_lines(world, top):
+    """Current's view as drawn: its top-cards line there (`top`) or not."""
+    page = world.win.page_widgets["current"]
+    page.view_model = SimpleNamespace(rows=(), lines=(view_rows.Line("top", 0, "", None),) if top else ())
+
+
+def test_currents_card_says_cards_are_off_plainly_and_open_its_settings_goes_to_the_switch(world, monkeypatch):
+    world.services.settings.set({"connect_enabled": False})
+    _current_lines(world, top=False)
+    asked = []
+    monkeypatch.setattr(world.win, "open_setting", lambda target: asked.append(target) or True)
+    card = world.win.open_help("current")
+    assert card.line.text() == strings.HELP_CARDS_OFF["current"]
+    assert "by themselves" not in card.line.text() and "cards" not in card.line.text().lower()
+    assert card.also.isVisibleTo(card) and card.also.text() == strings.HELP_CARDS_OFF_ALSO
+    assert not card.after.isVisibleTo(card)                                 # no drag above a line that isn't there
+    card.settings.click()
+    assert asked == ["connect_enabled"] and not card.isVisible()
+
+
+def test_with_cards_on_currents_drag_line_shows_only_while_the_top_cards_line_is_drawn(world, monkeypatch):
+    world.services.settings.set({"connect_enabled": True})
+    asked = []
+    monkeypatch.setattr(world.win, "open_setting", lambda target: asked.append(target) or True)
+    _current_lines(world, top=False)
+    card = world.win.open_help("current")
+    title, line, after = strings.HELP_CARDS["current"]
+    assert card.line.text() == line and card.also.text() == strings.HELP_ALSO["current"]
+    assert not card.after.isVisibleTo(card)
+    card.close()
+    _current_lines(world, top=True)
+    card = world.win.open_help("current")
+    assert card.after.isVisibleTo(card) and card.after.text() == after
+    card.settings.click()
+    assert asked == ["mine_line"]                                           # on: its own setting, as before
+
+
+def test_with_run_things_by_themselves_off_nothing_is_promised_and_its_settings_go_to_that_switch(world, monkeypatch):
+    # review 4: the card switch on but D29's *Run things by themselves* off — no card is made by itself either
+    world.services.settings.set({"connect_enabled": True, "logic.automation": False})
+    _current_lines(world, top=True)
+    asked = []
+    monkeypatch.setattr(world.win, "open_setting", lambda target: asked.append(target) or True)
+    card = world.win.open_help("current")
+    assert card.line.text() == strings.HELP_CARDS_OFF["current"] and not card.after.isVisibleTo(card)
+    assert card.also.text() == strings.HELP_CARDS_AUTO_OFF_ALSO
+    card.settings.click()
+    assert asked == ["automation"]
+
+
+def test_the_making_cards_card_with_cards_off_says_so_once(world):
+    world.services.settings.set({"connect_enabled": False})
+    _current_lines(world, top=False)
+    card = world.win.open_help("cards")
+    assert card.line.text() == strings.HELP_CARDS_OFF["cards"]
+    assert card.also.text() == strings.HELP_CARDS_OFF_ALSO and card.also.isVisibleTo(card)
+    assert not card.missing.isVisibleTo(card) and not card.try_it.isVisibleTo(card)   # said once, never twice
+    assert not card.after.isVisibleTo(card)
+    card.close()

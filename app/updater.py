@@ -508,7 +508,7 @@ def _close_windows(pid):
     return len(windows)
 
 
-CONNECT_ROW = "Surasura Connect — stops after this batch of cards"
+CONNECT_ROW = "Cards made for you — stops after this batch of cards"   # Kantan-B2 (AUDIT B6)
 # The re-plan preview's helper (`replan_preview.open_host`'s process): the window stops its host before the wait list is
 # read, and the helper ends after the job in hand (an Anki re-order mid-write is never cut), so its row is wait-only.
 REPLAN_ROW = "Re-ordering Anki's new cards — stops after its current step"

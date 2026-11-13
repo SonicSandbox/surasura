@@ -567,6 +567,29 @@ def test_a_mark_taken_off_keeps_its_python_half_until_its_deferred_delete_then_l
     gc.collect()
     assert all(m() is None for m in marks)                 # gone with them: nothing kept for good
 
+
+def test_a_collection_inside_the_call_into_a_taken_off_arc_is_harmless(stage, handed):
+    # Qt-C, the crash itself on demand: a press ended, its arc's _Follow still filters the button until the deferred
+    # delete; a collection made to start at each of the next allocations while an event goes through it (the old code
+    # died here, 0xC0000005: the collection freed the wrapper sip was calling into)
+    b = stage.button
+    was = gc.get_threshold()
+    gc.disable()
+    try:
+        gc.collect()
+        for k in range(10):
+            qpress.run(b, f"needs:mark_known:known-offer:{k}", lambda: None)
+            handed[-1].then(None)                          # the press ends: its arc off, deleted later
+            gc.set_threshold(gc.get_count()[0] + k, 1000, 1000)
+            gc.enable()
+            QCoreApplication.sendEvent(b, QEvent(QEvent.Type.PolishRequest))      # through the arc's _Follow
+            gc.disable()
+    finally:
+        gc.set_threshold(*was)
+        gc.enable()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert qpress._going == {}                             # every arc let go once it went
+
 def test_a_workers_report_moves_the_press_and_holds_a_named_wait_in_the_bar(window, handed):
     win = window
     p = qpress.run(None, "needs:ja:answer:x", lambda: None, busy="Marking…", win=win)

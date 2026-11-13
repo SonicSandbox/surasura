@@ -275,20 +275,82 @@ def test_a_finished_run_already_put_back_or_for_another_deck_is_never_taken_over
     assert taken == [cut]
 
 
-def test_a_cut_run_that_cant_be_marked_taken_over_stops_your_reorder_before_any_write(tmp_path, monkeypatch):
-    """Its file held as it is marked (the adversary's SHOULD 4): the run would stay unfinished, offered first by Undo
-    on top of your writes. Nothing is written, and the run is still the way back."""
+def _files(*paths):
+    out = {}
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                out[path] = handle.read()
+        except FileNotFoundError:
+            out[path] = None
+    return out
+
+
+def test_a_cut_run_that_cant_be_marked_taken_over_stops_your_reorder_and_changes_nothing(tmp_path, monkeypatch):
+    """A run's file held as it is marked (round 1's SHOULD 4; round 2's SHOULD 1): left unfinished, it would be offered
+    first by Undo on top of your writes. Your Reorder stops before any write — and changes nothing at all: your last
+    snapshot and every run's file byte for byte as they were (one already marked put back too), so once the file is
+    free the same Reorder takes them over."""
     fake = scene(tmp_path)
-    run_id = _cut_connect_run(fake)
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["written"]         # your last reorder: its snapshot
+    older = _cut_connect_run(fake)
+    newer = _cut_connect_run(fake, at=1)
+    paths = [undo.snapshot_path("ja"), undo.snapshot_path("ja", run_id=older), undo.snapshot_path("ja", run_id=newer)]
+    before = _files(*paths)
     real = undo.mark_complete
     monkeypatch.setattr(undo, "mark_complete", lambda language="ja", kind="reorder", run_id=None, **kw:
-                        False if kw.get("taken_over") else real(language, kind, run_id, **kw))
+                        False if kw.get("taken_over") and run_id == older else real(language, kind, run_id, **kw))
     fake.writes, fake.suspend_calls, fake.tag_calls = [], [], []
     with _patched(fake):
         report = reposition.run(settings(), refresh=False)
     assert not report["ok"] and "nothing was changed" in report["problems"][0], report
     assert fake.writes == [] and fake.suspend_calls == [] and fake.tag_calls == []
-    assert undo.unfinished("ja", "reorder") == run_id
+    assert _files(*paths) == before, "your snapshot and both runs' files exactly as they were"
+    monkeypatch.setattr(undo, "mark_complete", real)
+    with _patched(fake):
+        again = reposition.run(settings(), refresh=False)
+    assert again["ok"] and undo.unfinished("ja", "reorder") is None, again
+
+
+def test_an_automatic_job_that_cant_mark_a_run_goes_on_as_before(tmp_path, monkeypatch):
+    """The automatic path is unchanged (round 2's SHOULD 2): its job takes the run over in the window's snapshot and
+    goes on even when marking the run fails, as it did."""
+    from modules.junban import spaced
+    fake = scene(tmp_path)
+    run_id = _cut_connect_run(fake)
+    monkeypatch.setattr(undo, "mark_complete", lambda *a, **kw: False)
+    fake.writes = []
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False, job=spaced.Job(automatic=True))
+    assert report["ok"] and fake.writes, report
+    assert undo.load("ja")["automatic"] is True and str(next(iter(undo.load("ja", run_id=run_id)["cards"]))) in \
+        undo.load("ja")["cards"]
+
+
+def test_your_reorder_takes_over_an_automatic_job_that_went_on_past_the_oldest_cut_run(tmp_path):
+    """Round 2's SHOULD 3: Connect's run cut, its next run cut too; the re-plan's automatic job goes on and takes the
+    newer one over (the window's snapshot, lead 2026-11-07). Your Reorder takes over the older one — and that window
+    snapshot with it, whose way back (and the newer run's) is in it alone — so one Undo puts back the deck from before
+    them all, never the older run's cards alone."""
+    from modules.junban import spaced
+    fake = scene(tmp_path)
+    before = _state(fake)
+    older = _cut_connect_run(fake)
+    newer = _cut_connect_run(fake, at=1)
+    with _patched(fake):
+        job = reposition.run(settings(), refresh=False, job=spaced.Job(automatic=True))
+    assert job["ok"] and undo.load("ja", run_id=newer).get("taken_over_at"), job
+    assert undo.unfinished("ja", "reorder") == older
+    with _patched(fake):
+        mine = reposition.run(settings(), refresh=False)
+    assert mine["ok"] and not mine.get("restore_first"), mine
+    assert undo.load("ja", run_id=older).get("taken_over_at")
+    with _patched(fake):
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
 
 
 def test_your_reorder_takes_over_the_windows_own_cut_run_and_connects_together(tmp_path):

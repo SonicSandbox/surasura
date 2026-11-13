@@ -2349,6 +2349,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                        problems=[f"An automatic reorder ({unfinished}) did not finish, and its saved order is the "
                                  "only way back from it. Press Undo the last reorder first, then reorder again."],
                        warnings=checks["warnings"], decks=decks, unfinished=unfinished, restore_first=True)
+    went_on = None if automatic or cut is not None else _went_on(previous, connect_cuts, decks, settings)
     # Backlog onboarding: Try it's numbers from before, carried (`carry_forward_tried`) — only while no automatic write
     # came after it (today's baseline newer than the window's snapshot): that write's baseline is the way back then.
     window_snapshot = None if undo.newer_baseline(_language(settings), previous) else previous
@@ -2405,7 +2406,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
             # #50: the order stands, but a card's show label is behind it (a list moved, a show renamed): only those
             # labels, never a snapshot (one of nothing would replace your route back from the last run)
             labelled, label_failures = show_tags.apply(url, labels, _chunk_size(settings))
-            _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot)
+            _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot, went_on)
             return _report(True, "Every card is already in the right place — nothing to change." +
                            _labels_clause(labelled), warnings=checks["warnings"] + _labels_warning(label_failures),
                            decks=decks, stats=stats)
@@ -2413,7 +2414,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # order with an empty one would throw away the user's only route back from the *previous*
         # run, and they would not find out until they pressed Restore. (With the cards not on the
         # list still to tag, flag or suspend, the run goes ahead, snapshot first, positions or not.)
-        _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot)
+        _finish_cut(settings, cut, automatic, decks, stats, connect_cuts, previous, window_snapshot, went_on)
         return _report(True, "Every card is already in the right place — nothing to change.",
                        warnings=checks["warnings"], decks=decks, stats=stats)
 
@@ -2449,6 +2450,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     connect_cuts = [(cut_id, saved) for cut_id, saved in connect_cuts      # another deck's: left as it is, its own
                     if _same_scope(saved, decks, settings)]                 # Undo puts it back
     taking = bool(connect_cuts)         # this run's window snapshot takes Connect's cut runs over (lead 2026-11-07)
+    taken = [cut, went_on] + [saved for _cut_id, saved in connect_cuts]
     if automatic and not acting:
         cut = None                      # a positions-only job leaves the cut run's snapshot alone, restorable
     elif cut is not None and (undo.normalize_scope(cut.get("scope")) != undo.normalize_scope(decks)
@@ -2461,7 +2463,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # reaches the wire, not after it. FT (K8): this run's own field writes in the first-touch journal first.
         first_touch.note(_language(settings), "reorder", profile, decks, fields=touchups.get("fields"))
         return undo.save(original, decks, language=_language(settings),
-                         fields=_carried_fields([previous] + [saved for _cut_id, saved in connect_cuts],
+                         fields=_carried_fields([saved for _cut_id, saved in connect_cuts] + [previous],
                                                 touchups.get("fields")),
                          profile=profile,
                          tags=touchups.get("tags"),
@@ -2475,8 +2477,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                          **({"unsuspended": back} if back else {}),
                          **({"later_back": stats.get("later_back")} if stats.get("later_back") else {}),
                          automatic=automatic and (acting or taking) and run_id is None,
-                         cut=[cut] + [saved for _cut_id, saved in connect_cuts],
-                         finished_automatic=not automatic and (cut is not None or taking))
+                         cut=taken, finished_automatic=not automatic and (cut is not None or taking))
     map_read = reads is not None and job.cards.reads > reads
     try:
         parked = set(back)
@@ -2485,10 +2486,12 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                               map_read)
         if automatic and not acting:
             snapshot = _save_baseline(carried, decks, language=_language(settings), mode=_scope_mode(settings))
+        held = _held_files(_language(settings), connect_cuts) if taking and not automatic else None
         if run_id is not None or not automatic or acting or taking:
             snapshot = save_snapshot(touchups, later)
         for cut_id, _saved in connect_cuts:     # the window's snapshot now holds their way back: never refused or
-            if not undo.mark_complete(_language(settings), run_id=cut_id, taken_over=True):     # offered again
+            if not undo.mark_complete(_language(settings), run_id=cut_id, taken_over=True) and held is not None:
+                _put_back_files(held)           # offered again — or, one not marked, nothing changed (a run you start)
                 raise OSError(f"Connect's run {cut_id} could not be marked as taken over")
     except OSError as e:
         # Refusing here is the entire point of I3. A reposition with no undo file is a one-way door:
@@ -2872,7 +2875,8 @@ def _same_scope(snapshot, decks, settings):
             and (snapshot.get("mode") == "all") == (_scope_mode(settings) == "all"))
 
 
-def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previous=None, window_snapshot=None):
+def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previous=None, window_snapshot=None,
+                went_on=None):
     """Disc-T1: a run you start that takes over a cut automatic run and finds nothing left to write still ends it —
     a snapshot of its own takes the cut run over, as one with writes does (every card in scope where it is, the cut
     run's originals winning), saved complete and `finished_automatic`, and today's baseline ended. Newest, it is what
@@ -2887,8 +2891,8 @@ def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=(), previou
     try:
         pairs = undo.carry_forward_tried(window_snapshot, [(row.card_id, row.due) for row in stats.get("order") or []])
         undo.save(pairs, decks, language=language, mode=_scope_mode(settings),
-                  fields=_carried_fields([previous or cut] + [saved for _cut_id, saved in connect_cuts], None),
-                  cut=[cut] + [saved for _cut_id, saved in connect_cuts], finished_automatic=True)
+                  fields=_carried_fields([saved for _cut_id, saved in connect_cuts] + [previous or cut], None),
+                  cut=[cut, went_on] + [saved for _cut_id, saved in connect_cuts], finished_automatic=True)
     except OSError:
         return
     undo.end_baseline(language)
@@ -2920,10 +2924,52 @@ def _connect_cuts(settings, decks):
     return taken
 
 
+def _went_on(previous, connect_cuts, decks, settings):
+    """The window's snapshot of an automatic job that went on past the oldest of Connect's cut runs a run you start
+    takes over (it took over a newer one, lead 2026-11-07), for this deck -> that snapshot, to take over with them; else
+    None. Its way back (and that of the run it took over) is in it alone: replaced, one Undo would leave its cards
+    where it put them (round 2's SHOULD 3). A snapshot older than the cut run is your last reorder: replaced as ever."""
+    cuts = [saved.get("written_at") or "" for _cut_id, saved in connect_cuts if saved.get("complete") is False]
+    if (not previous or previous.get("automatic") is not True or not cuts or not _same_scope(previous, decks, settings)
+            or (previous.get("written_at") or "") <= min(cuts)):
+        return None
+    return previous
+
+
+def _held_files(language, connect_cuts):
+    """The window's snapshot file and each run's to be taken over, as they are on disk now (`{path: bytes or None}`), so
+    a take-over that can't mark a run puts them back (`_put_back_files`) and changes nothing. Raises `OSError`."""
+    held = {}
+    for path in [undo.snapshot_path(language)] + [undo.snapshot_path(language, run_id=cut_id)
+                                                  for cut_id, _saved in connect_cuts]:
+        try:
+            with open(path, "rb") as handle:
+                held[path] = handle.read()
+        except FileNotFoundError:
+            held[path] = None
+    return held
+
+
+def _put_back_files(held):
+    """`_held_files`' files back as they were (one that wasn't there removed), each atomically; best effort."""
+    for path, data in held.items():
+        try:
+            if data is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                continue
+            with open(path + ".tmp", "wb") as handle:
+                handle.write(data)
+            os.replace(path + ".tmp", path)
+        except OSError:
+            pass
+
+
 def _carried_fields(snapshots, fields):
-    """`fields` for a snapshot that replaces or takes over `snapshots` (the window's last one, Connect's cut runs): each
+    """`fields` for a snapshot that replaces or takes over `snapshots` (Connect's cut runs, the window's last one): each
     field's true original carried back through every one of them, newest first, so the oldest's wins — one that
-    carried an earlier one first would stop at a value Surasura wrote (the adversary's BLOCKER, Junban-X)."""
+    carried an earlier one first would stop at a value Surasura wrote (the adversary's BLOCKER, Junban-X). Two written
+    in the same second keep the order handed in: the window's last snapshot goes last, as the older (round 2's NIT)."""
     for earlier in sorted((snapshot for snapshot in snapshots if snapshot),
                           key=lambda snapshot: snapshot.get("written_at") or "", reverse=True):
         fields = undo.carry_forward_fields(earlier, fields)

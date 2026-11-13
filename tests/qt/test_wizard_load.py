@@ -487,3 +487,15 @@ def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):
     finally:
         run.ended = True
         outside.ended = True
+
+
+def test_fresh_u_use_every_core_on_the_load_screen_shows_the_key_as_saved(make, empty_library):
+    """Why (mutant M20): Settings › Content's row is the same key; on there, on here."""
+    wiz, _shell, _api, settings, _m = make(api=SourcesApi(), data={"use_every_core": True})
+    screen = sort_screen.LoadScreen()
+    try:
+        wiz._load_long(screen)
+        assert screen.offer.switch.isChecked()
+        assert not [c for c in settings.calls if "use_every_core" in c], "showing it writes nothing"
+    finally:
+        screen.deleteLater()

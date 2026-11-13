@@ -1112,3 +1112,71 @@ def test_fresh_u_the_rows_say_next_in_line_and_looking_wins_a_mix_of_the_two():
     assert st.label == "Looking for subtitles…"
     assert view_rows.STRINGS["arr_" + view_rows.SUBS_KEYS[view_rows.subs_said(
         [_shim(no_subs.QUEUED)])[0]]] == "next in line…"
+
+
+def test_fresh_u_a_batch_stopped_before_its_turn_leaves_no_next_in_line(tmp_path):
+    """Why (mutant M3): the window closing before a batch's run starts returns at once; every video handed over must
+    lose its *Next in line* all the same (the run's own end never came)."""
+    store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
+    cli = str(tmp_path / "hato-cli.exe")
+    open(cli, "wb").close()
+    _hato(["find"], cli)
+    rels = [r for _i, r, _a in _items(store)]
+    try:
+        no_subs.find(store, "ja", {no_subs.SETTING: True}, stop=lambda: True,
+                     popen=lambda c, **k: pytest.fail("hato started after the stop"))
+        assert [no_subs.note(r, "ja") for r in rels] == [None, None]
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_fresh_u_a_tidy_beside_a_waiting_run_keeps_next_in_line(tmp_path):
+    """Why (mutant M4): the tracks' tidy runs beside hato's run; a tidy that read no waiting row keeps the run's
+    *Next in line* as it keeps its *Looking* — only the run drops it."""
+    store, data_dir, src, root, (video,) = _library("ja")
+    (item_id, rel, _a), = _items(store)
+    try:
+        no_subs._change(store, "ja", notes={rel: no_subs.QUEUED})
+        no_subs._change(store, "ja", live={})
+        assert no_subs.note(rel, "ja") == no_subs.QUEUED
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_fresh_u_a_video_made_from_its_audio_while_it_waited_keeps_saying_so_when_hatos_search_starts(tmp_path):
+    """Why (mutant M7): a run may wait hours behind another hato; the learner can press *Make them from the audio*
+    meanwhile. When hato's search starts, *Looking* never writes over that MAKING (nor does its end drop it)."""
+    store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
+    cli = str(tmp_path / "hato-cli.exe")
+    open(cli, "wb").close()
+    _hato(["find"], cli)
+    rels = [r for _i, r, _a in _items(store)]
+    lines = [{"type": "progress", "phase": "waiting", "stage": "waiting"}, {"type": "progress", "phase": "start"},
+             {"type": "run", "videos": 0}]
+    runs, said = [], []
+
+    def started(command, **_k):
+        no_subs._change(store, "ja", notes={rels[1]: no_subs.MAKING})         # a make began while it was queued
+        runs.append(_Paced(lines, command, []))
+        return runs[-1]
+
+    def hato_side():
+        notes = lambda: [no_subs.note(r, "ja") for r in rels]
+        if not _until(lambda: runs):
+            return
+        runs[0].step(2)                                       # its wait, then its search
+        _until(lambda: notes()[0] == no_subs.LOOKING)
+        said.append(notes())
+        runs[0].step()
+    side = threading.Thread(target=hato_side, daemon=True)
+    try:
+        side.start()
+        no_subs.find(store, "ja", {no_subs.SETTING: True}, popen=started)
+        side.join(20)
+        assert said == [[no_subs.LOOKING, no_subs.MAKING]]
+        assert no_subs.note(rels[1], "ja") == no_subs.MAKING and no_subs.note(rels[0], "ja") is None
+    finally:
+        for r in runs:
+            r.step(len(r.lines) + 1)
+        side.join(20)
+        store.__exit__(None, None, None)

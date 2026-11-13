@@ -251,7 +251,8 @@ PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "sa
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
-                     "add_audio")                                                  # Kura-AB3 A2: Anki written
+                     "add_audio",                                                  # Kura-AB3 A2: Anki written
+                     "change_video")                                               # Kantan-B5: a picker's start
 
 
 class NeedsCards(QWidget):
@@ -2265,6 +2266,9 @@ class NeedsYou(QObject):
 
     def _do_try_again(self, entry, _line):             # Mattias #5: the rows' own ask (`mine_actions`)
         self.hooks["try_again"](entry)
+
+    def _do_change_video(self, entry, _line):          # Kantan-B5 (PR 421): the episode's own (`mine_actions`)
+        self.hooks["change_video"](entry)
 
     # setup's first cards (SRC D1)
     def _do_first_cards(self, entry, _line):

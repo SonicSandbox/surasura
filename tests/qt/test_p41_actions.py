@@ -753,7 +753,8 @@ def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
                                                       "not timed to its video", 1, 0, 0), "video")
     in_anki = _ep(view_rows.Status("in_anki", "In Anki", "Its cards are in Anki", "ok"))._replace(cards=4)
     mining = _ep(view_rows.Status("mining", "Mining", "Being mined now", "accent"))._replace(mining=True)
-    assert [e.name for e in win.mine.episode_entries(row, _ep(not_timed))] == ["ep-" + rows.CHECK]
+    assert [e.name for e in win.mine.episode_entries(row, _ep(not_timed))] == ["ep-" + rows.CHECK,
+                                                                               "ep-change-video"]   # Kantan-B5
     assert _mine_now(win.items.episode_entries(row, _ep(not_timed))) == []
     for ep in (in_anki, mining, _ep(None)):
         assert win.mine.episode_entries(row, ep) == [], ep.status

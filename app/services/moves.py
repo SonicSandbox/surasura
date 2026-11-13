@@ -102,6 +102,7 @@ KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s value
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
+KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
 # --- LM11: user-made groups (Sonic's G1–G4) — the one piece rule's commands; a join's `how` ("titles": P-LF-4's
 # `titles`, which a journal the window's first build wrote still replays as)
 JOURNALLED += ("group", "add_to_group", "ungroup", "rename_piece")
@@ -458,10 +459,12 @@ class Writer:
         as `its_new`; journalled with both (a replay answers the same question)."""
         return self._put({"op": "audiobook_answer", "ids": [item_id], "yes": bool(yes), "key": key, "label": label})
 
-    def pick_audiobook(self, item_id, epub, label=None):
+    def pick_audiobook(self, item_id, epub, label=None, replace=False):
         """`Store.pick_audiobook_book` (Hon, a5-2): *Find its book…*'s pick — the audiobook joins that book's title as
-        a *Yes* joins it, one command with its Undo (the item, its records and the answer back as they were)."""
-        return self._put({"op": "audiobook_pick", "ids": [item_id], "path": os.fspath(epub), "label": label})
+        a *Yes* joins it, one command with its Undo (the item, its records and the answer back as they were).
+        `replace` (Kura-AB4): one paired with another book is taken from it (its Undo pairs it back)."""
+        return self._put({"op": "audiobook_pick", "ids": [item_id], "path": os.fspath(epub), "label": label,
+                          **({"replace": True} if replace else {})})
 
     def audiobook_no_book(self, item_id, label=None):
         """`Store.audiobook_no_book` (Hon, a5-2): *It has no book* — the audiobook stays alone, never asked about a
@@ -1115,7 +1118,7 @@ class Writer:
             store.answer_audiobook(ids[0], cmd["yes"], key=cmd.get("key"))
             return None
         if op == "audiobook_pick":                  # a5-2: the pick, undone as one change
-            return store.pick_audiobook_book(ids[0], cmd["path"])
+            return store.pick_audiobook_book(ids[0], cmd["path"], **({"replace": True} if cmd.get("replace") else {}))
         if op == "audiobook_no_book":               # a5-2: an answer kept, nothing to undo
             store.audiobook_no_book(ids[0])
             return None

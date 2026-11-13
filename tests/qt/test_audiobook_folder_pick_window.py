@@ -128,6 +128,27 @@ def test_one_already_in_alone_is_picked_for_the_book_with_its_undo(window, monke
     assert picked == [(None, 52, EPUB, TITLE)]
 
 
+def test_one_with_a_copy_of_this_title_is_taken_from_it_with_its_undo(window, monkeypatch):
+    """Kura-AB4, based on the diagnosis in #419 by Mattias: the folder's audiobook was paired by a look with a copy of
+    this very book (the EPUB beside it); picked again for the book that asked, it is taken from the copy — the pick
+    with `replace`, its Undo pairing it back."""
+    looks = AnsweringLooks({"joined": [], "alone": [], "asks": [], "elsewhere": [{"item_id": 53, "book": TITLE}]})
+    win, _writer = window(looks)
+    picked = []
+    monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda entry, audio, epub, title, replace=False:
+                        picked.append((entry, audio, epub, title, replace)))
+    assert win.adder.read_folder(_folder(), book={"epub": EPUB, "title": TITLE})
+    assert wait_until(lambda: picked, 5)
+    assert picked == [(None, 53, EPUB, TITLE, True)]
+
+
+def test_the_pick_menus_line_says_which_book_it_is_with_now():
+    from app.qt import needs as qneeds
+    assert qneeds.audiobook_line({"title": "カラフル", "n": 1}) == strings.NEEDS_AUDIOBOOK_LINE.format(title="カラフル", n=1)
+    assert qneeds.audiobook_line({"title": "カラフル", "n": 1, "elsewhere": "カラフル"}) ==         strings.NEEDS_AUDIOBOOK_LINE.format(title="カラフル", n=1) + strings.NEEDS_AUDIOBOOK_ELSEWHERE.format(book="カラフル")
+    assert qneeds.taken({"elsewhere": "カラフル"}) == {"replace": True} and qneeds.taken({}) == {}   # (its pick takes it)
+
+
 @pytest.mark.parametrize("said, line", [
     ({"joined": [], "alone": [], "asks": []}, strings.NEEDS_AUDIOBOOK_NONE_IN.format(name="audiobook", book=TITLE)),
     ({"joined": [], "alone": [3, 4], "asks": []},

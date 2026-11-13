@@ -360,6 +360,10 @@ class Adder(QObject):
             if len(free) == 1 and ny is not None:
                 ny._pick_audiobook(None, free[0], book["epub"], book["title"])
                 return "picked"
+            taken = said.get("elsewhere") or ()
+            if not free and len(taken) == 1 and ny is not None:  # (#419's diagnosis: a look paired it with a copy;
+                ny._pick_audiobook(None, taken[0]["item_id"], book["epub"], book["title"], replace=True)   # you said
+                return "picked"                                  # it is this book's: taken from it, with Undo)
             line = strings.NEEDS_AUDIOBOOK_SEVERAL_IN.format(n=len(free), name=name, book=book["title"]) if free \
                 else strings.NEEDS_AUDIOBOOK_NONE_IN.format(name=name, book=book["title"])
             say = getattr(self.shell, "say", None)

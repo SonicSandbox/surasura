@@ -754,6 +754,19 @@ def _find_none(answer):
     return isinstance(refused, str) and len(refused) > len(head) + len(tail) and refused.startswith(head) and \
         refused.endswith(tail)
 
+def audiobook_line(ab):
+    """*Pick its audiobook…*'s line for one audiobook: its title and files — and, one now with another book of this
+    title (Kura-AB4, #419's diagnosis), *· now with 「…」*: picking it takes it from that book."""
+    line = strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"])
+    return line + strings.NEEDS_AUDIOBOOK_ELSEWHERE.format(book=ab["elsewhere"]) if ab.get("elsewhere") else line
+
+
+def taken(ab):
+    """The pick's own argument for that line: `replace` only for one with another book (older callers keep their
+    shape)."""
+    return {"replace": True} if ab.get("elsewhere") else {}
+
+
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
@@ -1591,9 +1604,9 @@ class NeedsYou(QObject):
             return
         m = drag.list_menu(self.cards, entry.title)
         for ab in (got.get("audiobooks") or [])[:BOOKS_SHOWN]:
-            act = QAction(strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]), m)
+            act = QAction(audiobook_line(ab), m)
             act.triggered.connect(lambda _c=False, ab=ab: self._pick_audiobook(entry, ab["item_id"], got["epub"],
-                                                                               got["title"]))
+                                                                               got["title"], **taken(ab)))
             m.addAction(act)
         if got.get("audiobooks"):
             m.addSeparator()
@@ -1607,14 +1620,15 @@ class NeedsYou(QObject):
             m.popup(control.mapToGlobal(QPoint(0, control.height())))
         return m
 
-    def _pick_audiobook(self, entry, audio_id, epub, title):
+    def _pick_audiobook(self, entry, audio_id, epub, title, replace=False):
         writer, kick, read_settings = self.win.services.writer, self.connect_calls.get("kick"), self.read_settings
 
         def told(_ticket, event):                    # saved: Connect lines them up at once, not at its next look
             if event == "saved" and kick is not None:
                 bridge.run_in_worker(lambda: kick(read_settings() or {}))
         self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
-                   lambda t: writer.pick_audiobook(audio_id, epub, label=t), told=told)
+                   lambda t: writer.pick_audiobook(audio_id, epub, label=t, **({"replace": True} if replace else {})),
+                   told=told)
 
     def _audiobook_folder(self, title, epub=None):
         """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,

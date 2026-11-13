@@ -79,13 +79,19 @@ MEANT_S = 3600                                       # Kura-AB4: how long a book
 def _audiobooks_read(store, folder, book=None):
     """Kura-AB4: what became of the audiobooks under `folder` once it was read -> {"joined": [item ids paired with
     `book`'s EPUB], "alone": [item ids with no book and no question open], "asks": [{item_id, key, book}: H-8's
-    question open about `book` (its title) — a title alike, not sure]} — the window's words: *The audiobook joins
+    question open about `book` (its title) — a title alike, not sure], "elsewhere": [{item_id, book}: paired with
+    another book of `book`'s very title: a copy]} — the window's words: *The audiobook joins
     「…」*; one already in alone, picked for the book (its pick, with Undo); the + Add's lead into the pairing
     (*「…」's audiobook? · Pair it*). One read; never a write."""
     from app import library_store as ls
     top = ls.path_key(os.path.normpath(folder)).rstrip("/") + "/"
     epub = ls.path_key(os.path.abspath(book["epub"])) if book and book.get("epub") else None
-    out = {"joined": [], "alone": [], "asks": []}       # joined: [{item_id, key}] (its *Separate them*'s key)
+    from app import audiobooks
+    forms = audiobooks._forms([book.get("title") or ""])[0] if book else set()
+
+    def same_title(title):                               # a book of this very title (a copy), never another book
+        return bool(forms) and audiobooks._title_level(forms, audiobooks._forms([title or ""])[0]) == audiobooks.EXACT
+    out = {"joined": [], "alone": [], "asks": [], "elsewhere": []}   # joined: [{item_id, key}] (*Separate them*'s)
     for r in store.audiobooks():
         ab = r["audiobook"] or {}
         if not any(ls.path_key(os.path.abspath(f)).startswith(top) for f in ab.get("files") or ()):
@@ -95,6 +101,8 @@ def _audiobooks_read(store, folder, book=None):
             if epub is not None and isinstance(paired.get("epub"), str) and \
                     ls.path_key(os.path.abspath(paired["epub"])) == epub:
                 out["joined"].append({"item_id": r["item_id"], "key": paired.get("key")})
+            elif epub is not None and same_title(paired.get("title")):   # (#419's diagnosis: paired with another
+                out["elsewhere"].append({"item_id": r["item_id"], "book": paired.get("title") or ""})   # copy of it)
         elif isinstance(ask, dict) and ask.get("key"):
             out["asks"].append({"item_id": r["item_id"], "key": ask["key"], "book": ask.get("title") or "",
                                 "epub": ask.get("epub")})

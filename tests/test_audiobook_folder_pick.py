@@ -247,7 +247,7 @@ def test_the_looks_answer_names_the_audiobook_that_joined_the_book():
     with store:
         (item,) = _audio_items(store)
         key = _record(store, item["id"])["book"]["key"]
-        assert key and said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": []}
+        assert key and said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [], "elsewhere": []}
         assert item["tier"] != "arrivals"
 
 
@@ -262,7 +262,7 @@ def test_an_audiobook_read_before_alone_is_named_so_the_window_picks_it():
     first = _add(language, audio)["audiobooks"]
     assert first["joined"] == [] and len(first["alone"]) == 1
     again = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert again == {"joined": [], "alone": first["alone"], "asks": []}
+    assert again == {"joined": [], "alone": first["alone"], "asks": [], "elsewhere": []}
 
 
 def test_an_audiobook_there_paired_with_another_book_is_never_said_to_have_joined_this_one():
@@ -281,7 +281,7 @@ def test_an_audiobook_there_paired_with_another_book_is_never_said_to_have_joine
         (item,) = _audio_items(store)
         assert _record(store, item["id"])["book"]["epub"] == os.path.abspath(other)
     said = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert said == {"joined": [], "alone": [], "asks": []}
+    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
 
 
 def test_add_a_folder_with_a_title_like_a_books_answers_its_open_question():
@@ -299,7 +299,8 @@ def test_add_a_folder_with_a_title_like_a_books_answers_its_open_question():
         asks = [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_ASK]
         assert len(asks) == 1 and store.item(asks[0]["item_id"])["tier"] == "arrivals"
     assert said == {"joined": [], "alone": [], "asks": [{"item_id": asks[0]["item_id"], "key": asks[0]["key"],
-                                                         "book": NEKO, "epub": asks[0]["book"]["epub"]}]}
+                                                         "book": NEKO, "epub": asks[0]["book"]["epub"]}],
+                    "elsewhere": []}
 
 
 def test_the_books_word_waits_for_audio_still_on_its_way_and_the_next_look_joins_it():
@@ -316,7 +317,7 @@ def test_the_books_word_waits_for_audio_still_on_its_way_and_the_next_look_joins
     try:
         assert looks.add(folder, answers.append, book={"epub": epub, "title": NEKO})
         assert looks.idle(30)
-        assert answers[0]["audiobooks"] == {"joined": [], "alone": [], "asks": []}
+        assert answers[0]["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
         _untagged(os.path.join(folder, "audiobook"), _fit(language))
         clock[0] += 3600 / 2                                  # within the hour the word waits
         assert looks.asked(refreshed=True) and looks.idle(30)
@@ -356,4 +357,4 @@ def test_the_answer_with_no_audio_in_the_folder_is_empty():
     _store.close()
     empty = _drive("nothing")
     said = _add(language, empty, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert said == {"joined": [], "alone": [], "asks": []}
+    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": []}

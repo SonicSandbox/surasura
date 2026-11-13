@@ -1566,6 +1566,7 @@ NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
 NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
+NEEDS_AUDIOBOOK_ELSEWHERE = " · now with 「{book}」"        # Kura-AB4 (PROVISIONAL): picked, it leaves that book
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
 NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the audiobook in it joins this book "

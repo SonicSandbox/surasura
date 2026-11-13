@@ -549,7 +549,7 @@ MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Surasura ma
 LINK_TITLE = "Choose the video for {label}"
 LINK_FILTER = "Videos ({patterns})"
 LINKING_ONE = "Linking {label}'s video"
-# Kantan-B5 (Mattias's #421, PROVISIONAL words): an episode linked to the wrong video picks again — *Not timed*'s
+# Kantan-B5 (Mattias's PR 421, PROVISIONAL words): an episode linked to the wrong video picks again — *Not timed*'s
 # *Needs you* card and its ⋯; the pick is linked (Undo puts the old one back), then its timing is checked again
 ROWS_CHANGE_VIDEO = "Change its video…"
 ROWS_CHANGE_VIDEO_TIP = ("Linked to the wrong video? Choose the right one: its timing is checked again. Undo puts the "
@@ -1467,7 +1467,7 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
     # Kantan-B2 (AUDIT B4, Sonic's yes; PROVISIONAL words): *Not timed*'s *Check again*, the row's own
     "check_again": ("Check again", "Check its timing again: a subtitle you re-timed beside its video is read first"),
-    # Kantan-B5 (Mattias's #421, PROVISIONAL words): the episode's own ⋯ entry, the same press
+    # Kantan-B5 (Mattias's PR 421, PROVISIONAL words): the episode's own ⋯ entry, the same press
     "change_video": (ROWS_CHANGE_VIDEO, ROWS_CHANGE_VIDEO_TIP),
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),

@@ -2249,7 +2249,7 @@ class NeedsYou(QObject):
     def _do_try_again(self, entry, _line):             # Mattias #5: the rows' own ask (`mine_actions`)
         self.hooks["try_again"](entry)
 
-    def _do_change_video(self, entry, _line):          # Kantan-B5 (#421): the episode's own (`mine_actions`)
+    def _do_change_video(self, entry, _line):          # Kantan-B5 (PR 421): the episode's own (`mine_actions`)
         self.hooks["change_video"](entry)
 
     # setup's first cards (SRC D1)

@@ -44,7 +44,7 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   and the episode's ⋯ check its timing anew — `connect.actions.check_again` on a worker (the entry fixed, the job
   queued), then Connect kicked. Pressed, its pill turns at once (`check:<language>:<id>`, as *Mine now*'s) until its
   status moves; nothing to check again (the episode no longer waits on its timing): the bar says so.
-- ***Change its video…*** (Kantan-B5, based on the approach in #421 by Mattias; PROVISIONAL words): a *Not timed*
+- ***Change its video…*** (Kantan-B5, based on the approach in PR 421 by Mattias; PROVISIONAL words): a *Not timed*
   episode linked to another episode's video picks again — on its ⋯ beside *Check again* and on its *Needs you* card
   (`change_video`): the picker at the linked video's folder, the pick linked by the writer (one change, Undo), then its
   timing checked again once that change is saved. Nothing on disk moves.
@@ -144,7 +144,7 @@ class MineActions(QObject):
         if needs is not None:
             needs.hooks["make_cards"] = self._needs_make_cards
             needs.hooks["try_again"] = self._needs_try_again      # Mattias #5
-            needs.hooks["change_video"] = self._needs_change_video    # Kantan-B5 (#421)
+            needs.hooks["change_video"] = self._needs_change_video    # Kantan-B5 (PR 421)
             needs.rewire()
         items = getattr(win, "items", None)
         if items is not None:                        # --- row 28 (Michi's row 24b ask): an episode's ⋯ offers *Mine now*
@@ -408,7 +408,7 @@ class MineActions(QObject):
         if name == rows.CHECK:                       # --- Michi-NT: no store write, so never greyed for one
             return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
                                     payload=lambda: self.check_again(ask)),
-                    # Kantan-B5 (#421): linked to the wrong video, it picks again — a write (greyed while read-only)
+                    # Kantan-B5 (PR 421): linked to the wrong video, it picks again — a write (greyed while read-only)
                     item_menu.Entry("ep-change-video", strings.ROWS_CHANGE_VIDEO, strings.ROWS_CHANGE_VIDEO_TIP, True,
                                     payload=lambda: self.change_video(ep.id, ep.label, ep.rel_path, keys=(row.key,)),
                                     writes=True)]
@@ -444,7 +444,7 @@ class MineActions(QObject):
         qpress.run(None, ("link", ep.id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
 
-    # --- Kantan-B5 (Mattias's #421): *Change its video…* ------------------------------------------------------ #
+    # --- Kantan-B5 (Mattias's PR 421): *Change its video…* ------------------------------------------------------ #
     def change_video(self, item_id, label, rel_path=None, control=None, key=None, keys=()):
         """*Not timed*'s way out when the episode was linked to another episode's video (*Link…* shows only while it
         has none): the system's picker, videos only, opened at the folder of the video it is linked to now

@@ -1583,7 +1583,7 @@ class _Look:
             found += here
             if waits:                                        # listed again next look (a placeholder: until it is here)
                 self.unsettled.add(ls.path_key(folder))
-        fresh, grown = [], []
+        fresh, grown, back = [], [], []
         for ab in found:
             k = _key(ab.files[0])
             same = next((by_file[ls.path_key(os.path.abspath(f))][0] for f in ab.files
@@ -1596,6 +1596,9 @@ class _Look:
             if k in self.origins:
                 continue
             if k in self.ex_paths or audiobooks.sizes_key(ab) in self.ex_shas:    # Removed (S6), here or moved
+                if self._in_book_folder(ab.files):           # Kura-AB5 (#429): unless its folder was picked for a
+                    back.append(ab)                          # book — weighed for it below, let back only to join it
+                    continue
                 self.out["skipped"] += 1
                 continue
             fresh.append(ab)
@@ -1621,11 +1624,25 @@ class _Look:
                 if f is not None:
                     batch.append(f)
         meant = self._meant(fresh, held_in)
+        if back and not any(self._in_book_folder(ab.files) for ab in fresh):    # never over a new one there
+            meant.update(self._meant(back, held_in))
+        for ab in back:                                      # the learner's word to have it again: only the one that
+            if id(ab) in meant:                              # joins the book that asked (else kept out, as before)
+                fresh.append(ab)
+            else:
+                self.out["skipped"] += 1
         for ab in fresh:
             f = self._audio_found(ab, clean_name, pair=meant.get(id(ab)) or
                                   (audiobooks.decide(ab, books, answers) if books else None))
             if f is None:
                 continue
+            if any(ab is b for b in back):
+                f["let_back"] = True                         # its Remove's exclusions go in the take-in (`take_in`)
+                if _key(ab.files[0]) not in self.ex_paths:   # renamed since: the one removed origin of these bytes
+                    gone = [p for p in self.ex_by_sha.get(audiobooks.sizes_key(ab), ())   # gone from disk (a copy
+                            if not os.path.exists(p)]                    # still there is another Remove's: r3, r4)
+                    if len(gone) == 1:
+                        f["let_back_from"] = gone[0]
             if f.get("rel") and ls.path_key(f["rel"]) in heard_at:
                 f["item_id"] = heard_at[ls.path_key(f.pop("rel"))]
                 old = records.get(f["item_id"]) or {}        # its records kept alike (`pair_audiobook`'s rule)
@@ -1668,13 +1685,7 @@ class _Look:
         book, or once the book has no part in the library."""
         if not self.book or not fresh:
             return {}
-        folder = os.path.normpath(self.book["folder"])
-        if audiobooks.disc_number(os.path.basename(folder)) is not None:
-            folder = os.path.dirname(folder)                 # a disc folder picked: its title's audiobook (`find`'s)
-        top = ls.path_key(folder).rstrip("/") + "/"
-
-        def under(files):
-            return any(ls.path_key(os.path.abspath(f)).startswith(top) for f in files or ())
+        under = self._in_book_folder
         inside = [ab for ab in fresh if under(ab.files)]
         others = [audiobooks.from_record(r["audiobook"]) for r in held_in
                   if not isinstance(r["audiobook"].get("book"), dict) and under(r["audiobook"].get("files"))]
@@ -1695,6 +1706,17 @@ class _Look:
             return {}
         book = self.store.picked_for(self.book["epub"], audiobooks.record(inside[0]))
         return {id(inside[0]): {"book": book}} if book is not None else {}
+
+    def _in_book_folder(self, files):
+        """Is one of `files` under the folder the learner picked for `book` (a disc folder picked: its title's, as
+        `find` reads it)? False without a book."""
+        if not self.book:
+            return False
+        folder = os.path.normpath(self.book["folder"])
+        if audiobooks.disc_number(os.path.basename(folder)) is not None:
+            folder = os.path.dirname(folder)                 # a disc folder picked: its title's audiobook (`find`'s)
+        top = ls.path_key(folder).rstrip("/") + "/"
+        return any(ls.path_key(os.path.abspath(f)).startswith(top) for f in files or ())
 
     def _found_in(self, folder):
         """(the audiobooks of `folder`, an audio file there can't be read yet) — `audiobooks.find` once a look (the walk

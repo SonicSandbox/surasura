@@ -2963,8 +2963,10 @@ class ShellWindow(QMainWindow):
     def guide_show_me(self, where):
         """*Show me* (the panel closed already): go to `where` and light it — a Settings row as Settings reveals one,
         a help card opened, a tab or a control washed as a decision's place is (`motion.wash`). A place not on screen
-        now (a tab with nothing in it, a control not shown): the bar says so."""
-        kind, _sep, name = str(where).partition(":")
+        now (a tab with nothing in it, a control not shown): the bar says so. A path step whose own press is elsewhere
+        than the place (`…@audiobook`: the book's ⋯) has the bar say that press once it lands (Kantan-S2)."""
+        where, _at, step = str(where).partition("@")
+        kind, _sep, name = where.partition(":")
         if kind == "settings":
             if not self.mount_settings().shows(name):       # a row this learner's Settings doesn't show: never another
                 self.say(strings.GUIDE_NOT_HERE)
@@ -2985,6 +2987,8 @@ class ShellWindow(QMainWindow):
             self.say(strings.GUIDE_NOT_HERE)
             return
         motion.wash(widget, theme.RADII["icon-button"])
+        if step in strings.PATH_THEN:
+            self.say(strings.PATH_THEN[step])
     # --- end the feature guide -------------------------------------------------------------------------------- #
 
     def changeEvent(self, event):

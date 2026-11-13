@@ -12,13 +12,16 @@ Real data: the add-audio suite's book (a real EPUB, its M4B and `.srt` paired an
 text-only cards Connect made), the fake Anki Miner as a child, the writer's fake Anki.
 """
 import json
+import os
 
 import pytest
 
-from app.connect import actions, anki_miner, runner
+from app import library_store
+from app.connect import actions, anki_miner, library, runner
 from app.connect import sentence_audio as sa
 from app.connect.ledger import Ledger
 from tests.connect.test_add_audio import MAPPING, _act_book, book  # noqa: F401 (the fixture)
+from tests.connect.test_lineup_own_subtitle import STAR
 
 
 def _lined(book, ledger):  # noqa: F811
@@ -571,3 +574,177 @@ def test_a_line_up_given_up_is_never_offered(book, tmp_path, monkeypatch):  # no
     assert book["steps"].lineable("ja", book["book"]) is False
     lineup.write(book["rec"]["book"]["key"], {"status": lineup.FAILED, "tries": lineup.TRIES - 1})
     assert book["steps"].lineable("ja", book["book"]) is True
+
+
+# --- Kura-AB5: an earlier copy's cards (based on the diagnosis in #431 by Mattias, a 3.0.8 preview; PROVISIONAL) ---- #
+# His カラフル: 40 cards made from the book's 2.x `.txt` parts; the parts removed, the book added again as its
+# EPUB — every word carded already, so the EPUB made none; the offer counted the live parts only, froze with no card, and
+# *Add the narrator's voice* never showed for the very cards to fill.
+
+def _removed_parts(book, name, notes, folder="old 2x"):  # noqa: F811
+    """A 2.x split copy `<name>_01.txt`, `<name>_02.txt` (the book's own sentences) read by a look, its first
+    part's cards `notes` made by Connect (text-only, each a sentence of the book), then removed -> (its item ids, trash
+    ids)."""
+    from tests.test_audiobook_items import _settle
+    from tests.test_sources_scan import _book_text, _drive, _look, _write
+    top = _drive(folder)
+    paths = [_write(os.path.join(top, name, f"{name}_{n:02d}.txt"),        # (a part worth reading: T2-B4's length)
+                    "\n".join([name] + book["lines"][n * 4:n * 4 + 4] + [_book_text("ja")])) for n in (1, 2)]
+    _settle(*paths)
+    with book["steps"]._open("ja") as store:
+        _look(store, "ja", store.add_source(top))
+        keys = {library_store.origin_key(os.path.abspath(p)) for p in paths}
+        ids = sorted({i for k, i in store.conn.execute("SELECT content_key, item_id FROM pairings") if k in keys})
+        assert len(ids) == 2
+        for k, note in enumerate(notes):
+            line = book["lines"][4 + k]
+            book["anki"].add(note, f"<b>{line[:2]}</b>" + line[2:], line[:2])
+        library.record_batch(store, ids[0], {f"old{k}": [n] for k, n in enumerate(notes)}, "2026-10-01T00:00:00Z")
+        store.remove(ids)
+        trash = [r[0] for r in store.conn.execute("SELECT id FROM trash WHERE item_id IN (?, ?)", ids)]
+    return ids, trash
+
+
+def _asked(book, ledger):  # noqa: F811
+    _title, _notes, sha = book["steps"].made_before("ja", book["book"])
+    key = f"{runner.ADD_AUDIO_ASKED}ja:{runner.book_key(book['book'], sha)}"
+    return key, json.loads(runner._meta(ledger, key) or "null")
+
+
+def test_a_book_asked_with_no_card_is_asked_once_more_for_its_earlier_copys_cards_alone(book, tmp_path):  # noqa: F811
+    """#431, his state: the record 3.0.8 froze — lined up, no card. The next pass asks ONCE more, for the earlier
+    copy's cards alone (never the live part's, made since it lined up: they carry the narrator); a pass after writes
+    nothing; the press's plan places those cards by their sentences."""
+    from app.connect import add_audio
+    _removed_parts(book, STAR, [400, 401, 402])
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        key, _none = _asked(book, ledger)
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": book["book"], "item": book["item"], "title": STAR, "notes": [], "stage": runner.ADD_AUDIO_LINED})))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [offer] = _offers(ledger)
+        assert offer["item_id"] == book["item"]
+        _key, rec = _asked(book, ledger)
+        assert rec["notes"] == [400, 401, 402] and rec["stage"] == runner.ADD_AUDIO_LINED
+        before = (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                  ledger.conn.execute("SELECT * FROM meta").fetchall())
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                ledger.conn.execute("SELECT * FROM meta").fetchall()) == before, "asked once"
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert {400, 401, 402} <= set(got["can"]), "placed in the book's line-up by their sentences"
+
+
+def test_a_book_asked_with_no_card_and_no_earlier_copy_is_never_asked_again(book, tmp_path):  # noqa: F811
+    """No earlier copy's card either: the once-more look writes the record (asked once), raises no line, and the
+    record is never looked at again."""
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        key, _none = _asked(book, ledger)
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": book["book"], "item": book["item"], "title": STAR, "notes": [], "stage": runner.ADD_AUDIO_LINED})))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert _offers(ledger) == []
+        _key, rec = _asked(book, ledger)
+        assert rec["notes"] == [] and rec["earlier"] is True
+        _removed_parts(book, STAR, [400])                # removed after: the book was asked already
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert _offers(ledger) == []
+
+
+def test_the_first_ask_counts_an_earlier_copys_cards_with_the_books_own(book, tmp_path):  # noqa: F811
+    """No record yet (the copy removed before the EPUB lined up): the first ask names the book's cards and the earlier
+    copy's, together."""
+    _removed_parts(book, STAR, [400, 401])
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        _lined(book, ledger)
+        [_offer] = _offers(ledger)
+        _key, rec = _asked(book, ledger)
+        assert {100, 400, 401} <= set(rec["notes"]) and rec["earlier"] is True
+
+
+def test_earlier_copies_are_the_removed_2x_parts_of_this_book_only(book):  # noqa: F811
+    """Only the book's own earlier copy: the removed `<the EPUB's name>_NN.txt` (any case, full-width alike); never a
+    name that only starts alike, another book's, nor one put back (a live item: the book's own rule)."""
+    from app.connect import add_audio
+    mine, _t = _removed_parts(book, STAR, [400])
+    alike, _t2 = _removed_parts(book, STAR + "外伝", [410], folder="gaiden")
+    other, _t3 = _removed_parts(book, "銀河鉄道の夜", [420], folder="ginga")
+    back, trash = _removed_parts(book, STAR.replace("！", "!"), [430], folder="halfwidth")
+    with book["steps"]._open("ja") as store:
+        assert add_audio.earlier_copies(store, book["book"]) == sorted(mine + back), "NFKC: ！ and ! alike"
+        store.restore(trash)
+        assert add_audio.earlier_copies(store, book["book"]) == sorted(mine), "put back: live, never an earlier copy"
+        assert not set(alike + other) & set(add_audio.book_items(store, book["book"]))
+        assert add_audio.earlier_copies(store, os.path.join(os.path.dirname(book["book"]), "nothing.epub")) == []
+
+
+def test_earlier_copies_go_by_the_epubs_file_name_and_by_the_books_title(book, monkeypatch):  # noqa: F811
+    """His EPUB's file name is not its title (`カラフル (文春文庫) - 森 絵都 epub.epub` holds 「カラフル」): 2.x named its
+    parts by what he typed — the file's name or the title; both are this book's."""
+    from app.connect import add_audio
+    by_file, _t = _removed_parts(book, STAR, [400])
+    by_title, _t2 = _removed_parts(book, "カラフル", [410], folder="title")
+    real = library.book_of
+    monkeypatch.setattr(library, "book_of", lambda store, epub: dict(real(store, epub), title="カラフル"))
+    with book["steps"]._open("ja") as store:
+        assert add_audio.earlier_copies(store, book["book"]) == sorted(by_file + by_title)
+
+
+def test_a_book_asked_with_no_card_not_lined_up_now_is_left_as_it_was(book, tmp_path, monkeypatch):  # noqa: F811
+    """Its line-up gone meanwhile (separated, a sync failed): the once-more ask waits for it — the record is never
+    given up for that (it would never be asked again) and nothing is written."""
+    _removed_parts(book, STAR, [400])
+    monkeypatch.setattr(book["steps"], "lined_up", lambda lang, epub: None)
+    monkeypatch.setattr(book["steps"], "lineable", lambda lang, epub: False)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        key, _none = _asked(book, ledger)
+        was = json.dumps({"epub": book["book"], "item": book["item"], "title": STAR, "notes": [],
+                          "stage": runner.ADD_AUDIO_LINED})
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, was))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert runner._meta(ledger, key) == was and _offers(ledger) == []
+
+
+def test_a_book_asked_with_its_own_cards_is_asked_once_more_when_an_earlier_copy_had_more(book, tmp_path,  # noqa: F811
+                                                                                          monkeypatch):
+    """Review r1 S4: the EPUB made two cards before it lined up, so 3.0.8 froze the record with those — the 2.x copy's
+    cards were never counted. Looked at once more: the earlier copy's are added to its list, the line asked again, and
+    the row's ⋯ counts them; a pass after writes nothing."""
+    from app.connect import add_audio
+    _removed_parts(book, STAR, [400, 401])
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        key, _none = _asked(book, ledger)
+        ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
+            {"epub": book["book"], "item": book["item"], "title": STAR, "notes": [100, 101],
+             "stage": runner.ADD_AUDIO_LINED})))
+        ledger.conn.commit()
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        [_offer] = _offers(ledger)
+        _key, rec = _asked(book, ledger)
+        assert rec["notes"] == [100, 101, 400, 401] and rec["earlier"] is True
+        before = (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                  ledger.conn.execute("SELECT * FROM meta").fetchall())
+        runner._add_audio_offers(book["steps"], ledger, "ja")
+        assert (ledger.conn.execute("SELECT * FROM needs").fetchall(),
+                ledger.conn.execute("SELECT * FROM meta").fetchall()) == before
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"], earlier=False)
+    got = actions.add_audio_offer("ja", parts, {"connect_enabled": True}, steps=book["steps"], path=path)
+    assert got["n"] == 4
+
+
+def test_earlier_copies_never_count_a_part_of_this_very_epub_given_up(book):  # noqa: F811
+    """Review r2 N1: the EPUB's own parts are named `<name>_NN.txt` too — one removed is no earlier copy (its cards
+    were counted while it was live; those mined since its line-up carry the narrator)."""
+    from app import library_store as ls
+    from app.connect import add_audio
+    with book["steps"]._open("ja") as store:
+        parts = add_audio.book_items(store, book["book"], earlier=False)
+        rel = store.conn.execute("SELECT rel_path FROM items WHERE id = ?", (parts[-1],)).fetchone()[0]
+        assert ls._SPLIT_PART.fullmatch(rel.replace("\\", "/").rpartition("/")[2]), rel
+        store.remove([parts[-1]])
+        assert add_audio.earlier_copies(store, book["book"]) == []

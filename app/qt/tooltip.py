@@ -7,12 +7,17 @@ is the control's `toolTip()` (rich text allowed), at the tooltip type size × th
 size wide. Qt's own `QToolTip` is suppressed for any widget the bubble serves.
 
 With the freeze switch on (tests, captures) it shows at once.
+
+**The ? that says one line** (`AboutMark`; Sonic 2026-11-13: "I don't like subtitles, I like them hidden with a question
+icon or something that reveals a succinct one. A subtitle would be best used as an example"): an explainer line under a
+title stands behind a small ? beside it instead — its line in the bubble on hover, on keyboard focus (Tab) and on a click
+or Enter / Space. A visible line under a title stays only where it is a concrete example, a state, or an action.
 """
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QTextDocument
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from app import theme
 from app.qt import freeze, style
@@ -179,6 +184,11 @@ class Tooltips(QObject):
         else:
             target = QRect(w.mapToGlobal(rect.topLeft()), rect.size())
         screen = (w.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        if getattr(w, "keeps_to_window", False):     # a ?'s line stays inside its window (no room above: below it)
+            top = w.window()
+            inside = screen.intersected(QRect(top.mapToGlobal(QPoint(0, 0)), top.size()))
+            if inside.width() >= self.bubble.width() and inside.height() >= self.bubble.height():
+                screen = inside
         self.bubble.move(place(self.bubble.size(), target, screen))
         self.bubble.show()
         self.shown = (w, rect)
@@ -209,3 +219,72 @@ class Tooltips(QObject):
     def showing(self):
         """The text shown now, or None."""
         return self.bubble.text if self.bubble.isVisible() else None
+
+
+class FitTitle(QLabel):
+    """A word-wrapped title with its `AboutMark` after it (laid out with a large stretch, the room after taking the
+    rest): as wide as its words, so the ? sits right after them; it wraps only when the row is narrower (Settings' rows
+    do the same, `RowView._fit_title`). Refitted when its words, font or style change (the text size changes live)."""
+
+    REFIT = (QEvent.Type.FontChange, QEvent.Type.StyleChange)
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._fit()
+
+    def setText(self, text):
+        super().setText(text)
+        self._fit()
+
+    def _fit(self):
+        import math
+        m = self.contentsMargins()
+        width = math.ceil(QFontMetricsF(self.font()).horizontalAdvance(self.text())) + 4 + m.left() + m.right()
+        if self.maximumWidth() != width:
+            self.setMaximumWidth(max(1, width))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in self.REFIT:
+            self._fit()
+
+
+class AboutMark(QLabel):
+    """A small ? that reveals one succinct line (the module's note): its tooltip in the bubble on hover, on keyboard
+    focus (Tab) and on a click or Enter / Space (the press hid the bubble: the release shows it again). `mark`: its glyph
+    (the caller's strings table). Hidden while it has no line. Settings' rows build on it (`settings_page.HelpMark`).
+    Its bubble keeps inside its window as well as the screen (`keeps_to_window`: a section's ? at the page's top put
+    its line above the window at 100 %), unless the window is smaller than the bubble."""
+
+    keeps_to_window = True
+
+    def __init__(self, mark, parent=None):
+        super().__init__(mark, parent)
+        self.setObjectName("helpmark")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setVisible(False)
+
+    def set_about(self, name, text):
+        """Its line `text` (empty: hidden) and `name`, what a screen reader calls it; only what changed is redone."""
+        if self.toolTip() != text:
+            self.setToolTip(text)
+            self.setAccessibleName(name)
+            self.setAccessibleDescription(text)
+        if self.isHidden() == bool(text):
+            self.setVisible(bool(text))
+
+    def _ask(self):
+        tips = getattr(self.window(), "tooltips", None)
+        if tips is not None and self.toolTip():
+            tips.request(self)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._ask()
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._ask()

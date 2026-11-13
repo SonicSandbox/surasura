@@ -290,6 +290,78 @@ def test_reorder_is_off_until_a_preview_and_the_preview_writes_nothing(main, eng
     assert win.model.rowCount() == len(engine.stats["order"])
 
 
+_ELSEWHERE = {"ok": False, "message": "Junban did not make any changes.", "warnings": [], "written": [],
+              "problems": ["An automatic reorder of Kanji stopped part way. Put it back first, then reorder."],
+              "restore_first": True, "unfinished": "reorder-20261113-100000-000-1",
+              "put_back_first": ["reorder-20261113-100000-000-1"], "put_back_decks": "Kanji"}
+
+
+def test_junban_x2_a_reorder_refused_for_another_decks_stopped_run_offers_one_press_and_keeps_the_preview(
+        main, engine, monkeypatch):
+    """Junban-X2 (Sonic 2026-11-13): refused only for another deck's stopped run, nothing was written — the preview
+    stays, and *Put that one back, then reorder* (its ? says what goes back, in one line) puts that run back and
+    reorders this preview."""
+    pressed = []
+    monkeypatch.setattr(view, "put_back_then_reorder_work",
+                        lambda settings, language, answers, runs, **kw: pressed.append(list(runs)) or dict(engine.report))
+    win = settled(previewed(opened(main)))
+    assert win.put_back_row.isHidden()
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    assert win.session.stats is not None and win.btn_reorder.isEnabled(), "the preview still holds"
+    assert win.btn_put_back_first.text() == qs.JUNBAN_PUT_BACK_FIRST and win.btn_put_back_first.isEnabled()
+    assert win.put_back_mark.toolTip() == qs.JUNBAN_PUT_BACK_FIRST_HELP.format(decks="Kanji")
+    assert not win.put_back_mark.isHidden()
+    engine.report = {"ok": True, "message": "Moved 6 cards.", "warnings": [], "problems": [], "written": [1]}
+    win.btn_put_back_first.click()
+    assert wait_until(lambda: pressed == [["reorder-20261113-100000-000-1"]])
+    assert wait_until(lambda: win.put_back_row.isHidden() and not win.is_busy())
+    assert len(engine.runs) == 1, "the press runs the put-back job, never a second plain Reorder"
+
+
+def test_junban_x2_a_change_to_the_order_takes_the_offer_away_with_its_preview(main, engine):
+    """Only while its preview is the one on screen (I5): a setting changed after the refusal hides it at once."""
+    win = settled(previewed(opened(main)))
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    win.cb_freqsort.click()
+    settled(win)
+    assert win.put_back_row.isHidden()
+
+
+def test_junban_x2_the_question_mark_clicked_shows_its_line_in_this_window_too(main, engine, monkeypatch):
+    """The adversary's SHOULD 2: a ? clicked in a secondary window asks the app's bubble (hover and Tab did already)."""
+    asked = []
+    win = settled(previewed(opened(main)))
+    assert win.tooltips is main.tooltips
+    monkeypatch.setattr(main.tooltips, "request", lambda widget: asked.append(widget))
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    QTest.mouseClick(win.put_back_mark, Qt.MouseButton.LeftButton)
+    assert asked == [win.put_back_mark]
+
+
+def test_junban_x2_a_plain_refusal_offers_nothing_and_throws_the_preview_away_as_before(main, engine):
+    win = settled(previewed(opened(main)))
+    engine.report = dict(_ELSEWHERE, put_back_first=None, put_back_decks=None)
+    win.on_reorder()
+    assert wait_until(lambda: not win.is_busy() and win.session.stats is None)
+    assert win.put_back_row.isHidden() and win._put_back_first is None
+
+
+def test_junban_x2_a_new_preview_takes_the_offer_away(main, engine):
+    win = settled(previewed(opened(main)))
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    previewed(win)
+    settled(win)
+    assert win.put_back_row.isHidden() and win._put_back_first is None
+
+
 def test_d1a_a_preview_landing_after_a_change_never_unlocks_reorder(main, engine):
     win = opened(main)
     engine.gate = threading.Event()

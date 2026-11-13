@@ -82,6 +82,7 @@ def anchor_ok(where, has_card=None, locate=None):
     Settings catalog's checks (the tests pass the real ones; left out, only the shape is checked)."""
     if not isinstance(where, str) or ":" not in where:
         return False
+    where = where.partition("@")[0]              # a path step's own mark (`tab:current@audiobook`): the place is before
     kind, _sep, name = where.partition(":")
     if kind not in ANCHOR_KINDS or not name:
         return False

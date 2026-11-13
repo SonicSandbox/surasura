@@ -13,6 +13,13 @@ answers may change it). Qt-free: the Next card on Current (`app/qt/next_card.py`
   writes one before its first change), a finished line-up (Connect's `lineup/<key>/state.json`), a pairing hato wrote
   (the store's `pairings`), a kept Piyo round (`practice_rounds.last_round`, else a round file). Pointing at a place is
   never doing the step. A tick is kept once seen (`guide.json`'s `done`): a record gone later never un-ticks it.
+- **Done before the guide counts** (Kantan-S2, Sonic 2026-11-13: "if they already did one…"): cards mined with Anki
+  Miner before Connect kept a ledger — a mining session of this language that created cards, in Anki Miner's own
+  `stats.db` (`_miner_cards`) — count as cards made; a later step's record is read whether or not the step
+  applies now (a book lined up once, with none in Current today, is done — never offered as new).
+- **The panel's three lists** (`listed`): chapter 1's steps, done ones kept (to try again); chapter 2's useful or done
+  steps; and chapter 2's steps that can't apply yet (*Not for now*: no Anki, no book, no waiting video, too few episodes)
+  — never one whose module is missing or switched off (`offered`, S10).
 - **The Next card** (`next_card`): chapter 1's first undone step (*Not now* hides it until the next start — it is the
   loop itself); then *Your first cards are made*, once; then a chapter-2 step that has become useful and was never set
   aside (*Not now* there is for good: it lives on in ✦ → *Your path*). One at a time; never during setup.
@@ -34,7 +41,12 @@ Facts = namedtuple("Facts", "has_library journey_opened episodes_done cards_made
                             "junban_ordered backfilled book_in_current lined_up video_waiting hato_paired piyo_round "
                             "journey_ready", defaults=(True,))
 # journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's Show me has a place
-Step = namedtuple("Step", "id chapter when done where")
+def _always(_f):
+    return True
+
+
+Step = namedtuple("Step", "id chapter when done where offered", defaults=(_always,))
+# offered: Facts -> bool, whether the step is this learner's at all (its module here and on); else never listed
 PIYO_AFTER = 3                                  # episodes Done before Piyo is offered
 
 # The table (EXPERIENCE.md §3). `when` / `done`: Facts -> bool. Chapter 1's steps are useful as soon as a library is.
@@ -43,16 +55,16 @@ STEPS = (
     Step("watch", FIRST, lambda f: f.has_library, lambda f: f.episodes_done >= 1, "help:current"),
     Step("cards", FIRST, lambda f: f.has_library, lambda f: f.cards_made or f.own_cards, "settings:anki_miner"),
     Step("junban", READY, lambda f: f.junban and f.anki_synced and (f.cards_made or f.own_cards),
-         lambda f: f.junban_ordered, "settings:junban"),
+         lambda f: f.junban_ordered, "settings:junban", lambda f: f.junban),
     Step("backfill", READY, lambda f: f.junban and (f.cards_made or (f.own_cards and f.anki_synced)),
-         lambda f: f.backfilled, "settings:backfill_patterns"),
-    Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current"),
+         lambda f: f.backfilled, "settings:backfill_patterns", lambda f: f.junban),
+    Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current@audiobook"),
     Step("hato", READY, lambda f: f.video_waiting, lambda f: f.hato_paired, "settings:hato"),
     Step("piyo", READY, lambda f: f.episodes_done >= PIYO_AFTER, lambda f: f.piyo_round, "settings:practice_ai"),
 )
 BY_ID = {s.id: s for s in STEPS}
 
-Status = namedtuple("Status", "step useful done")                 # one step for this learner now
+Status = namedtuple("Status", "step useful done offered", defaults=(True,))   # one step for this learner now
 Path = namedtuple("Path", "steps first_done card glow")            # what the card and the panel show
 # card: None, ("step", step id, n, of) for a step, or ("made",) for *Your first cards are made*
 
@@ -84,6 +96,23 @@ def _cards_made(language):
     from app.connect import ledger
     return _one(ledger.path(), "SELECT 1 FROM outcomes o JOIN jobs j ON j.id = o.job_id "
                                "WHERE o.outcome = 'made' AND j.language = ? LIMIT 1", (language,))
+
+
+def _miner_cards(language):
+    """Cards Anki Miner made itself, before Connect kept a ledger: a mining session of this language that created
+    cards, in Anki Miner's own `stats.db` (`mining_sessions`, written as it mines; read only). Never "Anki Miner
+    installed + cards in Anki": a premade deck synced on setup is no card mined (adversary r1 #1). A test run reads it
+    only from an `ANKI_MINER_HOME` it set (never the developer's own)."""
+    if os.environ.get("SURASURA_TEST_ROOT") and not os.environ.get("ANKI_MINER_HOME"):
+        return False
+    from app.connect import anki_miner
+    db = os.path.join(anki_miner.home(), "stats.db")
+    if _one(db, "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND language = ? LIMIT 1", (language,)):
+        return True
+    # an Anki Miner from before its `language` column mined Japanese only (its migration fills the old rows 'ja')
+    return language == "ja" and _one(db, "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND NOT EXISTS "
+                                         "(SELECT 1 FROM pragma_table_info('mining_sessions') WHERE name = 'language') "
+                                         "LIMIT 1")
 
 
 def _hato_paired(language):
@@ -187,21 +216,33 @@ def facts(language, settings, view, state, journey_ready=True):
     except Exception:
         synced = False
     junban = safe(help_cards.module_present, "junban") and bool(settings.get("enable_junban", True))
+    # a later step's record is read whether or not it applies now (Kantan-S2: done before is done)
     return Facts(
         has_library=has, journey_opened="journey" in (state.get("moments") or {}), episodes_done=episodes,
-        cards_made=safe(_cards_made, language), own_cards=bool(state.get("own_cards")), junban=junban,
+        cards_made=safe(_cards_made, language) or safe(_miner_cards, language),
+        own_cards=bool(state.get("own_cards")), junban=junban,
         anki_synced=synced, junban_ordered=junban and unless("junban", _junban, language, "reorder"),
         backfilled=junban and unless("backfill", _junban, language, "backfill"), book_in_current=book,
-        lined_up=book and unless("audiobook", _lined_up), video_waiting=waiting,
-        hato_paired=waiting and unless("hato", _hato_paired, language),
-        piyo_round=episodes >= PIYO_AFTER and unless("piyo", _piyo_round, language), journey_ready=journey_ready)
+        lined_up=unless("audiobook", _lined_up), video_waiting=waiting,
+        hato_paired=unless("hato", _hato_paired, language),
+        piyo_round=unless("piyo", _piyo_round, language), journey_ready=journey_ready)
 
 
 # --- the path (pure) ------------------------------------------------------------------------------------------------- #
 def statuses(f, state):
     """Every step's `Status` for `Facts` `f`: done if it happened now or was ticked before (kept)."""
     ticked = (state or {}).get("done") or {}
-    return tuple(Status(s, bool(s.when(f)), s.id in ticked or bool(s.done(f))) for s in STEPS)
+    return tuple(Status(s, bool(s.when(f)), s.id in ticked or bool(s.done(f)), bool(s.offered(f))) for s in STEPS)
+
+
+def listed(sts):
+    """The panel's three lists (Kantan-S2): chapter 1's steps (done ones kept, to try again); chapter 2's offered steps
+    useful now or done; chapter 2's offered steps that can't apply yet (*Not for now*). A step not offered (its module
+    missing or off) is in none."""
+    first = [st for st in sts if st.step.chapter == FIRST]
+    ready = [st for st in sts if st.step.chapter == READY and st.offered and (st.useful or st.done)]
+    later = [st for st in sts if st.step.chapter == READY and st.offered and not (st.useful or st.done)]
+    return first, ready, later
 
 
 def newly_done(sts, state):

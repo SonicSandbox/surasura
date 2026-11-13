@@ -312,6 +312,98 @@ def test_a_ticked_step_is_never_read_again(monkeypatch):
     assert calls == ["ja"]
 
 
+#  --- Kantan-S2 (Sonic 2026-11-13: "they would need to be able to see past ones to try again, and if they already did
+# one or don't have an audiobook to test one of the steps, etc that needs to account for that ux experience") ------ #
+def _mining_session(home, language, cards):
+    """A row of Anki Miner's own `stats.db` (`mining_sessions`, written by Anki Miner as it mines an episode)."""
+    os.makedirs(home, exist_ok=True)
+    con = sqlite3.connect(os.path.join(home, "stats.db"))
+    con.execute("CREATE TABLE IF NOT EXISTS mining_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, series_name TEXT "
+                "NOT NULL, episode_name TEXT NOT NULL, total_words INTEGER NOT NULL DEFAULT 0, unknown_words INTEGER "
+                "NOT NULL DEFAULT 0, cards_created INTEGER NOT NULL DEFAULT 0, elapsed_time REAL NOT NULL DEFAULT 0.0, "
+                "mined_at TEXT NOT NULL DEFAULT (datetime('now')), language TEXT NOT NULL DEFAULT 'ja')")
+    con.execute("INSERT INTO mining_sessions (series_name, episode_name, cards_created, language) VALUES (?, ?, ?, ?)",
+                ("ぼっち・ざ・ろっく！", "第1話", cards, language))
+    con.commit()
+    con.close()
+
+
+def test_cards_made_with_anki_miner_before_the_guide_count_as_done(tmp_path, monkeypatch):
+    # an upgrader who mined with Anki Miner long before the guide: told "Get cards made for you" would be wrong. The
+    # real record is Anki Miner's own: a mining session that created cards, in this language (its stats.db). Never
+    # "Anki Miner installed + cards in Anki": a premade deck (Kaishi) synced on setup's page would tick chapter 1 for a
+    # learner who never mined (adversary r1 #1)
+    from app import anki_sync
+    home = str(tmp_path / ".anki_miner")
+    monkeypatch.setenv("ANKI_MINER_HOME", home)
+    anki_sync._save_state("ja", {"note_ids": [1700000000001, 1700000000002], "last_sync": "2026-11-01T10:00:00"})
+    assert not P.facts("ja", {}, SHOWS, {}).cards_made                          # a synced deck alone: not mined
+    _mining_session(home, "ja", 0)
+    assert not P.facts("ja", {}, SHOWS, {}).cards_made                          # a session that made no card
+    _mining_session(home, "zh", 12)
+    assert not P.facts("ja", {}, SHOWS, {}).cards_made                          # another language's cards
+    _mining_session(home, "ja", 8)
+    assert P.facts("ja", {}, SHOWS, {}).cards_made and P.facts("zh", {}, SHOWS, {}).cards_made
+    way = P.look("ja", {}, View((Row("anime", 0),), Counts(0, 0), ()))
+    assert way.first_done and way.card != ("step", "words", 1, 3)               # no beginner's step 1
+
+
+def test_an_old_anki_miner_stats_db_without_a_language_column_counts_for_japanese(tmp_path, monkeypatch):
+    # (re-check r2 #4) before its migration Anki Miner mined Japanese only and kept no language: a long-time miner
+    home = str(tmp_path / ".anki_miner")
+    monkeypatch.setenv("ANKI_MINER_HOME", home)
+    os.makedirs(home)
+    con = sqlite3.connect(os.path.join(home, "stats.db"))
+    con.execute("CREATE TABLE mining_sessions (id INTEGER PRIMARY KEY, series_name TEXT, episode_name TEXT, "
+                "cards_created INTEGER NOT NULL DEFAULT 0)")
+    con.execute("INSERT INTO mining_sessions (series_name, episode_name, cards_created) VALUES ('葬送のフリーレン', "
+                "'第1話', 5)")
+    con.commit()
+    con.close()
+    assert P._miner_cards("ja") and not P._miner_cards("zh")
+
+
+def test_a_test_run_never_reads_the_developers_own_anki_miner(monkeypatch):
+    monkeypatch.delenv("ANKI_MINER_HOME", raising=False)
+    assert not P._miner_cards("ja")                                             # (under SURASURA_TEST_ROOT: never ~)
+
+
+def test_a_later_step_done_before_it_applies_now_counts_by_its_record():
+    # a line-up finished, a subtitle hato found, a Piyo round kept — while no book is in Current now, no video waits
+    # and fewer than three episodes are Done: each is still done (its record), never offered again as new
+    from app import practice_rounds
+    from app.connect import lineup
+    os.makedirs(os.path.join(lineup.root(), "k1"), exist_ok=True)
+    with open(os.path.join(lineup.root(), "k1", lineup.STATE), "w", encoding="utf-8") as f:
+        json.dump({"status": lineup.DONE, "grade": "A"}, f)
+    _pairing("ja", "hato")
+    practice_rounds.save("ja", practice_rounds.new_id(), start={"role": "friend", "words": [["猫", "ねこ"]]})
+    f = P.facts("ja", {}, SHOWS, {})
+    assert f.lined_up and f.hato_paired and f.piyo_round
+    st = {s.step.id: s for s in P.statuses(f, {})}
+    for step_id in ("audiobook", "hato", "piyo"):
+        assert st[step_id].done and not st[step_id].useful, step_id
+    assert P.newly_useful(P.statuses(f, {}), {}) == []                          # nothing to light the ✦ for
+
+
+def test_the_panels_lists_keep_past_steps_and_say_not_for_now_for_steps_that_cant_apply():
+    f = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, lined_up=True)
+    first, ready, later = P.listed(P.statuses(f, {}))
+    assert [st.step.id for st in first] == ["words", "watch", "cards"] and all(st.done for st in first)
+    assert [st.step.id for st in ready] == ["audiobook", "hato"]                # done by its record · useful now
+    assert [st.step.id for st in later] == ["junban", "backfill", "piyo"]       # can't apply yet: no Anki, 1 episode
+    assert not any(st.useful or st.done for st in later)
+    _first, ready, later = P.listed(P.statuses(f._replace(junban=False), {}))   # 順 absent or off: never offered
+    assert not {"junban", "backfill"} & {st.step.id for st in ready + later}
+
+
+def test_every_later_step_says_in_one_short_line_when_it_applies():
+    for step in P.STEPS:
+        if step.chapter == P.READY:
+            line = strings.PATH_WHEN[step.id]
+            assert line and "\n" not in line and len(line) <= 60, step.id
+
+
 def test_manga_and_plain_text_are_not_books_an_audiobook_lines_up_with():
     assert not P._view_facts(View((Row("manga", 0), Row("text", 0)), Counts(0, 0), ()))[2]
     assert P._view_facts(View((Row("lightnovel", 0),), Counts(0, 0), ()))[2]

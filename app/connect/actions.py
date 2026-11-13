@@ -384,13 +384,13 @@ def add_audio_offer(language, item_ids, settings, steps=None, path=None):
         with steps._open(language) as store:            # one open: the pairs, the book's parts, its notes, its title
             found = None
             for epub, _item, sha in library.paired_books(store):
-                parts = adding.book_items(store, epub)
+                parts = adding.book_items(store, epub, earlier=False)   # (the row's book: its live parts)
                 if want & set(parts):
                     found = (epub, parts, sha)
                     break
             if found is None:
                 return None
-            notes = adding.made_notes(store, found[1])
+            notes = adding.made_notes(store, adding.book_items(store, found[0]))   # an earlier copy's too (#431)
             title = (library.book_of(store, found[0]) or {}).get("title") or \
                 os.path.splitext(os.path.basename(found[0]))[0]
         if not notes or not (steps.lined_up(language, found[0]) or steps.lineable(language, found[0])):

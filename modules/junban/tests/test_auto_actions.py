@@ -415,18 +415,14 @@ def test_an_unfinished_connect_run_never_stops_an_automatic_job_which_takes_it_o
     """Lead 2026-11-07 (Mattias, alpha 3; Sonic's W3.5 row 7, "a run nobody started never stops the automation"): 順's
     automatic step, with actions or positions only, goes on past one of Connect's unfinished runs and takes it over in
     the window's snapshot (its cards' numbers from before it, its suspends), as row 7 takes over the window's own cut
-    run; the run's file is marked taken over, so 順's Reorder is no longer refused. Before the takeover, that Reorder
-    asks for the Undo first (Disc-T1 left this one as the lead ruled it: only a cut run of the window's own is yours
-    to take over)."""
+    run; the run's file is marked taken over, so 順's Reorder is no longer refused. (A Reorder you start takes it over
+    too since Junban-X, Sonic 2026-11-13: `test_run_snapshots`.)"""
     fake = _backlog(tmp_path)
     pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items()]
     first = pairs[0][0]
     run_id = undo.new_run_id("reorder")
     undo.save([(first, pairs[0][1] + 7)], ["TheBank"], language="ja", run_id=run_id, after=[(first, pairs[0][1])],
               suspended=[pairs[1][0]])
-    with _patched(fake):
-        yours = reposition.run(_auto())
-    assert not yours["ok"] and yours["restore_first"] and yours["unfinished"] == run_id and fake.writes == []
     with _patched(fake):
         done = auto.reorder(_auto(junban_auto_actions=actions), list_current=True)
     assert done["outcome"] == "ran" and not done["report"].get("restore_first"), done

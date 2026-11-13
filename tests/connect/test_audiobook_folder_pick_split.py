@@ -128,3 +128,174 @@ def test_c_the_same_folder_picked_again_names_the_audiobook_with_the_copy(split)
     with split["steps"]._open("ja") as store:
         said = source_looks._audiobooks_read(store, folder, {"epub": book, "title": GINGA})
     assert said["elsewhere"] == [], "another title's book: never named to be taken"
+
+
+# --- Kura-AB5: the audiobook removed with a copy, its folder picked for the book (based on the diagnosis in #429
+# by Mattias, a 3.0.8 preview: カラフル's folder picked, nothing happened; PROVISIONAL) ------------------------ #
+
+def _source_of(store, folder):
+    return next(i for i, p in store.conn.execute("SELECT id, path FROM roots WHERE kind = 'source'")
+                if ls.path_key(p) == ls.path_key(folder))
+
+
+def _removed_with_its_copy(split):
+    """His state: the copy's title removed from the library — its parts and the audiobook paired with it, one Remove
+    (each kept out: S6)."""
+    folder, m4b, audio = _copy_paired(split)
+    with split["steps"]._open("ja") as store:
+        gone = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))]
+        assert audio in gone and len(gone) > 1, "the copy's parts and its audiobook"
+        store.remove(gone)
+        assert not _audio_items(store) or all(i["id"] != audio for i in _audio_items(store))
+    return folder, m4b, audio
+
+
+def _kept_out(store, m4b):
+    return [p for p, n in store.excluded().items() if ls.path_key(p) == ls.path_key(os.path.abspath(m4b))]
+
+
+def test_d_an_audiobook_removed_with_a_copy_comes_back_when_its_folder_is_picked_for_the_book_and_joins_it(split):
+    """#429: the split book asks, *A folder on your computer…* picks the folder holding the `.m4b` removed earlier
+    with an EPUB copy — the look took nothing in (the Remove's keep-out was read before the book's join). Now that
+    pick is the learner's word to have it back: it comes in, joins THIS book, its keep-out goes and its Removed line
+    with it (its trash row marked put back: a Put back would make a second); the copy beside it stays removed; a plain
+    look before and after changes nothing; the learner's folder as it was."""
+    _reading, book = _joined(split)
+    folder, m4b, audio = _removed_with_its_copy(split)
+    before = _tree(folder)
+    with split["steps"]._open("ja") as store:
+        root = _source_of(store, folder)
+        items = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        _look(store, "ja", root, full=True)
+        assert all(os.path.abspath(m4b) not in _record(store, i["id"])["files"] for i in _audio_items(store)), \
+            "a plain look: still removed"
+        assert _kept_out(store, m4b)
+        _look(store, "ja", root, full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        back = _audio_of(store, m4b)
+        rec = _record(store, back["id"])
+        assert rec["book"]["epub"] == os.path.abspath(book) and rec["book"]["how"] == "answered"
+        assert _work(store, back["id"]) == _work(store, split["parts"][0]), "in the split book's title"
+        assert library.audiobook_of_book(store, book)["item_id"] == back["id"]
+        assert not _kept_out(store, m4b), "its keep-out gone"
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == items + 1, "the audiobook alone"
+        copy = ls.path_key(os.path.abspath(os.path.join(folder, f"{TITLE}.epub")))
+        assert any(ls.path_key(p).startswith(copy + "#") for p in store.excluded()), "the copy still removed"
+        listed = [k for e in store.removed(split=True) for k in e["trash_ids"]]
+        assert all(store.trash_rows([t])[0]["item_id"] != audio for t in listed), "no Put back for it any more"
+        rows = store.conn.execute("SELECT item_id, restored_at FROM trash").fetchall()
+        assert [r for r in rows if r[1]] == [r for r in rows if r[0] == audio] != [], "only its own row: put back"
+        _look(store, "ja", root, full=True)
+        assert _audio_of(store, m4b)["id"] == back["id"] and _record(store, back["id"])["book"] == rec["book"]
+    assert _tree(folder) == before, "the learner's folder as it was"
+
+
+def test_d_a_removed_audiobook_outside_the_folder_picked_stays_removed(split):
+    """Only the very folder picked: an audiobook removed elsewhere stays out when another folder is picked for the
+    book."""
+    _reading, book = _joined(split)
+    folder, m4b, _audio = _removed_with_its_copy(split)
+    other = _drive("other")
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": other, "epub": book, "title": TITLE})
+        assert all(os.path.abspath(m4b) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+        assert _kept_out(store, m4b)
+
+
+def test_d_of_two_removed_audiobooks_in_the_folder_only_the_books_comes_back(split):
+    """The folder picked also holds another title's audiobook, removed too: only the one that joins the book (`_meant`:
+    the most like it) is let back; the other stays removed, its keep-out kept."""
+    _reading, book = _joined(split)
+    folder, m4b, _audio = _removed_with_its_copy(split)
+    ginga = _audio_folder(os.path.join(folder, GINGA), GINGA, _fit("ja"))
+    with split["steps"]._open("ja") as store:
+        root = _source_of(store, folder)
+        _look(store, "ja", root, full=True)
+        other = _audio_of(store, ginga[0])
+        store.remove([other["id"]])
+        _look(store, "ja", root, full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, m4b)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert all(os.path.abspath(ginga[0]) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+        assert _kept_out(store, ginga[0]), "the other title's: still removed"
+
+
+def test_d_a_removed_audiobook_renamed_since_comes_back_by_its_files_sizes(split):
+    """Renamed after its Remove (kept out by its files' sizes, S6): the folder picked for the book still lets it back,
+    and the Remove's keep-out of its old name goes with it."""
+    _reading, book = _joined(split)
+    folder, m4b, _audio = _removed_with_its_copy(split)
+    renamed = os.path.join(folder, "カラフル 朗読.m4b")
+    os.rename(m4b, renamed)
+    with split["steps"]._open("ja") as store:
+        root = _source_of(store, folder)
+        _look(store, "ja", root, full=True)
+        assert all(os.path.abspath(renamed) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+        _look(store, "ja", root, full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, renamed)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert not _kept_out(store, m4b), "the old name's keep-out gone too"
+
+
+def test_d_a_new_audiobook_in_the_folder_joins_and_the_removed_one_stays_removed(split):
+    """Review r1 S3: he removed one reading and put another (unabridged, the same title) in that folder — the new one
+    joins the book; the removed one never outranks it, nor ties it out, and stays removed."""
+    _reading, book = _joined(split)
+    folder, m4b, _audio = _removed_with_its_copy(split)
+    new = _m4b(os.path.join(folder, f"{TITLE} 完全版.m4b"), audiobooks.MIN_SECONDS + 900,
+               tags={"album": TITLE, "title": "完全版"})          # (other bytes: never the removed one's sizes)
+    _settle(new)
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, new)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert all(os.path.abspath(m4b) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+        assert _kept_out(store, m4b)
+
+
+def test_d_a_copy_of_the_same_bytes_removed_elsewhere_stays_removed(split):
+    """Review r2 S1/S2: the same `.m4b` also sat in Downloads under another name, removed on its own. Picking the
+    book's folder brings back the one there (its own Remove's row only), joined to the book; the Downloads copy keeps
+    its keep-out and its Removed line, and a plain look of Downloads still leaves it out."""
+    import shutil
+    _reading, book = _joined(split)
+    folder, m4b, audio = _copy_paired(split)
+    dl = _drive("downloads")
+    copy = shutil.copy2(m4b, os.path.join(dl, "colorful.m4b"))
+    with split["steps"]._open("ja") as store:
+        dl_root = store.add_source(dl)
+        _look(store, "ja", dl_root, full=True)
+        theirs = _audio_of(store, copy)["id"]
+        assert theirs != audio, "two items: the same bytes under two names"
+        store.remove([theirs])                                          # its own Remove
+        store.remove([i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))])
+        trash = dict(store.conn.execute("SELECT item_id, id FROM trash"))
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, m4b)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert _kept_out(store, copy), "the Downloads copy: still removed"
+        assert store.trash_rows([trash[theirs]])[0]["restored_at"] is None, "its Removed line kept"
+        assert store.trash_rows([trash[audio]])[0]["restored_at"], "the book's own: put back"
+        _look(store, "ja", dl_root, full=True)
+        assert all(os.path.abspath(copy) not in _record(store, i["id"])["files"] for i in _audio_items(store))
+
+
+@pytest.mark.parametrize("book_first", (False, True))
+def test_d_renamed_since_with_a_copy_of_its_bytes_removed_elsewhere_takes_its_own_row_only(split, book_first):
+    """Review r2 S2 / r3 S1: as above, and the book's `.m4b` renamed since its Remove — found by its files' sizes,
+    which the Downloads copy's row carries too: only the book's own Remove (its file gone from disk; the copy's still
+    there) is put back, whichever was removed first."""
+    import shutil
+    _reading, book = _joined(split)
+    folder, m4b, audio = _copy_paired(split)
+    dl = _drive("downloads")
+    copy = shutil.copy2(m4b, os.path.join(dl, "colorful.m4b"))
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", store.add_source(dl), full=True)
+        theirs = _audio_of(store, copy)["id"]
+        mine = [i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (_work(store, audio),))]
+        for ids in ([mine, [theirs]] if book_first else [[theirs], mine]):
+            store.remove(ids)
+        trash = dict(store.conn.execute("SELECT item_id, id FROM trash"))
+    renamed = os.path.join(folder, "カラフル 朗読.m4b")
+    os.rename(m4b, renamed)
+    with split["steps"]._open("ja") as store:
+        _look(store, "ja", _source_of(store, folder), full=True, book={"folder": folder, "epub": book, "title": TITLE})
+        assert _record(store, _audio_of(store, renamed)["id"])["book"]["epub"] == os.path.abspath(book)
+        assert store.trash_rows([trash[theirs]])[0]["restored_at"] is None and _kept_out(store, copy)
+        assert store.trash_rows([trash[audio]])[0]["restored_at"]

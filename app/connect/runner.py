@@ -1282,7 +1282,8 @@ def _add_audio_offers(steps, ledger, lang):
         return
     for epub, item, sha in pairs:
         rec = _json_or_none(_meta(ledger, f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"))
-        if rec is not None and rec.get("stage") != ADD_AUDIO_WAITING:
+        due = _earlier_due(rec)
+        if rec is not None and rec.get("stage") != ADD_AUDIO_WAITING and not due:
             continue
         try:
             lined = lined_up(lang, epub)
@@ -1292,6 +1293,8 @@ def _add_audio_offers(steps, ledger, lang):
             continue
         if lined:
             _add_audio_offer(steps, ledger, lang, epub, lined.get("item_id", item))
+        elif due:                               # (asked again only once lined up: never given up for it)
+            continue
         elif able and rec is None:
             _add_audio_offer(steps, ledger, lang, epub, item, lined=False)
         elif not able and rec is not None:      # waiting, and it can't be lined up any more (r5 S2): the line goes
@@ -1325,7 +1328,14 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
     title, notes, sha = got
     key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
     rec = _json_or_none(_meta(ledger, key))
-    if rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
+    if lined and _earlier_due(rec):             # Kura-AB5 (#431): asked with no card, before an earlier copy's counted:
+        early = getattr(steps, "earlier_before", None)      # asked once more, for that copy's cards alone (those
+        try:                                    # mined since its line-up carry the narrator)
+            notes = early(lang, epub) if early is not None else []
+        except Exception as e:
+            log.info("Connect: couldn't count a book's earlier copy's cards (%s): %s", lang, e)
+            return
+    elif rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
         return
     # (a waiting record's list is the cards so far — each made as the book, text-only: r5 S3 — frozen once lined up:
     # the cards made since carry the narrator)
@@ -1333,9 +1343,17 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
     with ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
             {"epub": os.path.abspath(epub), "item": item, "title": title, "notes": notes,
-             "stage": ADD_AUDIO_LINED if lined else ADD_AUDIO_WAITING}, sort_keys=True, ensure_ascii=False)))
+             "stage": ADD_AUDIO_LINED if lined else ADD_AUDIO_WAITING, "earlier": True},
+            sort_keys=True, ensure_ascii=False)))
         if notes and ledger.need(lang, ADD_AUDIO_NEED, say, item_id=item, standing=True):
             log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
+
+
+def _earlier_due(rec):
+    """Kura-AB5 (#431): a book's record asked, lined up, with no card — written before an earlier copy's cards counted
+    (`earlier` unset): asked once more for those."""
+    return isinstance(rec, dict) and rec.get("stage") == ADD_AUDIO_LINED and rec.get("notes") == [] and \
+        not rec.get("earlier")
 
 
 def book_key(epub, sha256=None):
@@ -3624,6 +3642,13 @@ class Steps:
             book = library.book_of(store, epub)
         return ((book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], sorted(notes),
                 (book or {}).get("sha256"))
+
+    def earlier_before(self, lang, epub):
+        """Kura-AB5 (#431): the notes Connect made from an earlier copy of the book, removed
+        (`add_audio.earlier_copies`) -> [ids] — the store read only."""
+        from app.connect import add_audio
+        with self._open(lang) as store:
+            return sorted(add_audio.made_notes(store, add_audio.earlier_copies(store, epub)))
 
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its

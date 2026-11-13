@@ -10162,6 +10162,30 @@ def _store_let_origins_back(self, keys):
                           chunk)
 
 
+def _store_let_audiobook_back(self, key, sha256, out):
+    """Inside `take_in` (Kura-AB5, based on the diagnosis in #429 by Mattias): an audiobook removed earlier whose
+    folder the learner picked for its book (`sources._Look._meant`) — the Remove's exclusions of it go (its path `key`,
+    and its files' sizes `sha256` for one found moved), as Put back's do, and the trash rows of that Remove which held
+    it are marked put back: it is in again, so the Removed list never offers a second. Nothing on disk is touched; `out`
+    (the batch's kept-out sets) forgets them. -> how many exclusions went."""
+    rows = [(i, p) for i, p, note in self.conn.execute("SELECT id, pattern, note FROM exclusions WHERE kind = ?",
+                                                       ("removed",))
+            if p == key[len(SOURCE_KEY):] or (sha256 and (_json_dict(note) or {}).get("sha256") == sha256)]
+    if not rows:
+        return 0
+    self.conn.executemany("DELETE FROM exclusions WHERE id = ?", [(i,) for i, _p in rows])
+    gone = {SOURCE_KEY + p for _i, p in rows}
+    out["patterns"].difference_update(p for _i, p in rows)
+    if sha256:
+        out["sha256"].discard(sha256)
+    now = _now()
+    for trash_id, raw in self.conn.execute("SELECT id, item_state FROM trash WHERE restored_at IS NULL").fetchall():
+        held = (_json_dict(raw) or {}).get("pairings") or ()
+        if any(isinstance(k, (list, tuple)) and k and k[0] in gone for k in held):
+            self.conn.execute("UPDATE trash SET restored_at = ? WHERE id = ?", (now, trash_id))
+    return len(rows)
+
+
 # --- K2 (alpha 4, Mattias's note 6): the Removed list — his own Removes, to put back ------------------------------- #
 REMOVED_DAYS = TRASH_DAYS        # a removed file's days in the trash (`path_utils`' purge: one number)
 
@@ -10679,6 +10703,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
+            if f.get("let_back") and f.get("audiobook"):     # Kura-AB5 (#429): its folder picked for its book
+                self._let_audiobook_back(key, f.get("sha256"), out)
             if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):
                 change.skipped["excluded"].append(origin)
@@ -12851,6 +12877,7 @@ Store.update_origins = _store_update_origins
 Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store._let_audiobook_back = _store_let_audiobook_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
 Store.rename_removed = _store_rename_removed

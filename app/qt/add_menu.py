@@ -263,10 +263,12 @@ class Adder(QObject):
                        name=name, why=info[0])), win=self.shell)
 
     # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #
-    def read_folder(self, folder, first=False):
+    def read_folder(self, folder, first=False, book=None):
         """`folder` becomes a source: `add_source` and its first look, on the looks' worker; what it found (or why it
         can't be read there) said in the bar, `given` once it landed. `first`: setup's own first scan (Current, SRC-1).
-        Without the looks, copied in (`add_folder`). -> True when it was asked."""
+        `book` (Kura-AB4: {epub, title}): the folder is that book's audiobook (the book's *A folder on your computer…*)
+        — its look pairs it at its take-in; what became of it said after (`_audiobooks_said`). Without the looks,
+        copied in (`add_folder`). -> True when it was asked."""
         if not folder:
             return False
         looks = getattr(self.shell, "looks", None)
@@ -281,10 +283,11 @@ class Adder(QObject):
         if p is None:                                                                    # until its look answers
             return True                                   # its look asked already, still running: asked once
         relay = bridge.Relay(self)
-        relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p))
+        relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p, book, quiet=first))
         busy = looks.busy() if hasattr(looks, "busy") else False
         try:
-            asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
+            asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first,
+                                   **({"book": book} if book else {})))
         except Exception:
             self._read_ended(p)
             raise
@@ -298,7 +301,7 @@ class Adder(QObject):
         if p is not None and p.live():
             qpress.end(p, self.shell, failed=failed)
 
-    def _read(self, name, answer, relay, folder=None, p=None):
+    def _read(self, name, answer, relay, folder=None, p=None, book=None, quiet=False):
         relay.deleteLater()
         self._read_ended(p, failed=bool(answer.get("refused")))
         refused = answer.get("refused")
@@ -329,6 +332,79 @@ class Adder(QObject):
             windows.say_in_bar(self.shell, text)
         if not refused:
             self.given.emit(text)
+            if result.get("reachable", True) and not answer.get("later") and not quiet:     # (setup: never)
+                self._audiobooks_said(answer.get("audiobooks"), name, book)
+
+    def _audiobooks_said(self, said, name, book=None):
+        """Kura-AB4 (PROVISIONAL words): what the read made of the folder's audiobooks (`source_looks._audiobooks_read`).
+        For a book's own folder pick (`book`): joined at its take-in → *The audiobook joins 「…」*; one already in your
+        library and still without a book (read before, or a watched folder's look first) → picked for it, as *Pick its
+        audiobook…* picks (its toast's Undo); several → pick it from the list; none → said. + Add's own folder, an
+        audiobook in it whose names are like a book's (H-8's question open) → *「…」's audiobook?* · *Pair it* (the
+        question's *Yes*, `answer_audiobook`). -> what was done ("joined", "picked", "several", "none", "offered") or
+        None."""
+        said = said or {}
+        toasts = getattr(self.shell, "toasts", None)
+        moves = self._moves()
+        if book:
+            joined = said.get("joined") or ()
+            if joined:
+                self._kick()
+                if toasts is not None:
+                    toasts.show(strings.NEEDS_PICKED.format(book=book["title"]),
+                                undo=self._separate(joined[0], book["title"]) if moves is not None and
+                                joined[0].get("key") else None)
+                return "joined"
+            free = list(said.get("alone") or ()) + [a["item_id"] for a in said.get("asks") or ()]
+            ny = getattr(self.shell, "needs_you", None)
+            if len(free) == 1 and ny is not None:
+                ny._pick_audiobook(None, free[0], book["epub"], book["title"])
+                return "picked"
+            line = strings.NEEDS_AUDIOBOOK_SEVERAL_IN.format(n=len(free), name=name, book=book["title"]) if free \
+                else strings.NEEDS_AUDIOBOOK_NONE_IN.format(name=name, book=book["title"])
+            say = getattr(self.shell, "say", None)
+            (say or (lambda t: windows.say_in_bar(self.shell, t)))(line)
+            return "several" if free else "none"
+        asks = said.get("asks") or ()
+        if len(asks) != 1 or toasts is None or moves is None or not asks[0].get("book"):
+            return None
+        ask = asks[0]
+        label, tip = strings.ADD_AUDIOBOOK_PAIR_IT
+
+        def pair():
+            from app.qt import drag
+            writer = moves.writer
+            ticket = drag.Ticket(strings.NEEDS_PICKED.format(book=ask["book"]), (), (ask["item_id"],))
+            if moves._give(ticket, lambda t: writer.answer_audiobook(ask["item_id"], True, key=ask["key"], label=t),
+                           toast=False) is not None:
+                say = getattr(self.shell, "say", None)
+                (say or (lambda t: windows.say_in_bar(self.shell, t)))(strings.NEEDS_PICKED.format(book=ask["book"]))
+                self._kick()
+        toasts.show(strings.ADD_AUDIOBOOK_PAIR.format(book=ask["book"]),
+                    buttons=[(label, tip.format(book=ask["book"]), pair)])
+        return "offered"
+
+    def _separate(self, joined, title):
+        """The joined toast's way back: *Separate them* (`audiobook_separate`, journalled, its own toast's Undo) — the
+        audiobook its own title again, and the pair never weighed again."""
+        def back():
+            from app.qt import drag
+            moves = self._moves()
+            if moves is None:
+                return
+            writer = moves.writer
+            ticket = drag.Ticket(strings.NEEDS_SEPARATED, (), (joined["item_id"],))
+            moves._give(ticket, lambda t: writer.audiobook_separate(joined["item_id"], joined["key"], label=t))
+        return back
+
+    def _kick(self):
+        """Connect told at once (a book now with its audiobook lines up), as *Needs you*'s pick tells it."""
+        ny = getattr(self.shell, "needs_you", None)
+        kick = getattr(ny, "connect_calls", {}).get("kick") if ny is not None else None
+        if kick is None:
+            return
+        read = getattr(ny, "read_settings", None) or (lambda: {})
+        bridge.run_in_worker(lambda: kick(read() or {}))
 
     def paste(self):
         if self.card is not None and _alive(self.card) and self.card.isVisible():

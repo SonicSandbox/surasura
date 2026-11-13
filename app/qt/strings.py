@@ -1568,10 +1568,17 @@ NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} ke
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"
 NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
-NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders: the audiobook joins the book by itself when its "
-                              "name says so, else pick it here")
+NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the audiobook in it joins this book "
+                              "(of several, the one named like it)")         # Kura-AB4 (PROVISIONAL)
 NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
-NEEDS_AUDIOBOOK_READING = "Reading {name}: once its audiobook is in your library, it joins the book or is listed here"
+NEEDS_AUDIOBOOK_READING = "Reading {name} for 「{book}」's audiobook…"
+# Kura-AB4 (PROVISIONAL): what the folder picked for a book's audiobook held, once it was read
+NEEDS_AUDIOBOOK_NONE_IN = "No audiobook in {name} yet: once one is there, it joins 「{book}」"
+NEEDS_AUDIOBOOK_SEVERAL_IN = ("{n} audiobooks in {name}: pick 「{book}」's under Pick its audiobook… (or the book's "
+                              "⋯ → Its audiobook…)")
+# Kura-AB4 (PROVISIONAL): + Add → A folder…, an audiobook in it whose names are like a book's (H-8's question open)
+ADD_AUDIOBOOK_PAIR = "Is this 「{book}」's audiobook?"
+ADD_AUDIOBOOK_PAIR_IT = ("Pair it", "The audiobook joins 「{book}」: one entry, the book's chapters and its audio")
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"

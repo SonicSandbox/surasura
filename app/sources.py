@@ -182,7 +182,8 @@ def local_or_network(path):
     return "local" if kind in (2, 3, 6) else "network"   # REMOVABLE · FIXED · RAMDISK
 
 
-def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None, copying=None):
+def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None, copying=None,
+         book=None):
     """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, short, waiting,
     recopied, restored, paired, switched, switched_works, stopped, busy, ids} (`short`: of those skipped, the loose
     texts too short to be a book, T2-B4; `paired`: known texts whose video was found and recorded on them, `_late` —
@@ -194,6 +195,9 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
     rules `take_in` applies to an arrival. A source not being read raises NotASource. `copying(done, total)` (K5: a
     25,000-book first look said nothing for hours once its listing was done) every PROGRESS_S while the new files and
     books found are checked, copied and taken in: how many of them are done.
+    `book` (Kura-AB4: {folder, epub}): the learner picked `folder` as that book's audiobook (the book's own *A folder
+    on your computer…*) — the audiobook this look finds there joins the book at its take-in, whatever its names say
+    (`_Look._meant`), never New arrivals.
     Another look at the same store running → {"busy": True}, nothing done."""
     key = _store_key(store)
     with _GUARD:
@@ -212,7 +216,7 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
                 _EMPTIED.add(key)               # (a check that failed — the store busy — is tried at the next look)
             except Exception as e:              # (never in the look's way: the card just isn't asked)
                 print(f"Sources: the library folder couldn't be checked: {e!r}")
-        return _Look(store, language, root, first, progress, stop, full, rules, copying).run()
+        return _Look(store, language, root, first, progress, stop, full, rules, copying, book).run()
     finally:
         with _GUARD:
             _RUNNING.discard(key)
@@ -1170,8 +1174,9 @@ def notes(language, store):
 
 
 class _Look:
-    def __init__(self, store, language, root, first, progress, stop, full, rules, copying=None):
+    def __init__(self, store, language, root, first, progress, stop, full, rules, copying=None, book=None):
         self.store, self.language, self.root_id = store, language, root
+        self.book = book             # Kura-AB4: {folder, epub} — the folder the learner picked as that book's audiobook
         self.first, self.progress, self.stop, self.rules = first, progress, stop, rules
         self.copying, self.copy_said, self.copied, self.to_copy = copying, 0.0, 0, 0   # K5: the take's progress
         self.full = bool(full or first)
@@ -1614,8 +1619,10 @@ class _Look:
                 f = self._audio_found(ab, clean_name, item_id=same, pair=old)
                 if f is not None:
                     batch.append(f)
+        meant = self._meant(fresh, held_in)
         for ab in fresh:
-            f = self._audio_found(ab, clean_name, pair=audiobooks.decide(ab, books, answers) if books else None)
+            f = self._audio_found(ab, clean_name, pair=meant.get(id(ab)) or
+                                  (audiobooks.decide(ab, books, answers) if books else None))
             if f is None:
                 continue
             if f.get("rel") and ls.path_key(f["rel"]) in heard_at:
@@ -1648,6 +1655,45 @@ class _Look:
         if stale and self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1":
             self.store.audiobooks_weighed()
         self._transcripts()
+
+    def _meant(self, fresh, held_in=()):
+        """Kura-AB4 (Mattias, 3.0.6: the book asked for its audiobook, he picked its folder, and it sat in New arrivals
+        as a title of its own — its names weren't the book's): the audiobook the learner picked `book`'s folder for
+        joins that book at its take-in, paired as *Find its book…*'s pick pairs it (`Store.picked_for`: the book's
+        title, after its last part) — the one new audiobook found in that folder; when the folder holds several (new,
+        or in the library already with no book: `held_in`), the new one whose titles are the most like the book's,
+        its volume never another's (none alike, a tie, or one already in: none — each is then listed under *Pick its
+        audiobook…*; one already in is the window's pick, with Undo). -> {id(audiobook): {"book": …}}; {} without a
+        book, or once the book has no part in the library."""
+        if not self.book or not fresh:
+            return {}
+        folder = os.path.normpath(self.book["folder"])
+        if audiobooks.disc_number(os.path.basename(folder)) is not None:
+            folder = os.path.dirname(folder)                 # a disc folder picked: its title's audiobook (`find`'s)
+        top = ls.path_key(folder).rstrip("/") + "/"
+
+        def under(files):
+            return any(ls.path_key(os.path.abspath(f)).startswith(top) for f in files or ())
+        inside = [ab for ab in fresh if under(ab.files)]
+        others = [audiobooks.from_record(r["audiobook"]) for r in held_in
+                  if not isinstance(r["audiobook"].get("book"), dict) and under(r["audiobook"].get("files"))]
+        if len(inside) + len(others) > 1:
+            epub = self.book["epub"]
+            forms, vols = audiobooks._forms([self.book.get("title") or "", os.path.splitext(os.path.basename(epub))[0]])
+
+            def level(ab):
+                a_forms, a_vols = audiobooks._forms(list(ab.titles) + [ab.title])
+                if vols and a_vols and not vols & a_vols:
+                    return 0                                 # another volume: never this book's
+                return audiobooks._title_level(forms, a_forms)
+            levels = [(level(ab), ab, True) for ab in inside] + [(level(ab), ab, False) for ab in others]
+            best = max(lv for lv, _ab, _new in levels)
+            top_ones = [(ab, new) for lv, ab, new in levels if lv == best] if best else []
+            inside = [top_ones[0][0]] if len(top_ones) == 1 and top_ones[0][1] else []
+        if len(inside) != 1:
+            return {}
+        book = self.store.picked_for(self.book["epub"], audiobooks.record(inside[0]))
+        return {id(inside[0]): {"book": book}} if book is not None else {}
 
     def _found_in(self, folder):
         """(the audiobooks of `folder`, an audio file there can't be read yet) — `audiobooks.find` once a look (the walk

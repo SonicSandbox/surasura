@@ -1599,7 +1599,7 @@ class NeedsYou(QObject):
             m.addSeparator()
         act = QAction(strings.NEEDS_AUDIOBOOK_FOLDER, m)
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
-        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"]))
+        act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"], got["epub"]))
         m.addAction(act)
         self.last_menu = m
         control = self._control("pick_audiobook", entry)
@@ -1616,16 +1616,20 @@ class NeedsYou(QObject):
         self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
                    lambda t: writer.pick_audiobook(audio_id, epub, label=t), told=told)
 
-    def _audiobook_folder(self, title):
+    def _audiobook_folder(self, title, epub=None):
         """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,
-        `Adder.read_folder`); its look pairs the audiobook by itself when it is sure, else asks, else it is listed
-        here for the pick."""
+        `Adder.read_folder`) and the audiobook in it is this book's (Kura-AB4, Mattias 3.0.6: its look paired it only
+        when its names said so — else it sat in New arrivals): its look pairs the one it finds there with `epub`'s book
+        at its take-in, whatever its names (`sources.scan`'s `book`); one already in your library is picked for it
+        (`_pick_audiobook`, its toast's Undo) — the read's answer says which (`Adder._audiobooks_said`)."""
         adder = getattr(self.win, "adder", None)
         if adder is None:
             return
         folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), "")
-        if folder and adder.read_folder(folder):
-            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
+        book = {"epub": epub, "title": title} if epub else None
+        if folder and adder.read_folder(folder, book=book):
+            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder)),
+                                                             book=title))
 
     def _do_no_audiobook(self, entry, _line):
         answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),

@@ -884,7 +884,8 @@ class ItemActions(QObject):
                                                                           got["title"])))
         if got.get("audiobooks"):
             m.addSeparator()
-        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FOLDER, lambda: ny._audiobook_folder(got["title"]))
+        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FOLDER, lambda: ny._audiobook_folder(got["title"],
+                                                                                                 got["epub"]))
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         m.addAction(act)
         self.audiobook_list = self.last_menu = m

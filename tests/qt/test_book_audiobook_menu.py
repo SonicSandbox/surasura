@@ -38,7 +38,8 @@ def book_menu(qapp, monkeypatch):
     win.items.read_audiobook = read
     monkeypatch.setattr(win.needs_you, "_pick_audiobook", lambda entry, audio, epub, title: picked.append(
         ("pick", entry, audio, epub, title)))
-    monkeypatch.setattr(win.needs_you, "_audiobook_folder", lambda title: picked.append(("folder", title)))
+    monkeypatch.setattr(win.needs_you, "_audiobook_folder", lambda title, epub=None: picked.append(
+        ("folder", title, epub)))
     row = rows_of(win)[4]
     from app.qt import item_menu
     monkeypatch.setattr(item_menu, "book_row", lambda r: r is row)      # (the seed's rows are videos: this, a book's)
@@ -101,7 +102,7 @@ def test_a_folder_on_your_computer_is_needs_yous_own_door(book_menu):
     assert wait_until(lambda: getattr(win.items, "audiobook_list", None) is not None and
                       win.items.audiobook_list.actions(), 5)
     next(a for a in win.items.audiobook_list.actions() if a.text() == strings.NEEDS_AUDIOBOOK_FOLDER).trigger()
-    assert picked == [("folder", TITLE)]
+    assert picked == [("folder", TITLE, JOINED)]               # Kura-AB4: the book named, so its audiobook joins it
     win.items.audiobook_list.hide()
 
 

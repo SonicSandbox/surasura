@@ -73,6 +73,36 @@ from app.services.automation import Worker
 AGAIN_S = 1.0                   # a watch report's look: this long after the scan's half-written wait (SETTLE_S)
 
 
+MEANT_S = 3600                                       # Kura-AB4: how long a book's word on a folder waits for its audio
+
+
+def _audiobooks_read(store, folder, book=None):
+    """Kura-AB4: what became of the audiobooks under `folder` once it was read -> {"joined": [item ids paired with
+    `book`'s EPUB], "alone": [item ids with no book and no question open], "asks": [{item_id, key, book}: H-8's
+    question open about `book` (its title) — a title alike, not sure]} — the window's words: *The audiobook joins
+    「…」*; one already in alone, picked for the book (its pick, with Undo); the + Add's lead into the pairing
+    (*「…」's audiobook? · Pair it*). One read; never a write."""
+    from app import library_store as ls
+    top = ls.path_key(os.path.normpath(folder)).rstrip("/") + "/"
+    epub = ls.path_key(os.path.abspath(book["epub"])) if book and book.get("epub") else None
+    out = {"joined": [], "alone": [], "asks": []}       # joined: [{item_id, key}] (its *Separate them*'s key)
+    for r in store.audiobooks():
+        ab = r["audiobook"] or {}
+        if not any(ls.path_key(os.path.abspath(f)).startswith(top) for f in ab.get("files") or ()):
+            continue
+        paired, ask = ab.get("book"), ab.get("ask")
+        if isinstance(paired, dict):
+            if epub is not None and isinstance(paired.get("epub"), str) and \
+                    ls.path_key(os.path.abspath(paired["epub"])) == epub:
+                out["joined"].append({"item_id": r["item_id"], "key": paired.get("key")})
+        elif isinstance(ask, dict) and ask.get("key"):
+            out["asks"].append({"item_id": r["item_id"], "key": ask["key"], "book": ask.get("title") or "",
+                                "epub": ask.get("epub")})
+        else:
+            out["alone"].append(r["item_id"])
+    return out
+
+
 def _nothing(*_args):
     pass
 
@@ -183,6 +213,8 @@ class SourceLooks:
         self._dirty = set()                           # roots a watch reported while the window was behind
         self._again_at = {}                           # root -> when its reports' look is due (B1 / S7: quiet, settled)
         self._stopping = set()                        # roots *Stop reading* was pressed on (a running look lets go: S6)
+        self._meant = {}                              # Kura-AB4: root -> (the book its folder's audiobook is, since):
+                                                      # kept until a look finds an audiobook there (`MEANT_S` at most)
         self._watches = {}                            # root id -> TreeWatch (local folders being read)
         self._wake = threading.Event()                # every watch's reports wake the one watch thread
         self._watcher = None
@@ -230,9 +262,12 @@ class SourceLooks:
         with self._lock:
             self._shown = bool(shown)
 
-    def add(self, path, then=None, first=False):
-        """*Read it where it is*: `then({"path", "root", "refused", "result"})` on the worker. -> False once closed."""
-        return self._worker.put(self._add, path, then or _nothing, first) if not self._closing.is_set() else False
+    def add(self, path, then=None, first=False, book=None):
+        """*Read it where it is*: `then({"path", "root", "refused", "result", "audiobooks"})` on the worker. `book`
+        (Kura-AB4: {epub, title}): `path` is that book's audiobook, the learner said (the book's *A folder on your
+        computer…*) — the look pairs the one it finds there at its take-in (`sources.scan`'s `book`). `audiobooks`
+        (`_audiobooks_read`): what became of the folder's audiobooks, for the window's words. -> False once closed."""
+        return self._worker.put(self._add, path, then or _nothing, first, book) if not self._closing.is_set() else False
 
     def find_new_folder(self, root_id, path, then=None, language=None):
         """T6, a gone folder's *Find its new folder...*: `then({"old", "path", "root", "refused", "result", "state",
@@ -561,15 +596,26 @@ class SourceLooks:
         with self._lock:
             return self._tracking or self._closing.is_set()
 
-    def _scan(self, store, row, full=False, first=False, progress=None, stop=None):
+    def _scan(self, store, row, full=False, first=False, progress=None, stop=None, book=None):
         path = row["path"]
+        with self._lock:
+            kept = self._meant.get(row["id"])
+            if kept is not None and self._clock() - kept[1] > MEANT_S:
+                self._meant.pop(row["id"], None)          # (never a later audiobook's, an hour on)
+                kept = None
+        book = book or (kept[0] if kept is not None else None)
         try:
             result = sources.scan(store, self.language, row["id"], first=first, full=full, rules=self._rules_now(),
                                   progress=progress, stop=lambda: self._closing.is_set() or row["id"] in self._stopping
-                                  or (stop is not None and bool(stop())))
+                                  or (stop is not None and bool(stop())), book=book)
         except Exception as e:                        # one folder's fault never stops the others
             print(f"Sources: {path} wasn't looked at: {e!r}")
             return None
+        if book is not None and not result.get("busy") and not result.get("stopped") and result.get("reachable"):
+            said = _audiobooks_read(store, book["folder"], book)
+            if any(said.values()):                        # an audiobook there now: the book's word is spent
+                with self._lock:
+                    self._meant.pop(row["id"], None)
         if not result.get("busy"):
             self._reachable[row["id"]] = bool(result.get("reachable"))
             self._gone[row["id"]] = not result.get("reachable") and bool(result.get("gone"))
@@ -587,9 +633,9 @@ class SourceLooks:
             return None
         return settings_manager.placing_rules(rules)
 
-    def _add(self, path, then, first):
+    def _add(self, path, then, first, book=None):
         answer = {"path": path, "root": None, "refused": None, "result": None, "arrivals": 0,
-                  "language": self.language}
+                  "language": self.language, "audiobooks": None}
         store = None
         try:
             store = self._store()
@@ -604,8 +650,12 @@ class SourceLooks:
                 else:
                     answer["root"] = root
                     row = next((r for r in store.sources(counts=False) if r["id"] == root), {"id": root, "path": path})
+                    meant = dict(book, folder=path) if book and book.get("epub") else None
+                    if meant is not None:                 # a look deferred, a file still arriving: the next look's too
+                        with self._lock:
+                            self._meant[root] = (meant, self._clock())
                     answer["result"] = self._scan(store, row, full=True, first=first, progress=lambda found, shows:
-                                                  self.on_progress(row["path"], found, shows))
+                                                  self.on_progress(row["path"], found, shows), book=meant)
                     if answer["result"] is None or answer["result"].get("busy"):
                         answer["later"] = True        # read from now on; its first look comes with the next one
                     for item_id in (answer["result"] or {}).get("ids") or ():
@@ -613,6 +663,8 @@ class SourceLooks:
                         if item is not None and item["tier"] == "arrivals":
                             answer["arrivals"] += 1      # D6: the shows never shown wait there
                     self._follow_watches(store.sources(counts=False))
+                    if not answer.get("later"):
+                        answer["audiobooks"] = _audiobooks_read(store, path, book)
         except Exception as e:
             answer["refused"] = str(e) or repr(e)
         then(answer)

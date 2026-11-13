@@ -13221,12 +13221,40 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user"):
     item after the book's last part, in its title) in ONE command whose Change (`audiobook_pick`) Undo takes back: the
     records as they were, the answer as it was, the item in its title and place again. -> the Change, or None (no such
     audiobook item, already paired, or the book has no part in the library)."""
-    from app import audiobooks
     joined = self.joined_book(epub)          # Kura-TX: a split book's joined `.txt` (its sidecar read before the lock)
     with self._command("audiobook_pick", by) as cmd:
         rows = self._audiobook_rows(item_id)
         if not rows or isinstance((rows[0][2].get("audiobook") or {}).get("book"), dict):
             return None
+        picked = self._picked_book(epub, rows[0][2]["audiobook"], joined)
+        if picked is None:
+            return None
+        book, placed = picked
+        key = book["key"]
+        change = self._change(cmd, "audiobook_pick")
+        self._before(change, list(self._rows([item_id]).values()))
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+        said = (_json_dict(row[0]) if row else None) or {}
+        change.audiobook = {"records": [(k, json.dumps(r, sort_keys=True, ensure_ascii=False)) for k, _i, r in rows],
+                            "answer": (key, said.get(key)), "item": item_id}
+        old = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+        moved = old != placed[0]
+        change.works = {"rows": [self._work_row(old)] if moved and old is not None else [],
+                        "items": [(item_id, old, placed[0])] if moved else [], "fields": [], "created": []}
+        if not self.pair_audiobook(item_id, book=book, answer=(key, True), by=by):
+            return None
+        return change
+
+
+def _store_picked_book(self, epub, rec, joined=None):
+    """The book a learner's pick pairs the audiobook `rec` (its record, `audiobooks.record`'s) with — `epub` (a book of
+    the library, by its EPUB's path; a split book's joined `.txt`: `joined`, `joined_book(epub)` read before) -> ({item,
+    epub, sha256, key, title, how "answered"[, parts]}: the records' `book`, its place `_audiobook_place`'s) or None (the
+    book has no part in the library; a split book's parts changed). One rule for *Find its book…*'s pick and the
+    book's own *A folder on your computer…* (Kura-AB4: its look pairs the folder's audiobook as the pick would). Read
+    only; inside a write, as it is."""
+    from app import audiobooks
+    with self._reading():
         if joined is not None:
             split = self.split_book(joined["parts"][0])
             if split is None or path_key(os.path.abspath(split["path"])) != path_key(os.path.abspath(epub)):
@@ -13244,24 +13272,17 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user"):
         if found is None or placed is None:
             return None
         title = self.conn.execute("SELECT title FROM works WHERE id = ?", (placed[0],)).fetchone()
-        key = audiobooks.answer_key(audiobooks.from_record(rows[0][2]["audiobook"]),
-                                    audiobooks.Book(id=placed[2], path=os.path.abspath(epub), sha256=sha))
-        book = {"item": placed[2], "epub": os.path.abspath(epub), "sha256": sha, "key": key,
-                "title": title[0] if title else (joined or {}).get("title") or
-                os.path.splitext(os.path.basename(epub))[0], "how": "answered", **parts}
-        change = self._change(cmd, "audiobook_pick")
-        self._before(change, list(self._rows([item_id]).values()))
-        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
-        said = (_json_dict(row[0]) if row else None) or {}
-        change.audiobook = {"records": [(k, json.dumps(r, sort_keys=True, ensure_ascii=False)) for k, _i, r in rows],
-                            "answer": (key, said.get(key)), "item": item_id}
-        old = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
-        moved = old != placed[0]
-        change.works = {"rows": [self._work_row(old)] if moved and old is not None else [],
-                        "items": [(item_id, old, placed[0])] if moved else [], "fields": [], "created": []}
-        if not self.pair_audiobook(item_id, book=book, answer=(key, True), by=by):
-            return None
-        return change
+    key = audiobooks.answer_key(audiobooks.from_record(rec),
+                                audiobooks.Book(id=placed[2], path=os.path.abspath(epub), sha256=sha))
+    return {"item": placed[2], "epub": os.path.abspath(epub), "sha256": sha, "key": key,
+            "title": title[0] if title else (joined or {}).get("title") or
+            os.path.splitext(os.path.basename(epub))[0], "how": "answered", **parts}, placed
+
+
+def _store_picked_for(self, epub, rec):
+    """Kura-AB4: `_picked_book`'s book alone (a look's, before its take-in: `sources._Look._meant`), or None."""
+    picked = self._picked_book(epub, rec, self.joined_book(epub))
+    return picked[0] if picked is not None else None
 
 
 def _store_audiobook_no_book(self, item_id):
@@ -13639,6 +13660,8 @@ Store.audiobook_finds = _store_audiobook_finds
 Store.audiobook_hovers = _store_audiobook_hovers
 Store.library_books = _store_library_books
 Store.pick_audiobook_book = _store_pick_audiobook_book
+Store._picked_book = _store_picked_book
+Store.picked_for = _store_picked_for
 Store.book_audiobooks = _store_book_audiobooks
 Store.split_book = _store_split_book
 Store.joined_book = _store_joined_book

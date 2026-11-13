@@ -166,17 +166,19 @@ def test_a_link_that_lands_as_nothing_is_never_checked(act, monkeypatch, tmp_pat
     assert rec.checks == []
 
 
-def test_connect_off_still_links_checks_nothing_and_says_why_nothing_is_made(act, monkeypatch, tmp_path):
-    """As *Link…* (it still works with Connect off): the link is the learner's to make; as *Check again* (which writes
-    nothing while Connect is off), nothing is checked — Connect's next start checks it, its pairing moved — and the
-    bar says the video is linked and why no cards come."""
+def test_connect_off_still_links_writes_its_check_and_says_why_nothing_is_made(act, monkeypatch, tmp_path):
+    """As *Link…* (it still works with Connect off): the link is the learner's to make; its check is still written
+    (only `check_again` clears the old video's re-time and no-answer marks and a dismissed entry; its kick starts
+    nothing while off) — Connect's next start checks the new video — and the bar says it is linked and why no cards
+    come."""
     _seed, win, writer = act(connect_off=feed.OFF_CONNECT)
     i, row = _not_timed_row(lst_of(win))
     ep = row.episodes[0]
     rec = _wired(win, monkeypatch, tmp_path)
     win.mine.change_video(ep.id, ep.label, ep.rel_path)
     assert wait_until(lambda: win.bar_line.full() == strings.CHANGE_VIDEO_LINKED_OFF.format(why=feed.OFF_CONNECT), 5)
-    assert _links(writer) == [("link_video", [ep.id], {"path": rec.picked})] and rec.checks == []
+    assert _links(writer) == [("link_video", [ep.id], {"path": rec.picked})]
+    assert rec.checks == [(win.language, [ep.id], True, True)],         "its check still written (round 2: the old video's re-time / no-answer marks and a dismissed entry cleared)"
 
 
 def test_pressed_again_while_it_looks_asks_nothing_more(act, monkeypatch, tmp_path):

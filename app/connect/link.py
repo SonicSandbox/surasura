@@ -13,17 +13,19 @@ a move.
   library, and a video hato has already paired — **hato's record is never written over** (the intent keeper's S6):
   the user's link lives beside hato's, never on its content key.
 
-A second link replaces the first for Connect (`library.pairing_of`: the newest pairing wins). `runner.Steps.video`
-finds the video by the record's `video_path` as it finds hato's; one renamed or moved since is *No video* again unless
+A second link replaces the first for Connect (`library.pairing_of`: the newest pairing wins); an earlier link of the
+same episode picked again is written again, stamped `linked_at` (Kantan-B5's *Change its video…*: V1, V2, V1).
+`runner.Steps.video` finds the video by the record's `video_path` as it finds hato's; one renamed or moved since is
+*No video* again unless
 the video index finds the same bytes. The caller (the window's writer, on its worker) kicks Connect after
 (`kick.kick`): the item's job waiting on *No video* is looked at again at the next run.
 
 Light (02 §5): the standard library, `videos` and the runner's names; the store is the caller's.
 """
+import datetime
 import hashlib
 import json
 import os
-import time
 
 PRODUCER = "surasura"
 
@@ -90,7 +92,7 @@ def link(store, item_id, video_path):
             # link, nothing written
             from app.connect import library
             if ((library.pairing_of(store, item_id) or {}).get("content_key")) != rec["content_key"]:
-                rec["linked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                rec["linked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds")
             else:
                 try:
                     stamp = (json.loads(row[1]) or {}).get("linked_at")

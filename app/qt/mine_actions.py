@@ -453,7 +453,7 @@ class MineActions(QObject):
         timing checked again at once (`check_job`: Connect's `check_again`, then kicked) and the bar says so. The
         video it has already: said, nothing written; refused by the store: the writer's note says why. Nothing on
         disk moves. `control` / `key`: the button pressed and its press (*Needs you*'s card); None: the bar's arc.
-        `keys`: the row its ticket marks while the store is busy (the ⋯'s). Connect off: linked, nothing checked —
+        `keys`: the row its ticket marks while the store is busy (the ⋯'s). Connect off: linked and its check written —
         Connect's next start checks it (its pairing moved: `runner._fit`'s re-pick). A link journalled while the store
         was busy and replayed at the next start has no ticket: the next start checks it the same way.
         -> the press, or None (pressed already, or no writer)."""
@@ -489,19 +489,18 @@ class MineActions(QObject):
     def _video_changed(self, event, ticket, lang, item_id):
         """The new link saved (never one refused, undone — its Undo pressed before it landed included — or let go):
         its timing checked again now, on a worker (`check_job`); the bar says so, and the feed and *Needs you* are
-        read again (the card goes). Connect off: nothing checked (as *Check again* writes nothing then), and the bar
+        read again (the card goes). Connect off: the check is still written (round 2 S1: `check_again` alone clears the
+        old video's re-time and no-answer marks and a dismissed entry; its kick starts nothing while off), and the bar
         says the video is linked and why nothing is made."""
         if event != "saved" or ticket.change is None or ticket.undo_asked or sip.isdeleted(self):
-            return
-        if self.off:
-            self.win.say(strings.CHANGE_VIDEO_LINKED_OFF.format(why=self.off))
             return
         get = self.win.services.settings.get
 
         def done(queued):
             if sip.isdeleted(self):
                 return
-            self.win.say(strings.NEEDS_CHECK_AGAIN if queued else strings.CHANGE_VIDEO_LINKED)
+            self.win.say(strings.CHANGE_VIDEO_LINKED_OFF.format(why=self.off) if self.off else
+                         strings.NEEDS_CHECK_AGAIN if queued else strings.CHANGE_VIDEO_LINKED)
             refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")

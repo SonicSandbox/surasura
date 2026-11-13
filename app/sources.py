@@ -1583,7 +1583,7 @@ class _Look:
             found += here
             if waits:                                        # listed again next look (a placeholder: until it is here)
                 self.unsettled.add(ls.path_key(folder))
-        fresh, grown = [], []
+        fresh, grown, back = [], [], []       # back: removed audiobooks a book's picked folder lets in again
         for ab in found:
             k = _key(ab.files[0])
             same = next((by_file[ls.path_key(os.path.abspath(f))][0] for f in ab.files
@@ -1596,9 +1596,16 @@ class _Look:
             if k in self.origins:
                 continue
             if k in self.ex_paths or audiobooks.sizes_key(ab) in self.ex_shas:    # Removed (S6), here or moved
-                self.out["skipped"] += 1
-                continue
+                if not self._in_book_folder(ab.files):
+                    self.out["skipped"] += 1
+                    continue
+                # Kura-AB4 (Mattias, 3.0.8 preview: the book asked for its audiobook, he picked its folder, and
+                # nothing happened — he had removed that audiobook with an earlier copy of the book): the learner
+                # picking this very folder for a book is his word to have its audiobook again; its Remove is let go
+                back.append((k, audiobooks.sizes_key(ab)))
             fresh.append(ab)
+        if back:
+            self._let_back(back)
         lone = [(r["item_id"], r["audiobook"]) for r in held_in       # a5-2: *It has no book* is never weighed again
                 if not r["audiobook"].get("book") and not r["audiobook"].get("no_book")] if stale else []
         wanted = fresh + [audiobooks.from_record(rec) for _i, rec in lone]
@@ -1656,6 +1663,31 @@ class _Look:
         if stale and self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1":
             self.store.audiobooks_weighed()
         self._transcripts()
+
+    def _in_book_folder(self, files):
+        """Kura-AB4: is an audiobook's first file inside the folder the learner picked for a book (`book["folder"]`,
+        or the folder above a disc folder picked, as `_meant` reads it)? None without a book's pick."""
+        if not self.book or not files:
+            return False
+        folder = os.path.normpath(self.book["folder"])
+        if audiobooks.disc_number(os.path.basename(folder)) is not None:
+            folder = os.path.dirname(folder)
+        top = ls.path_key(folder).rstrip("/") + "/"
+        return ls.path_key(os.path.abspath(files[0])).startswith(top)
+
+    def _let_back(self, back):
+        """Kura-AB4: the removed audiobooks in a book's picked folder let in again (`back`: [(origin key, sizes key)]):
+        their Remove's exclusions go (by path, and by bytes for one found moved: `Store.let_audiobooks_back`), and this
+        look no longer keeps them out. A store that can't write now: they stay out (logged), never the look's end."""
+        try:
+            self.store.let_audiobooks_back([k for k, _s in back], [s for _k, s in back if s])
+        except (ls.StoreError, OSError) as e:
+            log.info("A removed audiobook stays out for now (%s): %r", self.book.get("folder"), e)
+            return
+        for k, sha in back:
+            self.ex_paths.discard(k)
+            if sha:
+                self.ex_shas.discard(sha)
 
     def _meant(self, fresh, held_in=()):
         """Kura-AB4 (Mattias, 3.0.6: the book asked for its audiobook, he picked its folder, and it sat in New arrivals

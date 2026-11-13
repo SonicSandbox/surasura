@@ -10162,6 +10162,27 @@ def _store_let_origins_back(self, keys):
                           chunk)
 
 
+def _store_let_audiobooks_back(self, keys, shas=()):
+    """Kura-AB4 (a book's picked folder): removed audiobooks let in again — their exclusions of kind 'removed' by path
+    (`keys`: their origins' path keys) and by bytes (`shas`: `audiobooks.sizes_key`'s, for one found moved), in ONE
+    command. Their trash rows stay (the trash empties itself as ever); a new item is made at the take-in. -> how many
+    exclusions went."""
+    keys, shas = [str(k) for k in keys or ()], [str(s) for s in shas or () if s]
+    if not keys and not shas:
+        return 0
+    with self._command("audiobook_back", SOURCE_PRODUCER) as cmd:
+        n = 0
+        for chunk in _chunks(keys, 500):
+            n += self.conn.execute(f"DELETE FROM exclusions WHERE kind = 'removed' AND pattern IN "
+                                   f"({','.join('?' * len(chunk))})", chunk).rowcount
+        for sha in shas:
+            n += self.conn.execute("DELETE FROM exclusions WHERE kind = 'removed' AND json_valid(note) AND "
+                                   "json_extract(note, '$.sha256') = ?", (sha,)).rowcount
+        if n:
+            cmd.touch()
+        return n
+
+
 # --- K2 (alpha 4, Mattias's note 6): the Removed list — his own Removes, to put back ------------------------------- #
 REMOVED_DAYS = TRASH_DAYS        # a removed file's days in the trash (`path_utils`' purge: one number)
 
@@ -12851,6 +12872,7 @@ Store.update_origins = _store_update_origins
 Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store.let_audiobooks_back = _store_let_audiobooks_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
 Store.rename_removed = _store_rename_removed

@@ -1640,7 +1640,8 @@ class NeedsYou(QObject):
             if event == "saved" and kick is not None:
                 bridge.run_in_worker(lambda: kick(read_settings() or {}))
         self._give(strings.NEEDS_PICKED.format(book=title), (audio_id,),
-                   lambda t: writer.pick_audiobook(audio_id, epub, label=t, replace=replace), told=told)
+                   lambda t: writer.pick_audiobook(audio_id, epub, label=t, **({"replace": True} if replace else {})),
+                   told=told)
 
     def _audiobook_folder(self, title, item_id=None, epub=None):
         """*A folder on your computer…*: the folder picked becomes a library folder (+ Add's *read it where it is*,
@@ -1655,7 +1656,7 @@ class NeedsYou(QObject):
         done = None
         if folder and item_id is not None and epub:
             done = lambda _answer: self._folder_audiobook(folder, item_id, epub, title)    # noqa: E731
-        if folder and adder.read_folder(folder, done=done):
+        if folder and adder.read_folder(folder, **({"done": done} if done is not None else {})):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
 
     def _folder_audiobook(self, folder, item_id, epub, title):

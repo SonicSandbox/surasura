@@ -70,7 +70,7 @@ def trash_heard(shell, change):
     if tray is not None and looks is not None and tray.kept_out[0] and tray.giving is None:
         looks.listing()                    # alpha 4: New arrivals' kept-out foot as the trash stands now (a Put back or
     from app.qt import settings_sources    # an Undo here; never left offering a Remove already put back, review)
-    for name in (WINDOW, settings_sources.WINDOW):
+    for name in (WINDOW, settings_sources.WINDOW, "extract"):      # (Kantan-B4: Extract's offer)
         heard = getattr(windows.opened(shell, name), "trash_heard", None)
         if heard is not None:
             heard()

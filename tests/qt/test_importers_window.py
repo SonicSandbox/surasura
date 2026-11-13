@@ -1168,3 +1168,40 @@ def test_B4_r1_a_purged_removed_title_offers_add_as_new_alone(main, runs, tmp_pa
     assert wait_until(lambda: w.new_door.isVisibleTo(w), 10)
     assert not w.back_door.isVisibleTo(w)
     assert w.status.text() == strings.EXTRACT_REMOVED_GONE.format(name="消滅世界")
+
+
+
+def test_B4_r2_add_as_new_follows_extracts_own_gate(main, runs, tmp_path, monkeypatch):
+    """r2 S-2: what greys Extract greys Add as new (here: busy with another child)."""
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.begin_write()
+    w.refresh()
+    assert not w.go.isEnabled() and not w.new_door.isEnabled()
+    w._add_new()
+    assert runs.calls == []
+    w.end_write()
+    w.refresh()
+    assert w.new_door.isEnabled()
+
+
+def test_B4_r2_another_file_typed_since_the_offer_is_checked_again(main, runs, tmp_path):
+    """r2 N-2: the path field edited without leaving it: Add as new asks the check again, never extracts it on the
+    first file's answer."""
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    w.path.setText(_text(tmp_path))                     # (no editingFinished: the field kept the focus)
+    w.new_door.click()
+    assert runs.calls == [] or "--as-new" not in runs.calls[-1].argv
+
+
+def test_B4_r2_the_trash_moving_elsewhere_takes_the_offer_away(main, runs, tmp_path):
+    """r2 N-3: put back from the Removed list (or a Remove's Undo) while the offer shows: it goes, with its line."""
+    from app.qt import removed
+    src, _ids = _removed_epub(tmp_path)
+    w = importers.open_extract(main)
+    _offered(w, src)
+    removed.trash_heard(main, SimpleNamespace(trash_ids=[1], restored=[]))
+    assert w.offer is None and not w.back_door.isVisibleTo(w) and w.status.text() == ""

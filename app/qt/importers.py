@@ -756,7 +756,7 @@ class ExtractWindow(ToolWindow):
         self.sample.setVisible(deck and self.deck is not None)
         self.go.setEnabled(importers_view.can_extract(path, self.name.text(), self.field.currentText(),
                                                       self.understand.isChecked(), self.busy(), self.deck))
-        self.new_door.setEnabled(not self.busy())
+        self.new_door.setEnabled(self.go.isEnabled())     # Extract's own gate (review r2 S-2)
 
     def options(self):
         """The split as the child takes it: (method, value, parts — 0 when not grouping)."""
@@ -866,19 +866,29 @@ class ExtractWindow(ToolWindow):
     def _add_new(self):
         """*Add as new*: the child as Extract's own, with `--as-new` when the removed title holds the name (it gives
         the name up in the trash first: `extract.free_name`)."""
-        if self.offer is None or self.busy():
+        if self.offer is None or not self.go.isEnabled():
             return
         answer, asked = self.offer
         self._offer(None)
         job = self.job()                                  # the options as they are now (review r1 #5)
         if job["language"] != asked["language"]:
             return                                        # (another library now: the check's answer isn't its)
+        if job["path"] != asked["path"]:                  # another file typed since (review r2 N-2): asked again
+            self.check()
+            return
         if not importers_view.is_deck(job["path"]):
             fault = extract.check_options(job["method"], job["value"], bool(job["parts"]), job["parts"] or None)
             if fault:
                 self.say(strings.EXTRACT_FAULTS[fault])
                 return
         self.start(answer.name, job, as_new=answer.taken)
+
+    def trash_heard(self):
+        """The trash moved (`removed.trash_heard`: a Put back, a Remove or its Undo anywhere): an offer showing is
+        stale — taken away, its line with it (review r2 N-3)."""
+        if self.offer is not None:
+            self._offer(None)
+            self.say("")
 
     def language_changed(self, language):
         """A language switch: the open offer was the other library's (review r1 #5)."""

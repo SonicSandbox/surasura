@@ -970,3 +970,54 @@ def test_B4_a_title_the_learner_renamed_still_comes_back_apart(tmp_path):
         store.close()
     assert new and old_work not in new
     assert title == "Vanishing World" and "消滅世界" not in json.loads(titles)
+
+
+
+# --- Kantan-B4, review round 2 ------------------------------------------------------------------------------------ #
+@pytest.mark.parametrize("why", ["skip", "edition"])
+def test_B4_r2_rows_that_arent_his_remove_are_never_freed_with_nothing_named(tmp_path, why):
+    """r2 S-1: a skipped folder's or a book part's trash rows are out of the Removed list but not purged — the name is
+    never freed for them (nor called a title he removed)."""
+    _store_library("ja")
+    src, trash_ids, _old = _removed_book(tmp_path, "ja")
+    store = _open("ja")
+    try:
+        with store._writing():
+            for r in store.trash_rows(trash_ids):
+                state = json.loads(r["item_state"])
+                state["why"] = why
+                store.conn.execute("UPDATE trash SET item_state = ? WHERE id = ?", (json.dumps(state), r["id"]))
+        assert store.removed() == []
+    finally:
+        store.close()
+    answer = extract.check_name("消滅世界", "ja", src)
+    assert answer.taken and answer.removed is None and not answer.free
+
+
+def test_B4_r2_a_trashed_file_of_that_very_name_is_never_freed(tmp_path):
+    """r2 N-4: a removed loose file at `Library/<name>` (exactly the name): the name stays taken, never renamed."""
+    data_dir, _uf = _store_library("ja")
+    src, _ids, _old = _removed_book(tmp_path, "ja")
+    store = _open("ja")
+    try:
+        with store._writing():
+            r = store.trash_rows()[0]
+            store.conn.execute("INSERT INTO trash (item_id, root_id, rel_path, tier, entry, item_state, trashed_path, "
+                               "removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                               (99999, r["root_id"], f"{ls.CONTENT_FOLDER}/消滅世界", "now", r["entry"],
+                                r["item_state"], None, r["removed_at"]))
+    finally:
+        store.close()
+    assert not extract.check_name("消滅世界", "ja", src).free
+
+
+def test_B4_r2_a_failure_after_the_name_was_freed_still_names_the_new_name(tmp_path, monkeypatch):
+    """r2 N-1: the write fails after the removed one gave its name up: the result says both."""
+    _store_library("ja")
+    src, _ids, _old = _removed_book(tmp_path, "ja")
+
+    def broken(*_a, **_k):
+        raise OSError("the disk is full")
+    monkeypatch.setattr(extract, "_write_and_add", broken)
+    result = extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False, as_new=True)
+    assert result.code == extract.EXIT_FAILED and result.note == "error" and result.freed == "消滅世界 2"

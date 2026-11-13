@@ -115,8 +115,8 @@ def is_taken(name, language, store=None):
 
 def _held_by_removed_only(name, language, store):
     """Kantan-B4: is `name` held only by a removed title and its own leftovers — no item at or under any of its
-    folders, a trash row there (purged or not), none of whose titles holds an item, and on disk nothing but `Processed/<name>` (Extract's own output) and a
-    `Library/<name>` holding only Surasura's marks? Anything else there (a tier folder of that name, a file of the
+    folders, a trash row under it (purged or not), none of whose titles holds an item, and on disk nothing but
+    `Processed/<name>` (Extract's own output) and a `Library/<name>` holding only Surasura's marks? Anything else there (a tier folder of that name, a file of the
     learner's) and the name is never freed."""
     from app.library_store import CONTENT_FOLDER, path_key
     from app.path_utils import SOURCE_MARKER
@@ -127,8 +127,13 @@ def _held_by_removed_only(name, language, store):
                               (k, k + "/", k + "0")).fetchone() is not None:
             return False
     from app.library_store import _json_dict
-    under = [row for row in store.trash_rows()
-             if path_key(row.get("rel_path") or "").startswith(tuple(k + "/" for k in keys))]
+    under, own = [], tuple(k + "/" for k in keys)
+    for row in store.trash_rows():
+        rel = path_key(row.get("rel_path") or "")
+        if rel in keys:
+            return False                                 # a file of that very name: never renamed (review r2 N-4)
+        if rel.startswith(own):
+            under.append(row)
     if not under:
         return False
     works = {((_json_dict(row.get("item_state")) or {}).get("columns") or {}).get("work_id") for row in under}
@@ -146,6 +151,24 @@ def _held_by_removed_only(name, language, store):
     return True
 
 
+def _purged_removes(name, language, store):
+    """Kantan-B4 (review r2 S-1): with nothing in Removed named, may the name still be freed? Only when every trash row
+    under it not put back is his own Remove (`why` None or "remove", or written before `why` was kept) whose file
+    the trash has purged since — never a skipped folder's or a book part's, never one whose file is still there."""
+    from app.library_store import _json_dict, path_key
+    data_dir, folders = _folders(language)
+    own = tuple(path_key(f"{f}/{name}") + "/" for f in folders)
+    rows = [r for r in store.trash_rows() if not r.get("restored_at")
+            and path_key(r.get("rel_path") or "").startswith(own)]
+    for r in rows:
+        if (_json_dict(r.get("item_state")) or {}).get("why", None) not in (None, "remove"):
+            return False
+        trashed = r.get("trashed_path")
+        if trashed and os.path.lexists(os.path.join(data_dir, *trashed.split("/"))):
+            return False
+    return bool(rows)
+
+
 def _in_removed(store, name, language, path=None):
     """Kantan-B4: what in Removed `name` or the file at `path` is — the removed titles whose Put back places lie in a
     folder of that name, else those whose origin's bytes are the file's (an EPUB extracted or read before) ->
@@ -157,21 +180,20 @@ def _in_removed(store, name, language, path=None):
         return None, False
     _data_dir, folders = _folders(language)
     keys = tuple(path_key(f"{f}/{name}") + "/" for f in folders)
+    listed = {i for e in entries for i in e["trash_ids"]}
+    rows = [row for row in store.trash_rows() if row["id"] in listed]       # (one read: never an IN list of them all)
+    by_name, by_bytes = {row["id"] for row in rows if path_key(row.get("rel_path") or "").startswith(keys)}, set()
     sha = None
-    if path and file_kind(path) is not None and os.path.isfile(path):      # (never a deck: no origin records one)
-        try:
+    if not by_name and path and file_kind(path) is not None and os.path.isfile(path):   # (never a deck's: none
+        try:                                                                              # is recorded)
             sha = sha256_of(path)
         except OSError:
             sha = None
-    by_name, by_bytes = set(), set()
-    for row in store.trash_rows([i for e in entries for i in e["trash_ids"]]):
-        if path_key(row.get("rel_path") or "").startswith(keys):
-            by_name.add(row["id"])
-        elif sha is not None:
-            pairings = (_json_dict(row.get("item_state")) or {}).get("pairings") or ()
-            if any(isinstance(k, str) and k.startswith(SOURCE_KEY) and (_json_dict(text) or {}).get("sha256") == sha
-                   for k, text, *_at in pairings):
-                by_bytes.add(row["id"])
+    for row in rows if sha is not None else ():
+        pairings = (_json_dict(row.get("item_state")) or {}).get("pairings") or ()
+        if any(isinstance(k, str) and k.startswith(SOURCE_KEY) and (_json_dict(text) or {}).get("sha256") == sha
+               for k, text, *_at in pairings):
+            by_bytes.add(row["id"])
     found = by_name or by_bytes
     hits = [e for e in entries if found.intersection(e["trash_ids"])]
     if not hits:
@@ -260,7 +282,8 @@ def check_name(name, language, path=None):
             return Name(clean, False, None, removed, False)
         # free: what Add as new renames is what was named — the name's own removed title, or (its files purged, so
         # out of the list: review r1 #3) nothing named; never a title met only by its bytes (review r1 #7)
-        free = store is not None and (removed is None or by_name) and _held_by_removed_only(clean, language, store)
+        free = store is not None and (by_name if removed is not None else _purged_removes(clean, language, store)) \
+            and _held_by_removed_only(clean, language, store)
         return Name(clean, True, _free_proposal(clean, language, store), removed, free)
     finally:
         if store is not None:
@@ -1011,7 +1034,13 @@ def _extract_named(file_path, clean, language, section, method, value, parts, fi
         freed, why = free_name(clean, language, spawn=spawn)
         if freed is None:
             return Result(EXIT_REFUSED, 0, clean, section, False, why or "taken")
-    result = _write_and_add(file_path, clean, language, section, parts, pieces, chunks, spawn)
+    try:
+        result = _write_and_add(file_path, clean, language, section, parts, pieces, chunks, spawn)
+    except Exception as e:
+        if not freed:
+            raise
+        print(f"Error: {e}")                             # the name was freed: say so with the failure (review r2 N-1)
+        result = Result(EXIT_FAILED, 0, clean, section, False, "error")
     return result._replace(freed=freed) if freed else result
 
 

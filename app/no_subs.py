@@ -27,8 +27,8 @@ subtitle comes; `app/tracks.py` first copies out a text track the video carries)
   video is asked again on that date. A run silent for HATO_SILENT_S is stopped (P3); one that fails as a whole (offline,
   a crash) waits OFFLINE_S (P4).
 
-What a row says (`note`): MAKING, NO_SPEECH, UNREADABLE, LOOKING, NOT_FOUND (with hato's date), MADE (a row filled from
-the audio) — kept in `state_path(language)` (local data, beside Connect's ledger), read again only when that file
+What a row says (`note`): MAKING, NO_SPEECH, UNREADABLE, QUEUED (handed to hato, its search not started: Mado-FU2),
+LOOKING, NOT_FOUND (with hato's date), MADE (a row filled from the audio) — kept in `state_path(language)` (local data, beside Connect's ledger), read again only when that file
 changed (S19); the rows whose words changed are drawn again (`Store.refeed`), only those.
 
 Standard library only; no Qt, no Tk. Every call blocks: run it on a worker. Never Anki: `transcribe` and `setup` write
@@ -74,7 +74,8 @@ JOB_KIND = "transcribe"             # the job registry's kind (`services.jobs.RE
 
 MAKING, NO_SPEECH, UNREADABLE, LOOKING, NOT_FOUND, MADE = ("making", "no-speech", "unreadable", "looking",
                                                            "not-found", "made")
-WAITING_NOTES = (MAKING, NO_SPEECH, UNREADABLE, LOOKING, NOT_FOUND)     # said on a waiting row
+QUEUED = "queued"                   # Mado-FU2 (Sonic 2026-11-13): handed to hato, waiting its turn — *Next in line…*
+WAITING_NOTES = (MAKING, NO_SPEECH, UNREADABLE, QUEUED, LOOKING, NOT_FOUND)     # said on a waiting row
 DONE_NOTES = (NO_SPEECH, UNREADABLE)  # a video made no subtitle from: not offered again until it changes
 
 _make_lock = threading.Lock()       # one `make` at a time in a process
@@ -132,14 +133,14 @@ def _change(store, language, notes=None, drop_if=None, hato=None, offline_until=
         data["notes"] = {rel: v for rel, v in data["notes"].items() if _live(v)}
         said = dict(data["notes"])
         for rel, kind in (drop_if or {}).items():
-            if (data["notes"].get(rel) or [None])[0] == kind:
+            if (data["notes"].get(rel) or [None])[0] in (kind if isinstance(kind, tuple) else (kind,)):
                 del data["notes"][rel]
         for rel, value in (notes or {}).items():
             if (data["notes"].get(rel) or [None])[0] in unless:
                 continue
             data["notes"][rel] = _entry(value)
         if live is not None:
-            data["notes"] = {rel: v for rel, v in data["notes"].items() if v[0] in (MADE, LOOKING) or (
+            data["notes"] = {rel: v for rel, v in data["notes"].items() if v[0] in (MADE,) + HATO_NOTES or (
                 rel in live and (v[0] not in DONE_NOTES or len(v) < 3 or v[2] == live[rel]))}
         if hato:
             data["hato"].update(hato)
@@ -167,7 +168,8 @@ def _live(v):
     return isinstance(v, list) and bool(v) and (v[0] not in TRANSIENT or (len(v) > 2 and v[2] == os.getpid()))
 
 
-TRANSIENT = (MAKING, LOOKING)
+TRANSIENT = (MAKING, QUEUED, LOOKING)
+HATO_NOTES = (QUEUED, LOOKING)          # a hato run's own: only the run drops them (never `tidy`)
 NOTES_FRESH_S = 1.0     # `note`: the file looked at again at most this often (this process's writes are seen at once)
 
 
@@ -271,7 +273,7 @@ def tidy(store, language, away=()):
             except (OSError, TypeError, ValueError):
                 pass
         live[rel] = stats
-    if any(v and v[0] not in (MADE, LOOKING) and (rel not in live or (v[0] in DONE_NOTES and len(v) > 2 and
+    if any(v and v[0] not in (MADE,) + HATO_NOTES and (rel not in live or (v[0] in DONE_NOTES and len(v) > 2 and
                                                                    v[2] != live[rel])) for rel, v in held.items()):
         _change(store, language, live=live)
 
@@ -813,18 +815,19 @@ def _find(store, language, cli, stop, now, away, popen):
             by_root.setdefault(root, []).append(v)
     run_dir = os.path.join(os.path.dirname(state_path(language)), f"no-subs-hato-{language}")
     os.makedirs(run_dir, exist_ok=True)
+    handed = {v.rel: QUEUED for videos in by_root.values() for v in videos}
+    _change(store, language, notes=handed, unless=(MAKING,))    # Mado-FU2: *Next in line* until its search starts
     try:
         for root, videos in by_root.items():
             for n in range(0, len(videos), BATCH):
                 if stop():
                     return out
                 batch = videos[n:n + BATCH]
-                _change(store, language, notes={v.rel: LOOKING for v in batch}, unless=(MAKING,))
                 found = out["found"]
                 try:
                     ok = _hato_run(store, language, cli, roots[root], batch, run_dir, stop, now, out, popen)
                 finally:
-                    _change(store, language, drop_if={v.rel: LOOKING for v in batch})
+                    _change(store, language, drop_if={v.rel: HATO_NOTES for v in batch})
                 if out["found"] > found:
                     out["roots"][root] = roots[root]
                 if stop():
@@ -833,8 +836,22 @@ def _find(store, language, cli, stop, now, away, popen):
                     _change(store, language, offline_until=(time.time() if now is None else now) + OFFLINE_S)
                     return out
     finally:
+        _change(store, language, drop_if=dict.fromkeys(handed, QUEUED))   # a batch never run: no *Next in line* left
         shutil.rmtree(run_dir, ignore_errors=True)
     return out
+
+
+def _searching(lines, start):
+    """Mado-FU2: has hato begun the search itself — a line from `start` on that isn't its wait for another hato run
+    (`--wait`'s `{"type": "progress", "phase": "waiting"}`)?"""
+    for line in lines[start:]:
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and not (obj.get("type") == "progress" and obj.get("phase") == "waiting"):
+            return True
+    return False
 
 
 def _hato_run(store, language, cli, folder, batch, run_dir, stop, now, out, popen):
@@ -855,8 +872,13 @@ def _hato_run(store, language, cli, folder, batch, run_dir, stop, now, out, pope
     lines, heard = [], [time.monotonic()]
     reader = threading.Thread(target=_read_lines, args=(proc.stdout, lines, heard), daemon=True)
     reader.start()
+    seen, searching = 0, False
     while reader.is_alive():
         reader.join(0.5)
+        if not searching:                   # Mado-FU2: *Next in line* → *Looking* once hato's own search begins
+            searching, seen = _searching(lines, seen), len(lines)
+            if searching:
+                _change(store, language, notes={v.rel: LOOKING for v in batch}, unless=(MAKING,))
         if stop() or time.monotonic() - heard[0] > HATO_SILENT_S:
             _end(proc)
             break

@@ -981,3 +981,134 @@ def test_a_beside_copy_the_learner_corrected_is_still_the_same_episode(film, fak
         assert library.pairing_of(store, item_id)["verdict"] == "transcribed"
     finally:
         store.__exit__(None, None, None)
+
+
+# --- Mado-FU2: *Next in line…* while hato's search waits its turn (Sonic 2026-11-13, "7. Fix this yea") ------------ #
+class _Paced:
+    """A hato run whose lines arrive one step at a time: `step()` lets the next one through (its stdout's
+    `readline` waits for it), so a test sees what the rows say between them."""
+
+    def __init__(self, lines, command, calls):
+        import queue
+        calls.append(command)
+        self.q, self.lines, self.returncode = queue.Queue(), list(lines), 0
+        self.stdout = self
+
+    def step(self, n=1):
+        for _ in range(n):
+            if self.lines:
+                self.q.put((json.dumps(self.lines.pop(0), ensure_ascii=False) + "\n").encode("utf-8"))
+        if not self.lines:
+            self.q.put(b"")                                   # its end
+
+    def readline(self):
+        return self.q.get(timeout=20)
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _until(fn, timeout=8.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if fn():
+            return True
+        time.sleep(0.05)
+    return fn()
+
+
+def test_fresh_u_a_video_waiting_behind_another_hato_run_says_next_in_line_until_its_search_starts(tmp_path):
+    """Why (Minato-SM's finding; Sonic: "Fix this"): `--wait` queues a run behind another hato (its window, another
+    library's run) for up to hours, and its videos said *Looking…* all along. Now: *Next in line* from the moment they
+    are handed over and while hato says it waits; *Looking* from its first line that is the search itself; nothing
+    once the run ends (its answers say the rest)."""
+    store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
+    cli = str(tmp_path / "hato-cli.exe")
+    open(cli, "wb").close()
+    _hato(["find"], cli)
+    rels = [r for _i, r, _a in _items(store)]
+    lines = [{"type": "progress", "phase": "waiting", "stage": "waiting for another hato run to finish"},
+             {"type": "progress", "phase": "start", "folders": 1},
+             {"type": "video", "video": videos[0], "outcome": "CONFIDENT"},
+             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": None},
+             {"type": "run", "videos": 2}]
+    runs, calls, said = [], [], []
+
+    def started(command, **_k):
+        runs.append(_Paced(lines, command, calls))
+        return runs[-1]
+
+    def hato_side():
+        # (one connection a thread: `find` keeps the store on this test's thread; this side reads only the notes file)
+        notes = lambda: [no_subs.note(r, "ja") for r in rels]
+        if not _until(lambda: runs):
+            return
+        said.append(notes())                                  # handed over
+        runs[0].step()                                        # hato: waiting for another run
+        time.sleep(0.8)                                       # (past a look of the run's loop)
+        said.append(notes())
+        runs[0].step()                                        # hato's own search begins
+        _until(lambda: notes() == [no_subs.LOOKING] * 2)
+        said.append(notes())
+        runs[0].step(3)
+    side = threading.Thread(target=hato_side, daemon=True)
+    try:
+        side.start()
+        out = no_subs.find(store, "ja", {no_subs.SETTING: True}, popen=started)
+        side.join(20)
+        assert said == [[no_subs.QUEUED] * 2, [no_subs.QUEUED] * 2, [no_subs.LOOKING] * 2]
+        assert out["asked"] == 2
+        assert no_subs.note(rels[0], "ja") is None and no_subs.note(rels[1], "ja")[0] == no_subs.NOT_FOUND
+    finally:
+        for r in runs:
+            r.step(len(r.lines) + 1)
+        side.join(20)
+        store.__exit__(None, None, None)
+
+
+def test_fresh_u_a_run_that_never_got_its_turn_leaves_no_next_in_line_behind(tmp_path):
+    """Why: the window closing (stop) mid-wait, or hato saying nothing at all, must never leave *Next in line* on a
+    row; and a video being made from its audio meanwhile keeps saying so (never written over)."""
+    store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
+    cli = str(tmp_path / "hato-cli.exe")
+    open(cli, "wb").close()
+    _hato(["find"], cli)
+    rels = [r for _i, r, _a in _items(store)]
+    try:
+        no_subs._change(store, "ja", notes={rels[1]: no_subs.MAKING})
+        seen = []
+
+        def started(command, **_k):
+            seen.append([no_subs.note(r, "ja") for r in rels])
+            return _Proc([{"type": "progress", "phase": "waiting", "stage": "waiting"}], [], command)
+        no_subs.find(store, "ja", {no_subs.SETTING: True}, popen=started)
+        assert seen == [[no_subs.QUEUED, no_subs.MAKING]]
+        assert no_subs.note(rels[0], "ja") is None and no_subs.note(rels[1], "ja") == no_subs.MAKING
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_fresh_u_next_in_line_is_this_processs_note_and_a_tidy_keeps_it():
+    """Why: like *Looking*, a note a Surasura that quit left is no note (`_live`), and the tracks' tidy beside the run
+    never drops it (the run does, at its end)."""
+    assert no_subs.QUEUED in no_subs.TRANSIENT and no_subs.QUEUED in no_subs.WAITING_NOTES
+    assert not no_subs._live([no_subs.QUEUED, None, os.getpid() + 1])
+    assert no_subs._live(no_subs._entry(no_subs.QUEUED))
+
+
+def test_fresh_u_the_rows_say_next_in_line_and_looking_wins_a_mix_of_the_two():
+    """Why: the row's words (PROVISIONAL): *Next in line…* while every waiting video waits its turn; one already being
+    looked for makes the row *Looking for subtitles…*; the tray's line the same, lower case."""
+    st, _m = view_rows.status_of([_shim(no_subs.QUEUED, id=1), _shim(no_subs.QUEUED, id=2)], "video", None)
+    assert st.label == "Next in line…" and "hato" in st.tip
+    assert st.tone == "dim"
+    st, _m = view_rows.status_of([_shim(no_subs.QUEUED, id=1), _shim(no_subs.LOOKING, id=2)], "video", None)
+    assert st.label == "Looking for subtitles…"
+    assert view_rows.STRINGS["arr_" + view_rows.SUBS_KEYS[view_rows.subs_said(
+        [_shim(no_subs.QUEUED)])[0]]] == "next in line…"

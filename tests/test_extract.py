@@ -885,3 +885,88 @@ def test_B4_r1_undo_of_the_original_remove_after_add_as_new_comes_back_under_the
     finally:
         store.close()
     assert len(back) == len(rows) and all(r.startswith(f"{ls.CONTENT_FOLDER}/消滅世界 2/") for r in back)
+
+
+def test_B4_add_as_new_renames_only_the_names_removed_title_never_another_one(tmp_path):
+    """Mutant S1: two books in Removed; *Add as new* of 消滅世界 renames its rows and title alone — the other removed
+    book keeps its place and its name (its Put back unchanged)."""
+    _store_library("ja")
+    other = _epub(tmp_path / "別の本.epub", ["<p>どこで生れたかとんと見当がつかぬ。</p>" * 30])
+    _x, other_ids, _o = _removed_book(tmp_path, "ja", name="別の本", epub=other)
+    store = _open("ja")
+    try:
+        before = {r["id"]: (r["rel_path"], r["entry"]) for r in store.trash_rows(other_ids)}
+    finally:
+        store.close()
+    src, _ids, _old = _removed_book(tmp_path, "ja")
+    assert extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False, as_new=True).freed
+    store = _open("ja")
+    try:
+        assert {r["id"]: (r["rel_path"], r["entry"]) for r in store.trash_rows(other_ids)} == before
+        titles = sorted(e["title"] for e in store.removed())
+    finally:
+        store.close()
+    assert titles == sorted(["別の本", "消滅世界 2"])
+
+
+def test_B4_a_name_only_processed_holds_is_taken_and_never_freed(tmp_path):
+    """Mutant F2: an earlier split into Processed only (no title, nothing removed) — taken as before, never offered."""
+    data_dir, _uf = _store_library("ja")
+    os.makedirs(os.path.join(data_dir, "Processed", "旅の記録"))
+    answer = extract.check_name("旅の記録", "ja")
+    assert answer.taken and answer.removed is None and not answer.free
+
+
+def test_B4_with_no_library_yet_a_taken_name_is_answered_as_before(tmp_path):
+    """No store at all (a first run): the check still answers — taken, the free name proposed, nothing freed."""
+    os.makedirs(os.path.join(get_data_path("ja"), "Processed", "旅の記録"))
+    assert extract.check_name("旅の記録", "ja") == extract.Name("旅の記録", True, "旅の記録 2", None, False)
+
+
+def test_B4_a_missing_episode_of_another_title_under_the_name_never_lets_it_go(tmp_path):
+    """Mutant F1: half the book removed, the other half made a title of its own and its files gone (rows kept,
+    missing): the folder holds only the marker and the removed rows' title holds nothing — but an item is still listed
+    under the name, so it is never freed."""
+    data_dir, _uf = _store_library("ja")
+    src = _epub(tmp_path / "消滅世界.epub", ["<p>吾輩は猫である。名前はまだ無い。</p>" * 40] * 2)
+    assert extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False).in_library
+    store = _open("ja")
+    try:
+        rows = [(i, r) for i, r in store.conn.execute("SELECT id, rel_path FROM items ORDER BY id")
+                if r.startswith(f"{ls.CONTENT_FOLDER}/消滅世界/")]
+        half = len(rows) // 2
+        store.remove([i for i, _r in rows[:half]], {i: ls.trash_file(data_dir, r) for i, r in rows[:half]})
+        store.split_work([i for i, _r in rows[half:]], "別の題")
+    finally:
+        store.close()
+    for _i, r in rows[half:]:
+        os.remove(os.path.join(data_dir, *r.split("/")))
+    answer = extract.check_name("消滅世界", "ja", src)
+    assert answer.taken and not answer.free
+
+
+def test_B4_a_title_the_learner_renamed_still_comes_back_apart(tmp_path):
+    """Mutant S4: he had named the book 「Vanishing World」 (its old name kept among its names). After *Add as new*
+    its old name is dropped from its names, so the new 消滅世界 is never joined to it by show."""
+    data_dir, _uf = _store_library("ja")
+    src = _epub(tmp_path / "消滅世界.epub", ["<p>吾輩は猫である。名前はまだ無い。</p>" * 40] * 2)
+    assert extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False).in_library
+    store = _open("ja")
+    try:
+        rows = [(i, r, w) for i, r, w in store.conn.execute("SELECT id, rel_path, work_id FROM items ORDER BY id")
+                if r.startswith(f"{ls.CONTENT_FOLDER}/消滅世界/")]
+        old_work = rows[0][2]
+        store.rename_work(old_work, "Vanishing World")
+        store.remove([i for i, _r, _w in rows], {i: ls.trash_file(data_dir, r) for i, r, _w in rows})
+    finally:
+        store.close()
+    assert extract.extract(src, "消滅世界", "ja", section="now", value="300", spawn=False, as_new=True).freed
+    store = _open("ja")
+    try:
+        new = {w for r, w in store.conn.execute("SELECT rel_path, work_id FROM items")
+               if r.startswith(f"{ls.CONTENT_FOLDER}/消滅世界/")}
+        title, titles = store.conn.execute("SELECT title, titles FROM works WHERE id = ?", (old_work,)).fetchone()
+    finally:
+        store.close()
+    assert new and old_work not in new
+    assert title == "Vanishing World" and "消滅世界" not in json.loads(titles)

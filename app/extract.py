@@ -260,7 +260,7 @@ def check_name(name, language, path=None):
             return Name(clean, False, None, removed, False)
         # free: what Add as new renames is what was named — the name's own removed title, or (its files purged, so
         # out of the list: review r1 #3) nothing named; never a title met only by its bytes (review r1 #7)
-        free = (removed is None or by_name) and _held_by_removed_only(clean, language, store)
+        free = store is not None and (removed is None or by_name) and _held_by_removed_only(clean, language, store)
         return Name(clean, True, _free_proposal(clean, language, store), removed, free)
     finally:
         if store is not None:

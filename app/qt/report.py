@@ -488,10 +488,10 @@ def _kept(shell, pictures, scrubbed):
         if win.made_in == style.current():
             win.reopen(pictures, scrubbed)
             return win
-        win.deleteLater()
+        qpress.let_go(win)                                        # (its bar arc's `_Follow` filters it: Qt-C2)
     except RuntimeError:                                          # deleted meanwhile (or half reopened: let go)
         try:
-            win.deleteLater()
+            qpress.let_go(win)
         except RuntimeError:
             pass
     return None

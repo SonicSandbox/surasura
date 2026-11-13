@@ -1986,7 +1986,7 @@ class ShellWindow(QMainWindow):
             moves.undo_key.setEnabled(False)        # (the window's own Ctrl+Z goes to the new controller's)
             moves.undo_key.deleteLater()
             moves.unwire()                          # a write still in hand past the switch's wait tells no one
-            moves.deleteLater()
+            qpress.let_go(moves)                    # (its `_Resting` filters the list until it goes: Qt-C2)
         lst = getattr(self.page_widgets.get("current"), "list", None)
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row

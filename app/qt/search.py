@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QLabe
 
 from app import scrub, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
+from app.qt import press as qpress
 
 DEBOUNCE_MS = 120                       # A2 #85: the query asked this long after the last keystroke
 GROUP_ORDER = ("current", "goal", "arrivals", "finished")
@@ -297,7 +298,7 @@ class Results(motion.Overlay):
             for gone in self._kept.values():
                 for w in gone:
                     w.hide()
-                    w.deleteLater()
+                    qpress.let_go(w)                      # (a HitRow hears its own DeferredDelete: Qt-C2)
             self._kept = {}
         self.place()
         if not self.isVisible() and motion.opening_of(self) is None:

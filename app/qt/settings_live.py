@@ -355,8 +355,8 @@ class _Card(motion.Overlay):
     def closeEvent(self, event):
         super().closeEvent(event)
         self.room.hide()
-        self.room.deleteLater()
-        self.deleteLater()
+        qpress.let_go(self.room)                          # (the room still filters the window until the loop deletes
+        qpress.let_go(self)                               # ... it: kept until they go, Qt-C2)
         callback, self._on_close = self._on_close, None
         if callback is not None:
             callback()

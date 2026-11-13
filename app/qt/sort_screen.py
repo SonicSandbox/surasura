@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QPushButton, QSiz
 
 from app import scrub, theme
 from app.qt import motion, style
+from app.qt import press as qpress
 from app.qt import wizard_strings as S
 
 LINE_MS = 6500                  # a gentle line stays this long, then fades out and the next fades in
@@ -1231,7 +1232,7 @@ def open_over(win):
     def closed(_how):
         if not sip.isdeleted(screen):
             screen.hide()
-            screen.deleteLater()
+            qpress.let_go(screen)                         # (its `_Cover` filters the area until it goes: Qt-C2)
     screen.closed.connect(closed)
     screen.show()
     screen.raise_()
@@ -1500,6 +1501,6 @@ def cover_window(shell):
             if shell.__dict__.get("_sort_screen") is old:
                 del shell.__dict__["_sort_screen"]
             old.hide()
-            old.deleteLater()
+            qpress.let_go(old)                            # (its `_Cover` filters the area until it goes: Qt-C2)
     cover.covered = lambda: held["w"]
     return cover

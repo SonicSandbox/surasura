@@ -4,8 +4,9 @@
 What a wrong answer would cost, most first:
 
   * **The snapshot is on disk, marked incomplete, before the first write**, and a run killed between the write and
-    "complete" blocks every later reorder — Connect's and the window's — until it is put back: the half-written order
-    must never be snapshotted over the only record of how the deck was.
+    "complete" is never snapshotted over: the half-written order must never replace the only record of how the deck
+    was. A reorder you start takes it over (Sonic 2026-11-13) only while its record is complete — readable, for this
+    deck — and one Undo then goes back past both; otherwise it asks for that run's Undo first.
   * **A restore undoes exactly what that run changed**, and nothing after it: a card you moved by hand since, or a
     later run moved, stays where it is.
   * **Separate from the window's Restore point**: a run of Connect's never replaces it.
@@ -15,6 +16,8 @@ Against the fake collection of `connect_scene` — real words, real Lapis fields
 """
 import json
 import os
+
+import pytest
 
 from modules.junban import auto, reposition, undo
 from modules.junban.tests import connect_scene
@@ -53,33 +56,166 @@ def test_a_connect_run_keeps_its_own_snapshot_written_incomplete_before_the_firs
     assert done["report"]["run"] == run_id
 
 
-def test_a_run_killed_between_its_writes_and_complete_blocks_your_reorder_until_it_is_put_back(tmp_path):
-    # Lead 2026-11-07 (Mattias, alpha 3; W3.5 row 7): Connect's next automatic run goes on, in a snapshot of its own;
-    # the cut run stays unfinished, offered first by Undo, and a reorder you start in 順 still asks for that Undo.
+def _cut_connect_run(fake, at=2):
+    """One of Connect's runs (the fast re-plan's spaced writes, two cards a request) cut by Anki closing at its `at`-th
+    write request from now: its first requests landed, its snapshot left unfinished -> its run id."""
+    from modules.junban import spaced
+    fake.fail_write_chunk = fake.write_chunks + at
+    run_id = undo.new_run_id("reorder")
+    with _patched(fake):
+        died = auto.reorder(settings(junban_chunk_size=2), list_current=True, positions_only=True, run_id=run_id,
+                            job=spaced.Job())
+    fake.fail_write_chunk = None
+    assert died["outcome"] == "refused" and undo.load("ja", run_id=run_id)["complete"] is False, died
+    return run_id
+
+
+def _state(fake):
+    return {card_id: (card["due"], card["queue"], card.get("flags", 0)) for card_id, card in fake.cards.items()}
+
+
+def test_a_run_killed_between_its_writes_and_complete_is_taken_over_by_your_reorder_and_one_undo_puts_back_both(
+        tmp_path):
+    """Sonic 2026-11-13 (overturning the lead's 2026-11-07 ruling: "a manual would be a priority BUT if the data until
+    that point isn't prepped than the manual isn't ready to run yet"): Connect's run, cut part way, is never written
+    over by Connect's own next run — that one goes on and leaves it offered first. A Reorder you start in 順 now takes
+    it over, as it takes over the window's own cut automatic run (Disc-T1): its record is complete, so the reorder
+    runs, the cut run is marked taken over (never restored, never offered again), and one Undo — its question saying
+    both — puts every card back as it was before the cut run: position, queue, flag."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    before = _state(fake)
+    run_id = _cut_connect_run(fake)
+    half = dict(fake.writes)
+    assert half and any(before[c][0] != d for c, d in half.items()), "the cut run's first request landed"
+    assert undo.unfinished("ja", "reorder") == run_id
+
+    fake.writes = []
+    with _patched(fake):
+        window = reposition.run(settings(), refresh=False)              # the 順 window's Reorder: it goes on
+    assert window["ok"] and not window.get("restore_first") and fake.writes, window
+    assert undo.unfinished("ja", "reorder") is None
+    cut = undo.load("ja", run_id=run_id)
+    assert cut["complete"] is True and cut.get("taken_over_at") and not cut.get("restored_at")
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["finished_automatic"] is True and saved.get("automatic") is not True
+    assert all(saved["cards"][str(c)] == before[c][0] for c in half), "the cut run's way back is in yours"
+    asked = junban_view.restore_question("ja", settings())
+    assert asked["kind"] == "snapshot" and asked["both"] is True, asked
+
+    with _patched(fake):
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before, "one Undo: the order from before both runs"
+    with _patched(fake):
+        again = reposition.restore(settings())
+    assert again["ok"] and _state(fake) == before, "never the half writes back"
+
+
+def test_connects_own_next_run_still_leaves_a_cut_run_offered_first(tmp_path):
+    """Connect's next automatic run goes on in a snapshot of its own and never takes the cut run over: the cut run
+    stays unfinished, offered first by Undo, and that Undo takes back exactly that run."""
     fake = scene(tmp_path, fail_write_chunk=1)          # Anki goes away mid-run: nothing in the chunk lands
     run_id, done = _connect_run(fake)
     assert done["outcome"] == "refused"
     assert undo.load("ja", run_id=run_id)["complete"] is False
-    assert undo.unfinished("ja", "reorder") == run_id
-
     fake.fail_write_chunk = None
-    second, again = _connect_run(fake)                  # Connect's next run: never stopped by the cut one
+    second, again = _connect_run(fake)
     assert again["outcome"] == "ran" and fake.writes, again
     assert second != run_id and undo.load("ja", run_id=second)["complete"] is True
     assert undo.load("ja", run_id=run_id)["complete"] is False, "the cut run's snapshot is never written over"
     assert undo.unfinished("ja", "reorder") == run_id
-    fake.writes = []
-    with _patched(fake):
-        window = reposition.run(settings())             # the 順 window's Reorder: Undo first
-    assert not window["ok"] and window["unfinished"] == run_id and fake.writes == []
-
     with _patched(fake):
         put_back = reposition.restore(settings())       # the window's Restore takes that run back first
     assert put_back["ok"], put_back["problems"]
-    assert put_back["run"] == run_id
+    assert put_back["run"] == run_id and undo.unfinished("ja", "reorder") is None
+
+
+@pytest.mark.parametrize("why", ["unreadable", "another deck", "all decks"])
+def test_your_reorder_asks_for_the_undo_first_while_a_cut_runs_record_isnt_complete(tmp_path, monkeypatch, why):
+    """Not prepped, not ready: a cut run whose snapshot can't be read just now (an antivirus or cloud folder holds
+    it), or one for another deck or the other scope mode, which your reorder's snapshot couldn't hold the way back
+    from. Your Reorder asks for its Undo first, as before, and nothing is written — with something to write, and with
+    nothing (the take-over that only saves)."""
+    fake = scene(tmp_path)
+    run_id = _cut_connect_run(fake)
+    path = undo.snapshot_path("ja", run_id=run_id)
+    if why == "unreadable":
+        real = undo.load
+        monkeypatch.setattr(undo, "load", lambda language="ja", kind="reorder", run_id=None:
+                            None if run_id is not None and run_id.startswith("reorder-") and run_id in path
+                            else real(language, kind, run_id))
+    else:
+        with open(path, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        if why == "another deck":
+            saved["scope"] = ["Another deck"]
+        else:
+            saved["mode"] = "all"
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(saved, handle)
+    with open(path, encoding="utf-8") as handle:
+        cut_file = handle.read()
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    for chosen in (settings(), quiet):
+        fake.writes, fake.suspend_calls = [], []
+        with _patched(fake):
+            yours = reposition.run(chosen, refresh=False)
+        assert not yours["ok"] and yours["restore_first"] and yours["unfinished"] == run_id, yours
+        assert fake.writes == [] and fake.suspend_calls == [] and not os.path.exists(undo.snapshot_path("ja"))
+    with open(path, encoding="utf-8") as handle:
+        assert handle.read() == cut_file, "left exactly as it was"
+
+
+def test_two_cut_runs_of_this_deck_are_both_taken_over_so_one_undo_goes_back_past_all_of_them(tmp_path):
+    """Connect's run cut, then its next run cut too (it goes on past the one before): both are unfinished. Your
+    Reorder takes over both, the oldest's numbers winning — the newest alone would leave the older run's half writes
+    in your Undo — and one Undo puts back the deck from before the first."""
+    fake = scene(tmp_path)
+    before = _state(fake)
+    first = _cut_connect_run(fake)
+    second = _cut_connect_run(fake, at=1)              # its first request dies: none of its own landed
+    assert first != second and undo.unfinished("ja", "reorder") == second
+    assert undo.load("ja", run_id=first)["complete"] is False
+    with _patched(fake):
+        window = reposition.run(settings(), refresh=False)
+    assert window["ok"] and not window.get("restore_first"), window
+    assert all(undo.load("ja", run_id=run_id).get("taken_over_at") for run_id in (first, second))
     assert undo.unfinished("ja", "reorder") is None
-    _third, last = _connect_run(fake)
-    assert last["outcome"] == "ran" and fake.writes
+    with _patched(fake):
+        put_back = reposition.restore(settings())
+    assert put_back["ok"], put_back["problems"]
+    assert _state(fake) == before
+
+
+def test_your_reorder_with_nothing_left_to_write_still_takes_a_cut_run_over(tmp_path):
+    """Connect's run cut after its last position (every card where your list puts it) leaves nothing for your Reorder
+    to write. It still takes the run over — a snapshot of its own, complete, holding the run's numbers from before it —
+    so it is never refused or offered again, and one Undo puts back the order from before that run."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    before = _state(fake)
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    pairs = [(card_id, card["due"]) for card_id, card in fake.cards.items() if card["queue"] == 0]
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["written"]         # the deck in your order
+    after = {card_id: card["due"] for card_id, card in fake.cards.items()}
+    run_id = undo.new_run_id("reorder")                                 # as if Connect's run had put it there
+    undo.save(pairs, ["TheBank"], language="ja", run_id=run_id, after=[(c, after[c]) for c, _due in pairs])
+    writes = list(fake.writes)
+    with _patched(fake):
+        report = reposition.run(quiet, refresh=False)
+    assert report["ok"] and not report.get("restore_first"), report
+    assert fake.writes == writes, "nothing written"
+    assert undo.load("ja", run_id=run_id).get("taken_over_at") and undo.unfinished("ja", "reorder") is None
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["finished_automatic"] is True
+    assert {int(c): d for c, d in saved["cards"].items() if int(c) in dict(pairs)} == dict(pairs)
+    assert junban_view.restore_question("ja", quiet)["both"] is True
+    with _patched(fake):
+        put_back = reposition.restore(quiet)
+    assert put_back["ok"], put_back["problems"]
+    assert {c: due for c, (due, _q, _f) in _state(fake).items()} == {c: due for c, (due, _q, _f) in before.items()}
 
 
 def test_a_restore_puts_back_what_the_run_moved_and_leaves_a_card_you_moved_since(tmp_path):

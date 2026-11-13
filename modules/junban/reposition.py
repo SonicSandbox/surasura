@@ -2329,17 +2329,22 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         if not automatic and not _same_scope(previous, decks, settings):
             return _unfinished_refusal(checks, decks)       # another deck's: only its own Restore puts it back
         cut = previous
-    # One of Connect's runs left unfinished (P1.4, §7.2): its snapshot is the only way back from it, so a reorder you
-    # start (順's Reorder) asks for its Undo first (the lead's 2026-11-07 ruling; Disc-T1 left it as it is). An
-    # automatic job goes on (lead 2026-11-07, Mattias's alpha-3 notes; Sonic's W3.5 row 7, "a run nobody started never
-    # stops the automation"; PROVISIONAL): one without a run of its own (the re-plan's, 順's automatic step) takes that
-    # run over in the window's snapshot for the same deck, as row 7 takes over the window's own cut run (`connect_cut`,
-    # below): one Undo then goes back past both, never the older first. Connect's own next run (`run_id`) leaves it as
-    # it is: its Undo still offered first.
+    # One of Connect's runs left unfinished (P1.4, §7.2): its snapshot is the only way back from it. An automatic job
+    # goes on (lead 2026-11-07, Mattias's alpha-3 notes; Sonic's W3.5 row 7, "a run nobody started never stops the
+    # automation"; PROVISIONAL): one without a run of its own (the re-plan's, 順's automatic step) takes that run over in
+    # the window's snapshot for the same deck, as row 7 takes over the window's own cut run (`connect_cuts`, below): one
+    # Undo then goes back past both, never the older first. Connect's own next run (`run_id`) leaves it as it is: its
+    # Undo still offered first. Junban-X (Sonic 2026-11-13, overturning the lead's 2026-11-07 ruling): a reorder you
+    # start (順's Reorder) takes over every such run too when their record is complete (`_connect_cuts`: each readable,
+    # for this deck and scope mode) — else it asks for their Undo first, as before.
     unfinished = undo.unfinished(_language(settings), "reorder")
-    connect_cut = undo.load(_language(settings), run_id=unfinished) if (
-        unfinished is not None and automatic and run_id is None) else None
-    if unfinished is not None and not automatic:
+    connect_cuts = []                   # [(run id, its snapshot)] this run takes over
+    if unfinished is not None and automatic and run_id is None:
+        connect_cut = undo.load(_language(settings), run_id=unfinished)
+        connect_cuts = [(unfinished, connect_cut)] if connect_cut else []
+    elif unfinished is not None and not automatic:
+        connect_cuts = _connect_cuts(settings, decks)
+    if unfinished is not None and not automatic and connect_cuts is None:
         return _report(False, "Junban did not make any changes.",
                        problems=[f"An automatic reorder ({unfinished}) did not finish, and its saved order is the "
                                  "only way back from it. Press Undo the last reorder first, then reorder again."],
@@ -2400,7 +2405,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
             # #50: the order stands, but a card's show label is behind it (a list moved, a show renamed): only those
             # labels, never a snapshot (one of nothing would replace your route back from the last run)
             labelled, label_failures = show_tags.apply(url, labels, _chunk_size(settings))
-            _finish_cut(settings, cut, automatic, decks, stats)
+            _finish_cut(settings, cut, automatic, decks, stats, connect_cuts)
             return _report(True, "Every card is already in the right place — nothing to change." +
                            _labels_clause(labelled), warnings=checks["warnings"] + _labels_warning(label_failures),
                            decks=decks, stats=stats)
@@ -2408,7 +2413,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # order with an empty one would throw away the user's only route back from the *previous*
         # run, and they would not find out until they pressed Restore. (With the cards not on the
         # list still to tag, flag or suspend, the run goes ahead, snapshot first, positions or not.)
-        _finish_cut(settings, cut, automatic, decks, stats)
+        _finish_cut(settings, cut, automatic, decks, stats, connect_cuts)
         return _report(True, "Every card is already in the right place — nothing to change.",
                        warnings=checks["warnings"], decks=decks, stats=stats)
 
@@ -2441,10 +2446,9 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     # baseline — the window's snapshot (2.5's automatic step's), or the run's own given a `run_id`.
     acting = automatic and job.actions and bool(unlisted.has_work(later) or _has_touchups(touchups) or back
                                                 or unlisted.has_work(out))
-    if connect_cut is not None and (undo.normalize_scope(connect_cut.get("scope")) != undo.normalize_scope(decks)
-                                    or (connect_cut.get("mode") == "all") != (_scope_mode(settings) == "all")):
-        connect_cut = None              # another deck's: left as it is, its own Undo puts it back
-    taking = connect_cut is not None    # this job's window snapshot takes Connect's cut run over (lead 2026-11-07)
+    connect_cuts = [(cut_id, saved) for cut_id, saved in connect_cuts      # another deck's: left as it is, its own
+                    if _same_scope(saved, decks, settings)]                 # Undo puts it back
+    taking = bool(connect_cuts)         # this run's window snapshot takes Connect's cut runs over (lead 2026-11-07)
     if automatic and not acting:
         cut = None                      # a positions-only job leaves the cut run's snapshot alone, restorable
     elif cut is not None and (undo.normalize_scope(cut.get("scope")) != undo.normalize_scope(decks)
@@ -2457,8 +2461,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # reaches the wire, not after it. FT (K8): this run's own field writes in the first-touch journal first.
         first_touch.note(_language(settings), "reorder", profile, decks, fields=touchups.get("fields"))
         return undo.save(original, decks, language=_language(settings),
-                         fields=undo.carry_forward_fields(connect_cut, undo.carry_forward_fields(
-                             previous, touchups.get("fields"))),
+                         fields=_cut_fields(connect_cuts, undo.carry_forward_fields(previous, touchups.get("fields"))),
                          profile=profile,
                          tags=touchups.get("tags"),
                          tag=touchups.get("tag"),
@@ -2470,8 +2473,9 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                          **({"run_id": run_id, "after": writes} if run_id is not None else {}),
                          **({"unsuspended": back} if back else {}),
                          **({"later_back": stats.get("later_back")} if stats.get("later_back") else {}),
-                         automatic=automatic and (acting or taking) and run_id is None, cut=[cut, connect_cut],
-                         finished_automatic=not automatic and cut is not None)
+                         automatic=automatic and (acting or taking) and run_id is None,
+                         cut=[cut] + [saved for _cut_id, saved in connect_cuts],
+                         finished_automatic=not automatic and (cut is not None or taking))
     map_read = reads is not None and job.cards.reads > reads
     try:
         parked = set(back)
@@ -2482,8 +2486,8 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
             snapshot = _save_baseline(carried, decks, language=_language(settings), mode=_scope_mode(settings))
         if run_id is not None or not automatic or acting or taking:
             snapshot = save_snapshot(touchups, later)
-        if taking:                      # the window's snapshot now holds its way back: never refused or offered again
-            undo.mark_complete(_language(settings), run_id=unfinished, taken_over=True)
+        for cut_id, _saved in connect_cuts:     # the window's snapshot now holds their way back: never refused or
+            undo.mark_complete(_language(settings), run_id=cut_id, taken_over=True)     # offered again
     except OSError as e:
         # Refusing here is the entire point of I3. A reposition with no undo file is a one-way door:
         # AnkiConnect writes no undo entry, and Anki's own Undo would revert the wrong thing.
@@ -2866,23 +2870,50 @@ def _same_scope(snapshot, decks, settings):
             and (snapshot.get("mode") == "all") == (_scope_mode(settings) == "all"))
 
 
-def _finish_cut(settings, cut, automatic, decks, stats):
+def _finish_cut(settings, cut, automatic, decks, stats, connect_cuts=()):
     """Disc-T1: a run you start that takes over a cut automatic run and finds nothing left to write still ends it —
     a snapshot of its own takes the cut run over, as one with writes does (every card in scope where it is, the cut
     run's originals winning), saved complete and `finished_automatic`, and today's baseline ended. Newest, it is what
     Undo offers: never a baseline a positions-only job wrote after the cut (the adversary's MUST: that one knows
-    nothing of the cut run's tags, flags and suspends). Not saved: the cut snapshot stays unfinished, as it was."""
-    if cut is None or automatic:
+    nothing of the cut run's tags, flags and suspends). Not saved: the cut snapshot stays unfinished, as it was.
+    Junban-X: Connect's cut runs it takes over (`connect_cuts`) the same way, each then marked taken over."""
+    if (cut is None and not connect_cuts) or automatic:
         return
     language = _language(settings)
     try:
         undo.save([(row.card_id, row.due) for row in stats.get("order") or []], decks, language=language,
-                  fields=undo.carry_forward_fields(cut, None), mode=_scope_mode(settings), cut=[cut],
-                  finished_automatic=True)
+                  fields=_cut_fields(connect_cuts, undo.carry_forward_fields(cut, None)), mode=_scope_mode(settings),
+                  cut=[cut] + [saved for _cut_id, saved in connect_cuts], finished_automatic=True)
     except OSError:
         return
     undo.end_baseline(language)
     undo.mark_complete(language)
+    for cut_id, _saved in connect_cuts:
+        undo.mark_complete(language, run_id=cut_id, taken_over=True)
+
+
+def _connect_cuts(settings, decks):
+    """Junban-X (Sonic 2026-11-13: "a manual would be a priority BUT if the data until that point isn't prepped than the
+    manual isn't ready to run yet"): Connect's unfinished reorder runs a run you start takes over -> `[(run id, its
+    snapshot)]`, newest first; or None when one of them can't be, its record not complete — a file that can't be read
+    just now (`undo.runs`' unreadable), or a run for another deck or scope mode, whose way back this run's snapshot
+    wouldn't hold. Every one, never only the newest: an older one left unfinished would put its half writes back."""
+    taken = []
+    for cut_id, saved in undo.runs(_language(settings), "reorder"):
+        if saved.get("complete") is not False:
+            continue
+        if (saved.get("unreadable") or not isinstance(saved.get("cards"), dict)
+                or not _same_scope(saved, decks, settings)):
+            return None
+        taken.append((cut_id, saved))
+    return taken
+
+
+def _cut_fields(connect_cuts, fields):
+    """`fields` with each field's true original from Connect's cut runs carried forward, the oldest run's winning."""
+    for _cut_id, saved in connect_cuts:             # newest first (`undo.runs`): the oldest is carried last and wins
+        fields = undo.carry_forward_fields(saved, fields)
+    return fields
 
 
 def _unfinished_refusal(checks, decks, stats=None):

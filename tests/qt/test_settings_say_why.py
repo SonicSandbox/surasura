@@ -44,18 +44,25 @@ def test_the_rows_say_their_plain_name_first_with_the_tools_name_small():
     assert "connect_enabled" not in S.ROW_TAGS and "connect_needs_miner" not in S.ROW_TAGS
 
 
-@pytest.mark.parametrize("key", ["closed", "no_addon", "unsure", "denied", "failed", "busy"])
+@pytest.mark.parametrize("key", ["closed", "no_addon", "unsure", "denied", "busy"])
 def test_card_order_and_fill_your_cards_need_anki_while_it_answers_not_connected(key):
     for section_id in WHY_SECTIONS:
         assert live.section_needs(section_id, key) == (S.NEEDS_ANKI, "anki_connection")
 
 
-@pytest.mark.parametrize("key", [None, "unknown", "checking", "connected", "syncing"])
+@pytest.mark.parametrize("key", [None, "unknown", "checking", "connected", "syncing", "failed"])
 def test_no_needs_line_while_anki_is_unread_being_checked_or_answering(key):
-    # never a wrong line: unread / a Check under way say nothing; connected or syncing needs nothing
+    # never a wrong line: unread / a Check under way say nothing; connected or syncing needs nothing; a sync that
+    # failed with Anki open and answering (a deck's or a field's error) never says "needs Anki" (adversary r1 #3)
     for section_id in WHY_SECTIONS:
         assert live.section_needs(section_id, key) is None
     assert live.section_needs("level", "closed") is None              # a section without a why line has no needs
+
+
+def test_card_order_with_its_switch_off_needs_nothing_from_anki():
+    # (adversary r1 #9) the line would send the learner away from the one thing to do: turn 順 on
+    assert live.section_needs("junban", "closed", {"enable_junban": False}) is None
+    assert live.section_needs("junban", "closed", {"enable_junban": True}) == (S.NEEDS_ANKI, "anki_connection")
 
 
 def test_show_me_names_where_it_goes():
@@ -63,12 +70,16 @@ def test_show_me_names_where_it_goes():
     assert S.SHOW_ME_TIP.format(where=live.where("anki_connection")).endswith("Connection")
 
 
-def test_a_renamed_section_is_still_found_by_its_modules_name():
-    # a learner who knew "Junban" / "Backfill" finds the same rows by search (the rows' own words)
+@pytest.mark.parametrize("query, section_id", [("junban", "junban"), ("順", "junban"), ("card order", "junban"),
+                                               ("backfill", "backfill"), ("fill your cards", "backfill")])
+def test_a_renamed_section_is_found_by_its_old_name_and_its_new_one(query, section_id):
+    # a learner who knew "Junban" / "Backfill" finds the same rows by search, and so does one who reads the new name
+    # (adversary r1 #7: "card order" found nothing); the section's every row, not only the ones that say it
     settings = dict(ALL_ON, target_language="ja")
     ctx = frozenset(catalog.MODULES)
-    assert {r.id for r in catalog.rows("junban")} & set(catalog.find("junban", settings, "ja", ctx))
-    assert {r.id for r in catalog.rows("backfill")} & set(catalog.find("backfill", settings, "ja", ctx))
+    rows = {r.id for r in catalog.rows(section_id) if catalog.visible(r, settings, "ja", ctx)}
+    assert rows and rows <= set(catalog.find(query, settings, "ja", ctx))
+    assert not set(catalog.find("fill your cards", settings, "ja", ctx)) & {r.id for r in catalog.rows("level")}
 
 
 # --- the page --------------------------------------------------------------------------------------------------------- #
@@ -82,7 +93,9 @@ def test_the_two_slabs_show_the_plain_name_the_tag_and_the_why_line_and_no_other
             assert slab.why.text() == S.SECTION_WHY[section.id] and slab.why.isVisibleTo(page)
         else:
             assert not slab.tag.isVisibleTo(page) and not slab.about.isVisibleTo(page)
-    assert page.nav["junban"].text() == "Card order" and page.nav["backfill"].text() == "Fill your cards"
+    assert page.nav["junban"].text() == "Card order · 順" and page.nav["backfill"].text() == "Fill your cards"
+    assert page.nav["backfill"].accessibleName() == "Fill your cards · Backfill"          # the module's name heard
+    assert "Backfill" in page.nav["backfill"].toolTip() and "順 Junban" in page.slabs["junban"].name.accessibleName()
     assert store.calls == []                                                        # showing it writes nothing
 
 
@@ -111,6 +124,28 @@ def test_the_needs_line_comes_with_ankis_answer_show_me_reveals_the_connection_a
     assert store.calls == []
 
 
+def test_a_sync_on_its_way_keeps_the_needs_line_no_flicker_at_each_sync(qapp, fakes):  # noqa: F811
+    # (adversary r1 #2) every automatic sync says "syncing" before its answer: the line must not go and come back
+    from app.services import automation as automation_module
+    page, store, shell = make(fakes, ALL_ON)
+    page.bridge.automation_changed.emit(automation_module.State("anki-closed", "ja", 0, None, "Anki is closed", None, 3))
+    assert wait_until(lambda: page.slabs["junban"].needs.isVisibleTo(page))
+    page.bridge.automation_changed.emit(automation_module.State("syncing", "ja", 0, None, "", None, 3))
+    QApplication.processEvents()
+    assert page.slabs["junban"].needs.isVisibleTo(page) and page.slabs["backfill"].needs.isVisibleTo(page)
+
+
+def test_turning_junban_off_takes_card_orders_needs_line_away(qapp, fakes):  # noqa: F811
+    page, store, shell = make(fakes, ALL_ON)
+    fakes.probe = CLOSED
+    page.live.check()
+    assert wait_until(lambda: page.slabs["junban"].needs.isVisibleTo(page))
+    store.file["enable_junban"] = False
+    page.bridge.settings_written.emit(["enable_junban"])
+    assert wait_until(lambda: page.slabs["junban"].needs_now is None)
+    assert not page.slabs["junban"].needs.isVisibleTo(page)
+
+
 def test_a_check_under_way_keeps_the_needs_line_as_it_was_no_jump(qapp, fakes):  # noqa: F811
     page, store, shell = make(fakes, ALL_ON)
     fakes.probe = CLOSED
@@ -126,11 +161,13 @@ def test_a_slab_built_after_ankis_answer_gets_its_needs_line_as_it_is_built(qapp
     # the slabs are built in slices (a reveal may build Card order first): Anki's answer can come before the slab
     # exists, so each row built in it paints its needs line from what is known — no wait for Anki's next answer
     page, store, shell = make(fakes, ALL_ON)
-    slab = page.slabs["junban"]
+    fakes.probe = CLOSED
+    page.live.check()
+    assert wait_until(lambda: page.slabs["junban"].needs.isVisibleTo(page))
+    slab = page.slabs["backfill"]                         # the later slab alone not painted yet (Card order is)
     slab.set_needs(None)
-    page.live.facts.update(sync="anki-closed", report=None)        # answered meanwhile, as the slab came
     assert not slab.needs.isVisibleTo(page)
-    page.live._built(catalog.rows("junban")[0].id)
+    page.live._built(catalog.rows("backfill")[0].id)
     assert slab.needs.isVisibleTo(page) and slab.needs_line.text() == S.NEEDS_ANKI
 
 
@@ -155,6 +192,8 @@ def test_the_rows_show_their_tag_and_their_what_you_get_line_in_sight(qapp, fake
         assert view.label.text() == S.ROWS[row_id][0]
     for row_id in ("hato", "practice_ai"):
         assert page.rows[row_id].help.isVisibleTo(page), row_id                  # what you get: never behind the ?
+    assert page.live.parts["hato"]["mark"].accessibleName().startswith("hato")   # (r1 #5) "not found" names hato
+    assert S.HATO_NOT_FOUND.startswith("hato")
     others = [v for r, v in page.rows.items() if r not in S.ROW_TAGS]
     assert others and not any(v.tag.isVisibleTo(page) for v in others)
 
@@ -166,6 +205,8 @@ def test_cards_made_for_you_says_what_you_get_in_sight(qapp, fakes, row_id, foun
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False), found=tools)
     view = page.rows[row_id]
     assert view.isVisibleTo(page) and view.help.isVisibleTo(page)
+    if row_id == "connect_enabled":                       # (r1 #1, blocking) its ? still opens the help card
+        assert view.mark.card == "cards" and view.mark.isVisibleTo(page) and view.mark.toolTip()
     if row_id == "connect_needs_miner":                         # what you get, then (one line) what it needs
         assert view.help.text() == f"{S.CARDS_WHY}{S.SEP}{S.NEEDS_MINER}"
     else:

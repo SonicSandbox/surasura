@@ -275,6 +275,8 @@ class Slab(QWidget):
         self.tag.setObjectName("settingshelp")
         self.tag.setText(S.SECTION_TAGS.get(section.id, ""))
         self.tag.setVisible(bool(self.tag.text()))
+        if self.tag.text():                            # a screen reader hears the module's name too
+            self.name.setAccessibleName(S.SECTION_NAMED.format(name=section.name, tag=self.tag.text()))
         head.addWidget(self.icon)
         head.addWidget(self.name)
         head.addWidget(self.tag)
@@ -665,7 +667,9 @@ class RowView(QWidget):
         shown = bool(help_) and (not own or self.row.id in HELP_SHOWN or self.row.kind == "slider")
         if self.help.isHidden() == shown:
             self.help.setVisible(shown)
-        about = "" if shown and own else help_ if own else self.row.help if "{" not in self.row.help else ""
+        # (shown, its ? stays only when it opens the row's help card: S1's *Cards made for you*)
+        about = (help_ if self.mark.card else "") if shown and own else help_ if own else \
+            self.row.help if "{" not in self.row.help else ""
         self.mark.set_about(label, about if label else "")
 
     def restyle(self):
@@ -783,13 +787,17 @@ class SettingsPage(QWidget):
         nav = QVBoxLayout(self.nav_panel)
         nav.setSpacing(round(2 * _f()))
         for section in catalog.SECTIONS:
-            b = QPushButton(section.name.replace("&", "&&"), self.nav_panel)    # "&" shown, never a mnemonic (S2)
+            words = S.SECTION_NAMED.format(name=section.name, tag=S.NAV_TAGS[section.id]) \
+                if section.id in S.NAV_TAGS else section.name                 # S1: 順 beside Card order (mock 03)
+            named = S.SECTION_NAMED.format(name=section.name, tag=S.SECTION_TAGS[section.id]) \
+                if section.id in S.SECTION_TAGS else section.name
+            b = QPushButton(words.replace("&", "&&"), self.nav_panel)    # "&" shown, never a mnemonic (S2)
             b.setObjectName("settingsnavitem")
             b.setCheckable(True)
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip(S.CHANGE_TIP.format(section=section.name))
-            b.setAccessibleName(section.name)
+            b.setToolTip(S.CHANGE_TIP.format(section=named))
+            b.setAccessibleName(named)
             b.clicked.connect(lambda _c=False, s=section.id: self.go_to(s))
             self.nav[section.id] = b
             nav.addWidget(b)

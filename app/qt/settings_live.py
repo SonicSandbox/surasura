@@ -227,12 +227,17 @@ def connection(report=None, sync=None):
 
 # S1 · Settings say why (Kantan-S1, PROVISIONAL): what a section needs while it's missing, from the Connection row's own
 # answer (no read of its own) — never while Anki is unread or a Check is under way (never a wrong line)
-NEEDS_ANKI = ("closed", "no_addon", "unsure", "denied", "failed", "busy")
+# ("failed": a sync's own error, Anki open and answering — never "needs Anki")
+NEEDS_ANKI = ("closed", "no_addon", "unsure", "denied", "busy")
+KEEP_NEEDS = ("checking", "syncing")    # an answer on its way: the line stays as it is (no flicker at each sync)
 
 
-def section_needs(section_id, anki):
+def section_needs(section_id, anki, settings=None):
     """(the needs line, the row its *Show me* reveals) for `section_id` while something stands in its way, else None.
-    `anki`: the Connection row's key (`connection`'s), None while unread."""
+    `anki`: the Connection row's key (`connection`'s), None while unread. Card order with 順's switch off needs nothing
+    from Anki (its own switch is the thing to turn on)."""
+    if section_id == "junban" and not catalog.value_of(settings or {}, "enable_junban"):
+        return None
     if section_id in S.SECTION_WHY and anki in NEEDS_ANKI:
         return S.NEEDS_ANKI, "anki_connection"
     return None
@@ -242,7 +247,7 @@ def where(target):
     """*Show me*'s words for where it goes: the section › the row ("Anki & mining › Connection")."""
     section_id, row_id = catalog.locate(target)
     name = next(section.name for section in catalog.SECTIONS if section.id == section_id)
-    return f"{name} › {catalog.ROW[row_id].label}" if row_id else name
+    return S.WHERE.format(section=name, row=catalog.ROW[row_id].label) if row_id else name
 
 
 def _hours(hours):
@@ -640,7 +645,7 @@ class Live(QObject):
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"door": door}
         elif row_id == "hato":
-            mark = sc.StatusMark(False, S.HATO_NOT_FOUND, tooltip=row.tip, name=row.label)
+            mark = sc.StatusMark(False, S.HATO_NOT_FOUND, tooltip=row.tip, name=S.ROW_TAGS["hato"])
             find = qpress.room(sc.Door(S.FIND_HATO, tooltip=S.FIND_HATO_TIP, name=S.FIND_HATO))
             find.clicked.connect(lambda _c=False: self.find_hato())
             find.setVisible(False)                      # until the look says hato isn't found
@@ -767,6 +772,8 @@ class Live(QObject):
             self._read_skipped()
         self._paint_level()                   # the page put the settings' band back: Automatic's shown again (S2)
         self._paint_setup()
+        if "enable_junban" in keys:
+            self._paint_needs()                # S1: Card order's needs line follows 順's switch
 
     def _language(self, _language):
         self.facts.update(known=None, band=None, auto=False, previews=None)
@@ -944,17 +951,26 @@ class Live(QObject):
 
     def _paint_needs(self):
         """S1: each why-section's needs line from Anki's answer as the Connection row has it (no read of its own);
-        kept as it is while a Check runs (no jump), and repainted only when its words change (S19)."""
-        if self._checking:
-            return
+        kept as it is while an answer is on its way (a Check, a sync: no jump), and repainted only when its words change
+        (S19) — the page held in place once for all of them; a slab not shown yet (mid-build) just takes its line."""
         anki = self._anki_now()[1] if self._anki_known() else None
+        if anki in KEEP_NEEDS:
+            return
+        settings = self._settings()
+        changed = []
         for section_id in S.SECTION_WHY:
             slab = self.page.slabs.get(section_id)
-            need = section_needs(section_id, anki)
-            if slab is None or slab.needs_now == need:
-                continue
-            with self.page._keeping(self.page._last):
+            need = section_needs(section_id, anki, settings)
+            if slab is not None and slab.needs_now != need:
+                changed.append((slab, need))
+        shown = [(slab, need) for slab, need in changed if not slab.isHidden()]
+        for slab, need in changed:
+            if slab.isHidden():
                 slab.set_needs(need, where(need[1]) if need else "")
+        if shown:
+            with self.page._keeping(self.page._last):
+                for slab, need in shown:
+                    slab.set_needs(need, where(need[1]) if need else "")
 
     def _anki_url(self):
         from app import anki_connect

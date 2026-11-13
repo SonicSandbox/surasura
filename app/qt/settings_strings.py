@@ -28,7 +28,7 @@ CHECK = "Check"
 CHECK_TIP = "Checks AnkiConnect, the deck and the note type"
 INSTALLED = "installed · {version}"
 # Michi-HD (Mattias 2026-11-11; lean taken, PROVISIONAL): hato installed where Surasura can't see it — *Find hato…*
-HATO_NOT_FOUND = "not found"
+HATO_NOT_FOUND = "hato not found"            # (S1: under its plain name, the words name it)
 FIND_HATO = "Find hato…"
 FIND_HATO_TIP = ("Already have hato? Pick the folder you unpacked it into.\n"
                  "• hato opens once, so it can connect to Surasura")
@@ -120,10 +120,12 @@ SECTIONS = {
 # hide value say their plain name first, the module's name small beside it, and one line on what you get under it; a
 # needs line only while something is missing, with *Show me* where that is (the page's `reveal`)
 SECTION_TAGS = {"junban": "順 Junban", "backfill": "Backfill"}
+NAV_TAGS = {"junban": "順"}                                     # the nav's (mock 03): 順's glyph, as the bar's circle
+SECTION_NAMED = "{name} · {tag}"                               # a tagged section, for the nav's tip and screen readers
 SECTION_WHY = {
-    "junban": "Your new Anki cards come in the order you'll meet their words in your shows",
+    "junban": "Your new Anki cards come in the order you'll meet their words in your content",
     "backfill": "Adds to your Anki cards how each word is usually used (パターン) and two more sentences from your own "
-                "shows (例文)",
+                "content (例文). Restore puts every card back",
 }
 ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato"}       # a row's tool, small beside its plain name
 NEEDS_ANKI = "Needs Anki open and connected"
@@ -131,6 +133,7 @@ NEEDS_MINER = "Needs Anki Miner (free)"
 CARDS_WHY = "Episodes you place at the top of Current get their Anki cards by themselves"   # (before Anki Miner's found)
 SHOW_ME = "Show me ›"
 SHOW_ME_TIP = "Goes to {where}"
+WHERE = "{section} › {row}"
 SHOW_ME_PLAIN = "Goes to the setting it needs"
 
 # --- the group names inside a section ------------------------------------------------------------------------------ #
@@ -505,7 +508,7 @@ ROWS = {
     "hato": ("Subtitles for videos without them", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
     "practice_ai": ("Practise with your AI",
-                    "Practise your words with your AI. What it's told goes to that AI's company",
+                    "Your AI app quizzes you on your own words. What it's told goes to that AI's company",
                     "Copy the setup for your AI app, then paste it to your AI. A short story is a good first try",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",

@@ -668,6 +668,8 @@ def find(query, settings, language, ctx=frozenset()):
         # a9.1: a door's own words find its row too (one opener per window: *Preview a video…* is on its switch)
         labels += [(S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS.get(name, ("",)))[0] for name in row.door]
         text = " ".join([row.label, row.help, row.words] + labels)
+        if row.section in S.SECTION_TAGS:     # S1: *Card order* / *Fill your cards* (and 順 Junban, Backfill) find theirs
+            text = " ".join((text, S.SECTIONS[row.section], S.SECTION_TAGS[row.section]))
         if not q or q in _fold(text):
             found.append(row.id)
     return found

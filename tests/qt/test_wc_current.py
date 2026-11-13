@@ -295,7 +295,8 @@ def test_r5_a_kept_menus_submenus_hold_only_this_opens_entries(screen):
     at = win.mapToGlobal(QPoint(300, 300))
 
     def shape(m):
-        return [(a.text(), [x.text() for x in a.menu().actions()] if a.menu() is not None else None)
+        from app.qt import drag
+        return [(a.text(), [x.text() for x in drag.filled(a.menu()).actions()] if a.menu() is not None else None)
                 for a in m.actions()]
     row = next((r for r in rs[1:] if any(a.menu() is not None for a in win.items.menu(r, at).actions())), None)
     win.items.last_menu.close()

@@ -978,7 +978,10 @@ def fit_on_screens(rect, screens, default=DEFAULT_SIZE):
     if best is None:
         first = screens[0] if screens else QRect(0, 0, *default)
         w, h = min(default[0], first.width()), min(default[1], first.height() - CAPTION)
-        return QRect(first.center().x() - w // 2, first.center().y() - h // 2 + CAPTION // 2, w, h)
+        # inside the screen to the pixel, its title strip too (Fresh-U row 21: `center()` is half a pixel short, so a
+        # window as wide as the screen began at x -1, on the screen beside it)
+        return QRect(first.left() + (first.width() - w) // 2, first.top() + CAPTION + (first.height() - CAPTION - h) // 2,
+                     w, h)
     w, h = min(rect.width(), best.width()), min(rect.height(), best.height() - CAPTION)
     x = max(best.left(), min(rect.left(), best.right() - w + 1))
     y = max(best.top() + CAPTION, min(rect.top(), best.bottom() - h + 1))
@@ -2612,10 +2615,17 @@ class ShellWindow(QMainWindow):
         if self.duties is not None and self._status_snap is not None:
             self._paint_journey_dot()
 
+    def _journey_owed(self):
+        """The journey's sentences catching up: the bar's last snapshot says a Generate is owed AND there is a journey
+        to catch up (its *Journey ↗* shown). Fresh-U row 16: on a first start, behind setup, the store's order moved
+        before any Generate, so an empty window said *Your journey's sentences are catching up* with no journey."""
+        snap = self._status_snap
+        return bool(snap is not None and snap.journey and self.duties.journey_button.isEnabled())
+
     def _paint_journey_dot(self):
         """The journey dot from the bar's last snapshot; its tooltip promises a Generate by itself only while D29 is on
         (the keeper runs one), else says to press Generate — D29 as last read on a worker (`_read_d29`)."""
-        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
+        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._journey_owed() else "",
                           strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
         self._paint_level()                                    # W3.1a: the dot is a mark on the ▾ too
 
@@ -3192,6 +3202,8 @@ class ShellWindow(QMainWindow):
                 b.setEnabled(exists)
                 b.setVisible(exists)                       # W3.1a: shown only while there is one to open
                 b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
+                if self._status_snap is not None:
+                    self._paint_journey_dot()          # Fresh-U row 16: the dot only beside a journey
         if self.duties.pop.isVisible():
             self.duties.pop.place()
 
@@ -3432,10 +3444,9 @@ class ShellWindow(QMainWindow):
         (amber), stale, or the journey's sentences catching up (`frame.level_mark`); repainted only on a change."""
         d = self.duties
         gen, state = d.module.gen, d.generate_state
-        snap = self._status_snap
         mark = frame.level_mark(state is not None and state.state == gen.FAILED,
                                 state is not None and state.state == gen.STALE,
-                                bool(snap is not None and snap.journey))
+                                self._journey_owed())
         tip = (strings.LEVEL_TIP_MARK.format(level=d.level_tip, mark=strings.LEVEL_MARKS[mark]) if mark
                else strings.LEVEL_TIP.format(level=d.level_tip))
         changed = d.level.set_level(d.level_text, tip)

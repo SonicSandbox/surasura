@@ -172,6 +172,33 @@ def test_a_cancelled_picker_adds_nothing(window, monkeypatch):
     assert asked == [DRAMA]
 
 
+def test_fresh_u_every_picker_for_shows_and_books_opens_in_the_videos_folder_never_the_programs(window, monkeypatch,
+                                                                                               tmp_path):
+    """Fresh-U row 11: *Add a folder…* gave Windows' dialog no folder, so it opened in the program's own folder
+    (`_internal`, `data`, `User Files`). Every picker of shows and books — the page's and the window's *Add a folder…*,
+    + Add's files and folder, Finished's import — opens in the learner's Videos folder (their home without one)."""
+    from app.qt import add_menu
+    videos = tmp_path / "ビデオ"
+    videos.mkdir()
+    monkeypatch.setattr(windows.QStandardPaths, "writableLocation", lambda _where: str(videos))
+    assert windows.content_folder() == os.path.normpath(str(videos))
+    looks = ActingLooks([])
+    win, page, row, folders = _open(window, looks)
+    monkeypatch.setattr(win.adder, "read_folder", lambda _f: False)
+    starts = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda _p, _t, start="", *_a: starts.append(start) or "")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda _p, _t, start="", *_a: starts.append(start) or ([], ""))
+    row.add.click()
+    folders.add.click()
+    add_menu.pick_folder(win)
+    add_menu.pick_files(win)
+    win.finished._choose("files")
+    win.finished._choose("folder")
+    assert starts == [os.path.normpath(str(videos))] * 6
+    monkeypatch.setattr(windows.QStandardPaths, "writableLocation", lambda _where: str(tmp_path / "none"))
+    assert windows.content_folder() == os.path.normpath(os.path.expanduser("~"))   # no Videos folder: home
+
+
 def _starts(monkeypatch):
     """The folder dialog stood in for, cancelled -> the start folder each opening was given."""
     asked = []

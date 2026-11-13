@@ -256,12 +256,13 @@ def _audio_name(path):
 
 
 def pick_files(parent):
-    paths, _chosen = QFileDialog.getOpenFileNames(parent, strings.ADD_PICK_FILES, "", strings.ADD_PICK_FILTER)
+    paths, _chosen = QFileDialog.getOpenFileNames(parent, strings.ADD_PICK_FILES, windows.content_folder(),
+                                                 strings.ADD_PICK_FILTER)
     return [os.path.normpath(p) for p in paths]
 
 
 def pick_folder(parent):
-    folder = QFileDialog.getExistingDirectory(parent, strings.ADD_PICK_FOLDER, "")
+    folder = QFileDialog.getExistingDirectory(parent, strings.ADD_PICK_FOLDER, windows.content_folder())
     return os.path.normpath(folder) if folder else None
 
 

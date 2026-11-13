@@ -154,14 +154,16 @@ REPAINT_ROWS = 40            # picks moved on more rows than this: one repaint o
 HAND_EVERY = 0.25           # s: the numbers go to the reader at most four times a second (A4), the last never lost
 
 
-def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None):
+def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None, after=None):
     """An arrival's place, New arrivals' one call (the tray's icons and ⋯, its picks, the sort screen): `where` one of
     `moves.PLACES`, through the window's writer (`Writer.place`) by the drag controller's ticket — its toast with Undo
-    unless `toast` is False (the sort screen says it itself; `ticket`: its own, kept for its Undo). -> the writer's
-    number, or None (refused)."""
+    unless `toast` is False (the sort screen says it itself; `ticket`: its own, kept for its Undo; `after`: the item it
+    goes after, with `top` — `Writer.place`). -> the writer's number, or None (refused)."""
     from app.qt import drag
     ticket = ticket or drag.Ticket(text, tuple(keys), list(ids))
-    return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
+    if after is None:
+        return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
+    return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t, after=after), toast=toast)
 
 
 def removed_door(win):

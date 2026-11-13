@@ -1632,7 +1632,8 @@ class NeedsYou(QObject):
         adder = getattr(self.win, "adder", None)
         if adder is None:
             return
-        folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), "")
+        from app.qt import windows                       # (Fresh-U row 11: never the program's own folder)
+        folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), windows.content_folder())
         if folder and adder.read_folder(folder):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
 

@@ -180,7 +180,31 @@ def test_a_generated_cover_writes_a_latin_title_as_one_short_line_and_a_japanese
             if w >= 31:                                     # a row's cover and up: at least the first letters
                 assert text and text.rstrip("…") and title.startswith(text.rstrip("…"))
         else:
-            assert vertical and text == title               # Japanese: the mock's vertical cover, as before
+            assert vertical and text == rows.vertical_text(title)     # Japanese: the mock's vertical cover
+
+
+
+@pytest.mark.parametrize("title, written", [
+    ("杜子春 (audiobook subs)", "杜子春"),                   # Fresh-U row 17: no "( a u d i o" down the cover
+    ("灯の細工職人 Brotherhood", "灯の細工職人"),
+    ("灯の細工職人　ＳＥＡＳＯＮ２", "灯の細工職人"),          # full-width Latin too
+    ("星屑ステーション", "星屑ステ︱ション"),                  # the long vowel a line down, as a vertical book prints it
+    ("「水無瀬カナエの午後」", "﹁水無瀬カナエの午後﹂"),
+    ("ﾎｰﾑﾗﾝ･ﾀﾞｲｱﾘｰ", "ﾎ︱ﾑﾗﾝ･ﾀﾞｲｱﾘ︱"),
+    ("Akari:灯の細工職人", "Akari:灯の細工職人"),              # a romaji name before the kana stays
+    ("とある科学の超電磁砲S", "とある科学の超電磁砲S"),        # one letter stays
+    ("進撃 2nd Season", "進撃"),                              # (review N5: the digits before the run go too)
+    ("機動戦士ガンダム00 Second Season", "機動戦士ガンダム00"),   # (review R2-5: digits of the title's own stay)
+    ("銀河鉄道の夜", "銀河鉄道の夜"),
+])
+def test_fresh_u_a_vertical_cover_stops_before_a_latin_run_and_writes_vertical_forms(title, written):
+    """Fresh-U row 17: the sort pad's tile for *杜子春 (audiobook subs)* stood "( a u d i o" one letter under another
+    down its edge, and 星屑ステーション's long vowel lay across the column. A vertical cover writes the title up to its
+    first run of Latin letters after the Japanese begins (the whole title is beside it), each long vowel, dash and
+    bracket in its vertical form (made-up titles and Aozora's)."""
+    from PyQt6.QtGui import QFont, QFontMetrics
+    assert rows.vertical_text(title) == written
+    assert rows.cover_label(title, 88, QFontMetrics(QFont())) == (True, written)
 
 
 @pytest.mark.parametrize("what", ["text renamed .jpg", "truncated jpeg", "vanished"])

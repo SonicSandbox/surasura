@@ -550,9 +550,11 @@ def test_choose_a_file_lists_what_the_library_reads_and_says_what_it_doesnt(make
     page = wiz.page
     picked = [str(tmp_path / n) for n in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "夜の図書館.epub", "日記.txt",
                                           "ぼっち・ざ・ろっく！ 第01話.png")]
-    wiz.pick_files_dialog = lambda _title, _start: picked
+    starts = []
+    wiz.pick_files_dialog = lambda _title, start: starts.append(start) or picked
     QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
     assert page.files == [os.path.normpath(p) for p in picked[:3]]
+    assert starts == [windows.content_folder()]                    # Fresh-U row 11: the Videos folder, not home
     assert not page.refused_line.isHidden() and "第01話.png" in page.refused_line.text()
     assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.png") in page.refused_line.text()
     QApplication.processEvents()                                   # (a new row is shown by the next turn of the loop)
@@ -844,6 +846,23 @@ def test_card_order_preselects_keep_in_order_page_twos_deck_and_leave_and_saves_
     wiz.next()
     assert settings.calls == [{"junban_auto_actions": True, "junban_deck": "日本語::Mining", "junban_later_tag": True,
                                "junban_later_flag": False, "junban_later_suspend": True}]
+
+
+def test_fresh_u_the_card_order_page_says_what_the_chosen_later_choice_does_to_those_cards(make):
+    """Fresh-U row 19: *Leave them / Mark them / Set them aside* said what they do to the cards only in their hovers.
+    The line under the three says it for the chosen one, follows a pick (click or arrow), and follows a loaded answer."""
+    wiz, _shell, _api, _settings, _m = make()
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert page.later.value() == "leave" and page.later_line.text() == S.LATER_LINES["leave"]
+    QTest.mouseClick(page.later.choice("aside"), Qt.MouseButton.LeftButton)
+    assert page.later_line.text() == S.LATER_LINES["aside"] and "suspended" in page.later_line.text()
+    page.later.step(page.later.choice("aside"), -1)
+    assert page.later.value() == "mark" and page.later_line.text() == S.LATER_LINES["mark"]
+    page.load({"later": "aside"})
+    assert page.later_line.text() == S.LATER_LINES["aside"]
+    assert set(S.LATER_LINES) == set(S.LATER_CHOICES)
 
 
 def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):

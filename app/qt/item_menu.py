@@ -492,9 +492,11 @@ class ItemActions(QObject):
     def _picked(self):
         """What Ctrl+click picked, in the list's order: ([whole rows], [(row, episode)]) — an episode of a row picked
         whole is in it already."""
+        whole_keys, eps = self.lst.picked_rows, self.lst.picked_eps
+        if not whole_keys and not eps:
+            return [], []                            # (nothing picked: no walk of every row's episodes at each ⋯)
         view = self._view()
         rows_ = view.rows if view is not None else ()
-        whole_keys, eps = self.lst.picked_rows, self.lst.picked_eps
         whole = [r for r in rows_ if r.key in whole_keys]
         picked = [(r, e) for r in rows_ if r.key not in whole_keys for e in r.episodes if (r.key, e.id) in eps]
         return whole, picked
@@ -634,17 +636,21 @@ class ItemActions(QObject):
 
     def _submenu(self, menu, row, label, tip, ok, children):
         """`children` in a submenu of `menu`: `MENU_PAGE` of them, then *More…* holding the rest, page by page (a long
-        *Same show as…* or *Split here…* list never runs past the window). -> the submenu."""
+        *Same show as…* or *Split here…* list never runs past the window). Its entries are made as it opens
+        (`drag.fill_later`: Mado-SM, the ⋯ press at 250 %). -> the submenu."""
         sub = drag.sub_menu(menu, label)             # R5: a kept submenu (`list_menu`'s), never a new one
         sub.setObjectName("rowmenu")
         sub.setToolTipsVisible(True)
         sub.menuAction().setToolTip(tip)
         sub.menuAction().setEnabled(ok)
         page, rest = (children, []) if len(children) <= MENU_PAGE + 1 else (children[:MENU_PAGE], children[MENU_PAGE:])
-        for c in page:
-            self._action(sub, row, c)
-        if rest:
-            self._submenu(sub, row, strings.MENU_MORE[0], strings.MENU_MORE[1], any(c.ok for c in rest), rest)
+
+        def fill():
+            for c in page:
+                self._action(sub, row, c)
+            if rest:
+                self._submenu(sub, row, strings.MENU_MORE[0], strings.MENU_MORE[1], any(c.ok for c in rest), rest)
+        drag.fill_later(sub, fill)
         return sub
 
     def _action(self, menu, row, e):

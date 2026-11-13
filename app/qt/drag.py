@@ -880,6 +880,29 @@ def sub_menu(menu, label, before=None):
     return sub
 
 
+def fill_later(sub, fill):
+    """`sub`'s entries made by `fill()` only as it opens (its `aboutToShow`, which Qt sends before it sizes the
+    submenu), never with its menu: Mado-SM (3.0.x), ⋯ opened at 250 % took 16.6–17.7 ms a press, most of it making the
+    ~60 entries of submenus nobody opened (*Same show as…* lists every other show) and Qt taking them in at the
+    popup. Made as its entry is reached (`hovered`: the mouse on it, the keyboard onto it — before Qt places the
+    submenu level with that entry, which it does before `aboutToShow`; review R2-1), else as it shows. A later
+    `fill_later` replaces one not run yet; the kept menu's close drops it (`_empty_menu`)."""
+    sub.__dict__["fill"] = fill
+    if not sub.__dict__.get("fills_on_show"):
+        sub.__dict__["fills_on_show"] = True
+        sub.menuAction().hovered.connect(lambda m=sub: filled(m))
+        sub.aboutToShow.connect(lambda m=sub: filled(m))
+
+
+def filled(sub):
+    """`sub` with its entries made (a `fill_later` still to run, run now: as its entry is reached or it opens, and
+    for a test). -> `sub`."""
+    fill = sub.__dict__.pop("fill", None)
+    if fill is not None:
+        fill()
+    return sub
+
+
 def _kept_top(menu):
     """The kept menu (`list_menu`'s) `menu` is, or is a submenu of; None under a plain menu."""
     top = menu
@@ -956,6 +979,7 @@ def _empty_menu(m):
     lent = m.__dict__.get("lent") or []
     used = m.__dict__.setdefault("used", [])
     for menu in [m] + lent:
+        menu.__dict__.pop("fill", None)              # (a submenu never opened: nothing to make for it any more)
         for act in menu.actions():
             menu.removeAction(act)
             if act.parent() is menu or act.parent() is m:

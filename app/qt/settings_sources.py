@@ -644,7 +644,7 @@ class FoldersWindow(windows.SecondaryWindow):
         if looks is None or moves is None or why_not(self.shell) is not None or qpress.live(self.shell, key):
             return False
         if path is None:
-            start = next((line.source["path"] for line in self.lines.values()), "")
+            start = next((line.source["path"] for line in self.lines.values()), "") or windows.content_folder()
             path = self.pick_dialog(W.SKIP_TITLE, start)
             if not path:
                 return False

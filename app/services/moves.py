@@ -127,6 +127,7 @@ JOURNALLED += ("audiobook_keep", "audiobook_separate")
 # --- Mado-O (alpha 8): the sort screen's *Start sorting over* (`placed`: its placements' records)
 JOURNALLED += ("start_over",)
 KEPT += ("placed",)
+KEPT += ("after",)                              # choice 1: a place after the sort screen's last Current pick
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -387,12 +388,17 @@ class Writer:
         return self._put({"op": "set_watched", "ids": list(ids), "on": bool(on), "label": label})
 
     # --- W3.2: New arrivals, Finished, Needs you, the trash, pins, pieces, titles -------------------------------- #
-    def place(self, ids, where, label=None):
+    def place(self, ids, where, label=None, after=None):
         """`Store.place`: New arrivals' icons and ⋯ — `where` in `PLACES` (`top` · `after-show` · `soon` · `goal` ·
-        `finished`); `after-show` with no show to follow writes nothing (`on_reread`). Undone as a move (a finish)."""
+        `finished`); `after-show` with no show to follow writes nothing (`on_reread`). `after` (an item id, with `top`:
+        the sort screen's last Current pick — choice 1): right after it while it is in Current, else the top; the
+        numbers then follow from where the store put it. Undone as a move (a finish)."""
         if where not in PLACES:
             raise ValueError(f"unknown place {where!r}")
-        return self._put({"op": "place", "ids": list(ids), "where": where, "label": label})
+        cmd = {"op": "place", "ids": list(ids), "where": where, "label": label}
+        if after is not None:
+            cmd["after"] = after
+        return self._put(cmd)
 
     def start_over(self, changes, label=None):
         """Mado-O (alpha 8): the sort screen's *Start sorting over* — `Store.unsort` of the placements it made
@@ -970,7 +976,8 @@ class Writer:
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
                 self._numbers_move(cmd, store)                          # first write
-            elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("numbered"):
+            elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("after") and \
+                    not cmd.get("numbered"):
                 cmd["numbered"] = (None, None)      # Up next · Goal's top: `Store.place` is a move to the tier's top —
                 self._numbers_move(cmd, store, tier=PLACED_TOP[cmd["where"]])   # followed as one
             elif _follows_after(cmd) and not cmd.get("numbered") and self._numbers_expect(cmd):
@@ -1091,7 +1098,7 @@ class Writer:
         """W3.2's store commands, each one store call. -> the change, or None."""
         op, ids = cmd["op"], cmd["ids"]
         if op == "place":
-            return store.place(ids, cmd["where"])
+            return store.place(ids, cmd["where"], after_id=cmd.get("after"))
         if op == "put_back":
             return store.put_back_finished(ids)
         if op == "start_over":                      # Mado-O (alpha 8)
@@ -1974,8 +1981,10 @@ def _state_of(opener):
 
 def _follows_after(cmd):
     """The commands whose place only the store's rule decides (`Store.nudge`'s group jumps, Soon's slot below its line,
-    after-show): the numbers follow them from the store's result, after the write (`Writer._numbers_follow`)."""
-    return cmd["op"] == "nudge" or (cmd["op"] == "place" and cmd.get("where") in ("soon", "after-show"))
+    after-show, a place after an anchor — which falls back to the top when it left Current): the numbers follow them
+    from the store's result, after the write (`Writer._numbers_follow`)."""
+    return cmd["op"] == "nudge" or (cmd["op"] == "place" and (cmd.get("where") in ("soon", "after-show") or
+                                                               cmd.get("after") is not None))
 
 
 def _placed(store, ids):

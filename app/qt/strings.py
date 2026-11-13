@@ -1461,12 +1461,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
-                                  "• Change it any time: Settings › Anki"),
+                                  "• Change it any time: Settings › Anki & mining"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
-                           "• Turn it on any time: Settings › Anki"),
+                           "• Turn it on any time: Settings › Anki & mining"),
     # … the same line once setup's page 5 turned *Make cards for me as I watch* on: it asks only about these episodes
     "first_cards_on": ("Make cards", "Make cards for these episodes now.\n"
-                                     "• What comes into your top 20 later gets its cards already: Settings › Anki"),
+                                     "• What comes into your top 20 later gets its cards already: Settings › Anki & mining"),
     "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
                               "• What comes into your top 20 later still gets its cards"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
@@ -1576,8 +1576,8 @@ NEEDS_STOPPED_READING = "Stopped reading {name}: its {n:,} episodes stay in your
 NEEDS_STOPPED_READING_ONE = "Stopped reading {name}: its episode stays in your library"
 NEEDS_STOPPED_READING_NONE = "Stopped reading {name}"
 NEEDS_KEEP_WAITING = "Waiting for {name}: Needs you asks again if it comes back and goes again"
-NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
-NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
+NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki & mining"
+NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki & mining"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
 NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
@@ -1890,7 +1890,7 @@ NEEDS_RELINK_LEFT = "{n:,} of them weren't pointed at: {why}"
 NEEDS_RELINK_WHY = "{why} ({n:,})"
 # fix2 (A4B-4): a folder picked outside the library folder — the store points an item only at a file inside it
 NEEDS_RELINK_OUTSIDE = ("{n:,} of them are in {folder}, outside your library folder, so they can't be pointed at. "
-                        "To read them where they are, add that folder in Settings › Library folders")
+                        "To read them where they are, add that folder in Settings › Content › Library folders")
 NEEDS_RELINK_WHY_OUTSIDE = "outside your library folder"
 NEEDS_RELINK_NONE_TAKEN = ("None of them were pointed at: each file found is another item's already, in the trash, "
                            "or not there any more")
@@ -2030,7 +2030,7 @@ HELP_ALSO = {
 HELP_CARDS_OFF = {"current": "What you're watching or reading now, in order.",
                   "cards": "With it on, Anki Miner makes cards for your top episodes, by itself."}
 HELP_CARDS_OFF_ALSO = "Cards made for you is off · Settings › Anki & mining"
-HELP_CARDS_AUTO_OFF_ALSO = "Nothing is made by itself · Settings › Run things by themselves is off"
+HELP_CARDS_AUTO_OFF_ALSO = "Nothing is made by itself · Settings › Anki & mining › Run things by themselves is off"
 # The tour's first card: the seven, one line each
 HELP_AUTOMATION_LIST = ("Cards made for you: your top episodes", "Known words from Anki", "Your journey catching up",
                         "順 putting Anki's new cards in order", "Backfill filling empty fields",
@@ -2061,7 +2061,7 @@ HELP_NEXT_TIP = "The next card"
 HELP_DONE = "Done"
 HELP_DONE_TIP = "End the tour"
 HELP_STEP = "{n} of {total}"
-HELP_TOUR_FOOT = "Turn any of these off: Settings › Run things by themselves"
+HELP_TOUR_FOOT = "Turn any of these off: Settings › Anki & mining › Run things by themselves"
 HELP_LIT = "Now"                                          # the strip's card: every lit circle and its *Why*
 HELP_LIT_NONE = "Nothing is running now"
 HELP_LIT_LINE = "{name}: {line}"

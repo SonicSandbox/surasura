@@ -376,7 +376,7 @@ def test_the_search_is_sent_the_name_without_its_season_or_part():
 
 
 def test_mushoku_tensei_s01_and_s02_each_find_their_own_season():
-    """Sonic's library (S01 / S02 folders: `Mushoku Tensei Season 1` / `Season 2`): AniList calls season 1 `Mushoku
+    """A learner's library (S01 / S02 folders: `Mushoku Tensei Season 1` / `Season 2`): AniList calls season 1 `Mushoku
     Tensei: Isekai Ittara Honki Dasu` and splits each season in two entries (`… Part 2`, `第2クール`)."""
     assert _named("Mushoku Tensei Season 1") == 108465, "the name and a subtitle; its Part 2 isn't season 1's start"
     assert _named("Mushoku Tensei S01") == _named("Mushoku Tensei") == 108465

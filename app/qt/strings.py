@@ -105,7 +105,10 @@ ITEM_MENU = {
     "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
     "cover": ("Change cover…", "Choose the picture it shows"),
     # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
-    "add-audio": ("Add the narrator's voice…", "{n} of its cards Connect made can get their sentence in the narrator's "
+    # Kura-TX (PROVISIONAL; the audit's ask 2): any book's row names its audiobook up front
+    "audiobook": ("Its audiobook…", "Pick the audiobook that reads this book aloud: its cards get their sentences in "
+                                    "the narrator's voice"),
+    "add-audio": ("Add the narrator's voice…", "{n} of its cards made for you can get their sentence in the narrator's "
                                                "voice: only an empty sentence-audio field is filled, nothing else on "
                                                "the card changes. Undo takes it back"),
     "folder": ("Open its folder", "Open the folder its files are in"),
@@ -236,6 +239,7 @@ ROWS_HERO_WATCHED = "✓ Watched it · finished with it? Press Done"   # Fresh-U
 ROWS_HERO_WATCHED_MIX = "✓ Watched it"                               # … hato's mix never finishes (G3.2)
 ROWS_VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 ROWS_NO_MEDIA_BUTTON = "No {word}"
+ROWS_NO_MEDIA_LINK_BUTTON = "No {word} · Link…"    # Kantan-B2 (AUDIT A3, finding 15; PROVISIONAL): Up Next's, a press
 ROWS_ONLINE_BUTTON = "Online"
 ROWS_LOOKING_BUTTON = "Looking…"                   # R55-A: Up Next before the video check answered
 ROWS_STUDYING = "Studying its cards first"         # after a painted up arrow (G2.3 R3)
@@ -392,12 +396,12 @@ QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, t
 QUIT_DETACHED_TITLE = "Still finishing: {labels}"
 QUIT_DETACHED_JOIN = " · "
 QUIT_DETACHED_BODY = "They finish by themselves."
-QUIT_DETACHED_CONNECT = "Connect finishes the cards it's making by itself."
+QUIT_DETACHED_CONNECT = "Surasura finishes the cards it's making for you by itself."
 QUIT_DETACHED_QUIT = "Quit"
 QUIT_DETACHED_QUIT_TIP = "Close Surasura now: what is still finishing goes on and ends by itself (Esc does the same)"
 QUIT_DETACHED_STOP = "Stop and quit"
 QUIT_DETACHED_STOP_TIP = ("End the library's upkeep now, then close. Surasura picks it up again as it closes, or at "
-                          "its next start. Connect isn't stopped")
+                          "its next start. The cards made for you aren't stopped")
 # --- end row 35
 
 # --- W3.1a frame (app/qt/frame.py): the level ▾ and its pop, the footer's emerald and known corner, the Goal dock and
@@ -499,8 +503,8 @@ ROWS_STOP = "Stop"
 ROWS_STOPPING = "Stopping…"
 ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode: the cards made so far are kept"
 MINE_STOP_ENTRY = "Stop mining"
-MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or Connect is done with it"
-MINE_STOP_FAILED = "Stop didn't reach Connect: {why}"
+MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or they are done"
+MINE_STOP_FAILED = "Stop didn't reach Surasura's card-maker: {why}"
 # R47-A1 (PROVISIONAL): Connect took the stop, then began naming the clips before it could act on it
 MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
 # --- end R47
@@ -527,16 +531,16 @@ MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines v
 MINE_ASKED_ONE = "1 file: its cards come next"
 MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
 MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
-MAKE_CARDS_NONE = "Nothing left to make: Connect has each of those episodes already"
-MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made"
+MAKE_CARDS_NONE = "Nothing left to make: each of those episodes has its cards made for you already"
+MAKE_CARDS_GONE = "Surasura has no record of those episodes' cards now: nothing was made"
 # --- end P4.1 WF
 # alpha 4 M1: a book's or a text's *Mine* while Anki Miner reads no book — never its window
-MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
+MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Surasura makes these cards by itself once it can "
                    "read books and texts")
 # IK-6: the window's start look at Anki (its line in the bar while it runs; *Opening Anki for you…* says the rest)
 SESSION_JOB_LABEL = "Looking at Anki"
 # A4M1-3: an audiobook's or a podcast's *Mine*, the same way
-MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
+MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Surasura makes these cards by itself once it can "
                    "mine audio")
 LINK_TITLE = "Choose the video for {label}"
 LINK_FILTER = "Videos ({patterns})"
@@ -574,7 +578,7 @@ PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # An
 PHASE_ABOUT = {                                    # beside the name: what it is, a few words (help cards, HC-2)
     "arrivals": "new files in your folders",
     "surasura": "your word list",
-    "miner": "makes your cards",
+    "miner": "cards made for you",
     "junban": "Anki's order",
     "anki": "your known words",
 }
@@ -733,7 +737,7 @@ WHY_DONE = {
     "joined": "A split show's parts join forward: the watched part joined its next part",
     "came_up": "Its next part comes up from Goal after it",
 }
-WHY_MINES = "It's above your top-cards line: Make cards for me makes its cards by itself"
+WHY_MINES = "It's above your top-cards line: Cards made for you makes its cards by itself"
 WHY_NOTICE = "Another program (hato, a downloader) added these to your library while Surasura was closed"
 # --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
 DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
@@ -1332,6 +1336,22 @@ def sources_short(n, language="ja"):
 
 
 SHORT_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
+# Kantan-B2 (AUDIT A3, finding 9; Fresh-U row 4; PROVISIONAL): New arrivals' line for the loose texts the looks left out
+# as too short (the inset's tip and name, the tray's foot)
+ARRIVALS_SHORT = "{n:,} short texts left out (under {chars:,} characters of {language})"
+ARRIVALS_SHORT_ONE = "1 short text left out (under {chars:,} characters of {language})"
+ARRIVALS_SHORT_TIP = "A loose .txt or .md this short (a readme, a note, a lyric sheet) isn't read: a book's worth or nothing"
+ARRIVALS_SHORT_INSET_TIP = "{line}\n• Open the tray: what was left out"
+
+
+def arrivals_short(n, language="ja"):
+    """New arrivals' line for `n` short texts left out ("" for none)."""
+    from app import sources
+    n = int(n or 0)
+    if n <= 0:
+        return ""
+    return (ARRIVALS_SHORT_ONE if n == 1 else ARRIVALS_SHORT).format(
+        n=n, chars=sources.BOOK_MIN_CHARS, language=SHORT_LANGUAGES.get(language, SHORT_LANGUAGES["ja"]))
 
 
 SOURCES_NO_LIBRARY = "your library isn't open"
@@ -1394,9 +1414,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
-    "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    "make_cards": ("Make their cards", "Make the cards Surasura missed"),
     # Mattias's field report (3.0.0, #5; PROVISIONAL words)
     "try_again": ("Try again", "Make the cards Anki Miner didn't: the ones it made are kept"),
+    # Kantan-B2 (AUDIT B4, Sonic's yes; PROVISIONAL words): *Not timed*'s *Check again*, the row's own
+    "check_again": ("Check again", "Check its timing again: a subtitle you re-timed beside its video is read first"),
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
@@ -1428,8 +1450,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                         "again"),
     "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
     # a6 settings import (SI-3): a video folder the imported settings name isn't on this PC
-    "find_settings_folder": ("Find it…", "Choose where this folder is on this computer: Connect looks there instead"),
-    "drop_settings_folder": ("Stop looking there", "Take this folder out of Connect's video folders. Nothing on disk "
+    "find_settings_folder": ("Find it…", "Choose where this folder is on this computer: Surasura looks there instead"),
+    "drop_settings_folder": ("Stop looking there", "Take this folder out of the video folders Surasura looks in. Nothing on disk "
                                                    "is touched"),
     # Michi-U: Anki Miner's line (titles wait only for the approved Anki Miner)
     "update_miner": ("Update", "Get the Anki Miner Surasura has tested, free: its installer from its own GitHub "
@@ -1495,8 +1517,8 @@ NEEDS_KEPT = "Kept: their words still count"
 # T6: a gone source folder's answers (said in the bar, or the toast with Undo)
 NEEDS_FIND_TITLE = "Where is {name} now?"
 NEEDS_SETTINGS_FOLDER_TITLE = "Where is this video folder on this computer?"      # a6 settings import (SI-3)
-NEEDS_SETTINGS_FOLDER_FOUND = "Connect looks for videos in {folder} now"
-NEEDS_SETTINGS_FOLDER_DROPPED = "Connect no longer looks for videos in {folder}"
+NEEDS_SETTINGS_FOLDER_FOUND = "Surasura looks for videos in {folder} now"
+NEEDS_SETTINGS_FOLDER_DROPPED = "Surasura no longer looks for videos in {folder}"
 NEEDS_FIND_JOINED = "{name} is read from {folder} now · {n:,} episodes joined their show"
 NEEDS_FIND_JOINED_ONE = "{name} is read from {folder} now · 1 episode joined its show"
 NEEDS_FIND_JOINED_LEFT = "{name}'s episodes joined {folder}: stop reading the old folder in that language's library"
@@ -1538,7 +1560,7 @@ NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    #
 NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
 NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")
-NEEDS_AUDIO_RUNNING = "Connect is looking at 「{title}」's cards for the narrator's voice…"
+NEEDS_AUDIO_RUNNING = "Surasura is looking at 「{title}」's cards for the narrator's voice…"
 NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
@@ -1559,6 +1581,7 @@ NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, t
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_CHECK_AGAIN = "Its timing is checked again, in turn"                  # Kantan-B2 (PROVISIONAL)
 NEEDS_SKIPPED = "Skipped: the rest of its cards are made next"             # Michi-RM3 (PROVISIONAL words)
 NEEDS_SKIPPED_NOT = "Nothing to skip there any more"
 NEEDS_SKIPPED_OWES = "Skipped: its other words still wait, Try again on its row tries them"     # (PROVISIONAL)
@@ -1590,9 +1613,9 @@ NEEDS_SUBS_BUSY = "Anki Miner is busy (its setup, or another one being made): pr
 NEEDS_SUBS_MODEL_FAILED = "Anki Miner's speech model didn't download: {why}"
 NEEDS_SUBS_BESIDE = "Kept in Surasura's library only: their video folder took no copy beside the video"
 NEEDS_HATO_ON = "hato looks for these subtitles now, and for every new video with none from now on"
-NEEDS_MINER_UPDATED = "Anki Miner is updated · Connect makes the waiting cards by itself"
+NEEDS_MINER_UPDATED = "Anki Miner is updated · Surasura makes the waiting cards by itself"
 NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed before it finished"
-NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"
+NEEDS_MINER_BUSY = "Anki Miner is in use (Surasura is making cards with it, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
@@ -1930,7 +1953,7 @@ HELP_CARDS = {
                 "Journey ↗ → the episode's page, open at once"),
     "known": ("Known words from Anki", "Cards you study in Anki become words you know.",
               "Click the known-words count → +12 known"),
-    "cards": ("Making cards", "Anki Miner makes cards for your top episodes, by itself.",
+    "cards": ("Cards made for you", "Anki Miner makes cards for your top episodes, by itself.",
               "Place an episode above the top-cards line → Making cards → 12 cards made today"),
     "junban": ("順 Anki's order", "Your new cards, in the order you'll meet their words.",
                "Preview → Reorder → the next cards come first"),
@@ -1955,8 +1978,14 @@ HELP_ALSO = {
     "piyo": "What leaves: what Surasura tells your AI goes to that AI's company. Nothing else",
     "generate": "Known words, the level or a new file: it catches up straight away",
 }
+# Kantan-B2 (AUDIT A3, finding 3; PROVISIONAL): with cards off, the two card cards say so and never promise cards; their
+# *Open its settings* goes to the switch (`help_cards.live`)
+HELP_CARDS_OFF = {"current": "What you're watching or reading now, in order.",
+                  "cards": "With it on, Anki Miner makes cards for your top episodes, by itself."}
+HELP_CARDS_OFF_ALSO = "Cards made for you is off · Settings › Anki & mining"
+HELP_CARDS_AUTO_OFF_ALSO = "Nothing is made by itself · Settings › Anki & mining › Run things by themselves is off"
 # The tour's first card: the seven, one line each
-HELP_AUTOMATION_LIST = ("Making cards for your top episodes", "Known words from Anki", "Your journey catching up",
+HELP_AUTOMATION_LIST = ("Cards made for you: your top episodes", "Known words from Anki", "Your journey catching up",
                         "順 putting Anki's new cards in order", "Backfill filling empty fields",
                         "Placing new arrivals by your rules", "Finishing a show after its last episode")
 HELP_AREAS = {"screens": "The screens", "library": "Your library", "words": "Your words",
@@ -2003,7 +2032,7 @@ HELP_TRY = {
 }
 HELP_TRY_MISSING = {
     "sync_known": "Choose your Anki decks first: Settings › Known words",
-    "mine_top": "Make cards for me is off, or Anki Miner isn't set up yet",
+    "mine_top": "Cards made for you is off, or Anki Miner isn't set up yet",
     "junban": "順 isn't installed",
     "update_journey": "Add something to your library first",
 }

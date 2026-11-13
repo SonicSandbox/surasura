@@ -48,8 +48,8 @@ def test_a_simplified_sentence_anchors_on_the_traditional_files_own_wording(tmp_
 def test_a_traditional_sentence_anchors_on_a_simplified_file(tmp_path, zh_resources_dir):
     with open(os.path.join(zh_resources_dir, "chinese_text_1.txt"), encoding="utf-8") as f:
         raw = f.read()
-    path = _write(tmp_path / "bbc.txt", raw)
-    line = next(l for l in raw.splitlines() if l.startswith("美国总统特朗普"))
+    path = _write(tmp_path / "news.txt", raw)
+    line = next(l for l in raw.splitlines() if l.startswith("城南孙中山纪念馆"))
     anchor = AnchorFinder(script="t").anchor(path, zh_script.convert(line, "t"))
     assert anchor and anchor in line and raw.count(anchor) == 1
 

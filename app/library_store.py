@@ -12878,13 +12878,20 @@ def _store_audiobook_asks(self):
 
 def _store_audiobook_parts(self, book):
     """The item ids of the book an audiobook reads — its EPUB's live parts (`<epub>#<n>`), else the part the pairing
-    named. One rule for where the audiobook goes (`_audiobook_place`) and which rows show it (`audiobook_hovers`)."""
+    named. One rule for where the audiobook goes (`_audiobook_place`) and which rows show it (`audiobook_hovers`).
+    Kura-TX: a split book's pick names its parts (`parts`): those still in the library."""
     ids = set()
     epub = book.get("epub")
     if isinstance(epub, str) and epub:
         lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
         ids = {r[0] for r in self.conn.execute(f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND "
                                                f"p.content_key < ? AND {_LIVE_ORIGIN}", (lo, lo[:-1] + "$"))}
+    parts = [n for n in book.get("parts") or () if isinstance(n, int) and not isinstance(n, bool)] \
+        if isinstance(book.get("parts"), list) else []
+    if not ids and parts:
+        for chunk in _chunks(parts, 500):
+            ids |= {r[0] for r in self.conn.execute(f"SELECT id FROM items WHERE id IN ({','.join('?' * len(chunk))})",
+                                                    chunk)}
     if not ids and isinstance(book.get("item"), int) and not isinstance(book.get("item"), bool):
         ids = {book["item"]}
     return ids
@@ -13069,28 +13076,37 @@ def _store_book_audiobooks(self, item_id):
     {epub, title, audiobooks: [{item_id, title, n (files), seconds}]} — the library's audiobooks with no book: one
     Hon asks about for this very book (H-8) first, then those with no question open, the likeliest first for this book
     (`audiobooks`' title levels), one told *No* about it or *It has no book* last, then by title; None when the item is
-    no live part of an EPUB. One read."""
+    no live part of an EPUB — nor of a split book (Kura-TX: `epub` its joined `.txt`, `split_book`). `paired`: an
+    audiobook reads this book already (⋯ → *Its audiobook…* is offered only while none does). One read."""
     from app import audiobooks
     with self._reading():
         origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
             f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN} AND instr(p.content_key, '#') > 0 "
             f"ORDER BY p.content_key LIMIT 1", (item_id,))), None)
         if origin is None or not _EPUB_PART.search(origin.get("origin") or ""):
-            return None
-        epub = origin["origin"].rsplit("#", 1)[0]
-        title = self.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
-                                  (item_id,)).fetchone()
-        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
-        if title and self.conn.execute(
-                f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND {_LIVE_ORIGIN} AND "
-                f"instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND p.content_key < ?) AND "
-                f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
-            title = None                                 # two books in one title: this one named by its file
-        title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
-        lone, seen = [], set()
+            split = self.split_book(item_id)             # Kura-TX: a part of a book 2.x split into `.txt` parts
+            if split is None:
+                return None
+            epub, title = split["path"], split["title"]
+            origin = {"sha256": None}                   # (by its path: review r2 N1)
+        else:
+            epub = origin["origin"].rsplit("#", 1)[0]
+            title = self.conn.execute("SELECT w.title, w.id FROM items i JOIN works w ON w.id = i.work_id WHERE "
+                                      "i.id = ?", (item_id,)).fetchone()
+            lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+            if title and self.conn.execute(
+                    f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND {_LIVE_ORIGIN} "
+                    f"AND instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND p.content_key < ?) AND "
+                    f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
+                title = None                             # two books in one title: this one named by its file
+            title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
+        lone, seen, paired = [], set(), False
         for _k, ab_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
             ask = ab.get("ask")
+            book = ab.get("book")
+            paired = paired or (isinstance(book, dict) and isinstance(book.get("epub"), str) and
+                                path_key(os.path.abspath(book["epub"])) == path_key(os.path.abspath(epub)))
             asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
                 path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
             if ab_id in seen or ab.get("book") or (ask and not asked_here):
@@ -13109,9 +13125,102 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    return {"epub": os.path.abspath(epub), "title": title,
+    return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
                             "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)]}
+
+
+# Kura-TX (B1; PROVISIONAL, the lead 2026-11-12 — Mattias's migrated books): a book 2.x split into `.txt` parts
+# (`<name>_<NN>.txt`, `extract.part_name`'s form, a chapter's label after the number too; 2.x's own `<base>_<k>_NN.txt`
+# is the name `<base>_<k>`) — a folder's parts of one name, two or more — is ONE book for its audiobook. ONE joined
+# `.txt` of its parts in order (the app's own file, written by Connect: `connect.library.split_book`; never the
+# learner's, never a library copy) stands wherever an EPUB's path stands; its sidecar `<joined>.json` names its parts
+# and their bytes' key. The book's own question names the title: the check against a learner's numbered notes.
+_SPLIT_PART = re.compile(r"(.+)_(\d{2,})(?: \(\d+(?:-\d+)?\)(?: .*)?)?\.txt", re.I)
+JOINED_PREFIX = "txt-"
+
+
+def joined_book_path(language, book_id):
+    """Where the split book `book_id`'s joined `.txt` lives: Connect's folder, `books/txt-<language>-<id>.txt`."""
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), "connect", "books", f"{JOINED_PREFIX}{language}-{book_id}.txt")
+
+
+def _store_split_book(self, item_id):
+    """Kura-TX B1: the split book the text item `item_id` is a part of -> {id (by its folder and name: the same at
+    every look, whatever its parts' bytes), path (`joined_book_path`), parts [item ids, by their numbers], rels [their
+    library copies, in that order], all [every item of it, a left-out copy too: whose cards are the book's], title (the first part's title's, else the name)}; None when it is no such part — a
+    name not `<name>_<NN>.txt`, an EPUB's part (a book of its own), waiting (no file), or alone (fewer than two
+    available parts of that name in its folder). ONE part a number (review B1: the same book from two sources is
+    `<name>_01.txt` and the library's `<name>_01 (2).txt` — never joined twice): the shortest name of that number,
+    then the first; a part left out so still names the book. Read only, in one read; one range read of its folder."""
+    with self._reading():
+        row = self.conn.execute("SELECT root_id, rel_key, availability FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None or row[2] != "available":
+            return None
+        root, rel_key = row[0], row[1]
+        folder, _sep, name = rel_key.rpartition("/")
+        own = _SPLIT_PART.fullmatch(name)
+        if own is None:
+            return None
+        sql = "SELECT id, rel_path, rel_key FROM items WHERE root_id = ? AND availability = 'available'"
+        found = []
+        for other, rel, key in self.conn.execute(sql + " AND rel_key >= ? AND rel_key < ?", (root, folder + "/",
+                                                                                            folder + "0")) \
+                if folder else self.conn.execute(sql, (root,)):     # ("0" sorts right after "/": the folder's range)
+            head, _sep, tail = key.rpartition("/")
+            m = _SPLIT_PART.fullmatch(tail) if head == folder else None
+            if m is not None and m.group(1) == own.group(1):
+                found.append((int(m.group(2)), len(tail), key, other, rel))
+        ids = [f[3] for f in found]
+        epubs = set()
+        for chunk in _chunks(ids, 500):
+            epubs |= {r[0] for r in self.conn.execute(
+                f"SELECT DISTINCT p.item_id FROM pairings p WHERE p.item_id IN ({','.join('?' * len(chunk))}) AND "
+                f"{_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%'", chunk)}
+        if item_id in epubs:
+            return None
+        by_number, every = {}, []
+        for f in sorted(f for f in found if f[3] not in epubs):
+            by_number.setdefault(f[0], f)
+            every.append(f[3])
+        found = [by_number[n] for n in sorted(by_number)]
+        if len(found) < 2:
+            return None
+        title = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                  (found[0][3],)).fetchone()
+    stem = _SPLIT_PART.fullmatch(found[0][4].replace("\\", "/").rpartition("/")[2]).group(1)
+    book_id = hashlib.sha1(f"{root}|{folder}|{own.group(1)}".encode("utf-8")).hexdigest()[:16]
+    # `all`: every item of the book, a left-out copy too (review r2 S1: its cards are the book's — *Add audio*, the 🎧)
+    return {"id": book_id, "path": joined_book_path(self.language, book_id), "parts": [f[3] for f in found],
+            "rels": [f[4] for f in found], "all": sorted(every),
+            "title": (title[0] if title and title[0] else None) or stem}
+
+
+def _store_joined_book(self, path):
+    """Kura-TX B1: the split book whose joined `.txt` is `path` (`split_book`'s, its sidecar written by Connect) ->
+    `split_book`'s answer and `sha256` (its parts' bytes' key, as the sidecar holds it, or None); None when `path` is
+    no joined book of this library (not one, its sidecar unread, or no part the sidecar names is still a part of a book
+    joined there; never a file outside Connect's `books` folder: review N5). Read only."""
+    if not isinstance(path, str) or not os.path.basename(path).startswith(JOINED_PREFIX) or \
+            path_key(os.path.dirname(os.path.abspath(path))) != \
+            path_key(os.path.dirname(os.path.abspath(joined_book_path(self.language, "x")))):
+        return None
+    try:
+        with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:
+            side = json.load(f)
+    except (OSError, ValueError):
+        return None
+    want = path_key(os.path.abspath(path))
+    for part in (side.get("parts") if isinstance(side, dict) else None) or ():
+        item = part.get("item") if isinstance(part, dict) else None
+        if not isinstance(item, int) or isinstance(item, bool):
+            continue
+        got = self.split_book(item)
+        if got is not None and path_key(os.path.abspath(got["path"])) == want:
+            sha = side.get("sha256")
+            return dict(got, sha256=sha if isinstance(sha, str) and sha else None)
+    return None
 
 
 def _store_pick_audiobook_book(self, item_id, epub, by="user"):
@@ -13121,22 +13230,33 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user"):
     records as they were, the answer as it was, the item in its title and place again. -> the Change, or None (no such
     audiobook item, already paired, or the book has no part in the library)."""
     from app import audiobooks
+    joined = self.joined_book(epub)          # Kura-TX: a split book's joined `.txt` (its sidecar read before the lock)
     with self._command("audiobook_pick", by) as cmd:
         rows = self._audiobook_rows(item_id)
         if not rows or isinstance((rows[0][2].get("audiobook") or {}).get("book"), dict):
             return None
-        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
-        found = self.conn.execute(f"SELECT p.pairing FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? "
-                                  f"AND {_LIVE_ORIGIN} LIMIT 1", (lo, lo[:-1] + "$")).fetchone()
-        placed = self._audiobook_place({"epub": epub})
+        if joined is not None:
+            split = self.split_book(joined["parts"][0])
+            if split is None or path_key(os.path.abspath(split["path"])) != path_key(os.path.abspath(epub)):
+                return None                  # (its parts changed meanwhile)
+            parts = {"parts": split["all"]}
+            # (no sha256: a joined book's answers are kept by its path — review r2 N1, as Connect's `book_key`)
+            sha, placed = None, self._audiobook_place({"epub": epub, "parts": split["all"]})
+            found = placed
+        else:
+            lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+            found = self.conn.execute(f"SELECT p.pairing FROM pairings p WHERE p.content_key >= ? AND p.content_key "
+                                      f"< ? AND {_LIVE_ORIGIN} LIMIT 1", (lo, lo[:-1] + "$")).fetchone()
+            placed, parts = self._audiobook_place({"epub": epub}), {}
+            sha = (_json_dict(found[0]) or {}).get("sha256") if found is not None else None
         if found is None or placed is None:
             return None
-        sha = (_json_dict(found[0]) or {}).get("sha256")
         title = self.conn.execute("SELECT title FROM works WHERE id = ?", (placed[0],)).fetchone()
         key = audiobooks.answer_key(audiobooks.from_record(rows[0][2]["audiobook"]),
                                     audiobooks.Book(id=placed[2], path=os.path.abspath(epub), sha256=sha))
         book = {"item": placed[2], "epub": os.path.abspath(epub), "sha256": sha, "key": key,
-                "title": title[0] if title else os.path.splitext(os.path.basename(epub))[0], "how": "answered"}
+                "title": title[0] if title else (joined or {}).get("title") or
+                os.path.splitext(os.path.basename(epub))[0], "how": "answered", **parts}
         change = self._change(cmd, "audiobook_pick")
         self._before(change, list(self._rows([item_id]).values()))
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
@@ -13528,6 +13648,8 @@ Store.audiobook_hovers = _store_audiobook_hovers
 Store.library_books = _store_library_books
 Store.pick_audiobook_book = _store_pick_audiobook_book
 Store.book_audiobooks = _store_book_audiobooks
+Store.split_book = _store_split_book
+Store.joined_book = _store_joined_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick
 Store.audiobook_no_book = _store_audiobook_no_book
 Store.mark_audiobook_lineup = _store_mark_audiobook_lineup

@@ -1372,7 +1372,7 @@ def test_closing_with_helpers_under_way_names_them_and_quit_leaves_them_running(
     card = _sheet(world)
     assert world.win.isVisible()
     assert card.title.text() == f"Still finishing: {C.MAINTAIN_LABEL} · {MAKING_CARDS}"
-    assert card.body.text() == "They finish by themselves. Connect finishes the cards it's making by itself."
+    assert card.body.text() == "They finish by themselves. Surasura finishes the cards it's making for you by itself."
     assert (card.no.text(), card.yes.text()) == ("Quit", "Stop and quit")
     assert card.no.toolTip() == strings.QUIT_DETACHED_QUIT_TIP and card.yes.toolTip() == strings.QUIT_DETACHED_STOP_TIP
     assert card.default is card.no

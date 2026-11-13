@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app import locks, youtube_hold
 from app.connect import anki_miner, feed, online, runfile, runner, status, stopping
 
 LINK = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -79,8 +80,6 @@ def test_webvtt_captions_become_subrip_the_cue_reader_reads(fake_miner, monkeypa
                                           "removed by the uploader"}, online.REMOVED, False),
     ({"error": "YOUTUBE_REFUSED", "message": "Live streams are not supported."}, online.LIVE, False),
     ({"error": "YOUTUBE_REFUSED", "message": "This video has no Japanese captions."}, online.NO_CAPTIONS, False),
-    ({"error": "FETCH_FAILED", "message": "Sign in to confirm you're not a bot", "transient": True}, online.BOT,
-     True),
     ({"error": "FETCH_FAILED", "message": "urlopen error [Errno 11001] getaddrinfo failed", "transient": True},
      online.OFFLINE, True),
     ({"error": "FETCH_FAILED", "message": "something new went wrong", "transient": True}, online.OFFLINE, True),
@@ -88,7 +87,7 @@ def test_webvtt_captions_become_subrip_the_cue_reader_reads(fake_miner, monkeypa
                                         "install it, then try again."}, online.NO_YTDLP, True),
     ({"error": "SETUP_ERROR", "message": "ffmpeg was not found. Install ffmpeg, or set its location in Anki Miner's "
                                          "settings."}, online.NO_FFMPEG, True),
-], ids=["age", "private", "removed", "live", "no-captions", "bot", "offline", "transient-other", "no-ytdlp", "ffmpeg"])
+], ids=["age", "private", "removed", "live", "no-captions", "offline", "transient-other", "no-ytdlp", "ffmpeg"])
 def test_every_refusal_is_plain_words_never_anki_miners_window(fake_miner, monkeypatch, spec, words, standing):
     # why: the row and Needs you say it plainly; nothing sends the learner to Anki Miner's window
     with pytest.raises(online.Trouble) as raised:
@@ -346,3 +345,71 @@ def test_one_videos_format_trouble_never_holds_the_others(steps, fake_miner):
             steps.download("ja", job, WEB)
         assert raised.value.say == online.STALE
     assert fake_miner.commands().count("fetch") == 2, "each video still tried"
+
+
+# --- Yt-B: YouTube's bot check holds every YouTube call for a day -------------------------------------------------- #
+# Sonic 2026-11-12: "will this hit from my own network and then will I have issues in the future with too many
+# requests?" Connect's video is asked from the learner's own address, like the downloader's transcripts: one refusal
+# holds both for a day, said with when it tries again; never asked again in that time.
+@pytest.mark.parametrize("message", [
+    "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser or --cookies",
+    "ERROR: [youtube] dQw4w9WgXcQ: Unable to download webpage: HTTP Error 429: Too Many Requests",
+], ids=["bot", "429"])
+def test_a_refusal_holds_every_youtube_call_and_says_when(fake_miner, monkeypatch, message):
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, error="FETCH_FAILED", message=message, transient=True)
+    until = youtube_hold.held()
+    assert until and raised.value.standing
+    assert raised.value.say == youtube_hold.words(until) and youtube_hold.is_words(raised.value.say)
+    with pytest.raises(online.Trouble) as again:
+        online.fetch(fake_miner.path, "p-surasura", "ja", 8, LINK)
+    assert again.value.say == raised.value.say and fake_miner.commands().count("fetch") == 1, \
+        "nothing asked of YouTube while the hold runs"
+
+
+def test_an_age_check_holds_nothing(fake_miner, monkeypatch):
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, error="YOUTUBE_REFUSED",
+               message="Sign in to confirm your age. This video may be inappropriate for some users.")
+    assert raised.value.say == online.AGE and youtube_hold.held() is None
+
+
+def test_a_hold_the_downloader_began_is_met_before_anki_miner_starts(fake_miner, monkeypatch):
+    youtube_hold.hold()
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch)
+    assert youtube_hold.is_words(raised.value.say) and raised.value.standing
+    assert "fetch" not in fake_miner.commands()
+
+
+def test_a_held_trouble_stops_every_other_fetch_this_run(steps, fake_miner):
+    # why (review S4, as offline): every other online episode would only meet the same hold
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED", "transient": True,
+                                                               "message": "Sign in to confirm you're not a bot"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert youtube_hold.is_words(raised.value.say) and raised.value.standing
+    assert fake_miner.commands().count("fetch") == 1
+
+
+def test_a_fetch_waits_its_turn_and_a_stop_ends_the_wait(fake_miner, monkeypatch):
+    # why: never two YouTube calls at once from this computer; a Stop never waits behind the window's playlist
+    other = locks.take(youtube_hold.LOCK, "the window's playlist", owner=object())     # (another program)
+    try:
+        monkeypatch.setattr(stopping, "pressed", lambda: True)
+        started = time.monotonic()
+        with pytest.raises(stopping.Stopped):
+            _fetch(fake_miner, monkeypatch)
+        assert time.monotonic() - started < QUICK and "fetch" not in fake_miner.commands()
+    finally:
+        other.release()
+
+
+def test_a_held_fetch_never_waits_for_the_turn(fake_miner, monkeypatch):
+    # why (mutant C4): behind the window's half-hour playlist, Connect would wait all that time to learn it is held
+    youtube_hold.hold()
+    monkeypatch.setattr(youtube_hold, "turn", lambda *a, **k: pytest.fail("asked for the turn while held"))
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch)
+    assert youtube_hold.is_words(raised.value.say) and "fetch" not in fake_miner.commands()

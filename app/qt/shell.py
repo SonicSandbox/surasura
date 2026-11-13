@@ -1887,7 +1887,11 @@ class ShellWindow(QMainWindow):
         rows = [r for r in self.sources if r.get("kept_out")]
         n = sum(int(r["kept_out"]) for r in rows)
         tray.kept_said(n, sorted({i for r in rows for i in r.get("kept_out_ids") or ()}), [r["id"] for r in rows])
-        if not tray.kept_out[0] and not self.arrivals_inset.count and \
+        short = sum(int(r.get("short") or 0) for r in self.sources)       # Kantan-B2 (AUDIT A3): short texts left out
+        line = strings.arrivals_short(short, self.language)
+        tray.short_said(short, line)
+        self.arrivals_inset.set_short(short, line)
+        if not tray.kept_out[0] and not tray.short[0] and not self.arrivals_inset.count and \
                 (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()
 

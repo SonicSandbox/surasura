@@ -49,14 +49,19 @@ def _lines(case, sources):
 _EPISODE = ("gotoubun_ep01.srt",)               # the café episode's first part
 # The recap each library receives: lines it holds already, whose every word is listed, known, or new and met once.
 # (zh: every window of 孔乙己 moves the floor, a short story's rare words; the パターン sample's lines move none.)
-RECAP = {"rp2-ja": (_EPISODE, 3, 13), "rp2-zh": (("patterns_zh_sample.txt",), 60, 70)}
+RECAP = {"rp2-ja": (_EPISODE, 20, 30), "rp2-zh": (("patterns_zh_sample.txt",), 64, 70)}
+# (Re-found 2026-11-11, Hon-TR, for the fixture known words rebuilt then and the news page written for the tests: ja
+# 3–13 and zh 60–70 now bring a word to the cut-off; ja 20–30 and zh 64–70 (six lines: no ten-line zh window moves no
+# gate) move none.)
 # One line each that moves a gate (row 2.2.6): (its library's files, its place among their lines, the gates it moves).
 GATE_LINES = {
     "rp2-ja": {"floor": (_EPISODE, 15, {"floor"}),                          # a word met once: now twice, the cut-off
                "names": (("eighty_six_part1.txt",), 11, {"names"}),         # a katakana name the library joins anew
                "phrases": (_EPISODE, 37, {"phrases"}),                      # an idiom met once: now a row
                "compounds": (_EPISODE, 33, {"floor", "compounds"}),         # a rare compound reaches the cut-off
-               "spellings": (("eighty_six_ch2.txt",), 20, {"floor", "spellings"})},   # a list word's spellings tie
+               "spellings": (("eighty_six_ch2.txt",), 80, {"floor", "spellings"})},   # a list word's spellings tie
+    # (line 20 until 2026-11-11: its spelling no longer ties for the rebuilt fixture known words; 80 found by trying
+    # every line, Hon-TR)
     "rp2-zh": {"floor": (("zh_high_1.txt",), 2, {"floor"})},
 }
 

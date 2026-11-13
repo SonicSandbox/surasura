@@ -912,7 +912,7 @@ def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
     assert "connect_enabled" in on and "connect_needs_miner" not in on
     assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
     row = catalog.ROW["connect_needs_miner"]
-    assert row.section == "anki" and row.keys == () and row.label == "Make cards for me"
+    assert row.section == "anki" and row.keys == () and row.label == "Cards made for you"
     assert "Anki Miner" in row.help and row.tip
 
 

@@ -199,6 +199,36 @@ def test_fresh_u_every_picker_for_shows_and_books_opens_in_the_videos_folder_nev
     assert windows.content_folder() == os.path.normpath(os.path.expanduser("~"))   # no Videos folder: home
 
 
+def _starts(monkeypatch):
+    """The folder dialog stood in for, cancelled -> the start folder each opening was given."""
+    asked = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        lambda *a, **_k: (asked.append(a[2] if len(a) > 2 else None), "")[1])
+    return asked
+
+
+def test_add_a_folder_opens_at_the_folder_added_last_else_the_videos_folder(window, monkeypatch):
+    # Kantan-B2 (AUDIT A3, finding 14; Fresh-U row 11): the picker opened in the program's own folder. It starts where
+    # his shows are (the newest folder being read: a stopped one is passed over), else his Videos folder (Qt's own
+    # answer, never looked at on the window's thread: the dialog falls back by itself when it isn't there).
+    from PyQt6.QtCore import QStandardPaths
+    # (review: the newest one on a share that is down is passed over too — the native dialog would stall on it)
+    looks = ActingLooks([_src(1, ANIME, 412), _src(3, DRAMA, 30), _src(2, OLD, 5), _src(4, r"F:\映画", 1, on=False),
+                         _src(5, r"\\nas\アニメ", 7, reachable=False)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: len(folders.lines) == 4, 10)
+    asked = _starts(monkeypatch)
+    row.add.click()
+    folders.add.click()
+    assert asked == [DRAMA, DRAMA]
+    looks.sources = []
+    looks.publish()
+    assert wait_until(lambda: row.summary.text() == S.SOURCES_NONE, 10)
+    row.add.click()
+    videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+    assert videos and asked[-1] == videos
+
+
 # --- the window ------------------------------------------------------------------------------------------------- #
 def test_the_door_opens_one_library_folders_window_titled_and_esc_closes_it(window):
     looks = ActingLooks([_src(1, ANIME, 412)])

@@ -505,6 +505,62 @@ def _kept_summary(win, ids, n, root=7):
          "kept_out_ids": sorted(ids)}]})
 
 
+def _short_summary(win, short, kept=0, ids=(), root=7):
+    """The looks' summary with `short` texts left out of one folder (`SourceLooks._notes`' `short`) — after the real
+    looks' own first one (it would land after it, and say none)."""
+    assert wait_until(lambda: getattr(win, "sources_listed", False), 10)
+    settle()
+    win._sources_looked({"language": win.language, "sources": [
+        {"id": root, "path": "D:/Incoming", "on": True, "items": 3, "reachable": True, "kept_out": kept,
+         "kept_out_ids": sorted(ids), "short": short}]})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_short_texts_left_out_are_said_in_new_arrivals_with_no_bring_back(real, language):
+    # Kantan-B2 (AUDIT A3, finding 9; Fresh-U row 4): a `.txt` under 1,000 characters never arrives and nothing said
+    # so. New arrivals says it — the inset shows for it with no arrival waiting, its foot one line more — and offers
+    # nothing to press for it (there is nothing to bring back); none left out, it goes.
+    store, win, writer = real(language)
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    assert inset.count == 0 and inset.isHidden()
+    _short_summary(win, 2)
+    words = strings.arrivals_short(2, language)
+    assert words == strings.ARRIVALS_SHORT.format(n=2, chars=1000, language=strings.SHORT_LANGUAGES[language])
+    assert not inset.isHidden() and words in inset.toolTip() and words in inset.accessibleName()
+    win.open_arrivals()
+    settle()
+    assert tray.isVisible() and not tray.short_line.isHidden() and tray.short_line.text() == words
+    assert tray.kept_box.isHidden()                                     # no *Bring back* for short texts
+    _short_summary(win, 1)
+    settle()
+    assert tray.isVisible() and tray.short_line.isVisible()             # still left out: still said in the tray ...
+    assert inset.isHidden()                                             # ... but seen once, it lights no inset alone
+    assert tray.short_line.text() == strings.arrivals_short(1, language) == strings.ARRIVALS_SHORT_ONE.format(
+        chars=1000, language=strings.SHORT_LANGUAGES[language])
+    paints = inset.paints
+    _short_summary(win, 1)                                              # the same summary: nothing touched (S19)
+    assert inset.paints == paints
+    _short_summary(win, 3)                                              # more left out since: news again
+    assert not inset.isHidden() and strings.arrivals_short(3, language) in inset.toolTip()
+    _short_summary(win, 0)
+    settle()
+    assert inset.isHidden() and tray.short_line.isHidden() and not tray.isVisible()
+
+
+def test_short_texts_and_kept_out_files_are_both_said_and_an_arrival_keeps_its_count(real):
+    store, win, writer = real()
+    title, ids = _remove_row(win, writer)
+    trash = [i for e in store.removed() for i in e["trash_ids"]]
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    _short_summary(win, 3, kept=2, ids=trash)
+    tip = inset.toolTip()
+    assert strings.ARRIVALS_KEPT_OUT.format(n=2) in tip and strings.arrivals_short(3, "ja") in tip
+    win.open_arrivals()
+    settle()
+    assert not tray.kept_box.isHidden() and not tray.short_line.isHidden()
+    assert tray.layout().indexOf(tray.short_line) > tray.layout().indexOf(tray.kept_box)
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_kept_out_files_show_in_new_arrivals_and_bring_back_is_one_put_back_with_one_undo(real, monkeypatch,
                                                                                            language):

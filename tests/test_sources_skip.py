@@ -631,6 +631,46 @@ def test_a_short_loose_text_is_skipped_counted_as_short_and_remembered_but_a_sho
         assert _look(store, language, root, full=True)["added"] == 1
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_looks_notes_count_the_short_texts_left_out_and_a_quick_look_keeps_saying_them(language):
+    """Kantan-B2 (AUDIT A3, finding 9; Fresh-U row 4): a short `.txt` never arrives, and New arrivals says how many the
+    last look left out — from the look cache (`sources.notes`), so a quick look that reads nothing again keeps saying
+    them, and one grown into a book's worth stops counting. A short subtitle is an episode: never counted."""
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    short = _resource(language, "context_test.txt")
+    _write(os.path.join(src, show, f"{show} - 01.srt"), short)
+    notes = [_write(os.path.join(src, "Notes", name), short) for name in ("memo.txt", "歌詞.md")]
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["short"] == 2
+        assert sources.notes(language, store)[root]["short"] == 2
+        _look(store, language, root)                                             # a quick look: nothing read again
+        assert sources.notes(language, store)[root]["short"] == 2
+        _write(notes[0], _sample(language), age=30)                               # now a book's worth: taken
+        assert _look(store, language, root, full=True)["added"] == 1
+        assert sources.notes(language, store)[root]["short"] == 1
+
+
+def test_the_notes_short_count_is_the_short_kind_alone_beside_each_roots_other_notes(monkeypatch):
+    """The look cache's `books` hold other kinds too — a copy of a removed file kept out ("out" + its sha), an edition,
+    a text with none of our script (stats alone): only "short" counts, on the root it was found under."""
+    cache = {"roots": {
+        "3": {"books": {"a": [10, 1, "short"], "b": [11, 2, "out", "ab12"], "c": [12, 3], "d": [13, 4, "short"],
+                        "e": [14, 5, "edition", "x"]},
+              "notes": {"D:/本": {"D:/本/リンク": ["not_read", "link"]}}},
+        "4": {"books": {"f": [15, 6, "short"]}},
+        "5": {"books": {"g": [16, 7, "out", "cd34"]}, "dirs": {}},
+        "x": {"books": {"h": [17, 8, "short"]}}}}
+    monkeypatch.setattr(sources, "_load_cache", lambda language, key: cache)
+    store = type("S", (), {"meta": lambda self: {"store_id": "s", "epoch": 1}})()
+    said = sources.notes("ja", store)
+    assert said[3]["short"] == 2 and said[3]["not_read"] == [{"path": "D:/本/リンク", "why": "link"}]
+    assert said[4] == {"not_read": [], "kept_out": {}, "short": 1}
+    assert 5 not in said                                                         # nothing to say: no entry
+
+
 @pytest.mark.parametrize("language,n,taken", [("ja", 999, False), ("ja", 1000, True), ("zh", 999, False),
                                               ("zh", 1000, True)])
 def test_a_thousand_characters_of_our_script_make_a_loose_text_a_book(language, n, taken):

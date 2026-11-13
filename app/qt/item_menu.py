@@ -354,6 +354,12 @@ class ItemActions(QObject):
         self._audio_ask = 0
         self._audio_relay = None                     # made at the first ask, kept: an open makes no object (C4)
         self._audio_running = set()                  # the books a press is adding to now (never offered meanwhile)
+        # Kura-TX (the audit's ask 2): *Its audiobook…* on any book's row — its book and the library's lone audiobooks,
+        # asked on a worker as ⋯ opens (tests replace the reader); its list is *Needs you*'s own picker
+        self.read_audiobook = self._read_audiobook
+        self._book_ask = 0
+        self._book_relay = None                      # made at the first ask, kept (C4)
+        self.audiobook_list = None
         # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
         self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
         register = getattr(win, "register_overlay", None)
@@ -622,6 +628,7 @@ class ItemActions(QObject):
         if not getattr(row, "group", False):         # (LM11b G3: a group's folders are several shows')
             self._offer_skip(row, m)                 # K6: *Never read this folder*, once the looks' worker answers
             self._offer_add_audio(row, m)            # Kura-AB3 A2: once Connect answers
+            self._offer_audiobook(row, m)            # Kura-TX: once the store answers
         m.popup(at)
         return m
 
@@ -817,6 +824,78 @@ class ItemActions(QObject):
         """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2), the folder is looked
         for (a drive may be slow or gone) and opened on a worker."""
         return finished.open_folder_of(self.win, self.language, row, self.lst, self.moves.say)
+
+    # --- Kura-TX (the audit's ask 2, Sonic's yes 2026-11-12; PROVISIONAL): ⋯ → *Its audiobook…* on any book ----- #
+    def _read_audiobook(self, item_id):
+        """(A worker.) The book the part `item_id` is of and the library's audiobooks with no book
+        (`Store.book_audiobooks`, through *Needs you*'s own reader), or None."""
+        read = getattr(getattr(self.win, "needs_you", None), "read_audiobooks", None)
+        return read(item_id) if read is not None else None
+
+    def _offer_audiobook(self, row, m):
+        """A book's row (an EPUB's part or a `.txt` book's: `book_row`) asks the store on a plain thread through the
+        kept relay as ⋯ opens; *Its audiobook…* goes in before *Open its folder* when it answers a book with no
+        audiobook while this menu is still open. Any other row asks nothing. -> True when it was asked."""
+        self._book_ask += 1
+        ids = drag.ids_of(row)
+        if not book_row(row) or not ids:
+            return False
+        ask, read = self._book_ask, self.read_audiobook
+        self._book_menu = (ask, m, getattr(m, "fills", None))
+        if self._book_relay is None:
+            self._book_relay = bridge.Relay(self)
+            self._book_relay.said.connect(self._audiobook_found)
+        relay = self._book_relay
+
+        def ask_store():
+            try:
+                relay.call((ask, read(ids[0])))
+            except Exception:
+                relay.call((ask, None))              # (no entry this time)
+        threading.Thread(target=ask_store, name="book-audiobook", daemon=True).start()
+        return True
+
+    def _audiobook_found(self, said):
+        ask, got = said
+        now, m, fill = getattr(self, "_book_menu", (None, None, None))
+        if (got and not got.get("paired") and ask == self._book_ask == now and self.last_menu is m and
+                not sip.isdeleted(m) and m.isVisible() and getattr(m, "fills", None) == fill):
+            self.audiobook_entry(m, got)
+
+    def audiobook_entry(self, m, got):
+        """*Its audiobook…* in `m`, before *Open its folder*. -> the action."""
+        before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
+        words, tip = strings.ITEM_MENU["audiobook"]
+        act = drag.menu_action(m, words, lambda: QTimer.singleShot(0, lambda: self.audiobook_menu(got)))
+        act.setToolTip(tip)
+        if before is not None:
+            m.insertAction(before, act)
+        else:
+            m.addAction(act)
+        return act
+
+    def audiobook_menu(self, got):
+        """The press: today's picker, *Needs you*'s — the library's audiobooks with no book, the likeliest first
+        (`BOOKS_SHOWN`), then *A folder on your computer…* — at the pointer; a pick pairs through *Needs you*'s own
+        `_pick_audiobook` (its toast's Undo, Connect kicked). -> the menu."""
+        from PyQt6.QtGui import QCursor
+        from app.qt import needs as qneeds
+        ny = getattr(self.win, "needs_you", None)
+        if ny is None:
+            return None
+        m = drag.list_menu(self.lst, got["title"])
+        for ab in (got.get("audiobooks") or [])[:qneeds.BOOKS_SHOWN]:
+            m.addAction(drag.menu_action(m, strings.NEEDS_AUDIOBOOK_LINE.format(title=ab["title"], n=ab["n"]),
+                                         lambda ab=ab: ny._pick_audiobook(None, ab["item_id"], got["epub"],
+                                                                          got["title"])))
+        if got.get("audiobooks"):
+            m.addSeparator()
+        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FOLDER, lambda: ny._audiobook_folder(got["title"]))
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
+        m.addAction(act)
+        self.audiobook_list = self.last_menu = m
+        m.popup(QCursor.pos())
+        return m
 
     # --- K6: *Never read this folder* (the item's folder or one above it, inside its source folder) --------------- #
     def _settings(self):

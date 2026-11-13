@@ -255,7 +255,7 @@ CARDS_LINE_SAMPLE = {"ja": ("この店のラーメンは本当に絶品だ", "�
                      "zh": ("这家店的拉面真是绝品", "juépǐn", "绝品")}
 MINER_MISSING = "Anki Miner makes the cards"
 MINER_MISSING_LINE = "It isn't installed yet · free"
-MINER_READY = "Make cards for me as I watch"
+MINER_READY = "Cards made for you as you watch"   # Kantan-B2 (B6)
 MINER_READY_LINE = "Anki Miner {version} · ready for Surasura"
 MINER_READY_TIP = ("Anki Miner makes a card for a new word from the episode you're watching: the line, its audio and a "
                    "picture.\n• Turn it off any time: Settings")

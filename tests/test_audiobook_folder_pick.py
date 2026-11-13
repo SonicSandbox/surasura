@@ -139,6 +139,20 @@ def test_a_folder_of_several_audiobooks_none_like_the_book_pairs_none():
         assert len(items) == 2 and all(_record(store, i["id"])["book"] is None for i in items)
 
 
+def test_two_editions_alike_the_book_pair_neither():
+    """Two audiobooks in the folder picked, both titled as the book (two editions, two readers): a tie — Surasura
+    never picks one at random; both are listed for the pick."""
+    language = "ja"
+    store, epub = _book_in(language, NEKO, "source")
+    audio = os.path.join(_drive("audio"), "Audio")
+    _audio_folder(os.path.join(audio, "reader A"), NEKO, _chars(language) / 1.5)
+    _audio_folder(os.path.join(audio, "reader B"), NEKO, _chars(language) / 1.4, n=4)
+    with store:
+        _picked(store, language, audio, epub, NEKO)
+        items = _audio_items(store)
+        assert len(items) == 2 and all(_record(store, i["id"])["book"] is None for i in items)
+
+
 def test_a_new_audiobook_beside_one_already_in_pairs_neither():
     """The folder picked holds an audiobook already in the library (alone) and a new one, neither named like the book:
     Surasura can't tell which is the book's — the new one is never paired just for being new (each is listed)."""
@@ -249,6 +263,25 @@ def test_an_audiobook_read_before_alone_is_named_so_the_window_picks_it():
     assert first["joined"] == [] and len(first["alone"]) == 1
     again = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
     assert again == {"joined": [], "alone": first["alone"], "asks": []}
+
+
+def test_an_audiobook_there_paired_with_another_book_is_never_said_to_have_joined_this_one():
+    """The folder picked for 「吾輩は猫である」 holds 「銀河鉄道の夜」's audiobook, already paired with that book: the
+    answer names nothing joined to this book and nothing free to pick — the window then says none is there."""
+    language = "ja"
+    store, epub = _book_in(language, NEKO, "source")
+    store.close()
+    other = _epub(os.path.join(_drive("more books"), f"{GINGA}.epub"), GINGA, language)
+    audio = os.path.join(_drive("audio"), GINGA)
+    _audio_folder(audio, GINGA, _fit(language))
+    _add(language, os.path.dirname(other))
+    _add(language, audio)
+    store = ls.open_store(language, *roots(language))
+    with store:
+        (item,) = _audio_items(store)
+        assert _record(store, item["id"])["book"]["epub"] == os.path.abspath(other)
+    said = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
+    assert said == {"joined": [], "alone": [], "asks": []}
 
 
 def test_add_a_folder_with_a_title_like_a_books_answers_its_open_question():

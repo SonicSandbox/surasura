@@ -1062,7 +1062,7 @@ def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default
     its own key; its help says nothing is kept when it is off."""
     from app import practice, settings_manager
     page, store, _shell = make(fakes)
-    assert page.row("practice_ai").label.text().startswith(practice.NAME)
+    assert page.row("practice_ai").tag.text() == practice.NAME          # S1: beside its plain name, small
     assert settings_manager.DEFAULT_SETTINGS["practice_keep_rounds"] is True
     toggle = page.rows["practice_keep_rounds"].controls[0]
     assert toggle.value() is True and toggle.toolTip()

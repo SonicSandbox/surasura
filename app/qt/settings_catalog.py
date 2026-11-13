@@ -668,6 +668,11 @@ def find(query, settings, language, ctx=frozenset()):
         # a9.1: a door's own words find its row too (one opener per window: *Preview a video…* is on its switch)
         labels += [(S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS.get(name, ("",)))[0] for name in row.door]
         text = " ".join([row.label, row.help, row.words] + labels)
+        if row.section in S.SECTION_TAGS:     # S1: 順 Junban / Backfill find their section's rows, and so does its
+            text = " ".join((text, S.SECTION_TAGS[row.section]))      # name typed past its first word (no flood on
+            name = _fold(S.SECTIONS[row.section])                     # "order" or "cards")
+            if " " in q and name.startswith(q):
+                text = " ".join((text, name))
         if not q or q in _fold(text):
             found.append(row.id)
     return found

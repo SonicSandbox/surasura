@@ -87,6 +87,7 @@ def test_a_word_of_a_new_section_name_alone_never_floods_the_search_with_its_row
     settings = dict(ALL_ON, target_language="ja")
     ctx = frozenset(catalog.MODULES)
     assert "junban_later_flag" not in catalog.find("order", settings, "ja", ctx)
+    assert "junban_later_flag" not in catalog.find("card", settings, "ja", ctx)      # (the name's first word alone)
     assert "junban_later_flag" in catalog.find("card order", settings, "ja", ctx)
 
 
@@ -177,6 +178,17 @@ def test_a_slab_built_after_ankis_answer_gets_its_needs_line_as_it_is_built(qapp
     assert not slab.needs.isVisibleTo(page)
     page.live._built(catalog.rows("backfill")[0].id)
     assert slab.needs.isVisibleTo(page) and slab.needs_line.text() == S.NEEDS_ANKI
+
+
+def test_a_slab_not_shown_yet_still_takes_its_needs_line(qapp, fakes):  # noqa: F811
+    # (mutant M21) a slab hidden (mid-build, or by a search) takes its line directly, so it is right when it shows
+    page, store, shell = make(fakes, ALL_ON)
+    slab = page.slabs["backfill"]
+    slab.setVisible(False)
+    fakes.probe = CLOSED
+    page.live.check()
+    assert wait_until(lambda: page.slabs["junban"].needs_now is not None)
+    assert slab.needs_now == (S.NEEDS_ANKI, "anki_connection") and slab.needs_line.text() == S.NEEDS_ANKI
 
 
 def test_show_me_really_lands_on_the_connection_row(qapp, fakes, monkeypatch):  # noqa: F811

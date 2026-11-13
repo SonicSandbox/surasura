@@ -93,3 +93,23 @@ def test_a_check_with_nothing_waiting_on_its_timing_writes_nothing_after_the_lin
         link.link(s, item, c.video("Dungeon Meshi S01E07-[1080p][BDRIP][x265.FLAC].mkv"))
     _run(tmp_path, item, ByVideo(c.video("Dungeon Meshi S01E07-[1080p][BDRIP][x265.FLAC].mkv")))
     assert actions.check_again("ja", item) is False
+
+
+def test_picking_an_earlier_video_again_makes_it_the_one_read_and_undo_puts_the_later_back(tmp_path):
+    """The adversary's case: E07, then E08, then E07 again. E07's link is still the episode's own row, so the store
+    would see the same record and write nothing — the episode left on E08 with nothing said. It is written again
+    (stamped), one change; its Undo puts E08 back; picking the newest again is the same link: nothing written."""
+    s, item = _episode()
+    first = c.video("Dungeon Meshi S01E07-[1080p][BDRIP][x265.FLAC].mkv")
+    second = c.video("Dungeon Meshi S01E08-[1080p][BDRIP][x265.FLAC].mkv")
+    with s:
+        link.link(s, item, first)
+        link.link(s, item, second)
+        again = link.link(s, item, first)
+        assert again is not None, "a change: never silently nothing"
+        assert library.pairing_of(s, item)["video_path"] == os.path.abspath(first)
+        assert link.link(s, item, first) is None, "the newest picked again: the same link, nothing written"
+        s.undo(again)
+        assert library.pairing_of(s, item)["video_path"] == os.path.abspath(second), "Undo: E08 again"
+        rows = s.conn.execute("SELECT COUNT(*) FROM pairings WHERE item_id = ?", (item,)).fetchone()[0]
+    assert rows == 2, "one row a video, never a pile"

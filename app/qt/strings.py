@@ -548,9 +548,11 @@ LINKING_ONE = "Linking {label}'s video"
 # Kantan-B5 (Mattias's #421, PROVISIONAL words): an episode linked to the wrong video picks again — *Not timed*'s
 # *Needs you* card and its ⋯; the pick is linked (Undo puts the old one back), then its timing is checked again
 ROWS_CHANGE_VIDEO = "Change its video…"
-ROWS_CHANGE_VIDEO_TIP = "Linked to the wrong video? Choose the right one: its timing is checked again. Undo puts it back"
+ROWS_CHANGE_VIDEO_TIP = ("Linked to the wrong video? Choose the right one: its timing is checked again. Undo puts the "
+                         "old video back")
 CHANGE_VIDEO_SAME = "That's the video it has already: nothing changed"
 CHANGE_VIDEO_LINKED = "Its new video is linked: its timing is checked when its turn comes"
+CHANGE_VIDEO_LINKED_OFF = "Its new video is linked · {why}"
 CHANGE_VIDEO_EPISODE = "this episode"           # (a card whose episode the view doesn't list just now)
 # --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"

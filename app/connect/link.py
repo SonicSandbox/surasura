@@ -23,6 +23,7 @@ Light (02 §5): the standard library, `videos` and the runner's names; the store
 import hashlib
 import json
 import os
+import time
 
 PRODUCER = "surasura"
 
@@ -82,4 +83,19 @@ def link(store, item_id, video_path):
             # hato's own record for this video: kept as hato wrote it (S6), whichever episode it names
             raise Refused("hato has already paired that video with an episode, so Surasura leaves its pairing as it "
                           "is. If hato picked the wrong one, fix it in hato.")
+        if row[0] == item_id:
+            # Kantan-B5 (*Change its video…*: V1, then V2, then V1 again): the episode's own earlier link, no longer
+            # its newest, is written again — stamped (`linked_at`), so the store sees a new record and it is the one
+            # read again; one change, its Undo puts V2 back. Its newest link picked again keeps its stamp: the same
+            # link, nothing written
+            from app.connect import library
+            if ((library.pairing_of(store, item_id) or {}).get("content_key")) != rec["content_key"]:
+                rec["linked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            else:
+                try:
+                    stamp = (json.loads(row[1]) or {}).get("linked_at")
+                except (ValueError, AttributeError):
+                    stamp = None
+                if stamp:
+                    rec["linked_at"] = stamp
     return store.register(subtitle, rec)

@@ -166,17 +166,17 @@ def test_a_link_that_lands_as_nothing_is_never_checked(act, monkeypatch, tmp_pat
     assert rec.checks == []
 
 
-def test_connect_off_still_links_and_says_why_nothing_is_made(act, monkeypatch, tmp_path):
-    """As *Link…* (it still works with Connect off): the link is the learner's to make; the check is recorded for
-    Connect's next run, and the bar says Connect is off rather than "checked again"."""
+def test_connect_off_still_links_checks_nothing_and_says_why_nothing_is_made(act, monkeypatch, tmp_path):
+    """As *Link…* (it still works with Connect off): the link is the learner's to make; as *Check again* (which writes
+    nothing while Connect is off), nothing is checked — Connect's next start checks it, its pairing moved — and the
+    bar says the video is linked and why no cards come."""
     _seed, win, writer = act(connect_off=feed.OFF_CONNECT)
     i, row = _not_timed_row(lst_of(win))
     ep = row.episodes[0]
     rec = _wired(win, monkeypatch, tmp_path)
     win.mine.change_video(ep.id, ep.label, ep.rel_path)
-    assert wait_until(lambda: rec.checks, 5)
-    assert _links(writer) == [("link_video", [ep.id], {"path": rec.picked})]
-    assert wait_until(lambda: win.bar_line.full() == feed.OFF_CONNECT, 5)
+    assert wait_until(lambda: win.bar_line.full() == strings.CHANGE_VIDEO_LINKED_OFF.format(why=feed.OFF_CONNECT), 5)
+    assert _links(writer) == [("link_video", [ep.id], {"path": rec.picked})] and rec.checks == []
 
 
 def test_pressed_again_while_it_looks_asks_nothing_more(act, monkeypatch, tmp_path):
@@ -210,6 +210,7 @@ def test_the_cards_arc_turns_from_the_click_and_needs_you_is_read_again_once_che
     gathers = ny.gathers
     button(ny, entry.key, "change_video").click()
     assert qpress.live(win, key), "turning at once, before the worker answers"
+    assert qpress.mark(button(ny, entry.key, "change_video")) is not None, "on the card's own button"
     gate.set()
     assert wait_until(lambda: rec.checks and not qpress.live(win, key), 5)
     assert wait_until(lambda: ny.gathers > gathers, 5), "read again after the check"
@@ -243,6 +244,38 @@ def test_a_language_switch_before_the_picker_or_another_languages_card_asks_noth
         win.language = win.needs_you.language = seed.language
 
 
+def test_undo_pressed_before_the_link_lands_checks_nothing(act, monkeypatch, tmp_path):
+    """A busy store: the link waits; its Undo is pressed before it lands. Once it lands it is undone at once — the
+    wrong video is the episode's again — so nothing is checked (it would check the old one and say otherwise)."""
+    _seed, win, writer = act()
+    i, row = _not_timed_row(lst_of(win))
+    ep = row.episodes[0]
+    rec = _wired(win, monkeypatch, tmp_path)
+    writer.stuck = True
+    win.mine.change_video(ep.id, ep.label, ep.rel_path)
+    assert wait_until(lambda: _links(writer) and win.moves.tickets, 5)
+    win.moves.tickets[-1].undo_asked = True                    # the toast's Undo, before the change landed
+    writer.free()
+    assert wait_until(lambda: writer.undone, 5)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert rec.checks == []
+
+
+def test_a_look_that_fails_says_why_in_plain_words(act, monkeypatch, tmp_path):
+    _seed, win, writer = act()
+    i, row = _not_timed_row(lst_of(win))
+    ep = row.episodes[0]
+    rec = _wired(win, monkeypatch, tmp_path)
+
+    def gone(*_a, **_k):
+        raise OSError("ドライブ E: が見つかりません")
+    monkeypatch.setattr(own_folder, "read_video", gone)
+    win.mine.change_video(ep.id, ep.label, ep.rel_path)
+    assert wait_until(lambda: win.bar_line.full() == "ドライブ E: が見つかりません", 5), "the error, never a traceback"
+    assert rec.started == [] and _links(writer) == []
+
+
 # --- the episode's ⋯ ---------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("kind", [feed.NOT_TIMED, feed.SKIPPED])
 def test_the_episodes_menu_offers_change_its_video_beside_check_again_and_a_pick_links_it(act, monkeypatch, tmp_path,
@@ -257,8 +290,13 @@ def test_the_episodes_menu_offers_change_its_video_beside_check_again_and_a_pick
     assert (change.label, change.tip, change.ok, change.writes) == (strings.ROWS_CHANGE_VIDEO,
                                                                     strings.ROWS_CHANGE_VIDEO_TIP, True, True)
     rec = _wired(win, monkeypatch, tmp_path)
+    given = []
+    real_give = win.moves._give
+    monkeypatch.setattr(win.moves, "_give", lambda ticket, *a, **k: given.append(ticket.keys) or real_give(ticket, *a,
+                                                                                                          **k))
     win.items.episode_pick(row, ep, change.name, change.payload)
     assert wait_until(lambda: rec.checks, 5)
+    assert given == [(row.key,)], "its row marked while the store is busy, as *Link…*'s"
     assert _links(writer) == [("link_video", [ep.id], {"path": rec.picked})]
     assert rec.started[0][1] == rec.folder
 
@@ -303,6 +341,7 @@ def test_read_video_opens_at_the_linked_videos_folder_else_the_items_own_rule(tm
     os.rmdir(folder)
     assert own_folder.read_video(Opener(), str(tmp_path), 7, "Library/ダンジョン飯/S01E07.ja.srt") == \
         ("their own folder", video), "its folder gone: the item's own rule (the video still named: the same is said)"
+    assert rules[-1] == ("the store", (7,), ("Library/ダンジョン飯/S01E07.ja.srt",)), "asked with its copy"
     pairings["pairing"] = None
     assert own_folder.read_video(Opener(), str(tmp_path), 7) == ("their own folder", None)
     assert rules[-1] == ("the store", (7,), ())

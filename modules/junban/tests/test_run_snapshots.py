@@ -435,7 +435,7 @@ def test_a_positions_only_automatic_job_taking_a_connect_run_over_keeps_the_wind
     from modules.junban import spaced
     fake = scene(tmp_path)
     _cut_connect_run(fake)
-    parked = fake.card_of("須藤")["cardId"]
+    parked = fake.card_of("冒険")["cardId"]                # one Connect's run never suspends (on the list)
     undo.save([(parked, 2800)], ["TheBank"], language="ja", automatic=True, suspended=[parked])
     with _patched(fake):
         job = reposition.run(settings(), refresh=False, job=spaced.Job(automatic=True))

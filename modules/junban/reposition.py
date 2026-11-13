@@ -2965,6 +2965,24 @@ def _apart(saved, decks, settings):
     return bool(undo.normalize_scope(saved.get("scope")))
 
 
+def runs_reach(settings, run_ids):
+    """Junban-X2 (adversary SHOULD 3): does any card these runs of Connect's changed sit in the window's deck (or a
+    subdeck) now — moved there since the run stopped? Putting such a run back would move a card under this deck's
+    preview (I5). Read from Anki (`cardsInfo`), no write; raises `AnkiError`."""
+    url = _url(settings)
+    decks, problems = _resolve_decks(settings, url)
+    if problems or _scope_mode(settings) == "all":
+        return True
+    ids = set()
+    for run_id in run_ids or ():
+        saved = undo.load(_language(settings), run_id=run_id) or {}
+        ids |= {int(card_id) for card_id in saved.get("cards") or {} if str(card_id).isdigit()}
+        ids |= set(undo.restore_suspended(saved)) | set(undo.restore_unsuspended(saved))
+    rows = ankiconnect.cards_info(url, sorted(ids)) if ids else []
+    return any(str(row.get("deckName") or "") == deck or str(row.get("deckName") or "").startswith(deck + "::")
+               for row in rows for deck in decks)
+
+
 def _decks_named(settings, run_ids):
     """The decks of these runs of Connect's, for a sentence: "Kanji", "Kanji and Mining", or "all decks"."""
     names = []

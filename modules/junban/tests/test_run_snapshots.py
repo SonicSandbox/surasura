@@ -640,6 +640,75 @@ def test_a_stopped_run_that_cant_be_put_back_stops_the_press_before_any_reorder(
     assert report["problems"] == ["Anki isn't answering."] and fake.writes == []
 
 
+def test_one_apart_and_one_sharing_cards_is_never_offered_as_one_press(tmp_path, monkeypatch):
+    """Kanji's run apart, and an All-decks run too: putting back only Kanji's would still leave the ask — and the
+    All-decks one shares this deck's cards — so it is the plain ask."""
+    fake = scene(tmp_path)
+    _other_deck_cut(fake)
+    run_id = undo.new_run_id("reorder")
+    undo.save([(max(fake.cards), 1)], ["Kanji"], language="ja", run_id=run_id, after=[], mode="all")
+    monkeypatch.setattr(reposition, "_held_wait", lambda: None)
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert not report["ok"] and report["restore_first"] and not report.get("put_back_first"), report
+
+
+def test_the_press_says_what_went_back_even_when_the_reorder_then_refuses(tmp_path, monkeypatch):
+    """The adversary's SHOULD 1: Kanji's run put back, then the Reorder refused (you began a review meanwhile): the
+    report still says the put-back happened, above the refusal."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    card_id, was, run_id = _other_deck_cut(fake)
+    monkeypatch.setattr(junban_view, "reorder_work", lambda *a, **kw: {
+        "ok": False, "message": "Junban did not make any changes.", "problems": ["You're reviewing."],
+        "warnings": [], "written": [], "failures": []})
+    with _patched(fake):
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert not report["ok"] and fake.cards[card_id]["due"] == was
+    assert report["put_back_done"] and junban_view.report_lines(report)[0] == (report["put_back_done"][0], "good")
+
+
+def test_two_runs_the_second_failing_says_how_many_went_back(tmp_path, monkeypatch):
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    _a, _b, first = _other_deck_cut(fake)
+    _c, _d, second = _other_deck_cut(fake)
+    real = reposition.restore_run
+    monkeypatch.setattr(reposition, "restore_run", lambda settings, run, **kw: real(settings, run, **kw)
+                        if run == first else {"ok": False, "message": "Nothing was restored.", "problems": ["Busy."]})
+    fake.writes = []
+    with _patched(fake):
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [first, second])
+    assert not report["ok"] and report["message"] == junban_view.PUT_BACK_FIRST_PART.format(n=1, total=2), report
+    assert len(report["put_back_done"]) == 1 and not undo.load("ja", run_id=second).get("restored_at")
+
+
+def test_a_card_of_that_run_moved_into_this_deck_since_stops_the_press_before_anything(tmp_path, monkeypatch):
+    """The adversary's SHOULD 3: one of Kanji's run's cards now sits in this deck (you changed its deck since). Putting
+    the run back would move it under this deck's preview (I5): nothing is put back, nothing reordered, the plain ask."""
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    card_id, _was, run_id = _other_deck_cut(fake)
+    fake.cards[card_id]["deckName"] = "TheBank::Kanji"
+    calls = []
+    monkeypatch.setattr(reposition, "restore_run", lambda *a, **kw: calls.append(a) or {"ok": True})
+    fake.writes = []
+    with _patched(fake):
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert not report["ok"] and report["problems"] == [junban_view.PUT_BACK_FIRST_MOVED] and report["restore_first"]
+    assert calls == [] and fake.writes == []
+
+
+def test_a_run_put_back_since_the_offer_is_skipped_and_the_reorder_goes_on(tmp_path, monkeypatch):
+    from modules.junban import junban_view
+    fake = scene(tmp_path)
+    _card_id, _was, run_id = _other_deck_cut(fake)
+    with _patched(fake):
+        assert reposition.restore_run(settings(), run_id)["ok"]       # put back by Undo meanwhile
+        report = junban_view.put_back_then_reorder_work(settings(), "ja", {}, [run_id])
+    assert report["ok"] and report["written"] and report["put_back_done"] == [], report
+
+
 def test_a_restore_puts_back_what_the_run_moved_and_leaves_a_card_you_moved_since(tmp_path):
     fake = scene(tmp_path)
     before = {card_id: card["due"] for card_id, card in fake.cards.items()}

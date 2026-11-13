@@ -205,6 +205,7 @@ class SecondaryWindow(QWidget):
     def __init__(self, shell, name, language=None, scroll=False):
         super().__init__(shell, Qt.WindowType.Window)
         self.shell = shell
+        self.tooltips = getattr(shell, "tooltips", None)  # the app's bubble: a ? clicked here shows it (`HelpMark`)
         self.tool_name = name                             # its name in the bottom bar's icon (try a9 #5)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(strings.SECONDARY_TITLE.format(name=name))

@@ -320,6 +320,30 @@ def test_junban_x2_a_reorder_refused_for_another_decks_stopped_run_offers_one_pr
     assert len(engine.runs) == 1, "the press runs the put-back job, never a second plain Reorder"
 
 
+def test_junban_x2_a_change_to_the_order_takes_the_offer_away_with_its_preview(main, engine):
+    """Only while its preview is the one on screen (I5): a setting changed after the refusal hides it at once."""
+    win = settled(previewed(opened(main)))
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    win.cb_freqsort.click()
+    settled(win)
+    assert win.put_back_row.isHidden()
+
+
+def test_junban_x2_the_question_mark_clicked_shows_its_line_in_this_window_too(main, engine, monkeypatch):
+    """The adversary's SHOULD 2: a ? clicked in a secondary window asks the app's bubble (hover and Tab did already)."""
+    asked = []
+    win = settled(previewed(opened(main)))
+    assert win.tooltips is main.tooltips
+    monkeypatch.setattr(main.tooltips, "request", lambda widget: asked.append(widget))
+    engine.report = dict(_ELSEWHERE)
+    win.on_reorder()
+    assert wait_until(lambda: not win.put_back_row.isHidden())
+    QTest.mouseClick(win.put_back_mark, Qt.MouseButton.LeftButton)
+    assert asked == [win.put_back_mark]
+
+
 def test_junban_x2_a_plain_refusal_offers_nothing_and_throws_the_preview_away_as_before(main, engine):
     win = settled(previewed(opened(main)))
     engine.report = dict(_ELSEWHERE, put_back_first=None, put_back_decks=None)

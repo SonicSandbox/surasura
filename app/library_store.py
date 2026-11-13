@@ -13668,7 +13668,7 @@ def _store_transcript_found(self, said, book):
             return None
     if not text:
         return None
-    return {"book": audiobooks._book_mark(book),
+    return {"book": audiobooks._book_mark(book), "rule": audiobooks.FOUND_RULE,
             "share": audiobooks.found_in_order(lines, audiobooks.clean_text("".join(text)))}
 
 

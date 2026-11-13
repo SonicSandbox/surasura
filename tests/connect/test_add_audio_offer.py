@@ -680,6 +680,18 @@ def test_earlier_copies_are_the_removed_2x_parts_of_this_book_only(book):  # noq
         assert add_audio.earlier_copies(store, os.path.join(os.path.dirname(book["book"]), "nothing.epub")) == []
 
 
+def test_earlier_copies_go_by_the_epubs_file_name_and_by_the_books_title(book, monkeypatch):  # noqa: F811
+    """His EPUB's file name is not its title (`カラフル (文春文庫) - 森 絵都 epub.epub` holds 「カラフル」): 2.x named its
+    parts by what he typed — the file's name or the title; both are this book's."""
+    from app.connect import add_audio
+    by_file, _t = _removed_parts(book, STAR, [400])
+    by_title, _t2 = _removed_parts(book, "カラフル", [410], folder="title")
+    real = library.book_of
+    monkeypatch.setattr(library, "book_of", lambda store, epub: dict(real(store, epub), title="カラフル"))
+    with book["steps"]._open("ja") as store:
+        assert add_audio.earlier_copies(store, book["book"]) == sorted(by_file + by_title)
+
+
 def test_a_book_asked_with_no_card_not_lined_up_now_is_left_as_it_was(book, tmp_path, monkeypatch):  # noqa: F811
     """Its line-up gone meanwhile (separated, a sync failed): the once-more ask waits for it — the record is never
     given up for that (it would never be asked again) and nothing is written."""

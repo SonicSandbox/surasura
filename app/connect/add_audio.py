@@ -115,8 +115,8 @@ def earlier_copies(store, epub):
     """Kura-AB5 (based on the diagnosis in #431 by Mattias: his cards were made from the book's 2.x `.txt` parts, which
     he removed before adding its EPUB): the items of an earlier copy of the EPUB `epub`'s book, removed and not put
     back (the trash's rows) — its parts named `<the EPUB's name or the book's title>_NN.txt` as 2.x split it (and as
-    a removed copy's parts are named: `_SPLIT_PART`; NFKC, any case) -> [item ids]. Never a live item; [] for a book
-    not in the library. Read only: their cards are still placed by their sentences (`place`), never by the part."""
+    a removed copy's parts are named: `_SPLIT_PART`; NFKC, any case) -> [item ids]. Never one put back (a live item:
+    `restore` marks its row); [] for a book not in the library. Read only: their cards are still placed by their sentences (`place`), never by the part."""
     import unicodedata
     from app import library_store
     from app.connect import library
@@ -135,9 +135,6 @@ def earlier_copies(store, epub):
             m = library_store._SPLIT_PART.fullmatch((rel or "").replace("\\", "/").rpartition("/")[2])
             if m is not None and fold(m.group(1)) in names:
                 out.add(item_id)
-        for chunk in library_store._chunks(sorted(out), 500):
-            out -= {r[0] for r in store.conn.execute(
-                f"SELECT id FROM items WHERE id IN ({','.join('?' * len(chunk))})", chunk)}
     return sorted(out)
 
 

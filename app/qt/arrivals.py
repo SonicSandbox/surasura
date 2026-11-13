@@ -1319,11 +1319,10 @@ class _MoreMark:
         s.set_running(True)
 
     def off(self):
+        from app.qt import press as qpress
         s, self.spinner = self.spinner, None
         if s is not None and not sip.isdeleted(s):
-            s.set_running(False)
-            s.hide()
-            s.deleteLater()
+            qpress._let_go(s)                       # (its Python half kept until it goes: the press's one rule)
 
 
 class _Fade(QWidget):

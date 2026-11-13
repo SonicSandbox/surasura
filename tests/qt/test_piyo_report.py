@@ -81,6 +81,19 @@ def test_a_draft_the_learner_was_writing_is_kept_and_piyos_words_come_after_it(m
     assert w.expected.toPlainText() == ""
 
 
+def test_a_needs_you_failure_fills_the_form_once_after_the_draft_never_as_piyo(main):
+    """Kantan-B1 (A1): *Needs you*'s *Report a problem* opens this window with the failure's line (`fill`) — after a
+    draft, never twice when pressed again, and never said to be Piyo's."""
+    main.report_button.click()
+    w = windows.opened(main, report_ui.NAME)
+    w.what.setPlainText("Generateを押したら止まった")
+    line = "Your list was written, but the report couldn't be."
+    w.fill(line)
+    w.fill(line)                                                   # pressed again
+    assert w.what.toPlainText() == f"Generateを押したら止まった\n\n{line}"
+    assert not w.from_piyo and w.status.text() != strings.REPORT_FROM_PIYO
+
+
 def test_saved_it_says_it_was_written_with_piyo_and_the_next_one_doesnt(main):
     main.bring_to_front([practice.REPORT_ARG, WHAT, EXPECTED])
     w = windows.opened(main, report_ui.NAME)

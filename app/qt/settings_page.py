@@ -251,7 +251,10 @@ class Search(QWidget):
 
 class Slab(QWidget):
     """A section: a layer-0 slab (the stylesheet's `settingsslab`, tinted every other one), its head, its rows, its
-    *More options · N* fold and the rows under it."""
+    *More options · N* fold and the rows under it. S1 (Kantan-S1, PROVISIONAL): a section that hides value
+    (`S.SECTION_WHY`) has its module's name small beside its plain name (`tag`), and under the head its one line on what
+    you get (`why`) and, only while something is missing, its needs line with *Show me* (`set_needs`: the page reveals
+    where it points)."""
 
     def __init__(self, section, tint, parent=None):
         super().__init__(parent)
@@ -268,9 +271,38 @@ class Slab(QWidget):
         self.name.setObjectName("settingshead")
         self.name.setText(section.name.upper())
         self.name.setAccessibleName(section.name)
+        self.tag = QLabel(self.head)
+        self.tag.setObjectName("settingshelp")
+        self.tag.setText(S.SECTION_TAGS.get(section.id, ""))
+        self.tag.setVisible(bool(self.tag.text()))
+        if self.tag.text():                            # a screen reader hears the module's name too
+            self.name.setAccessibleName(S.SECTION_NAMED.format(name=section.name, tag=self.tag.text()))
         head.addWidget(self.icon)
-        head.addWidget(self.name, 1)
+        head.addWidget(self.name)
+        head.addWidget(self.tag)
+        head.addStretch(1)
         box.addWidget(self.head)
+        self.about = QWidget(self)                     # S1: what you get, and what it needs while that's missing
+        about = QVBoxLayout(self.about)
+        self.why = Words(self.about)
+        self.why.setObjectName("settingshelp")
+        self.why.setWordWrap(True)
+        self.why.setText(S.SECTION_WHY.get(section.id, ""))
+        about.addWidget(self.why)
+        self.needs = QWidget(self.about)
+        needs = QHBoxLayout(self.needs)
+        needs.setContentsMargins(0, 0, 0, 0)
+        self.needs_line = QLabel(self.needs)
+        self.needs_line.setObjectName("settingshelp")
+        self.show_me = sc.Door(S.SHOW_ME, tooltip=S.SHOW_ME_PLAIN, parent=self.needs)    # (its place: `set_needs`)
+        needs.addWidget(self.needs_line)
+        needs.addWidget(self.show_me)
+        needs.addStretch(1)
+        about.addWidget(self.needs)
+        self.needs.setVisible(False)
+        self.needs_now = None                          # (the line, the row *Show me* reveals) shown, or None
+        box.addWidget(self.about)
+        self.about.setVisible(bool(self.why.text()))
         self.main = QWidget(self)
         self.main_box = QVBoxLayout(self.main)
         self.main_box.setContentsMargins(0, 0, 0, 0)
@@ -322,6 +354,18 @@ class Slab(QWidget):
         placed.insert(at, index)
         (self.adv_box if adv else self.main_box).insertWidget(at, widget)
 
+    def set_needs(self, need, where=""):
+        """S1: the needs line — `need` (its words, the row *Show me* reveals) shown, None hidden; only when it moved."""
+        if need == self.needs_now:
+            return
+        self.needs_now = need
+        if need is not None:
+            self.needs_line.setText(need[0])
+            self.show_me.setToolTip(S.SHOW_ME_TIP.format(where=where))
+            self.show_me.setAccessibleName(S.SHOW_ME_NAME.format(need=need[0], show=S.SHOW_ME))
+        if self.needs.isHidden() == (need is not None):
+            self.needs.setVisible(need is not None)
+
     def set_open(self, opened, count):
         if self._fold == (opened, count):
             return                                           # repainted only when its words change (S19)
@@ -337,6 +381,9 @@ class Slab(QWidget):
         self.head.layout().setContentsMargins(round(side * f), round(top * f), round(side * f), round(bottom * f))
         self.head.layout().setSpacing(round(10 * f))
         self.icon.setPixmap(icon_pixmap(self.section.icon, "accent", "settings-head-icon"))
+        self.about.layout().setContentsMargins(round(side * f), 0, round(side * f), round(bottom * f))  # (the head's)
+        self.about.layout().setSpacing(round(8 * f))
+        self.needs.layout().setSpacing(round(8 * f))
         top, side, bottom = theme.SPACING["settings-more"]
         self.more_row.layout().setContentsMargins(round(side * f), round(top * f), round(side * f), round(bottom * f))
         icon = round(theme.size("settings-more-icon", style.current()[1]))
@@ -358,6 +405,10 @@ HELP_SHOWN = frozenset((
     "practice_ai",               # what goes to that AI's company
     "enable_koe",                # each sentence goes to Google
     "anki_miner",                # Sonic's credit to its maker
+    # S1 · Settings say why (Kantan-S1, PROVISIONAL): what you get, in sight where the value hides
+    "connect_enabled",           # Cards made for you: what the switch does
+    "connect_needs_miner",       # …and, until Anki Miner is found, what it needs
+    "hato",                      # Subtitles for videos without them
 ))
 
 
@@ -480,8 +531,12 @@ class RowView(QWidget):
         self.help.setWordWrap(True)
         self.mark = HelpMark(self)
         self.mark.card = ROW_CARDS.get(getattr(row, "id", None))
-        self.title = QHBoxLayout()                # the label, its ?, room after
+        self.tag = QLabel(S.ROW_TAGS.get(getattr(row, "id", None), ""), self)    # S1: its tool's name, small
+        self.tag.setObjectName("settingshelp")
+        self.tag.setVisible(bool(self.tag.text()))
+        self.title = QHBoxLayout()                # the label, its tool's name, its ?, room after
         self.title.addWidget(self.label, 1000)    # (as wide as its words, `_fit_title`; the room after takes the rest)
+        self.title.addWidget(self.tag, 0, Qt.AlignmentFlag.AlignVCenter)
         self.title.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)
         self.title.addStretch(1)
         self._least = 0                           # the words' minimum width beside the control (`arrange`)
@@ -594,6 +649,8 @@ class RowView(QWidget):
         if self.label.maximumWidth() != max(1, natural):
             self.label.setMaximumWidth(max(1, natural))
         least = min(self._least, natural)
+        if not self.tag.isHidden():               # S1: its tool's name beside it fits in the words' width too (the
+            least = max(0, least - self.tag.sizeHint().width() - self.title.spacing())   # label wraps, never under it)
         if self.label.minimumWidth() != least:
             self.label.setMinimumWidth(least)
 
@@ -612,7 +669,9 @@ class RowView(QWidget):
         shown = bool(help_) and (not own or self.row.id in HELP_SHOWN or self.row.kind == "slider")
         if self.help.isHidden() == shown:
             self.help.setVisible(shown)
-        about = "" if shown and own else help_ if own else self.row.help if "{" not in self.row.help else ""
+        # (shown, its ? stays only when it opens the row's help card: S1's *Cards made for you*)
+        about = (help_ if self.mark.card else "") if shown and own else help_ if own else \
+            self.row.help if "{" not in self.row.help else ""
         self.mark.set_about(label, about if label else "")
 
     def restyle(self):
@@ -730,13 +789,17 @@ class SettingsPage(QWidget):
         nav = QVBoxLayout(self.nav_panel)
         nav.setSpacing(round(2 * _f()))
         for section in catalog.SECTIONS:
-            b = QPushButton(section.name.replace("&", "&&"), self.nav_panel)    # "&" shown, never a mnemonic (S2)
+            words = S.SECTION_NAMED.format(name=section.name, tag=S.NAV_TAGS[section.id]) \
+                if section.id in S.NAV_TAGS else section.name                 # S1: 順 beside Card order (mock 03)
+            named = S.SECTION_NAMED.format(name=section.name, tag=S.SECTION_TAGS[section.id]) \
+                if section.id in S.SECTION_TAGS else section.name
+            b = QPushButton(words.replace("&", "&&"), self.nav_panel)    # "&" shown, never a mnemonic (S2)
             b.setObjectName("settingsnavitem")
             b.setCheckable(True)
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip(S.CHANGE_TIP.format(section=section.name))
-            b.setAccessibleName(section.name)
+            b.setToolTip(S.CHANGE_TIP.format(section=named))
+            b.setAccessibleName(named)
             b.clicked.connect(lambda _c=False, s=section.id: self.go_to(s))
             self.nav[section.id] = b
             nav.addWidget(b)
@@ -992,6 +1055,7 @@ class SettingsPage(QWidget):
             index = order.index(section_id)
             slab = Slab(catalog.SECTIONS[index], tint=False, parent=self.column)
             slab.more.clicked.connect(lambda _c=False, s=section_id: self.fold(s))
+            slab.show_me.clicked.connect(lambda _c=False, s=slab: s.needs_now and self.reveal(s.needs_now[1]))
             before = sum(1 for s in self.slabs if order.index(s) < index)
             self.column_box.insertWidget(1 + before, slab)         # after the search, among the slabs in order
             self.slabs[section_id] = slab
@@ -1578,6 +1642,19 @@ class SettingsPage(QWidget):
                 end = max(0, min(bar.maximum(), round(target_y())))
                 self._scroll_to(round(start + (end - start) * v))
         self._scroll_anim = motion.clock().animate(theme.SETTINGS_MOTION["page-scroll"], frame, kind="move", owner=self)
+
+    def shows(self, target):
+        """Whether `target` (a row id or key, a section id) is shown on this page now — for this learner's settings and
+        what was found — as `reveal` would light it, never a fallback's row (the feature guide's *Show me*)."""
+        located = catalog.locate(target)
+        if located is None:
+            return False
+        _section_id, row_id = located
+        if row_id is None:
+            return True
+        if row_id in FALLBACK and row_id in self.slots and not self.slots[row_id].layout().count():
+            return False
+        return bool(self._visible(catalog.ROW[row_id], self._settings(), self._ctx()))
 
     def reveal(self, target):
         """Bring a setting into view (W3.1a's three clicks; P7's `open_setting`): `target` a row id, a key, a section id

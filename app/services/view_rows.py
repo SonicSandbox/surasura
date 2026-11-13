@@ -415,6 +415,7 @@ STRINGS = {
     "need_ep": "no {word}", "unit_eps": "episodes", "unit_parts": "parts", "unit_files": "files",
     "subline": "{lang} · {rows} in Current · {files} files", "subline_empty": "{lang} · nothing added yet",
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
+    "pct_hero": "{pct}% of its words you won't need to learn",     # Kantan-B1: as Up next paints it (strings.py)
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
     "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
@@ -1667,7 +1668,7 @@ def _as_hero(h):
     nxt = h.episodes[h.next_index]
     return h._replace(accessible=_said(STRINGS["acc_hero"].format(
         title=h.title, ep=h.title_ep, status=spoken(h.status),
-        pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
+        pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct_hero"].format(pct=round(nxt.pct)),
         new="" if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new))).replace("  ", " "))
 
 

@@ -154,14 +154,22 @@ REPAINT_ROWS = 40            # picks moved on more rows than this: one repaint o
 HAND_EVERY = 0.25           # s: the numbers go to the reader at most four times a second (A4), the last never lost
 
 
-def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None):
+def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None, after=None):
     """An arrival's place, New arrivals' one call (the tray's icons and ⋯, its picks, the sort screen): `where` one of
     `moves.PLACES`, through the window's writer (`Writer.place`) by the drag controller's ticket — its toast with Undo
-    unless `toast` is False (the sort screen says it itself; `ticket`: its own, kept for its Undo). -> the writer's
-    number, or None (refused)."""
+    unless `toast` is False (the sort screen says it itself; `ticket`: its own, kept for its Undo; `after`: the item it
+    goes after, with `top` — `Writer.place`). -> the writer's number, or None (refused)."""
     from app.qt import drag
     ticket = ticket or drag.Ticket(text, tuple(keys), list(ids))
-    return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
+    if after is None:
+        return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
+    return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t, after=after), toast=toast)
+
+
+def removed_door(win):
+    """Kantan-B4: a Remove's toast's *Removed…* (`removed.door`; imported when asked, as the menus do)."""
+    from app.qt import removed
+    return removed.door(win)
 
 
 def _later(seconds, fn):
@@ -1319,11 +1327,10 @@ class _MoreMark:
         s.set_running(True)
 
     def off(self):
+        from app.qt import press as qpress
         s, self.spinner = self.spinner, None
         if s is not None and not sip.isdeleted(s):
-            s.set_running(False)
-            s.hide()
-            s.deleteLater()
+            qpress._let_go(s)                       # (its Python half kept until it goes: the press's one rule)
 
 
 class _Fade(QWidget):
@@ -2100,6 +2107,7 @@ class ArrivalsTray(motion.Overlay):
             if not yes or moves.refused() is not None:
                 return
             ticket = drag.Ticket(strings.TRAY_REMOVED.format(title=title), ids=ids)
+            ticket.buttons = removed_door(self.win)             # Kantan-B4: the way to Put back, at the Remove
             moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         self.question = confirm.ask(
             self.win, strings.TRAY_REMOVE_TITLE.format(title=title),
@@ -2192,6 +2200,7 @@ class ArrivalsTray(motion.Overlay):
             if not yes or moves.refused() is not None:
                 return
             ticket = drag.Ticket(strings.TRAY_REMOVED.format(title=arrival.title), ids=ids)
+            ticket.buttons = removed_door(self.win)             # Kantan-B4: the way to Put back, at the Remove
             moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         self.question = confirm.ask(
             self.win, strings.TRAY_REMOVE_TITLE.format(title=arrival.title),

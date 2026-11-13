@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QMenu, QWidget
 
 from app import theme
 from app.qt import logos, motion, strings, style, windows
+from app.qt import press as qpress
 from app.qt.phase_strip import ARC_W, RING_W
 
 LOGOS = {"anki": "anki_outline"}               # the windows whose icon is a logo (`logos.CLEARED`): the phase strip's star
@@ -201,7 +202,7 @@ class ToolIcons(QWidget):
             icon = self.icons.pop(key)
             self.layout().removeWidget(icon)
             icon.hide()
-            icon.deleteLater()
+            qpress.let_go(icon)                             # (its Turn filters the main window until it goes: Qt-C2)
         for name, win in tools:
             icon = self.icons.get(id(win))
             if icon is None or icon.win is not win:

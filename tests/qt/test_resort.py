@@ -525,7 +525,8 @@ class _IndexerChores:
 def test_the_load_screen_counts_only_its_own_languages_indexer_runs(tmp_path, qapp):
     """Another language's indexer runs don't end the words step: three runs of zh leave a ja load on the index step,
     and three of ja end it. Why: a Chinese library's indexer run must not finish a Japanese load's words early."""
-    shell = type("Shell", (), {"chores": _IndexerChores(str(tmp_path / "index.log"))})()
+    services = type("Services", (), {"chores": _IndexerChores(str(tmp_path / "index.log"))})()
+    shell = type("Shell", (), {"services": services})()            # (the window's chores are its services')
     run = sort_screen.LoadRun(shell, lambda widget: None, door="resort", language=lambda: "ja",
                               sort=lambda: None)
     run.begin()

@@ -38,7 +38,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   worker: the library folder not there, or a folder in it that links to a drive or share that isn't); it offers *Keep
   their words* and never *Remove*.
 - **the failures** (`status.Snapshot.needs_you`, W3.5's: seen once looked at, still listed): *Open the logs folder* ·
-  *Save logs to a file…*.
+  *Save logs to a file…*; one card per text, *· 2 times* when it came again (Kantan-B1); a failed Generate's (the
+  window's, `source` `generate`) offers *Generate again* · *Report a problem* first, its log's path in its hover.
 - **Connect's entries** (`read_connect`: `connect.status`'s record, newest first, plus the ledger's gaps): its own words
   and its kind's action — `not-timed` *Check again* (`connect.actions.check_again`, the row's own: Kantan-B2, AUDIT
   B4), *Change its video…* (Kantan-B5, Mattias's #421: the window's `mine_actions.change_video`, hidden until it is
@@ -135,6 +136,7 @@ KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OF
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
+GENERATE_ACTIONS = ("generate_again", "report")      # Kantan-B1 (A1): a failed Generate's way on, before its logs
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 # Kantan-B2 (AUDIT B4, Sonic's yes 2026-11-12): *Not timed* offers *Check again* first — a subtitle re-timed by hand
 # Kantan-B5 (Mattias's #421; PROVISIONAL): then *Change its video…* — an episode linked to another episode's video picks
@@ -175,6 +177,10 @@ STRINGS = {
                       "Surasura it has none: it won't ask again.",
     "abook_find_say_none": "{files}. Not that book, you said. Find its book in your library or on your computer, or "
                            "tell Surasura it has none: it won't ask again.",
+    # Kantan-B3 (PROVISIONAL; Mattias 2026-11-12): an audiobook brought in alone, asked about at once
+    "abook_alone_title": "「{audio}」 is an audiobook. Which book is it?",
+    "abook_alone_say": "{files}. Find its book in your library or on your computer, or tell Surasura it has none: it "
+                       "won't ask again.",
     # Hon (a6, H-13 PROVISIONAL): a transcript beside an audiobook that its book doesn't hold — never used in silence
     "abook_transcript_title": "The transcript beside 「{audio}」 doesn't match 「{book}」",
     "abook_transcript_say": "Only {share} of its lines are in that book, so it's another edition's or another "
@@ -284,6 +290,8 @@ STRINGS = {
     "reason_no_pairing": "{n} episodes wait for hato's videos", "reason_cards": "{n} cards couldn't be made",
     "reason_gap": "{n} times Surasura lost track of your moves",
     "reason_say": "One answer for all of them, or answer each card below on its own.",
+    # Kantan-B1 (A1, PROVISIONAL): the same failure again is one card, counted
+    "failure_times": "{text} · {n} times",
 }
 # kinds whose cards share a reason (3+ of one: one line over them, `_reason_lines`), and its words
 REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_offline", FAILURE: "reason_failure",
@@ -355,7 +363,8 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
+            generate_log=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -372,7 +381,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
     arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again); `miner_update`
     (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
-    (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here."""
+    (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here;
+    `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -460,10 +470,13 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         entry = _offline_entry(root, by_id, seen)
         if entry.key not in answered:
             out.append(entry)
-    for f in failures or ():
+    for f, n, unseen in _folded(failures):
         key = f"failure:{f.at}:{_digest([f.text])}"
-        out.append(Entry(key=key, kind=FAILURE, title=f.text, lines=(), actions=("open_logs", "save_logs"),
-                         unseen=not f.seen, say="", data={"at": f.at}))
+        generate = getattr(f, "source", None) == "generate"
+        title = STRINGS["failure_times"].format(text=f.text, n=n) if n > 1 else f.text
+        out.append(Entry(key=key, kind=FAILURE, title=title, lines=(),
+                         actions=(GENERATE_ACTIONS if generate else ()) + ("open_logs", "save_logs"), unseen=unseen,
+                         say="", data={"at": f.at, "text": f.text, "log": generate_log if generate else None}))
     for n in (connect or {}).get("needs") or ():
         kind = n.get("kind")
         title = n.get("say") or ""
@@ -485,6 +498,21 @@ def _episode_of(by_id, item_id):
     title and its copy), else {}."""
     found = by_id.get(item_id) if item_id is not None else None
     return {"label": found[1].label, "rel_path": found[1].rel_path} if found is not None else {}
+
+
+def _folded(failures):
+    """Kantan-B1 (A1: two Generates stopping the same way made two identical cards): the failures as one card per text
+    -> [(the newest of them, how many times it came, whether any is unseen)], newest first as the status service lists
+    them — the newest's time is the card's key, so the same failure coming again after *Not now* shows again."""
+    by = {}
+    for f in failures or ():
+        got = by.get(f.text)
+        if got is None:
+            by[f.text] = [f, 1, not f.seen]
+        else:
+            got[1] += 1
+            got[2] = got[2] or not f.seen
+    return [tuple(v) for v in by.values()]
 
 
 def _reason_lines(cards):
@@ -1513,15 +1541,18 @@ def _audiobook_files(ask):
 def _audiobook_find_entry(ask, seen):
     """a5-2's card, after a *No* left an audiobook alone: *Which book does the audiobook 「…」 read?* — *Find its
     book…* (`find_book`: the library's books, likeliest first, then an EPUB on the computer; the pick pairs as a *Yes*
-    does, with Undo) · *It has no book* (`no_book`: alone, never asked again). Keyed by its item."""
+    does, with Undo) · *It has no book* (`no_book`: alone, never asked again). Keyed by its item. Kantan-B3: one alone
+    nobody answered about (`said_no` None) — *「…」 is an audiobook. Which book is it?*, the same two answers."""
     if ask.get("item_id") is None:
         return None
     key = f"find:{_digest(['audiobook-find', str(ask['item_id'])])}"
     files = _audiobook_files(ask)
-    say = STRINGS["abook_find_say"].format(files=files, book=ask["said_no"]) if ask.get("said_no") else \
+    alone = ask.get("said_no") is None
+    say = STRINGS["abook_alone_say"].format(files=files) if alone else \
+        STRINGS["abook_find_say"].format(files=files, book=ask["said_no"]) if ask.get("said_no") else \
         STRINGS["abook_find_say_none"].format(files=files)
-    return Entry(key=key, kind=AUDIOBOOK_FIND,
-                 title=STRINGS["abook_find_title"].format(audio=ask.get("title") or "?"), lines=(),
+    title = STRINGS["abook_alone_title" if alone else "abook_find_title"].format(audio=ask.get("title") or "?")
+    return Entry(key=key, kind=AUDIOBOOK_FIND, title=title, lines=(),
                  actions=("find_book", "no_book"), unseen=key not in seen, say=say,
                  data={"item_id": ask["item_id"], "title": ask.get("title") or ""})
 

@@ -309,8 +309,10 @@ def ask_remove_picks(win, moves, n, ids, keys=(), then=None):
     def answered(said_yes):
         if not said_yes or moves.refused() is not None:
             return
-        moves._give(drag.Ticket(strings.PICKS_REMOVED.format(title=title), tuple(keys), ids),
-                    lambda t: moves.writer.remove(ids, label=t))
+        from app.qt import removed
+        ticket = drag.Ticket(strings.PICKS_REMOVED.format(title=title), tuple(keys), ids)
+        ticket.buttons = removed.door(win)                       # Kantan-B4: the way to Put back, at the Remove
+        moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
         if then is not None:
             then()
     return confirm.ask(win, strings.PICKS_REMOVE_ASK.format(title=title), strings.PICKS_REMOVE_BODY.format(n=files),
@@ -490,9 +492,11 @@ class ItemActions(QObject):
     def _picked(self):
         """What Ctrl+click picked, in the list's order: ([whole rows], [(row, episode)]) — an episode of a row picked
         whole is in it already."""
+        whole_keys, eps = self.lst.picked_rows, self.lst.picked_eps
+        if not whole_keys and not eps:
+            return [], []                            # (nothing picked: no walk of every row's episodes at each ⋯)
         view = self._view()
         rows_ = view.rows if view is not None else ()
-        whole_keys, eps = self.lst.picked_rows, self.lst.picked_eps
         whole = [r for r in rows_ if r.key in whole_keys]
         picked = [(r, e) for r in rows_ if r.key not in whole_keys for e in r.episodes if (r.key, e.id) in eps]
         return whole, picked
@@ -632,17 +636,21 @@ class ItemActions(QObject):
 
     def _submenu(self, menu, row, label, tip, ok, children):
         """`children` in a submenu of `menu`: `MENU_PAGE` of them, then *More…* holding the rest, page by page (a long
-        *Same show as…* or *Split here…* list never runs past the window). -> the submenu."""
+        *Same show as…* or *Split here…* list never runs past the window). Its entries are made as it opens
+        (`drag.fill_later`: Mado-SM, the ⋯ press at 250 %). -> the submenu."""
         sub = drag.sub_menu(menu, label)             # R5: a kept submenu (`list_menu`'s), never a new one
         sub.setObjectName("rowmenu")
         sub.setToolTipsVisible(True)
         sub.menuAction().setToolTip(tip)
         sub.menuAction().setEnabled(ok)
         page, rest = (children, []) if len(children) <= MENU_PAGE + 1 else (children[:MENU_PAGE], children[MENU_PAGE:])
-        for c in page:
-            self._action(sub, row, c)
-        if rest:
-            self._submenu(sub, row, strings.MENU_MORE[0], strings.MENU_MORE[1], any(c.ok for c in rest), rest)
+
+        def fill():
+            for c in page:
+                self._action(sub, row, c)
+            if rest:
+                self._submenu(sub, row, strings.MENU_MORE[0], strings.MENU_MORE[1], any(c.ok for c in rest), rest)
+        drag.fill_later(sub, fill)
         return sub
 
     def _action(self, menu, row, e):
@@ -1008,9 +1016,11 @@ class ItemActions(QObject):
         """`Writer.remove`: its files to the trash (30 days), its toast with Undo."""
         if self.moves.refused() is not None:
             return None
+        from app.qt import removed
         ids = drag.ids_of(row)
-        return self.moves._give(drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids),
-                                lambda t: self.writer.remove(ids, label=t))
+        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids)
+        ticket.buttons = removed.door(self.win)                 # Kantan-B4: the way to Put back, at the Remove
+        return self.moves._give(ticket, lambda t: self.writer.remove(ids, label=t))
 
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):

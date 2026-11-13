@@ -588,8 +588,11 @@ class GenerateController:
             self._tell_end(run, "current")
             self._after(run, CURRENT)
         else:
+            # Kantan-B1 (A1): the child's own plain line when it said one ("Your list was written, but the report
+            # couldn't be."); the log's path is the state's `log_path` (a hover's), never the line
+            said = final[1].get("message") if final is not None and final[0] == "error" else None
             what = "couldn't start" if returncode is None else f"stopped (exit code {returncode})"
-            message = f"Generate {what}." + (f" The details are in {self.log_path()}" if self.log_path() else "")
+            message = str(said).strip() if said and str(said).strip() else f"Generate {what}."
             run.job.finish(ok=False, message=message)
             self._tell_end(run, "failed")
             self._after(run, FAILED, message=message, log_path=self.log_path())

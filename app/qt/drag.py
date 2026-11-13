@@ -880,6 +880,29 @@ def sub_menu(menu, label, before=None):
     return sub
 
 
+def fill_later(sub, fill):
+    """`sub`'s entries made by `fill()` only as it opens (its `aboutToShow`, which Qt sends before it sizes the
+    submenu), never with its menu: Mado-SM (3.0.x), ⋯ opened at 250 % took 16.6–17.7 ms a press, most of it making the
+    ~60 entries of submenus nobody opened (*Same show as…* lists every other show) and Qt taking them in at the
+    popup. Made as its entry is reached (`hovered`: the mouse on it, the keyboard onto it — before Qt places the
+    submenu level with that entry, which it does before `aboutToShow`; review R2-1), else as it shows. A later
+    `fill_later` replaces one not run yet; the kept menu's close drops it (`_empty_menu`)."""
+    sub.__dict__["fill"] = fill
+    if not sub.__dict__.get("fills_on_show"):
+        sub.__dict__["fills_on_show"] = True
+        sub.menuAction().hovered.connect(lambda m=sub: filled(m))
+        sub.aboutToShow.connect(lambda m=sub: filled(m))
+
+
+def filled(sub):
+    """`sub` with its entries made (a `fill_later` still to run, run now: as its entry is reached or it opens, and
+    for a test). -> `sub`."""
+    fill = sub.__dict__.pop("fill", None)
+    if fill is not None:
+        fill()
+    return sub
+
+
 def _kept_top(menu):
     """The kept menu (`list_menu`'s) `menu` is, or is a submenu of; None under a plain menu."""
     top = menu
@@ -956,6 +979,7 @@ def _empty_menu(m):
     lent = m.__dict__.get("lent") or []
     used = m.__dict__.setdefault("used", [])
     for menu in [m] + lent:
+        menu.__dict__.pop("fill", None)              # (a submenu never opened: nothing to make for it any more)
         for act in menu.actions():
             menu.removeAction(act)
             if act.parent() is menu or act.parent() is m:
@@ -1039,7 +1063,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks", "rides", "why")
+                 "marks", "rides", "why", "buttons")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -1054,6 +1078,7 @@ class Ticket:
         self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
         self.rides = False                           # a Finished choice the setting made: undone with its drop
         self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
+        self.buttons = ()                            # Kantan-B4: its toast's own buttons (a Remove's *Removed…*)
 
 
 def mines_why(lines, place):
@@ -2313,7 +2338,8 @@ class DragController(QObject):
         ticket.toast = True
         self.toasted = ticket
         self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
-        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons, why=ticket.why)
+        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons or ticket.buttons,
+                             why=ticket.why)
 
     # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
     def _toast_shown(self):
@@ -3206,7 +3232,10 @@ class DragController(QObject):
 
     def files_dropped(self, event):
         """Files dropped on the list from Explorer (A2's toast *Added X at #N*): copied into the tier's folder and placed
-        beside the row under the hand, by the writer (`insert_at`)."""
+        beside the row under the hand, by the writer (`insert_at`). Kantan-B3: a drop that may hold an audiobook (an
+        audio file, a folder: `add_menu.may_hold_audiobook`, by names) is listed first on a worker
+        (`Adder.audiobooks_apart`): an audiobook in it is asked about on its own card (read where it is), never *left
+        out*; the rest placed here."""
         paths = self._files(event)
         if not paths or self.running is not None or self.refused() is not None:
             return False
@@ -3219,11 +3248,21 @@ class DragController(QObject):
         tier, before_id, after_id, near = placement(rows_, None, slot)
         if tier not in ("now", "soon"):
             tier = "now"
-        name = os.path.basename(paths[0])
-        text = strings.DRAG_ADDED.format(name=name, n=slot + 1) if len(paths) == 1 else \
-            strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
-        self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id, after_id=after_id,
-                                                                 near=near, label=t))
+
+        def place(paths):
+            if self._closed or self.refused() is not None:
+                return                                   # (a language switch or E4 while it was listed)
+            name = os.path.basename(paths[0])
+            text = strings.DRAG_ADDED.format(name=name, n=slot + 1) if len(paths) == 1 else \
+                strings.DRAG_ADDED_N.format(count=len(paths), n=slot + 1)
+            self._give(Ticket(text), lambda t: self.writer.insert_at(paths, tier, before_id=before_id,
+                                                                     after_id=after_id, near=near, label=t))
+        from app.qt import add_menu
+        adder = getattr(self.win, "adder", None)
+        if adder is not None and any(add_menu.may_hold_audiobook(p) for p in paths) and \
+                adder.audiobooks_apart(paths, place):
+            return True
+        place(paths)
         return True
 
     def _slot_outside(self, y):

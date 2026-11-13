@@ -129,14 +129,22 @@ PICK_ANOTHER = "Add another folder…"
 PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads them where they are.\n"
                    "• You sort it show by show next; the rest wait in New arrivals (Surasura 2 tiers are kept)\n"
                    "• Nothing in it is changed; each new episode joins your library by itself")
+PICK_WHERE_THEY_ARE = "Read where they are: nothing in your folders is moved or changed."   # Kantan-B1, PROVISIONAL
 PICK_TITLE = "Where are your shows and books?"
 # Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
 PICK_FILE = "Choose a file…"
-PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB: Surasura sees which it is.\n"
+PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text, an EPUB or an audiobook: Surasura sees which "
+                 "it is.\n"
                  "• It goes at the top of Current; nothing in the file is changed")
 PICK_FILE_TITLE = "Choose a file"
-PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
+PICK_FILE_FILTER = "Subtitles, videos, texts, books and audiobooks ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
+# Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook chosen as a file
+FILE_AUDIOBOOK = ("{name} is audio: Surasura reads an audiobook in its folder, then asks which book it is. Choose "
+                  "its folder.")
+FILE_AUDIOBOOK_PLAIN = "{name} is audio: an audiobook comes in with its folder, from + Add → A folder… after setup."
+AUDIOBOOK_ITS_FOLDER_TIP = ("Read the audiobook's whole folder, as Choose a folder… does:\n"
+                            "• It joins its book, or Surasura asks which book it is")
 # alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
 VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
 VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."
@@ -223,12 +231,20 @@ LATER_TIPS = {"leave": "Leaves them as they are, after the cards for words on yo
               "mark": "Tags them Surasura::later and flags them purple.\n• Undo: 順 → Restore",
               "aside": ("Suspends them and tags them Surasura::later.\nThey come back when the word is on your list.\n"
                         "• Undo: 順 → Restore")}
+# Fresh-U row 19: what the chosen one does to those cards, said under the three (not only in a hover; PROVISIONAL)
+LATER_LINES = {"leave": "Those cards stay as they are, after the ones for words on your list.",
+               "mark": "Those cards stay, tagged Surasura::later and flagged purple.",
+               "aside": "Those cards are suspended until their word comes onto your list."}
 OPEN_ANKI = "Open Anki when Surasura opens"
 OPEN_ANKI_LINE = "So the reviews from your phone count"
 OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone is read in."
 ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
 ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
 ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
+# Kantan-B1 (A2, PROVISIONAL): Anki closed — *Next* stays, and goes on as *Skip* does (nothing written)
+ORDER_WHEN_OPEN = "Once Anki is open, 順 turns amber: pick your deck there."
+ORDER_NEXT_TIP = ("Go on without Card order for now: once Anki is open, pick your deck in 順. Nothing is "
+                  "changed.\n• Enter")
 # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the deck's new cards — the first sentence is *Needs you*'s
 # (`app/services/needs.backlog_head`: *Your 2,300 new cards come from 14 shows; 12 are on this PC.*), then one of these
 BEHIND_LOOKING = "Looking at where your new cards came from…"
@@ -368,6 +384,7 @@ EVERY_N = "{h:.0f} h"
 EVERY_MIN = "{m:.0f} min"
 NONE_YET = "—"
 COUNTING = "Counting your shows…"
+READING_FILES = ("Reading 1 file…", "Reading {n:,} files…")   # Kantan-B1 (A2, PROVISIONAL): the indexer's, while it reads
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
 DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."

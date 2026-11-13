@@ -50,6 +50,11 @@ def open_window(shell):
     return windows.show(shell, WINDOW, RemovedWindow)
 
 
+def door(shell):
+    """Kantan-B4: a Remove's toast's *Removed…* (Mattias: "where is the Trash?") -> its toast buttons."""
+    return ((strings.REMOVED_TOAST_OPEN, strings.REMOVED_TOAST_OPEN_TIP, lambda: open_window(shell)),)
+
+
 def trash_moved(change):
     """Did the saved or undone `change` put files in the trash or take them out (a Remove, a skip, a Put back)?"""
     return bool(getattr(change, "trash_ids", None) or getattr(change, "restored", None))
@@ -65,7 +70,7 @@ def trash_heard(shell, change):
     if tray is not None and looks is not None and tray.kept_out[0] and tray.giving is None:
         looks.listing()                    # alpha 4: New arrivals' kept-out foot as the trash stands now (a Put back or
     from app.qt import settings_sources    # an Undo here; never left offering a Remove already put back, review)
-    for name in (WINDOW, settings_sources.WINDOW):
+    for name in (WINDOW, settings_sources.WINDOW, "extract"):      # (Kantan-B4: Extract's offer)
         heard = getattr(windows.opened(shell, name), "trash_heard", None)
         if heard is not None:
             heard()
@@ -159,14 +164,17 @@ def detail_words(entry):
     folder read: *from a folder Surasura reads*)."""
     n = entry.get("count") or 0
     files = strings.REMOVED_FILES_ONE if n == 1 else strings.REMOVED_FILES.format(n=n)
+    return f"{files} · {left_words(entry)}"
+
+
+def left_words(entry):
+    """An entry's days: *12 days left*, *last day*, or *from a folder Surasura reads* (nothing in the trash)."""
     days = entry.get("days_left")
     if days is None:
-        left = strings.REMOVED_FROM_FOLDER
-    elif days <= 0:
-        left = strings.REMOVED_DAYS_LAST
-    else:
-        left = strings.REMOVED_DAYS_ONE if days == 1 else strings.REMOVED_DAYS.format(n=days)
-    return f"{files} · {left}"
+        return strings.REMOVED_FROM_FOLDER
+    if days <= 0:
+        return strings.REMOVED_DAYS_LAST
+    return strings.REMOVED_DAYS_ONE if days == 1 else strings.REMOVED_DAYS.format(n=days)
 
 
 def give_back(shell, trash_ids, text, told=None):

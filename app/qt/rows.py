@@ -189,6 +189,27 @@ def clear_covers():
 
 
 _CJK = re.compile(f"[{unicode_ranges.HAN}{unicode_ranges.KANA}]")
+_LATIN_RUN = re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]{2,}")
+_OPENERS = " \u3000([{（［｛【「『〔:：-–—・/"
+# a character's vertical form (the forms a vertical book prints): the long vowel and dashes a line down, brackets turned
+_VERTICAL = str.maketrans({"ー": "︱", "ｰ": "︱", "―": "︱", "—": "︱", "－": "︱", "(": "︵", ")": "︶", "（": "︵",
+                           "）": "︶", "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄", "【": "︻", "】": "︼", "〔": "︹",
+                           "〕": "︺"})
+
+
+def vertical_text(title):
+    """A Japanese / Chinese title as a vertical cover writes it (Fresh-U row 17: *杜子春 (audiobook subs)* stood "( a u d
+    i o" one letter under another): cut before the first run of Latin letters after its first Japanese or Chinese
+    letter (the brackets and spaces before that run go too; the full title is beside the cover), each long vowel, dash
+    and bracket in its vertical form. A romaji name before the kana stays (*Akari:灯…*), as does one letter (超電磁砲S)."""
+    first = next((i for i, ch in enumerate(title) if _CJK.search(unicodedata.normalize("NFKC", ch))), None)
+    run = _LATIN_RUN.search(title, first + 1) if first is not None else None
+    if run is not None:
+        cut = run.start()
+        while cut > 0 and title[cut - 1] in "0123456789０１２３４５６７８９":    # 進撃 2nd Season (ガンダム00 Season keeps 00)
+            cut -= 1
+        title = title[:cut].rstrip(_OPENERS) or title
+    return title.translate(_VERTICAL)
 
 
 def cover_label(title, w, fm):
@@ -200,7 +221,7 @@ def cover_label(title, w, fm):
     title = title or ""
     t = title.strip()
     if not t or _CJK.search(unicodedata.normalize("NFKC", t)):
-        return True, title
+        return True, vertical_text(title)
     first = next((ch for ch in t if ch.isalnum()), t[0])
     room = max(0, int(w * 0.84))
     line = fm.elidedText(t, Qt.TextElideMode.ElideRight, room)
@@ -1516,6 +1537,8 @@ class RowDelegate(QStyledItemDelegate):
                             Ask(nxt.id, (nxt.id,), nxt)))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
+            if g["pct"] is not None:                       # Kantan-B1: what the % counts
+                out.append(("pct", g["pct"], strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct)), None))
             is_open = self.view.model().open_key == payload.key
             if not is_open and self._sheet_there() and not view_rows.audio_only(payload):    # G16 / L4; a5-2
                 s = g["string"]
@@ -1913,6 +1936,11 @@ class RowDelegate(QStyledItemDelegate):
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)
         g["journey"] = None                                   # (every file watched: *Watched it*, no link: Fresh-U 5)
+        g["pct"] = None                                       # Kantan-B1: the % says what it counts in its hover
+        if nxt.pct is not None and not nxt.watched and not view_rows.audio_only(row):
+            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+            hs = TEXT.metrics("hero-sub")
+            g["pct"] = QRect(main.left(), y, min(hs.horizontalAdvance(known.rstrip(" ·")), main.width()), stats_h)
         if nxt.pct is not None and nxt.n_new is not None and not nxt.watched:   # *N new words ↗*: the journey (A3; S6);
             known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))   # no number, no link (row 36)
             link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new)
@@ -4588,8 +4616,8 @@ class RowsView(QListView):
         if name == "play" and payload is not None:
             if payload.can_play:
                 self.play_requested.emit(payload)
-        elif name in ("open", "title", "audio"):     # a5-2: the 🎧 before a title is the title's
-            self.toggle(idx)
+        elif name in ("open", "title", "audio", "pct"):     # a5-2: the 🎧 before a title is the title's; Kantan-B1:
+            self.toggle(idx)                                # ... the % only adds its hover over the card's own click
         else:
             self._act(idx, part)
 

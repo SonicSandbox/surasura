@@ -41,7 +41,9 @@ class ArrivalsWriter(FakeWriter):
     """test_drag's recording writer, with S2's commands the tray gives (written into the stand-in library as the store
     would: a place moves the items, Finished dates them, Remove takes them out)."""
 
-    def place(self, ids, where, label=None):
+    def place(self, ids, where, label=None, after=None):
+        if after is not None:                           # choice 1: the sort screen's next Current pick
+            return self._put("place", ids, label, where=where, after=after)
         return self._put("place", ids, label, where=where)
 
     def remove(self, ids, label=None):
@@ -60,7 +62,10 @@ class ArrivalsWriter(FakeWriter):
                                   for i in change.ids], order=True)
             else:
                 tier = {"top": "now", "after-show": "now", "soon": "soon", "goal": "goal"}[where]
-                lib.commit(items=[{"id": i, "tier": tier, "ord": -1000.0 + k} for k, i in enumerate(change.ids)],
+                anchor = {r["id"]: r for r in lib.items()}.get(change.kw.get("after"))
+                start = anchor["ord"] + 0.001 if anchor is not None and anchor["tier"] in ("now", "soon") else -1000.0
+                tier = anchor["tier"] if start != -1000.0 else tier
+                lib.commit(items=[{"id": i, "tier": tier, "ord": start + k * 0.001} for k, i in enumerate(change.ids)],
                            order=True)
         elif change.op == "remove":
             lib.commit(gone=[("item", i) for i in change.ids], order=True)
@@ -1571,3 +1576,20 @@ def test_open_its_folder_says_when_its_own_folder_is_gone(world, monkeypatch, tm
     tray_of(win).act(row.arrival, "folder")
     assert wait_until(lambda: opened == [there], 5)
     assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["up"], 3) and calls(writer) == []
+
+
+def test_B4_a_tray_removes_toast_carries_the_removed_door(world):
+    """Kantan-B4: New arrivals' Remove toast names Removed and carries its door too."""
+    from app.qt import removed, windows
+    seed, win, writer = world()
+    open_tray(win)
+    arrival = tray_rows(win)[1].arrival
+    tray = tray_of(win)
+    tray.act(arrival, "remove")
+    tray.question.yes.click()
+    card = win.toasts.card
+    assert card.base == strings.TRAY_REMOVED.format(title=arrival.title) and "in Removed" in card.base
+    door = next(b for b in card.buttons if b.isVisibleTo(card) and b.text() == strings.REMOVED_TOAST_OPEN)
+    door.click()
+    assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
+    windows.opened(win, removed.WINDOW).close()

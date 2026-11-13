@@ -59,8 +59,9 @@ def test_a_no_that_leaves_the_audiobook_alone_offers_to_find_its_book(said_no):
 
 
 def test_no_find_card_while_another_book_is_asked_about_or_before_any_no():
-    """Never two cards for one audiobook: a question open (the next book after a *No*) is the card; an audiobook alone
-    nobody said *No* about (no book anywhere) has none — it sits quietly, *Audio only*."""
+    """Never two cards for one audiobook: a question open (the next book after a *No*) is the card. An audiobook alone
+    nobody said *No* about (no book anywhere) is asked which book it is at once (Kantan-B3, 2026-11-12: it sat quietly,
+    *Audio only*, and a learner went looking for a subtitle file) — test_audiobook_alone_find.py."""
     language = "ja"
     store, _data_dir = _empty(language)
     src = _drive("driveA")
@@ -71,12 +72,13 @@ def test_no_find_card_while_another_book_is_asked_about_or_before_any_no():
     with store:
         root = store.add_source(src)
         _look(store, language, root, first=True)
-        assert _finds(store) == []                                     # GINGA alone, never asked: no card
+        ginga = [f["item_id"] for f in _finds(store)]
+        assert [f["title"] for f in _finds(store)] == [GINGA]          # GINGA alone: which book is it? (Kantan-B3)
         heard = next(i for i in _audio_items(store) if _record(store, i["id"])["ask"])
         store.answer_audiobook(heard["id"], False)
         _look(store, language, root)
         assert _record(store, heard["id"])["ask"] is not None          # the other edition asked: that card alone
-        assert _finds(store) == [] and len(store.audiobook_asks()) == 1
+        assert [f["item_id"] for f in _finds(store)] == ginga and len(store.audiobook_asks()) == 1
 
 
 # --- Find its book…: the pick, and its Undo ------------------------------------------------------------------------ #

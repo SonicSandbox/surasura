@@ -11,6 +11,11 @@ fixes the port carries:
   * **a taken name is refused** and `<name> 2` proposed (`check_name`, IK-1): taken means a folder of that name in
     `Processed` or in any section's folder, or anything the library store holds or keeps in its trash under one — so
     nothing in the library is moved, overwritten or mixed with a new split, and Put back still has its place;
+  * **a removed title is named, never only "taken"** (Kantan-B4, Mattias 2026-11-12, PROVISIONAL): the check names
+    the title in Removed that the name or the file's own bytes are (`check_name`'s `removed`, with its days left),
+    so the window offers *Put back* (the Removed list's command) or *Add as new* — `as_new`: a name only a removed
+    title and its own leftovers hold is freed first (`free_name`: the removed one takes the next free name in the
+    trash, its old split in Processed and its left folder renamed with it; nothing deleted, never the learner's file);
   * an extraction that finds no text is a failure, never "Success"; a length and a number of parts are at least 1;
   * a delimiter pattern with groups of its own splits where it matches (the Tk split paired a group's text as a
     delimiter, or failed on an optional group);
@@ -57,9 +62,11 @@ NO_HELPER_ENV = "SURASURA_EXTRACT_NO_HELPER"
 _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEVICE = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$", re.IGNORECASE)
 
-Name = namedtuple("Name", "name taken proposal")
-# `title`: the item an 'already' names (SRC K3)
-Result = namedtuple("Result", "code parts folder section in_library note title", defaults=(None,))
+# `removed` (Kantan-B4): the title in Removed this name or file is (`Store.removed`'s entry, one title), or None;
+# `free`: the name is taken only by that removed title and its own leftovers, so *Add as new* can free it
+Name = namedtuple("Name", "name taken proposal removed free", defaults=(None, False))
+# `title`: the item an 'already' names (SRC K3); `freed`: the removed title's new name, when *Add as new* freed one
+Result = namedtuple("Result", "code parts folder section in_library note title freed", defaults=(None, None))
 
 
 # --- the name ------------------------------------------------------------------------------------------------- #
@@ -106,6 +113,152 @@ def is_taken(name, language, store=None):
     return store is not None and _store_holds(store, [f"{f}/{name}" for f in folders])
 
 
+def _held_by_removed_only(name, language, store):
+    """Kantan-B4: is `name` held only by a removed title and its own leftovers — no item at or under any of its
+    folders, a trash row under it (purged or not), none of whose titles holds an item, and on disk nothing but
+    `Processed/<name>` (Extract's own output) and a `Library/<name>` holding only Surasura's marks? Anything else there (a tier folder of that name, a file of the
+    learner's) and the name is never freed."""
+    from app.library_store import CONTENT_FOLDER, path_key
+    from app.path_utils import SOURCE_MARKER
+    data_dir, folders = _folders(language)
+    keys = [path_key(f"{f}/{name}") for f in folders]
+    for k in keys:
+        if store.conn.execute("SELECT 1 FROM items WHERE rel_key = ? OR (rel_key > ? AND rel_key < ?) LIMIT 1",
+                              (k, k + "/", k + "0")).fetchone() is not None:
+            return False
+    from app.library_store import _json_dict
+    under, own = [], tuple(k + "/" for k in keys)
+    for row in store.trash_rows():
+        rel = path_key(row.get("rel_path") or "")
+        if rel in keys:
+            return False                                 # a file of that very name: never renamed (review r2 N-4)
+        if rel.startswith(own):
+            under.append(row)
+    if not under:
+        return False
+    works = {((_json_dict(row.get("item_state")) or {}).get("columns") or {}).get("work_id") for row in under}
+    for work in works - {None}:                          # its title still in the library elsewhere (review r1 #6)
+        if store.conn.execute("SELECT 1 FROM items WHERE work_id = ? LIMIT 1", (work,)).fetchone() is not None:
+            return False
+    for f in folders:
+        path = os.path.join(data_dir, f, name)
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path) or not os.path.isdir(path) or f not in ("Processed", CONTENT_FOLDER):
+            return False
+        if f == CONTENT_FOLDER and any(n != SOURCE_MARKER for _w, _d, names in os.walk(path) for n in names):
+            return False
+    return True
+
+
+def _purged_removes(name, language, store):
+    """Kantan-B4 (review r2 S-1): with nothing in Removed named, may the name still be freed? Only when every trash row
+    under it not put back is his own Remove (`why` None or "remove", or written before `why` was kept) whose file
+    the trash has purged since — never a skipped folder's or a book part's, never one whose file is still there."""
+    from app.library_store import _json_dict, path_key
+    data_dir, folders = _folders(language)
+    own = tuple(path_key(f"{f}/{name}") + "/" for f in folders)
+    rows = [r for r in store.trash_rows() if not r.get("restored_at")
+            and path_key(r.get("rel_path") or "").startswith(own)]
+    for r in rows:
+        if (_json_dict(r.get("item_state")) or {}).get("why", None) not in (None, "remove"):
+            return False
+        trashed = r.get("trashed_path")
+        if trashed and os.path.lexists(os.path.join(data_dir, *trashed.split("/"))):
+            return False
+    return bool(rows)
+
+
+def _in_removed(store, name, language, path=None):
+    """Kantan-B4: what in Removed `name` or the file at `path` is — the removed titles whose Put back places lie in a
+    folder of that name, else those whose origin's bytes are the file's (an EPUB extracted or read before) ->
+    (their Removed entries as one: every trash id, so Put back brings the whole title back — a grouped split's
+    folders, two Removes of one book; review r1 #2 — or None, whether the name matched)."""
+    from app.library_store import SOURCE_KEY, _json_dict, path_key, sha256_of
+    entries = store.removed(split=True)
+    if not entries:
+        return None, False
+    _data_dir, folders = _folders(language)
+    keys = tuple(path_key(f"{f}/{name}") + "/" for f in folders)
+    listed = {i for e in entries for i in e["trash_ids"]}
+    rows = [row for row in store.trash_rows() if row["id"] in listed]       # (one read: never an IN list of them all)
+    by_name, by_bytes = {row["id"] for row in rows if path_key(row.get("rel_path") or "").startswith(keys)}, set()
+    sha = None
+    if not by_name and path and file_kind(path) is not None and os.path.isfile(path):   # (never a deck's: none
+        try:                                                                              # is recorded)
+            sha = sha256_of(path)
+        except OSError:
+            sha = None
+    for row in rows if sha is not None else ():
+        pairings = (_json_dict(row.get("item_state")) or {}).get("pairings") or ()
+        if any(isinstance(k, str) and k.startswith(SOURCE_KEY) and (_json_dict(text) or {}).get("sha256") == sha
+               for k, text, *_at in pairings):
+            by_bytes.add(row["id"])
+    found = by_name or by_bytes
+    hits = [e for e in entries if found.intersection(e["trash_ids"])]
+    if not hits:
+        return None, False
+    titles = {e["title"] for e in hits}
+    days = [e["days_left"] for e in hits if e["days_left"] is not None]
+    return {"trash_ids": sorted(i for e in hits for i in e["trash_ids"]),
+            "title": hits[0]["title"] if len(titles) == 1 else name, "titles": 1,
+            "removed_at": hits[0]["removed_at"], "days_left": min(days) if days else None,
+            "count": sum(e["count"] for e in hits), "can_return": True,
+            "roots": [r for e in hits for r in e["roots"]]}, bool(by_name)
+
+
+def free_name(name, language, spawn=True):
+    """Kantan-B4, *Add as new*: under the store's write lock, a name only a removed title holds
+    (`_held_by_removed_only`) is given up — `Processed/<name>` and the left `Library/<name>` renamed (never over
+    anything) to the next free name, then `Store.rename_removed` gives the removed title that name in the trash; a
+    refused rename moves the folders back. -> (the removed title's new name, None), or (None, why): why None — nothing
+    to free (more than a removed title holds it); "busy" — a folder or the store refused, everything put back."""
+    from app import library_store
+    clean = clean_name(name)
+    if clean is None:
+        return None, None
+    store = library_store.open_store(language, get_data_path(language), get_user_files_path(language), role="window")
+    if store is None:
+        return None, "busy"
+    moved = []
+    with store:
+        try:
+            with store._writing():
+                if not _held_by_removed_only(clean, language, store):
+                    return None, None
+                new = _free_proposal(clean, language, store)
+                data_dir, folders = _folders(language)
+                for f in ("Processed", library_store.CONTENT_FOLDER):
+                    src = os.path.join(data_dir, f, clean)
+                    if os.path.lexists(src):
+                        dst = os.path.join(data_dir, f, new)
+                        if os.path.lexists(dst):
+                            raise FileExistsError(dst)
+                        os.rename(src, dst)
+                        moved.append((dst, src))
+                if not store.rename_removed(clean, new, folders):
+                    raise library_store.StoreConflict("no trash row to rename")
+        except Exception as e:
+            print(f"The removed one couldn't give up its name ({e}), so nothing was added.")
+            for dst, src in reversed(moved):
+                try:
+                    os.rename(dst, src)
+                except OSError as back:
+                    print(f"Error: {dst} couldn't be renamed back to {src} ({back}).")
+            return None, "busy"
+    print(f"The removed {clean} is now {new} in Removed.")
+    if spawn:
+        library_store.spawn_maintain(language)             # the copy carries the trash: written by the helper
+    return new, None
+
+
+def _free_proposal(clean, language, store):
+    n = 2
+    while is_taken(f"{clean} {n}", language, store):
+        n += 1
+    return f"{clean} {n}"
+
+
 def _open_reader(language):
     from app import library_store
     try:
@@ -115,20 +268,23 @@ def _open_reader(language):
         return None
 
 
-def check_name(name, language):
+def check_name(name, language, path=None):
     """The name the user typed -> Name(the cleaned name or None, whether it is taken, the free name proposed:
-    `<name> 2`, `<name> 3`, …). Reads the disk and the store (a worker's call)."""
+    `<name> 2`, `<name> 3`, …, the title in Removed the name or the file at `path` is, whether the name is held by
+    that removed title alone). Reads the disk and the store (a worker's call)."""
     clean = clean_name(name)
     if clean is None:
         return Name(None, False, None)
     store = _open_reader(language)
     try:
+        removed, by_name = _in_removed(store, clean, language, path) if store is not None else (None, False)
         if not is_taken(clean, language, store):
-            return Name(clean, False, None)
-        n = 2
-        while is_taken(f"{clean} {n}", language, store):
-            n += 1
-        return Name(clean, True, f"{clean} {n}")
+            return Name(clean, False, None, removed, False)
+        # free: what Add as new renames is what was named — the name's own removed title, or (its files purged, so
+        # out of the list: review r1 #3) nothing named; never a title met only by its bytes (review r1 #7)
+        free = store is not None and (by_name if removed is not None else _purged_removes(clean, language, store)) \
+            and _held_by_removed_only(clean, language, store)
+        return Name(clean, True, _free_proposal(clean, language, store), removed, free)
     finally:
         if store is not None:
             store.close()
@@ -834,10 +990,13 @@ def parts_of(file_path, language, method="length", value=DEFAULT_LENGTH, field=N
 
 
 def extract(file_path, name, language, section=None, method="length", value=DEFAULT_LENGTH, parts=0, field=None,
-            overflow=None, spawn=True):
+            overflow=None, spawn=True, as_new=False):
     """The whole extraction: check the name, read and split, write the parts into `Processed/<name>` (a folder of
     their own first, renamed when complete), then — with `section` — copy them into that section's folder and add
-    them to the library through the store. -> Result. `parts` > 0 groups the output into that many folders."""
+    them to the library through the store. -> Result. `parts` > 0 groups the output into that many folders.
+    `as_new` (Kantan-B4, *Add as new*): a name only a removed title holds is freed (`free_name`) once the file is
+    read and split (a file that can't be read renames nothing: review r1 #4); the result's `freed` names the removed
+    title's new name, `note` "busy" when it couldn't be freed."""
     clean = clean_name(name)
     if clean is None:
         return Result(EXIT_REFUSED, 0, None, section, False, "name")
@@ -845,13 +1004,22 @@ def extract(file_path, name, language, section=None, method="length", value=DEFA
         return Result(EXIT_FAILED, 0, None, section, False, "section")
     if not os.path.isfile(file_path):
         return Result(EXIT_FAILED, 0, None, section, False, "no-file")
+    result = _extract_named(file_path, clean, language, section, method, value, parts, field, overflow, spawn,
+                            as_new)
+    return result
+
+
+def _extract_named(file_path, clean, language, section, method, value, parts, field, overflow, spawn, as_new=False):
+    """`extract`'s body once the name is clean and the file there: the name checked, the split read, the name freed
+    (`as_new`), the split written and added."""
     store = _open_reader(language)
     try:
-        if is_taken(clean, language, store):
-            return Result(EXIT_REFUSED, 0, clean, section, False, "taken")
+        taken = is_taken(clean, language, store)
     finally:
         if store is not None:
             store.close()
+    if taken and not as_new:
+        return Result(EXIT_REFUSED, 0, clean, section, False, "taken")
     print(f"Reading {os.path.basename(file_path)}")
     pieces, error = parts_of(file_path, language, method, value, field, overflow)
     chunks = None if error else [p.text for p in pieces]
@@ -861,7 +1029,23 @@ def extract(file_path, name, language, section=None, method="length", value=DEFA
     if not chunks:
         print("Error: no text was found in it, so nothing was saved.")
         return Result(EXIT_FAILED, 0, clean, section, False, "empty")
+    freed = None
+    if taken:                                            # *Add as new*: only now the new file is read
+        freed, why = free_name(clean, language, spawn=spawn)
+        if freed is None:
+            return Result(EXIT_REFUSED, 0, clean, section, False, why or "taken")
+    try:
+        result = _write_and_add(file_path, clean, language, section, parts, pieces, chunks, spawn)
+    except Exception as e:
+        if not freed:
+            raise
+        print(f"Error: {e}")                             # the name was freed: say so with the failure (review r2 N-1)
+        result = Result(EXIT_FAILED, 0, clean, section, False, "error")
+    return result._replace(freed=freed) if freed else result
 
+
+def _write_and_add(file_path, clean, language, section, parts, pieces, chunks, spawn):
+    """The split written into `Processed/<clean>` (refused when taken meanwhile) and, with `section`, added."""
     data_dir = get_data_path(language)
     processed = os.path.join(data_dir, "Processed")
     final = os.path.join(processed, clean)
@@ -1009,6 +1193,7 @@ def main(argv=None):
     parser.add_argument("--value", default=str(DEFAULT_LENGTH))
     parser.add_argument("--parts", type=int, default=0)
     parser.add_argument("--field", default=None)
+    parser.add_argument("--as-new", action="store_true")      # Kantan-B4: *Add as new* (`free_name` first)
     args = parser.parse_args(argv)
     fault = check_options(args.split, args.value, args.parts != 0, args.parts if args.parts else None)
     if fault:
@@ -1018,7 +1203,7 @@ def main(argv=None):
     os.makedirs(os.path.join(get_data_path(args.language), "Processed"), exist_ok=True)
     try:
         result = extract(args.file, args.name, args.language, args.section, args.split, args.value, args.parts,
-                         args.field, _settings_overflow(), spawn=not os.environ.get(NO_HELPER_ENV))
+                         args.field, _settings_overflow(), spawn=not os.environ.get(NO_HELPER_ENV), as_new=args.as_new)
     except Exception as e:
         print(f"Error: {e}")
         result = Result(EXIT_FAILED, 0, None, args.section, False, "error")

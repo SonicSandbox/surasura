@@ -683,6 +683,28 @@ def _snap(**kw):
     return Snapshot(**base)
 
 
+def test_junbans_deck_to_pick_stays_grey_until_anki_answers_then_amber(strip):
+    """Kantan-A's walk (11-12, `07-generating.png`; Sonic ✅ B3): right after setup — Card order skipped, Anki closed — 順
+    went amber at once and a toast said *A decision waits for you*: the deck choice just skipped, which can't be made
+    without Anki. A deck to pick is grey until Anki answers (its hover says so), amber once it does, grey again when
+    Anki closes; the unfinished reorder's Undo and a fault are as before."""
+    from app import replan_preview as rp
+    strip.set_opens({P.JUNBAN})
+    strip.set_status(_snap(replan=rp.InJunban(rp.ONE_DECK)))
+    st = strip.states[P.JUNBAN]
+    assert st.needs is None and strip.go(P.JUNBAN) is None
+    hover = strip.hover_text(P.JUNBAN)
+    assert html.escape(strings.PHASE_DECK_WHEN_ANKI) in hover and html.escape(rp.ONE_DECK) not in hover
+    strip.set_anki(True)                                                 # Anki answers: the decision is amber
+    assert strip.states[P.JUNBAN].needs == rp.ONE_DECK and strip.go(P.JUNBAN) == P.Go("junban", "deck")
+    strip.set_anki(False)                                                # Anki closed again: grey
+    assert strip.states[P.JUNBAN].needs is None and strip.go(P.JUNBAN) is None
+    strip.set_status(_snap(replan=rp.InJunban(rp.RESTORE_FIRST)))        # the Undo isn't a deck: amber as before
+    assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST
+    strip.set_status(_snap(replan=rp.Fails("Re-ordering as you move stopped: disk full")))
+    assert strip.states[P.JUNBAN].failed == "Re-ordering as you move stopped: disk full"
+
+
 def test_a7_junban_is_amber_only_while_a_decision_waits_in_its_window_and_its_press_goes_there(strip):
     """a7 (Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that is
     highlighted. If no decision it shouldn't be yellow but something else."): 順 is amber only for a line whose decision
@@ -703,6 +725,7 @@ def test_a7_junban_is_amber_only_while_a_decision_waits_in_its_window_and_its_pr
     strip.set_status(_snap(replan=rp.InJunban(rp.RESTORE_FIRST)))
     assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST and strip.go(P.JUNBAN) == P.Go("junban", "restore")
     assert html.escape(strings.PHASE_PRESS_RESTORE) in strip.hover_text(P.JUNBAN)
+    strip.set_anki(True)                                                 # (Kantan-B1: a deck asks once Anki answers)
     strip.set_status(_snap(replan=rp.InJunban(rp.ONE_DECK)))
     assert strip.states[P.JUNBAN].needs == rp.ONE_DECK and strip.go(P.JUNBAN) == P.Go("junban", "deck")
     assert html.escape(strings.PHASE_PRESS_DECK) in strip.hover_text(P.JUNBAN)

@@ -7,13 +7,15 @@ What a wrong answer would cost a learner:
   * a failure that leaves the button greyed, or says nothing;
   * a menu's press (the menu closed) with no word anywhere until it ends.
 """
+import gc
 import os
+import weakref
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QEvent, QObject, QRectF
+from PyQt6.QtCore import QCoreApplication, QEvent, QObject, QRectF
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
 
@@ -538,6 +540,55 @@ def test_a_widget_mark_turns_the_arc_over_the_widget_painted_before_the_work(sta
     handed[0].then(None)
     assert spinners() == []
 
+
+
+def _marks(widget):
+    """Weak references to the press's marks under `widget`: its spinners and their `_Follow`s (Python halves)."""
+    from app.qt import motion
+    return [weakref.ref(c) for c in widget.findChildren(QObject) if isinstance(c, (motion.Spinner, qpress._Follow))]
+
+
+def test_a_mark_taken_off_keeps_its_python_half_until_its_deferred_delete_then_lets_it_go(stage, handed):
+    # Qt-C (the install part's 0xC0000005, tests/FLAKES.md): PyQt6's deleteLater() lets go of the parent's hold on a
+    # Python widget's wrapper. A mark's spinner and its _Follow (an event filter on the control) are in reference
+    # cycles, so a collection after the press ended freed their Python halves while their C++ objects still filtered
+    # the control's events; one that ran inside sip's call into _Follow.eventFilter crashed the process (the dump:
+    # PolishRequest -> _Follow.eventFilter, its self freed). Kept until the C++ object goes, and let go with it.
+    b, host = stage.button, stage.host
+    qpress.run(b, "needs:mark_known:known-offer:1", lambda: None)                    # the button's arc
+    qpress.run(None, "cover:fetch:1", lambda: None, at=qpress.widget_mark(host))     # a widget's mark
+    marks = _marks(host)
+    assert len(marks) == 4                                 # two spinners, each with its _Follow
+    for job in list(handed):
+        job.then(None)                                     # both presses end: their marks off, deleted later
+    gc.collect()
+    assert all(m() is not None for m in marks)             # their Python halves kept while the C++ objects live
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    gc.collect()
+    assert all(m() is None for m in marks)                 # gone with them: nothing kept for good
+
+
+def test_a_collection_inside_the_call_into_a_taken_off_arc_is_harmless(stage, handed):
+    # Qt-C, the crash itself on demand: a press ended, its arc's _Follow still filters the button until the deferred
+    # delete; a collection made to start at each of the next allocations while an event goes through it (the old code
+    # died here, 0xC0000005: the collection freed the wrapper sip was calling into)
+    b = stage.button
+    was = gc.get_threshold()
+    gc.disable()
+    try:
+        gc.collect()
+        for k in range(10):
+            qpress.run(b, f"needs:mark_known:known-offer:{k}", lambda: None)
+            handed[-1].then(None)                          # the press ends: its arc off, deleted later
+            gc.set_threshold(gc.get_count()[0] + k, 1000, 1000)
+            gc.enable()
+            QCoreApplication.sendEvent(b, QEvent(QEvent.Type.PolishRequest))      # through the arc's _Follow
+            gc.disable()
+    finally:
+        gc.set_threshold(*was)
+        gc.enable()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert qpress._going == {}                             # every arc let go once it went
 
 def test_a_workers_report_moves_the_press_and_holds_a_named_wait_in_the_bar(window, handed):
     win = window

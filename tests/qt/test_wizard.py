@@ -550,9 +550,11 @@ def test_choose_a_file_lists_what_the_library_reads_and_says_what_it_doesnt(make
     page = wiz.page
     picked = [str(tmp_path / n) for n in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "夜の図書館.epub", "日記.txt",
                                           "ぼっち・ざ・ろっく！ 第01話.png")]
-    wiz.pick_files_dialog = lambda _title, _start: picked
+    starts = []
+    wiz.pick_files_dialog = lambda _title, start: starts.append(start) or picked
     QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
     assert page.files == [os.path.normpath(p) for p in picked[:3]]
+    assert starts == [windows.content_folder()]                    # Fresh-U row 11: the Videos folder, not home
     assert not page.refused_line.isHidden() and "第01話.png" in page.refused_line.text()
     assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.png") in page.refused_line.text()
     QApplication.processEvents()                                   # (a new row is shown by the next turn of the loop)
@@ -846,16 +848,59 @@ def test_card_order_preselects_keep_in_order_page_twos_deck_and_leave_and_saves_
                                "junban_later_flag": False, "junban_later_suspend": True}]
 
 
+def test_fresh_u_the_card_order_page_says_what_the_chosen_later_choice_does_to_those_cards(make):
+    """Fresh-U row 19: *Leave them / Mark them / Set them aside* said what they do to the cards only in their hovers.
+    The line under the three says it for the chosen one, follows a pick (click or arrow), and follows a loaded answer."""
+    wiz, _shell, _api, _settings, _m = make()
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert page.later.value() == "leave" and page.later_line.text() == S.LATER_LINES["leave"]
+    QTest.mouseClick(page.later.choice("aside"), Qt.MouseButton.LeftButton)
+    assert page.later_line.text() == S.LATER_LINES["aside"] and "suspended" in page.later_line.text()
+    page.later.step(page.later.choice("aside"), -1)
+    assert page.later.value() == "mark" and page.later_line.text() == S.LATER_LINES["mark"]
+    page.load({"later": "aside"})
+    assert page.later_line.text() == S.LATER_LINES["aside"]
+    assert set(S.LATER_LINES) == set(S.LATER_CHOICES)
+
+
 def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):
     api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
     wiz, _shell, api, settings, _m = make(api=api)
     go_to(wiz, "order")
     page = wiz.page
     assert wait_until(lambda: not page.closed_part.isHidden() and not wiz._anki_looking)
-    assert page.controls.isHidden() and wiz.btn_next.isHidden() and not wiz.btn_skip.isHidden()
+    assert page.controls.isHidden() and not wiz.btn_skip.isHidden()
     settings.calls.clear()
     wiz.enter()
     assert W.PAGES[wiz.index] == "cards" and settings.calls == []
+
+
+def test_card_order_with_anki_closed_keeps_next_which_goes_on_as_skip_and_writes_nothing(make):
+    """Kantan-A's walk (11-12, `04-order.png`): with Anki closed the page's *Next* was gone, only a small *Skip* left —
+    a dead end for a learner who doesn't use Anki yet. *Next* stays, says why in a line and its hover, and goes on as
+    *Skip* does (the Skip test's rule: nothing written). Anki open: *Next* keeps its own words and saves the page."""
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.closed_part.isHidden() and not wiz._anki_looking)
+    assert not wiz.btn_next.isHidden() and wiz.btn_next.text() == S.NEXT and wiz.btn_next.isEnabled()
+    assert wiz.btn_next.toolTip() == S.ORDER_NEXT_TIP
+    assert not page.when_open.isHidden() and page.when_open.text() == S.ORDER_WHEN_OPEN
+    settings.calls.clear()
+    saves = len([c for c in api.calls if c[0] == "save"])
+    wiz.next()
+    assert W.PAGES[wiz.index] == "cards"
+    assert settings.calls == [] and len([c for c in api.calls if c[0] == "save"]) == saves
+    assert wiz.btn_next.toolTip() == S.NEXT_TIP                  # the next page's *Next* is its own again
+    api.anki = {"open": True, "say": None, "decks": list(DECKS), "preselected": [DECKS[0][0]]}
+    wiz.back()                                                   # (the page looks for Anki again as it shows)
+    assert wait_until(lambda: not wiz._anki_looking and page.closed_part.isHidden())
+    assert page.when_open.isHidden() and wiz.btn_next.toolTip() == S.NEXT_TIP
+    wiz.next()
+    assert W.PAGES[wiz.index] == "cards" and settings.calls                 # open: Next saves the page as before
 
 
 @pytest.mark.parametrize("running, words, how, card", [
@@ -1885,6 +1930,67 @@ def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make,
     assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
 
 
+class ReadingChores:
+    """The window's chores as page 6 reads them: whether the indexer reads (`indexing`), and its log (`index_log`)."""
+
+    def __init__(self, log):
+        self.log, self.reading = log, True
+
+    def indexing(self):
+        return self.reading
+
+    def index_log(self):
+        return self.log
+
+
+def test_page_six_says_reading_n_files_while_the_indexer_reads_never_counting_over_an_empty_graph(make, monkeypatch,
+                                                                                                  tmp_path):
+    """Kantan-A's walk (11-12, `06-level.png`): the samples just added, page 6 said *Counting your shows…* over an empty
+    graph for its first seconds. While the window's indexer reads them, the page says how many files it reads (its
+    log's count, the load screen's); once it is done, the numbers — or *Counting* while none are in."""
+    waits = []
+    wiz, shell, api, *_ = make()
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))
+    log = tmp_path / "indexer-window.log"
+    log.write_text("Indexer: 1 of 4\n", encoding="utf-8")
+    shell.services.chores = ReadingChores(str(log))                 # (the window's chores are its services')
+    go_to(wiz, "level")
+    page = wiz.page
+    assert wait_until(lambda: page.counting.text() == "Reading 4 files…")
+    assert not page.counting.isHidden() and page.numbers_part.isHidden()
+    page.show_numbers(None, 1)
+    assert page.counting.text() == "Reading 1 file…"
+    shell.services.chores.reading = False                                    # the indexer ended: no count of its kept
+    wiz.read_numbers()
+    assert wait_until(lambda: page.counting.text() == S.COUNTING)
+    shell.services.chores.reading = True
+    page.show_numbers(None, 4)
+    os.utime(log, (1, 1))                                           # an old run's log: never this run's count
+    wiz.read_numbers()
+    assert wait_until(lambda: page.counting.text() == S.COUNTING)
+    api.numbers = NUMBERS                                           # read: the numbers, whatever the log says
+    os.utime(log, None)
+    shell.bridge.indexed.emit("ja")
+    assert wait_until(lambda: page.counting.isHidden() and not page.numbers_part.isHidden())
+
+
+def test_page_three_says_nothing_is_moved_and_asks_every_core_only_once_a_folder_is_picked(make, ja_resources_dir):
+    """Kantan-A's walk (11-12): *will it move my files?* (Mattias, 11-10) was answered only in *Choose a folder…*'s
+    hover, and *Use every core* — a reading speed — was asked before any folder. The first is a line under the
+    buttons; the second shows once a folder is picked, and goes with it. Showing them writes nothing."""
+    wiz, _shell, api, settings, _m = make()
+    go_to(wiz, "shows")
+    page = wiz.page
+    settings.calls.clear()
+    assert page.where_line.isVisibleTo(wiz) and page.where_line.text() == S.PICK_WHERE_THEY_ARE
+    assert not page.every_core.isVisibleTo(wiz)
+    wiz.choose_folder(ja_resources_dir)                             # (no store rule here: listed at once)
+    assert page.has_folder(ja_resources_dir) and page.every_core.isVisibleTo(wiz)
+    page.remove_folder(page.folders[0])
+    assert not page.every_core.isVisibleTo(wiz) and page.where_line.isVisibleTo(wiz)
+    assert settings.calls == []
+
+
 def test_an_empty_library_says_add_a_show_first_never_counting_and_still_asks_again(make, monkeypatch):
     """Disc-T1 (Mattias, 2026-11-10: "Counting your shows… didn't really get any feedback"): his library was empty
     (a new incoming folder, the 2.5 shows left behind) and the page said *Counting your shows…* for good. Nothing to
@@ -2080,10 +2186,10 @@ def test_card_order_coming_up_when_anki_answers_takes_no_press_aimed_before_it(m
     wiz, _shell, api, settings, _m = make(api=api)
     go_to(wiz, "order")
     settle(wiz)
-    assert wiz.btn_next.isHidden()
+    assert not wiz.btn_next.isHidden() and wiz.btn_next.toolTip() == S.ORDER_NEXT_TIP     # Kantan-B1: Next as Skip
     settings.calls.clear()
     wiz._anki_looked(dict(OPEN_LOOK), wiz._anki_seq, wiz.language)       # Anki answers: the controls come up
-    assert not wiz.btn_next.isHidden()
+    assert not wiz.btn_next.isHidden() and wiz.btn_next.toolTip() == S.NEXT_TIP   # (now it saves: it waits again)
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
     QTest.keyClick(wiz, Qt.Key.Key_Return)
     assert W.PAGES[wiz.index] == "order" and settings.calls == [], "nothing saved before the page was seen"

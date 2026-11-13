@@ -1,0 +1,14 @@
+{
+  "version": "3.0.5",
+  "date": "2026-11-12",
+  "items": [
+    {"id": "narrator-voice", "kind": "new", "for": ["audiobooks", "miner"], "where": "tab:needs",
+     "text": "Book cards made before their audiobook: Add the narrator's voice, in Needs you or the book's ⋯."},
+    {"id": "anki-busy", "kind": "tweak", "for": ["anki", "junban", "miner"],
+     "text": "When Anki is busy, 順, Backfill, the sync and Connect wait and try again."},
+    {"id": "hato-own-search", "kind": "fix", "for": ["hato"],
+     "text": "A long hato search no longer holds up the next video's own subtitle track."},
+    {"id": "qt-notices", "kind": "fix", "for": ["everyone"],
+     "text": "The installer carries the notices of the libraries Qt builds in."}
+  ]
+}

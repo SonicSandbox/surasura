@@ -247,7 +247,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "pick_audiobook",
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
+                     "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
                      "add_audio",                                                  # Kura-AB3 A2: Anki written
@@ -443,7 +444,10 @@ class NeedsCards(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(*pad)
         box.setSpacing(round(6 * f))
-        box.addWidget(_label(e.title, "needstitle", card))
+        title = _label(e.title, "needstitle", card)
+        if e.kind == service.FAILURE and (e.data or {}).get("log"):
+            title.setToolTip(strings.NEEDS_FAILURE_LOG_TIP.format(path=e.data["log"]))   # Kantan-B1: never the line
+        box.addWidget(title)
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
         self.addon(card, box, e)
@@ -1002,6 +1006,8 @@ class NeedsYou(QObject):
         library = self._library()
         emptied = self._emptied()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
+        log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
+        generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
         def gather():
             settings = read_settings() or {}
@@ -1031,7 +1037,8 @@ class NeedsYou(QObject):
                                   settings_folders=_settings_folders(settings, lang),     # a6: imported, not here
                                   backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
                                   miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
-                                  no_subs=service.no_subs_offer(view, settings))   # Michi-NS: videos, no subtitle
+                                  no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
+                                  generate_log=generate_log)                  # Kantan-B1: its path, in the hover
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1130,6 +1137,8 @@ class NeedsYou(QObject):
             return getattr(getattr(self.win, "services", None), "settings", None) is not None
         if name == "start_fresh":                    # K1: the looks start the fresh library (`SourceLooks.fresh`)
             return callable(getattr(getattr(self.win, "looks", None), "fresh", None))
+        if name == "generate_again":                 # Kantan-B1: the window's own Generate (the header's)
+            return callable(getattr(getattr(self.win, "services", None), "generate", None))
         return True
 
     def act(self, name, entry, line=None):
@@ -1624,7 +1633,8 @@ class NeedsYou(QObject):
         adder = getattr(self.win, "adder", None)
         if adder is None:
             return
-        folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), "")
+        from app.qt import windows                       # (Fresh-U row 11: never the program's own folder)
+        folder = self.pick_folder(strings.NEEDS_AUDIOBOOK_FOLDER_TITLE.format(book=title), windows.content_folder())
         if folder and adder.read_folder(folder):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder))))
 
@@ -2359,6 +2369,19 @@ class NeedsYou(QObject):
         save = self.connect_calls["save_logs"]
         self._press("save_logs", entry, save, dest, then=lambda _n: self._say(strings.NEEDS_SAVED_LOGS.format(path=dest)),
                     goes=False)
+
+    def _do_generate_again(self, entry, _line):
+        """Kantan-B1 (A1): *Generate again* — the header's Generate (`Services.generate`, on a worker: the settings
+        flushed, then the run asked), its arc on this button until the run is asked; the card stays, as every
+        failure's (the bar shows the run)."""
+        self._press("generate_again", entry, self.win.services.generate, then=lambda _r: None, goes=False,
+                    failed=lambda info: self._say(str(info[0])))
+
+    def _do_report(self, entry, _line):
+        """Kantan-B1 (A1): *Report a problem* — the bug's window, opened at once with the failure's line written in
+        (after any draft) for the learner to add to and send; nothing saved or sent here."""
+        from app.qt import report as qreport
+        qreport.open_report(self.win).fill(entry.data.get("text") or entry.title)
 
 
 def give_shows(win, ids, shows, language):

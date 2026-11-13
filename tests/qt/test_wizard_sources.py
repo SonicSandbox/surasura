@@ -128,12 +128,17 @@ def _sorted(wiz):
 
 
 def _pick(wiz, *paths):
-    """*Choose a folder…* clicked once per path, the dialog answering it; each waits for the store's check."""
+    """*Choose a folder…* clicked once per path, the dialog answering it; each waits for the store's check. The first
+    opens in the Videos folder (Fresh-U row 11), a later one in the last folder listed."""
+    from app.qt import windows
     page = wiz.pages[2]
     for path in paths:
-        wiz.pick_dialog = lambda _title, _start, p=path: p
+        starts = []
+        wiz.pick_dialog = lambda _title, start, p=path: starts.append(start) or p
+        want = page.folders[-1] if page.folders else windows.content_folder()
         before = (list(page.folders), page.refused_line.text())
         QTest.mouseClick(page.btn_pick, Qt.MouseButton.LeftButton)
+        assert starts == [want]
         assert wait_until(lambda: (list(page.folders), page.refused_line.text()) != before)
 
 

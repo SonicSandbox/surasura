@@ -40,7 +40,7 @@ import sys
 import weakref
 from collections import namedtuple
 
-from PyQt6.QtCore import QEvent, QObject, QSize, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, QStandardPaths, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QHBoxLayout, QLabel, QPushButton,
                              QScrollArea, QSizePolicy, QStyle, QVBoxLayout, QWidget)
@@ -121,6 +121,14 @@ def onto_screen(win):
         dy = area.top() - frame.top()
     if dy:
         win.move(win.x(), win.y() + dy)
+
+
+def content_folder():
+    """Where a picker for the learner's shows and books opens (Fresh-U row 11): their Videos folder (its real place,
+    wherever Windows keeps it), else their home folder — never the dialog's own default, the program's folder
+    (`_internal`, `data`, `User Files`)."""
+    path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+    return os.path.normpath(path if path and os.path.isdir(path) else os.path.expanduser("~"))
 
 
 class _FitScroll(QScrollArea):

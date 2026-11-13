@@ -178,7 +178,7 @@ ITEM_REMOVE_BODY_ONE = "Its file goes to the trash for 30 days. Undo puts it bac
 ITEM_REMOVE_YES = "Remove {n} files"
 ITEM_REMOVE_YES_ONE = "Remove 1 file"
 ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash for 30 days"
-ITEM_REMOVED = "Removed {title}"
+ITEM_REMOVED = "{title} is in Removed for 30 days"     # Kantan-B4: + the toast's *Removed…*
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
@@ -336,6 +336,10 @@ BAR_LEVEL_AUTO_NONE = "Auto"
 BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
 BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the commonest band whose list holds enough words, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
+# Kantan-B1 (B1, Sonic ✅ 2026-11-12; PROVISIONAL): the list's size, never a band's name ("Native" to a beginner)
+BAR_LEVEL_AUTO_WORDS = "Auto · ≈{words:,} words"
+BAR_LEVEL_AUTO_WORDS_TIP = ("Your level, chosen for you: your list holds ≈{words:,} words, the commonest band with "
+                            "enough of them ({band} now)")
 # W3.5 row 7: the journey dot (the re-order's and Connect's lines are 順's and Anki Miner's hovers since alpha 3).
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
@@ -565,7 +569,12 @@ ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
 ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never finishes (G3.2)
-ROWS_HERO_KNOWN = "{pct}% known · "
+# Kantan-B1 (AUDIT B1, Sonic ✅; PROVISIONAL): the % is the analyzer's coverage — the words you know AND those with
+# nothing to learn (ignored words; in Japanese with the one-character rule on, の は を …) — so *37% known* beside
+# *0 known* misread; "won't need to learn" is true in both languages, with the rule on or off
+ROWS_HERO_KNOWN = "{pct}% of its words you won't need to learn · "     # (view_rows' "pct_hero" says it the same)
+ROWS_HERO_PCT_TIP = ("The words you know, the words you ignore and, in Japanese, the small one-character words "
+                     "(の, は, を…) with nothing to learn: together {pct}% of its words")
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
@@ -581,6 +590,7 @@ FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync rea
 # one's hover its name and what it does, what it is doing now, then the last thing that ended. Alpha 3 (Sonic
 # 2026-10-24: "I'd actually prefer if pressing it opened up their settings"): a press opens the circle's settings.
 PHASE_STRIP_NAME = "What's running"
+PHASE_DECK_WHEN_ANKI = "Card order: pick your deck once Anki is open"    # Kantan-B1 (B3, PROVISIONAL): 順 grey
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
@@ -822,7 +832,7 @@ TRAY_REMOVE_BODY_ONE = "Its file goes to the trash, kept there for 30 days. Undo
 TRAY_REMOVE_YES = "Remove {n} files"
 TRAY_REMOVE_YES_ONE = "Remove 1 file"
 TRAY_REMOVE_YES_TIP = "Send them to the trash. Undo on the next message puts them back"
-TRAY_REMOVED = "{title} removed · in the trash for 30 days"
+TRAY_REMOVED = "{title} is in Removed for 30 days"
 TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
 TRAY_NUMBER_NONE = "—"
 TRAY_NUMBER_UNIT = "new / {unit}"
@@ -872,8 +882,8 @@ GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts 
 GOAL_REMOVE_YES = "Remove {n} files"
 GOAL_REMOVE_YES_ONE = "Remove 1 file"
 GOAL_REMOVE_YES_TIP = "Send them to the trash (kept 30 days); the toast's Undo puts them back"
-GOAL_REMOVED = "{title} removed · {n} files in the trash for 30 days"
-GOAL_REMOVED_ONE = "{title} removed · its file is in the trash for 30 days"
+GOAL_REMOVED = "{title} is in Removed for 30 days · {n} files"
+GOAL_REMOVED_ONE = "{title} is in Removed for 30 days"
 GOAL_FOLDER_FAILED = "Couldn't open the folder of {title}"
 # --- end W3.2 Q2
 
@@ -1114,6 +1124,22 @@ EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"
 EXTRACT_CHECKING = "Checking the name…"
 EXTRACT_BAD_NAME = "That name can't be a folder's name: try another"
 EXTRACT_TAKEN = "“{name}” is taken in your library, so nothing would be replaced: “{proposal}” is filled in"
+# Kantan-B4 (Mattias 2026-11-12: a removed book added again said only "taken"; words PROVISIONAL): what he adds is a
+# title in Removed (by its name or its bytes) → Put back (the Removed list's command, with its Undo) or Add as new
+EXTRACT_IN_REMOVED = "「{title}」 is in Removed ({left})"
+EXTRACT_IN_REMOVED_TAKEN = "「{title}」 is in Removed ({left}) · its name is taken too: “{proposal}” is filled in"
+EXTRACT_PUT_BACK = "Put back"
+EXTRACT_PUT_BACK_TIP = "Put 「{title}」 back where it was, with its progress\n• Undo sends it back to Removed"
+EXTRACT_ADD_NEW = "Add as new"
+EXTRACT_ADD_NEW_TIP = "Add this file as a new title\n• The removed one stays in Removed"
+EXTRACT_ADD_NEW_FREE_TIP = ("Add this file as a new title named “{name}”\n• The removed one stays in Removed, "
+                            "renamed “{proposal}”")
+EXTRACT_PUT_BACK_DONE = "「{title}」 is back in your library"
+EXTRACT_PUT_BACK_FAILED = "「{title}」 wasn't put back: open 🗑 Removed… in Settings › Content › Library folders"
+EXTRACT_FREED = " · the removed one is “{freed}” in Removed"
+EXTRACT_REMOVED_GONE = "“{name}” was a title you removed; its files have left Removed since"
+EXTRACT_PUTTING_BACK = "Putting 「{title}」 back…"
+EXTRACT_FREE_BUSY = "The removed 「{name}」 couldn't give up its name (a file of it open?): nothing was added · try again"
 EXTRACT_FAULTS = {"length": "The length must be a whole number of at least 1",
                   "pattern": "The pattern isn't a usable regular expression",
                   "parts": "The number of folders must be a whole number of at least 1"}
@@ -1294,8 +1320,21 @@ ADD_ITEMS = {
 ADD_DROP_LINE = "Or drop files anywhere in your list"
 ADD_PICK_FILES = "Add files to your library"
 ADD_PICK_FOLDER = "Add a folder to your library"
-ADD_PICK_FILTER = "Subtitles and text (*.srt *.ass *.ssa *.txt *.md);;All files (*)"
+ADD_PICK_FILTER = ("Subtitles, texts and audiobooks (*.srt *.ass *.ssa *.txt *.md *.m4b *.mp3 *.m4a *.aac *.ogg *.opus "
+                   "*.flac *.wav);;All files (*)")         # Kantan-B3: audiobooks.AUDIO_EXTENSIONS shown too
 ADD_NOTHING = "Nothing to add in {name}: no subtitle or text files"
+# Kantan-B3 (PROVISIONAL; Mattias 2026-11-12: "has to be srt then I guess"): an audiobook dropped or picked alone
+AUDIOBOOK_IN_TITLE = "「{name}」 is an audiobook"
+AUDIOBOOK_IN_TITLE_N = "{n} audiobooks"
+AUDIOBOOK_IN_BODY = ("Surasura reads it where it is, in {folders}, and looks there again for new files. It joins its "
+                     "book, or waits in New arrivals while Needs you asks which book it is.")
+AUDIOBOOK_IN_BODY_N = ("Surasura reads them where they are, in {folders}, and looks there again for new files. Each "
+                       "joins its book, or waits in New arrivals while Needs you asks which book it is.")
+AUDIOBOOK_IN_OTHERS = "Everything else Surasura reads in {folders} comes in too: subtitles, texts, books and videos."
+AUDIOBOOK_IN_REFUSED = "「{name}」 is an audiobook: put it in a folder of its own, then add that folder ({why})"
+AUDIOBOOK_IN_YES = "Read its folder"
+AUDIOBOOK_IN_YES_N = "Read {n} folders"
+AUDIOBOOK_IN_YES_TIP = "As + Add → A folder… does: nothing is moved"
 ADD_FOLDER_FAILED = "{name} couldn't be read: {why}"
 PASTE_NAME = "Paste text"
 PASTE_HEADING = "Paste text"
@@ -1433,12 +1472,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Michi-RM3 (PROVISIONAL words)
     "skip_words": ("Skip this word", "Leave it out: the rest of the part is done, and it's never asked again"),
     "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
-                                  "• Change it any time: Settings › Anki"),
+                                  "• Change it any time: Settings › Anki & mining"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
-                           "• Turn it on any time: Settings › Anki"),
+                           "• Turn it on any time: Settings › Anki & mining"),
     # … the same line once setup's page 5 turned *Make cards for me as I watch* on: it asks only about these episodes
     "first_cards_on": ("Make cards", "Make cards for these episodes now.\n"
-                                     "• What comes into your top 20 later gets its cards already: Settings › Anki"),
+                                     "• What comes into your top 20 later gets its cards already: Settings › Anki & mining"),
     "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
                               "• What comes into your top 20 later still gets its cards"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
@@ -1452,6 +1491,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                   "again"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # Kantan-B1 (A1, PROVISIONAL): a failed Generate's way on
+    "generate_again": ("Generate again", "Make your list again now, as the Generate button at the top does"),
+    "report": ("Report a problem", "Tell us what went wrong: Report a problem opens with this line written in, for "
+                                   "you to add to and send"),
     # T6: a gone source folder's card (Sonic 2026-10-24)
     "find_folder": ("Find its new folder…", "Choose where the folder is now. Surasura reads it there and joins its "
                                             "episodes to the shows you have, never as a second copy, then stops "
@@ -1544,8 +1587,8 @@ NEEDS_STOPPED_READING = "Stopped reading {name}: its {n:,} episodes stay in your
 NEEDS_STOPPED_READING_ONE = "Stopped reading {name}: its episode stays in your library"
 NEEDS_STOPPED_READING_NONE = "Stopped reading {name}"
 NEEDS_KEEP_WAITING = "Waiting for {name}: Needs you asks again if it comes back and goes again"
-NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
-NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
+NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki & mining"
+NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki & mining"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
 NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
@@ -1629,6 +1672,7 @@ NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed befor
 NEEDS_MINER_BUSY = "Anki Miner is in use (Surasura is making cards with it, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
+NEEDS_FAILURE_LOG_TIP = "The last Generate's details are in {path}"             # Kantan-B1 (A1): a failed Generate's path, hover only
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
 NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
 NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"
@@ -1857,7 +1901,7 @@ NEEDS_RELINK_LEFT = "{n:,} of them weren't pointed at: {why}"
 NEEDS_RELINK_WHY = "{why} ({n:,})"
 # fix2 (A4B-4): a folder picked outside the library folder — the store points an item only at a file inside it
 NEEDS_RELINK_OUTSIDE = ("{n:,} of them are in {folder}, outside your library folder, so they can't be pointed at. "
-                        "To read them where they are, add that folder in Settings › Library folders")
+                        "To read them where they are, add that folder in Settings › Content › Library folders")
 NEEDS_RELINK_WHY_OUTSIDE = "outside your library folder"
 NEEDS_RELINK_NONE_TAKEN = ("None of them were pointed at: each file found is another item's already, in the trash, "
                            "or not there any more")
@@ -1873,6 +1917,9 @@ NEEDS_FIND_DROPPED_ARRIVAL = ("None of {show}'s episodes were there: {folder} is
 REMOVED_NAME = "Removed"
 REMOVED_OPEN = "🗑"                # the icon alone (Sonic, 2026-10-27 late: "Too many words"): its words are its name + tip
 REMOVED_OPEN_NAME = "Removed…"
+REMOVED_TOAST_OPEN = "Removed…"                     # Kantan-B4: a Remove's toast, the door to the list (PROVISIONAL)
+REMOVED_TOAST_OPEN_TIP = ("Open Removed: what you removed in the last 30 days, each with Put back\n"
+                          "• Also in Settings › Content › Library folders › 🗑")
 REMOVED_OPEN_TIP = ("Removed in the last 30 days\nWhat you removed, each with Put back. Removed files wait in the trash "
                     "for 30 days, then they're gone for good")
 REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."
@@ -1932,7 +1979,7 @@ PICKS_REMOVE_ASK = "Remove {title}?"
 PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
 PICKS_REMOVE_YES = "Remove {n} files"
 PICKS_REMOVE_YES_TIP = "Take them out of your library: their files go to the trash for 30 days"
-PICKS_REMOVED = "Removed {title} · in the trash for 30 days"
+PICKS_REMOVED = "{title} are in Removed for 30 days"
 # --- end A4 picks
 
 # --- the help cards (Sonic 2026-11-06 "Ok do it", into 3.0; spec tracks/window/work/help-cards; HG-1…HG-5, HC-1…HC-5,
@@ -1994,7 +2041,7 @@ HELP_ALSO = {
 HELP_CARDS_OFF = {"current": "What you're watching or reading now, in order.",
                   "cards": "With it on, Anki Miner makes cards for your top episodes, by itself."}
 HELP_CARDS_OFF_ALSO = "Cards made for you is off · Settings › Anki & mining"
-HELP_CARDS_AUTO_OFF_ALSO = "Nothing is made by itself · Settings › Run things by themselves is off"
+HELP_CARDS_AUTO_OFF_ALSO = "Nothing is made by itself · Settings › Anki & mining › Run things by themselves is off"
 # The tour's first card: the seven, one line each
 HELP_AUTOMATION_LIST = ("Cards made for you: your top episodes", "Known words from Anki", "Your journey catching up",
                         "順 putting Anki's new cards in order", "Backfill filling empty fields",
@@ -2025,7 +2072,7 @@ HELP_NEXT_TIP = "The next card"
 HELP_DONE = "Done"
 HELP_DONE_TIP = "End the tour"
 HELP_STEP = "{n} of {total}"
-HELP_TOUR_FOOT = "Turn any of these off: Settings › Run things by themselves"
+HELP_TOUR_FOOT = "Turn any of these off: Settings › Anki & mining › Run things by themselves"
 HELP_LIT = "Now"                                          # the strip's card: every lit circle and its *Why*
 HELP_LIT_NONE = "Nothing is running now"
 HELP_LIT_LINE = "{name}: {line}"
@@ -2060,3 +2107,68 @@ HINT_WHY = {"first_card_wait": "Anki Miner makes cards only while Anki is open a
             "first_amber": "Amber means only you can decide something: the circle takes you to it",
             "first_auto_generate": "After a move, new known words or a new file, your journey catches up by itself"}
 # --- end help cards
+
+# --- the feature guide (Hoshi-S, 2026-11-12; app/qt/guide.py — every word PROVISIONAL, on Sonic's after-launch list)
+GUIDE_MARK = "✦"
+GUIDE_NAME = "What's new"
+GUIDE_TIP = "What's new in this update\n• Click: see it, with yours first"
+GUIDE_GLOW_NAME = "What's new: something new for you"
+GUIDE_PANEL_NAME = "What's new"
+GUIDE_HEADING = "What's new"
+GUIDE_HEADING_ONE = "What's new in {version}"
+GUIDE_RELEASE = "Surasura {version} · {date}"
+GUIDE_RELEASE_NO_DATE = "Surasura {version}"
+GUIDE_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+GUIDE_FOR_YOU = "FOR YOU"
+GUIDE_FIXES = "▸ {n} fixes and small changes"
+GUIDE_FIXES_ONE = "▸ 1 fix or small change"
+GUIDE_FIXES_OPEN = "▾ {n} fixes and small changes"
+GUIDE_FIXES_OPEN_ONE = "▾ 1 fix or small change"
+GUIDE_FIXES_TIP = "Fixes and small changes in this update\n• Click: show or hide them"
+GUIDE_SHOW_ME = "Show me"
+GUIDE_SHOW_ME_TIP = "Where to try it\n• Click: go there, lit up"
+GUIDE_SHOW_ME_NAME = "Show me: {text}"
+GUIDE_NOT_HERE = "That isn't on this screen right now."
+# --- end the feature guide
+# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; app/qt/next_card.py, app/qt/guide.py — PROVISIONAL)
+GUIDE_TIP_PATH = "What's new, and your path\n• Click: open them"
+GUIDE_TAB_NEWS = "What's new"
+GUIDE_TAB_NEWS_TIP = "This update's changes, yours first"
+GUIDE_TAB_PATH = "Your path"
+GUIDE_TAB_PATH_TIP = "The steps to your first cards, and what's worth trying next"
+PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
+PATH_DONE = "✓ DONE"
+PATH_TICK = "✓"
+PATH_COUNT = "{n} OF {total}"
+PATH_FIRST_LINE = "Set up · See the words · Watch and Done · Cards made for you"
+PATH_MORE = "More steps show up when they're useful to you."
+PATH_TICK_NAME = "{title}: done"
+PATH_OPEN_NAME = "{title}: not done yet"
+PATH_STEPS = {           # id -> (title, the line under it)
+    "words": ("See the words before you watch", "Open them, each with a line from the episode."),
+    "watch": ("Watch it, then press Done", "Its words count as seen, and the next episode moves up."),
+    "cards": ("Get cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
+              "It's free and needs Anki open."),
+    "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
+    "backfill": ("Let your cards show how each word is used",
+                 "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    "audiobook": ("Line up a book with its audiobook", "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
+    "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),
+    "piyo": ("Practise your words with your AI", "Piyo ぴよ chats with you using the words you're learning."),
+}
+NEXT_NAME = "Your next step"
+NEXT_FIRST = "NEXT · {n} of {total} to your first cards"
+NEXT_READY = "NEW FOR YOU"
+NEXT_SHOW_ME = "Show me"
+NEXT_SHOW_ME_TIP = "Where to do it\n• Click: go there, lit up"
+NEXT_NOT_NOW = "Not now"
+NEXT_NOT_NOW_TIP = "Set this step aside\n• It stays in ✦ → Your path"
+NEXT_SET_UP_MINER = "Set up Anki Miner"
+NEXT_SET_UP_MINER_TIP = "Anki Miner makes your cards\n• Click: its place in Settings"
+NEXT_OWN_CARDS = "I make my own cards"
+NEXT_OWN_CARDS_TIP = "You mine cards by hand\n• Click: this step counts as done"
+NEXT_MADE = "✓ YOUR FIRST CARDS ARE MADE"
+NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes useful. The rest is under ✦."
+NEXT_OK = "OK"
+NEXT_OK_TIP = "Put this card away"
+# --- end the feature guide's path

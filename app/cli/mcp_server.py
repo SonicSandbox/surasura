@@ -25,6 +25,7 @@ import os
 import random
 import sys
 import threading
+import time
 from typing import List, Optional
 
 from app.cli import contract
@@ -659,6 +660,7 @@ def build(state=None, warm=True, serving=False):
 
     server = MCPServer("surasura", title=f"{NAME} (Surasura)", version=__version__,
                        instructions=INSTRUCTIONS, lifespan=lifespan)
+    server.tool = _counted(server.tool)     # every tool call counted: an update's exit never cuts one (`watch_updates`)
     reads = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
                             open_world_hint=False)
     starts = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=False,
@@ -853,8 +855,131 @@ def setup_text(app, command=None):
     raise ValueError(f"app must be one of {', '.join(APPS)}")
 
 
+# --- an update never waits for the AI app (Mattias's 3.0.6 field report) ------------------------------------------- #
+# The AI app keeps this server for as long as its session lives — Claude Code one per session, for days. It holds
+# Surasura's `<data name>.Running` mutex (Setup's AppMutex) and its own program file, so an update or Setup waited
+# until the learner killed every surasura-cli.exe by hand. Now it steps aside, as Connect does: an update staged (from
+# *Update now* until its swap), Setup running (its `<data name>.Setup` mutex, packaging/surasura.iss), or another build
+# already in its program folder -> it ends, never mid-call; the AI app starts the new one at its next session.
+YIELD_EVERY_S = 2.0             # how often it looks
+YIELD_CALL_WAIT_S = 30.0        # how long it lets a call under way finish first
+SETUP_SUFFIX = ".Setup"         # Inno Setup's SetupMutex: `<data name>.Setup` while Setup runs
+_SYNCHRONIZE = 0x00100000
+
+
+class Calls:
+    """The tool calls under way: `with calls:` around each; `idle(timeout)` waits until none is -> True when idle."""
+
+    def __init__(self):
+        self._n = 0
+        self._cond = threading.Condition()
+
+    def __enter__(self):
+        with self._cond:
+            self._n += 1
+        return self
+
+    def __exit__(self, *exc):
+        with self._cond:
+            self._n -= 1
+            self._cond.notify_all()
+        return False
+
+    def idle(self, timeout):
+        with self._cond:
+            return self._cond.wait_for(lambda: self._n == 0, timeout)
+
+
+CALLS = Calls()
+
+
+def _counted(tool, calls=CALLS):
+    """`server.tool` whose tools each run inside `calls` (their signatures kept: the schema is read through them)."""
+    import functools
+
+    def register(*args, **kwargs):
+        decorate = tool(*args, **kwargs)
+
+        def wrap(fn):
+            @functools.wraps(fn)
+            def counted(*a, **kw):
+                with calls:
+                    return fn(*a, **kw)
+            return decorate(counted)
+        return wrap
+    return register
+
+
+def setup_running():
+    """Is Surasura's Setup (or its uninstaller) running — its `<data name>.Setup` mutex there? Windows only; never
+    raises (a look that fails: no)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        from app.path_utils import data_name
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenMutexW.restype = wintypes.HANDLE
+        kernel32.OpenMutexW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+        handle = kernel32.OpenMutexW(_SYNCHRONIZE, False, data_name() + SETUP_SUFFIX)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    except Exception:
+        return False
+
+
+def must_yield():
+    """Why this server should end now so an update can go in, or None: an update staged (the update lock held at every
+    probe, or the updater's marker: `library_store.update_staged`), Setup running, or another build already in its
+    program folder (`build_info.stamp_skew`: it would answer as the old version). Never raises."""
+    try:
+        from app import library_store
+        if library_store.update_staged(looks=library_store.PROBE_LOOKS):
+            return "an update of Surasura is waiting"
+    except Exception:
+        pass
+    if setup_running():
+        return "Surasura's Setup is running"
+    try:
+        from app import build_info
+        if build_info.stamp_skew() is not None:
+            return "its program folder holds another build of Surasura"
+    except Exception:
+        pass
+    return None
+
+
+def watch_updates(why=must_yield, end=None, calls=CALLS, every=YIELD_EVERY_S, sleep=time.sleep, wait=YIELD_CALL_WAIT_S):
+    """(Its own daemon thread, while serving.) Looks every `every` seconds; once `why()` names a reason, lets a call
+    under way finish (`wait` at most), logs it, lets go of its running mark and ends the process (`end`, default
+    `os._exit(0)`: the stdio loop is blocked reading the AI app, and nothing of this server's needs saving). The
+    `<data name>.Running` mutex goes with the process. Returns only with a test's `end`."""
+    while True:
+        sleep(every)
+        reason = why()
+        if not reason:
+            continue
+        calls.idle(wait)
+        contract.log.info("mcp: %s, so it ends now (the AI app starts it again at its next session)", reason)
+        try:
+            from app import locks
+            locks.release_running()
+        except Exception:
+            pass
+        try:
+            contract.close_log()
+        except Exception:
+            pass
+        (end or (lambda: os._exit(0)))()
+        return reason
+
+
 def main(argv):
-    """Serve until the AI app closes stdin. -> exit code."""
+    """Serve until the AI app closes stdin — or until an update needs this program to end (`watch_updates`). -> exit
+    code."""
     contract.open_log()
     try:
         try:
@@ -863,6 +988,7 @@ def main(argv):
             sys.stderr.write("surasura-cli mcp: this build has no MCP support (the mcp package is missing).\n")
             return 1
         contract.log.info("mcp: serving on stdio (%s)", " ".join(argv))
+        threading.Thread(target=watch_updates, name="mcp-yields-to-update", daemon=True).start()
         server.run()
         return 0
     finally:

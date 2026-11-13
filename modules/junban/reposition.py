@@ -2350,7 +2350,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     if unfinished is not None and not automatic and blocked:
         # Junban-X2: only other decks' runs in the way (none held) -> the window offers one press, *Put that one back,
         # then reorder* (`put_back_first`: their ids; their decks named)
-        elsewhere = [] if blocked["held"] else blocked["elsewhere"]
+        elsewhere = [] if blocked["held"] or blocked["overlapping"] else blocked["elsewhere"]
         named = _decks_named(settings, elsewhere) if elsewhere else ""
         problem = (UNFINISHED_ELSEWHERE.format(decks=named) if elsewhere else
                    f"An automatic reorder ({unfinished}) did not finish, and its saved order is the only way back "
@@ -2917,27 +2917,29 @@ def _connect_cuts(settings, decks):
     """Junban-X (Sonic 2026-11-13: "a manual would be a priority BUT if the data until that point isn't prepped than the
     manual isn't ready to run yet"): the runs of Connect's a run you start takes over -> `(taken, blocked)`: `taken`
     `[(run id, its snapshot)]`, newest first; `blocked` None, or — when one can't be taken, its record not complete —
-    `{"held": [...], "elsewhere": [...]}`, the run ids of the files that can't be read just now (`undo.runs`'
-    unreadable) and of the unfinished runs for another deck or scope mode, whose way back this run's snapshot wouldn't
-    hold. Every unfinished one, never only the newest (an older one left would put its half writes back), and every
+    `{"held": [...], "elsewhere": [...], "overlapping": [...]}`, the run ids of the files that can't be read just now
+    (`undo.runs`' unreadable) and of the unfinished runs for another deck or scope mode, whose way back this run's
+    snapshot wouldn't hold — `elsewhere` those sharing no card with this run's decks (`_apart`), whose put-back leaves
+    this deck's preview as it is (Junban-X2's one press), `overlapping` the rest (all decks, a parent or a subdeck). Every unfinished one, never only the newest (an older one left would put its half writes back), and every
     finished run of this deck newer than the oldest of them, neither put back nor taken over yet (Connect's own next
     runs go on past a cut one): one Undo then puts back the deck from before them all, never a mix of the two."""
     runs = undo.runs(_language(settings), "reorder")
     cuts = [index for index, (_cut_id, saved) in enumerate(runs) if saved.get("complete") is False]
-    taken, held, elsewhere = [], [], []
+    taken, held, elsewhere, overlapping = [], [], [], []
     for cut_id, saved in runs[:max(cuts) + 1] if cuts else ():
         if saved.get("complete") is False:
             if saved.get("unreadable") or not isinstance(saved.get("cards"), dict):
                 held.append(cut_id)
                 continue
             if not _same_scope(saved, decks, settings):
-                elsewhere.append(cut_id)
+                (elsewhere if _apart(saved, decks, settings) else overlapping).append(cut_id)
                 continue
         elif (saved.get("restored_at") or saved.get("taken_over_at") or not isinstance(saved.get("cards"), dict)
               or not _same_scope(saved, decks, settings)):
             continue                    # put back, taken over, or another deck's: nothing of this deck to go back past
         taken.append((cut_id, saved))
-    return taken, ({"held": held, "elsewhere": elsewhere} if held or elsewhere else None)
+    blocked = held or elsewhere or overlapping
+    return taken, ({"held": held, "elsewhere": elsewhere, "overlapping": overlapping} if blocked else None)
 
 
 # Junban-X2: how long a run you start waits before it reads a held run's file once more (Sonic 2026-11-13: "a quiet
@@ -2949,6 +2951,18 @@ UNFINISHED_ELSEWHERE = "An automatic reorder of {decks} stopped part way. Put it
 
 def _held_wait():
     time.sleep(HELD_RETRY)
+
+
+def _apart(saved, decks, settings):
+    """Do this run of Connect's and a run on `decks` share no card? Never across All decks; a deck's search holds its
+    subdecks (`new_card_query`), so a parent or a subdeck of one of `decks` is not apart."""
+    if saved.get("mode") == "all" or _scope_mode(settings) == "all":
+        return False
+    for one in undo.normalize_scope(saved.get("scope")):
+        for other in undo.normalize_scope(decks):
+            if one == other or one.startswith(other + "::") or other.startswith(one + "::"):
+                return False
+    return bool(undo.normalize_scope(saved.get("scope")))
 
 
 def _decks_named(settings, run_ids):

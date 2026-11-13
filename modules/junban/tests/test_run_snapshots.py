@@ -166,7 +166,7 @@ def test_your_reorder_asks_for_the_undo_first_while_a_cut_runs_record_isnt_compl
             yours = reposition.run(chosen, refresh=False)
         assert not yours["ok"] and yours["restore_first"] and yours["unfinished"] == run_id, yours
         assert fake.writes == [] and fake.suspend_calls == [] and not os.path.exists(undo.snapshot_path("ja"))
-        assert yours.get("put_back_first") == (None if why == "unreadable" else [run_id]), yours
+        assert yours.get("put_back_first") == ([run_id] if why == "another deck" else None), yours
     assert len(waits) == (2 if why == "unreadable" else 0), "one quiet retry a press, only for a held file"
     with open(path, encoding="utf-8") as handle:
         assert handle.read() == cut_file, "left exactly as it was"
@@ -575,6 +575,21 @@ def test_another_decks_stopped_run_is_offered_as_one_press_named(tmp_path, monke
     assert not report["ok"] and report["restore_first"] and fake.writes == [], report
     assert report["put_back_first"] == [run_id] and report["put_back_decks"] == "Kanji"
     assert report["problems"] == [reposition.UNFINISHED_ELSEWHERE.format(decks="Kanji")]
+
+
+@pytest.mark.parametrize("scope, mode", [(["TheBank::Sub"], "deck"), (["The"], "deck"), (["Kanji"], "all")])
+def test_a_stopped_run_that_shares_cards_with_this_deck_is_never_offered_as_one_press(tmp_path, monkeypatch, scope,
+                                                                                       mode):
+    """A subdeck or parent of this deck, or All decks: putting that run back would move this deck's cards under its
+    preview (I5), so it is the plain ask — Undo, then Preview again. (`The` is no parent of `TheBank`: apart.)"""
+    fake = scene(tmp_path)
+    run_id = undo.new_run_id("reorder")
+    undo.save([(max(fake.cards), 1)], scope, language="ja", run_id=run_id, after=[], mode=mode)
+    monkeypatch.setattr(reposition, "_held_wait", lambda: None)
+    with _patched(fake):
+        report = reposition.run(settings(), refresh=False)
+    assert not report["ok"] and report["restore_first"], report
+    assert report.get("put_back_first") == ([run_id] if scope == ["The"] else None), report
 
 
 def test_a_held_file_beside_another_decks_run_is_never_offered_as_one_press(tmp_path, monkeypatch):

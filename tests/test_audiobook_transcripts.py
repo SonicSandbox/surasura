@@ -16,6 +16,7 @@ with real tags and lengths, transcripts of real sentences) and proves the source
 """
 import logging
 import os
+import re
 import unicodedata
 
 import pytest
@@ -606,23 +607,36 @@ def test_which_subtitle_is_an_audiobooks_transcript(found, names, want):
     assert audiobooks.transcripts(found, names) == want
 
 
-def test_the_in_order_share_is_the_plain_scans_on_real_text():
-    """The index (`found_in_order`) finds exactly what a plain scan in order finds — the book's own lines shuffled,
-    repeated and mixed with another text's."""
+def test_the_in_order_share_is_the_plain_longest_run_on_real_text():
+    """The index (`found_in_order`) finds exactly the longest run in order a plain search finds — the book's own
+    lines shuffled, repeated and mixed with another text's."""
     import random
     book = audiobooks.clean_text("".join(_lines("ja")) * 3)
     lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
     lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
     random.Random(7).shuffle(lines)
 
-    def plain(cues, text):
-        at, n = 0, 0
+    def plain(cues, text):              # best[p]: the longest run in order ending with a cue found at place p
+        best = {}
         for c in cues:
-            i = text.find(c, at)
-            if i >= 0:
-                n, at = n + 1, i + len(c)
-        return n / len(cues)
+            at = [m.start() for m in re.finditer(f"(?={re.escape(c)})", text)]
+            got = {p: 1 + max((n for q, n in best.items() if q < p), default=0) for p in at}
+            for p, n in got.items():
+                best[p] = max(best.get(p, 0), n)
+        return max(best.values(), default=0) / len(cues)
     assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
+
+
+def test_a_cue_found_only_far_off_leaves_the_rest_found():
+    """Mattias's 本好きの下剋上 vol 3: the narrator reads the title first, the EPUB's text holds it only in its colophon
+    (its cover an image) — the check counted 15 of 6548 cues, and the transcript of that very book was "another
+    book's". Every cue after such a one is still found in order."""
+    title = "第一部兵士の娘III"
+    body = ["とうとうこの日が来たとフリーダは", "鎖につけられている鍵は二つある", "一つは祖父の部屋の鍵でもう一つは",
+            "その中にあるのは貴族から金に飽かせて"]
+    book = audiobooks.clean_text("".join(body) + "あとがき" + title + "二〇一五年発行")
+    assert audiobooks.found_in_order([title] + body, book) == 0.8                   # the title alone out of order
+    assert audiobooks.found_in_order(body + [title], book) == 1.0
 
 
 def test_cues_and_the_in_order_share():

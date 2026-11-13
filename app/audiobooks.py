@@ -795,24 +795,32 @@ def cues(text):
     return out
 
 
+FOUND_PLACES = 64               # a cue's places in the book the in-order share weighs at most (a line said that often
+                                # tells nothing of the order; the bound keeps another book's check milliseconds)
+
+
 def found_in_order(lines, book_text):
-    """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d), each after the one before
-    -> 0.0–1.0; None when the transcript has no cue to look for. One pass over the book (its CUE_MIN-character runs'
-    places), then each cue tried only where its first run sits: milliseconds even for a transcript of another book."""
+    """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d) in the book's order -> 0.0–
+    1.0: the most cues whose places in the book go forward as the transcript does (its longest run in order, not a
+    scan that only looks after the last cue found — one cue found far off, like the title the narrator reads first
+    that the book's text holds only in its colophon, would leave every cue after it unfound); None when the
+    transcript has no cue to look for. One pass over the book (its CUE_MIN-character runs' places), each cue tried
+    only where its first run sits, then a patience sort over the places: milliseconds even for another book's."""
     if not lines:
         return None
     places = {}
     for i in range(len(book_text) - CUE_MIN + 1):
         places.setdefault(book_text[i:i + CUE_MIN], []).append(i)
-    at, n = 0, 0
+    tails = []                          # tails[k]: the least place a run in order of k + 1 cues can end at
     for line in lines:
-        where = places.get(line[:CUE_MIN]) or ()
-        for i in where[bisect.bisect_left(where, at):]:
-            if book_text.startswith(line, i):
-                n += 1
-                at = i + len(line)
-                break
-    return n / len(lines)
+        found = [i for i in places.get(line[:CUE_MIN], ())[:FOUND_PLACES] if book_text.startswith(line, i)]
+        for i in reversed(found):       # last place first: one cue never counts twice in one run
+            k = bisect.bisect_left(tails, i)
+            if k == len(tails):
+                tails.append(i)
+            else:
+                tails[k] = i
+    return len(tails) / len(lines)
 
 
 def transcript_use(rec):

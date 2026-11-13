@@ -194,6 +194,55 @@ def test_pressed_again_while_it_looks_asks_nothing_more(act, monkeypatch, tmp_pa
     assert len(rec.started) == 1 and len(_links(writer)) == 1
 
 
+def test_the_cards_arc_turns_from_the_click_and_needs_you_is_read_again_once_checked(act, monkeypatch, tmp_path):
+    """The press reacts at once (its arc on the card's own button while the start is looked for), lets go once the
+    picker has answered, and after the check *Needs you* is read again (the card goes with Connect's record)."""
+    from app.qt import press as qpress
+    _seed, win, _writer = act()
+    i, row = _not_timed_row(lst_of(win))
+    entry = _card(win, row.episodes[0])
+    ny = win.needs_you
+    rec = _wired(win, monkeypatch, tmp_path)
+    gate = threading.Event()
+    real = own_folder.read_video
+    monkeypatch.setattr(own_folder, "read_video", lambda *a, **k: gate.wait(5) and real(*a, **k))
+    key = ny._press_key("change_video", entry)
+    gathers = ny.gathers
+    button(ny, entry.key, "change_video").click()
+    assert qpress.live(win, key), "turning at once, before the worker answers"
+    gate.set()
+    assert wait_until(lambda: rec.checks and not qpress.live(win, key), 5)
+    assert wait_until(lambda: ny.gathers > gathers, 5), "read again after the check"
+
+
+def test_a_language_switch_before_the_picker_or_another_languages_card_asks_nothing(act, monkeypatch, tmp_path):
+    """Ids repeat across stores: a link must land in the library it was asked of — the window switched before the
+    start came back opens no picker; a card of another language than the window's asks nothing."""
+    seed, win, writer = act()
+    i, row = _not_timed_row(lst_of(win))
+    ep = row.episodes[0]
+    entry = _card(win, ep)
+    rec = _wired(win, monkeypatch, tmp_path)
+    gate = threading.Event()
+    real = own_folder.read_video
+    monkeypatch.setattr(own_folder, "read_video", lambda *a, **k: gate.wait(5) and real(*a, **k))
+    try:
+        assert win.mine.change_video(ep.id, ep.label, ep.rel_path) is not None
+        win.language = "zh"                                     # switched before the start came back
+        gate.set()
+        for _ in range(40):
+            QApplication.processEvents()
+        assert rec.started == [] and _links(writer) == [] and rec.checks == []
+        win.language = seed.language
+        win.needs_you.language = "zh"                           # its card is another library's
+        assert win.mine._needs_change_video(entry) is None
+        for _ in range(20):
+            QApplication.processEvents()
+        assert rec.started == [] and _links(writer) == []
+    finally:
+        win.language = win.needs_you.language = seed.language
+
+
 # --- the episode's ⋯ ---------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("kind", [feed.NOT_TIMED, feed.SKIPPED])
 def test_the_episodes_menu_offers_change_its_video_beside_check_again_and_a_pick_links_it(act, monkeypatch, tmp_path,

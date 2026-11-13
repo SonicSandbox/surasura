@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBox
 from app import theme
 from app.qt import strings, style
 from app.qt.frame import _iris
-from app.qt.tooltip import AboutMark, fit_title
+from app.qt.tooltip import AboutMark, FitTitle
 from app.services import path as path_service
 
 
@@ -83,7 +83,7 @@ class NextCard(QWidget):
         row.addLayout(lead)
         words = QHBoxLayout()                              # the title, then its ? (its line behind it: Kantan-S2)
         words.setSpacing(round(6 * f))
-        self.title = QLabel("", self)
+        self.title = FitTitle("", self)
         self.title.setObjectName("nexttitle")
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.title.setWordWrap(True)
@@ -131,7 +131,8 @@ class NextCard(QWidget):
             self.eyebrow.setText(strings.NEXT_MADE)
             self.dots.set_count(0, 0)
             self.dots.hide()
-            self.title.hide()
+            self.title.setText(strings.NEXT_MADE_WHERE)       # where later steps wait: a place, in sight (r1 #3)
+            self.title.show()
             line = strings.NEXT_MADE_LINE
             self._set(self.primary, strings.NEXT_OK, strings.NEXT_OK_TIP)
             self.secondary.hide()
@@ -144,19 +145,18 @@ class NextCard(QWidget):
             self.dots.set_count(n - 1 if total else 0, total)
             self.dots.setVisible(bool(total))
             self.title.setText(title)
-            fit_title(self.title)
             self.title.show()
             if step_id == "cards":
                 self._set(self.primary, strings.NEXT_SET_UP_MINER, strings.NEXT_SET_UP_MINER_TIP)
                 self._set(self.secondary, strings.NEXT_OWN_CARDS, strings.NEXT_OWN_CARDS_TIP)
             else:
-                self._set(self.primary, strings.NEXT_SHOW_ME, strings.NEXT_SHOW_ME_TIP)
+                self._set(self.primary, strings.NEXT_SHOW_ME,
+                          strings.PATH_SHOW_ME_TIPS.get(step_id, strings.NEXT_SHOW_ME_TIP))
                 self._set(self.secondary, strings.NEXT_NOT_NOW, strings.NEXT_NOT_NOW_TIP)
             self.secondary.show()
             self.later.setVisible(step_id == "cards")
         self.about.set_about(strings.NEXT_ABOUT_NAME, line)
-        self.setAccessibleDescription(" ".join(t for t in (self.eyebrow.text(), self.title.text() if
-                                                             card[0] != "made" else "", line) if t))
+        self.setAccessibleDescription(" ".join(t for t in (self.eyebrow.text(), self.title.text(), line) if t))
         self.style().unpolish(self)
         self.style().polish(self)
         self.show()

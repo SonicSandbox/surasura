@@ -94,7 +94,7 @@ def test_the_first_cards_made_card_has_only_ok_and_a_later_step_says_new_for_you
     card.made_ok.connect(lambda: ok.append(True))
     card.set_card(("made",))
     assert card.eyebrow.text() == strings.NEXT_MADE and not card.secondary.isVisibleTo(card)
-    assert not card.title.isVisibleTo(card) and card.primary.text() == strings.NEXT_OK
+    assert card.title.text() == strings.NEXT_MADE_WHERE and card.primary.text() == strings.NEXT_OK
     card.primary.click()
     assert ok == [True]
     card.set_card(("step", "hato", 0, 0))
@@ -247,6 +247,51 @@ def test_a_missing_module_is_never_listed_even_as_not_for_now(world):
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False))
     assert not {"junban", "backfill"} & set(rows)
+
+
+def test_tab_reaches_every_question_mark_in_the_path_in_order(world):
+    # (adversary r1 #2) a not-for-now row has no Show me: its ? is its only control, and Tab must reach it
+    from app.qt.tooltip import AboutMark
+    panel = world.d.guide_panel
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))
+    seen = []
+    for _ in range(40):
+        panel.focusNextPrevChild(True)
+        seen.append(QApplication.focusWidget())
+    piyo = rows["piyo"].about
+    assert piyo in seen and all(r.about in seen for r in rows.values())
+    words = rows["words"]
+    assert seen.index(words.about) == seen.index(words.show_me) - 1             # the ? before its row's Show me
+    assert isinstance(piyo, AboutMark)
+    panel.close()
+
+
+def test_the_made_card_says_where_later_steps_wait_in_sight(card):
+    # (adversary r1 #3) OK puts the card away for good: where the path lives is a place, said in sight
+    card.set_card(("made",))
+    assert card.title.isVisibleTo(card) and card.title.text() == strings.NEXT_MADE_WHERE
+    assert card.about.toolTip() == strings.NEXT_MADE_LINE
+
+
+def test_the_audiobooks_show_me_names_the_press_that_does_it(card, world):
+    # (adversary r1 #4) Show me opens Current; the press itself is on the book's ⋯ — its tip says so
+    card.set_card(("step", "audiobook", 0, 0))
+    assert card.primary.toolTip() == strings.PATH_SHOW_ME_TIPS["audiobook"]
+    panel = world.d.guide_panel
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, book_in_current=True))
+    assert rows["audiobook"].show_me.toolTip() == strings.PATH_SHOW_ME_TIPS["audiobook"]
+    panel.close()
+
+
+def test_a_title_refits_when_the_text_size_changes_so_its_question_mark_stays_beside_it(card):
+    # (adversary r1 #6) the text size changes live: a title held to its old width would wrap its last word
+    from PyQt6.QtGui import QFont
+    card.set_card(("step", "words", 1, 3))
+    small = card.title.maximumWidth()
+    font = QFont(card.title.font())
+    font.setPointSizeF(font.pointSizeF() * 1.6)
+    card.title.setFont(font)
+    assert card.title.maximumWidth() > small
 
 
 def test_no_step_shows_a_line_under_its_title_each_says_it_behind_its_question_mark(world):

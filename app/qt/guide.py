@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QP
 from app import theme
 from app.qt import motion, shadow, strings, style
 from app.qt.frame import _Away, _iris
-from app.qt.tooltip import AboutMark, fit_title
+from app.qt.tooltip import AboutMark, FitTitle
 
 EDGE = 8                            # px the panel keeps from the window's edges
 FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
@@ -167,13 +167,12 @@ class _StepRow(QWidget):
         title, text = strings.PATH_STEPS[step_id]
         if later:
             text = strings.PATH_WHEN[step_id]
-        self.title = QLabel(title, self)
+        self.title = FitTitle(title, self)
         self.title.setObjectName("pathtitle")
         self.title.setProperty("later", "true" if later else "false")
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.title.setWordWrap(True)
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-        fit_title(self.title)
         row.addWidget(self.title, 1000, Qt.AlignmentFlag.AlignVCenter)
         self.about = AboutMark(strings.HELP_MARK, self)
         self.about.set_about(strings.PATH_ABOUT_NAME.format(title=title), text)
@@ -183,7 +182,8 @@ class _StepRow(QWidget):
         if not later and status.useful:
             b = QPushButton(strings.GUIDE_SHOW_ME, self)
             b.setObjectName("guideshow")
-            b.setToolTip(strings.PATH_AGAIN_TIP if done else strings.GUIDE_SHOW_ME_TIP)
+            b.setToolTip(strings.PATH_AGAIN_TIP if done else
+                         strings.PATH_SHOW_ME_TIPS.get(step_id, strings.GUIDE_SHOW_ME_TIP))
             b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=title))
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
@@ -602,8 +602,10 @@ class GuidePanel(motion.Overlay):
             self.open()
 
     def focusNextPrevChild(self, next_):
-        """Tab and Shift+Tab go round the panel's own buttons (the window behind keeps its order)."""
-        ring = [self.scroll] + [b for b in self.findChildren(QPushButton) if b.isVisible() and b.isEnabled()]
+        """Tab and Shift+Tab go round the panel's own buttons and ?s, in their rows' order (the window behind keeps its
+        order; a not-for-now step's ? is its only control: Kantan-S2 r1 #2)."""
+        ring = [self.scroll] + [b for b in self.findChildren(QWidget) if isinstance(b, (QPushButton, AboutMark))
+                                and b.isVisible() and b.isEnabled()]
         if not ring:
             return True
         now = QApplication.focusWidget()

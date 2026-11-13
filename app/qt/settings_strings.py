@@ -230,8 +230,9 @@ ROWS = {
                         "and Surasura orders them. Needs Anki and Anki Miner. Nothing placed before you turn it on",
                         "cards made for you connect make cards mine automatically anki miner"),
     # row 13 (laptop fixes): *Cards made for you* while Anki Miner isn't found (and Connect is off)
-    # S1: what you get (the switch's own line), then what it needs; *Set up Anki Miner ›* is its Show me
-    "connect_needs_miner": ("Cards made for you", CARDS_WHY + " · " + NEEDS_MINER,
+    # S1: what you get (the switch's own line) behind its ? (Kantan-S2); what it needs is its shown line
+    # (`catalog.help_line`); *Set up Anki Miner ›* is its Show me
+    "connect_needs_miner": ("Cards made for you", CARDS_WHY,
                             "Surasura makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
     "connect_mine_words": ("Words to make cards from",

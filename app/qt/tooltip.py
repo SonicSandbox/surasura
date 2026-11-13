@@ -216,13 +216,32 @@ class Tooltips(QObject):
         return self.bubble.text if self.bubble.isVisible() else None
 
 
-def fit_title(label):
+class FitTitle(QLabel):
     """A word-wrapped title with its `AboutMark` after it (laid out with a large stretch, the room after taking the
     rest): as wide as its words, so the ? sits right after them; it wraps only when the row is narrower (Settings' rows
-    do the same, `RowView._fit_title`)."""
-    import math
-    label.ensurePolished()
-    label.setMaximumWidth(max(1, math.ceil(QFontMetricsF(label.font()).horizontalAdvance(label.text())) + 4))
+    do the same, `RowView._fit_title`). Refitted when its words, font or style change (the text size changes live)."""
+
+    REFIT = (QEvent.Type.FontChange, QEvent.Type.StyleChange)
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._fit()
+
+    def setText(self, text):
+        super().setText(text)
+        self._fit()
+
+    def _fit(self):
+        import math
+        m = self.contentsMargins()
+        width = math.ceil(QFontMetricsF(self.font()).horizontalAdvance(self.text())) + 4 + m.left() + m.right()
+        if self.maximumWidth() != width:
+            self.setMaximumWidth(max(1, width))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in self.REFIT:
+            self._fit()
 
 
 class AboutMark(QLabel):

@@ -14,8 +14,8 @@ answers may change it). Qt-free: the Next card on Current (`app/qt/next_card.py`
   (the store's `pairings`), a kept Piyo round (`practice_rounds.last_round`, else a round file). Pointing at a place is
   never doing the step. A tick is kept once seen (`guide.json`'s `done`): a record gone later never un-ticks it.
 - **Done before the guide counts** (Kantan-S2, Sonic 2026-11-13: "if they already did one…"): cards mined with Anki
-  Miner before Connect kept a ledger — Anki Miner's program found where the settings point and cards the known-words
-  sync read from Anki (`_miner_cards`) — count as cards made; a later step's record is read whether or not the step
+  Miner before Connect kept a ledger — a mining session of this language that created cards, in Anki Miner's own
+  `stats.db` (`_miner_cards`) — count as cards made; a later step's record is read whether or not the step
   applies now (a book lined up once, with none in Current today, is done — never offered as new).
 - **The panel's three lists** (`listed`): chapter 1's steps, done ones kept (to try again); chapter 2's useful or done
   steps; and chapter 2's steps that can't apply yet (*Not for now*: no Anki, no book, no waiting video, too few episodes)
@@ -98,13 +98,16 @@ def _cards_made(language):
                                "WHERE o.outcome = 'made' AND j.language = ? LIMIT 1", (language,))
 
 
-def _miner_cards(settings, sync):
-    """Cards made before Connect kept a ledger: Anki Miner's program where the settings point (or its installer put it)
-    and cards in Anki the known-words sync read (`sync`: its state, read once by `facts`)."""
-    if not (sync or {}).get("note_ids"):
+def _miner_cards(language):
+    """Cards Anki Miner made itself, before Connect kept a ledger: a mining session of this language that created
+    cards, in Anki Miner's own `stats.db` (`mining_sessions`, written as it mines; read only). Never "Anki Miner
+    installed + cards in Anki": a premade deck synced on setup is no card mined (adversary r1 #1). A test run reads it
+    only from an `ANKI_MINER_HOME` it set (never the developer's own)."""
+    if os.environ.get("SURASURA_TEST_ROOT") and not os.environ.get("ANKI_MINER_HOME"):
         return False
     from app.connect import anki_miner
-    return bool(anki_miner.find(settings))
+    return _one(os.path.join(anki_miner.home(), "stats.db"),
+                "SELECT 1 FROM mining_sessions WHERE cards_created > 0 AND language = ? LIMIT 1", (language,))
 
 
 def _hato_paired(language):
@@ -204,15 +207,14 @@ def facts(language, settings, view, state, journey_ready=True):
 
     try:
         from app import anki_sync
-        sync = anki_sync.load_state(language) or {}
+        synced = bool(anki_sync.load_state(language).get("last_sync"))
     except Exception:
-        sync = {}
-    synced = bool(sync.get("last_sync"))
+        synced = False
     junban = safe(help_cards.module_present, "junban") and bool(settings.get("enable_junban", True))
     # a later step's record is read whether or not it applies now (Kantan-S2: done before is done)
     return Facts(
         has_library=has, journey_opened="journey" in (state.get("moments") or {}), episodes_done=episodes,
-        cards_made=safe(_cards_made, language) or safe(_miner_cards, settings, sync),
+        cards_made=safe(_cards_made, language) or safe(_miner_cards, language),
         own_cards=bool(state.get("own_cards")), junban=junban,
         anki_synced=synced, junban_ordered=junban and unless("junban", _junban, language, "reorder"),
         backfilled=junban and unless("backfill", _junban, language, "backfill"), book_in_current=book,

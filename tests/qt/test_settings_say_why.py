@@ -102,7 +102,8 @@ def test_the_two_slabs_show_the_plain_name_the_tag_and_the_why_line_and_no_other
             # Kantan-S2 (Sonic 2026-11-13: "I don't like subtitles"): what you get is behind the head's ?, never a
             # line in sight; nothing missing yet, so no line under the head at all
             assert slab.why.toolTip() == S.SECTION_WHY[section.id] and slab.why.isVisibleTo(page)
-            assert slab.why.parentWidget() is slab.head and slab.why.accessibleName()
+            assert slab.why.parentWidget() is slab.head            # (M26) a screen reader hears whose ? it is
+            assert slab.why.accessibleName() == S.HELP_MARK_NAME.format(label=section.name)
             assert not slab.about.isVisibleTo(page)
             assert S.SECTION_WHY[section.id] not in _lines_in_sight(slab)
         else:
@@ -249,10 +250,11 @@ def test_cards_made_for_you_says_what_you_get_behind_its_question_mark(qapp, fak
     tools = EVERYTHING if found else EVERYTHING - {"miner_found"}
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False), found=tools)
     view = page.rows[row_id]
-    assert view.isVisibleTo(page) and not view.help.isVisibleTo(page)         # Kantan-S2: no line under the label
-    assert view.mark.isVisibleTo(page)
+    assert view.isVisibleTo(page) and view.mark.isVisibleTo(page)
     if row_id == "connect_enabled":                       # (r1 #1, blocking) its ? still opens the help card
+        assert not view.help.isVisibleTo(page)                                  # Kantan-S2: no line under the label
         assert view.mark.card == "cards" and view.mark.toolTip().startswith(S.ROWS["connect_enabled"][1])
-    if row_id == "connect_needs_miner":           # what you get + what it needs, behind the ?; *Set up Anki Miner ›*
-        assert view.mark.toolTip() == f"{S.CARDS_WHY}{S.SEP}{S.NEEDS_MINER}"            # stays: the action
-        assert page.live.parts["connect_needs_miner"]["door"].isVisibleTo(page)
+    if row_id == "connect_needs_miner":           # what you get behind the ?; what it needs in sight (a state, as the
+        assert view.mark.toolTip() == S.CARDS_WHY                               # sections' needs lines: S2 r1 #5)
+        assert view.help.isVisibleTo(page) and view.help.text() == S.NEEDS_MINER
+        assert page.live.parts["connect_needs_miner"]["door"].isVisibleTo(page)            # and its action

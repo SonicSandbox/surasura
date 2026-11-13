@@ -1056,8 +1056,8 @@ class SettingsPage(QWidget):
         view = RowView(row, slab.adv if row.adv else slab.main)
         if "{" in row.label or "{" in row.help:                # a live word (the version, the deck): its owner's
             view.set_words(_live(row.label), _live(row.help))
-        elif row.id == "known_from_anki":                      # its line names the states picked (a7, DIAGNOSIS 3)
-            view.set_words(row.label, catalog.help_line(row, settings, self.language))
+        elif row.id in ("known_from_anki", "connect_needs_miner"):   # a line of its own: the states picked (a7,
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))   # DIAGNOSIS 3); a need (S2)
         if row.kind in PLACEHOLDER_KINDS:
             view.slot.layout().addWidget(self.slots[row.id])
         else:

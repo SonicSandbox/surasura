@@ -312,6 +312,60 @@ def test_a_ticked_step_is_never_read_again(monkeypatch):
     assert calls == ["ja"]
 
 
+#  --- Kantan-S2 (Sonic 2026-11-13: "they would need to be able to see past ones to try again, and if they already did
+# one or don't have an audiobook to test one of the steps, etc that needs to account for that ux experience") ------ #
+def test_cards_made_with_anki_miner_before_the_guide_count_as_done(tmp_path):
+    # an upgrader who set up Anki Miner and mined long before the guide: told "Get cards made for you" would be wrong.
+    # The real record: Anki Miner's program where the settings point, and cards the known-words sync read from Anki
+    from app import anki_sync
+    exe = tmp_path / "Anki Miner.exe"
+    exe.write_bytes(b"MZ")
+    settings = {"connect_anki_miner_path": str(exe)}
+    assert not P.facts("ja", settings, SHOWS, {}).cards_made                    # Anki Miner alone: no cards yet
+    anki_sync._save_state("ja", {"note_ids": [1700000000001, 1700000000002], "last_sync": "2026-11-01T10:00:00"})
+    assert P.facts("ja", settings, SHOWS, {}).cards_made                        # Anki Miner + its cards in Anki
+    assert not P.facts("ja", {}, SHOWS, {}).cards_made                          # cards, no Anki Miner: a shared deck
+    assert not P.facts("zh", settings, SHOWS, {}).cards_made                    # another language's cards
+    way = P.look("ja", settings, View((Row("anime", 0),), Counts(0, 0), ()))
+    assert way.first_done and way.card != ("step", "words", 1, 3)               # no beginner's step 1
+
+
+def test_a_later_step_done_before_it_applies_now_counts_by_its_record():
+    # a line-up finished, a subtitle hato found, a Piyo round kept — while no book is in Current now, no video waits
+    # and fewer than three episodes are Done: each is still done (its record), never offered again as new
+    from app import practice_rounds
+    from app.connect import lineup
+    os.makedirs(os.path.join(lineup.root(), "k1"), exist_ok=True)
+    with open(os.path.join(lineup.root(), "k1", lineup.STATE), "w", encoding="utf-8") as f:
+        json.dump({"status": lineup.DONE, "grade": "A"}, f)
+    _pairing("ja", "hato")
+    practice_rounds.save("ja", practice_rounds.new_id(), start={"role": "friend", "words": [["猫", "ねこ"]]})
+    f = P.facts("ja", {}, SHOWS, {})
+    assert f.lined_up and f.hato_paired and f.piyo_round
+    st = {s.step.id: s for s in P.statuses(f, {})}
+    for step_id in ("audiobook", "hato", "piyo"):
+        assert st[step_id].done and not st[step_id].useful, step_id
+    assert P.newly_useful(P.statuses(f, {}), {}) == []                          # nothing to light the ✦ for
+
+
+def test_the_panels_lists_keep_past_steps_and_say_not_for_now_for_steps_that_cant_apply():
+    f = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, lined_up=True)
+    first, ready, later = P.listed(P.statuses(f, {}))
+    assert [st.step.id for st in first] == ["words", "watch", "cards"] and all(st.done for st in first)
+    assert [st.step.id for st in ready] == ["audiobook", "hato"]                # done by its record · useful now
+    assert [st.step.id for st in later] == ["junban", "backfill", "piyo"]       # can't apply yet: no Anki, 1 episode
+    assert not any(st.useful or st.done for st in later)
+    _first, ready, later = P.listed(P.statuses(f._replace(junban=False), {}))   # 順 absent or off: never offered
+    assert not {"junban", "backfill"} & {st.step.id for st in ready + later}
+
+
+def test_every_later_step_says_in_one_short_line_when_it_applies():
+    for step in P.STEPS:
+        if step.chapter == P.READY:
+            line = strings.PATH_WHEN[step.id]
+            assert line and "\n" not in line and len(line) <= 60, step.id
+
+
 def test_manga_and_plain_text_are_not_books_an_audiobook_lines_up_with():
     assert not P._view_facts(View((Row("manga", 0), Row("text", 0)), Counts(0, 0), ()))[2]
     assert P._view_facts(View((Row("lightnovel", 0),), Counts(0, 0), ()))[2]

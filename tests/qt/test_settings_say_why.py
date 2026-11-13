@@ -99,9 +99,15 @@ def test_the_two_slabs_show_the_plain_name_the_tag_and_the_why_line_and_no_other
         assert slab.name.text() == section.name.upper()
         if section.id in WHY_SECTIONS:
             assert slab.tag.text() == S.SECTION_TAGS[section.id] and slab.tag.isVisibleTo(page)
-            assert slab.why.text() == S.SECTION_WHY[section.id] and slab.why.isVisibleTo(page)
+            # Kantan-S2 (Sonic 2026-11-13: "I don't like subtitles"): what you get is behind the head's ?, never a
+            # line in sight; nothing missing yet, so no line under the head at all
+            assert slab.why.toolTip() == S.SECTION_WHY[section.id] and slab.why.isVisibleTo(page)
+            assert slab.why.parentWidget() is slab.head and slab.why.accessibleName()
+            assert not slab.about.isVisibleTo(page)
+            assert S.SECTION_WHY[section.id] not in _lines_in_sight(slab)
         else:
             assert not slab.tag.isVisibleTo(page) and not slab.about.isVisibleTo(page)
+            assert not slab.why.isVisibleTo(page)
     assert page.nav["junban"].text() == "Card order · 順" and page.nav["backfill"].text() == "Fill your cards"
     assert page.nav["backfill"].accessibleName() == "Fill your cards · Backfill"          # the module's name heard
     assert "Backfill" in page.nav["backfill"].toolTip() and "順 Junban" in page.slabs["junban"].name.accessibleName()
@@ -204,14 +210,21 @@ def test_show_me_really_lands_on_the_connection_row(qapp, fakes, monkeypatch):  
     #                                                               ends the wash at once, so it's caught as it starts)
 
 
-def test_the_rows_show_their_tag_and_their_what_you_get_line_in_sight(qapp, fakes):  # noqa: F811
+def _lines_in_sight(widget):
+    from PyQt6.QtWidgets import QLabel
+    return [lab.text() for lab in widget.findChildren(QLabel) if lab.isVisibleTo(widget) and lab.text()
+            and lab.objectName() != "helpmark"]
+
+
+def test_the_rows_show_their_tag_and_their_what_you_get_line_behind_the_question_mark(qapp, fakes):  # noqa: F811
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False))
     for row_id, tag in S.ROW_TAGS.items():
         view = page.rows[row_id]
         assert view.tag.text() == tag and view.tag.isVisibleTo(page), row_id
         assert view.label.text() == S.ROWS[row_id][0]
-    for row_id in ("hato", "practice_ai"):
-        assert page.rows[row_id].help.isVisibleTo(page), row_id                  # what you get: never behind the ?
+    hato = page.rows["hato"]                                                     # Kantan-S2: what you get behind its ?
+    assert not hato.help.isVisibleTo(page) and hato.mark.isVisibleTo(page) and hato.mark.toolTip() == S.ROWS["hato"][1]
+    assert page.rows["practice_ai"].help.isVisibleTo(page)       # what goes to that AI's company: read before pressing
     assert page.live.parts["hato"]["mark"].accessibleName().startswith("hato:")   # (r1 #5) "not found" is hato's
     others = [v for r, v in page.rows.items() if r not in S.ROW_TAGS]
     assert others and not any(v.tag.isVisibleTo(page) for v in others)
@@ -231,15 +244,15 @@ def test_a_rows_tag_fits_in_its_words_width_so_the_label_wraps_and_never_runs_un
 
 
 @pytest.mark.parametrize("row_id, found", [("connect_enabled", True), ("connect_needs_miner", False)])
-def test_cards_made_for_you_says_what_you_get_in_sight(qapp, fakes, row_id, found):  # noqa: F811
+def test_cards_made_for_you_says_what_you_get_behind_its_question_mark(qapp, fakes, row_id, found):  # noqa: F811
     from tests.qt.test_settings_page import EVERYTHING
     tools = EVERYTHING if found else EVERYTHING - {"miner_found"}
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False), found=tools)
     view = page.rows[row_id]
-    assert view.isVisibleTo(page) and view.help.isVisibleTo(page)
+    assert view.isVisibleTo(page) and not view.help.isVisibleTo(page)         # Kantan-S2: no line under the label
+    assert view.mark.isVisibleTo(page)
     if row_id == "connect_enabled":                       # (r1 #1, blocking) its ? still opens the help card
-        assert view.mark.card == "cards" and view.mark.isVisibleTo(page) and view.mark.toolTip()
-    if row_id == "connect_needs_miner":                         # what you get, then (one line) what it needs
-        assert view.help.text() == f"{S.CARDS_WHY}{S.SEP}{S.NEEDS_MINER}"
-    else:
-        assert view.help.text() == S.ROWS["connect_enabled"][1]
+        assert view.mark.card == "cards" and view.mark.toolTip().startswith(S.ROWS["connect_enabled"][1])
+    if row_id == "connect_needs_miner":           # what you get + what it needs, behind the ?; *Set up Anki Miner ›*
+        assert view.mark.toolTip() == f"{S.CARDS_WHY}{S.SEP}{S.NEEDS_MINER}"            # stays: the action
+        assert page.live.parts["connect_needs_miner"]["door"].isVisibleTo(page)

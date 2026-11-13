@@ -7,12 +7,17 @@ is the control's `toolTip()` (rich text allowed), at the tooltip type size × th
 size wide. Qt's own `QToolTip` is suppressed for any widget the bubble serves.
 
 With the freeze switch on (tests, captures) it shows at once.
+
+**The ? that says one line** (`AboutMark`; Sonic 2026-11-13: "I don't like subtitles, I like them hidden with a question
+icon or something that reveals a succinct one. A subtitle would be best used as an example"): an explainer line under a
+title stands behind a small ? beside it instead — its line in the bubble on hover, on keyboard focus (Tab) and on a click
+or Enter / Space. A visible line under a title stays only where it is a concrete example, a state, or an action.
 """
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QTextDocument
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from app import theme
 from app.qt import freeze, style
@@ -209,3 +214,49 @@ class Tooltips(QObject):
     def showing(self):
         """The text shown now, or None."""
         return self.bubble.text if self.bubble.isVisible() else None
+
+
+def fit_title(label):
+    """A word-wrapped title with its `AboutMark` after it (laid out with a large stretch, the room after taking the
+    rest): as wide as its words, so the ? sits right after them; it wraps only when the row is narrower (Settings' rows
+    do the same, `RowView._fit_title`)."""
+    import math
+    label.ensurePolished()
+    label.setMaximumWidth(max(1, math.ceil(QFontMetricsF(label.font()).horizontalAdvance(label.text())) + 4))
+
+
+class AboutMark(QLabel):
+    """A small ? that reveals one succinct line (the module's note): its tooltip in the bubble on hover, on keyboard
+    focus (Tab) and on a click or Enter / Space (the press hid the bubble: the release shows it again). `mark`: its glyph
+    (the caller's strings table). Hidden while it has no line. Settings' rows build on it (`settings_page.HelpMark`)."""
+
+    def __init__(self, mark, parent=None):
+        super().__init__(mark, parent)
+        self.setObjectName("helpmark")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setVisible(False)
+
+    def set_about(self, name, text):
+        """Its line `text` (empty: hidden) and `name`, what a screen reader calls it; only what changed is redone."""
+        if self.toolTip() != text:
+            self.setToolTip(text)
+            self.setAccessibleName(name)
+            self.setAccessibleDescription(text)
+        if self.isHidden() == bool(text):
+            self.setVisible(bool(text))
+
+    def _ask(self):
+        tips = getattr(self.window(), "tooltips", None)
+        if tips is not None and self.toolTip():
+            tips.request(self)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._ask()
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._ask()

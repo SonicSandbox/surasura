@@ -2150,11 +2150,22 @@ PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
 PATH_DONE = "✓ DONE"
 PATH_TICK = "✓"
 PATH_COUNT = "{n} OF {total}"
-PATH_FIRST_LINE = "Set up · See the words · Watch and Done · Cards made for you"
-PATH_MORE = "More steps show up when they're useful to you."
 PATH_TICK_NAME = "{title}: done"
 PATH_OPEN_NAME = "{title}: not done yet"
-PATH_STEPS = {           # id -> (title, the line under it)
+# Kantan-S2 (Sonic 2026-11-13: past steps to try again, steps that can't apply now; no subtitles — a step's line is
+# behind its ?; every word PROVISIONAL)
+PATH_ABOUT_NAME = "About {title}"                    # a step's ? (its line), for screen readers
+PATH_AGAIN_TIP = "Done. Do it again any time\n• Click: go there, lit up"
+PATH_LATER = "NOT FOR NOW"                           # chapter 2's steps that can't apply yet
+PATH_LATER_NAME = "{title}: not for now. {when}"
+PATH_WHEN = {            # id -> when a later step applies (its ? while it can't yet)
+    "junban": "Once Anki is connected and has your cards",
+    "backfill": "Once you have cards in Anki",
+    "audiobook": "Once a book is in Current",
+    "hato": "Once a new episode waits for its subtitles",
+    "piyo": "Once three episodes are Done",
+}
+PATH_STEPS = {           # id -> (title, the line behind its ?)
     "words": ("See the words before you watch", "Open them, each with a line from the episode."),
     "watch": ("Watch it, then press Done", "Its words count as seen, and the next episode moves up."),
     "cards": ("Get cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
@@ -2167,6 +2178,7 @@ PATH_STEPS = {           # id -> (title, the line under it)
     "piyo": ("Practise your words with your AI", "Piyo ぴよ chats with you using the words you're learning."),
 }
 NEXT_NAME = "Your next step"
+NEXT_ABOUT_NAME = "About this step"                  # the card's ? (its line), for screen readers
 NEXT_FIRST = "NEXT · {n} of {total} to your first cards"
 NEXT_READY = "NEW FOR YOU"
 NEXT_SHOW_ME = "Show me"

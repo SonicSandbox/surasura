@@ -143,7 +143,7 @@ def test_i_make_my_own_cards_is_kept_and_the_next_look_says_your_first_cards_are
     assert wait_until(lambda: guide.read_state().get("own_cards") is True)
 
 
-def test_the_panel_has_two_tabs_with_a_path_no_done_tab_and_the_path_lists_only_whats_useful(world):
+def test_the_panel_has_two_tabs_with_a_path_no_done_tab_and_the_path_lists_whats_useful_first(world):
     panel = world.d.guide_panel
     useful = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True)
     panel.set_look(guide.Look("3.0.5", (), False))
@@ -153,12 +153,111 @@ def test_the_panel_has_two_tabs_with_a_path_no_done_tab_and_the_path_lists_only_
     assert all(b.toolTip() for b in panel.tab_buttons.values())
     panel.open(tab="path")
     assert wait_until(panel.isVisible) and panel.tab == "path"
-    texts = [r.line.text() for r in panel.rows] + [r.title.text() for r in panel.rows if r.title is not None]
-    assert strings.PATH_STEPS["hato"][0] in texts                               # useful now: listed, with Show me
-    assert strings.PATH_STEPS["piyo"][0] not in texts                           # not useful yet: not listed
-    hato = next(r for r in panel.rows if r.status is not None and r.status.step.id == "hato")
-    assert hato.show_me is not None and hato.show_me.toolTip()
+    rows = {r.status.step.id: r for r in panel.rows}
+    assert not rows["hato"].later and rows["hato"].show_me is not None and rows["hato"].show_me.toolTip()
+    assert rows["piyo"].later and rows["piyo"].show_me is None                  # not useful yet: not for now
     panel.close()
+
+
+# --- Kantan-S2: past steps to try again, steps that can't apply now, and no subtitles (Sonic 2026-11-13) ---------- #
+def _open_path(panel, f, state=None):
+    panel.set_path(_path(f, state if state is not None else {"first_ack": True}))
+    assert wait_until(lambda: not panel.building())
+    panel.open(tab="path")
+    assert wait_until(panel.isVisible) and panel.tab == "path"
+    return {r.status.step.id: r for r in panel.rows}
+
+
+def _lines_in_sight(widget):
+    """Every word-wrapped or plain line a learner sees in `widget` (the ?s' own glyph left out)."""
+    from PyQt6.QtWidgets import QLabel
+    return [lab.text() for lab in widget.findChildren(QLabel) if lab.isVisibleTo(widget) and lab.text()
+            and lab.objectName() != "helpmark"]
+
+
+def test_the_cards_line_is_behind_its_question_mark_never_in_sight(card):
+    from PyQt6.QtCore import Qt
+    for got, (title, line) in ((("step", "words", 1, 3), strings.PATH_STEPS["words"]),
+                               (("step", "cards", 3, 3), strings.PATH_STEPS["cards"]),
+                               (("step", "hato", 0, 0), strings.PATH_STEPS["hato"])):
+        card.set_card(got)
+        assert card.title.isVisibleTo(card) and card.title.text() == title
+        assert card.about.isVisibleTo(card) and card.about.toolTip() == line
+        assert card.about.focusPolicy() == Qt.FocusPolicy.TabFocus and card.about.accessibleName()
+        assert line not in _lines_in_sight(card)
+        assert line in card.accessibleDescription()                             # a screen reader still hears it
+    card.set_card(("made",))
+    assert card.about.isVisibleTo(card) and card.about.toolTip() == strings.NEXT_MADE_LINE
+    assert strings.NEXT_MADE_LINE not in _lines_in_sight(card)
+
+
+def test_the_cards_question_mark_reveals_its_line_on_a_press_and_on_enter(lib_world):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    win = lib_world
+    asked = []
+    win.tooltips.request = lambda w, *a, **k: asked.append(w)
+    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+    mark = win.duties.next_card.about
+    assert mark.isVisible() and mark.toolTip() == strings.PATH_STEPS["words"][1]
+    QTest.mouseClick(mark, Qt.MouseButton.LeftButton)
+    mark.setFocus()
+    QTest.keyClick(mark, Qt.Key.Key_Return)
+    QTest.keyClick(mark, Qt.Key.Key_Space)
+    assert asked == [mark, mark, mark]
+    assert win.duties.next_card.card == ("step", "words", 1, 3)                 # revealing presses nothing else
+
+
+def test_past_steps_stay_in_the_path_ticked_with_show_me_to_try_again(world):
+    went = []
+    panel = world.d.guide_panel
+    panel.show_me.connect(went.append)
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))
+    for step_id in ("words", "watch", "cards"):                                 # chapter 1 done: each still listed
+        r = rows[step_id]
+        assert r.status.done and r.tick.text() == strings.PATH_TICK and not r.later
+        assert r.show_me is not None and r.show_me.toolTip() == strings.PATH_AGAIN_TIP, step_id
+        assert r.accessibleName() == strings.PATH_TICK_NAME.format(title=strings.PATH_STEPS[step_id][0])
+    rows["watch"].show_me.click()
+    assert went == ["help:current"] and not panel.isVisible()
+
+
+def test_a_step_that_cant_apply_now_reads_not_for_now_with_when_behind_its_question_mark(world):
+    panel = world.d.guide_panel
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))   # no Anki, book, video
+    later = {step_id for step_id, r in rows.items() if r.later}
+    assert later == {"junban", "backfill", "audiobook", "hato", "piyo"}
+    for step_id in later:
+        r = rows[step_id]
+        assert r.show_me is None and r.tick.text() == "", step_id               # never a dead end, never a tick
+        assert r.about.isVisibleTo(panel) and r.about.toolTip() == strings.PATH_WHEN[step_id]
+        assert strings.PATH_WHEN[step_id] in r.accessibleName()
+    assert strings.PATH_LATER in _lines_in_sight(panel)                         # one quiet group name above them
+    assert strings.PATH_COUNT.format(n=0, total=0) not in _lines_in_sight(panel)   # never "0 OF 0": no count
+
+
+def test_a_step_done_before_that_cant_apply_now_keeps_its_tick_and_no_show_me(world):
+    panel = world.d.guide_panel
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, lined_up=True))
+    r = rows["audiobook"]                                                       # lined up once; no book in Current now
+    assert r.status.done and not r.later and r.tick.text() == strings.PATH_TICK and r.show_me is None
+
+
+def test_a_missing_module_is_never_listed_even_as_not_for_now(world):
+    panel = world.d.guide_panel
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False))
+    assert not {"junban", "backfill"} & set(rows)
+
+
+def test_no_step_shows_a_line_under_its_title_each_says_it_behind_its_question_mark(world):
+    panel = world.d.guide_panel
+    every = facts(journey_opened=False, episodes_done=0, video_waiting=True, book_in_current=True)
+    rows = _open_path(panel, every, {})
+    sight = _lines_in_sight(panel)
+    for step_id, r in rows.items():
+        title, line = strings.PATH_STEPS[step_id]
+        assert r.title.text() == title and line not in sight, step_id
+        assert r.about.toolTip() in (line, strings.PATH_WHEN.get(step_id)), step_id
 
 
 def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world):

@@ -58,6 +58,7 @@ from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_live
 from app.qt import settings_strings as S
+from app.qt.tooltip import AboutMark
 from app.services import settings as settings_service
 
 SLICE_MS = 4.0                  # the GUI thread's step (charter §4): what a slice may take
@@ -252,8 +253,9 @@ class Search(QWidget):
 class Slab(QWidget):
     """A section: a layer-0 slab (the stylesheet's `settingsslab`, tinted every other one), its head, its rows, its
     *More options · N* fold and the rows under it. S1 (Kantan-S1, PROVISIONAL): a section that hides value
-    (`S.SECTION_WHY`) has its module's name small beside its plain name (`tag`), and under the head its one line on what
-    you get (`why`) and, only while something is missing, its needs line with *Show me* (`set_needs`: the page reveals
+    (`S.SECTION_WHY`) has its module's name small beside its plain name (`tag`), its line on what you get behind the
+    head's ? (`why`, a `HelpMark`: Kantan-S2, Sonic 2026-11-13 — no subtitles) and, only while something is missing,
+    its needs line with *Show me* under the head (`set_needs`: a state and its action, kept in sight; the page reveals
     where it points)."""
 
     def __init__(self, section, tint, parent=None):
@@ -277,18 +279,16 @@ class Slab(QWidget):
         self.tag.setVisible(bool(self.tag.text()))
         if self.tag.text():                            # a screen reader hears the module's name too
             self.name.setAccessibleName(S.SECTION_NAMED.format(name=section.name, tag=self.tag.text()))
+        self.why = HelpMark(self.head)                 # S1's what you get, behind its ? (Kantan-S2)
+        self.why.set_about(section.name, S.SECTION_WHY.get(section.id, ""))
         head.addWidget(self.icon)
         head.addWidget(self.name)
         head.addWidget(self.tag)
+        head.addWidget(self.why, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
         box.addWidget(self.head)
-        self.about = QWidget(self)                     # S1: what you get, and what it needs while that's missing
+        self.about = QWidget(self)                     # S1: what it needs while that's missing (shown only then)
         about = QVBoxLayout(self.about)
-        self.why = Words(self.about)
-        self.why.setObjectName("settingshelp")
-        self.why.setWordWrap(True)
-        self.why.setText(S.SECTION_WHY.get(section.id, ""))
-        about.addWidget(self.why)
         self.needs = QWidget(self.about)
         needs = QHBoxLayout(self.needs)
         needs.setContentsMargins(0, 0, 0, 0)
@@ -299,10 +299,9 @@ class Slab(QWidget):
         needs.addWidget(self.show_me)
         needs.addStretch(1)
         about.addWidget(self.needs)
-        self.needs.setVisible(False)
         self.needs_now = None                          # (the line, the row *Show me* reveals) shown, or None
         box.addWidget(self.about)
-        self.about.setVisible(bool(self.why.text()))
+        self.about.setVisible(False)
         self.main = QWidget(self)
         self.main_box = QVBoxLayout(self.main)
         self.main_box.setContentsMargins(0, 0, 0, 0)
@@ -363,8 +362,8 @@ class Slab(QWidget):
             self.needs_line.setText(need[0])
             self.show_me.setToolTip(S.SHOW_ME_TIP.format(where=where))
             self.show_me.setAccessibleName(S.SHOW_ME_NAME.format(need=need[0], show=S.SHOW_ME))
-        if self.needs.isHidden() == (need is not None):
-            self.needs.setVisible(need is not None)
+        if self.about.isHidden() == (need is not None):
+            self.about.setVisible(need is not None)
 
     def set_open(self, opened, count):
         if self._fold == (opened, count):
@@ -405,10 +404,8 @@ HELP_SHOWN = frozenset((
     "practice_ai",               # what goes to that AI's company
     "enable_koe",                # each sentence goes to Google
     "anki_miner",                # Sonic's credit to its maker
-    # S1 · Settings say why (Kantan-S1, PROVISIONAL): what you get, in sight where the value hides
-    "connect_enabled",           # Cards made for you: what the switch does
-    "connect_needs_miner",       # …and, until Anki Miner is found, what it needs
-    "hato",                      # Subtitles for videos without them
+    # (S1's three what-you-get lines — Cards made for you, its needs-Anki-Miner line, hato — went behind their ?:
+    # Kantan-S2, Sonic 2026-11-13, "I don't like subtitles"; *Set up Anki Miner ›* stays, the action)
 ))
 
 
@@ -432,50 +429,30 @@ ROW_CARDS = {"connect_enabled": "cards", "mine_line": "current", "anki_sync_auto
              "level": "level"}
 
 
-class HelpMark(QLabel):
-    """A row's ? (a9.1): its description in the bubble on hover, on keyboard focus (Tab) and on a click or Enter /
-    Space (the bubble's own rules, `tooltip.Tooltips`: wrapped to its width). A row with a help card (`ROW_CARDS`,
-    `card`): a click or Enter / Space opens that card instead (its hover says so)."""
+class HelpMark(AboutMark):
+    """A row's ? (a9.1) — and a section's (Kantan-S2: what it gets you): its description in the bubble on hover, on
+    keyboard focus (Tab) and on a click or Enter / Space (`tooltip.AboutMark`; the bubble's own rules: wrapped to its
+    width). A row with a help card (`ROW_CARDS`, `card`): a click or Enter / Space opens that card instead (its hover
+    says so)."""
 
     card = None
 
     def __init__(self, parent=None):
         super().__init__(S.HELP_MARK, parent)
-        self.setObjectName("helpmark")
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.setCursor(Qt.CursorShape.WhatsThisCursor)
-        self.setVisible(False)
 
     def set_about(self, label, text):
         if text and self.card is not None:
             from app.services import help_cards
             if help_cards.available(self.card):
                 text = S.HELP_MARK_CARD.format(text=text)
-        if self.toolTip() != text:
-            self.setToolTip(text)
-            self.setAccessibleName(S.HELP_MARK_NAME.format(label=label) if label else S.HELP_MARK)
-            self.setAccessibleDescription(text)
-        if self.isHidden() == bool(text):
-            self.setVisible(bool(text))
+        super().set_about(S.HELP_MARK_NAME.format(label=label) if label else S.HELP_MARK, text)
 
     def _ask(self):
         if self.card is not None and self.toolTip().endswith(S.HELP_MARK_CARD.split("{text}", 1)[1]):
             from app.qt import help_card
             help_card.open_card(self, self.card)
             return
-        tips = getattr(self.window(), "tooltips", None)
-        if tips is not None and self.toolTip():
-            tips.request(self)
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        self._ask()                                       # the press hid the bubble: a click shows it again
-
-    def keyReleaseEvent(self, event):
-        super().keyReleaseEvent(event)
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self._ask()
+        super()._ask()
 
 
 class Words(QLabel):

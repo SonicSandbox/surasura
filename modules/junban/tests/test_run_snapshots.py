@@ -309,6 +309,37 @@ def test_your_reorder_takes_over_the_windows_own_cut_run_and_connects_together(t
     assert _state(fake) == before
 
 
+def test_a_take_over_with_nothing_to_write_keeps_what_your_last_snapshot_still_owed(tmp_path):
+    """The adversary's SHOULD 2: your Reorder, with nothing left to write, takes over a cut run of Connect's — and its
+    snapshot replaces your last one. What that one still held comes along, as on the writes path: a field's original
+    (FreqSort u, which Surasura overwrote) and a card *Try it on my cards* moved, still where it put it, at its number
+    from before Try it."""
+    fake = scene(tmp_path)
+    quiet = settings(junban_later_tag=False, junban_later_flag=False, junban_later_suspend=False)
+    pairs = {card_id: card["due"] for card_id, card in fake.cards.items() if card["queue"] == 0}
+    with _patched(fake):
+        assert reposition.run(quiet, refresh=False)["written"]         # the deck in your order: your last snapshot
+    tried = min(pairs)
+    note = fake.cards[tried]["note"]
+    path = undo.snapshot_path("ja")
+    with open(path, encoding="utf-8") as handle:
+        last = json.load(handle)
+    last["cards"][str(tried)] = 5                                      # Try it had moved it from 5, to where it is
+    last["tried"] = {str(tried): fake.cards[tried]["due"]}
+    last["fields"] = {str(note): {"FreqSort": {"before": "u", "after": "p1"}}}
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(last, handle)
+    run_id = undo.new_run_id("reorder")                                 # Connect's cut run, of the other cards
+    undo.save([(c, d) for c, d in pairs.items() if c != tried], ["TheBank"], language="ja", run_id=run_id, after=[])
+    writes = list(fake.writes)
+    with _patched(fake):
+        report = reposition.run(quiet, refresh=False)
+    assert report["ok"] and fake.writes == writes and undo.load("ja", run_id=run_id).get("taken_over_at"), report
+    saved = undo.load("ja")
+    assert saved["fields"][str(note)]["FreqSort"] == {"before": "u", "after": "p1"}, "the field's original kept"
+    assert saved["cards"][str(tried)] == 5, "Try it's number from before it kept"
+
+
 def test_a_fields_true_original_survives_a_take_over_whichever_snapshot_is_older():
     """The adversary's BLOCKER: your last reorder (older) wrote FreqSort u -> p1, a cut run of Connect's (newer) p1 ->
     a1, and this run writes a1 -> m. Carried back newest first, the way back is u — whichever order they're handed in;

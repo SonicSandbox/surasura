@@ -280,6 +280,31 @@ QPushButton#guideshow {{ background: {c['overlay-hover']}; color: {c['ink']}; bo
 QPushButton#guideshow:hover {{ border-color: {c['accent']}; }}
 QPushButton#guideshow:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(10 * f) - 1}px; }}
 """
+    # --- the feature guide's path (Hoshi-S PR 2): the panel's two tabs, the path's step rows, the Next card on Current
+    rules += f"""
+QPushButton#guidetab {{ background: transparent; color: {c['overlay-ink-dim']}; border: 0; border-radius: {px(8)};
+  min-height: {px(30)}; {font('button')} }}
+QPushButton#guidetab:hover {{ color: {c['ink']}; }}
+QPushButton#guidetab:checked {{ background: {c['overlay-cut']}; color: {c['ink']};
+  border-bottom: 2px solid {c['accent']}; }}
+QPushButton#guidetab:focus {{ border: 2px solid {c['accent']}; }}
+QWidget#pathrow {{ background: {c['overlay-cut']}; border-radius: {theme.RADII['r-sm']}px; }}
+QLabel#pathtick {{ border: 1px solid {c['overlay-ink-faint']}; border-radius: {px(10)}; color: {fixed['on-accent']};
+  {font('badge')} }}
+QLabel#pathtick[done="true"] {{ background: {c['ok']}; border-color: {c['ok']}; }}
+QLabel#pathtitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
+QLabel#pathline {{ color: {c['overlay-ink-dim']}; {font('row-sub')} font-weight: 400; }}
+QLabel#pathdone {{ color: {c['ok']}; {font('eyebrow')} }}
+QLabel#pathright {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} }}
+QLabel#pathmore {{ color: {c['overlay-ink-dim']}; {font('row-sub')} font-weight: 400; }}
+QWidget#nextcard {{ background: {c['raised']}; border-radius: {theme.RADII['r']}px;
+  border-left: {px(3)} solid {c['accent']}; }}
+QWidget#nextcard[look="made"] {{ border-left: {px(3)} solid {c['ok']}; }}
+QLabel#nexteyebrow {{ color: {c['accent']}; {font('eyebrow')} }}
+QWidget#nextcard[look="made"] QLabel#nexteyebrow {{ color: {c['ok']}; }}
+QLabel#nexttitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
+QLabel#nextline {{ color: {c['ink-dim']}; {font('row-sub')} font-weight: 400; }}
+"""
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
     rules += f"""
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}

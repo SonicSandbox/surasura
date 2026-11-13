@@ -431,7 +431,16 @@ def run_integrated(scale, out_dir):
     shot("guide-panel", ([] if d.guide_panel.isVisible() else ["the guide's panel did not open"]) +
          ([] if win.centralWidget().rect().contains(panel) else [f"the guide's panel {panel} leaves the window"]) +
          ([] if not d.guide.glow else ["the ✦ still glows with its panel open"]))
+    # the path (PR 2): its tab, then the Next card above Up Next (the seed's library: the first step)
+    if d.guide_panel.has_path():
+        d.guide_panel.show_tab("path")
+        until(lambda: not d.guide_panel.building())
+        settle(20)
+        shot("guide-path", [] if d.guide_panel.rows else ["the path's tab shows no step"])
     d.guide_panel.hide()
+    until(lambda: d.next_card is not None and d.next_card.isVisible())
+    settle(20)
+    shot("next-card", [] if d.next_card is not None and d.next_card.isVisible() else ["no Next card on Current"])
     win.dock.begin_drag("current")
     settle(30)
     win.dock.hover("goal")

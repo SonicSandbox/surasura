@@ -2043,3 +2043,44 @@ GUIDE_SHOW_ME_TIP = "Where to try it\n• Click: go there, lit up"
 GUIDE_SHOW_ME_NAME = "Show me: {text}"
 GUIDE_NOT_HERE = "That isn't on this screen right now."
 # --- end the feature guide
+# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; app/qt/next_card.py, app/qt/guide.py — PROVISIONAL)
+GUIDE_TIP_PATH = "What's new, and your path\n• Click: open them"
+GUIDE_TAB_NEWS = "What's new"
+GUIDE_TAB_NEWS_TIP = "This update's changes, yours first"
+GUIDE_TAB_PATH = "Your path"
+GUIDE_TAB_PATH_TIP = "The steps to your first cards, and what's worth trying next"
+PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
+PATH_DONE = "✓ DONE"
+PATH_COUNT = "{n} OF {total}"
+PATH_FIRST_LINE = "Set up · See the words · Watch and Done · Cards made for you"
+PATH_MORE = "More steps show up when they're useful to you."
+PATH_TICK_NAME = "{title}: done"
+PATH_OPEN_NAME = "{title}: not done yet"
+PATH_STEPS = {           # id -> (title, the line under it)
+    "words": ("See the words before you watch", "Open them, each with a line from the episode."),
+    "watch": ("Watch it, then press Done", "Its words count as seen, and the next episode moves up."),
+    "cards": ("Get cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
+              "It's free and needs Anki open."),
+    "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
+    "backfill": ("Let your cards show how each word is used",
+                 "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    "audiobook": ("Line up a book with its audiobook", "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
+    "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),
+    "piyo": ("Practise your words with your AI", "Piyo ぴよ chats with you using the words you're learning."),
+}
+NEXT_NAME = "Your next step"
+NEXT_FIRST = "NEXT · {n} of {total} to your first cards"
+NEXT_READY = "NEW FOR YOU"
+NEXT_SHOW_ME = "Show me"
+NEXT_SHOW_ME_TIP = "Where to do it\n• Click: go there, lit up"
+NEXT_NOT_NOW = "Not now"
+NEXT_NOT_NOW_TIP = "Set this step aside\n• It stays in ✦ → Your path"
+NEXT_SET_UP_MINER = "Set up Anki Miner"
+NEXT_SET_UP_MINER_TIP = "Anki Miner makes your cards\n• Click: its place in Settings"
+NEXT_OWN_CARDS = "I make my own cards"
+NEXT_OWN_CARDS_TIP = "You mine cards by hand\n• Click: this step counts as done"
+NEXT_MADE = "✓ YOUR FIRST CARDS ARE MADE"
+NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes useful. The rest is under ✦."
+NEXT_OK = "OK"
+NEXT_OK_TIP = "Put this card away"
+# --- end the feature guide's path

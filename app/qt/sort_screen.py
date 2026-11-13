@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QPushButton, QSiz
 
 from app import scrub, theme
 from app.qt import motion, style
+from app.qt import press as qpress
 from app.qt import wizard_strings as S
 
 LINE_MS = 6500                  # a gentle line stays this long, then fades out and the next fades in
@@ -897,16 +898,26 @@ class SortScreen(QWidget):
         moves = self._moves()
         if moves is None:
             return None
+        after = self._current_end() if name == "now" else None
         entry = self._take((a.key,), name, S.SORT_PLACED[name].format(title=a.title))
         if name == "ignore":
             self._ignore(a, moves, entry)
             return True
         from app.qt import arrivals
         seq = arrivals.give_place(moves, entry["text"], list(a.item_ids), PLACE_OF[name], toast=False,
-                                  ticket=self._ticket(entry, a.item_ids))
+                                  ticket=self._ticket(entry, a.item_ids), after=after)
         if seq is None:
             self._refused(entry)
         return seq
+
+    def _current_end(self):
+        """Choice 1 (Sonic, 2026-11-09: "sure"): Current keeps the order titles are sent in — the first sent stays on
+        top. -> the last item this screen sent to Current and still holds there (its newest choice or *Put the rest
+        in…* not undone, refused or put back), for the next one to go after; None: the top, as before."""
+        for entry in reversed(self.history):
+            if entry["name"] == "now" and not entry.get("gone") and entry["ticket"] is not None and entry["ticket"].ids:
+                return entry["ticket"].ids[-1]
+        return None
 
     def _ticket(self, entry, ids):
         """The entry's own ticket — kept for its Undo, and told when its command ends unsaved (it landed as nothing,
@@ -982,10 +993,11 @@ class SortScreen(QWidget):
             return None
         ids = [i for _k, a in rows for i in a.item_ids]
         label = next(lab for n, lab, *_r in S.SORT_CHOICES if n == name)
+        after = self._current_end() if name == "now" else None
         entry = self._take([a.key for _k, a in rows], name, S.SORT_REST_PLACED.format(n=len(rows), place=label))
         from app.qt import arrivals
         seq = arrivals.give_place(moves, entry["text"], ids, PLACE_OF[name], toast=False,
-                                  ticket=self._ticket(entry, ids))
+                                  ticket=self._ticket(entry, ids), after=after)
         if seq is None:
             self._refused(entry)
         return seq
@@ -1231,7 +1243,7 @@ def open_over(win):
     def closed(_how):
         if not sip.isdeleted(screen):
             screen.hide()
-            screen.deleteLater()
+            qpress.let_go(screen)                         # (its `_Cover` filters the area until it goes: Qt-C2)
     screen.closed.connect(closed)
     screen.show()
     screen.raise_()
@@ -1339,7 +1351,9 @@ class LoadRun(QObject):
             self.index()
 
     def _chores(self):
-        return getattr(self.shell, "chores", None)
+        """The window's chores — its services' (Kantan-B1: `shell.chores` is no attribute of the window, so this step
+        was passed by in the app and setup never said *Reading the words*)."""
+        return getattr(getattr(self.shell, "services", None), "chores", None)
 
     def index(self):
         """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log (only
@@ -1500,6 +1514,6 @@ def cover_window(shell):
             if shell.__dict__.get("_sort_screen") is old:
                 del shell.__dict__["_sort_screen"]
             old.hide()
-            old.deleteLater()
+            qpress.let_go(old)                            # (its `_Cover` filters the area until it goes: Qt-C2)
     cover.covered = lambda: held["w"]
     return cover

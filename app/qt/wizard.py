@@ -59,6 +59,7 @@ ROWS_SHOWN = 6                                  # page 3's rows; the rest are "a
 YOUTUBE_DOOR = "youtube-downloader"             # alpha 8: page 3's *YouTube…* shows while the downloader's door does
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
+INDEX_FRESH_S = 10                              # page 6's *Reading N files…*: an indexer log older than this is no run's
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
 SAVED_WAIT = 10                                 # s: D1's check after sorting waits at most this long for its places
 GLYPH_GEM = {"ja": "sapphire", "zh": "ruby"}    # page 1's wash under each glyph
@@ -1273,8 +1274,12 @@ class _Page(QWidget):
         """The page shows: what it reads is asked again on a worker."""
 
     def next_offered(self):
-        """False while the page can't go on (Anki not open on *Card order*): *Next* hides, Enter is *Skip*."""
+        """False while the page can't go on (Anki not open on *What you know*): *Next* hides, Enter is *Skip*."""
         return True
+
+    def next_skips(self):
+        """True while *Next* goes on as *Skip* does, nothing written (Kantan-B1: *Card order* with Anki closed)."""
+        return False
 
     def focus_first(self):
         """Where the keyboard starts on this page (nothing: the wizard keeps it; a key's Tab finds the controls)."""
@@ -1533,6 +1538,9 @@ class ShowsPage(_Page):
         pick.addWidget(self.btn_stop)
         pick.addStretch(1)
         fbox.addLayout(pick)
+        # Kantan-B1 (A2; Mattias, 11-10: "will it move my files?" was answered only in a hover)
+        self.where_line = _label("wizsub", S.PICK_WHERE_THEY_ARE, self.folders_part, wrap=True)
+        fbox.addWidget(self.where_line)
         # alpha 8: *YouTube…*'s links, one a line, and the downloader's own risk tick (its setting, its words)
         self.links_part = QWidget(self.folders_part)
         lbox = QVBoxLayout(self.links_part)
@@ -1554,6 +1562,8 @@ class ShowsPage(_Page):
         self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
         self.every_core.switch.toggled.connect(self.wiz.use_every_core)
         fbox.addWidget(self.every_core)                   # Mado-O (Sonic 2026-10-30): decided before the load
+        self.every_core.setVisible(False)                 # Kantan-B1 (A2): a reading speed — shown once a folder is
+                                                          # ... picked (`_paint_folders`), never asked before one
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
@@ -1664,11 +1674,13 @@ class ShowsPage(_Page):
         if not text:
             self.offer_folder(None)
 
-    def offer_folder(self, folder):
-        """(Alpha 8) *Choose its folder* beside the line saying a video's subtitle wasn't found (None: hidden)."""
+    def offer_folder(self, folder, tip=None):
+        """(Alpha 8) *Choose its folder* beside the line saying a video's subtitle wasn't found (None: hidden). `tip`
+        (Kantan-B3): an audiobook's words, else the video's."""
         self._its_folder = folder
         if folder:
             self.btn_its_folder.setAccessibleName(S.VIDEO_ITS_FOLDER_NAME.format(folder=folder))
+            self.btn_its_folder.setToolTip(tip or S.VIDEO_ITS_FOLDER_TIP)
         _show(self.btn_its_folder, bool(folder))
 
     def _paint_folders(self):
@@ -1718,6 +1730,7 @@ class ShowsPage(_Page):
             self.folder_list.addWidget(w)
         _show(self.btn_skip, bool(self.folders))          # only inside a folder picked
         _enable(self.btn_skip, self.wiz.reading is None)
+        _show(self.every_core, bool(self.folders) and not self.every_core.property("resort-hidden"))   # Kantan-B1
         _enable(self.btn_its_folder, self.wiz.reading is None)
         text = S.PICK_ANOTHER if self.folders else S.PICK_FOLDER
         if self.btn_pick.text() != text:
@@ -1940,6 +1953,9 @@ class OrderPage(_Page):
         self.box.addWidget(self.picture)
         self.closed_part, self.closed_line, self.closed_steps, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
+        self.when_open = _label("wizsub", S.ORDER_WHEN_OPEN, self, wrap=True)    # Kantan-B1 (A2): with the closed part
+        self.when_open.setVisible(False)
+        self.box.addWidget(self.when_open)
         # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
         self.off_line = _label("wizclosed", S.ORDER_OFF, self, wrap=True)
         self.off_line.setVisible(False)
@@ -1999,6 +2015,9 @@ class OrderPage(_Page):
             self.later.add(Choice(key, S.LATER_CHOICES[key], S.LATER_TIPS[key], self.later, small=True))
         self.later.setMaximumWidth(_px(430))              # (narrower only in a window narrower than it)
         later.addWidget(self.later, 0, Qt.AlignmentFlag.AlignLeft)
+        self.later_line = _label("wizsub", "", self.controls, wrap=True)    # Fresh-U row 19: what the pick does
+        later.addWidget(self.later_line)
+        self.later.changed.connect(self._paint_later)
         rows.addLayout(later)
         self.box.addWidget(self.controls)
         self.box.addStretch(1)
@@ -2011,9 +2030,17 @@ class OrderPage(_Page):
         self._keep_touched = False
         self.keep.switch.set_quiet(self._keep_shown)
         self.later.choose(a.get("later") if a.get("later") in S.LATER_CHOICES else "leave")
+        self._paint_later()
         self._deck = a.get("deck") or None
         self._deck_key = None
         self._show()
+
+    def _paint_later(self, *_key):
+        """The line under *Cards for words not on your list*: what the chosen one does to those cards (Fresh-U row
+        19: the three said it only in their hovers)."""
+        text = S.LATER_LINES.get(self.later.value(), "")
+        if self.later_line.text() != text:
+            self.later_line.setText(text)
 
     def _deck_picked(self):
         self._deck = self.deck_box.currentText() or None
@@ -2135,6 +2162,7 @@ class OrderPage(_Page):
         _show(self.off_line, bool(off))
         is_open = bool(look and look.get("open")) and not off
         _show(self.closed_part, not off and look is not None and not is_open)
+        _show(self.when_open, not off and look is not None and not is_open)
         if look is not None and not look.get("open"):
             _say_closed(self.closed_line, self.closed_steps, look, self.closed_part.watch)
         _show(self.controls, is_open)
@@ -2166,8 +2194,13 @@ class OrderPage(_Page):
                 "later": self.later.value() or "leave"}
 
     def next_offered(self):
+        """Kantan-B1 (A2, the walk's dead end: Anki closed left only a small *Skip*): once Anki was looked for, *Next*
+        stays — with Anki closed it goes on as *Skip* does (`next_skips`: nothing written)."""
+        return self.wiz.anki is not None and not self.wiz.junban_off()
+
+    def next_skips(self):
         look = self.wiz.anki
-        return bool(look and look.get("open")) and not self.wiz.junban_off()
+        return not (look and look.get("open"))
 
     def entered(self):
         if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
@@ -2582,6 +2615,7 @@ class LevelPage(_Page):
         discord.addStretch(1)
         self.box.addLayout(discord)
         self.numbers = None
+        self.reading = None                 # Kantan-B1: the files the indexer reads while counting (None: not reading)
         self._band = None                   # the band the user moved to (None: Automatic's)
         self._shown = None
         self.number_paints = 0
@@ -2604,8 +2638,9 @@ class LevelPage(_Page):
     def entered(self):
         self.wiz.read_numbers(fresh=True)
 
-    def show_numbers(self, numbers):
-        self.numbers = numbers
+    def show_numbers(self, numbers, reading=None):
+        """`reading` (Kantan-B1): how many files the indexer reads while nothing is counted yet (None: not reading)."""
+        self.numbers, self.reading = numbers, reading
         self._paint()
 
     def counted(self):
@@ -2644,7 +2679,9 @@ class LevelPage(_Page):
         counted = self.counted()
         if not counted:                                   # Disc-T1: nothing to count is said, never *Counting* for
             empty = None if self.wiz.fetching is not None else (n or {}).get("empty")  # good (YouTube's videos coming:
-            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, S.COUNTING))  # still)
+            # still); Kantan-B1 (A2): while the indexer reads, how many files it reads
+            counting = _count(S.READING_FILES, self.reading) if self.reading else S.COUNTING
+            _set_text(self.counting, {"library": S.NO_SHOWS, "arrivals": S.NO_SORTED}.get(empty, counting))
         _show(self.counting, not counted)
         _show(self.numbers_part, counted)
         if not counted:
@@ -2674,8 +2711,24 @@ class LevelPage(_Page):
             self.big["coverage"].style().polish(self.big["coverage"])
 
     def language_changed(self, language):
-        self.numbers, self._shown = None, None
+        self.numbers, self.reading, self._shown = None, None, None
         self._paint()
+
+
+def _index_reading(chores, numbers):
+    """(A worker.) Kantan-B1 (A2: page 6 said *Counting your shows…* over an empty graph while the samples were read):
+    while the numbers aren't in and the window's indexer reads, how many files it reads (its log's newest count,
+    `setup_load.read_count`, the load screen's) — else None."""
+    if chores is None or (numbers or {}).get("bands") or (numbers or {}).get("empty"):
+        return None
+    try:
+        if not chores.indexing():
+            return None
+        from app.services import setup_load
+        got = setup_load.read_count(chores.index_log(), time.time() - INDEX_FRESH_S)
+    except Exception:                                     # (no count: *Counting* stays, as before)
+        return None
+    return got[1] if got else None
 
 
 def number_for(numbers, key, band):
@@ -2923,14 +2976,17 @@ class SetupWizard(QWidget):
         offered = self.page.next_offered() or busy
         if offered and self._offered is False:
             self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
-        self._offered = offered
+        self._offered = offered                           # (Kantan-B1: Anki's answer re-arms too, `_anki_looked`)
         _show(self.btn_next, offered)
         text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
         if self.resort is not None:
             text, tip = S.RESORT_NEXT, S.RESORT_NEXT_TIP
+        elif self.page.next_skips():
+            tip = S.ORDER_NEXT_TIP                        # Kantan-B1: on as *Skip* goes (Anki closed)
         if self.btn_next.text() != text:
             self.btn_next.setText(text)
             self.btn_next.setAccessibleName(text)
+        if self.btn_next.toolTip() != tip:
             self.btn_next.setToolTip(tip)
         for b in (self.btn_back, self.btn_skip, self.btn_next):
             if b.isEnabled() == busy:
@@ -2981,6 +3037,9 @@ class SetupWizard(QWidget):
             return
         page = self.page
         if not page.next_offered():
+            return
+        if page.next_skips():
+            self.skip()                                    # Kantan-B1: Anki closed on *Card order*: nothing written
             return
         if self.resort is not None:
             self._resort_next()
@@ -3352,19 +3411,27 @@ class SetupWizard(QWidget):
         if self.reading is not None or self._gone:
             return
         page = self.pages[2]
-        start = os.path.dirname(page.files[-1]) if page.files else os.path.expanduser("~")
-        refused, videos = [], []
+        start = os.path.dirname(page.files[-1]) if page.files else windows.content_folder()   # (Fresh-U row 11)
+        from app import audiobooks
+        refused, videos, audio = [], [], None
         page.offer_folder(None)
+        offers = self.can_add("folder") and self.can_read_folders()
         for path in self.pick_files_dialog(S.PICK_FILE_TITLE, start) or ():
             path = os.path.normpath(path)
             if path_utils.file_kind(path) is not None:
                 page.add_file(path)
             elif _is_video(path):
                 videos.append(path)                       # alpha 8 (A8P-L6): its subtitle looked for beside it
+            elif audiobooks.is_audio(path):               # Kantan-B3: an audiobook, read in its folder — never "only"
+                refused.append((S.FILE_AUDIOBOOK if offers else S.FILE_AUDIOBOOK_PLAIN).format(
+                    name=os.path.basename(path)))
+                audio = audio or os.path.dirname(path)
             else:
                 refused.append(S.FILE_NOT_READ.format(name=os.path.basename(path)))
         if refused:
             page.refuse("\n".join(refused))
+        if audio and offers:
+            page.offer_folder(audio, S.AUDIOBOOK_ITS_FOLDER_TIP)
         if videos:
             self._subtitles_of(videos, refused)
 
@@ -3408,9 +3475,10 @@ class SetupWizard(QWidget):
                              then=self.alive(answered), failed=self.alive(failed))
 
     def _pick_files_dialog(self, title, start):
+        from app import audiobooks
         from app.connect import runner
         patterns = " ".join("*" + ext for ext in path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS
-                            + runner.VIDEO_EXTENSIONS)
+                            + runner.VIDEO_EXTENSIONS + audiobooks.AUDIO_EXTENSIONS)   # Kantan-B3: audiobooks too
         paths, _chosen = QFileDialog.getOpenFileNames(self, title, start, S.PICK_FILE_FILTER.format(patterns=patterns))
         return paths
 
@@ -3585,7 +3653,7 @@ class SetupWizard(QWidget):
         if self.reading is not None or self._gone or qpress.live(self, "wizard:pick"):
             return                                        # (one under way: a second press opens nothing, P5-A1)
         page = self.pages[2]
-        start = page.folders[-1] if page.folders else os.path.expanduser("~")
+        start = page.folders[-1] if page.folders else windows.content_folder()     # (Fresh-U row 11)
         path = self.pick_dialog(S.PICK_TITLE, start)
         if path:
             self.choose_folder(path)
@@ -3743,7 +3811,7 @@ class SetupWizard(QWidget):
             widget.setFocus(Qt.FocusReason.OtherFocusReason)
         if old is not None and old is not widget and not sip.isdeleted(old):
             old.hide()
-            old.deleteLater()
+            qpress.let_go(old)                            # (a sort screen hears its own DeferredDelete: Qt-C2)
         QApplication.postEvent(self, QEvent(QEvent.Type.LayoutRequest))   # the window's room asked again (`_Cover`)
 
     def minimumSizeHint(self):
@@ -4026,14 +4094,20 @@ class SetupWizard(QWidget):
             self._count_wait = COUNT_AGAIN_MS
         self._numbers_seq += 1
         seq, language = self._numbers_seq, self.language
-        bridge.run_in_worker(self.api.level_numbers, thaw(self._settings()), language,
-                             then=self.alive(lambda n: self._numbers(n, seq, language)),
+        count, chores = self.api.level_numbers, getattr(getattr(self.shell, "services", None), "chores", None)
+
+        def read(settings, language):
+            numbers = count(settings, language)
+            return numbers, _index_reading(chores, numbers)
+        bridge.run_in_worker(read, thaw(self._settings()), language,
+                             then=self.alive(lambda got: self._numbers(got, seq, language)),
                              failed=self.alive(lambda info: self._numbers_failed(info, seq, language)))
 
-    def _numbers(self, numbers, seq, language):
+    def _numbers(self, got, seq, language):
         if seq != self._numbers_seq or language != self.language:
             return
-        self.pages[5].show_numbers(numbers)
+        numbers, reading = got
+        self.pages[5].show_numbers(numbers, reading)
         if not self.pages[5].counted():                   # still counting (or no shows yet): asked again while shown,
             self._count_later(seq)                        # each time twice as long after, and when the indexer ran
 

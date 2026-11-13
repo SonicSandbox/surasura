@@ -402,6 +402,45 @@ def run_integrated(scale, out_dir):
     settle(30)
     shot("pop", () if d.pop.isVisible() else ["the level's pop did not open"])
     d.pop.hide()
+    # the feature guide (Hoshi-S): the ✦ glowing beside the ?, then its panel open with its fixes unfolded (the shipped
+    # notes, copied with the assets: this version's)
+    win._guide_look()
+    until(lambda: d.guide_panel.look is not None and d.guide.isVisible() and not d.guide_panel.building())
+    shot("guide-glow", () if d.guide.glow else ["the ✦ isn't glowing before its first open"])
+    d.guide.click()
+    settle(30)
+    for entry in d.guide_panel.folds:
+        entry[0].click()
+    settle(20)
+    panel = d.guide_panel.geometry()
+    d.guide_panel.hide()                                          # the GUI thread's largest slice of a new answer
+    d.guide_panel.slices.clear()
+    d.guide_panel._build()
+    until(lambda: not d.guide_panel.building())
+    t0 = time.perf_counter()
+    d.guide_panel.place()
+    place_ms = (time.perf_counter() - t0) * 1000
+    print(json.dumps({"scale": scale, "guide_largest_slice_ms": round(max(d.guide_panel.slices), 2),
+                      "guide_place_ms": round(place_ms, 2), "pieces": len(d.guide_panel.slices),
+                      "cards": len(d.guide_panel.cards)}), flush=True)
+    d.guide.click()
+    settle(20)
+    for entry in d.guide_panel.folds:
+        entry[0].click()
+    settle(20)
+    shot("guide-panel", ([] if d.guide_panel.isVisible() else ["the guide's panel did not open"]) +
+         ([] if win.centralWidget().rect().contains(panel) else [f"the guide's panel {panel} leaves the window"]) +
+         ([] if not d.guide.glow else ["the ✦ still glows with its panel open"]))
+    # the path (PR 2): its tab, then the Next card above Up Next (the seed's library: the first step)
+    if d.guide_panel.has_path():
+        d.guide_panel.show_tab("path")
+        until(lambda: not d.guide_panel.building())
+        settle(20)
+        shot("guide-path", [] if d.guide_panel.rows else ["the path's tab shows no step"])
+    d.guide_panel.hide()
+    until(lambda: d.next_card is not None and d.next_card.isVisible())
+    settle(20)
+    shot("next-card", [] if d.next_card is not None and d.next_card.isVisible() else ["no Next card on Current"])
     win.dock.begin_drag("current")
     settle(30)
     win.dock.hover("goal")

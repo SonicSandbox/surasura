@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLine
 
 from app import theme
 from app.qt import motion, shadow, strings, style
+from app.qt import press as qpress
 
 MARGIN = 24                              # px kept between the card and its window's edges
 _OPEN = []                               # the open cards, oldest first: only a window's newest holds its keyboard
@@ -229,8 +230,9 @@ class Confirm(motion.Overlay):
             self._window.removeEventFilter(self.scrim)
         else:
             self.keep = False
-            self.scrim.deleteLater()
-            self.deleteLater()
+            # (both still filter the window until the loop deletes them:
+            qpress.let_go(self.scrim)                     # ... kept until they go, Qt-C2)
+            qpress.let_go(self)
         before = self._before
         try:
             back = alive and before is not None and before.window() is self._window and before.isVisible()

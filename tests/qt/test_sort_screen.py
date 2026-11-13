@@ -351,6 +351,50 @@ def test_a_choice_places_the_top_title_through_new_arrivals_call_and_the_next_co
     assert no_toast(win, S.SORT_PLACED[name].format(title=top.title))
 
 
+def test_choice_1_current_keeps_the_order_titles_were_sent_in_the_first_sent_on_top(world):
+    """Choice 1 (Sonic, 2026-11-09: "sure"): each title sent to Current goes after the last one this screen sent there
+    (its last item), so the first sent stays on top — with another place between, too; an Undo takes that one out of
+    the reckoning (all undone: the next goes to the top)."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    rows_ = [a for _k, a in screen.visible_rows()[:3]]
+    many = next(i for i, a in enumerate(rows_) if len(a.item_ids) >= 2)     # a title of several files sent first
+    order = [many] + [i for i in range(3) if i != many]
+    first, second, third = (rows_[i] for i in order)
+    for name, a in (("now", first), ("soon", second), ("now", third)):  # another place between: still after the last
+        screen.choose(name, a)                                          # Current one
+    assert _saved(writer, 3)
+    places = calls(writer, "place")
+    assert places[0] == ("place", list(first.item_ids), {"where": "top"})
+    assert places[1] == ("place", list(second.item_ids), {"where": "soon"})
+    assert places[2] == ("place", list(third.item_ids), {"where": "top", "after": first.item_ids[-1]})   # its LAST file:
+    now = [r["id"] for r in sorted((r for r in writer.library.items() if r["tier"] == "now"), key=lambda r: r["ord"])]
+    sent = list(first.item_ids) + list(third.item_ids)                  # (never inside the title before it)
+    assert [i for i in now if i in sent] == sent, "the first sent on top, in the order sent"
+    screen.undo()                                       # all three back: the next goes to the top
+    screen.undo()
+    screen.undo()
+    screen.choose("now")
+    assert wait_until(lambda: len(calls(writer, "place")) == 4)
+    assert calls(writer, "place")[3][2] == {"where": "top"}
+
+
+def test_choice_1_put_the_rest_in_current_goes_after_the_last_title_sent_there(world):
+    """*Put the rest in… Current*: the rest after the last title this screen sent to Current, in the screen's order."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    first = screen.top_arrival()
+    screen.choose("now")
+    rest = [a for _k, a in screen.visible_rows()]
+    screen.rest("now")
+    assert _saved(writer, 2)
+    assert calls(writer, "place")[1] == ("place", [i for a in rest for i in a.item_ids],
+                                         {"where": "top", "after": first.item_ids[-1]})
+    now = [r["id"] for r in sorted((r for r in writer.library.items() if r["tier"] == "now"), key=lambda r: r["ord"])]
+    sent = list(first.item_ids) + [i for a in rest for i in a.item_ids]
+    assert [i for i in now if i in sent] == sent
+
+
 def test_a_held_key_sorts_one_title_and_a_modified_key_none(world):
     _seed, win, writer = world()
     screen = open_sort(win)

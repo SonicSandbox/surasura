@@ -146,3 +146,7 @@ def test_an_episode_the_play_look_found_moved_offers_find_its_folder_without_con
     win.mine.pick_folder = lambda title, where: asked.append(where) or ""
     assert win.mine.find_folder(ep) is False
     assert asked == [os.path.dirname(OLD)], "the picker opens above where the video was"
+    asked.clear()                                       # (review R2-4, Fresh-U row 11: no place known — the Videos
+    from app.qt import windows                          # folder, never the program's own, "")
+    assert win.mine.find_folder(row.episodes[0]._replace(moved=None)) is False
+    assert asked == [windows.content_folder()]

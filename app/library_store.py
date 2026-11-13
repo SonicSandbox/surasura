@@ -51,6 +51,7 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import library_watch
+from app.services import window_idle
 from app.path_utils import (CONTENT_EXTENSIONS, TRASH_DAYS, backup_to_trash, decode_text, infer_source_type,
                             read_source_marker, restart_trash_clock)
 
@@ -232,6 +233,8 @@ EXIT_BAD_DATA = 6
 
 LOCK_TIMEOUT = 5.0               # the write lock and SQLite's busy wait
 LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
+HOLD_WAIT_S = 0.05               # F13: a save waits this long for the write lock under its hand-over hold (a
+                                 # look's take-in holds it 6–20 ms at 20k); a longer wait (another program's save) not
 CLOSE_WAIT_MS = 50               # a close's anchor and its write lock are waited for this long (§6.12)
 BUSY_AT_OPEN = 1.0               # "database is locked" at open is retried this long (§6.2)
 MAINT_WAIT = 10.0                # a helper waits this long for the maintenance lock, then exits 5
@@ -2064,55 +2067,71 @@ class Store:
             finally:
                 self._depth -= 1
             return
-        if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
-            raise StoreReadOnly("the library store is damaged and needs Repair")
-        self._wlock.acquire(wait)
-        committed = wrote = False
-        try:
-            changes = self.conn.total_changes
-            self.conn.gate.open = True
-            if begin:
-                try:
-                    self.conn.execute("BEGIN IMMEDIATE")
-                except sqlite3.OperationalError as exc:
-                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                        raise StoreBusy("the library is busy; try again") from exc
-                    raise
-            self._depth = 1
+        held = True                              # F13: Python's lock back to this save at once (G1), from its
+        try:                                     # damaged check to its ring (`window_idle.hold`)
+            window_idle.hold(window_idle.SAVE_SWITCH_S)
+            if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
+                raise StoreReadOnly("the library store is damaged and needs Repair")
             try:
-                yield
-            except BaseException:
-                self._depth = 0
-                if self.conn.in_transaction:
-                    self.conn.execute("ROLLBACK")
-                raise
-            self._depth = 0
-            if begin:
+                self._wlock.acquire(min(wait, HOLD_WAIT_S))
+            except StoreBusy:
+                if wait <= HOLD_WAIT_S:
+                    raise
+                held = False                     # a long wait: never under the hold (every busy thread would take
+                window_idle.let_go(window_idle.SAVE_SWITCH_S)   # turns at each step meanwhile)
+                self._wlock.acquire(wait - HOLD_WAIT_S)
+            committed = wrote = False
+            try:
+                if not held:                     # (held again inside the try that lets the lock go)
+                    held = True
+                    window_idle.hold(window_idle.SAVE_SWITCH_S)
+                changes = self.conn.total_changes
+                self.conn.gate.open = True
+                if begin:
+                    try:
+                        self.conn.execute("BEGIN IMMEDIATE")
+                    except sqlite3.OperationalError as exc:
+                        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                            raise StoreBusy("the library is busy; try again") from exc
+                        raise
+                self._depth = 1
                 try:
-                    self.conn.execute("COMMIT")
+                    yield
                 except BaseException:
+                    self._depth = 0
                     if self.conn.in_transaction:
                         self.conn.execute("ROLLBACK")
                     raise
-                committed = True
-                wrote = self.role in OUTSIDE_ROLES and self.conn.total_changes != changes
-        except sqlite3.DatabaseError as exc:
-            if _is_malformed(exc):
-                mark_damaged(self.db_path, f"{self.role}: {exc}")
-            raise
-        finally:
-            self._depth = 0
-            try:
-                self.conn.gate.open = False
+                self._depth = 0
+                if begin:
+                    try:
+                        self.conn.execute("COMMIT")
+                    except BaseException:
+                        if self.conn.in_transaction:
+                            self.conn.execute("ROLLBACK")
+                        raise
+                    committed = True
+                    wrote = self.role in OUTSIDE_ROLES and self.conn.total_changes != changes
+            except sqlite3.DatabaseError as exc:
+                if _is_malformed(exc):
+                    mark_damaged(self.db_path, f"{self.role}: {exc}")
+                raise
             finally:
-                self._wlock.release()
-                if committed:
-                    library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
-        if wrote:                                # Connect's commit: the copy's trigger
-            try:
-                _outside_wrote(self)
-            except Exception:                    # a committed write never fails for its trigger
-                pass
+                self._depth = 0
+                try:
+                    self.conn.gate.open = False
+                finally:
+                    self._wlock.release()
+                    if committed:
+                        library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
+            if wrote:                                # Connect's commit: the copy's trigger
+                try:
+                    _outside_wrote(self)
+                except Exception:                    # a committed write never fails for its trigger
+                    pass
+        finally:
+            if held:
+                window_idle.let_go(window_idle.SAVE_SWITCH_S)
 
     def checkpoint(self, wait=LOCK_TIMEOUT):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""
@@ -5162,11 +5181,14 @@ class Store:
                              after_id=None if before else anchor, by=by, explicit=explicit) is not None
         return self.move([item_id], tier, by=by, explicit=explicit) is not None
 
-    def place(self, item_ids, where, by="user", explicit=None):
+    def place(self, item_ids, where, by="user", explicit=None, after_id=None):
         """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
         episode before it in Current (before its next one when only later ones are there), a title only in Finished
         or 6+ Months goes to the top of Current (Q4-9), a title with nothing anywhere stays where it is; `top`, `goal`,
-        `finished` — the rule targets. One command; undone as a move. Returns the change, or None."""
+        `finished` — the rule targets. `after_id` with `top` (the sort screen, choice 1: the order titles were sent
+        in): right after that item while it is still in Current — NOW or Soon, its own tier: the Soon line runs
+        through a long sort (past its group, LM11) — else the top. One command; undone as a move. Returns the change,
+        or None."""
         ids = list(dict.fromkeys(item_ids))
         if not ids:
             return None
@@ -5189,7 +5211,12 @@ class Store:
             tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
             if tier is None:
                 raise ValueError(f"unknown place {where!r}")
-            return _placed_to(self.move(ids, tier, by=by, explicit=explicit), tier)
+            anchor, into = None, tier
+            if after_id is not None and tier == "now" and after_id not in ids:
+                row = self.conn.execute("SELECT tier FROM items WHERE id = ?", (after_id,)).fetchone()
+                if row is not None and row[0] in CURRENT:
+                    anchor, into = self._past_group(after_id), row[0]
+            return _placed_to(self.move(ids, into, after_id=anchor, by=by, explicit=explicit), tier)
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
@@ -10186,11 +10213,12 @@ def _store_removed_rows(self):
     return out
 
 
-def _store_removed(self, now=None):
+def _store_removed(self, now=None, split=False):
     """The Removed list (K2, alpha 4, Mattias's note 6): his own Removes not put back (`_removed_rows`), one entry per
     Remove, newest first -> [{"trash_ids", "title", "titles", "removed_at", "days_left", "count",
     "can_return", "roots"}]; a Remove of several titles is ONE entry (alpha 5, Mado: a picks Remove of 120 titles was
-    120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
+    120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `split` (Kantan-B4: Extract's
+    name check, whose *Put back* is one title's): one entry per title and Remove, never summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
     clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the
     trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't
     come back (no file left, no original read) is left out: Put back would bring nothing back. One read transaction; one
@@ -10222,7 +10250,7 @@ def _store_removed(self, now=None):
         entry = groups[k]
         if not entry["can_return"]:
             continue
-        one = removes.get(entry["removed_at"])              # the same Remove's other titles: one entry
+        one = None if split else removes.get(entry["removed_at"])     # the same Remove's other titles: one entry
         if one is None:
             removes[entry["removed_at"]] = entry
             out.append(entry)
@@ -10235,6 +10263,54 @@ def _store_removed(self, now=None):
     for entry in out:
         entry["trash_ids"].sort()                           # Put back's order: as they were removed
     return out
+
+
+def _store_rename_removed(self, old, new, folders):
+    """Kantan-B4 (Extract's *Add as new*, PROVISIONAL): a removed title gives its name up in the trash, so a new title
+    can take it. Every trash row whose place lies in `<f>/<old>/` (`folders`: the folders a name is taken in, Extract's)
+    gets `<f>/<new>/` — its Put back place, its entry's path and folder — and each of their titles that holds no item
+    any more takes `new`: its folder key (`<old>/…` → `<new>/…`), its title when that is the old name's show, the old
+    name's show dropped from its other names. So the new title of the old name is its own (never joined by folder
+    key or by show, `_folder_work`), and a later Put back brings this one back as `new`, as its own title. One
+    command; no file is moved (the caller moves the folders, inside the same write lock). Not on the Undo stack: the
+    Removed list names it by its new name. -> the trash ids renamed ([] when none: nothing written)."""
+    from app.episode_names import show_key
+    keys = {path_key(f"{f}/{old}") for f in folders}
+    old_key, old_fk, new_fk = show_key(old), path_key(old), path_key(new)
+    with self._command("rename_removed") as cmd:
+        renamed, works = [], set()
+        for r in self.trash_rows():
+            parts = _strip(r["rel_path"] or "").split("/", 2)
+            if len(parts) < 3 or path_key(f"{parts[0]}/{parts[1]}") not in keys:
+                continue
+            rel = f"{parts[0]}/{new}/{parts[2]}"
+            entry = _json_dict(r["entry"]) or {}
+            entry["physical_path"] = rel
+            if "parent_folder" in entry:                    # (a grouped split's `<old>/<old>_1` too: review r1 #1)
+                entry["parent_folder"] = parent_folder_of(rel)
+            self.conn.execute("UPDATE trash SET rel_path = ?, entry = ? WHERE id = ?", (rel, _dumps(entry), r["id"]))
+            renamed.append(r["id"])
+            work = ((_json_dict(r["item_state"]) or {}).get("columns") or {}).get("work_id")
+            if work is not None:
+                works.add(work)
+        if not renamed:
+            return []
+        change = self._change(cmd, "rename_removed")
+        for work in sorted(works):
+            if self.conn.execute("SELECT 1 FROM items WHERE work_id = ? LIMIT 1", (work,)).fetchone():
+                continue                                    # a title still in the library keeps its names
+            row = self._work_row(work)
+            if row is None:
+                continue
+            fields = {"titles": _dumps([t for t in json.loads(row["titles"] or "[]") if show_key(t) != old_key])}
+            if show_key(row["title"]) == old_key:
+                fields["title"] = new
+            fk = row["folder_key"]
+            if fk is not None and (fk == old_fk or fk.startswith(old_fk + "/")):
+                fields["folder_key"] = new_fk + fk[len(old_fk):]
+            self._set_work_fields(cmd, change, work, fields)
+        cmd.touch()
+        return renamed
 
 
 # --- A5K-2: a library folder emptied under its record (Sonic ✅ 2026-10-28) ----------------------------------------- #
@@ -12777,6 +12853,7 @@ Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
+Store.rename_removed = _store_rename_removed
 Store.note_emptied = _store_note_emptied
 Store.emptied = _store_emptied
 Store.removed_under = _store_removed_under
@@ -12934,6 +13011,8 @@ def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale
             if fields is None or book is not None or ask is not None:
                 ab.update(book=book if placed else None, ask=None if placed else ask)
             ab.update(mark or {})
+            for gone in [k for k, v in (mark or {}).items() if v is None]:
+                del ab[gone]                         # (Kantan-B3: a None takes that mark off — the newest word wins)
             self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                               (json.dumps(dict(rec, audiobook=ab), sort_keys=True, ensure_ascii=False), key))
         cmd.feed([item_id])
@@ -12963,15 +13042,20 @@ def _store_answer_audiobook(self, item_id, yes, key=None):
         return False
     if yes and self.pair_audiobook(item_id, book=dict(ask, how="answered"), answer=(ask["key"], True), by="user"):
         return True
-    self.pair_audiobook(item_id, answer=(ask["key"], bool(yes)), stale=True, by="user",
-                        mark=None if yes else {"said_no": ask.get("title") or True})
+    self.pair_audiobook(item_id, answer=(ask["key"], bool(yes)), stale=True, by="user",   # (Kantan-B3: a *Yes* whose
+                        mark={"placed": True, "said_no": None} if yes else    # book was gone: placed; the newest
+                        {"said_no": ask.get("title") or True, "placed": None})   # word replaces the other)
     return True
 
 
 def _store_audiobook_finds(self):
     """a5-2 (Sonic 2026-10-28: after a *No*, "offer that they find the book"): [{item_id, title, files, seconds,
     said_no}] — an audiobook item alone (no book, no question open) whose learner said *No* and never *It has no
-    book*: *Needs you* offers *Find its book…* · *It has no book*. One an item."""
+    book*: *Needs you* offers *Find its book…* · *It has no book*. One an item. Kantan-B3 (PROVISIONAL; Mattias,
+    2026-11-12: one brought in alone sat as *Audio only* and nothing asked for its book): an audiobook alone nobody
+    answered about yet is offered the same at once (`said_no` None) — never one the learner placed (`placed`: a *Yes*
+    whose book was gone, *Separate them* — you said where it belongs), nor one whose transcript beside it is its text
+    (alone, read as a subtitle is)."""
     out, seen = [], set()
     with self._reading():
         for _k, item_id, rec in self._audiobook_rows():
@@ -12979,11 +13063,14 @@ def _store_audiobook_finds(self):
             if item_id in seen:
                 continue
             seen.add(item_id)
-            if ab.get("said_no") and not ab.get("no_book") and not ab.get("book") and not ab.get("ask") and \
-                    self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
-                out.append({"item_id": item_id, "title": ab.get("title") or "", "files": list(ab.get("files") or ()),
-                            "seconds": ab.get("seconds"),
-                            "said_no": ab["said_no"] if isinstance(ab["said_no"], str) else ""})
+            said = ab.get("said_no")
+            if ab.get("no_book") or ab.get("book") or ab.get("ask") or ab.get("placed") or \
+                    (not said and ab.get("transcript")) or \
+                    not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+                continue
+            out.append({"item_id": item_id, "title": ab.get("title") or "", "files": list(ab.get("files") or ()),
+                        "seconds": ab.get("seconds"),
+                        "said_no": (said if isinstance(said, str) else "") if said else None})
     return out
 
 
@@ -13361,7 +13448,8 @@ def _store_audiobook_separate(self, item_id, key=None, by="user"):
         said[book["key"]] = False
         self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         for content_key, _i, rec in rows:
-            one = dict(rec.get("audiobook") or {}, book=None, ask=None)
+            one = dict(rec.get("audiobook") or {}, book=None, ask=None, placed=True)   # Kantan-B3: no Find card,
+            one.pop("said_no", None)                                                   # an older *No* replaced
             self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                               (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), content_key))
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (new, item_id))
@@ -13399,6 +13487,8 @@ def _store_undo_audiobook_pick(self, cmd, change):
         ab = dict(now, book=was.get("book"), ask=was.get("ask"))
         if was.get("said_no"):
             ab["said_no"] = was["said_no"]
+        if not was.get("placed"):           # (Kantan-B3: *Separate them*'s mark goes with its Undo)
+            ab.pop("placed", None)
         back.append((json.dumps(dict(rec, audiobook=ab), sort_keys=True, ensure_ascii=False), content_key))
     if not back:
         return self._skipped(cmd, 1), []

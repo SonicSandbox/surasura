@@ -176,7 +176,7 @@ def test_every_entry_and_every_submenu_entry_has_a_tooltip_and_is_wired(world):
     for act in m.actions():
         if act.isSeparator():
             continue
-        subs = act.menu().actions() if act.menu() is not None else []
+        subs = drag.filled(act.menu()).actions() if act.menu() is not None else []   # (made as it opens)
         for x in [act] + subs:
             walked += 1
             assert x.toolTip().strip(), x.text()
@@ -998,7 +998,7 @@ def test_G3_IK5_a_groups_menu_is_the_moves_study_split_rename_ungroup_then_remov
     assert acts[-2].isSeparator() and skips == []
     for act in acts:                                                 # every entry tipped and wired
         if not act.isSeparator():
-            for x in [act] + (act.menu().actions() if act.menu() is not None else []):
+            for x in [act] + (drag.filled(act.menu()).actions() if act.menu() is not None else []):
                 assert x.toolTip().strip() and _connected(x), x.text()
     m.close()
 
@@ -1133,10 +1133,11 @@ def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes
 
 
 def _pages(menu):
-    """A submenu's chain of pages: [QMenu] — each page's *More…* opens the next."""
-    out = [menu]
+    """A submenu's chain of pages: [QMenu] — each page's *More…* opens the next (each page's entries made as it
+    opens: `drag.filled`)."""
+    out = [drag.filled(menu)]
     while True:
-        more = [a for a in out[-1].actions() if a.menu() is not None and a.text() == strings.MENU_MORE[0]]
+        more = [a for a in drag.filled(out[-1]).actions() if a.menu() is not None and a.text() == strings.MENU_MORE[0]]
         if not more:
             return out
         out.append(more[0].menu())
@@ -1184,6 +1185,36 @@ def test_same_show_as_with_many_shows_pages_with_more_so_each_page_fits_the_wind
         m.close()
     finally:
         style.apply(qapp, theme_name, old_size, language)
+
+
+def test_mado_sm_a_submenus_entries_are_made_as_it_opens_never_with_the_menu(world):
+    """Mado-SM (3.0.x): ⋯ opened at 250 % took 16.6–17.7 ms a press, most of it making the ~60 entries of submenus
+    nobody opened (*Same show as…* lists every other show) and Qt taking them in at the popup. The ⋯ press makes each
+    submenu empty — its own entry tipped and greyed or not as before — and its entries as it opens (`aboutToShow`,
+    which Qt sends before it sizes it), once; the kept menu's close drops one never opened."""
+    _seed, win, _w = world()
+    a, _b = split_parts(win)
+    row = rows_of(win)[a]
+    m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
+    subs = [act for act in m.actions() if act.menu() is not None]
+    assert len(subs) >= 2 and all(act.menu().actions() == [] for act in subs), "nothing made with the menu"
+    assert all(act.toolTip().strip() for act in subs)
+    kinds = next(act.menu() for act in subs if act.text() == strings.ITEM_MENU["type"][0])
+    kinds.menuAction().hovered.emit()                    # its entry reached (mouse or keys): made before Qt places it
+    assert len(kinds.actions()) >= 12                    # (level with its entry: review R2-1)
+    kinds.aboutToShow.emit()                             # as Qt opens it
+    made = [x.text() for x in kinds.actions()]
+    assert len(made) >= 12 and all(x.toolTip().strip() and _connected(x) for x in kinds.actions())
+    kinds.aboutToShow.emit()                             # opened again in the same ⋯: made once
+    assert [x.text() for x in kinds.actions()] == made
+    other = next(act.menu() for act in subs if act.menu() is not kinds)
+    m.close()
+    settle(50)
+    assert "fill" not in other.__dict__, "closed: a fill never run is dropped"
+    m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
+    again = next(act.menu() for act in m.actions() if act.text() == strings.ITEM_MENU["type"][0])
+    assert again.actions() == [] and [x.text() for x in drag.filled(again).actions()] == made
+    m.close()
 
 
 def test_a_short_submenu_has_no_more(world):
@@ -2618,3 +2649,22 @@ def test_leaving_the_middle_lets_the_hold_go_and_coming_back_needs_a_new_hold(wo
     assert lst_of(win).join_key == rows_of(win)[a].key
     win.moves.cancel()
     assert writer.calls == []
+
+
+def test_B4_the_removes_toast_names_removed_and_its_door_opens_the_list(world):
+    """Kantan-B4 (Mattias: "where is the Trash so I can restore the old one?"): the Remove's toast says where it went
+    and carries *Removed…*, which opens the Removed list (Put back) — beside its Undo."""
+    from app.qt import removed, windows
+    _seed, win, writer = world()
+    row = rows_of(win)[4]
+    win.items.menu_pick(row, "remove")
+    assert wait_until(lambda: _card_open(win.items), 5)
+    win.items.question.yes.click()
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_REMOVED.format(title=row.title), 5)
+    assert "in Removed for 30 days" in win.toasts.card.message
+    door = next(b for b in win.toasts.card.buttons if b.isVisibleTo(win.toasts.card)
+                and b.text() == strings.REMOVED_TOAST_OPEN)
+    assert door.toolTip() == strings.REMOVED_TOAST_OPEN_TIP
+    door.click()
+    assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
+    windows.opened(win, removed.WINDOW).close()

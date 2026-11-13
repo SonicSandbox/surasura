@@ -1,0 +1,26 @@
+{
+  "version": "3.0.4",
+  "date": "2026-11-12",
+  "items": [
+    {"id": "zh-cards", "kind": "new", "for": ["zh", "miner"], "where": "settings:connect_enabled",
+     "text": "Connect makes cards for your Chinese library, with pinyin and the sentence's audio."},
+    {"id": "zh-hato", "kind": "new", "for": ["zh", "hato"], "where": "settings:hato",
+     "text": "hato finds subtitles for a Chinese video that has none."},
+    {"id": "audiobook-own-srt", "kind": "new", "for": ["audiobooks"], "where": "settings:connect_trust_timing",
+     "text": "An audiobook with its own timed subtitle lines up its book at once."},
+    {"id": "ai-audio", "kind": "new", "for": ["ja", "miner"], "where": "settings:ai_audio",
+     "text": "Cards without audio can get an AI voice that runs on your PC (beta)."},
+    {"id": "piyo-help", "kind": "new", "for": ["piyo"], "where": "settings:practice_ai",
+     "text": "Ask Piyo how to do something in Surasura, or what's wrong."},
+    {"id": "book-sentence", "kind": "tweak", "for": ["books", "miner"],
+     "text": "A book card's sentence is the one that holds the word, within your Length."},
+    {"id": "junban-finish", "kind": "fix", "for": ["junban"],
+     "text": "順: your reorder finishes one that was cut off."},
+    {"id": "shifted-subtitle", "kind": "fix", "for": ["shows", "miner"],
+     "text": "A subtitle that shifts part-way is re-timed by itself."},
+    {"id": "near-a-cut", "kind": "fix", "for": ["shows", "miner"],
+     "text": "A line near a scene cut never makes a card."},
+    {"id": "words-split", "kind": "fix", "for": ["ja"],
+     "text": "Words split more truly (という, unknown names)."}
+  ]
+}

@@ -290,7 +290,41 @@ def test_a_crash_is_failed_with_the_logs_path_never_a_box():
     holder["run"].ended(3221225477)                          # 0xC0000005: a native fault
     state = controller.state()
     assert state.state == G.FAILED and state.log_path == controller.log_path()
-    assert controller.log_path() in state.message
+    # Kantan-B1 (A1): the path is the state's `log_path` (Needs you's hover), never the line a learner reads
+    assert state.message == "Generate stopped (exit code 3221225477)." and controller.log_path() not in state.message
+
+
+PARTIAL = json.dumps({"type": "error", "contract": 1, "ok": False, "code": "partial",
+                      "message": "Your list was written, but the report couldn't be."}) + "\n"
+
+
+def test_a_failed_run_says_the_childs_own_plain_line_never_its_exit_code_or_the_logs_path():
+    """Kantan-A's walk (11-12): the bar and Needs you said *Generate stopped (exit code 1). The details are in C:\\…*
+    while the child had already said what happened in plain words. Its words are the failure's — the state's line and
+    `failure()` (the bar's) — and the log stays the state's `log_path`."""
+    controller = GenerateController(JobRegistry(), settle=0, log_folder=os.path.join(h.root(), "logs"))
+    holder, launcher = _scripted(controller)
+    controller.request("ja", argv=FLAGGED, launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder["run"].feed(_line("Writing your list"))
+    holder["run"].feed(PARTIAL)
+    holder["run"].ended(1)
+    state = controller.state()
+    assert state.state == G.FAILED and state.message == "Your list was written, but the report couldn't be."
+    assert state.log_path == controller.log_path() and "exit code" not in state.message
+    assert controller.failure("ja") == state.message
+
+
+def test_a_child_error_with_no_words_falls_back_to_the_exit_code_line():
+    """An error record with an empty message (or a crash before any record) still says the run stopped."""
+    controller = GenerateController(JobRegistry(), settle=0)
+    holder, launcher = _scripted(controller)
+    controller.request("ja", argv=FLAGGED, launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder["run"].feed(json.dumps({"type": "error", "contract": 1, "ok": False, "code": "failed",
+                                   "message": "  "}) + "\n")
+    holder["run"].ended(1)
+    assert controller.state().message == "Generate stopped (exit code 1)."
 
 
 def test_a_launcher_that_raises_is_failed_and_the_next_request_runs():

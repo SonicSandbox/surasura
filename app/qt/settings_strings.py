@@ -28,7 +28,7 @@ CHECK = "Check"
 CHECK_TIP = "Checks AnkiConnect, the deck and the note type"
 INSTALLED = "installed · {version}"
 # Michi-HD (Mattias 2026-11-11; lean taken, PROVISIONAL): hato installed where Surasura can't see it — *Find hato…*
-HATO_NOT_FOUND = "hato not found"            # (S1: under its plain name, the words name it)
+HATO_NOT_FOUND = "not found"
 FIND_HATO = "Find hato…"
 FIND_HATO_TIP = ("Already have hato? Pick the folder you unpacked it into.\n"
                  "• hato opens once, so it can connect to Surasura")

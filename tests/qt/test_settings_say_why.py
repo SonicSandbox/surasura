@@ -82,6 +82,14 @@ def test_a_renamed_section_is_found_by_its_old_name_and_its_new_one(query, secti
     assert not set(catalog.find("fill your cards", settings, "ja", ctx)) & {r.id for r in catalog.rows("level")}
 
 
+def test_a_word_of_a_new_section_name_alone_never_floods_the_search_with_its_rows():
+    # (adversary r2 #1) "order" or "cards" looks for a setting, not for every row of Card order
+    settings = dict(ALL_ON, target_language="ja")
+    ctx = frozenset(catalog.MODULES)
+    assert "junban_later_flag" not in catalog.find("order", settings, "ja", ctx)
+    assert "junban_later_flag" in catalog.find("card order", settings, "ja", ctx)
+
+
 # --- the page --------------------------------------------------------------------------------------------------------- #
 def test_the_two_slabs_show_the_plain_name_the_tag_and_the_why_line_and_no_other_slab_does(qapp, fakes):  # noqa: F811
     page, store, shell = make(fakes, ALL_ON)
@@ -192,8 +200,7 @@ def test_the_rows_show_their_tag_and_their_what_you_get_line_in_sight(qapp, fake
         assert view.label.text() == S.ROWS[row_id][0]
     for row_id in ("hato", "practice_ai"):
         assert page.rows[row_id].help.isVisibleTo(page), row_id                  # what you get: never behind the ?
-    assert page.live.parts["hato"]["mark"].accessibleName().startswith("hato")   # (r1 #5) "not found" names hato
-    assert S.HATO_NOT_FOUND.startswith("hato")
+    assert page.live.parts["hato"]["mark"].accessibleName().startswith("hato:")   # (r1 #5) "not found" is hato's
     others = [v for r, v in page.rows.items() if r not in S.ROW_TAGS]
     assert others and not any(v.tag.isVisibleTo(page) for v in others)
 

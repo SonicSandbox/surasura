@@ -645,6 +645,7 @@ class Live(QObject):
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"door": door}
         elif row_id == "hato":
+            # (S1: named hato — under its plain name a screen reader hears "hato: not found", never "no subtitles")
             mark = sc.StatusMark(False, S.HATO_NOT_FOUND, tooltip=row.tip, name=S.ROW_TAGS["hato"])
             find = qpress.room(sc.Door(S.FIND_HATO, tooltip=S.FIND_HATO_TIP, name=S.FIND_HATO))
             find.clicked.connect(lambda _c=False: self.find_hato())

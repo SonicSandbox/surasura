@@ -649,6 +649,8 @@ class RowView(QWidget):
         if self.label.maximumWidth() != max(1, natural):
             self.label.setMaximumWidth(max(1, natural))
         least = min(self._least, natural)
+        if not self.tag.isHidden():               # S1: its tool's name beside it fits in the words' width too (the
+            least = max(0, least - self.tag.sizeHint().width() - self.title.spacing())   # label wraps, never under it)
         if self.label.minimumWidth() != least:
             self.label.setMinimumWidth(least)
 

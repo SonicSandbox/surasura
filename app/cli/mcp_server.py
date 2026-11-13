@@ -25,6 +25,8 @@ import os
 import random
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from typing import List, Optional
 
 from app.cli import contract
@@ -631,10 +633,12 @@ SLASH = "/surasura:practice"
 SLASH_EXAMPLE = f"{SLASH} 5 friend reading soon"
 
 
-def build(state=None, warm=True, serving=False):
+def build(state=None, warm=True, serving=False, calls=None):
     """The MCPServer with its tools and the `practice` prompt (tests use it with the in-memory client). `warm`: start
     loading the checker as the server starts serving — after the transport holds stdout, so nothing the load prints
-    can reach the wire. `serving` (main's, the real process): Python's own stdout goes to cli.log from then on."""
+    can reach the wire. `serving` (main's, the real process): Python's own stdout goes to cli.log from then on.
+    `calls`: the tool calls under way (`Calls`; default CALLS, the one `step_aside` waits for)."""
+    calls = CALLS if calls is None else calls
     from contextlib import asynccontextmanager
 
     from mcp.server.mcpserver import MCPServer
@@ -659,7 +663,8 @@ def build(state=None, warm=True, serving=False):
 
     server = MCPServer("surasura", title=f"{NAME} (Surasura)", version=__version__,
                        instructions=INSTRUCTIONS, lifespan=lifespan)
-    reads = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
+    server.tool = _counted(server.tool, calls)     # every call counted: stepping aside for an update never cuts one
+    reads =ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
                             open_world_hint=False)
     starts = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=False,
                              open_world_hint=False)   # reads only; each call gives a new round_id
@@ -853,8 +858,163 @@ def setup_text(app, command=None):
     raise ValueError(f"app must be one of {', '.join(APPS)}")
 
 
+# --- an update never waits for the AI app (Piyo-UP, 3.0.x; based on the approach in #420 by Mattias) --------------- #
+# The AI app keeps this server for as long as its session lives (Claude Code: one a session, for days), and the
+# process holds Surasura's `<data name>.Running` mutex — Setup's AppMutex (packaging/surasura.iss) — and its own
+# program file: Setup waited until the learner ended every surasura-cli.exe by hand (a tester's 3.0.6 report). Now it
+# steps aside as Connect does (`runner._stop`): an update staged — Connect's one signal, `library_store.update_staged`
+# (Update now until the swap) —, another build under it (`build_info.stamp_skew`: Connect's REPLACED), or Setup run
+# by hand (its SetupMutex, which no Surasura look can see). Then no new call starts (UPDATING), a write under way
+# always finishes and a read gets READ_WAIT_S, and the process ends: the mutex and the file go with it. The AI app
+# starts the new program with its next session (Claude Code: also /mcp → Reconnect; Claude Desktop: reopened).
+UPDATING = ("Surasura is updating; ask again in a minute. If Piyo doesn't answer then, reconnect it (Claude Code: "
+            "/mcp, then Reconnect) or start a new chat.")      # PROVISIONAL (Piyo-UP): the one line a learner sees
+LOOK_EVERY_S = 2.0      # how often it looks
+READ_WAIT_S = 30.0      # a read under way is let finish this long; a write (Anki, a round file) always finishes
+ANSWER_GRACE_S = 1.0    # the last answer's bytes reach the AI app before the process ends
+SETUP_SUFFIX = ".Setup"     # Inno's SetupMutex, `<data name>.Setup` while Setup or its uninstaller runs
+
+
+class Calls:
+    """The tool calls under way, and whether the server is stepping aside (`leaving`): `with calls.call(writes):`
+    around each — refused with UPDATING once leaving —, `leave()` waits for the ones under way."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._reads = 0
+        self._writes = 0
+        self.leaving = False
+
+    @contextmanager
+    def call(self, writes):
+        with self._cond:
+            if self.leaving:
+                from mcp.server.mcpserver.exceptions import ToolError
+                raise ToolError(UPDATING)
+            if writes:
+                self._writes += 1
+            else:
+                self._reads += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                if writes:
+                    self._writes -= 1
+                else:
+                    self._reads -= 1
+                self._cond.notify_all()
+
+    def leave(self, read_wait=READ_WAIT_S):
+        """No call starts from now; every write under way finishes (never cut part way: AnkiConnect's own timeouts
+        bound it), reads get `read_wait` s. -> True when none is left under way."""
+        with self._cond:
+            self.leaving = True
+            self._cond.wait_for(lambda: self._writes == 0)
+            return self._cond.wait_for(lambda: self._reads == 0 and self._writes == 0, read_wait)
+
+
+CALLS = Calls()
+
+
+def _counted(tool, calls):
+    """`server.tool` whose tools each run inside `calls.call` — a write by its annotations (`read_only_hint` False) —,
+    the answer of a call under way when the server steps aside ending with UPDATING (one line). The signatures are
+    kept (`functools.wraps`): the SDK reads the schema through them."""
+    import functools
+
+    def register(*args, **kwargs):
+        decorate = tool(*args, **kwargs)
+        writes = getattr(kwargs.get("annotations"), "read_only_hint", True) is False
+
+        def wrap(fn):
+            @functools.wraps(fn)
+            def counted(*a, **kw):
+                with calls.call(writes):
+                    out = fn(*a, **kw)
+                if calls.leaving:
+                    if isinstance(out, dict):
+                        out = dict(out, note=UPDATING)
+                    elif isinstance(out, str):
+                        out = f"{out}\n{UPDATING}"
+                return out
+            return decorate(counted)
+        return wrap
+    return register
+
+
+def setup_mutex_name():
+    from app.path_utils import data_name
+    return data_name() + SETUP_SUFFIX
+
+
+def setup_running():
+    """Is Surasura's Setup (or its uninstaller) running — its SetupMutex there? Windows only; a look that fails: no.
+    Opened for SYNCHRONIZE only, and closed at once: nothing of Setup's is held."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenMutexW.restype = wintypes.HANDLE
+        kernel32.OpenMutexW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenMutexW(0x00100000, False, setup_mutex_name())     # SYNCHRONIZE
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    except Exception:
+        return False
+
+
+def why_step_aside():
+    """Why this server should end now so an update can go in, or None. Never raises: a look that fails is no reason."""
+    try:
+        from app import library_store
+        if library_store.update_staged(looks=library_store.PROBE_LOOKS):
+            return "an update is staged"
+    except Exception:
+        contract.log.exception("mcp: the update look failed")
+    try:
+        from app import build_info
+        if build_info.stamp_skew() is not None:
+            return "another build is in its program folder"
+    except Exception:
+        contract.log.exception("mcp: the build look failed")
+    if setup_running():
+        return "Surasura's Setup is running"
+    return None
+
+
+def step_aside(why=why_step_aside, calls=CALLS, every=LOOK_EVERY_S, sleep=time.sleep, end=None):
+    """(Its own daemon thread, while serving.) Looks every `every` s; once `why()` names a reason: no new call, the
+    ones under way finished (`Calls.leave`), the reason logged, the running mark let go, a moment for the last answer
+    to reach the AI app, then the process ends (`end`, default `os._exit(0)`: the stdio loop is blocked reading the
+    AI app's pipe, and nothing of the server's is left to save). The mutex goes with the process. -> the reason (a
+    test's `end` returns)."""
+    while True:
+        sleep(every)
+        reason = why()
+        if reason:
+            break
+    drained = calls.leave()
+    contract.log.info("mcp: %s, so it ends now%s (the AI app starts it again with its next session)", reason,
+                      "" if drained else f" (a read was still under way after {READ_WAIT_S:.0f} s)")
+    try:
+        from app import locks
+        locks.release_running()
+    except Exception:
+        contract.log.exception("mcp: the running mark wasn't let go")
+    sleep(ANSWER_GRACE_S)
+    contract.close_log()
+    (end or (lambda: os._exit(0)))()
+    return reason
+
+
 def main(argv):
-    """Serve until the AI app closes stdin. -> exit code."""
+    """Serve until the AI app closes stdin, or until an update needs this program gone (`step_aside`). -> exit code."""
     contract.open_log()
     try:
         try:
@@ -863,6 +1023,7 @@ def main(argv):
             sys.stderr.write("surasura-cli mcp: this build has no MCP support (the mcp package is missing).\n")
             return 1
         contract.log.info("mcp: serving on stdio (%s)", " ".join(argv))
+        threading.Thread(target=step_aside, name="mcp-step-aside", daemon=True).start()
         server.run()
         return 0
     finally:

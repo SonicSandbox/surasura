@@ -2162,8 +2162,8 @@ PATH_SHOW_ME_TIPS = {    # a step whose own press is elsewhere than where Show m
 PATH_THEN = {            # said in the bar once Show me lands, where the step's own press is elsewhere (S2 r2 #1)
     "audiobook": "Open the book's ⋯ → Its audiobook… to line it up",
 }
-PATH_LATER = "NOT FOR NOW"                           # chapter 2's steps that can't apply yet
-PATH_LATER_NAME = "{title}: not for now. {when}"
+PATH_LATER = "NOT YET"                               # chapter 2's steps that can't apply yet
+PATH_LATER_NAME = "{title}: not yet. {when}"
 PATH_WHEN = {            # id -> when a later step applies (its ? while it can't yet)
     "junban": "Once Anki is connected and has your cards",
     "backfill": "Once you have cards in Anki",

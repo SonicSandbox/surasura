@@ -3,6 +3,7 @@ import pathlib
 import re
 import sys
 import json
+import urllib.parse
 import pandas as pd
 import webbrowser
 
@@ -630,16 +631,42 @@ def _line_media(language, rel_paths, memo_path=None):
             memo = loaded if isinstance(loaded, dict) else {}
         except Exception:
             memo = {}
-    before = json.dumps(memo, sort_keys=True)
+    before = dict(memo)                         # (`play.files` replaces an entry, never changes one in place)
     try:
         from app.services import play
         found = play.files(language, sorted(rel_paths), memo=memo)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
         return {}
+    from app import audiobooks
+    folders, out = {}, {}
+    for rel, path in found.items():
+        if not path:
+            continue
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in PLAYABLE:
+            out[rel] = ["", ext]
+            continue
+        if ext == ".mp3":
+            # A browser seeks in a VBR mp3 only roughly (±1–2 s): never the wrong words. The verdict is kept with the
+            # answer (a 4th field), read again only when the answer is looked for again.
+            kept = memo.get(rel)
+            if isinstance(kept, list) and len(kept) == 4 and kept[0] == path:
+                variable = kept[3]
+            else:
+                variable = bool(audiobooks.mp3_variable(path))
+                if isinstance(kept, list) and len(kept) == 3 and kept[0] == path:
+                    memo[rel] = kept + [variable]
+            if variable:
+                out[rel] = ["", "vbr"]
+                continue
+        folder, name = os.path.split(path)
+        if folder not in folders:                # each folder's part encoded once (20k files, 1.7k folders)
+            folders[folder] = pathlib.Path(folder).as_uri().rstrip("/")
+        out[rel] = [folders[folder] + "/" + urllib.parse.quote(name), ""]
     if memo_path:
         memo = {rel: memo[rel] for rel in rel_paths if rel in memo}
-        if json.dumps(memo, sort_keys=True) != before:
+        if memo != before:
             try:
                 tmp = memo_path + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
@@ -647,17 +674,6 @@ def _line_media(language, rel_paths, memo_path=None):
                 os.replace(tmp, memo_path)
             except Exception as e:
                 print(f"Warning: could not save the lines' audio memo: {e}")
-    from app import audiobooks
-    out = {}
-    for rel, path in found.items():
-        if path:
-            ext = os.path.splitext(path)[1].lower()
-            if ext not in PLAYABLE:
-                out[rel] = ["", ext]
-            elif ext == ".mp3" and audiobooks.mp3_variable(path):
-                out[rel] = ["", "vbr"]          # a browser seeks in it only roughly (±1–2 s): never the wrong words
-            else:
-                out[rel] = [pathlib.Path(path).as_uri(), ""]
     return out
 
 

@@ -252,6 +252,30 @@ def test_the_render_keeps_its_memo_for_its_own_sources_only(tmp_path, monkeypatc
     assert seen[-1] == {}
 
 
+def test_an_mp3s_verdict_is_kept_with_its_answer_and_read_again_only_with_it(tmp_path, monkeypatch):
+    """Each mp3's first frame is read once: a redraw that keeps the answer keeps its verdict; an answer looked for
+    again (a new entry of three) has its verdict read again."""
+    from app import audiobooks
+    from tests.test_audiobooks import _mp3
+    vbr = _mp3(str(tmp_path / "杜子春 01.mp3"), seconds=192.4)
+    path = str(tmp_path / "line_media.json")
+
+    def files(language, rels, memo=None):
+        for r in rels:
+            if r not in memo:
+                memo[r] = [vbr, "key", 1]
+        return {r: vbr for r in rels}
+    monkeypatch.setattr(play, "files", files)
+    read = []
+    real = audiobooks.mp3_variable
+    monkeypatch.setattr(audiobooks, "mp3_variable", lambda p: read.append(p) or real(p))
+    assert gen._line_media("ja", {"Library/a.srt"}, path) == {"Library/a.srt": ["", "vbr"]}
+    assert gen._line_media("ja", {"Library/a.srt"}, path) == {"Library/a.srt": ["", "vbr"]}
+    assert read == [vbr]                                                   # once, then kept
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["Library/a.srt"] == [vbr, "key", 1, True]
+
+
 def test_a_freshness_check_reads_each_folder_once_and_gives_what_stat_gives(tmp_path, monkeypatch):
     """The anchor memo's check (`_file_sig`) from one listing a folder: the same times and size `os.stat` gives, a
     file the listing doesn't name stat'ed itself, a gone one None — never a stat a file."""

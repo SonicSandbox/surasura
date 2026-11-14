@@ -250,9 +250,10 @@ def files(language, rel_paths, memo=None):
     window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays, several don't). A book or a text
     plays nothing (its ▶ opens the book). The render's worker; never writes; one source's fault is its None alone.
 
-    `memo` (the render's, kept between renders: {rel: [answer, key, its folder's mtime]}): an answer is looked for again
-    only when what it rests on moved (`_memo_key`: its title's type, its record, the folders it is looked for in, Connect's
-    index — and the folder of the file found) — a redraw after a move asks nothing of the disk but a stat a folder."""
+    `memo` (the render's, kept between renders: {rel: [answer, key, its folder's mtime, ...the caller's own]}): an
+    answer is looked for again only when what it rests on moved (`_memo_key`: its title's type, its record, the folders
+    it is looked for in, Connect's index — and the folder of the file found), and then written as a new entry of three
+    — a redraw after a move asks nothing of the disk but a stat a folder."""
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
     kinds = _kinds(language, rel_paths)
@@ -273,7 +274,7 @@ def files(language, rel_paths, memo=None):
             if memo is not None and record is not None:
                 key = _memo_key(language, rel, media, record, moved.get(item_id), stamps)
                 kept = memo.get(rel)
-                if isinstance(kept, list) and len(kept) == 3 and kept[1] == key and \
+                if isinstance(kept, list) and len(kept) >= 3 and kept[1] == key and \
                         (kept[0] is None or _stamp(os.path.dirname(kept[0]), stamps) == kept[2]):
                     out[rel] = kept[0]
                     continue

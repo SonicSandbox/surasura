@@ -195,7 +195,8 @@ if enable_irodori:
     for name in ('host.py', 'requirements-server.txt', 'requirements-torch-cpu.txt'):
         datas.append((os.path.join(irodori_dir, name), 'modules/irodori'))
     datas.append((os.path.join(irodori_dir, 'voices'), 'modules/irodori/voices'))
-    hiddenimports += ['modules.irodori.' + m for m in ('runtime', 'server', 'voice', 'make', 'queue', 'writer')]
+    hiddenimports += ['modules.irodori.' + m for m in ('runtime', 'server', 'voice', 'make', 'queue', 'writer',
+                                                       'listen')]
 
 # The transcripts preview's scoring child (`youtube_preview`, app_entry.py): the 3.0 window runs it as its own process.
 if enable_youtube:

@@ -186,9 +186,11 @@ def test_a_kick_before_a_look_is_answered_by_it_with_no_extra_look(tmp_path, led
     steps = _steps(tmp_path, cap=300, waiting=306)
     calls = []
     steps.kicked = lambda: (calls.append(1), len(calls) == 1)[1]     # one kick, seen at the look's start
-    started = time.monotonic()
+    # perf_counter, never monotonic: on Windows monotonic ticks every 15.6 ms and reads the whole 0.3 s pause as
+    # 0.296-0.297 s (tests/FLAKES.md)
+    started = time.perf_counter()
     runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=threading.Event(), looks=2)
-    assert time.monotonic() - started >= 0.3, "the pause ran whole: the kick was the first look's"
+    assert time.perf_counter() - started >= 0.3, "the pause ran whole: the kick was the first look's"
 
 
 def test_a_wake_look_that_fails_is_no_wake():

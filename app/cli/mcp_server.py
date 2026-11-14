@@ -366,6 +366,8 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
             raise ToolError(OFF)
         saved = practice_rounds.load(lang, again)
         choices = saved.get("round") or {}
+        if choices.get("kind") == "listening":          # a listening round: its files again (Piyo-LR, below)
+            return _answered(listening_again, state, lang, again)
         role, kind, source = choices.get("role"), choices.get("kind"), choices.get("source")
         words = len(practice_rounds.words(saved)) or choices.get("words") or 5
     role, kind, source = (str(role or "friend").lower(), str(kind or "chat").lower(), str(source or "soon").lower())
@@ -764,6 +766,87 @@ def undo_translations_tool(batch):
     return out
 
 
+# --- listening rounds (Piyo-LR, 3.0.11): the AI writes the lines; Surasura checks, voices, times and saves them -- #
+# (app/listening.py). Short answers only: never audio, subtitles or long text back through the AI.
+def listening_round_tool(state, lines, title="", language=None):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from app import listening, practice_rounds
+    from app.cli import verbs
+    lang = state.language(language)
+    why = listening.why_not(lang, verbs.settings())
+    if why:
+        return {"queued": False, "why": why}
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    lines = [listening.one_line(x) if x is not None else "" for x in lines or ()]
+    if not lines or len(lines) > listening.LINES_MOST:
+        raise ToolError(f"lines is a list of 1-{listening.LINES_MOST} short lines in the learner's language.")
+    blank = [n for n, line in enumerate(lines, 1) if not line]
+    if blank:                               # refused, never dropped: the fix's line numbers stay the AI's own
+        raise ToolError(f"Line {blank[0]} is empty: send only lines with text. Nothing was made.")
+    verbs.require_set_up(lang)
+    fixes, _counts = listening.check_lines(state.checker(lang), lines, usable=listening.voice(lang).usable)
+    if fixes:
+        return {"queued": False, "fix": fixes,
+                "next": "Rewrite only those lines (each swapped word for one the learner knows), then send all the "
+                        "lines again. Nothing was made."}
+    round_id = practice_rounds.new_id()
+    keep = state.keep_rounds()
+    try:                                    # written "new" (no maker takes it), its record, then queued
+        listening.queue(lang, lines, title, round_id=round_id, state="new")
+        if keep:
+            listening.keep_record(lang, round_id, lines, title)
+        listening.ready(lang, round_id)
+    except (OSError, ValueError, contract.CliError) as e:   # the folder or its record refused: said, never left
+        try:                                                # "new" for good: the folder says it wasn't made
+            data = listening.read(lang, round_id)
+            if data is not None:
+                listening._finish(lang, round_id, data, "failed", "It wasn't saved.")
+        except OSError:
+            pass
+        why = e.message if isinstance(e, contract.CliError) else listening.said(e)
+        raise ToolError(f"Surasura couldn't save the round just now ({why}). Try again in a moment.")
+    listening.start_maker(lang)
+    out = listening.status(lang, round_id, start=False)
+    out = {"queued": True, "round_id": round_id, "lines": len(lines), "next": out["next"]}
+    if not keep:
+        out["note"] = "Keeping practice rounds is off, so it won't be listed to do again; its files stay."
+    return out
+
+
+def listening_status_tool(state, round_id, play=False, cancel=False, open_folder=False, language=None):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from app import listening
+    lang = state.language(language)
+    if cancel:
+        return {"round_id": round_id, "state": listening.cancel(lang, round_id)}
+    out = listening.status(lang, round_id)
+    if play or open_folder:
+        if play and not listening.made(lang, round_id):
+            raise ToolError("It isn't made yet (or its files were moved): ask surasura_listening_status(round_id).")
+        path = listening.to_open(lang, round_id, "play" if play else "folder")
+        try:
+            listening.open_file(path)
+        except OSError as e:
+            raise ToolError(f"Surasura couldn't open it ({e.strerror or e}). It is in {listening.where(lang, round_id)}.")
+        return {"round_id": round_id, "state": out["state"], "opened": os.path.basename(path)}
+    return out
+
+
+def listening_again(state, lang, round_id):
+    """surasura_practice_start(again=) on a listening round: made -> its files, nothing voiced; else the rest made."""
+    from app import listening
+    from app.cli import verbs
+    if not listening.made(lang, round_id):
+        why = listening.why_not(lang, verbs.settings())       # asked first: nothing re-queued with no voice
+        if why:
+            return {"round_id": round_id, "queued": False, "why": why}
+    if listening.again(lang, round_id):
+        listening.start_maker(lang)
+        return listening.status(lang, round_id, start=False)
+    return listening.status(lang, round_id)
+
+
 # What the AI app reads at connect (Claude Code hands it to the model): what Piyo is and how a round starts, so "let's
 # practise" or "write me a story with my words" works without the learner knowing a tool's name (Sonic's first try,
 # 2026-10-30: "How do i start piyo conversation?"). Short and true to the tools; Claude Code cuts it past 4,096 chars.
@@ -787,7 +870,9 @@ INSTRUCTIONS = (
     "the learner's own Surasura misbehaves, surasura_diagnose shows what it sees; to report a problem, "
     "surasura_send_report asks the learner in Surasura's window, and nothing is sent until they press Send there. "
     "When the learner asks you to translate their cards, surasura_cards_to_translate gives the cards with no "
-    "translation and the lines around each; translate them yourself and send them with surasura_write_translations.")
+    "translation and the lines around each; translate them yourself and send them with surasura_write_translations. "
+    "For listening practice, write short lines with the learner's words and send them with surasura_listening_round: "
+    "Surasura voices them on their PC.")
 
 # Claude Code lists the `practice` prompt as `/surasura:practice (MCP)`; its arguments are single words in the prompt's
 # order (words, role, kind, source), and it runs only in an interactive session, never in `claude -p` (spike.md).
@@ -949,6 +1034,20 @@ def build(state=None, warm=True, serving=False, calls=None):
         "emptied only where it is still what was written; one the learner changed since is kept."))
     def surasura_undo_translations(batch: str) -> dict:
         return _answered(undo_translations_tool, batch)
+
+    @server.tool(annotations=keeps)
+    def surasura_listening_round(lines: List[str], title: str = "", language: str = "") -> dict:
+        """A listening round: lines (1-20 short lines in the learner's language, using their words). Surasura checks
+        each against the words they know, then voices them on this PC in the background. Returns its round_id, or
+        for each line that fails which words to swap: fix only those and send all the lines again."""
+        return _answered(listening_round_tool, state, lines, title, language or None)
+
+    @server.tool(annotations=keeps)
+    def surasura_listening_status(round_id: str, play: bool = False, cancel: bool = False, open_folder: bool = False,
+                                  language: str = "") -> dict:
+        """A listening round's progress; once made, its files (an mp3 with its .srt, and a copy with a pause after
+        each line). play: open it in the learner's player. open_folder: show its files. cancel: stop making it."""
+        return _answered(listening_status_tool, state, round_id, play, cancel, open_folder, language or None)
 
     @server.prompt(title=f"Practise with {NAME}", description=(
         "Start a practice round, four words in this order: how many words (1-20), who's talking (friend, coworker, "

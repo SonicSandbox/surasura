@@ -297,7 +297,7 @@ def files(language, rel_paths, memo=None, explain=False):
         kept = memo.get(rel) if memo is not None else None
         if isinstance(kept, list) and len(kept) >= 3 and kept[1] == key and \
                 (kept[0] is None or (isinstance(kept[0], str) and
-                                     _digest(os.path.dirname(kept[0]), listings, digests) == kept[2])):
+                                     _digest(_folder_of(kept[0]), listings, digests) == kept[2])):
             out[rel] = kept[0]
         else:
             misses[rel] = key
@@ -318,7 +318,7 @@ def files(language, rel_paths, memo=None, explain=False):
             else:
                 out[rel] = _find(language, rel, media, record, listings, find, moved.get(item_id))[0]
             if memo is not None and record is not None:    # (a record that couldn't be read is never kept)
-                memo[rel] = [out[rel], key, _digest(os.path.dirname(out[rel]), listings, digests) if out[rel] else None]
+                memo[rel] = [out[rel], key, _digest(_folder_of(out[rel]), listings, digests) if out[rel] else None]
         except Exception as e:                      # one source's fault never stops the others
             print(f"Play: a line's file couldn't be looked for ({e!r})")
     return out

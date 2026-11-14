@@ -663,7 +663,8 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
             if variable:
                 out[rel] = ["", "vbr"]
                 continue
-        folder, name = os.path.split(path)
+        cut = max(path.rfind("\\"), path.rfind("/"))
+        folder, name = (path[:cut], path[cut + 1:]) if cut > 2 else os.path.split(path)
         try:
             if folder not in folders:            # each folder's part encoded once (20k files, 1.7k folders)
                 folders[folder] = pathlib.Path(folder).as_uri().rstrip("/")

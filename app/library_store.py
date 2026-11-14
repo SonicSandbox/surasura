@@ -12928,6 +12928,10 @@ Store._episodes_of = _store_episodes_of
 # audiobooks again (the next book, or none). No table, no schema: taking the key out of the records undoes it all.
 AUDIOBOOK_ANSWERS = "audiobook_answers"
 AUDIOBOOKS_STALE = "audiobooks_stale"
+# Kura-AB6 (based on Mattias's #432): the `audiobooks.FOUND_RULE` the look last weighed every audiobook's transcript by.
+# Another (a library from before, a new rule) and the next look — a quick one too — weighs them all once, so a verdict
+# the rule itself changes is made again (`sources._Look._transcripts`); then it says this rule (`transcripts_weighed`)
+TRANSCRIPT_RULE = "transcript_rule"
 
 
 def _store_audiobook_rows(self, item_id=None):
@@ -13597,6 +13601,12 @@ def _store_audiobooks_weighed(self):
     self.bookkeeping({AUDIOBOOKS_STALE: "0"})
 
 
+def _store_transcripts_weighed(self):
+    """The look weighed every audiobook's transcript by this rule: TRANSCRIPT_RULE says it (bookkeeping)."""
+    from app import audiobooks
+    self.bookkeeping({TRANSCRIPT_RULE: audiobooks.FOUND_RULE})
+
+
 # --- an audiobook's transcript (Hon a6: H-12 ✅ Sonic, H-13 PROVISIONAL) ------------------------------------------- #
 # A subtitle file beside an audiobook is its transcript: its records' `"transcript"` {origin, rel (Surasura's copy in
 # Library), sha256, size, mtime_ns, heard (the item's file name while it waits: its first audio file's), found (the
@@ -13804,6 +13814,7 @@ Store._audiobook_place = _store_audiobook_place
 Store.pair_audiobook = _store_pair_audiobook
 Store.answer_audiobook = _store_answer_audiobook
 Store.audiobooks_weighed = _store_audiobooks_weighed
+Store.transcripts_weighed = _store_transcripts_weighed
 Store.audiobook_finds = _store_audiobook_finds
 Store.audiobook_hovers = _store_audiobook_hovers
 Store.library_books = _store_library_books

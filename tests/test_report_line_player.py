@@ -171,6 +171,63 @@ def test_a_folder_of_many_episodes_is_listed_once(monkeypatch):
     assert len([p for p in listed if os.path.normcase(os.path.abspath(p)) == os.path.normcase(copies)]) == 1
 
 
+def test_a_library_of_mkv_episodes_read_in_place_is_never_looked_up(monkeypatch):
+    """The gate (the render no slower where nothing can play): a folder read in place whose episodes are .mkv — the
+    browser plays none — answers None for every source without `_find`, `_pairings` or a name parsed; asked to explain
+    (the badge shown), each names its .mkv from the listings already made."""
+    folder = _elsewhere("Downloads", SHOW)
+    subs = {n: _subtitle(os.path.join(folder, f"{SHOW} - {n:02d}.ja.srt"), n) for n in (1, 2, 3)}
+    mkvs = {n: _video(os.path.join(folder, f"{SHOW} - {n:02d}.mkv")) for n in (1, 2)}
+    items = _read_in_place(folder)
+    rels = {n: items[os.path.abspath(subs[n])][1] for n in subs}
+    monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("nothing playable: never looked for"))
+    monkeypatch.setattr(play, "_pairings", lambda *a, **k: pytest.fail("nothing playable: no record picked"))
+    assert play.files("ja", list(rels.values())) == dict.fromkeys(rels.values())
+    said = play.files("ja", list(rels.values()), explain=True)
+    assert said == {rels[1]: os.path.join(folder, f"{SHOW} - 01.mkv"), rels[2]: os.path.join(folder, f"{SHOW} - 02.mkv"),
+                    rels[3]: None}
+    assert {k: v for k, v in gen._line_media("ja", set(rels.values()), explain=True).items()} == \
+        {rels[1]: ["", ".mkv"], rels[2]: ["", ".mkv"]}
+
+
+def test_a_copy_with_no_record_is_looked_up_when_connects_index_holds_a_playable_file(monkeypatch):
+    """A 2.x library's copy (no pairing row) may play a video only Connect's index knows: the gate lets it through
+    when the index holds any playable file — and keeps it out when the index holds none."""
+    rel, _copies = _in_library("ja", SHOW, f"{SHOW} - 09.ja.srt")
+    far = _stand_in(_elsewhere("Videos", SHOW, f"{SHOW} - 09.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    from app.connect import videos
+    videos.Index("ja").refresh([], [_elsewhere("Videos")])                  # Connect's own refresh, saved
+    assert play.files("ja", [rel]) == {rel: far}
+    os.remove(far)
+    _video(_elsewhere("Videos", SHOW, f"{SHOW} - 09.mkv"))
+    videos.Index("ja").refresh([], [_elsewhere("Videos")])
+    monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("the index holds nothing playable"))
+    assert play.files("ja", [rel]) == {rel: None}
+
+
+def test_many_folders_are_listed_side_by_side_as_one_at_a_time_would(tmp_path):
+    folders = []
+    for n in range(40):
+        f = tmp_path / f"作品{n:02d}"
+        f.mkdir()
+        (f / f"第{n}話.srt").write_text(LINE_JA, encoding="utf-8")
+        if n % 3 == 0:
+            (f / f"第{n}話.MP4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        folders.append(str(f))
+    folders.append(str(tmp_path / "ない"))                                  # can't be listed: False, as `beside`'s
+    together, one_by_one = {}, {}
+    play._list_all(set(folders), together)
+    for f in folders:
+        play._listing(f, one_by_one)
+    assert together == one_by_one and together[str(tmp_path / "ない")] is False
+
+
+@pytest.mark.parametrize("path", ["C:\\番組\\第1話.ja.srt", "C:\\第1話.srt", "C:/x/y.mp4", "\\\\nas\\share\\作品\\y.mkv",
+                                  "\\\\nas\\share\\y.mkv", "Library/x.srt", "x.srt", "D:\\a\\b\\c.m4b"])
+def test_a_records_folder_is_what_dirname_gives(path):
+    assert play._folder_of(path) == (os.path.dirname(path) if os.path.isabs(path) else "")
+
+
 def _touch_later(path, magic=b"\x00\x00\x00\x18ftypmp42"):
     """A file added to a folder a moment later: its folder's mtime moves (NTFS keeps 100 ns; waited out to be sure)."""
     folder = os.path.dirname(path)

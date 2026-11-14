@@ -379,16 +379,26 @@ def _places(data_dir, rel, rows, copies):
             if isinstance(value, str):
                 if "#" in value:
                     value = re.sub(r"#\d+$", "", value)
-                if os.path.isabs(value):
-                    places.append(os.path.dirname(value))
+                where = _folder_of(value)
+                if where:
+                    places.append(where)
         if isinstance(files, str):
             try:
                 files = json.loads(files)
             except ValueError:
                 files = None
             if isinstance(files, list):
-                places += [os.path.dirname(f) for f in files if isinstance(f, str) and os.path.isabs(f)]
+                places += [w for w in map(_folder_of, (f for f in files if isinstance(f, str))) if w]
     return list(dict.fromkeys(places))
+
+
+def _folder_of(path):
+    """An absolute path's folder ("" for a relative one) — `os.path.dirname` by string work for the paths the store
+    keeps (`C:\\…\\name`, `\\\\server\\share\\…\\name`): a 20k-source render calls it twice a source."""
+    i = max(path.rfind("\\"), path.rfind("/"))
+    if i > 2 and (path[1:3] == ":\\" or path[1:3] == ":/") and path[0].isalpha():
+        return path[:i]
+    return os.path.dirname(path) if os.path.isabs(path) else ""
 
 
 def _list_all(folders, listings):

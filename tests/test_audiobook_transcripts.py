@@ -28,7 +28,7 @@ from tests.test_audiobook_items import (_audio_folder, _audio_items, _book_items
                                         _fresh_module_state, _settle)  # noqa: F401 (the fixture)
 from tests.test_audiobooks import _m4b
 from tests.test_library_store_support import RESOURCES
-from tests.test_sources_scan import _drive, _empty, _look
+from tests.test_sources_scan import _SHOWS, _drive, _empty, _look, _text, _write
 
 STAR, ISEKAI, SAIYU = "星屑の剣士になりたくて！", "異界転生", "西游记"
 
@@ -707,6 +707,199 @@ def test_a_transcript_judged_wanting_by_the_first_rule_is_its_books_at_the_next_
         rec = _record(store, item)
         assert audiobooks.transcript_use(rec) == audiobooks.TIMING
         assert rec["transcript"]["found"] == {"book": found["book"], "share": 1.0, "rule": audiobooks.FOUND_RULE}
+
+
+# --- a library's first look under a new rule (Kura-AB6, based on Mattias's #432) ---------------------------------- #
+def _audio_item(store, title):
+    _work, rows = _book_items(store, title)
+    [item] = [r[0] for r in rows if r[3] == "audio"]
+    return item
+
+
+def _as_3_0_8_left(store, item):
+    """The item's transcript as 3.0.8 judged it (rule 1, no `rule`: found wanting), in a library no look has weighed
+    by this rule yet (no meta `transcript_rule`): his library as the 3.0.9 update found it."""
+    with store._writing():
+        for key, text in store.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                            (item,)).fetchall():
+            rec = json.loads(text)
+            found = rec["audiobook"]["transcript"]["found"]
+            rec["audiobook"]["transcript"]["found"] = {"book": found["book"], "share": 0.0023}
+            store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (json.dumps(rec), key))
+        store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.TRANSCRIPT_RULE,))
+    assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+
+
+def _traced(store, language, root, **kw):
+    """A look with every statement it ran -> (its result, [sql])."""
+    sql = []
+    store.conn.set_trace_callback(sql.append)
+    try:
+        return _look(store, language, root, **kw), sql
+    finally:
+        store.conn.set_trace_callback(None)
+
+
+def _transcript_asks(store):
+    return [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT]
+
+
+@pytest.mark.parametrize("own", (True, False), ids=("its-books", "anothers"))
+@pytest.mark.parametrize("language,title", (("ja", STAR), ("zh", SAIYU)))
+def test_a_library_3_0_8_left_is_judged_again_by_its_first_quick_look_though_no_folder_changed(language, title, own,
+                                                                                                monkeypatch):
+    """Mattias's vol 3 after the 3.0.9 update (#432): a transcript 3.0.8 found wanting read UNCHECKED, but only a look
+    that listed its folder checked it again — and Surasura's looks are quick ones, which weigh no audiobook whose
+    folder is unchanged, so it stayed unused (Connect mined it without its timing). Now a library's first look under a
+    new rule (meta `transcript_rule` isn't FOUND_RULE), a quick one too, weighs every audiobook once: its book's
+    transcript is its timing again, no card; another book's is said once, judged by this rule. The meta then says this
+    rule: the next quick look weighs none and writes nothing (it reads the origins the check rewrote once, F13b, as
+    after any write), and the one after reads no record at all."""
+    store, _data_dir, src, _srt_path = _paired(language, title, _lines(language)[:12] if own else _other_lines(language))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)    # a new library's: said at once
+        item = _audio_item(store, title)
+        judged = _record(store, item)["transcript"]["found"]
+        assert judged["rule"] == audiobooks.FOUND_RULE
+        _as_3_0_8_left(store, item)
+        assert _transcript_asks(store) == []
+        _look(store, language, root)                     # a quick look: no folder of it changed
+        rec = _record(store, item)
+        use = audiobooks.TIMING if own else audiobooks.OTHER
+        assert audiobooks.transcript_use(rec) == use and rec["transcript"]["found"] == judged
+        assert store.audiobook_hovers()[item]["transcript"] == use
+        assert _transcript_asks(store) == ([] if own else [item])
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        changes, versions = store.conn.total_changes, store.versions()
+        weighed = []
+        monkeypatch.setattr(store, "audiobooks", lambda *a, **kw: weighed.append(kw) or [])
+        _look(store, language, root)                     # the next quick look: weighs none
+        assert weighed == [] and store.conn.total_changes == changes and store.versions() == versions
+        _result, sql = _traced(store, language, root)
+        assert not [s for s in sql if "pairings" in s], sql
+        assert store.conn.total_changes == changes and store.versions() == versions
+
+
+def test_a_look_stopped_while_it_weighs_them_never_says_the_rule_and_the_next_look_weighs_them(monkeypatch):
+    """A look stopped (the learner's Stop, the window closing) once it began weighing the audiobooks again never says
+    the library was weighed by this rule: the next look, a quick one, weighs them again — never a check skipped for
+    good."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        item = _audio_item(store, STAR)
+        _as_3_0_8_left(store, item)
+        weighing, real = [], store.audiobooks
+
+        def audiobooks_read(*a, **kw):
+            weighing.append(kw.get("every"))
+            return real(*a, **kw)
+        monkeypatch.setattr(store, "audiobooks", audiobooks_read)
+        result = _look(store, "ja", root, stop=lambda: True in weighing)
+        assert result["stopped"] and weighing == [True]
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+        assert ls.TRANSCRIPT_RULE not in store.meta()
+        _look(store, "ja", root)
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.TIMING
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+
+
+def test_a_store_busy_while_it_weighs_them_never_says_the_rule_and_the_next_look_weighs_them(monkeypatch):
+    """The store busy mid re-check (another window's write: StoreError) is a look that waits, never one that says the
+    library was weighed by this rule: the next quick look checks it again."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        item = _audio_item(store, STAR)
+        _as_3_0_8_left(store, item)
+        real = store.set_transcript
+
+        def busy(*a, **kw):
+            monkeypatch.setattr(store, "set_transcript", real)    # busy once
+            raise ls.StoreError("The library is busy.")
+        monkeypatch.setattr(store, "set_transcript", busy)
+        _look(store, "ja", root)
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+        assert ls.TRANSCRIPT_RULE not in store.meta()
+        _look(store, "ja", root)
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.TIMING
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+
+
+def test_another_sources_look_weighs_an_away_sources_audiobooks_from_the_librarys_copies():
+    """The rule is the library's, not a source's: a library of two sources, the audiobook's own away (a drive
+    unplugged) — the other's quick look checks it again from Surasura's copies of the transcript and the book (the
+    away folder never read) and says the rule once for both."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    other = _drive("driveB")
+    _write(os.path.join(other, _SHOWS["ja"][0], "ep01.srt"), _text("ja", 1))
+    _settle(other)
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        second = store.add_source(other)
+        _look(store, "ja", second, first=True)
+        item = _audio_item(store, STAR)
+        _as_3_0_8_left(store, item)
+        os.rename(src, src + " (unplugged)")
+        try:
+            _look(store, "ja", second)
+        finally:
+            os.rename(src + " (unplugged)", src)
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.TIMING
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+
+
+@pytest.mark.parametrize("held", ("nothing", "episodes"))
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_a_library_without_audiobooks_says_the_rule_once_and_writes_nothing_else(language, held):
+    """A library with no audiobook (its source folder empty, or episodes only) as the update reached it: its first look
+    under this rule writes the meta and nothing else — no version moves, no record written — and the look after it
+    writes nothing at all."""
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    if held == "episodes":
+        show = _SHOWS[language][0]
+        for n in (1, 2):
+            _write(os.path.join(src, show, f"ep{n:02d}.srt"), _text(language, n))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        with store._writing():
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.TRANSCRIPT_RULE,))
+        versions = store.versions()
+        _result, sql = _traced(store, language, root)
+        writes = [s for s in sql if s.lstrip().split(None, 1)[0].upper() in ("INSERT", "UPDATE", "DELETE", "REPLACE")]
+        assert writes and all("INTO meta" in s for s in writes), writes
+        assert store.versions() == versions
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        changes = store.conn.total_changes
+        _look(store, language, root)
+        assert store.conn.total_changes == changes and store.versions() == versions
+
+
+def test_a_later_rule_re_arms_the_first_look_with_no_new_code(monkeypatch):
+    """A FOUND_RULE 3 one day is the same story with nothing added: every verdict by rule 2 that found a transcript
+    wanting reads UNCHECKED under it, and the library's first look under rule 3 — a quick one — judges each again by
+    rule 3, once (a transcript found its book's stays its book's: the longest run is never shorter)."""
+    store, _data_dir, src, _srt_path = _paired("zh", SAIYU, _other_lines("zh"))
+    with store:
+        root = store.add_source(src)
+        _look(store, "zh", root, first=True)
+        item = _audio_item(store, SAIYU)
+        assert _record(store, item)["transcript"]["found"]["rule"] == 2
+        monkeypatch.setattr(audiobooks, "FOUND_RULE", 3)
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+        _look(store, "zh", root)
+        rec = _record(store, item)
+        assert rec["transcript"]["found"]["rule"] == 3 and audiobooks.transcript_use(rec) == audiobooks.OTHER
+        assert str(store.meta()[ls.TRANSCRIPT_RULE]) == "3" and _transcript_asks(store) == [item]
 
 
 def _story(language, name):

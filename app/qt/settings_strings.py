@@ -9,6 +9,7 @@ numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row i
 from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
 from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
+from app.anki_words import SOURCES as ANKI_SOURCES  # Piyo's sources from Anki (Piyo-AK): one table, app/anki_words.py
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
 SEARCH_PLACEHOLDER = "Search settings"
@@ -794,12 +795,13 @@ PRACTICE_COPIED = "Copied"
 PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
 # A7 (Sonic's first try, 2026-10-30: "How do i start piyo conversation?"): under the Copy buttons, both ways to start a
 # round (the slash form, its words and example: app/cli/mcp_server.SLASH_EXAMPLE and the prompt's arguments, a test keeps
-# them equal; the plain request: app/practice.STARTER)
+# them equal; the sources from Anki from their one table; the plain request: app/practice.STARTER)
 PRACTICE_THEN = ("Then, to start a round:\n"
                  "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
                  "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
                  "short story, quiz) · from what (soon: the next words on your journey, top: your list's top words, "
-                 "mix). Type / and it's listed as /surasura:practice (MCP).\n"
+                 "mix; from Anki: " + ", ".join(ANKI_SOURCES) + "). Type / and it's listed as /surasura:practice "
+                 "(MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
                  "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
 # A7 (Sonic, 2026-10-30: the row's words no longer than *Download covers*'): what leaves and how to start, behind its ?

@@ -278,6 +278,19 @@ def test_a_redraw_reuses_every_answer_and_looks_again_only_where_a_folder_change
     assert looked == []                                 # nothing playable left beside it: the gate answers
 
 
+def test_a_kept_none_goes_when_its_own_video_arrives_beside_a_playable_sibling():
+    """Episode 2 shares a folder with episode 1's .mp4, so the gate lets it through and its None is kept; its own .mp4
+    arriving changes that folder's listing — the memo's key with it — and the next render finds it."""
+    rel1, copies = _in_library("ja", SHOW, f"{SHOW} - 11.ja.srt")
+    rel2, _ = _in_library("ja", SHOW, f"{SHOW} - 12.ja.srt")
+    mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 11.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    memo = {}
+    assert play.files("ja", [rel1, rel2], memo=memo) == {rel1: mp4, rel2: None}
+    assert memo[rel2][0] is None                                           # kept: its folder holds a playable file
+    arrived = _stand_in(os.path.join(copies, f"{SHOW} - 12.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    assert play.files("ja", [rel1, rel2], memo=memo) == {rel1: mp4, rel2: arrived}
+
+
 def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(monkeypatch):
     """hato pairs the episode with a video elsewhere: its record moves, so the kept answer goes; a record that
     couldn't be read (the store busy) is answered as before but never kept — the next render reads it again."""
@@ -594,6 +607,10 @@ def test_stop_esc_another_play_a_redraw_and_a_hidden_page_all_stop_it(page):
     assert "e.key === 'Escape'" in code and "lpStop()" in code
     assert "visibilitychange" in code and "document.hidden" in code
     assert "isConnected" in code                                                    # its line left the page: stop
+    stop = _block(page, "function lpStop()", "
+        }
+")
+    assert "clearTimeout(r.timer)" in stop and "lpAudio.pause()" in stop and "lpRun = null" in stop   # no stray sound
     for fn in ("async function switchMainTab(", "async function renderFileWords(", "async function renderPriorityView("):
         head = "\n".join(_block(page, fn, "\n        }\n").replace("\r\n", "\n").split("\n")[:4])
         assert "lpStop();" in head, fn                                              # first thing, before the redraw

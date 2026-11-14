@@ -36,6 +36,7 @@ CALL_SITES = {
     "app/connect/ledger.py": 1,
     "app/diagnose.py": 1,             # Piyo's diagnose: reads the saved reports' folder (persistent_root, never made)
     "app/import_2x.py": 2,
+    "app/listening.py": 1,            # Piyo-LR: the listening-round maker's lock (listening.lock, local data)
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
     "app/instance_name.py": 1,
     "app/library_store.py": 4,
@@ -110,7 +111,7 @@ def _part_of(path, parts=None):
 
 def _writers():
     """(what writes it, its path, a folder?) — each from the code's own path function under the test root."""
-    from app import report, send_report, telemetry, updater, youtube_hold
+    from app import listening, report, send_report, telemetry, updater, youtube_hold
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
@@ -135,6 +136,7 @@ def _writers():
         ("the window's state", os.path.join(path_utils.get_local_data_path(), "window_state.json"), False),
         ("the feature guide's state", guide.state_path(), False),
         ("the one-window lock", os.path.join(path_utils.get_local_data_path(), "window-abc.lock"), False),
+        ("the listening maker's lock", listening._lock_path(), False),      # Piyo-LR: held while it runs
         ("the update's state", updater.update_state_path(), False),
         ("the update's folder", updater.update_dir(), True),
         ("the CLI's log", os.path.join(contract.log_folder() if hasattr(contract, "log_folder") else
@@ -186,7 +188,7 @@ def _writers():
 
 
 # What each writer's part must be: the parts that stay (the rest move)
-STAYS = {"the one-window lock", "the update's state", "the update's folder", "the CLI's log", "the CLI's events",
+STAYS = {"the one-window lock", "the listening maker's lock", "the update's state", "the update's folder", "the CLI's log", "the CLI's events",
          "a lock", "the telemetry id", "the telemetry URL", "the start gate's note", "the import's note", "the library move's note",
          "the installs note", "the library note", "the update marker", "the update lock", "the journal", "yt-dlp",
          "YouTube's hold"}

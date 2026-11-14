@@ -826,6 +826,7 @@ PARTS = (
     ("install", "logs", "logs", STAYS, STAYS),                   # a problem report needs them
     ("install", "locks", "locks", STAYS, STAYS),                 # the running programs' own (the running marks too)
     ("install", "window-*.lock", "window_lock", STAYS, STAYS),   # one window per sign-in (app/qt/single.py): held now
+    ("install", "listening.lock", "listening_lock", STAYS, STAYS),   # Piyo-LR: one listening-round maker on the PC
     ("install", "update_state.json", "update_state", STAYS, STAYS),
     ("install", PROFILE_JOURNAL, "journal", STAYS, STAYS),
     ("install", PROFILE_JOURNAL + ".tmp", "journal", STAYS, STAYS),

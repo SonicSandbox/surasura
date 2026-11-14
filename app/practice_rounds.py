@@ -186,10 +186,10 @@ def rounds(language, limit=10):
 
 
 def _choices(data):
-    """A round's role, kind, source and number of words as listed and read back: a value a hand edit made long or odd
-    is left out (it would otherwise flood the AI's context)."""
+    """A round's role, kind, source and number of words (a listening round's voice) as listed and read back: a value a
+    hand edit made long or odd is left out (it would otherwise flood the AI's context)."""
     return {k: v for k, v in data["round"].items()
-            if k in ("role", "kind", "source", "words") and isinstance(v, (str, int)) and len(str(v)) <= 20}
+            if k in ("role", "kind", "source", "words", "voice") and isinstance(v, (str, int)) and len(str(v)) <= 20}
 
 
 def _texts_of(data, key):

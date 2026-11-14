@@ -140,7 +140,8 @@ def test_a_book_or_a_text_never_plays_and_one_sources_fault_is_its_own(monkeypat
     rel_a, copies = _in_library("ja", SHOW, f"{SHOW} - 05.ja.srt")
     mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 05.mp4"), b"\x00\x00\x00\x18ftypmp42")
     rel_b, _ = _in_library("ja", SHOW, f"{SHOW} - 06.ja.srt")
-    monkeypatch.setattr(play, "_kinds", lambda language, rels, **_: {rel_a: (None, None), rel_b: (7, "book")})
+    monkeypatch.setattr(play, "_rows", lambda language, rels: ({rel_a: (None, None, (), ()),
+                                                                  rel_b: (7, "book", [], [])}, ""))
     assert play.files("ja", [rel_a, rel_b]) == {rel_a: mp4, rel_b: None}
     real = play._find
 
@@ -148,7 +149,7 @@ def test_a_book_or_a_text_never_plays_and_one_sources_fault_is_its_own(monkeypat
         if rel_path == rel_a:
             raise RuntimeError("a share that answers with garbage")
         return real(language, rel_path, *a, **k)
-    monkeypatch.setattr(play, "_kinds", lambda language, rels, **_: {})
+    monkeypatch.setattr(play, "_rows", lambda language, rels: ({}, ""))
     monkeypatch.setattr(play, "_find", flaky)
     rel_c, copies_c = _in_library("ja", SHOW, f"{SHOW} - 07.ja.srt")
     mp4_c = _stand_in(os.path.join(copies_c, f"{SHOW} - 07.mp4"), b"\x00\x00\x00\x18ftypmp42")
@@ -220,7 +221,8 @@ def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(mo
     beside = _stand_in(os.path.join(copies, f"{SHOW} - 08.mp4"), b"\x00\x00\x00\x18ftypmp42")
     paired = _stand_in(_elsewhere("hato", "第8話.mp4"), b"\x00\x00\x00\x18ftypmp42")
     record = {}
-    monkeypatch.setattr(play, "_kinds", lambda language, rels: {rel: (5, "anime")})
+    monkeypatch.setattr(play, "_rows", lambda language, rels: (
+        {rel: (5, "anime", [json.dumps(record)] if record else [], [dict(record)] if record else [])}, ""))
     monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: dict(record)})
     memo = {}
     assert play.files("ja", [rel], memo=memo) == {rel: beside}

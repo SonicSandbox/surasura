@@ -117,7 +117,8 @@ def test_hover_w_leaving_n_new_takes_the_hover_card_away_unless_the_pointer_is_o
     assert wait_until(card.isVisible, 3)
     card.pointer_in.emit(True)                                          # on the card: it stays
     win.words.left()
-    QTest.qWait(word_peek.GRACE_MS + 120)
+    assert win.words._grace.isActive()
+    assert wait_until(lambda: not win.words._grace.isActive(), 3)      # the grace ran out with the pointer on it
     assert card.isVisible()
     card.pointer_in.emit(False)
     assert wait_until(lambda: not card.isVisible(), 3)

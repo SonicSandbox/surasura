@@ -1598,6 +1598,7 @@
         }
 
         .lp-bar.lp-shown { transform: translate(-50%, 0); }
+        body.lp-bar-up .word-list-container { padding-bottom: 88px; }   /* the bar never hides a list's last card */
         .lp-bar button { font: inherit; cursor: pointer; }
         .lp-bar :focus-visible { outline: 2px solid var(--lp-ink); outline-offset: 1px; }
 
@@ -3323,6 +3324,7 @@
 
                 // 4. Remove Card (Visual)
                 const card = btnElement.closest('.card');
+                if (card && lpRun && card.contains(lpRun.btn)) lpStop();   // the line player: its line leaves
                 if (card) {
                     // Fade out and remove
                     card.style.transition = 'all 0.5s ease';
@@ -3897,13 +3899,12 @@
                     }, ms);
                 }, (err) => lpFailed(r, token, err));
             };
-            if (a.getAttribute('src') !== r.uri) {
+            const fresh = a.getAttribute('src') !== r.uri;
+            if (fresh || a.error || a.readyState === 0) {        // a new file, or one that failed before: (re)load it
                 a.addEventListener('loadedmetadata', go, { once: true });
-                a.setAttribute('src', r.uri);
-            } else if (a.readyState >= 1) {
-                go();
+                if (fresh) a.setAttribute('src', r.uri); else a.load();
             } else {
-                a.addEventListener('loadedmetadata', go, { once: true });
+                go();
             }
         }
 
@@ -3938,6 +3939,7 @@
                 lpBar.classList.remove('lp-shown');
                 lpHelp(false);
             }
+            document.body.classList.remove('lp-bar-up');
         }
 
         function lpPaint(btn, state, ms) {
@@ -3984,6 +3986,7 @@
             }
             lpControls();
             lpBar.classList.add('lp-shown');
+            document.body.classList.add('lp-bar-up');
         }
 
         function lpBarClick(e) {
@@ -3991,6 +3994,7 @@
             if (!b) return;
             const S = lpChoices();
             const what = b.dataset.lp;
+            if (e.detail > 0) b.blur();                          // a mouse click: Space stays the waiting line's
             if (what === 'stop') { lpStop(); return; }
             if (what === 'help') { lpHelp(b.getAttribute('aria-expanded') !== 'true'); return; }
             if (what === 'fewer') S.repeat = Math.max(1, S.repeat - 1);
@@ -4033,6 +4037,8 @@
         document.addEventListener('keydown', (e) => {
             if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
             if (e.key === 'Escape') {
+                const menu = document.getElementById('sort-menu');
+                if (menu && menu.style.display === 'block') return;     // the sort menu closes first
                 const help = lpBar && lpBar.querySelector('.lp-help[aria-expanded="true"]');
                 if (!help && !lpRun) return;
                 e.preventDefault();
@@ -4052,6 +4058,7 @@
         // --- Audio Logic ---
         function playAudio(text, btnElement) {
             if (!text) return;
+            lpStop();                         // the line player's sound never under the computer's voice
             const lang = (typeof globalLanguage !== 'undefined') ?
                 (globalLanguage === 'zh' ? 'zh-CN' : 'ja-JP') : 'ja-JP';
 

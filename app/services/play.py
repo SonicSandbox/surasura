@@ -243,39 +243,65 @@ def look(language, asks, listings=None, find=None):
     return out
 
 
-def files(language, rel_paths, memo=None):
+PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav", ".mp4", ".m4v", ".webm")
+# ^ the files a browser's <audio> plays from the journey's file:// page (Chromium: Edge, Chrome) — the journey's ▶
+#   (Kiku-L). Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary).
+
+
+def files(language, rel_paths, memo=None, explain=False):
     """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
-    once for every timed source it shows. Each one's item and its title's type read through one store open (`_kinds`;
-    no store, or an item it doesn't hold: a video looked for beside the file, as a 2.x library's ▶); then `_find`, the
-    window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays, several don't). A book or a text
-    plays nothing (its ▶ opens the book). The render's worker; never writes; one source's fault is its None alone.
+    once for every timed source it shows.
+
+    **The gate first** (the render stays as fast as before where nothing can play — most anime libraries): one store
+    open reads each source's item and every pairing row it has (`_rows`); each folder its file could be in (`_places`:
+    the copy's, the original's, a named or moved video's, an audiobook's) is listed once — the same listings `_find`
+    reuses — and only a source with a `PLAYABLE` file in one of them is looked for; a source with no pairing row also
+    when Connect's index holds a playable file (`_index_playable`: a video only the index knows). **Then the lookup**
+    for those alone: its item's title type (`_kinds`; a book or a text plays nothing — its ▶ opens the book), its
+    record (`_pairings`), and `_find`, the window's ▶'s own lookup — except an audiobook's (its record's `files`: one
+    plays, several don't). The render's worker; never writes; one source's fault is its None alone.
 
     `memo` (the render's, kept between renders: {rel: [answer, key, its folder's mtime, ...the caller's own]}): an
     answer is looked for again only when what it rests on moved (`_memo_key`: its title's type, its record, the folders
-    it is looked for in, Connect's index — and the folder of the file found), and then written as a new entry of three
-    — a redraw after a move asks nothing of the disk but a stat a folder."""
+    of `_places`, Connect's index — and the folder of the file found), and then written as a new entry of three.
+
+    `explain` (the badge is shown: its hover says why a line has no ▶): a source the gate keeps out answers the media
+    file named as it is in one of its folders' listings (`_named_beside`: an `.mkv` the browser can't play), else
+    None — a hint from the listings already made, never a lookup."""
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
-    kinds = _kinds(language, rel_paths)
-    ids = sorted({k[0] for k in kinds.values() if k[0] is not None})
-    moved = {}
-    records = _pairings(language, ids, moved) if ids else {}
-    listings, stamps = {}, {}
-    find = _finder(language, listings)
-    out = {}
+    out = dict.fromkeys(rel_paths)
+    ids, rows = _rows(language, rel_paths)
+    listings, stamps, playable = {}, {}, {}
+    asks = {}
     for rel in rel_paths:
+        item_rows = rows.get(ids.get(rel), ())
+        places = _places(language, rel, item_rows)
+        if any(_holds_playable(p, listings, playable) for p in places) or \
+                (not item_rows and _index_playable(language, stamps)):
+            asks[rel] = places
+        elif explain:
+            out[rel] = _named_beside(rel, places, listings)
+    if not asks:
+        return out
+    kinds = _kinds(language, list(asks))
+    item_ids = sorted({k[0] for k in kinds.values() if k[0] is not None})
+    moved = {}
+    records = _pairings(language, item_ids, moved) if item_ids else {}
+    find = _finder(language, listings)
+    for rel, places in asks.items():
         item_id, media = kinds.get(rel, (None, None))
-        out[rel] = None
         if MEDIA_WORD.get(media, "video") not in ("video", "audio"):
             continue
         record = records.get(item_id) if item_id is not None else {}
         try:
             key = None
             if memo is not None and record is not None:
-                key = _memo_key(language, rel, media, record, moved.get(item_id), stamps)
+                key = _memo_key(language, media, record, moved.get(item_id), places, stamps)
                 kept = memo.get(rel)
                 if isinstance(kept, list) and len(kept) >= 3 and kept[1] == key and \
-                        (kept[0] is None or _stamp(os.path.dirname(kept[0]), stamps) == kept[2]):
+                        (kept[0] is None or (isinstance(kept[0], str) and
+                                             _stamp(os.path.dirname(kept[0]), stamps) == kept[2])):
                     out[rel] = kept[0]
                     continue
             book = (record or {}).get("audiobook")
@@ -301,23 +327,105 @@ def _stamp(folder, stamps):
     return stamps[folder]
 
 
-def _memo_key(language, rel, media, record, moved, stamps):
-    """What `files`' answer for `rel` rests on, as one short digest: its title's type, its pairing record and the
-    MV-2 marks (`moved`), the folders `_find` lists for it (the copy's, the original's, a named video's, an audiobook's
-    file's) and Connect's index file (a video only it knows)."""
-    import hashlib
+def _rows(language, rel_paths):
+    """({rel path: item id}, {item id: [every pairing record it has, any producer, moved or not]}) through one store
+    open — two reads 500 at a time, no record picked (`pairing_of` picks, for the few the gate lets through); ({}, {})
+    with no store or one that can't be read now (each source then looked at as a 2.x library's file)."""
+    from app import library_store, path_utils
+    data_dir = path_utils.get_data_path(language)
+    try:
+        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+            return {}, {}
+        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
+        if store is None:
+            return {}, {}
+        with store:
+            ids = {rel: i for rel, i in zip(rel_paths, store.item_ids(rel_paths)) if i is not None}
+            wanted = sorted(set(ids.values()))
+            rows = {}
+            for at in range(0, len(wanted), 500):
+                chunk = wanted[at:at + 500]
+                for item_id, text in store.conn.execute(f"SELECT item_id, pairing FROM pairings WHERE item_id IN "
+                                                        f"({','.join('?' * len(chunk))})", chunk):
+                    try:
+                        record = json.loads(text)
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(record, dict):
+                        rows.setdefault(item_id, []).append(record)
+            return ids, rows
+    except Exception as e:
+        print(f"Play: the lines' records couldn't be read ({e!r})")
+        return {}, {}
+
+
+def _places(language, rel, records):
+    """Every folder a source's file could be found in by `_find` (a superset): its copy's, and each record's original's,
+    named video's (moved ones too) and audiobook files'."""
     from app import path_utils
-    from app.connect import runner, videos
     places = [os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))]
-    origin = runner.origin_of(record)
-    if origin:
-        places.append(os.path.dirname(re.sub(r"#\d+$", "", origin)))
-    named = record.get("video_path")
-    if isinstance(named, str) and named:
-        places.append(os.path.dirname(named))
-    book = record.get("audiobook")
-    if isinstance(book, dict) and book.get("files"):
-        places.append(os.path.dirname(str(book["files"][0])))
+    for record in records:
+        for key in ("origin", "video_path"):
+            value = record.get(key)
+            if isinstance(value, str) and os.path.isabs(re.sub(r"#\d+$", "", value)):
+                places.append(os.path.dirname(re.sub(r"#\d+$", "", value)))
+        book = record.get("audiobook")
+        if isinstance(book, dict) and isinstance(book.get("files"), list):
+            places += [os.path.dirname(f) for f in book["files"] if isinstance(f, str) and os.path.isabs(f)]
+    return list(dict.fromkeys(places))
+
+
+def _holds_playable(folder, listings, playable):
+    """Whether a folder holds a `PLAYABLE` file — its one listing, in `runner.beside`'s own form ({lower name: name},
+    False when it can't be listed), kept in `listings` for `_find`; the answer kept in `playable`."""
+    if folder not in playable:
+        names = listings.get(folder)
+        if names is None:
+            try:
+                names = {n.lower(): n for n in os.listdir(folder or ".")}
+            except OSError:
+                names = False
+            listings[folder] = names
+        playable[folder] = bool(names) and any(n.endswith(PLAYABLE) for n in names)
+    return playable[folder]
+
+
+def _named_beside(rel, places, listings):
+    """A video or audio file named as the subtitle is (`Show - 05.ja.srt` → `Show - 05.mkv`: its name without its last
+    one or two extensions) in one of `places`' listings (already made by the gate) -> its path, else None."""
+    from app.connect import runner
+    name = rel.rsplit("/", 1)[-1].lower()
+    stems = [name.rsplit(".", n)[0] for n in (1, 2) if name.count(".") >= n]
+    for folder in places:
+        names = listings.get(folder)
+        if names:
+            for stem in stems:
+                for ext in runner.VIDEO_EXTENSIONS + AUDIO_EXTS:
+                    found = names.get(stem + ext)
+                    if found:
+                        return os.path.join(folder, found)
+    return None
+
+
+def _index_playable(language, stamps):
+    """Whether Connect's video index (as last saved) holds any `PLAYABLE` file — once a call."""
+    if "index_playable" not in stamps:
+        try:
+            from app.connect import videos
+            dirs = videos.Index(language).data.get("dirs") or {}
+            stamps["index_playable"] = any(str(name).lower().endswith(PLAYABLE) for entry in dirs.values()
+                                           if isinstance(entry, dict) for name in (entry.get("videos") or {}))
+        except Exception:
+            stamps["index_playable"] = True             # unknown: look, as before the gate
+    return stamps["index_playable"]
+
+
+def _memo_key(language, media, record, moved, places, stamps):
+    """What `files`' answer rests on, as one short digest: its title's type, its pairing record and the MV-2 marks
+    (`moved`), the folders it could be found in (`_places`, moved videos' too) and Connect's index file (a video only
+    it knows)."""
+    import hashlib
+    from app.connect import videos
     if "index" not in stamps:
         try:
             stamps["index"] = os.stat(videos.index_path(language)).st_mtime_ns

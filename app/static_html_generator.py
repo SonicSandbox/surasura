@@ -385,12 +385,12 @@ class AnchorFinder:
         never serve a stale anchor."""
         entry = self._entry(abs_path)
         hit = entry["a"].get(sentence)
-        if hit is not None and len(hit) == 3 and hit[0] is not None:   # (a gone file's old entry: its signature is None)
+        if isinstance(hit, list) and len(hit) == 3 and hit[0] is not None:   # (a gone file's entry: its sig is None)
             return hit[0], hit[1], hit[2]
 
         anchor = self.anchor(abs_path, sentence)
         # A times-only answer (`times`: [None, start, end]) keeps its times; its anchor is looked for now.
-        start, end = (hit[1], hit[2]) if hit is not None and len(hit) == 3 else self.line(abs_path, sentence)
+        start, end = (hit[1], hit[2]) if isinstance(hit, list) and len(hit) == 3 else self.line(abs_path, sentence)
         entry["a"][sentence] = [anchor, start, end]
         self._memo_dirty = True
         return anchor, start, end
@@ -401,7 +401,7 @@ class AnchorFinder:
         only `resolve`, for the badge, does)."""
         entry = self._entry(abs_path)
         hit = entry["a"].get(sentence)
-        if hit is not None and len(hit) == 3:
+        if isinstance(hit, list) and len(hit) == 3:
             return hit[1], hit[2]
         start, end = self.line(abs_path, sentence)
         entry["a"][sentence] = [None, start, end]
@@ -413,7 +413,8 @@ class AnchorFinder:
         entry = self._entries.get(abs_path)
         if entry is None:
             entry = self._memo.get(abs_path)
-            if entry is None or entry.get("sig") != self._file_sig(abs_path):
+            if not isinstance(entry, dict) or not isinstance(entry.get("a"), dict) or \
+                    entry.get("sig") != self._file_sig(abs_path):
                 entry = {"sig": self._file_sig(abs_path), "a": {}}
                 self._memo[abs_path] = entry
                 self._memo_dirty = True
@@ -595,9 +596,9 @@ def shown_name(filename):
         return name
 
 
-# The journey's ▶ (Kiku-L): the files a browser's <audio> plays from the report's file:// page (Chromium: Edge, Chrome).
-# Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary): those lines get no ▶, and the badge's hover says why.
-PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav", ".mp4", ".m4v", ".webm")
+# The journey's ▶ (Kiku-L): the files a browser's <audio> plays from the report's file:// page — `play.PLAYABLE`, the
+# one list (`play.files`' gate reads it too). Those it doesn't hold get no ▶, and the badge's hover says why.
+from app.services.play import PLAYABLE  # noqa: E402
 
 
 def _shown_sources(lists, source_map):
@@ -609,17 +610,18 @@ def _shown_sources(lists, source_map):
             continue
         for col in [c for c in df.columns if str(c).startswith("Src ")]:
             shown.update(str(v) for v in df[col].dropna().unique())
-    return {rel for rel in shown if (source_map.get(rel) or {}).get("type") == "subtitle"}
+    return {rel for rel in shown if isinstance(source_map.get(rel), dict) and source_map[rel].get("type") == "subtitle"}
 
 
 LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept between renders (the anchor memo's twin)
 
 
-def _line_media(language, rel_paths, memo_path=None):
+def _line_media(language, rel_paths, memo_path=None, explain=False):
     """{rel path: [file URI, why not]} for the journey's ▶ (Kiku-L): the file `play.files` finds for each — its URI when
     a browser plays it (`PLAYABLE`), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose
     bit rate varies); nothing found, no row. `memo_path`: its answers kept between renders (only this render's
-    sources: one that left the lists leaves the file). Never raises: a lookup that fails is no ▶, never a failed
+    sources: one that left the lists leaves the file). `explain`: the badge is shown, so a line with no ▶ says why
+    (`play.files`' hint). Never raises: a lookup that fails is no ▶, never a failed
     report; a memo that can't be read or written only costs time."""
     if not rel_paths:
         return {}
@@ -634,36 +636,40 @@ def _line_media(language, rel_paths, memo_path=None):
     before = dict(memo)                         # (`play.files` replaces an entry, never changes one in place)
     try:
         from app.services import play
-        found = play.files(language, sorted(rel_paths), memo=memo)
+        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
         return {}
     from app import audiobooks
     folders, out = {}, {}
     for rel, path in found.items():
-        if not path:
-            continue
+        if not isinstance(path, str) or not os.path.isabs(path):
+            continue                             # nothing found (or never a relative path: no URI, no ▶)
         ext = os.path.splitext(path)[1].lower()
         if ext not in PLAYABLE:
             out[rel] = ["", ext]
             continue
         if ext == ".mp3":
             # A browser seeks in a VBR mp3 only roughly (±1–2 s): never the wrong words. The verdict is kept with the
-            # answer (a 4th field), read again only when the answer is looked for again.
+            # answer (a 4th field), read again only when the answer is looked for again; one that couldn't be read
+            # (None: a share's hiccup) plays and is never kept.
             kept = memo.get(rel)
-            if isinstance(kept, list) and len(kept) == 4 and kept[0] == path:
+            if isinstance(kept, list) and len(kept) == 4 and kept[0] == path and isinstance(kept[3], bool):
                 variable = kept[3]
             else:
-                variable = bool(audiobooks.mp3_variable(path))
-                if isinstance(kept, list) and len(kept) == 3 and kept[0] == path:
+                variable = audiobooks.mp3_variable(path)
+                if variable is not None and isinstance(kept, list) and len(kept) == 3 and kept[0] == path:
                     memo[rel] = kept + [variable]
             if variable:
                 out[rel] = ["", "vbr"]
                 continue
         folder, name = os.path.split(path)
-        if folder not in folders:                # each folder's part encoded once (20k files, 1.7k folders)
-            folders[folder] = pathlib.Path(folder).as_uri().rstrip("/")
-        out[rel] = [folders[folder] + "/" + urllib.parse.quote(name), ""]
+        try:
+            if folder not in folders:            # each folder's part encoded once (20k files, 1.7k folders)
+                folders[folder] = pathlib.Path(folder).as_uri().rstrip("/")
+            out[rel] = [folders[folder] + "/" + urllib.parse.quote(name), ""]
+        except ValueError:                       # a path no URI can name: no ▶, never a failed report
+            continue
     if memo_path:
         memo = {rel: memo[rel] for rel in rel_paths if rel in memo}
         if memo != before:
@@ -1210,7 +1216,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             except Exception as e:
                 print(f"Error loading {what} CSV: {e}")
     line_media = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
-                             os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO))
+                             os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO), settings.get("source_display", "off") != "off")
     line_timer = None
     if source_finder is None and any(uri for uri, _why in line_media.values()):
         line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),

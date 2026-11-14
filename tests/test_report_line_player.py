@@ -194,7 +194,7 @@ def test_a_redraw_reuses_every_answer_and_looks_again_only_where_a_folder_change
                                  f"{SHOW} - 01.mp4"), b"\x00\x00\x00\x18ftypmp42")
     memo = {}
     assert play.files("ja", list(rels.values()), memo=memo) == {rels[1]: mp4, rels[2]: None}
-    assert set(memo) == set(rels.values())
+    assert set(memo) == {rels[1]}                       # episode 2's folder holds nothing playable: the gate, no memo
     real = play._find
     monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("a kept answer is never looked for again"))
     assert play.files("ja", list(rels.values()), memo=memo) == {rels[1]: mp4, rels[2]: None}
@@ -210,7 +210,7 @@ def test_a_redraw_reuses_every_answer_and_looks_again_only_where_a_folder_change
     if os.stat(os.path.dirname(mp4)).st_mtime_ns == before:
         pytest.skip("this file system didn't move the folder's mtime")
     assert play.files("ja", list(rels.values()), memo=memo)[rels[1]] is None
-    assert looked == [rels[1]]
+    assert looked == []                                 # nothing playable left beside it: the gate answers
 
 
 def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(monkeypatch):
@@ -237,7 +237,7 @@ def test_the_render_keeps_its_memo_for_its_own_sources_only(tmp_path, monkeypatc
         json.dump({"Library/gone.srt": [None, "x", None], "Library/a.srt": ["C:\\a.mp4", "k", 1]}, f)
     seen = []
 
-    def files(language, rels, memo=None):
+    def files(language, rels, memo=None, **_):
         seen.append(dict(memo))
         memo["Library/b.srt"] = [None, "k2", None]
         return {r: None for r in rels}
@@ -260,7 +260,7 @@ def test_an_mp3s_verdict_is_kept_with_its_answer_and_read_again_only_with_it(tmp
     vbr = _mp3(str(tmp_path / "杜子春 01.mp3"), seconds=192.4)
     path = str(tmp_path / "line_media.json")
 
-    def files(language, rels, memo=None):
+    def files(language, rels, memo=None, **_):
         for r in rels:
             if r not in memo:
                 memo[r] = [vbr, "key", 1]
@@ -455,7 +455,7 @@ def test_a_report_gives_each_playable_line_its_file_and_times_and_an_mkv_line_it
     played, mkv, text = rows["文化祭"], rows["三日"], rows["まで"]
     assert urllib.request.url2pathname(table[played["Src 1"]][5][len("file:"):]) == mp4
     assert (played["At 1"], played["End 1"]) == (1.0, 3.2)
-    assert table[mkv["Src 1"]][5:] == ["", ".mkv"]
+    assert table[mkv["Src 1"]][5:] == ["", ".mkv"]          # its folder holds a playable episode: looked for, its why
     assert table[text["Src 1"]][5:] == ["", ""]
     assert ("At 1" in mkv) == (display != "off")                          # times for the badge only, as before
     assert ("Frag 1" in played) == (display != "off")                     # the anchor: only for the badge
@@ -474,7 +474,7 @@ def test_a_report_with_nothing_playable_looks_for_no_times_and_reads_no_file(tmp
     monkeypatch.setattr(cues, "timeline", lambda *a, **k: pytest.fail("no line is read when nothing can play"))
     data, table = _render(tmp_path, {f"{SHOW} - 03.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA,
                                                                "Src 1": rel_mkv}]}, source_map)
-    assert table[0][5:] == ["", ".mkv"]
+    assert table[0][5:] == ["", ""]                         # no badge shown: no why looked for either
     assert "At 1" not in _rows(data["progressive"][0]["words"])[0]
 
 

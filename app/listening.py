@@ -60,7 +60,7 @@ MP3_KBPS = 128                  # as the AI voice's own clips (modules/irodori/m
 TITLE_CHARS = 40
 _RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"{d}{n}" for d in ("COM", "LPT") for n in range(10)}
 PROBLEM_CHARS = 200             # a failed round's why, as the AI reads it
-LOCK = "listening.lock"         # in the local data folder: one maker on the PC
+LOCK = "listening-maker.lock"   # in the install's locks folder: one maker at a time
 TRIES = 3                       # a round a maker starts this often and never finishes is failed, said
 LOCK_LOOKS = 10                 # a new maker tries it this often, 0.2 s apart, before it leaves it to the holder
 BUSY_WAIT_S = 1800              # the voice held by another run (card audio): waited for this long, then said
@@ -375,8 +375,10 @@ def open_file(path, startfile=None):
 
 # --- the maker ------------------------------------------------------------------------------------------------------ #
 def _lock_path():
-    from app import path_utils
-    return os.path.join(path_utils.get_local_data_path(), LOCK)
+    """The maker's lock in the install's locks folder (`locks.folder`: path_utils.PARTS' `locks`, kept by a Start
+    over) — an OS lock on the file itself, never `locks.take`'s holder record (a maker killed lets it go at once)."""
+    from app import locks
+    return os.path.join(locks.folder("listening"), LOCK)
 
 
 def maker_running():

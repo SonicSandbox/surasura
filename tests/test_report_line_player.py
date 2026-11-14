@@ -607,9 +607,7 @@ def test_stop_esc_another_play_a_redraw_and_a_hidden_page_all_stop_it(page):
     assert "e.key === 'Escape'" in code and "lpStop()" in code
     assert "visibilitychange" in code and "document.hidden" in code
     assert "isConnected" in code                                                    # its line left the page: stop
-    stop = _block(page, "function lpStop()", "
-        }
-")
+    stop = _block(page, "function lpStop()", "\n        }\n")
     assert "clearTimeout(r.timer)" in stop and "lpAudio.pause()" in stop and "lpRun = null" in stop   # no stray sound
     for fn in ("async function switchMainTab(", "async function renderFileWords(", "async function renderPriorityView("):
         head = "\n".join(_block(page, fn, "\n        }\n").replace("\r\n", "\n").split("\n")[:4])

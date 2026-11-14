@@ -126,6 +126,7 @@ _RANK = {".ass": 0, ".ssa": 0, ".srt": 1}           # of one episode's subtitles
 _OVERRIDE = re.compile(r"\{[^}]*\}")          # an .ass line's override tags (`{\\pos(…)}`, `{\\k20}`)
 THIN = 4                        # A6: a pick holding under 1/THIN of its episode's fullest candidate's lines (a signs
                                 # track) is never the episode's text while that one is
+TRANSCRIPT_RULE = "transcript_rule"   # meta: the `audiobooks.FOUND_RULE` all transcripts were last weighed by
 # Alpha 4 (Mattias's report: six show folders never arrived, nothing said): why a folder in a source isn't read — a
 # look says it (`notes`), never drops a folder silently. A folder link (a junction, a symlink) is followed (`_link`).
 NOT_READ_LINK_GONE = "It links to a folder that isn't there."
@@ -1819,7 +1820,10 @@ class _Look:
         kept out (Removed, S6) keeps its transcript out too: never a title of its own."""
         claimed, listed = self.claimed, self.transcribed
         self.claimed, self.transcribed = [], []
-        held = self.store.audiobooks(every=True) if claimed or listed or self.heard else []
+        # a library whose transcripts were weighed by an earlier rule (`audiobooks.FOUND_RULE`): its next look, a
+        # quick one too, weighs every audiobook once, so one found another book's by it is checked again (H-13)
+        due = str(self.store.meta().get(TRANSCRIPT_RULE, "")) != str(audiobooks.FOUND_RULE)
+        held = self.store.audiobooks(every=True) if claimed or listed or self.heard or due else []
         by_file = {ls.path_key(os.path.abspath(f)): r for r in held for f in r["audiobook"].get("files") or ()}
         by_item = {}                                         # (each source's record: its files; one per item below)
         for r in held:
@@ -1854,6 +1858,8 @@ class _Look:
         for r in by_item.values():                           # a check that waited (a book's copy unreadable then)
             if audiobooks.transcript_use(r["audiobook"]) == audiobooks.UNCHECKED and not self.stopped():
                 self.store.set_transcript(r["item_id"])
+        if due and not self.stopped():
+            self.store.bookkeeping({TRANSCRIPT_RULE: audiobooks.FOUND_RULE})
 
     def _transcript_followed(self, item, path, st, said):
         """A recorded transcript listed this look: its copy written again when it is gone from `Library` (Item 8a's

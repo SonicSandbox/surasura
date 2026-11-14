@@ -23,6 +23,7 @@ import pytest
 
 from app import audiobooks
 from app import library_store as ls
+from app import sources
 from app.services import needs, view_rows
 from tests.test_audiobook_items import (_audio_folder, _audio_items, _book_items, _epub, _fit, _lines, _record,
                                         _fresh_module_state, _settle)  # noqa: F401 (the fixture)
@@ -707,6 +708,32 @@ def test_a_transcript_judged_wanting_by_the_first_rule_is_its_books_at_the_next_
         rec = _record(store, item)
         assert audiobooks.transcript_use(rec) == audiobooks.TIMING
         assert rec["transcript"]["found"] == {"book": found["book"], "share": 1.0, "rule": audiobooks.FOUND_RULE}
+
+
+def test_a_libraries_first_look_under_a_new_rule_checks_its_transcripts_again_though_no_folder_changed():
+    """Mattias's vol 3 card stayed after the update: Surasura's looks were quick ones, and a quick look weighs no
+    audiobook whose folder is unchanged. A library's first look under a new FOUND_RULE (meta `transcript_rule`), a
+    quick one too, weighs every audiobook once: the card goes. Quiet looks after it still read no record."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        assert str(store.meta()[sources.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        _work, rows = _book_items(store, STAR)
+        item = [r for r in rows if r[3] == "audio"][0][0]
+        with store._writing():                                        # a library 3.0.8 left
+            for key, text in store.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                                (item,)).fetchall():
+                rec = json.loads(text)
+                found = rec["audiobook"]["transcript"]["found"]
+                rec["audiobook"]["transcript"]["found"] = {"book": found["book"], "share": 0.0023}
+                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (json.dumps(rec), key))
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (sources.TRANSCRIPT_RULE,))
+        assert [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
+        _look(store, "ja", root)                                      # a quick look: no folder of it changed
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.TIMING
+        assert str(store.meta()[sources.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
 
 
 def _story(language, name):

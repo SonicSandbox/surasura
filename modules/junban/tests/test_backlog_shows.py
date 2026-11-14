@@ -44,6 +44,27 @@ def test_the_folder_and_the_name_stay_apart_and_a_bare_number_names_nothing():
     assert sn.names_of("", None) == set()
 
 
+def test_an_audiobooks_cards_name_its_file_and_a_single_videos_bare_name_its_subtitle():
+    """Mattias's report (3.0.10): 順 said three sources weren't in his library. カラフル's audiobook cards carry
+    `Audio — <the m4b's name>` (Anki Miner's fixed series), which no file's key was; a YouTube video's cards carry its
+    title bare, with no episode, which only a show-and-episode name could be. Both name their file now; a name every
+    show has (`Opening`, `Trailer`, `Part 1`, `OVA`) is still no bare name."""
+    m4b = "//hemma/data/Japanese/Book Sync/カラフル/カラフル (文春文庫) - 森 絵都.m4b"
+    assert sn.card_key("Audio — カラフル (文春文庫) - 森 絵都 @ 0:12:34") in sn.names_of(m4b)
+    assert sn.card_key("Audio — 他の本 @ 0:12:34") not in sn.names_of(m4b)
+    assert not any(k.startswith("audio/") for k in sn.names_of("カラフル/カラフル (文春文庫) - 森 絵都.srt"))
+    srt = "Library/笑い過ぎて一生忘れられないTRPG/笑い過ぎて一生忘れられないTRPG [IIqUltT_x0c].srt"
+    assert sn.card_key("笑い過ぎて一生忘れられないTRPG @ 0:01:02") in sn.names_of(srt)
+    assert sn.card_key("笑い過ぎて一生忘れられないTRPG @ 0:01:02") not in sn.names_of(srt, bare=False)
+    for stem in ("Opening", "Trailer", "Extra", "Part 1", "OVA", "ED"):
+        assert all("/" in k for k in sn.names_of(f"他の番組/{stem}.ja.srt")), stem
+    title = "笑い過ぎて一生忘れられないTRPG"
+    assert sn.card_key(f"YouTube — {title} @ 0:01:02") in sn.names_of_title(title)
+    assert sn.card_key(f"{title} @ 0:01:02") in sn.names_of_title(title)
+    assert sn.names_of_title("Trailer", bare=True) == {"youtube/trailer"}
+    assert sn.names_of_title("") == set()
+
+
 def test_a_card_that_isnt_anki_miners_names_nothing():
     for misc in ("この単語は「旅」の意味です", "月影の旅人 - 04", "", None, " @ 00:01:00", "月影の旅人 @ soon"):
         assert sn.card_key(misc) is None, misc

@@ -102,13 +102,20 @@ def library(language, bare=True):
         records = connect_library.pairings(store)
     items = []
     for item_id, tier, rel, work, title in rows:
-        paths = [rel]
+        paths, titles = [rel], []
         for record in records.get(item_id) or ():
             if isinstance(record, dict):
                 paths += [record.get("origin"), record.get("video_path")]
+                heard = record.get("audiobook")         # an audiobook's own files (`Audio — <name>`), not its copy's
+                if isinstance(heard, dict):
+                    paths += [f for f in heard.get("files") or () if isinstance(f, str)]
+                if record.get("media_type") == "youtube" or record.get("producer") == "youtube":
+                    titles.append(record.get("title"))  # a fetched video's own title (`YouTube — <title>`)
         names = set()
         for one in dict.fromkeys(p for p in paths if p):
             names |= source_names.names_of(one, bare=bare)
+        for title in dict.fromkeys(t for t in titles if isinstance(t, str)):
+            names |= source_names.names_of_title(title, bare=bare)
         text = os.path.splitext(str(rel or ""))[1].lower() not in VIDEO_EXTENSIONS
         items.append(Item(item_id, tier, work, title or library_store.show_of_name(os.path.basename(rel or "")) or "",
                           frozenset(names), text))

@@ -23,7 +23,9 @@ no special (`episode_names.identity`: `01`, `OVA`, `Movie`, `NCOP`, `Special 01`
 show has one too). A card names a file when its key is one of the file's — **exact, never a substring** (`show1` is
 not `show10`). A key two titles of the library share names neither (`shared_names`). A `MiscInfo` with no time after
 ` @ ` (a Migaku note's hint) names nothing. Anki Miner's fixed series (`Audio` for an audiobook, `YouTube` for a
-fetched video) name no show of their own (`FIXED_SERIES`).
+fetched video) name no show of their own (`FIXED_SERIES`) — but they name a file: an audiobook's own file carries
+`Audio — <its name>`, a fetched video's record title `YouTube — <title>` (`names_of_title`). A name with no episode
+(a single video) is a bare name too when it is a title of its own (`BARE_TITLE_MIN` letters and digits, no special).
 
 **Where a stray match would write Anki** (*Study its cards first*, *Take its new cards out*: `pins`), only the folder
 forms are used (`bare=False`): a bare name is only ever counted (the footer, the shows behind the backlog).
@@ -48,6 +50,13 @@ _SOURCE = re.compile(r"^(?P<source>.*\S)\s+@\s+\d{1,3}:\d{2}(?::\d{2})?(?:\.\d+)
 _LANGUAGE_TAG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|chi|zho|chs|cht|sc|tc|cn|tw|zh-hans|zh-hant)$", re.I)
 DASH = " — "                    # Anki Miner's separator between the folder and the name
 FIXED_SERIES = ("audio", "youtube")     # Anki Miner's own series names (an audiobook's, a fetched video's), `plain`
+AUDIO_SERIES, YOUTUBE_SERIES = "Audio", "YouTube"      # as Anki Miner writes them before DASH
+# An audiobook's files (`app.audiobooks.is_audio`'s, kept here: this module reads no other)
+AUDIO_EXTENSIONS = (".m4b", ".m4a", ".mp3", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma")
+# A name with no episode (a single video, a YouTube upload) is a bare name only when it is this long (`plain`'s letters
+# and digits): `Opening`, `Trailer`, `Extra`, `Part 1` are every show's (Mattias's report, 3.0.10: a video's cards
+# named its file `笑い過ぎて一生忘れられないTRPG` bare, and the file was in, named missing)
+BARE_TITLE_MIN = 10
 _NOT_ALNUM = re.compile(r"[\W_]+")       # what `str.isalnum` refuses (`\w` is alnum and `_`)
 
 
@@ -109,14 +118,19 @@ def series_of(misc_info):
 
 @lru_cache(maxsize=65536)
 def _bare_ok(stem):
-    """Does a file's name say a show and its episode, and no special (LM1a's one reading, `episode_names.identity`)?
-    Asked once per name."""
+    """Does a file's name say a show and its episode, and no special (LM1a's one reading, `episode_names.identity`) —
+    or, with no episode (a single video's), a title of its own: no special, no part, at least BARE_TITLE_MIN letters
+    and digits? Asked once per name."""
     from app import episode_names
     try:
         name = episode_names.identity(stem)
     except Exception:
         return False
-    return bool(name.show) and name.episode is not None and not name.special
+    if not name.show or name.special:
+        return False
+    if name.episode is not None:
+        return True
+    return name.part is None and len(plain(name.show)) >= BARE_TITLE_MIN
 
 
 def names_of(path, video_path=None, bare=True):
@@ -138,6 +152,9 @@ def names_of(path, video_path=None, bare=True):
     for folder, stem in pairs:
         if not stem:
             continue
+        if os.path.splitext(str(path or ""))[1].lower() in AUDIO_EXTENSIONS and video_path is None:
+            forms.add(AUDIO_SERIES + DASH + stem)                   # an audiobook's: `Audio — <its file's name>`
+            forms.add(AUDIO_SERIES + DASH + clean(stem))
         if folder:
             forms.add(folder + DASH + stem)                         # 3.5.0: as is, then the whole label's tags off
             forms.add(clean(folder) + DASH + clean(stem))           # 3.10: each part cleaned
@@ -152,6 +169,19 @@ def names_of(path, video_path=None, bare=True):
             if k:
                 names.add(k)
     return names
+
+
+def names_of_title(title, bare=True):
+    """Every key a card from a fetched video titled `title` (its record's, the YouTube downloader's) can carry: Anki
+    Miner's `YouTube — <title>`, and the bare title by `_bare_ok`'s rule (only with `bare`). A title is no file name:
+    its tags are part of it, nothing is cut but what Anki Miner cuts."""
+    title = str(title or "").strip()
+    if not title:
+        return set()
+    forms = {YOUTUBE_SERIES + DASH + title, YOUTUBE_SERIES + DASH + clean(title)}
+    if bare and _bare_ok(title):
+        forms |= {title, clean(title)}
+    return {k for k in (key(form) for form in forms) if k}
 
 
 def fixed_series(misc_info):

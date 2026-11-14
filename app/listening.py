@@ -20,7 +20,10 @@ The voice comes from ONE table, `VOICES` (language -> the voice's module; lead 2
 there later with no change to the round, the timing or the saving). A voice module answers `why_not(settings)` (None:
 ready; else one plain sentence), `usable(text)` (None, or why the voice can't read it), `seconds_per_line()`, and
 `Speaker(settings)` — a context manager holding the voice for this run (`Busy` when another run holds it) with
-`speak(text) -> wav bytes`. Japanese today: `modules/irodori/listen.py`. The round itself never names the voice.
+`speak(text) -> wav bytes`. A module with a choice of voices (Iro-V) adds `voices()` (their names, the default first),
+`unknown(name)` (None, or the sentence naming them) and `Speaker(settings, voice=name)`: a round that names one keeps
+it in its record (`voice`) for every line, the next maker's too. Japanese today: `modules/irodori/listen.py`. The
+round itself never knows what a voice name means.
 
 Playback is plain files (lead 2026-11-14: no in-app player): any player or phone opens them; `open_file` hands one to
 the system's player as the window's ▶ does for an audio item (`app/services/play.py`: audio always opens in the
@@ -97,6 +100,25 @@ def why_not(language, settings):
         return module.why_not(settings or {})
     except Exception as e:
         return f"The AI voice can't be asked just now ({e})."
+
+
+def voice_names():
+    """Every voice a round may name, each language's default first (the tool's description lists them; Iro-V)."""
+    out = []
+    for language in VOICES:
+        try:
+            out += [n for n in getattr(voice(language), "voices", lambda: ())() if n not in out]
+        except Exception:                       # a broken voice lists none: the round still takes its default
+            pass
+    return out
+
+
+def unknown_voice(language, name):
+    """None when `name` is one of `language`'s voices (or empty: its default); else one sentence naming them."""
+    if not name:
+        return None
+    check = getattr(voice(language), "unknown", None)
+    return check(name) if check else "This voice has no others to choose from: leave voice out."
 
 
 # --- the check: each line against the known words (the reading rules), before anything is made ------------------- #
@@ -190,14 +212,16 @@ def base_name(title):
     return text or NAME
 
 
-def queue(language, lines, title="", round_id=None, state="queued"):
-    """A checked round written as queued -> its round_id. (The caller checked every line and starts the maker.)"""
+def queue(language, lines, title="", round_id=None, state="queued", voice=""):
+    """A checked round written as queued -> its round_id. (The caller checked every line and its `voice` — "" for the
+    language's default — and starts the maker.)"""
     from app import practice_rounds
     round_id = round_id or practice_rounds.new_id()
     os.makedirs(os.path.join(folder(language, round_id), "lines"), exist_ok=True)
     _write(language, round_id, {"round_id": round_id, "language": language, "kind": KIND,
                                 "title": str(title or "")[:TITLE_CHARS * 5],
                                 "name": base_name(title), "lines": list(lines), "state": state,
+                                "voice": str(voice or ""),
                                 "queued": time.strftime("%Y-%m-%dT%H:%M:%S"), "order": time.time_ns()})
     return round_id
 
@@ -210,12 +234,24 @@ def ready(language, round_id):
     _write(language, round_id, dict(data, state="queued", order=time.time_ns()))
 
 
-def keep_record(language, round_id, lines, title=""):
-    """The round's practice record (`practice_rounds.save`): listed by surasura_rounds, done again by again=, and its
-    lines read back to later rounds as any kept lines are."""
+def keep_record(language, round_id, lines, title="", voice=""):
+    """The round's practice record (`practice_rounds.save`): listed by surasura_rounds (its voice too, when it named
+    one), done again by again=, and its lines read back to later rounds as any kept lines are."""
     from app import practice_rounds
-    practice_rounds.save(language, round_id, start={"round": {"kind": KIND, "title": str(title or "")[:TITLE_CHARS]},
-                                                    "words": []}, lines=list(lines))
+    choices = {"kind": KIND, "title": str(title or "")[:TITLE_CHARS]}
+    if voice:
+        choices["voice"] = voice
+    practice_rounds.save(language, round_id, start={"round": choices, "words": []}, lines=list(lines))
+
+
+def _kept_voice(language, round_id):
+    """The voice a round's practice record names, or "" (none named, no record)."""
+    from app import practice_rounds
+    try:
+        got = practice_rounds.load(language, round_id)["round"].get("voice")
+    except (ValueError, OSError):
+        return ""
+    return got if isinstance(got, str) else ""
 
 
 def cancel(language, round_id):
@@ -245,7 +281,9 @@ def again(language, round_id):
     queued again (its clips kept: only the missing lines are voiced) -> whether the maker is needed."""
     data = read(language, round_id)
     if data is None:
-        raise Problem(f"The listening round {round_id}'s files are gone: make it again from its lines.")
+        voiced = _kept_voice(language, round_id)            # the remade round in the voice it had (Iro-V)
+        raise Problem(f"The listening round {round_id}'s files are gone: make it again from its lines"
+                      + (f" with voice={voiced[:40]}." if voiced else "."))
     if data.get("state") == "done" and all(os.path.isfile(p) for p in _files(language, round_id, data).values()):
         return False
     try:
@@ -574,7 +612,8 @@ def _voice_lines(language, round_id, data, module, settings, should_stop, sleep)
     waited = 0.0
     while True:
         try:
-            speaker = module.Speaker(settings)
+            chosen = {"voice": data["voice"]} if data.get("voice") else {}   # the round's one voice, if it named one
+            speaker = module.Speaker(settings, **chosen)
             speaker.__enter__()
             break
         except getattr(module, "Busy", ()) as e:            # card audio holds the voice: this round waits its turn

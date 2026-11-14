@@ -608,7 +608,7 @@ def undo_translations_tool(batch):
 
 # --- listening rounds (Piyo-LR, 3.0.11): the AI writes the lines; Surasura checks, voices, times and saves them -- #
 # (app/listening.py). Short answers only: never audio, subtitles or long text back through the AI.
-def listening_round_tool(state, lines, title="", language=None):
+def listening_round_tool(state, lines, title="", language=None, voice=""):
     from mcp.server.mcpserver.exceptions import ToolError
     from app import listening, practice_rounds
     from app.cli import verbs
@@ -616,6 +616,10 @@ def listening_round_tool(state, lines, title="", language=None):
     why = listening.why_not(lang, verbs.settings())
     if why:
         return {"queued": False, "why": why}
+    voice = str(voice or "").strip()
+    why = listening.unknown_voice(lang, voice)      # a voice that isn't there: refused, never swapped for another
+    if why:
+        raise ToolError(f"{why} Nothing was made.")
     if isinstance(lines, str):
         lines = lines.splitlines()
     lines = [listening.one_line(x) if x is not None else "" for x in lines or ()]
@@ -633,9 +637,9 @@ def listening_round_tool(state, lines, title="", language=None):
     round_id = practice_rounds.new_id()
     keep = state.keep_rounds()
     try:                                    # written "new" (no maker takes it), its record, then queued
-        listening.queue(lang, lines, title, round_id=round_id, state="new")
+        listening.queue(lang, lines, title, round_id=round_id, state="new", voice=voice)
         if keep:
-            listening.keep_record(lang, round_id, lines, title)
+            listening.keep_record(lang, round_id, lines, title, voice)
         listening.ready(lang, round_id)
     except (OSError, ValueError, contract.CliError) as e:   # the folder or its record refused: said, never left
         try:                                                # "new" for good: the folder says it wasn't made
@@ -652,6 +656,21 @@ def listening_round_tool(state, lines, title="", language=None):
     if not keep:
         out["note"] = "Keeping practice rounds is off, so it won't be listed to do again; its files stay."
     return out
+
+
+LISTENING_ROUND = ("A listening round: lines (1-20 short lines in the learner's language, using their words). Surasura "
+                   "checks each against the words they know, then voices them on this PC in the background. Returns "
+                   "its round_id, or for each line that fails which words to swap: fix only those and send all the "
+                   "lines again.")
+
+
+def listening_round_description():
+    """The tool's description, with the voices to choose from in one line (Iro-V): one voice reads every line."""
+    from app import listening
+    names = listening.voice_names()
+    if len(names) < 2:
+        return LISTENING_ROUND
+    return f"{LISTENING_ROUND} voice: one of {', '.join(names)} (the first if left out); one voice reads every line."
 
 
 def listening_status_tool(state, round_id, play=False, cancel=False, open_folder=False, language=None):
@@ -875,12 +894,9 @@ def build(state=None, warm=True, serving=False, calls=None):
     def surasura_undo_translations(batch: str) -> dict:
         return _answered(undo_translations_tool, batch)
 
-    @server.tool(annotations=keeps)
-    def surasura_listening_round(lines: List[str], title: str = "", language: str = "") -> dict:
-        """A listening round: lines (1-20 short lines in the learner's language, using their words). Surasura checks
-        each against the words they know, then voices them on this PC in the background. Returns its round_id, or
-        for each line that fails which words to swap: fix only those and send all the lines again."""
-        return _answered(listening_round_tool, state, lines, title, language or None)
+    @server.tool(annotations=keeps, description=listening_round_description())
+    def surasura_listening_round(lines: List[str], title: str = "", voice: str = "", language: str = "") -> dict:
+        return _answered(listening_round_tool, state, lines, title, language or None, voice)
 
     @server.tool(annotations=keeps)
     def surasura_listening_status(round_id: str, play: bool = False, cancel: bool = False, open_folder: bool = False,

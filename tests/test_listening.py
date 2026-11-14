@@ -62,8 +62,9 @@ class FakeVoice:
     def seconds_per_line(self):
         return 20
 
-    def Speaker(self, settings):            # noqa: N802 (the module's class)
+    def Speaker(self, settings, **chosen):  # noqa: N802 (the module's class); chosen: voice=, only when a round names one
         voice = self
+        self.asked = getattr(self, "asked", []) + [chosen]
 
         class _S:
             def __enter__(self):
@@ -652,3 +653,48 @@ def test_r2_a_stop_for_an_update_is_not_one_of_the_tries(fake):
     assert listening.read("ja", rid)["state"] == "making" and listening.read("ja", rid)["tries"] == 0
     assert listening.make_round("ja", rid, settings={}, tool=None) == "done"
     assert listening.make_round("ja", rid, settings={}, tool=None) == "done" and len(fake.spoken) == 2  # made once
+
+
+# --- Iro-V: a round's one voice ----------------------------------------------------------------------------------- #
+def test_a_round_that_names_a_voice_keeps_it_for_every_maker_and_again(fake):
+    # the voice lives in the round's record: a maker stopped mid-round (an update) and the next one, and again= after
+    # a cancel, all ask the voice module for the same voice
+    rid = listening.queue("ja", LINES[:3], voice="man-20s")
+    assert listening.read("ja", rid)["voice"] == "man-20s"
+    assert listening.make_round("ja", rid, settings={}, should_stop=lambda: True, tool=None) == "stopped"
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done"
+    assert fake.asked == [{"voice": "man-20s"}, {"voice": "man-20s"}]
+    for name in os.listdir(os.path.join(listening.folder("ja", rid), "lines")):
+        os.remove(os.path.join(listening.folder("ja", rid), "lines", name))
+    listening._write("ja", rid, dict(listening.read("ja", rid), state="cancelled"))
+    assert listening.again("ja", rid) is True
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done"
+    assert fake.asked[-1] == {"voice": "man-20s"}
+
+
+def test_a_round_that_names_no_voice_asks_the_module_for_none(fake):
+    # a voice module with no choice of voices (a Chinese voice later) keeps working: Speaker(settings) alone
+    rid = _queued(LINES[:2])
+    assert listening.read("ja", rid)["voice"] == ""
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done" and fake.asked == [{}]
+
+
+def test_a_voice_the_module_doesnt_have_is_named_back_and_one_with_no_choice_says_so(fake):
+    assert listening.unknown_voice("ja", "") is None
+    assert listening.unknown_voice("ja", "man-20s") == "This voice has no others to choose from: leave voice out."
+    fake.unknown = lambda name: None if name == "man-20s" else f"There is no voice {name!r}."
+    assert listening.unknown_voice("ja", "man-20s") is None
+    assert listening.unknown_voice("ja", "robot") == "There is no voice 'robot'."
+
+
+def test_the_voice_names_come_from_every_languages_module_and_a_broken_one_lists_none(fake, monkeypatch):
+    assert listening.voice_names() == []                     # the fake has no choice of voices
+    fake.voices = lambda: ["woman-20s", "man-20s"]
+    assert listening.voice_names() == ["woman-20s", "man-20s"]
+
+    def broken():
+        raise OSError("the packs folder is gone")
+    fake.voices = broken
+    assert listening.voice_names() == []
+    monkeypatch.setitem(listening.VOICES, "ja", lambda: None)  # a build without the voice
+    assert listening.voice_names() == []

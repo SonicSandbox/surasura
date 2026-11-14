@@ -113,6 +113,30 @@ def test_register_finds_the_work_by_record_then_show_then_folder(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_video_dropped_straight_into_processed_is_titled_by_its_show_never_processed(language):
+    """Mattias's report (3.0.10): the YouTube downloader writes a single video's transcript directly into `Processed`;
+    registered, it became a title named "Processed" — the folder taken for a show's, its record's channel never read.
+    A file directly in `Processed` is a loose drop: titled by its record's show, else by its own name; two channels'
+    videos are two titles. A playlist's folder below `Processed` is still a title of its own, by its folder."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    one = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[81]} - {w[82]} [pitFobM6z80].txt"),
+                         _record("p1", show={"title": w[81]}))
+    two = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[83]} - {w[84]} [IIqUltT_x0c].txt"),
+                         _record("p2", show={"title": w[83]}))
+    loose = store.insert([touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[85]}.txt")], "now").added[0]
+    listed = store.insert([touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[86]}/{w[87]}.txt")], "now").added[0]
+    titles = dict(store.conn.execute("SELECT id, title FROM works"))
+    got = [titles[_work(store, i)] for i in (one.added[0], two.added[0], loose)]
+    assert got == [w[81], w[83], w[85]]
+    assert len({_work(store, i) for i in (one.added[0], two.added[0], loose, listed)}) == 4
+    assert ls.PROCESSED_FOLDER not in titles.values()
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_record_never_renames_a_users_work(language):
     """03 §3.3 #2: a title the user renamed (`title_by_user`) is never renamed by a record — its ids and other titles
     are added, its name stays; nor is a user's media type overwritten by hato's (06 §6.6)."""

@@ -712,7 +712,31 @@ def has_sources(language):
     return bool(counted or aside)
 
 
-def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None):
+def library_files(language):
+    """The library as `build` lists it, in order: Generate's files (a missing item still counts, its cached
+    sentences), then what is set aside as reference (Finished, watched episodes). Stats every file: a worker's call."""
+    from app import analyzer
+    counted, aside = analyzer.resolve_sentence_files(language)
+    return counted + (aside or [])
+
+
+def files_holding(language, files, wanted, runs=(), most=None):
+    """The `files` (in their order) whose words, as the token store counted them, hold one of `wanted` ((lemma,
+    reading)) or every word of one of `runs` (a phrase's lemmas) — `TokenStore.holding`, a look at each file's counts:
+    a pass of `best_for` over only these finds the same sentences, its ranking being each sentence's own. `most`: each
+    word's or run's first `most` such files only (the library's order: what the learner reads now first), so its
+    lines are the best of those. A file not indexed yet holds nothing here."""
+    from app import token_index
+    if not files or not (wanted or runs):
+        return []
+    store = token_index.open_store(language)
+    try:
+        return store.holding(files, keys=set(wanted or ()), runs=list(runs or ()), most=most)
+    finally:
+        store.close()
+
+
+def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None, files=None):
     """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
     them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
     (keys still being learned) breaks ties toward sentences that practise them; `phrases` ({name:
@@ -723,7 +747,9 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
 
     -> {key or name: [(others, text, surface, file)]}, best first — `others` is how many words besides
     the target's own the learner doesn't know; `file` tells two sentences' episodes apart. A target
-    with no sentence of a good length is absent."""
+    with no sentence of a good length is absent. `files`: the library's paths to read, in their order (default:
+    `library_files`) — a caller that passes them can name a sentence's file, as `file` is
+    its place among them (Piyo's rounds from Anki, app/cli/mcp_server.py)."""
     from app import analyzer, settings_manager, token_index
 
     if not wanted and not phrases:
@@ -731,10 +757,8 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    # The library as `build` lists it: Generate's (a missing item still counts, its cached sentences), then what is
-    # set aside as reference (Finished, watched episodes).
-    counted, aside = analyzer.resolve_sentence_files(language)
-    files = counted + (aside or [])
+    if files is None:
+        files = library_files(language)
     if not files:
         return {}
     store = token_index.open_store(language)

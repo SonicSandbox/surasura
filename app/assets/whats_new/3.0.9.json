@@ -1,0 +1,22 @@
+{
+  "version": "3.0.9",
+  "date": "2026-11-14",
+  "items": [
+    {"id": "path-try-again", "kind": "new", "for": ["everyone"], "where": "tab:current",
+     "text": "Your path keeps the steps you've done, with Show me to try one again."},
+    {"id": "junban-extended", "kind": "tweak", "for": ["junban", "anki"], "where": "help:junban",
+     "text": "順 Junban now sorts your cards on AnkiConnect Extended too."},
+    {"id": "junban-takes-over", "kind": "tweak", "for": ["junban"], "where": "help:junban",
+     "text": "A Reorder you start takes over a stopped one; one Undo puts the deck back."},
+    {"id": "about-marks", "kind": "tweak", "for": ["everyone"], "where": "tab:settings",
+     "text": "Explainer lines sit behind a small ? now: hover, Tab or click to read one."},
+    {"id": "put-back-then-reorder", "kind": "tweak", "for": ["junban"],
+     "text": "Another deck's stopped run in the way? Put that one back, then reorder, in one press."},
+    {"id": "audiobook-back", "kind": "fix", "for": ["audiobooks", "books"],
+     "text": "A removed audiobook comes back when you pick its folder for its book."},
+    {"id": "narrator-earlier-copy", "kind": "fix", "for": ["audiobooks", "books", "miner"],
+     "text": "Add the narrator's voice now reaches cards an earlier copy of the book made."},
+    {"id": "transcript-title-first", "kind": "fix", "for": ["audiobooks", "books"],
+     "text": "A book's own transcript is recognised when the narrator reads the title first."}
+  ]
+}

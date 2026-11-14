@@ -17,6 +17,11 @@ the same lookup (`_find`, the click's), asked of many episodes at once (`look`: 
 open, each folder listed once a round, Connect's index read once) by `Looks`, which keeps each episode's answer, looks
 on a worker of its own — never the window's thread, nor the reader's — and only when what an answer rests on changed
 (S19; the window track's `work/row55/NOTES.md`).
+
+The journey page's ▶ (Kiku-L, F3 / F19: a line's own audio, looped): `files`, the file each timed source the report
+shows plays from — the same lookup, so the page and the window never disagree; an audiobook's line plays from its one
+file (its record's, whatever the transcript is called), one of several files from none (the transcript's times run
+across them all).
 """
 import itertools
 import json
@@ -236,6 +241,65 @@ def look(language, asks, listings=None, find=None):
             print(f"Play: an episode's file couldn't be looked for ({e!r})")
             out[item_id] = False
     return out
+
+
+def files(language, rel_paths):
+    """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
+    once for every timed source it shows. Each one's item and its title's type read through one store open (`_kinds`;
+    no store, or an item it doesn't hold: a video looked for beside the file, as a 2.x library's ▶); then `_find`, the
+    window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays, several don't). A book or a text
+    plays nothing (its ▶ opens the book). The render's worker; never writes; one source's fault is its None alone."""
+    from app.services.view_rows import MEDIA_WORD
+    rel_paths = list(dict.fromkeys(rel_paths))
+    kinds = _kinds(language, rel_paths)
+    ids = sorted({k[0] for k in kinds.values() if k[0] is not None})
+    moved = {}
+    records = _pairings(language, ids, moved) if ids else {}
+    listings = {}
+    find = _finder(language, listings)
+    out = {}
+    for rel in rel_paths:
+        item_id, media = kinds.get(rel, (None, None))
+        out[rel] = None
+        if MEDIA_WORD.get(media, "video") not in ("video", "audio"):
+            continue
+        record = records.get(item_id) if item_id is not None else {}
+        try:
+            book = (record or {}).get("audiobook")
+            if isinstance(book, dict):
+                kept = book.get("files") or []
+                out[rel] = kept[0] if len(kept) == 1 and _on_disk(kept[0], listings) else None
+            else:
+                out[rel] = _find(language, rel, media, record, listings, find, moved.get(item_id))[0]
+        except Exception as e:                      # one source's fault never stops the others
+            print(f"Play: a line's file couldn't be looked for ({e!r})")
+    return out
+
+
+def _kinds(language, rel_paths):
+    """{rel path: (item id, its title's type)} for the store's items among `rel_paths`, through one store open; {} with
+    no store or one that can't be read now (each then looked for as a 2.x library's file)."""
+    from app import library_store, path_utils
+    data_dir = path_utils.get_data_path(language)
+    try:
+        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+            return {}
+        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
+        if store is None:
+            return {}
+        with store:
+            out, types = {}, {}
+            for rel, item_id in zip(rel_paths, store.item_ids(rel_paths)):
+                if item_id is None:
+                    continue
+                work_id = (store.item(item_id) or {}).get("work_id")
+                if work_id not in types:
+                    types[work_id] = store.media_type(work_id)[0] if work_id is not None else None
+                out[rel] = (item_id, types[work_id])
+            return out
+    except Exception as e:
+        print(f"Play: the lines' titles couldn't be read ({e!r})")
+        return {}
 
 
 def _find(language, rel_path, media, record, listings, find, moved=None):

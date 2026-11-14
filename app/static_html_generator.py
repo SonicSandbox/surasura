@@ -1,4 +1,5 @@
 import os
+import pathlib
 import re
 import sys
 import json
@@ -363,6 +364,33 @@ class AnchorFinder:
 
         A file's entries are dropped whenever its (mtime, size) changes, so an edited source can
         never serve a stale anchor."""
+        entry = self._entry(abs_path)
+        hit = entry["a"].get(sentence)
+        if hit is not None and len(hit) == 3 and hit[0] is not None:   # (a gone file's old entry: its signature is None)
+            return hit[0], hit[1], hit[2]
+
+        anchor = self.anchor(abs_path, sentence)
+        # A times-only answer (`times`: [None, start, end]) keeps its times; its anchor is looked for now.
+        start, end = (hit[1], hit[2]) if hit is not None and len(hit) == 3 else self.line(abs_path, sentence)
+        entry["a"][sentence] = [anchor, start, end]
+        self._memo_dirty = True
+        return anchor, start, end
+
+    def times(self, abs_path, sentence):
+        """(start, end) alone, for the journey's ▶ with the sources hidden (Kiku-L): the memo's answer when it has one,
+        else the line reader's — kept as [None, start, end], its anchor never looked for (that reads the whole file:
+        only `resolve`, for the badge, does)."""
+        entry = self._entry(abs_path)
+        hit = entry["a"].get(sentence)
+        if hit is not None and len(hit) == 3:
+            return hit[1], hit[2]
+        start, end = self.line(abs_path, sentence)
+        entry["a"][sentence] = [None, start, end]
+        self._memo_dirty = True
+        return start, end
+
+    def _entry(self, abs_path):
+        """The memo's entry for a file, checked against its signature once a render."""
         entry = self._entries.get(abs_path)
         if entry is None:
             entry = self._memo.get(abs_path)
@@ -371,16 +399,7 @@ class AnchorFinder:
                 self._memo[abs_path] = entry
                 self._memo_dirty = True
             self._entries[abs_path] = entry
-
-        hit = entry["a"].get(sentence)
-        if hit is not None and len(hit) == 3:       # (a gone file's old entry: its signature is None either way)
-            return hit[0], hit[1], hit[2]
-
-        anchor = self.anchor(abs_path, sentence)
-        start, end = self.line(abs_path, sentence)
-        entry["a"][sentence] = [anchor, start, end]
-        self._memo_dirty = True
-        return anchor, start, end
+        return entry
 
     def save_memo(self):
         """Persist the memo, keeping ONLY the files this render actually used.
@@ -557,22 +576,68 @@ def shown_name(filename):
         return name
 
 
-def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None):
+# The journey's ▶ (Kiku-L): the files a browser's <audio> plays from the report's file:// page (Chromium: Edge, Chrome).
+# Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary): those lines get no ▶, and the badge's hover says why.
+PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav", ".mp4", ".m4v", ".webm")
+
+
+def _shown_sources(lists, source_map):
+    """The timed sources (subtitles, transcripts) the report's lists name in their `Src N` columns — the only ones the
+    journey's ▶ looks a file up for (sources.json holds every file of the library)."""
+    shown = set()
+    for df in lists:
+        if df is None:
+            continue
+        for col in [c for c in df.columns if str(c).startswith("Src ")]:
+            shown.update(str(v) for v in df[col].dropna().unique())
+    return {rel for rel in shown if (source_map.get(rel) or {}).get("type") == "subtitle"}
+
+
+def _line_media(language, rel_paths):
+    """{rel path: [file URI, why not]} for the journey's ▶ (Kiku-L): the file `play.files` finds for each — its URI when
+    a browser plays it (`PLAYABLE`), else ["", its extension] (".mkv": the badge's hover says why); nothing found, no
+    row. Never raises: a lookup that fails is no ▶, never a failed report."""
+    if not rel_paths:
+        return {}
+    try:
+        from app.services import play
+        found = play.files(language, sorted(rel_paths))
+    except Exception as e:
+        print(f"Warning: could not look for the lines' audio: {e}")
+        return {}
+    from app import audiobooks
+    out = {}
+    for rel, path in found.items():
+        if path:
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in PLAYABLE:
+                out[rel] = ["", ext]
+            elif ext == ".mp3" and audiobooks.mp3_variable(path):
+                out[rel] = ["", "vbr"]          # a browser seeks in it only roughly (±1–2 s): never the wrong words
+            else:
+                out[rel] = [pathlib.Path(path).as_uri(), ""]
+    return out
+
+
+def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None):
     """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
 
     The CSVs carry the readable relative path so exports stay human-readable, but a big library
     repeats the same few hundred paths across tens of thousands of sentences — interning keeps the
     injected payload to one small int per sentence instead of a full path string.
 
-    Table rows are compact arrays: [name, type, fullPath, groupLabel]. The badge DISPLAYS `name`,
-    HOVERS `groupLabel` (group/file — enough to place the sentence without a wall of path), and
+    Table rows are compact arrays: [name, type, fullPath, groupLabel, videoLink, playUri, whyNot]. The badge DISPLAYS
+    `name`, HOVERS `groupLabel` (group/file — enough to place the sentence without a wall of path), and
     COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
-    made before sources.json carried absolute paths fall back to the relative one.
+    made before sources.json carried absolute paths fall back to the relative one. `playUri` / `whyNot`: the
+    journey's ▶ (Kiku-L) — `media`'s answer for the source (`_line_media`), else "".
 
     With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
     in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
     `At N` / `End N` — the seconds its lines start and end at, as Connect's line reader reads them (E5.1).
-    Deliberately NOT named "Context …": both templates collect example sentences with startsWith('Context ')."""
+    Without one (the badge off), a sentence whose source ▶ can play gets its `At N` / `End N` from `timer`
+    (`AnchorFinder.times`: no anchor looked for). Deliberately NOT named "Context …": both templates collect example
+    sentences with startsWith('Context ')."""
     for rec in records:
         for key in [k for k in rec if k.startswith("Src ")]:
             val = rec.get(key)
@@ -597,11 +662,13 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                               meta.get("type") or "text",
                               abs_path,
                               _group_label(val),
-                              vid])
+                              vid,
+                              *((media or {}).get(val) or ("", ""))])
             rec[key] = idx
 
             n = key[4:]                                      # "Src 2" -> "2"
-            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None) else None
+            timed = timer is not None and bool(table[idx][5])
+            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None or timed) else None
 
             if finder is not None:
                 if isinstance(sentence, str) and sentence:
@@ -613,6 +680,11 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                     if at is not None:
                         rec[f"At {n}"] = at
                         rec[f"End {n}"] = end
+            elif timed and isinstance(sentence, str) and sentence:
+                at, end = timer.times(table[idx][2], sentence)    # ▶ plays it: its times, never its anchor
+                if at is not None:
+                    rec[f"At {n}"] = at
+                    rec[f"End {n}"] = end
 
             # Optional speech module: mark sentences whose audio is already on disk, so the badge
             # can show that clicking will play instantly instead of pausing to generate. Named
@@ -1069,6 +1141,23 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                                   language=target_lang)
                      if settings.get("source_display", "off") != "off" else None)
 
+    # The two lists, read once here: the journey's ▶ (Kiku-L) looks up, in one go before anything is interned, the file
+    # each timed source they show plays from (`play.files`: the window's ▶'s lookup); its lines' times are read only
+    # for those — with the badge off, by a times-only finder (no anchor, no other file).
+    lists = {}
+    for what, path in (("progressive", PROGRESSIVE_CSV), ("priority", PRIORITY_CSV)):
+        if os.path.exists(path):
+            try:
+                lists[what] = pd.read_csv(path)
+            except Exception as e:
+                print(f"Error loading {what} CSV: {e}")
+    line_media = _line_media(language or target_lang, _shown_sources(lists.values(), source_map))
+    line_timer = None
+    if source_finder is None and any(uri for uri, _why in line_media.values()):
+        line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
+                                  script=_effective_script(target_lang, settings.get("zh_script")),
+                                  language=target_lang)
+
     # Optional speech module: which sentences already have generated audio. Gated on the badge
     # being visible, since the badge is the only thing that would show it.
     audio_probe = None
@@ -1115,9 +1204,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
         print(f"Warning: could not read the library tiers for the report: {e}")
 
     # Load Progressive
-    if os.path.exists(PROGRESSIVE_CSV):
+    if "progressive" in lists:
         try:
-            df = pd.read_csv(PROGRESSIVE_CSV)
+            df = lists["progressive"]
             # Group by Source File
             files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
@@ -1130,7 +1219,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             for filename in files_order:
                 words = by_file[filename]
                 _intern_sources(words, source_map, source_table, source_index, source_finder,
-                                audio_probe)
+                                audio_probe, line_media, line_timer)
                 compressed_words = compress_list_of_dicts(words)
                 
                 # Get total words from stats if available
@@ -1171,19 +1260,20 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
         entry["name"] = shown_name(entry["filename"])
 
     # Load Priority
-    if os.path.exists(PRIORITY_CSV):
+    if "priority" in lists:
         try:
-            df = pd.read_csv(PRIORITY_CSV)
+            df = lists["priority"]
             raw_priority = df.to_dict(orient="records")
             _intern_sources(raw_priority, source_map, source_table, source_index, source_finder,
-                            audio_probe)
+                            audio_probe, line_media, line_timer)
             data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
 
     # Every source is resolved by now — persist so the next render is a lookup, not a rescan.
-    if source_finder is not None:
-        source_finder.save_memo()
+    for finder in (source_finder, line_timer):
+        if finder is not None:
+            finder.save_memo()
 
     data["file_order"] = all_files_order
 

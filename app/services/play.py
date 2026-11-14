@@ -276,15 +276,17 @@ def files(language, rel_paths, memo=None, explain=False):
     out = dict.fromkeys(rel_paths)
     known, sources = _rows(language, rel_paths)
     data_dir = path_utils.get_data_path(language)
-    listings, playable, digests, stamps = {}, {}, {}, {}
-    asks = {}
+    listings, playable, digests, stamps, copies = {}, {}, {}, {}, {}
+    gated = {}
     for rel in rel_paths:
-        item_id, media, texts, records = known.get(rel, _UNKNOWN)
-        places = _places(data_dir, rel, records)
-        if MEDIA_WORD.get(media, "video") not in ("video", "audio"):
-            continue
+        item_id, media, texts, rows = known.get(rel, _UNKNOWN)
+        if MEDIA_WORD.get(media, "video") in ("video", "audio"):
+            gated[rel] = _places(data_dir, rel, rows, copies)
+    _list_all({p for places in gated.values() for p in places}, listings)
+    asks = {}
+    for rel, places in gated.items():
         if any(_holds_playable(p, listings, playable) for p in places) or \
-                (not records and _index_playable(language, stamps)):
+                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps)):
             asks[rel] = places
         elif explain:
             out[rel] = _named_beside(rel, places, listings)
@@ -326,8 +328,8 @@ _UNKNOWN = (None, None, (), ())         # `_rows`' answer for a source the store
 
 
 def _rows(language, rel_paths):
-    """({rel path: (item id, its title's type, its pairing rows as stored, those rows read)}, the library's sources as
-    one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
+    """({rel path: (item id, its title's type, its pairing rows as stored, each row's (origin, video_path, audiobook
+    files as JSON) as SQLite reads them)}, the library's sources as one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
     source then looked at as a 2.x library's file). No record is picked here (`pairing_of` picks, for the few the
     gate and the memo send on)."""
     from app import library_store, path_utils
@@ -341,50 +343,71 @@ def _rows(language, rel_paths):
         with store:
             ids = {rel: i for rel, i in zip(rel_paths, store.item_ids(rel_paths)) if i is not None}
             wanted = sorted(set(ids.values()))
-            works, texts = {}, {}
+            works, texts, fields = {}, {}, {}
+            pick = "CASE WHEN json_valid(pairing) THEN json_extract(pairing, '$.{}') END"
             for at in range(0, len(wanted), 500):
                 chunk = wanted[at:at + 500]
                 marks = ",".join("?" * len(chunk))
                 works.update(store.conn.execute(f"SELECT id, work_id FROM items WHERE id IN ({marks})", chunk))
-                for item_id, text in store.conn.execute(f"SELECT item_id, pairing FROM pairings WHERE item_id IN "
-                                                        f"({marks}) ORDER BY rowid", chunk):
+                # the gate's fields read by SQLite (no record parsed here); the rows as stored for the memo's key
+                for item_id, text, origin, video, files in store.conn.execute(
+                        f"SELECT item_id, pairing, {pick.format('origin')}, {pick.format('video_path')}, "
+                        f"{pick.format('audiobook.files')} FROM pairings WHERE item_id IN ({marks}) ORDER BY rowid",
+                        chunk):
                     texts.setdefault(item_id, []).append(text if isinstance(text, str) else "")
+                    fields.setdefault(item_id, []).append((origin, video, files))
             types = {w: (store.media_type(w)[0] if w is not None else None) for w in set(works.values())}
             sources = json.dumps(sorted((s.get("id"), s.get("path")) for s in store.sources(all=True, counts=False)),
                                  default=str)
-        known = {}
-        for rel, item_id in ids.items():
-            raw = texts.get(item_id, [])
-            read = []
-            for text in raw:
-                try:
-                    record = json.loads(text)
-                except ValueError:
-                    continue
-                if isinstance(record, dict):
-                    read.append(record)
-            known[rel] = (item_id, types.get(works.get(item_id)), raw, read)
+        known = {rel: (item_id, types.get(works.get(item_id)), texts.get(item_id, []), fields.get(item_id, []))
+                 for rel, item_id in ids.items()}
         return known, sources
     except Exception as e:
         print(f"Play: the lines' records couldn't be read ({e!r})")
         return {}, ""
 
 
-def _places(data_dir, rel, records):
-    """Every folder a source's file could be found in by `_find` (a superset): its copy's, and each pairing row's
-    original's, named video's (moved ones too) and audiobook files'."""
-    places = [os.path.join(data_dir, *rel.split("/")[:-1])]
-    for record in records:
-        for key in ("origin", "video_path"):
-            value = record.get(key)
+def _places(data_dir, rel, rows, copies):
+    """Every folder a source's file could be found in by `_find` (a superset): its copy's (`copies`: once a folder),
+    and each pairing row's original's, named video's (moved ones too) and audiobook files' (`_rows`' fields)."""
+    folder = rel.rpartition("/")[0]
+    if folder not in copies:
+        copies[folder] = os.path.join(data_dir, *folder.split("/")) if folder else data_dir
+    places = [copies[folder]]
+    for origin, video, files in rows:
+        for value in (origin, video):
             if isinstance(value, str):
-                value = re.sub(r"#\d+$", "", value)
+                if "#" in value:
+                    value = re.sub(r"#\d+$", "", value)
                 if os.path.isabs(value):
                     places.append(os.path.dirname(value))
-        book = record.get("audiobook")
-        if isinstance(book, dict) and isinstance(book.get("files"), list):
-            places += [os.path.dirname(f) for f in book["files"] if isinstance(f, str) and os.path.isabs(f)]
+        if isinstance(files, str):
+            try:
+                files = json.loads(files)
+            except ValueError:
+                files = None
+            if isinstance(files, list):
+                places += [os.path.dirname(f) for f in files if isinstance(f, str) and os.path.isabs(f)]
     return list(dict.fromkeys(places))
+
+
+def _list_all(folders, listings):
+    """Each folder not listed yet, listed once (`_listing`'s form) — side by side when there are many: a listing waits
+    on the disk (a share most of all), not on Python."""
+    todo = [f for f in folders if f not in listings]
+    if len(todo) < 16:
+        for f in todo:
+            _listing(f, listings)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(folder):
+        try:
+            return folder, {n.lower(): n for n in os.listdir(folder or ".")}
+        except OSError:
+            return folder, False
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        listings.update(pool.map(one, todo))
 
 
 def _listing(folder, listings):

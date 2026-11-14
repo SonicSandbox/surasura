@@ -222,7 +222,8 @@ def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(mo
     paired = _stand_in(_elsewhere("hato", "第8話.mp4"), b"\x00\x00\x00\x18ftypmp42")
     record = {}
     monkeypatch.setattr(play, "_rows", lambda language, rels: (
-        {rel: (5, "anime", [json.dumps(record)] if record else [], [dict(record)] if record else [])}, ""))
+        {rel: (5, "anime", [json.dumps(record)] if record else [],
+               [(record.get("origin"), record.get("video_path"), None)] if record else [])}, ""))
     monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: dict(record)})
     memo = {}
     assert play.files("ja", [rel], memo=memo) == {rel: beside}

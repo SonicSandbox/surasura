@@ -9,6 +9,7 @@ from tests/Test Resources/ in a source folder beside the test's data folder; Ank
 """
 import json
 import os
+import unicodedata
 
 import pytest
 
@@ -50,6 +51,139 @@ def test_a_card_that_isnt_anki_miners_names_nothing():
     assert sn.card_key("月&nbsp;影 &amp; 旅人 — 第1話 @ 00:01:00") == "月影旅人/第1話"       # HTML as Anki stores it
     assert sn.series_of("[SubsPlease] 夜市小记 (1080p) — 夜市小记 - 02 @ 00:01:00") == "夜市小记"
     assert sn.series_of("夜市小记 - 02 @ 00:01:00") is None
+
+
+# --- Junban-X3 (based on Mattias's #447, 3.0.10): 順's footer named two sources missing that were in his library ---- #
+COLORFUL = "カラフル (文春文庫) - 森 絵都"                       # his audiobook's m4b, as its file is named
+TRPG = "笑い過ぎて一生忘れられないTRPG"                         # his single YouTube video, as Anki Miner wrote it
+ABROAD = "【留学なし】誰から何も言われずに"                       # in his library under another title: still named
+AUDIOBOOK = {"ja": ("カラフル", f"//hemma/data/Japanese/Book Sync/カラフル/{COLORFUL}.m4b", f"Audio — {COLORFUL}"),
+             "zh": ("活着", "D:/有声书/活着/活着 - 余华.m4b", "Audio — 活着 - 余华")}
+SINGLE = {"ja": (f"Library/{TRPG}/{TRPG} [IIqUltT_x0c].srt", TRPG),
+          "zh": ("Library/VLOG一个人的旅行纪录片完整版/VLOG一个人的旅行纪录片完整版 [BV1xx411c7mD].srt",
+                 "VLOG一个人的旅行纪录片完整版")}
+
+
+def _audiobook(files, title):
+    """An audiobook item's record as the store keeps it (`audiobooks.record`): its files and the titles it carries."""
+    return {"audiobook": {"files": list(files), "title": title, "titles": [title]}}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_audiobooks_cards_name_its_own_file_by_anki_miners_audio_series(language):
+    """`Audio — <the file's name>` (Anki Miner's fixed series) names the audiobook whose file it is — read from the
+    item's record (`audiobook.files`), never from a file's own folder form; NFKC and full-width forms alike; another
+    book of that series names nothing."""
+    title, m4b, source = AUDIOBOOK[language]
+    names = sn.names_of_record(_audiobook([m4b], title))
+    assert sn.card_key(f"{source} @ 0:12:34") in names
+    folder, stem = os.path.dirname(m4b), os.path.splitext(os.path.basename(m4b))[0]
+    wide = sn.names_of_record(_audiobook([f"{folder}/{stem} ０１.m4b"], title))     # a full-width number: NFKC
+    assert sn.card_key(f"{source} 01 @ 0:12:34") in wide and sn.card_key(f"{source} 1 @ 0:12:34") not in wide
+    assert sn.card_key("Audio — 他の本 @ 0:12:34") not in names
+    tagged = sn.names_of_record(_audiobook([f"{folder}/[朗読] {stem}.m4b"], title))   # 3.10 cleans the leading tag off
+    assert sn.card_key(f"{source} @ 0:12:34") in tagged
+    assert sn.card_key(f"Audio — [朗読] {stem} @ 0:12:34") in tagged                # 3.5.0 kept it: as written
+    assert not any(k.startswith("audio/") for k in sn.names_of(m4b))              # a file's own name: no `Audio`
+    assert sn.only_counted(sn.card_key(f"{source} @ 0:12:34"))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_split_audiobooks_every_file_names_it_but_a_generic_files_name_never_does(language):
+    """An audiobook split across files: each file's cards name it. A file whose name doesn't carry its book's title
+    (`01`, `Track 01`, `Disc 1 Track 01`) is every audiobook's: it names nothing (a false *in your library* hides a
+    missing book; a missed one is only said)."""
+    title, m4b, source = AUDIOBOOK[language]
+    folder, stem = os.path.dirname(m4b), os.path.splitext(os.path.basename(m4b))[0]
+    split = [f"{folder}/{stem} {i:02d}.mp3" for i in (1, 2, 3)]
+    names = sn.names_of_record(_audiobook(split, title))
+    for i in (1, 2, 3):
+        assert sn.card_key(f"{source} {i:02d} @ 0:00:10") in names, i
+    assert sn.card_key(f"{source} 04 @ 0:00:10") not in names
+    generic = [f"{folder}/{name}.mp3" for name in ("01", "Track 01", "Disc 1 Track 01", "Chapter 01")]
+    assert sn.names_of_record(_audiobook(generic, title)) == set()
+    assert sn.names_of_record({"audiobook": {"files": [m4b]}}) == set()          # no title known: nothing to carry
+    for lone in ("Track 01", "Chapter 1", "audiobook"):     # a one-file book: its tags may give its own name as title
+        record = {"audiobook": {"files": [f"{folder}/{lone}.mp3"], "title": lone, "titles": [lone, title]}}
+        assert sn.names_of_record(record) == set(), lone
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_single_videos_bare_title_names_its_file_and_a_short_or_generic_name_never_does(language):
+    """A single video (`<title>/<title> [id].srt`) has no episode: its bare title names it when the file is its
+    folder's own title and the title is long enough to be its own (BARE_TITLE_MIN letters and digits, no special, no
+    part). An extra inside a show's folder (`Creditless Opening`) and every short name stay folder forms only."""
+    path, title = SINGLE[language]
+    assert sn.card_key(f"{title} @ 0:01:02") in sn.names_of(path)
+    wide = "".join(chr(ord(c) + 0xFEE0) if c.isascii() and c.isalnum() else c for c in title)     # ＴＲＰＧ, ＶＬＯＧ
+    assert wide != title and unicodedata.normalize("NFKC", wide) == title
+    assert sn.card_key(f"{wide} @ 0:01:02") in sn.names_of(path)
+    assert sn.only_counted(sn.card_key(f"{title} @ 0:01:02"))
+    for stem in ("Opening", "Trailer", "Extra", "Part 1", "OVA", "ED", "Creditless Opening", "Behind the Scenes",
+                 "Interview with the cast", f"{title} Part 1"):
+        assert all("/" in k for k in sn.names_of(f"他の番組/{stem}.ja.srt")), stem
+    assert all("/" in k for k in sn.names_of(f"Library/{title} Part 1/{title} Part 1 [IIqUltT_x0c].srt"))  # a part
+    for short in ("猫の動画", "Vlog", "旅行"):                                     # its folder's own, but too short
+        assert all("/" in k for k in sn.names_of(f"Library/{short}/{short} [IIqUltT_x0c].srt")), short
+    assert sn.card_key(f"{ABROAD} @ 0:00:05") not in sn.names_of(path)          # exact keys only: still missing
+
+
+def test_a_show_and_its_episode_keeps_the_names_it_had():
+    """The bare name of a show + an episode is what it was before Junban-X3, key for key."""
+    assert sn.names_of("星の旅人/星の旅人 - 05.ja.srt") == {"星の旅人/星の旅人05", "星の旅人/星の旅人05ja", "星の旅人05",
+                                                             "星の旅人05ja"}
+    assert sn.names_of("夜市小记/夜市小记 - 02.zh.srt") == {"夜市小记/夜市小记02", "夜市小记/夜市小记02zh", "夜市小记02",
+                                                         "夜市小记02zh"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_pin_writes_by_folder_forms_only_never_a_bare_title_or_anki_miners_series(language):
+    """Pins write Anki (*Study its cards first*, *Take its new cards out*): `bare=False` gives the folder forms alone —
+    no single video's bare title, no `Audio — …`, no `YouTube — …`."""
+    from modules.junban import pins
+    path, title = SINGLE[language]
+    assert sn.card_key(f"{title} @ 0:01:02") not in sn.names_of(path, bare=False)
+    assert sn.card_key(f"{title} @ 0:01:02") not in pins.names_of(path)
+    audio_title, m4b, _source = AUDIOBOOK[language]
+    assert sn.names_of_record(_audiobook([m4b], audio_title), bare=False) == set()
+    assert not any(k.startswith("audio/") for k in pins.names_of(m4b))
+    assert sn.names_of_record({"media_type": "youtube", "title": title}, bare=False) == set()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_fetched_videos_record_title_names_it_by_youtube_and_bare(language):
+    """The YouTube downloader's record keeps the video's title: `YouTube — <title>` (Anki Miner's fixed series) and the
+    bare title name it — only a title long enough to be its own (`Trailer` is every channel's)."""
+    _path, title = SINGLE[language]
+    names = sn.names_of_record({"producer": "youtube", "media_type": "youtube", "title": title})
+    assert sn.card_key(f"YouTube — {title} @ 0:01:02") in names and sn.card_key(f"{title} @ 0:01:02") in names
+    assert sn.only_counted(sn.card_key(f"YouTube — {title} @ 0:01:02"))
+    for generic in ("Trailer", "Opening", "", None):
+        assert sn.names_of_record({"media_type": "youtube", "title": generic}) == set(), generic
+    assert sn.names_of_record({"media_type": "anime", "title": title}) == set()  # another record's title: no video's
+    assert not sn.only_counted("月影の旅人/月影の旅人04")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_librarys_audiobook_item_carries_its_files_audio_names_found_by_a_look(language):
+    """On a real library: an audiobook split in two MP3s, found by a look under the user's own folder — its item's
+    names carry `Audio — <each file's name>` (the record's files, read by `library`); with `bare` False (pins) none."""
+    from tests.test_audiobooks import _mp3
+    from tests.test_audiobook_items import _settle
+    title, m4b, source = AUDIOBOOK[language]
+    stem = os.path.splitext(os.path.basename(m4b))[0]
+    store, _data_dir = _empty(language)
+    src = _drive("books")
+    files = [_mp3(os.path.join(src, "Audio", title, f"{stem} {i:02d}.mp3"), seconds=1800,
+                  frames={"TALB": title, "TRCK": str(i)}) for i in (1, 2)]
+    _settle(*files)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+    [audio] = [i for i in bs.library(language) if any(k.startswith("audio/") for k in i.names)]
+    for i in (1, 2):
+        assert sn.card_key(f"{source} {i:02d} @ 0:00:10") in audio.names, i
+    assert not any(k.startswith("audio/") for i in bs.library(language, bare=False) for k in i.names)
 
 
 def test_a_key_two_titles_share_names_neither_but_one_titles_two_folders_keep_it():

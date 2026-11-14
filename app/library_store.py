@@ -174,6 +174,10 @@ GRADUATED_FOLDER = "Graduated"
 # 3.0's Sources (SRC): every new text copy goes into one content folder of Surasura's own, `Library/<show>/<file>`,
 # whatever its place; grouping only (`_below_tier` strips it), never a place (a place is the store's alone)
 CONTENT_FOLDER = "Library"
+# The YouTube downloader's drop folder (`data/<lang>/Processed`): a single video's transcript lands directly in it, a
+# playlist's in a folder of its own below it. A file directly in it is a loose drop, as in hato's (`_below_tier`):
+# Mattias's report — a video registered there was titled "Processed", its record's channel never read
+PROCESSED_FOLDER = "Processed"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
@@ -325,11 +329,11 @@ def search_fold(text, language=None):
 
 def _below_tier(rel):
     """The folder a file sits in, below its tier folder ('HighPriority/Frieren/Season 1/x.srt' → 'Frieren/Season 1'),
-    as written; '' for a loose file (directly in a tier folder, or in hato's drop folder). The content folder counts as
+    as written; '' for a loose file (directly in a tier folder, in hato's drop folder or in `PROCESSED_FOLDER`). The content folder counts as
     one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any case the file
     system reads as it (as `take_in` and the sync compare it)."""
     folder = _rel_dir(_strip(rel))
-    if not folder or path_key(folder) == path_key(HATO_FOLDER):
+    if not folder or path_key(folder) in (path_key(HATO_FOLDER), path_key(PROCESSED_FOLDER)):
         return ""
     parts = folder.split("/")
     if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):

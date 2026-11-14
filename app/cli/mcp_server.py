@@ -327,16 +327,15 @@ def _library_lines(state, language, found, limit):
             rows.append((row, key, phrase, look, reading))
             if len(rows) >= limit:
                 break
+        best = {}
         try:
             library = sentence_corpus.library_files(language)
             best, read = _lines_pass(language, library, rows, FILES_PER_WORD)
             missed = [r for r in rows if not best.get(r[1] or r[0]["word"])]
             if missed:
-                more, _read = _lines_pass(language, library, missed, None, skip=set(read))
-                best.update(more)
-        except Exception:                   # the store busy or unreadable: the words still come, without lines
+                best.update(_lines_pass(language, library, missed, None, skip=set(read))[0])
+        except Exception:                   # the store busy or unreadable: the words still come, with what was read
             contract.log.exception("mcp: the library's lines for Anki's words weren't read")
-            best = {}
     out = []
     for row, key, _phrase, _look, reading in rows:
         if language == "ja" and reading:           # もん モン beside 物's モノ, as the list shows a kana spelling

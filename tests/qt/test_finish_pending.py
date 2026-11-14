@@ -457,6 +457,7 @@ def test_f2_ctrl_z_of_a_finish_waits_for_its_undos_reorder(window):
     # The store holds the undo before the window hears of it (the writer's thread tells it next): until then the
     # Finish's press is rightly still owed, so `owed` alone is already true. Wait for the undo's own press to begin.
     assert wait_until(lambda: any(p is not first for p in live(win)), 5)
+    assert not first.live()                                     # let go as the undo's own begins, never after
     assert owed(win)
     back = live(win)
     assert not first.live() and len(back) == 1 and win.bar_arc.isVisible()

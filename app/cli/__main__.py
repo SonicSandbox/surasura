@@ -43,9 +43,21 @@ def _selftest(args):
     return {"verb": "_selftest", "echo": args.echo}
 
 
+def _listen_args(parser):
+    from app import listening
+    listening.verb_args(parser)
+
+
+def _listen(args):
+    """Hidden: a listening round's maker (app/listening.py), started by Piyo's surasura_listening_round."""
+    from app import listening
+    return listening.verb(args)
+
+
 # name: (add its arguments, run it, shown in --help)
 VERBS = {
     "_selftest": (_selftest_args, _selftest, False),
+    "_listen": (_listen_args, _listen, False),            # Piyo-LR: a listening round's maker
     "status": (verbs.status_args, verbs.status, True),
     "list": (verbs.list_args, verbs.list_words, True),
     "known": (verbs.known_args, verbs.known, True),

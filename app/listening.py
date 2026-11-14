@@ -32,6 +32,7 @@ program. `tests/test_listening.py` (+ `modules/irodori/tests/test_listen.py`).
 """
 import array
 import json
+from contextlib import contextmanager
 import os
 import re
 import shutil
@@ -218,12 +219,27 @@ def queue(language, lines, title="", round_id=None, state="queued", voice=""):
     from app import practice_rounds
     round_id = round_id or practice_rounds.new_id()
     os.makedirs(os.path.join(folder(language, round_id), "lines"), exist_ok=True)
-    _write(language, round_id, {"round_id": round_id, "language": language, "kind": KIND,
-                                "title": str(title or "")[:TITLE_CHARS * 5],
-                                "name": base_name(title), "lines": list(lines), "state": state,
-                                "voice": str(voice or ""),
-                                "queued": time.strftime("%Y-%m-%dT%H:%M:%S"), "order": time.time_ns()})
+    with _placing(language) as place:
+        _write(language, round_id, {"round_id": round_id, "language": language, "kind": KIND,
+                                    "title": str(title or "")[:TITLE_CHARS * 5],
+                                    "name": base_name(title), "lines": list(lines), "state": state,
+                                    "voice": str(voice or ""),
+                                    "queued": time.strftime("%Y-%m-%dT%H:%M:%S"), "order": place})
     return round_id
+
+
+@contextmanager
+def _placing(language):
+    """A round's place in the queue: 1 + the highest place any round of `language` holds — the queue's own count,
+    never the clock (Windows' moves in 1–15.6 ms ticks: two rounds in one tick shared a place, and a round asked again
+    within one kept its old place, so the running maker took it as tried: Iro-V, train 35). Given under a short lock
+    and written before it is let go, so two AI sessions queueing at once never share one. `contract.CliError` (busy)
+    when the lock stays held."""
+    from app.cli import contract
+    with contract.take_lock("listening-queue", "queueing a listening round", wait=5.0):
+        most = max((data.get("order") for _name, data in _rounds(language)
+                    if isinstance(data.get("order"), int) and not isinstance(data.get("order"), bool)), default=0)
+        yield most + 1
 
 
 def ready(language, round_id):
@@ -231,7 +247,7 @@ def ready(language, round_id):
     data = read(language, round_id)
     if data is None:
         raise Problem(f"No listening round {round_id}.")
-    _write(language, round_id, dict(data, state="queued", order=time.time_ns()))
+    _write(language, round_id, dict(data, state="queued"))         # its place given by `queue`
 
 
 def keep_record(language, round_id, lines, title="", voice=""):
@@ -302,9 +318,10 @@ def again(language, round_id):
         finally:
             path_utils.release_lock(held)
         return True
-    data = dict(data, state="queued", order=time.time_ns(), tries=0)   # after the rounds already waiting
-    data.pop("problem", None)
-    _write(language, round_id, data)
+    with _placing(language) as place:                   # after the rounds already waiting: a new place, so a
+        data = dict(data, state="queued", order=place, tries=0)     # maker that tried it this run takes it again
+        data.pop("problem", None)
+        _write(language, round_id, data)
     return True
 
 
@@ -474,6 +491,13 @@ def _log():
 def waiting_rounds(language):
     """The rounds a maker should make, oldest first: queued or making (one with a cancel asked is taken and finished
     cancelled at once)."""
+    out = [((data.get("order") or 0), name) for name, data in _rounds(language)
+           if data.get("state") in ("queued", "making")]
+    return [name for _order, name in sorted(out)]       # their places in the queue (`_placing`)
+
+
+def _rounds(language):
+    """Every listening round's (round_id, record), by id; an unreadable one passed over."""
     from app import practice_rounds
     try:
         names = sorted(os.listdir(practice_rounds.folder(language)))
@@ -481,12 +505,11 @@ def waiting_rounds(language):
         return []
     out = []
     for name in names:
-        if not practice_rounds._ID.match(name) or not os.path.isdir(os.path.join(practice_rounds.folder(language), name)):
-            continue
-        data = read(language, name)
-        if data is not None and data.get("state") in ("queued", "making"):
-            out.append((data.get("order") or 0, name))
-    return [name for _order, name in sorted(out)]       # the order they were queued in (two in one second too)
+        if practice_rounds._ID.match(name) and os.path.isdir(os.path.join(practice_rounds.folder(language), name)):
+            data = read(language, name)
+            if data is not None:
+                out.append((name, data))
+    return out
 
 
 def make_waiting(language, settings=None, should_stop=None, sleep=time.sleep, tool="look"):
@@ -496,7 +519,7 @@ def make_waiting(language, settings=None, should_stop=None, sleep=time.sleep, to
     from app import path_utils
     made, tried = [], set()
 
-    def key(round_id):                          # again= gives a round a new order: queued again, it is new to this run
+    def key(round_id):                          # again= gives a round a new place: queued again, new to this run
         return round_id, (read(language, round_id) or {}).get("order")
 
     def left():

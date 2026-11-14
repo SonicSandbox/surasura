@@ -655,6 +655,47 @@ def test_r2_a_stop_for_an_update_is_not_one_of_the_tries(fake):
     assert listening.make_round("ja", rid, settings={}, tool=None) == "done" and len(fake.spoken) == 2  # made once
 
 
+# --- Iro-V (train 35): Windows' clock moves in 1–15.6 ms ticks; a round's place never rests on it ------------------ #
+@pytest.fixture
+def one_tick(monkeypatch):
+    """The clock frozen to one tick: everything in the test happens "at once", as within 15.6 ms on Windows."""
+    monkeypatch.setattr(listening.time, "time_ns", lambda: 1_794_673_767_446_235_000)
+
+
+def test_tick_a_round_asked_again_within_one_tick_is_made_in_that_run(fake, one_tick):
+    a, b = _queued(LINES[:2]), _queued(LINES[2:4])
+
+    def during(text):
+        if text == LINES[0]:
+            assert listening.cancel("ja", a) == "cancelling"
+        if text == LINES[2]:
+            assert listening.again("ja", a) is True
+    fake.during = during
+    got = listening.make_waiting("ja", settings={}, tool=None, sleep=lambda s: None)
+    assert got["made"] == [b, a] and listening.read("ja", a)["state"] == "done"
+
+
+def test_tick_rounds_queued_within_one_tick_keep_the_order_they_were_queued_in(fake, one_tick):
+    ids = [_queued(LINES[i:i + 1]) for i in range(5)]
+    assert listening.waiting_rounds("ja") == ids
+    assert listening.make_waiting("ja", settings={}, tool=None)["made"] == ids
+
+
+def test_tick_a_round_asked_again_goes_after_the_rounds_already_waiting(fake, one_tick):
+    a = _queued(LINES[:1])
+    listening.cancel("ja", a)
+    b = _queued(LINES[1:2])
+    listening.again("ja", a)
+    assert listening.waiting_rounds("ja") == [b, a]
+
+
+def test_tick_order_is_the_queue_s_own_count_whatever_the_clock_says(fake, monkeypatch):
+    clock = iter([3_000, 1_000, 2_000])                     # a clock set back between two queues
+    monkeypatch.setattr(listening.time, "time_ns", lambda: next(clock, 0))
+    ids = [_queued(LINES[i:i + 1]) for i in range(3)]
+    assert listening.waiting_rounds("ja") == ids
+
+
 # --- Iro-V: a round's one voice ----------------------------------------------------------------------------------- #
 def test_a_round_that_names_a_voice_keeps_it_for_every_maker_and_again(fake):
     # the voice lives in the round's record: a maker stopped mid-round (an update) and the next one, and again= after

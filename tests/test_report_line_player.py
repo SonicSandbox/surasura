@@ -484,7 +484,7 @@ def test_times_kept_without_an_anchor_are_reused_and_the_badge_still_finds_its_a
 def _render(tmp_path, records_by_file, source_map, settings=None):
     """A report rendered from these lists (the analyzer's CSVs, its sources.json) -> (globalData, globalSources)."""
     results = tmp_path / "results"
-    results.mkdir(exist_ok=True)
+    results.mkdir(parents=True, exist_ok=True)
     rows = []
     for seq, (filename, words) in enumerate(records_by_file.items(), 1):
         for w in words:
@@ -510,7 +510,8 @@ def _render(tmp_path, records_by_file, source_map, settings=None):
     table = json.loads(re.search(r"let globalSources = (\[.*?\]);\n", html, re.S).group(1))
     dirs = json.loads(re.search(r"let globalLineDirs = (\[.*?\]);\n", html, re.S).group(1))
     for row in table:                                       # each playable source's [5] as the page puts it together
-        row[5] = _uri(row[5], dirs) if row[5] else ""
+        if len(row) > 5:
+            row[5] = _uri(row[5], dirs) if row[5] else ""
     return data, table
 
 
@@ -549,6 +550,44 @@ def test_a_report_gives_each_playable_line_its_file_and_times_and_an_mkv_line_it
     assert ("Frag 1" in played) == (display != "off")                     # the anchor: only for the badge
     prio = {r["Word"]: r for r in _rows(data["priority"])}
     assert (prio["文化祭"]["At 1"], prio["文化祭"]["End 1"]) == (1.0, 3.2)  # the priority view's lines play too
+
+
+def test_with_its_switch_off_the_journey_is_drawn_as_before_the_player(tmp_path, monkeypatch):
+    """The Settings switch (*Play a line's own audio*, on by default): off, the render looks for no line's file and
+    reads no line's times — the source table's rows keep their five fields, no folder list — so the draw is what it
+    was before the line player, whatever the library holds; on (the default), an .mp4 line plays."""
+    rel, copies = _in_library("ja", SHOW, f"{SHOW} - 21.ja.srt")
+    mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 21.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    source_map = {rel: {"name": "x.srt", "type": "subtitle",
+                        "abs": os.path.join(path_utils.get_data_path("ja"), *rel.split("/"))}}
+    lists = {f"{SHOW} - 21.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel}]}
+    data, table = _render(tmp_path / "on", lists, source_map)                 # the default: on
+    assert urllib.request.url2pathname(table[0][5][len("file:"):]) == mp4
+    from app import cues
+    monkeypatch.setattr(play, "files", lambda *a, **k: pytest.fail("off: no line's file is looked for"))
+    monkeypatch.setattr(cues, "timeline", lambda *a, **k: pytest.fail("off: no line's times are read"))
+    data, table = _render(tmp_path / "off", lists, source_map, {"line_player": False})
+    assert [len(row) for row in table] == [5]                               # as before the line player
+    assert "At 1" not in _rows(data["progressive"][0]["words"])[0]
+    html = (tmp_path / "off" / "results" / "reading_list_static.html").read_text(encoding="utf-8")
+    assert "let globalLineDirs = [];" in html
+
+
+def test_the_switch_is_one_settings_row_on_by_default_with_its_words_in_one_place():
+    """PROVISIONAL (its default and words may change once it has been tried): the default in settings_manager's
+    defaults, the words in settings_strings' ROWS — a toggle on the Journey slab, its one line behind the row's ?,
+    found by a search for what it does; placed as the report's (a re-render, never a re-analysis)."""
+    from app import settings_manager
+    from app.qt import settings_catalog as catalog
+    from app.qt import settings_strings as S
+    from app.settings_placement import PLACED
+    assert settings_manager.DEFAULT_SETTINGS["line_player"] is True
+    [row] = [r for r in catalog.ROWS if r.id == "line_player"]
+    assert (row.section, row.kind, row.keys, row.adv) == ("reading", "toggle", ("line_player",), False)
+    label, help_, _tip, _words = S.ROWS["line_player"]
+    assert label == "Play a line's own audio" and help_ and "\n" not in help_
+    assert "line_player" in catalog.find("loop", {}, "ja") and "line_player" in catalog.find("own audio", {}, "zh")
+    assert PLACED["line_player"] == "report"
 
 
 def test_a_report_with_nothing_playable_looks_for_no_times_and_reads_no_file(tmp_path, monkeypatch):

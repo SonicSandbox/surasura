@@ -543,6 +543,11 @@ ROWS = {
                                  "label backlog anki waiting card mark"),
     "inline_completed_files": ("Show ‘Target met’ in place", "Met files keep their order instead of moving down",
                                "Keep met files in order instead of moving them down", "target met inline completed"),
+    # The journey's line player — PROVISIONAL words (the default is settings_manager's `line_player`)
+    "line_player": ("Play a line's own audio",
+                    "A ▶ after a sentence plays it from its own episode, repeated with a pause",
+                    "Play each sentence's own audio on your journey, looped with a pause",
+                    "play line audio loop repeat chorus listen pause"),
     "hide_audio_button": ("Hide the audio button", "No speaker icon on your journey’s sentences",
                           "Hide the speaker icon on your journey", "audio button speaker hide"),
     "word_search_category": ("Lookup examples from", "", "Which kind of sentences the lookup opens",

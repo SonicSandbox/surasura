@@ -18,7 +18,7 @@ PLACED = {
     "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
     "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "update_check_enabled": "neither", "skipped_version": "neither",
-"source_display": "report", "word_search_enabled": "report",
+"source_display": "report", "word_search_enabled": "report", "line_player": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",
     "use_every_core": "neither",
     "app_theme": "neither", "text_size": "neither", "app_motion": "neither",

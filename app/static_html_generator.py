@@ -730,11 +730,11 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                               abs_path,
                               _group_label(val),
                               vid,
-                              *((media or {}).get(val) or ("", ""))])
+                              *((media.get(val) or ("", "")) if media is not None else ())])
             rec[key] = idx
 
             n = key[4:]                                      # "Src 2" -> "2"
-            timed = timer is not None and bool(table[idx][5])
+            timed = timer is not None and len(table[idx]) > 5 and bool(table[idx][5])
             sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None or timed) else None
 
             if finder is not None:
@@ -1218,10 +1218,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 lists[what] = pd.read_csv(path)
             except Exception as e:
                 print(f"Error loading {what} CSV: {e}")
+    # Its switch (`line_player`, Settings): off, none of this — no lookup, no times, the source table as before.
+    line_on = bool(settings.get("line_player", True))
     line_media, line_dirs = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
-                             os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO), settings.get("source_display", "off") != "off")
+                                        os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO),
+                                        settings.get("source_display", "off") != "off") if line_on else (None, [])
     line_timer = None
-    if source_finder is None and any(uri for uri, _why in line_media.values()):
+    if source_finder is None and line_media and any(uri for uri, _why in line_media.values()):
         line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
                                   script=_effective_script(target_lang, settings.get("zh_script")),
                                   language=target_lang)

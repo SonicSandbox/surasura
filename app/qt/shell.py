@@ -1536,6 +1536,23 @@ class ShellWindow(QMainWindow):
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
                 page.list.tooltips = self.tooltips
+        # --- Hover-W: the word card over a row's *N new* (`word_peek.py`; the words: `services/title_words.py`) ---- #
+        self.words = None
+        self._title_words = None                          # (the numbers it reads, its TitleWords)
+        self._words_sync = None                           # the known-words sync's last state seen (a new sync: Anki read)
+        current = self.page_widgets.get("current")
+        if services.library is not None and hasattr(current, "list"):
+            from app.qt import word_peek
+            self.words = word_peek.PeekHost(central, self._words_provider, lambda: current.view_model,
+                                            tooltips=self.tooltips, router=self.router,
+                                            open_journey=self._words_journey)
+            lst = current.list
+
+            def _at(rect):
+                return QRect(lst.viewport().mapTo(central, rect.topLeft()), rect.size())
+            lst.words_hover.connect(lambda row, ep, rect: self.words.hover(word_peek.PeekHost.scope(row, ep), _at(rect)))
+            lst.words_keep.connect(lambda row, ep, rect: self.words.keep(word_peek.PeekHost.scope(row, ep), _at(rect)))
+            lst.words_left.connect(self.words.left)
         # --- W3.1a: the drag, the moves, Done and Undo (`drag.py`), given a writer beside the library ---------------- #
         self.moves = None
         if services.library is not None and services.writer is not None:
@@ -2655,6 +2672,7 @@ class ShellWindow(QMainWindow):
         if self._duties_asked:
             return
         self._duties_asked = True
+        self._words_anki()                                 # Hover-W: Anki's standing read once, after the first paint
         if self.current_tab() == "settings":
             self.mount_settings()                             # W3.3 P7: the window came back on its Settings tab
         from app.qt import first_run                          # W3.5 part 3: the setup wizard over the window, first run
@@ -3007,6 +3025,57 @@ class ShellWindow(QMainWindow):
                 and self.services.started):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
             self._look_for_anki()                           # Kantan-B1 (B3): Anki opened meanwhile?
+            self._words_anki()                              # Hover-W: Anki's standing for the word card (throttled)
+
+    # --- Hover-W: the word card's provider and its moments -------------------------------------------------------- #
+    def _words_provider(self):
+        """The word card's `TitleWords` over the numbers the rows show (a test's `services.title_words` first); a
+        language switch's new numbers make a new one, the old one closed. None without numbers."""
+        given = getattr(self.services, "title_words", None)
+        if given is not None:
+            return given
+        numbers = getattr(getattr(self.services, "writer", None), "numbers", None)
+        if numbers is None or not hasattr(numbers, "words"):
+            return None
+        held = self._title_words
+        if held is not None and held[0] is numbers:
+            return held[1]
+        from app.services.title_words import TitleWords
+        settings = self.services.settings
+        provider = TitleWords(numbers, self.language, settings=settings.get)
+        if held is not None:
+            held[1].close()
+        self._title_words = (numbers, provider)
+        provider.refresh_anki()
+        return provider
+
+    def _words_anki(self, force=False):
+        """Anki's standing read again for the word card (never on a hover): as the window comes to the front, after a
+        known-words sync (`force`) — the provider keeps its own once-a-minute throttle."""
+        if getattr(self, "words", None) is None:
+            return
+        provider = self._words_provider()
+        if provider is not None:
+            provider.refresh_anki(force=force)
+
+    def open_words(self, row):
+        """⋯'s *Its words* (lean 13): `row`'s card kept open under its *N new* (the row's own rect when that part
+        isn't on screen)."""
+        current = self.page_widgets.get("current")
+        if getattr(self, "words", None) is None or not hasattr(current, "list"):
+            return
+        lst = current.list
+        rect = lst.words_rect(row.key)
+        central = self.centralWidget()
+        if rect is not None:
+            at = QRect(lst.viewport().mapTo(central, rect.topLeft()), rect.size())
+        else:
+            at = QRect(central.width() // 2, central.height() // 3, 1, 1)
+        self.words.keep(row, at)
+
+    def _words_journey(self, control, episode):
+        """*Open in the journey ↗* on the kept card: the journey's one press, on its button, at that title."""
+        self._open_journey(control=control, episode=episode)
 
     # --- Kantan-B1 (B3, Sonic ✅ 2026-11-12): 順's deck to pick is amber only once Anki answers ------------------------ #
     def _look_for_anki(self):
@@ -3276,6 +3345,10 @@ class ShellWindow(QMainWindow):
         sync = getattr(state, "sync", None)                # Kantan-B1 (B3): 順's deck amber only once Anki answers —
         if sync in ("syncing", "synced", "anki-closed"):   # ... the sync's own answer (with the switch off too: a
             self.phase.set_anki(sync != "anki-closed")     # ... sync you asked), else `_look_for_anki`'s
+        if sync != getattr(self, "_words_sync", None):     # Hover-W: a known-words sync just ended: Anki read again
+            if sync == "synced":
+                self._words_anki(force=True)
+            self._words_sync = sync
 
     def _known_clicked(self):
         """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
@@ -4056,6 +4129,10 @@ class ShellWindow(QMainWindow):
         moves = getattr(self, "moves", None)
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
+        held = getattr(self, "_title_words", None)        # --- Hover-W: the word card's worker and store reader go
+        if held is not None:
+            self._title_words = None
+            held[1].close()
         qcovers.stop_scan()                               # --- W3.2 Q6: the disk scan stops between titles
         if getattr(self, "_fetcher", None) is not None:  # --- W3.2 L3: the online covers stop (between requests)
             self._fetcher.stop(timeout=0)

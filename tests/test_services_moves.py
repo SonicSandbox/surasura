@@ -1372,6 +1372,41 @@ def test_a_new_plan_read_stale_keeps_the_last_new_counts_until_one_can_be_follow
     fresh.close()
 
 
+def test_hover_w_a_titles_words_are_its_rows_new_and_a_stale_plan_keeps_the_last_words_while_its_figures_fade(
+        tmp_path):
+    """Hover-W: `words(ids)` counts what the row's *N new* counts (the engine the figures come from). A plan that can't
+    be followed (the next Generate's, read stale) keeps the last engine's words, marked kept, as the rows keep its
+    faded figures; a first plan read stale, or none, has no words (the row shows no figure)."""
+    seed, analysed, path = _small(tmp_path)
+    verdict = [None]
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: verdict[0])
+    assert numbers.words([r["id"] for r in analysed[:3]]) is None          # not read yet
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    table = numbers()[1]
+    ids = [r["id"] for r in analysed[:3]]
+    got = numbers.words(ids)
+    assert len(got.new) == sum(table[i][2] for i in ids) and not got.kept
+    assert got.plan == path                    # (data_dir: the store's — the seed's stand-in has none)
+    assert sorted(got.rel.values()) == sorted(r["rel_path"] for r in analysed[:3])
+    verdict[0] = "known words changed"
+    write_plan(path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed], n_words=300, seed=9)
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() == "stale: known words changed"
+    kept = numbers.words(ids)
+    assert kept.kept and [w.k for w in kept.new] == [w.k for w in got.new] and kept.key == got.key
+    numbers.close()
+    fresh = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: "known words changed")
+    fresh.load()
+    assert fresh.idle(30) and fresh.words(ids) is None
+    fresh.close()
+    gone = M.Numbers(seed.opener, "ja", plan_file=str(tmp_path / "none.json.gz"))
+    gone.load()
+    assert gone.idle(30) and gone.words(ids) is None
+    gone.close()
+
+
 def test_a_plan_missing_a_file_the_library_counts_is_stale(tmp_path):
     seed, analysed, path = _small(tmp_path, drop=1)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)

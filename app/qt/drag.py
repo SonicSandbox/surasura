@@ -3168,6 +3168,9 @@ class DragController(QObject):
             label, tip = strings.MENU_ITEMS[name]
             ok = writable or name == "journey"
             out.append((name, label, tip if ok else reason, ok))
+        words = getattr(self.win, "open_words", None)     # --- Hover-W (lean 13): the keyboard's way to the word card
+        if words is not None and getattr(row, "n_new", None) is not None and self.win._words_provider() is not None:
+            out.append(("words", strings.WORDS_MENU, strings.WORDS_MENU_TIP, True))
         return out
 
     def menu(self, row, at):
@@ -3183,6 +3186,9 @@ class DragController(QObject):
         return m
 
     def menu_pick(self, row, name):
+        if name == "words":                              # --- Hover-W: the card kept open, under the row's *N new*
+            self.win.open_words(row)
+            return
         if name == "journey":
             from app.qt import press as qpress       # round 8 row 45: the row's ⋯ turns while it opens (IK-2)
             ep = view_rows.journey_episode(row)                            # opened ON it (Sonic 2026-10-24)

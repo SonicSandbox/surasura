@@ -14,6 +14,8 @@ under the list's floor) stays as the last Generate left it until the next one (D
     eng.add(item_id, record, tier, before_id=None, after_id=None, exact=True, moved=())   # an arrival (E2.2 D9)
     eng.set_pins(pins)
     result = eng.result()
+    new, before = eng.words_of(item_ids)               # Hover-W: a title's words (the window's word card)
+    first_sentences(path)                              # Hover-W: each listed word's first sentence per file
 
 **Pure** (rule 3): the standard library and `app.plan_rules` only — no Qt, Tk, pandas or tokenizer, no settings, no
 store, no Anki; the only I/O is reading the plan file it is given. The caller runs it on a worker.
@@ -29,8 +31,10 @@ import bisect
 import gzip
 import io
 import json
+import sys
 import zlib
 from array import array
+from collections import namedtuple
 
 from app import plan_rules
 
@@ -751,6 +755,7 @@ class Engine:
             tiers.append(slot)
         n_files = len(self._uses)
         self._order = fs
+        self._order_v = getattr(self, "_order_v", 0) + 1     # Hover-W: what `words_of`'s spellings are kept for
         self._tier = [None] * n_files
         self._pos = [None] * n_files
         for i, (f, slot) in enumerate(zip(fs, tiers)):
@@ -888,6 +893,7 @@ class Engine:
         at = sum(self._tier_count[:slot]) if anchor is None else order.index(a) + (1 if before_id is None else 0)
         order[at:at] = block
         self._order = order
+        self._order_v += 1
         old_tier = [self._tier[f] for f in block]
         for f in block:
             self._tier[f] = slot
@@ -1043,6 +1049,7 @@ class Engine:
         self._fs.append(array("i"))         # (its sentences aren't the plan's: none is a row's, until the Generate)
         if sp:
             self._sp[f] = sp
+            self._order_v += 1                  # (a new file's tied spellings: the kept ones are stale)
         for i, k in enumerate(ks):
             self._files_of[k].append(f)
             if self._idx_in[k] is not None:
@@ -1320,6 +1327,51 @@ class Engine:
             out[k] = kept
         return out
 
+    def words_of(self, item_ids):
+        """Hover-W: a title's words in this order — `item_ids` its files (any not held or out of the order are left
+        out). -> (new, before): `new` the words first met in one of its files, the list's order (Score down, first
+        place, …, as `_rank`); `before` its other words, each first met in an earlier file — in journey order (where
+        they are taught), each place's most useful first. Every one a `TitleWord`; `len(new)` is always the sum of its
+        files' *N new*. `at` the title's own file where the word is first met (its sentence's file); `taught` the file
+        whose *N new* counts it."""
+        fs = []
+        for item in dict.fromkeys(item_ids):
+            f = self._f_of.get(item)
+            if f is not None and self._pos[f] is not None:
+                fs.append(f)
+        fs.sort(key=self._pos.__getitem__)
+        held = set(fs)
+        at = {}
+        for f in fs:
+            for k in self._uses[f][0]:
+                if k not in at:
+                    at[k] = f
+        first, pos, score = self._first, self._pos, self._score
+        new, before = [], []
+        for k in at:
+            if first[k] is not None:
+                (new if first[k] in held else before).append(k)
+        new.sort(key=lambda k: (-score(k), pos[first[k]], self._phrase[k], self._first_idx[k], k))
+        before.sort(key=lambda k: (pos[first[k]], -score(k), self._first_idx[k], k))
+        spelled = {}
+        if self._ties and not self._ties.keys().isdisjoint(at):
+            kept = getattr(self, "_spelled", None)       # the tied spellings' walk is every file (~3 ms at 20k):
+            if kept is None or kept[0] != self._order_v:  # once per order, not once per card
+                kept = self._spelled = (self._order_v, self._spellings(self._order))
+            spelled = kept[1]
+        ids, keys = self._ids, self.plan.keys
+
+        def word(k):
+            return TitleWord(keys[k][0], keys[k][1], self._label(k, spelled), bool(self._phrase[k]), ids[at[k]],
+                             ids[first[k]], at[k], k)
+        return [word(k) for k in new], [word(k) for k in before]
+
+    def _label(self, k, spelled):
+        """The spelling a row shows (`Orth`, ties worked out in this order); a word the list doesn't hold: its Word."""
+        if self.plan.rows[k] is None:
+            return self.plan.keys[k][0]
+        return self._spelling(k, spelled)[0] or self.plan.keys[k][0]
+
     @staticmethod
     def _prog_file(line):
         """A file's line of the progressive pass (`plan_rules.progressive_pass`) from its plan record (01 §7): the
@@ -1372,6 +1424,69 @@ class Engine:
         word = self.plan.keys[k][0]
         orth = plan_rules.display_orth(word, orths)
         return orth, plan_rules.display_forms(word, orths, surfaces), (tiers.get(orth, row[0]) if tiers else row[0])
+
+
+TitleWord = namedtuple("TitleWord", "word reading label phrase at taught f k")
+#   Hover-W (`Engine.words_of`): the key (Word, Reading), the spelling shown, whether it is a set phrase, the title's
+#   item where it is first met and the item that teaches it (its first place); `f`, `k`: the plan's file and key
+
+
+class FirstSentences:
+    """Hover-W: every listed word's first sentence in each file, as the plan keeps it (F7's per-file `fs` and the
+    packed `firsts`; the text stays in the token store) — read from the plan file, never decoded in a lean load. `of(f)`
+    -> {k: (sentence number in the file, the text's hash)} (`plan_rules.text_hash_of`: a text read back is shown only
+    when its hash is this one). `files` the plan's rel paths; `key` the file's (mtime_ns, size) when read."""
+
+    def __init__(self, files, fs, number, hashes, offset, key=None):
+        self.files, self._fs, self._number, self._hash, self._offset, self.key = files, fs, number, hashes, offset, key
+
+    def of(self, f):
+        if not 0 <= f < len(self._fs):
+            return {}
+        pairs, out = self._fs[f], {}
+        for j in range(0, len(pairs), 2):
+            i = pairs[j + 1] - self._offset
+            if 0 <= i < len(self._number):
+                out.setdefault(pairs[j], (self._number[i], self._hash[i]))
+        return out
+
+
+def first_sentences(path):
+    """`FirstSentences` from the plan file at `path` (format 3 or 4), or None: no plan, another format, one without
+    first sentences (format 1 or 2), or tables that don't fit together. Its own read of the file — the window's numbers
+    load it lean — on the caller's worker (at 20,000 files ~0.7 s, ~13 MB kept: Hover-W's register)."""
+    import base64
+    import os
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            lines = gzip.decompress(fh.read()).split(b"\n")
+        header = json.loads(lines[0])
+        if header.get("format") not in (3, 4):
+            return None
+        files, fs, offset, cols = [], [], 0, None
+        for line in lines[1:]:
+            if line.startswith(b'{"f":'):
+                fs.append(array("i", json.loads(line).get("fs", ())))
+            elif line.startswith(b'{"files":'):
+                files += [entry[0] for entry in json.loads(line)["files"]]
+            elif line.startswith(b'{"sentences":'):
+                offset += len(json.loads(line)["sentences"])
+            elif line.startswith(b'{"firsts":'):
+                packed = json.loads(line)["firsts"]
+                if len(packed) != 1 or packed[0].get("order") != sys.byteorder:
+                    return None
+                cols = {}
+                for name, code in (("number", "i"), ("hash", "I")):
+                    arr = array(code)
+                    arr.frombytes(base64.b64decode(packed[0][name], validate=True))
+                    cols[name] = arr
+        del lines
+    except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError, zlib.error):
+        return None
+    if cols is None or len(fs) != len(files) or len(cols["number"]) != len(cols["hash"]):
+        return None
+    return FirstSentences(files, fs, cols["number"], cols["hash"], offset, (st.st_mtime_ns, st.st_size))
 
 
 def _contexts(out, kept, n):

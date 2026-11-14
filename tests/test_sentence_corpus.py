@@ -1029,3 +1029,40 @@ def test_a_word_ignored_in_migaku_is_ignored_by_the_sentence_dictionary_too(tmp_
         store.close()
     assert "窓" in ignore
     assert "猫" in lemmas and "猫" not in ignore
+
+
+def test_the_first_look_keeps_only_the_files_holding_the_words_and_their_pass_finds_the_same_lines(tmp_path):
+    """Piyo's rounds from Anki (Piyo-AK): `files_holding` looks at each file's word counts in the token store, never its
+    sentences, so `best_for` reads only the episodes that say the words — the same lines as over every file, as a
+    sentence's rank is its own. In the library's order; a phrase needs every one of its words; `most` keeps each word's
+    first files only (a common word is in nearly every episode); a file not indexed holds nothing."""
+    lines = _context_lines(os.path.join(os.path.dirname(__file__), "Test Resources", "ja"))
+    _library(("第01話.txt", lines[:6]), ("第02話.txt", ["猫が窓の外を見ている。", "長い旅の末に、ついに城へ辿り着いた。"]),
+             ("第03話.txt", lines[6:]), ("第04話.txt", ["彼女は気を取り直して歩き出した。"]))
+    sc.build("ja", str(tmp_path / "corpus.zip"), progress=lambda message: None)   # indexes the library
+    files = sc.library_files("ja")
+    names = [os.path.basename(f) for f in files]
+    assert names == ["第01話.txt", "第02話.txt", "第03話.txt", "第04話.txt"]
+    adventure = next((l, r) for _t, tokens in _tokenized(["冒険だ。"]) for l, r, _s, _o in tokens if l == "冒険")
+    cat = next((l, r) for _t, tokens in _tokenized(["猫だ。"]) for l, r, _s, _o in tokens if l == "猫")
+    phrase = {"気を取り直す": tuple(t[0] for _t, tokens in _tokenized(["気を取り直す"]) for t in tokens)}
+
+    def held(**kw):
+        return [os.path.basename(f) for f in sc.files_holding("ja", files, **kw)]
+    assert held(wanted={adventure}) == ["第01話.txt", "第03話.txt"]
+    assert held(wanted={adventure, cat}) == ["第01話.txt", "第02話.txt", "第03話.txt"]
+    assert held(wanted=set(), runs=[phrase["気を取り直す"]]) == ["第04話.txt"]
+    assert held(wanted=set(), runs=[phrase["気を取り直す"][:2] + ("付ける",)]) == []
+    assert held(wanted=set(), runs=[("は",)], most=1) == ["第01話.txt"]
+    assert held(wanted=set(), runs=[("は",)]) == ["第01話.txt", "第03話.txt", "第04話.txt"]
+    assert held(wanted={adventure}, most=1) == ["第01話.txt"]
+    assert held(wanted={adventure, cat}, most=1) == ["第01話.txt", "第02話.txt"]
+    girl = next((l, r) for _t, tokens in _tokenized(["彼女だ。"]) for l, r, _s, _o in tokens if l == "彼女")
+    assert held(wanted={adventure, girl}, most=1) == ["第01話.txt", "第04話.txt"], "冒険 had its file: 第03話 isn't read"
+    assert sc.files_holding("ja", files + [os.path.join(os.path.dirname(files[0]), "第99話.txt")],
+                            {adventure}) == [files[0], files[2]]
+    assert sc.files_holding("ja", files, set()) == []
+
+    every = sc.best_for("ja", {adventure}, files=files)
+    some = sc.best_for("ja", {adventure}, files=sc.files_holding("ja", files, {adventure}))
+    assert [text for _o, text, _s, _f in every[adventure]] == [text for _o, text, _s, _f in some[adventure]]

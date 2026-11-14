@@ -23,6 +23,7 @@ import pytest
 
 from app import audiobooks
 from app import library_store as ls
+from app import sources
 from app.services import needs, view_rows
 from tests.test_audiobook_items import (_audio_folder, _audio_items, _book_items, _epub, _fit, _lines, _record,
                                         _fresh_module_state, _settle)  # noqa: F401 (the fixture)
@@ -440,6 +441,31 @@ def test_a_paired_transcript_rewritten_as_another_text_is_checked_again():
         assert [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == [heard[0]]
 
 
+def test_a_transcript_an_earlier_check_found_another_books_is_checked_again_by_the_next_look():
+    """Mattias's 本好きの下剋上 vol 3: its own transcript found "another book's" by the check before the run in order
+    (a `found` with no `check`) — the next look checks it again: the book's, used for timing, *Needs you* quiet."""
+    import json
+    language = "ja"
+    store, _data_dir, src, srt = _paired(language, STAR, _lines(language)[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        [heard] = [r for r in _book_items(store, STAR)[1] if r[3] == "audio"]
+        with store._writing():                                        # as 3.0.7's check left it
+            for key, _i, rec in store._audiobook_rows(heard[0]):
+                said = rec["audiobook"]["transcript"]
+                said["found"] = {"book": said["found"]["book"], "share": 0.0023}
+                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                                   (json.dumps(rec, sort_keys=True, ensure_ascii=False), key))
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (sources.TRANSCRIPT_CHECK,))
+        assert audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.UNCHECKED
+        _look(store, language, root)                                  # a quick look: no folder of it changed
+        rec = _record(store, heard[0])
+        assert audiobooks.transcript_use(rec) == audiobooks.TIMING
+        assert rec["transcript"]["found"]["check"] == audiobooks.FOUND_CHECK
+        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
+
+
 def test_a_book_arriving_after_an_audiobook_counted_by_its_transcript_takes_the_count_back():
     """Alone with its transcript (counted), then its book arrives beside it and pairs: the item waits again in the
     book's title — the book's words count, the transcript's no longer."""
@@ -656,8 +682,12 @@ def test_what_a_transcript_is_for():
     assert audiobooks.transcript_use({"book": None}) is None
     assert audiobooks.transcript_use({"transcript": said, "book": None}) == audiobooks.TEXT
     assert audiobooks.transcript_use({"transcript": said, "book": book}) == audiobooks.UNCHECKED
-    found = lambda share, mark="s1": dict(said, found={"book": mark, "share": share})  # noqa: E731
+    found = lambda share, mark="s1", check=audiobooks.FOUND_CHECK: dict(  # noqa: E731
+        said, found={"book": mark, "share": share, "check": check})
     assert audiobooks.transcript_use({"transcript": found(0.6), "book": book}) == audiobooks.TIMING
     assert audiobooks.transcript_use({"transcript": found(0.59), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(None), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(1.0, "s2"), "book": book}) == audiobooks.UNCHECKED
+    # a check made before the run in order (no `check`): another book's is checked again, the book's stays
+    assert audiobooks.transcript_use({"transcript": found(0.0023, check=None), "book": book}) == audiobooks.UNCHECKED
+    assert audiobooks.transcript_use({"transcript": found(0.99, check=None), "book": book}) == audiobooks.TIMING

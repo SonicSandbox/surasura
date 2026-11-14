@@ -795,6 +795,9 @@ def cues(text):
     return out
 
 
+FOUND_CHECK = 2                 # the in-order check a `found` was made with: 2, the longest run in order. A transcript
+                                # found another book's by an earlier one (1: a scan that never looked back) is checked
+                                # again at the next look; one found the book's stays (the run in order finds no less)
 FOUND_PLACES = 64               # a cue's places in the book the in-order share weighs at most (a line said that often
                                 # tells nothing of the order; the bound keeps another book's check milliseconds)
 
@@ -839,7 +842,9 @@ def transcript_use(rec):
     if not isinstance(found, dict) or found.get("book") != _book_mark(book):
         return UNCHECKED
     share = found.get("share")
-    return TIMING if isinstance(share, (int, float)) and share >= CONTENT_SHARE else OTHER
+    if isinstance(share, (int, float)) and share >= CONTENT_SHARE:
+        return TIMING
+    return OTHER if found.get("check") == FOUND_CHECK else UNCHECKED
 
 
 def _book_mark(book):

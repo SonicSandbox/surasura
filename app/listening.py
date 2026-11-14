@@ -253,7 +253,17 @@ def again(language, round_id):
     except OSError:
         pass
     if data.get("state") in ("queued", "making"):
-        return True                                     # on its way already: never rewritten under a maker
+        from app import path_utils
+        held = path_utils.try_lock(_lock_path())
+        if held is None:
+            return True                                 # a maker is at work: never rewritten under it
+        try:                                            # none: its tries start over (asked for again)
+            data = read(language, round_id) or data
+            if data.get("state") in ("queued", "making"):
+                _write(language, round_id, dict(data, tries=0))
+        finally:
+            path_utils.release_lock(held)
+        return True
     data = dict(data, state="queued", order=time.time_ns(), tries=0)   # after the rounds already waiting
     data.pop("problem", None)
     _write(language, round_id, data)
@@ -296,7 +306,7 @@ def status(language, round_id, start=True):
     state = data.get("state")
     out = {"round_id": round_id, "state": state}
     if state in ("queued", "making") and _cancelled(language, round_id):
-        out["state"] = "cancelling"
+        out["state"] = cancel(language, round_id) if not maker_running() else "cancelling"   # its maker gone: now
         return out
     if state == "done":
         files = _files(language, round_id, data)
@@ -407,13 +417,23 @@ def start_maker(language, popen=None):
     return None
 
 
+def said(e):
+    """An error in words for the AI: an OSError's own reason (its filename would carry the account's name), else its
+    text, short."""
+    if isinstance(e, OSError):
+        return e.strerror or type(e).__name__
+    text = str(e) or type(e).__name__
+    return text if len(text) <= PROBLEM_CHARS else text[:PROBLEM_CHARS - 1] + "…"
+
+
 def _log():
     import logging
     return logging.getLogger("surasura-cli")
 
 
 def waiting_rounds(language):
-    """The rounds a maker should make, oldest first: queued or making, no cancel asked."""
+    """The rounds a maker should make, oldest first: queued or making (one with a cancel asked is taken and finished
+    cancelled at once)."""
     from app import practice_rounds
     try:
         names = sorted(os.listdir(practice_rounds.folder(language)))
@@ -436,8 +456,11 @@ def make_waiting(language, settings=None, should_stop=None, sleep=time.sleep, to
     from app import path_utils
     made, tried = [], set()
 
+    def key(round_id):                          # again= gives a round a new order: queued again, it is new to this run
+        return round_id, (read(language, round_id) or {}).get("order")
+
     def left():
-        return [r for r in waiting_rounds(language) if r not in tried]
+        return [r for r in waiting_rounds(language) if key(r) not in tried]
     while True:
         held = None
         for _look in range(LOCK_LOOKS):                 # a status's look or a cancel holds it for a moment only
@@ -454,7 +477,7 @@ def make_waiting(language, settings=None, should_stop=None, sleep=time.sleep, to
                 waiting = left()
                 if not waiting:
                     break
-                tried.add(waiting[0])                   # once a run: a round its disk refused waits for the next
+                tried.add(key(waiting[0]))              # once a run: a round its disk refused waits for the next
                 if make_round(language, waiting[0], settings, should_stop, sleep, tool) == "done":
                     made.append(waiting[0])
         finally:
@@ -494,6 +517,8 @@ def make_round(language, round_id, settings=None, should_stop=None, sleep=time.s
     data = read(language, round_id)
     if data is None:
         return "failed"
+    if data.get("state") not in ("queued", "making"):
+        return data.get("state")                            # made, cancelled, failed or new: nothing to make
     if _cancelled(language, round_id):
         return _finish(language, round_id, data, "cancelled")
     if settings is None:
@@ -510,6 +535,8 @@ def make_round(language, round_id, settings=None, should_stop=None, sleep=time.s
     try:
         _write(language, round_id, data)
         got = _voice_lines(language, round_id, data, module, settings, should_stop, sleep)
+        if got == "stopped":                                # asked to stop (an update): not one of its tries
+            _write(language, round_id, dict(data, tries=tries - 1))
         if got != "voiced":
             return got
         if _cancelled(language, round_id):
@@ -525,7 +552,7 @@ def make_round(language, round_id, settings=None, should_stop=None, sleep=time.s
     except Exception as e:                                  # the voice's own trouble starting: said, never raised
         _log().exception("listening: round %s stopped", round_id)
         try:
-            return _finish(language, round_id, data, "failed", f"The AI voice stopped ({e}).")
+            return _finish(language, round_id, data, "failed", f"The AI voice stopped ({said(e)}).")
         except OSError:
             return "stopped"
     data = dict(data, files=files, made=time.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -552,7 +579,8 @@ def _voice_lines(language, round_id, data, module, settings, should_stop, sleep)
             break
         except getattr(module, "Busy", ()) as e:            # card audio holds the voice: this round waits its turn
             if waited >= BUSY_WAIT_S:
-                return _finish(language, round_id, data, "failed", str(e))
+                return _finish(language, round_id, data, "failed",
+                               f"The AI voice stayed busy making card audio for {BUSY_WAIT_S // 60} minutes.")
             if waited == 0:
                 _write(language, round_id, dict(data, waiting=str(e)))
             if _cancelled(language, round_id):
@@ -568,6 +596,10 @@ def _voice_lines(language, round_id, data, module, settings, should_stop, sleep)
             path = os.path.join(here, f"{n:02d}.wav")
             if os.path.isfile(path) and os.path.getsize(path) > 0:
                 continue
+            for _second in range(int(getattr(speaker, "rest_before", lambda: 0)())):   # the voice's rest (GPU)
+                if _cancelled(language, round_id) or (should_stop is not None and should_stop()):
+                    break
+                sleep(1)
             if _cancelled(language, round_id):
                 return _finish(language, round_id, data, "cancelled")
             if should_stop is not None and should_stop():
@@ -577,7 +609,7 @@ def _voice_lines(language, round_id, data, module, settings, should_stop, sleep)
                 if not read_wav(wav)[2]:                    # audio we can join, or the line is said
                     raise ValueError("no audio came back")
             except Exception as e:
-                raise Problem(f"The AI voice couldn't read line {n} ({e}).") from None
+                raise Problem(f"The AI voice couldn't read line {n} ({said(e)}).") from None
             with open(f"{path}.part", "wb") as f:
                 f.write(wav)
             os.replace(f"{path}.part", path)

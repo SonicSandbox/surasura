@@ -637,8 +637,15 @@ def listening_round_tool(state, lines, title="", language=None):
         if keep:
             listening.keep_record(lang, round_id, lines, title)
         listening.ready(lang, round_id)
-    except OSError as e:                    # the folder can't be written (held, full): said; the maker never starts
-        raise ToolError(f"Surasura couldn't save the round just now ({e.strerror or e}). Try again in a moment.")
+    except (OSError, ValueError, contract.CliError) as e:   # the folder or its record refused: said, never left
+        try:                                                # "new" for good: the folder says it wasn't made
+            data = listening.read(lang, round_id)
+            if data is not None:
+                listening._finish(lang, round_id, data, "failed", "It wasn't saved.")
+        except OSError:
+            pass
+        why = e.message if isinstance(e, contract.CliError) else listening.said(e)
+        raise ToolError(f"Surasura couldn't save the round just now ({why}). Try again in a moment.")
     listening.start_maker(lang)
     out = listening.status(lang, round_id, start=False)
     out = {"queued": True, "round_id": round_id, "lines": len(lines), "next": out["next"]}

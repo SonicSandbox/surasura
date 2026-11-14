@@ -497,9 +497,14 @@ def test_r1_a_cancel_with_no_maker_is_cancelled_at_once_and_with_one_waits_for_i
 
 
 def test_r1_again_on_a_round_on_its_way_never_rewrites_it(fake):
+    from app import path_utils
     rid = _queued(LINES[:2])
     before = listening.read("ja", rid)
-    assert listening.again("ja", rid) is True and listening.read("ja", rid) == before
+    held = path_utils.try_lock(listening._lock_path())          # a maker at work
+    try:
+        assert listening.again("ja", rid) is True and listening.read("ja", rid) == before
+    finally:
+        path_utils.release_lock(held)
 
 
 def test_r1_a_round_whose_record_the_disk_refuses_is_tried_once_a_run_never_forever(fake, monkeypatch):
@@ -578,3 +583,72 @@ def test_r1o_the_maker_steps_aside_only_on_the_same_reason_twice(monkeypatch, fa
         should_stop() for _ in range(5)) or {"made": [], "left": 0, "busy": False})
     listening.verb(type("A", (), {"lang": "ja"})())
     assert got == [False, False, False, False, True]
+
+
+# --- review r2 (Opus) -------------------------------------------------------------------------------------------- #
+def test_r2_an_errors_filename_never_reaches_the_ai(fake):
+    rid = _queued(LINES[:2])
+    fake.fail_on = set()
+    real = FakeVoice.Speaker
+
+    def denied(self, settings):
+        s = real(self, settings)
+
+        def speak(text):
+            raise PermissionError(13, "Permission denied", r"C:\Users\someone\AppData\Local\run\server.log")
+        s.speak = speak
+        return s
+    FakeVoice.Speaker = denied
+    try:
+        listening.make_round("ja", rid, settings={}, tool=None)
+    finally:
+        FakeVoice.Speaker = real
+    problem = listening.read("ja", rid)["problem"]
+    assert problem == "The AI voice couldn't read line 1 (Permission denied)." and "someone" not in problem
+
+
+def test_r2_a_cancel_whose_maker_died_is_finished_by_the_next_status(fake):
+    from app import path_utils
+    rid = _queued(LINES[:2])
+    held = path_utils.try_lock(listening._lock_path())
+    assert listening.cancel("ja", rid) == "cancelling"
+    path_utils.release_lock(held)                   # the maker is killed before it looks again
+    assert listening.status("ja", rid)["state"] == "cancelled"
+    assert listening.read("ja", rid)["state"] == "cancelled"
+
+
+def test_r2_a_round_queued_again_during_a_run_is_made_in_that_run(fake):
+    a, b = _queued(LINES[:2]), _queued(LINES[2:4])
+
+    def during(text):
+        if text == LINES[0]:
+            assert listening.cancel("ja", a) == "cancelling"        # the maker (this run) holds the lock
+        if text == LINES[2]:
+            assert listening.again("ja", a) is True                 # asked again while b is made
+    fake.during = during
+    got = listening.make_waiting("ja", settings={}, tool=None, sleep=lambda s: None)
+    assert got["made"] == [b, a] and listening.read("ja", a)["state"] == "done"
+
+
+def test_r2_a_voice_busy_past_the_wait_says_what_happened(fake, monkeypatch):
+    monkeypatch.setattr(listening, "BUSY_WAIT_S", 20)
+    rid = _queued(LINES[:2])
+    fake.busy_times = 99
+    assert listening.make_round("ja", rid, settings={}, sleep=lambda s: None, tool=None) == "failed"
+    assert listening.read("ja", rid)["problem"] == "The AI voice stayed busy making card audio for 0 minutes."
+
+
+def test_r2_again_on_a_round_killed_three_times_starts_its_tries_over(fake):
+    rid = _queued(LINES[:2])
+    listening._write("ja", rid, dict(listening.read("ja", rid), state="making", tries=listening.TRIES))
+    assert listening.again("ja", rid) is True and listening.read("ja", rid)["tries"] == 0
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done"
+
+
+def test_r2_a_stop_for_an_update_is_not_one_of_the_tries(fake):
+    rid = _queued(LINES[:2])
+    for _ in range(listening.TRIES + 2):
+        assert listening.make_round("ja", rid, settings={}, should_stop=lambda: True, tool=None) == "stopped"
+    assert listening.read("ja", rid)["state"] == "making" and listening.read("ja", rid)["tries"] == 0
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done"
+    assert listening.make_round("ja", rid, settings={}, tool=None) == "done" and len(fake.spoken) == 2  # made once

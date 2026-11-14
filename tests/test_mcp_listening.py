@@ -138,3 +138,16 @@ def test_r1o_again_with_the_voice_off_queues_nothing(voice):
     out = _data(state, "surasura_practice_start", {"again": rid})
     assert out == {"round_id": rid, "queued": False, "why": "The AI voice is off."}
     assert listening.read("ja", rid)["state"] == "cancelled" and voice.started == []
+
+
+def test_r2_a_record_that_cant_be_kept_leaves_no_round_stuck_new(voice, monkeypatch):
+    from app.cli import contract
+    state = _known_state(LINES)
+
+    def busy(*a, **k):
+        raise contract.CliError("busy", "Another call is saving a practice round.")
+    monkeypatch.setattr(listening, "keep_record", busy)
+    text, error = _call(state, "surasura_listening_round", {"lines": LINES})
+    assert error and "couldn't save the round" in text and voice.started == []
+    (rid,) = os.listdir(practice_rounds.folder("ja"))
+    assert listening.read("ja", rid)["state"] == "failed" and listening.waiting_rounds("ja") == []

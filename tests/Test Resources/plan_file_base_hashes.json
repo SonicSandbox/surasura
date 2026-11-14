@@ -1,9 +1,9 @@
 {
  "signatures": {
-  "ja-ordered": "1aa6ba9abc669c94d4cb397700e934992253bf646872c76a8627844110a5f5c7",
-  "ja-moved": "cf2285741f914aa2cdb75c958075057dfa63a7ead9d0bd1fc7bc34a1233f5711",
-  "zh-ordered": "0ec22073f6fe6cfe4596259e82a3be5744421752be4856a771822ff77cce40bd",
-  "ja-empty": "faacd8b3ad19d53378914e2ebfe9d8a7f87f6ebbfacaac122dd624f609891a71"
+  "ja-ordered": "bbfdcd52b4b8e9c494ab41530903fb1fe08097f8ecb36150a2c61933de156dd6",
+  "ja-moved": "fe51255b8c3572b50fe8ec8dc56ada32a1e619b564950d6a7654359d4953966d",
+  "zh-ordered": "6bbe093f5ab9e611694dcaf457fe7cb8efb1056c2c8205e42855aa7d0b19305d",
+  "ja-empty": "e1ac81032941501e26ee98d2b269db0d6989513230aec479c7f6fd03fd58d970"
  },
  "samples-ja": {
   "analyzed_files.json": "075086d96ec200fdfa1ed573c52e6a6b15febf66dfbf3a4b55baad4d25390275",
@@ -57,5 +57,5 @@
   "sources.json": "f0355e8ec8bf48a6f1890f26a71d5d706e65e5a843be1bc6432419ef49a838b2",
   "word_stats.json": "61390a01495c4c9f1a25ef3ba1cf9fd2fd203f3167f232e603b8d5cf625aa35e"
  },
- "_base": "23ace7303ae36ac13d27c05bbd8a73b4c371d37c"
+ "_base": "660b98f56f5e28946a69222a829a5546cf50db64"
 }

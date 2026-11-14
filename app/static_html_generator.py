@@ -617,14 +617,15 @@ LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept b
 
 
 def _line_media(language, rel_paths, memo_path=None, explain=False):
-    """{rel path: [file URI, why not]} for the journey's ▶ (Kiku-L): the file `play.files` finds for each — its URI when
-    a browser plays it (`PLAYABLE`), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose
-    bit rate varies); nothing found, no row. `memo_path`: its answers kept between renders (only this render's
-    sources: one that left the lists leaves the file). `explain`: the badge is shown, so a line with no ▶ says why
-    (`play.files`' hint). Never raises: a lookup that fails is no ▶, never a failed
-    report; a memo that can't be read or written only costs time."""
+    """({rel path: [where, why not]}, [folder URI, ...]) for the journey's ▶ (Kiku-L): the file `play.files` finds for
+    each — when a browser plays it (`PLAYABLE`), `where` is "<its folder's place in the list>/<its name as it is>" (the
+    page puts the URI together: a folder's URI once, a name never percent-encoded in the page — 20k sources were 2 MB
+    more), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose bit rate varies); nothing
+    found, no row. `memo_path`: its answers kept between renders (only this render's sources: one that left the lists
+    leaves the file). `explain`: the badge is shown, so a line with no ▶ says why (`play.files`' hint). Never raises: a
+    lookup that fails is no ▶, never a failed report; a memo that can't be read or written only costs time."""
     if not rel_paths:
-        return {}
+        return {}, []
     memo = {}
     if memo_path:
         try:
@@ -639,9 +640,9 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
         found = play.files(language, sorted(rel_paths), memo=memo, explain=explain)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
-        return {}
+        return {}, []
     from app import audiobooks
-    folders, out = {}, {}
+    folders, dirs, out = {}, [], {}
     for rel, path in found.items():
         if not isinstance(path, str) or not os.path.isabs(path):
             continue                             # nothing found (or never a relative path: no URI, no ▶)
@@ -666,9 +667,10 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
         cut = max(path.rfind("\\"), path.rfind("/"))
         folder, name = (path[:cut], path[cut + 1:]) if cut > 2 else os.path.split(path)
         try:
-            if folder not in folders:            # each folder's part encoded once (20k files, 1.7k folders)
-                folders[folder] = pathlib.Path(folder).as_uri().rstrip("/")
-            out[rel] = [folders[folder] + "/" + urllib.parse.quote(name), ""]
+            if folder not in folders:            # each folder's URI once (20k files, 1.7k folders)
+                dirs.append(pathlib.Path(folder).as_uri().rstrip("/"))
+                folders[folder] = len(dirs) - 1
+            out[rel] = [f"{folders[folder]}/{name}", ""]
         except ValueError:                       # a path no URI can name: no ▶, never a failed report
             continue
     if memo_path:
@@ -681,7 +683,7 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
                 os.replace(tmp, memo_path)
             except Exception as e:
                 print(f"Warning: could not save the lines' audio memo: {e}")
-    return out
+    return out, dirs
 
 
 def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None):
@@ -1216,7 +1218,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 lists[what] = pd.read_csv(path)
             except Exception as e:
                 print(f"Error loading {what} CSV: {e}")
-    line_media = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
+    line_media, line_dirs = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
                              os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO), settings.get("source_display", "off") != "off")
     line_timer = None
     if source_finder is None and any(uri for uri, _why in line_media.values()):
@@ -1431,6 +1433,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
     # Per-sentence source badge: the interned table + the display mode chosen in Advanced Settings.
     sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
+    # The line player's folders (`_line_media`: a playable source's [5] names one of them by its place).
+    line_dirs_json_str = json.dumps(line_dirs, ensure_ascii=False).replace("</", "<\\/")
     # Word lookup button (⌕). Validated here rather than trusted, exactly like source_display: a
     # hand-edited settings.json must not be able to put arbitrary text into the report's URL.
     _ws = settings if 'settings' in locals() else {}
@@ -1466,7 +1470,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

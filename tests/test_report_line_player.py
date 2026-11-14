@@ -26,6 +26,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 import urllib.request
 from unittest.mock import patch
 
@@ -67,6 +68,12 @@ def _stand_in(path, magic=b"ID3"):
     t = time.time() - 60
     os.utime(path, (t, t))
     return path
+
+
+def _uri(where, dirs):
+    """The URI the page puts together for a source (`lpUri`): its folder's from `globalLineDirs`, its name encoded."""
+    cut = where.index("/")
+    return dirs[int(where[:cut])] + "/" + urllib.parse.quote(where[cut + 1:], safe="")
 
 
 def _in_library(language, show, name, source=PLACED):
@@ -186,7 +193,7 @@ def test_a_library_of_mkv_episodes_read_in_place_is_never_looked_up(monkeypatch)
     said = play.files("ja", list(rels.values()), explain=True)
     assert said == {rels[1]: os.path.join(folder, f"{SHOW} - 01.mkv"), rels[2]: os.path.join(folder, f"{SHOW} - 02.mkv"),
                     rels[3]: None}
-    assert {k: v for k, v in gen._line_media("ja", set(rels.values()), explain=True).items()} == \
+    assert gen._line_media("ja", set(rels.values()), explain=True)[0] == \
         {rels[1]: ["", ".mkv"], rels[2]: ["", ".mkv"]}
 
 
@@ -329,8 +336,8 @@ def test_an_mp3s_verdict_is_kept_with_its_answer_and_read_again_only_with_it(tmp
     read = []
     real = audiobooks.mp3_variable
     monkeypatch.setattr(audiobooks, "mp3_variable", lambda p: read.append(p) or real(p))
-    assert gen._line_media("ja", {"Library/a.srt"}, path) == {"Library/a.srt": ["", "vbr"]}
-    assert gen._line_media("ja", {"Library/a.srt"}, path) == {"Library/a.srt": ["", "vbr"]}
+    assert gen._line_media("ja", {"Library/a.srt"}, path)[0] == {"Library/a.srt": ["", "vbr"]}
+    assert gen._line_media("ja", {"Library/a.srt"}, path)[0] == {"Library/a.srt": ["", "vbr"]}
     assert read == [vbr]                                                   # once, then kept
     with open(path, encoding="utf-8") as f:
         assert json.load(f)["Library/a.srt"] == [vbr, "key", 1, True]
@@ -367,24 +374,28 @@ def test_a_freshness_check_reads_each_folder_once_and_gives_what_stat_gives(tmp_
 def test_the_table_carries_a_uri_the_browser_plays_or_the_extension_it_cant(monkeypatch, name, expect):
     path = os.path.join(_elsewhere("Anime", f"{SHOW} #1", "50% 字幕"), name)       # a space, '#', '%', Japanese
     monkeypatch.setattr(play, "files", lambda language, rels, **_: {r: path for r in rels})
-    [(uri, why)] = gen._line_media("ja", ["Library/x.srt"]).values()
+    media, dirs = gen._line_media("ja", ["Library/x.srt"])
+    [(where, why)] = media.values()
     if expect == "play":
+        assert where == "0/" + name and dirs[0].startswith("file:///")    # the folder once, the name as it is
+        uri = _uri(where, dirs)
         assert why == "" and uri.startswith("file:///")
         assert "#" not in uri and "%25" in uri                          # never cut at '#', '%' itself encoded
         assert urllib.request.url2pathname(uri[len("file:"):]) == path  # the very file, round-tripped
     else:
-        assert (uri, why) == ("", expect)
+        assert (where, why) == ("", expect) and dirs == []
 
 
 def test_a_file_on_a_share_is_a_uri_with_its_server_and_nothing_found_is_no_row(monkeypatch):
     share = "\\\\nas\\media\\杜子春\\杜子春 01.m4b"
     monkeypatch.setattr(play, "files", lambda language, rels, **_: {"Library/a.srt": share, "Library/b.srt": None})
-    media = gen._line_media("ja", ["Library/a.srt", "Library/b.srt"])
-    assert media == {"Library/a.srt": ["file://nas/media/%E6%9D%9C%E5%AD%90%E6%98%A5/%E6%9D%9C%E5%AD%90%E6%98%A5%2001.m4b",
-                                       ""]}
+    media, dirs = gen._line_media("ja", ["Library/a.srt", "Library/b.srt"])
+    assert media == {"Library/a.srt": ["0/杜子春 01.m4b", ""]} and dirs == ["file://nas/media/%E6%9D%9C%E5%AD%90%E6%98%A5"]
+    assert _uri(media["Library/a.srt"][0], dirs) == \
+        "file://nas/media/%E6%9D%9C%E5%AD%90%E6%98%A5/%E6%9D%9C%E5%AD%90%E6%98%A5%2001.m4b"
     monkeypatch.setattr(play, "files", lambda language, rels, **_: (_ for _ in ()).throw(OSError("gone")))
-    assert gen._line_media("ja", ["Library/a.srt"]) == {}               # a failed lookup: no ▶, never a failed report
-    assert gen._line_media("ja", []) == {}
+    assert gen._line_media("ja", ["Library/a.srt"]) == ({}, [])         # a failed lookup: no ▶, never a failed report
+    assert gen._line_media("ja", []) == ({}, [])
 
 
 def test_a_variable_bit_rate_mp3_gets_no_play_and_says_why(monkeypatch, tmp_path):
@@ -399,9 +410,10 @@ def test_a_variable_bit_rate_mp3_gets_no_play_and_says_why(monkeypatch, tmp_path
         g.write(f.read().replace(b"Xing", b"Info"))
     found = {"Library/a.srt": vbr, "Library/b.srt": cbr, "Library/c.srt": info}
     monkeypatch.setattr(play, "files", lambda language, rels, **_: {r: found[r] for r in rels})
-    media = gen._line_media("ja", list(found))
+    media, dirs = gen._line_media("ja", list(found))
     assert media["Library/a.srt"] == ["", "vbr"]
-    assert media["Library/b.srt"][0].startswith("file:///") and media["Library/c.srt"][0].startswith("file:///")
+    assert _uri(media["Library/b.srt"][0], dirs).startswith("file:///")
+    assert _uri(media["Library/c.srt"][0], dirs).startswith("file:///")
 
 
 def test_the_vbr_check_reads_past_a_big_cover_tag_and_never_raises(tmp_path):
@@ -483,6 +495,9 @@ def _render(tmp_path, records_by_file, source_map, settings=None):
     html = out.read_text(encoding="utf-8")
     data = json.loads(re.search(r"let globalData = (\{.*?\});\n", html, re.S).group(1))
     table = json.loads(re.search(r"let globalSources = (\[.*?\]);\n", html, re.S).group(1))
+    dirs = json.loads(re.search(r"let globalLineDirs = (\[.*?\]);\n", html, re.S).group(1))
+    for row in table:                                       # each playable source's [5] as the page puts it together
+        row[5] = _uri(row[5], dirs) if row[5] else ""
     return data, table
 
 
@@ -556,7 +571,9 @@ def _player(page):
 
 def test_play_is_drawn_only_for_a_line_with_a_playable_file_and_its_times(page):
     fn = _block(page, "function linePlay(", "\n        }\n")
-    assert "row[5]" in fn and "b <= a" in fn and "isFinite" in fn
+    assert "lpUri(row)" in fn and "b <= a" in fn and "isFinite" in fn
+    uri = _block(page, "function lpUri(", "\n        }\n")
+    assert "globalLineDirs" in uri and "encodeURIComponent(where.slice(cut + 1))" in uri
     assert 'class="lp" migaku_ignore data-yomichan-ignore' in fn                  # dictionaries never read it
     for caller in ('linePlay(data["Src 1"], data["At 1"], data["End 1"], true)',
                    "linePlay(data['Src ' + n], data['At ' + n], data['End ' + n], false)"):

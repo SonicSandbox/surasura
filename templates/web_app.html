@@ -3772,7 +3772,7 @@
             if (idx === null || idx === undefined || idx === '') return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
             const row = table ? table[idx] : null;
-            if (!row || !row[5] || at === null || at === undefined || at === '' || end === null || end === undefined || end === '') return '';
+            if (!row || !lpUri(row) || at === null || at === undefined || at === '' || end === null || end === undefined || end === '') return '';
             const a = Number(at), b = Number(end);
             if (!isFinite(a) || !isFinite(b) || b <= a) return '';
             const span = fmtCueTime(a) === fmtCueTime(b) ? fmtCueTime(a) : fmtCueTime(a) + '–' + fmtCueTime(b);
@@ -3819,13 +3819,22 @@
             lpStep();
         }
 
+        // A source's file as a URI: its folder's (globalLineDirs, once a folder) + its name, encoded here.
+        function lpUri(row) {
+            const where = (row && row[5]) || '';
+            const cut = where.indexOf('/');
+            const dirs = (typeof globalLineDirs !== 'undefined' && globalLineDirs) ? globalLineDirs : [];
+            const dir = cut > 0 ? dirs[Number(where.slice(0, cut))] : undefined;
+            return dir ? dir + '/' + encodeURIComponent(where.slice(cut + 1)) : '';
+        }
+
         // The run's line from now on: this ▶'s file and times, its plays counted from none.
         function lpAim(btn) {
             const r = lpRun;
             if (r.btn && r.btn !== btn) lpPaint(r.btn, null);
             const row = (globalSources && globalSources[Number(btn.dataset.src)]) || [];
             r.btn = btn;
-            r.uri = row[5];
+            r.uri = lpUri(row);
             r.at = Number(btn.dataset.at);
             r.end = Number(btn.dataset.end);
             r.played = 0;

@@ -398,7 +398,8 @@ def test_hover_w_r1_close_shuts_the_store_reader_on_its_own_worker_and_opens_non
         def close(self):
             closed.append(threading.get_ident())
             self.conn.close()
-    tw = TW.TitleWords(_Numbers(run, eng), run.language, open_store=Store, read_standing=lambda *a: {})
+    known = {"扉": Standing(leech=False, lapses=0, young=True, mature=False)}   # (a standing to match: the counts read)
+    tw = TW.TitleWords(_Numbers(run, eng), run.language, open_store=Store, read_standing=lambda *a: known)
     view = _view(plan, run.language)
     tw.refresh_anki(force=True)
     assert _ask(tw, view.rows[0], view) is not None and len(opened) == 1
@@ -406,3 +407,36 @@ def test_hover_w_r1_close_shuts_the_store_reader_on_its_own_worker_and_opens_non
     tw.worker._thread.join(10) if getattr(tw.worker, "_thread", None) else None
     assert closed == opened                                  # the same thread, once
     assert tw._token_store() is None and len(opened) == 1
+
+
+def test_hover_w_r2_anki_busy_or_slow_is_never_closed_and_keeps_what_it_last_said(run):
+    """Review r2: Anki open but busy (its own sync, Check Database) or answering late keeps the last standing — never
+    "Anki is closed · open it to see these" — and is asked again at the next moment, inside the minute too."""
+    from app import anki_connect
+    plan, eng = _engine(run)
+    busy = anki_connect.AnkiError("busy", kind="action")
+    busy.busy = True
+    late = anki_connect.AnkiError("timed out", kind="offline")
+    late.timed_out = True
+    first = {"扉": Standing(leech=False, lapses=0, young=True, mature=False)}
+    answers = [first, busy, late, anki_connect.AnkiError("no answer", kind="offline")]
+
+    def read(language, settings):
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+    now = [0.0]
+    tw = TW.TitleWords(_Numbers(run, eng), run.language, read_standing=read, clock=lambda: now[0])
+    tw.refresh_anki()
+    assert tw.idle(30) and tw.standing() == first
+    tw.refresh_anki(force=True)                              # a known-words sync ended while Anki is busy
+    assert tw.idle(30) and tw.standing() == first
+    now[0] += 1
+    tw.refresh_anki()                                        # inside the minute: a busy answer left no throttle
+    assert tw.idle(30) and tw.standing() == first            # (late: still what it last said)
+    now[0] += 1
+    tw.refresh_anki()
+    assert tw.idle(30) and tw.standing() == TW.ANKI_CLOSED and tw.reads["standing"] == 4
+    tw.close()
+

@@ -664,7 +664,8 @@ class PeekHost(QObject):
         self._pending = (row, anchor)
         self._ask(row)
         wait = self.tooltips.delay() if self.tooltips is not None else theme.MOTION["tooltip-delay"]
-        if self.card.isVisible():
+        if self._shown():                            # another row's card, shown or still opening (r2)
+            motion.cancel_opening(self.card)
             self.card.hide()
             wait = theme.MOTION["tooltip-again"]
         if wait <= 0:

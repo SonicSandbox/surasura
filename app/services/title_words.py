@@ -201,7 +201,7 @@ class TitleWords:
         with self._lock:
             standing = self._standing
         counts = None
-        if standing is not None and standing != ANKI_CLOSED:
+        if standing and standing != ANKI_CLOSED:             # ({}: Anki holds no studied card — nothing to match)
             store = self._token_store()
             if store is not None and answer.data_dir:
                 key = (answer.key, tuple(sorted(answer.rel.values())))
@@ -209,7 +209,7 @@ class TitleWords:
                 if counts is None:
                     rels = answer.rel.values()
                     counts = counts_of(store, [os.path.join(answer.data_dir, *r.split("/")) for r in rels])
-                    if len(self._counts) > 64:
+                    if len(self._counts) > 16:
                         self._counts.clear()
                     self._counts[key] = counts
         if self._places[0] is not view:
@@ -310,10 +310,14 @@ class TitleWords:
         if read is not None:
             try:
                 found = read(self.language, self._settings() or {})
-            except Exception as e:                   # only Anki not answering is "closed" (review r1 #4)
+            except Exception as e:                   # only Anki not answering is "closed" (review r1 #4, r2)
                 name = e.__class__.__name__
                 if name in ("NoneStudied", "NoWords"):
                     found = {}                       # Anki answers: no studied card / no word in them
+                elif _anki_waits(e):
+                    with self._lock:                 # busy (its own sync, Check Database) or slow: what it last
+                        self._standing_at = None     # said stands, and it is asked again at the next moment
+                    return
                 elif name != "NoDecks" and _is_anki_error(e):
                     found = ANKI_CLOSED
                 else:
@@ -351,3 +355,12 @@ def _is_anki_error(e):
     except Exception:
         return False
     return isinstance(e, AnkiError)
+
+
+def _anki_waits(e):
+    """Anki open but busy or answering late (`anki_connect.is_busy`): never "closed"."""
+    try:
+        from app.anki_connect import AnkiError, is_busy
+    except Exception:
+        return False
+    return isinstance(e, AnkiError) and is_busy(e)

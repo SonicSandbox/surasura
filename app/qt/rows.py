@@ -542,6 +542,12 @@ def stone_tip(ep, state, leaves):
     return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
 
 
+def stone_state(ep):
+    """A stone's state in its tip's words, the string's and an opened row's alike (Kura-NT: *nothing new* for a file
+    mined with nothing new to make, never "0 cards in Anki": `stone_plan.tip_state`)."""
+    return strings.ROWS_STONE_STATE[stone_plan.tip_state(ep)].format(n=ep.cards)
+
+
 def _failed(e):
     """Mattias #5: is the episode one Anki Miner stopped on (its status *Try again*: `view_rows._connected`)?"""
     return getattr(getattr(e, "status", None), "kind", None) == "retry"
@@ -748,7 +754,7 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
         p.setPen(QPen(style.qcolor(col["warn"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
-    elif status.kind in ("mine", "deleted", "no_subs"):
+    elif status.kind in ("mine", "deleted", "nothing", "no_subs"):      # Kura-NT: *Nothing new* as *No cards*
         p.setPen(QPen(style.qcolor(col["line-hi"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
@@ -1505,7 +1511,7 @@ class RowDelegate(QStyledItemDelegate):
             if item.kind != "stone" or room.left() + x > room.right():
                 continue
             ep = row.episodes[item.index]
-            state = strings.ROWS_STONE_STATE[item.state].format(n=ep.cards)
+            state = stone_state(ep)
             if ep.missing:
                 state += strings.ROWS_STONE_MISSING.format(word=ep.media_word or row.media_word)   # LM11b G1
             tip = stone_tip(ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched()))
@@ -1762,7 +1768,7 @@ class RowDelegate(QStyledItemDelegate):
                                                               cols["stat"].center().y() - size.height() // 2,
                                                               size.width(), size.height()),
                                              ep.media_word or row.media_word))       # LM11b G1: its own type's word
-            state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
+            state = stone_state(ep)
             out.append(("stone", cols["tick"], stone_tip(
                 ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
         return out

@@ -434,3 +434,51 @@ def test_the_screen_reader_counts_over_the_whole_piece_not_just_the_twelve():
 def test_a_one_file_row_reads_as_watched_or_not():
     assert sp.words(sp.plan(piece(1), 0, "movie", "p"), STRING_WORDS) == "Not watched yet"
     assert sp.words(sp.plan(piece(1, next_at=1, extra={0: {"cards": 3}}), 0, "movie", "p"), STRING_WORDS) == "Watched, in Anki"
+
+
+# --- Kura-NT (based on Mattias's #454): a part mined with nothing new to make (its status *Nothing new to mine*) ---- #
+NOTHING = vr.Status("nothing", vr.STRINGS["nothing"], vr.STRINGS["tip_nothing"], "faint")
+
+
+def _nothing_piece():
+    """Three files: the first in Anki, the second mined with nothing new (every word already carded), the third below
+    the top and not mined."""
+    eps = piece(3, extra={0: {"cards": 4}, 1: {"in_top": False}, 2: {"in_top": False}})
+    return eps[0], eps[1]._replace(status=NOTHING), eps[2]
+
+
+def test_a_part_with_nothing_new_to_mine_looks_mined_never_dimmed_by_default():
+    """The lead's lean (Sonic's open call): it was mined — the coloured stone, as one in Anki — though no card of its
+    own is: the screen reader's count stays the cards'."""
+    assert sp.NOTHING_LOOKS_MINED is True
+    p = sp.plan(_nothing_piece(), 0, "anime", "p")
+    assert [(s.state, s.dim) for s in p.items] == [("raw", False), ("raw", False), ("rock", True)]
+    assert p.in_anki == 1 and sp.words(p, STRING_WORDS) == "0 of 3 watched, 1 in Anki"
+    assert [sp.tip_state(e) for e in _nothing_piece()] == ["raw", "nothing", "rock"]
+
+
+def test_its_stones_look_is_one_switch_off_it_is_a_grey_rock_as_one_not_mined(monkeypatch):
+    monkeypatch.setattr(sp, "NOTHING_LOOKS_MINED", False)
+    p = sp.plan(_nothing_piece(), 0, "anime", "p")
+    assert [(s.state, s.dim) for s in p.items] == [("raw", False), ("rock", True), ("rock", True)]
+    assert sp.tip_state(_nothing_piece()[1]) == "nothing", "its tip says *nothing new* whichever look it takes"
+
+
+def test_a_watched_part_with_nothing_new_is_cut_and_one_with_cards_is_raw_whatever_its_status():
+    watched = ep(0, watched=True)._replace(status=NOTHING)
+    carded = ep(1, cards=2)._replace(status=NOTHING)
+    assert sp.tip_state(watched) == "cut" and sp._stone(watched, 0, "p", False).state == "cut"
+    assert sp.tip_state(carded) == "raw"
+
+
+def test_the_ore_counts_parts_with_nothing_new_as_mined_while_they_look_mined(monkeypatch):
+    eps = piece(12) + tuple(ep(12 + i)._replace(status=NOTHING) for i in range(12))
+    assert sp.plan(eps, 0, "anime", "p").items[-1].mined_step == 3
+    monkeypatch.setattr(sp, "NOTHING_LOOKS_MINED", False)
+    assert sp.plan(eps, 0, "anime", "p").items[-1].mined_step == 0
+
+
+def test_a_stones_tip_says_nothing_new_with_no_card_count():
+    from app.qt import strings
+    said = strings.ROWS_STONE_STATE[sp.tip_state(_nothing_piece()[1])].format(n=0)
+    assert said == " · nothing new: Anki had every word" and "0 cards" not in said

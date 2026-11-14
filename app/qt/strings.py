@@ -560,7 +560,8 @@ CHANGE_VIDEO_LINKED_OFF = "Its new video is linked · {why}"
 CHANGE_VIDEO_EPISODE = "this episode"           # (a card whose episode the view doesn't list just now)
 # --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
-ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
+ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": "",
+                    "nothing": " · nothing new: Anki had every word"}      # Kura-NT (PROVISIONAL, the lead's lean)
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
 from app.services.view_rows import STRINGS as _ROWS_STRINGS   # noqa: E402  one sentence, the report's panel's too

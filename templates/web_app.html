@@ -3388,6 +3388,7 @@
         async function koeSpeak(el) {
             const text = el.dataset.koeText || '';
             if (!text || el.dataset.koeBusy === '1') return;
+            lpStop();                         // the line player's sound never under the spoken sentence
 
             const original = el.innerHTML;
             const originalTitle = el.title;
@@ -3812,6 +3813,9 @@
 
         function lpStart(btn) {
             lpStop();
+            // the page's other voices stop: the computer's speech, a spoken sentence (Koe)
+            try { window.speechSynthesis.cancel(); } catch (e) { /* no speech here */ }
+            if (typeof koeAudio !== 'undefined' && koeAudio) { try { koeAudio.pause(); } catch (e) { /* none */ } }
             btn.classList.remove('lp-failed');
             lpRun = { btn: null, played: 0, paused: false, timer: 0, phase: 'loading', token: null };
             lpAim(btn);
@@ -3844,7 +3848,9 @@
         // The next ▶ down the list that's open (another sentence of the word when its sentences are open, else the next
         // card's), or null at the last one drawn.
         function lpAfter(btn) {
-            const all = Array.from(document.querySelectorAll('.view.active .lp'));
+            // (a line in sight only: a word's closed sentences keep their ▶ in the page, hidden — never played on to)
+            const all = Array.from(document.querySelectorAll('.view.active .lp'))
+                .filter(b => b === btn || b.offsetParent !== null);
             const i = all.indexOf(btn);
             return i >= 0 ? (all[i + 1] || null) : null;
         }
@@ -4180,6 +4186,7 @@
         }
 
         function rsRun(raw) {
+            lpStop();                         // the line player: the results are drawn again
             const q = (raw || '').trim();
             const results = document.getElementById('rs-results');
             const summary = document.getElementById('rs-summary');

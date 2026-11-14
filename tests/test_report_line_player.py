@@ -552,6 +552,43 @@ def test_a_report_gives_each_playable_line_its_file_and_times_and_an_mkv_line_it
     assert (prio["文化祭"]["At 1"], prio["文化祭"]["End 1"]) == (1.0, 3.2)  # the priority view's lines play too
 
 
+def test_an_audiobooks_transcript_line_plays_from_its_m4b_in_a_rendered_report(tmp_path):
+    """The audiobook's item is its transcript's copy, typed `audio` in sources.json (the store's own type wins over the
+    .srt): its lines are timed and play from the audiobook's one file — never left out as "not a subtitle"."""
+    store, data_dir, src, m4b, srt = _alone("ja", STAR)
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root)
+        [item] = _audio_items(store)
+    rel = item["rel_path"]
+    first = _lines("ja")[0]                              # the transcript's first cue: 00:00:02,000 --> 00:00:03,500
+    source_map = {rel: {"name": rel.rsplit("/", 1)[-1], "type": "audio",
+                        "abs": os.path.join(data_dir, *rel.split("/"))}}
+    data, table = _render(tmp_path, {rel.rsplit("/", 1)[-1]: [{"Word": "剣士", "Context 1": first, "Src 1": rel}]},
+                          source_map)
+    assert urllib.request.url2pathname(table[0][5][len("file:"):]) == os.path.abspath(m4b)
+    row = _rows(data["progressive"][0]["words"])[0]
+    assert (row["At 1"], row["End 1"]) == (2.0, 3.5)
+
+
+def test_a_draw_with_the_badge_off_never_cuts_the_badges_anchor_memo(tmp_path):
+    """The times read for ▶ with the badge off are kept in their own memo (`LINE_TIMES_MEMO`): the badge's
+    `anchor_cache.json` keeps every file's anchors, so turning the badge on later reads nothing again."""
+    rel, copies = _in_library("ja", SHOW, f"{SHOW} - 31.ja.srt")
+    _stand_in(os.path.join(copies, f"{SHOW} - 31.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    results = tmp_path / "results"
+    results.mkdir(parents=True)
+    kept = {"C:\\他の番組\\第1話.srt": {"sig": [1.0, 2, "cues-1/0"], "a": {LINE_JA: ["文化祭まで", 1.0, 3.2]}}}
+    (results / "anchor_cache.json").write_text(json.dumps(kept, ensure_ascii=False), encoding="utf-8")
+    source_map = {rel: {"name": "x.srt", "type": "subtitle",
+                        "abs": os.path.join(path_utils.get_data_path("ja"), *rel.split("/"))}}
+    data, table = _render(tmp_path, {f"{SHOW} - 31.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel}]},
+                          source_map)
+    assert "At 1" in _rows(data["progressive"][0]["words"])[0]
+    assert json.loads((results / "anchor_cache.json").read_text(encoding="utf-8")) == kept
+    assert (results / gen.LINE_TIMES_MEMO).exists()
+
+
 def test_with_its_switch_off_the_journey_is_drawn_as_before_the_player(tmp_path, monkeypatch):
     """The Settings switch (*Play a line's own audio*, on by default): off, the render looks for no line's file and
     reads no line's times — the source table's rows keep their five fields, no folder list — so the draw is what it
@@ -646,6 +683,12 @@ def test_stop_esc_another_play_a_redraw_and_a_hidden_page_all_stop_it(page):
     assert "e.key === 'Escape'" in code and "lpStop()" in code
     assert "visibilitychange" in code and "document.hidden" in code
     assert "isConnected" in code                                                    # its line left the page: stop
+    assert "b.offsetParent !== null" in _block(page, "function lpAfter(", "return i")    # never on to a hidden line
+    starts = _block(page, "function lpStart(", "lpRun = {")
+    assert "speechSynthesis.cancel()" in starts and "koeAudio.pause()" in starts     # the page's other voices stop
+    for fn in ("async function koeSpeak(", "function rsRun(", "function playAudio("):
+        head = "\n".join(_block(page, fn, "\n        }\n").replace("\r\n", "\n").split("\n")[:5])
+        assert "lpStop();" in head, fn
     stop = _block(page, "function lpStop()", "\n        }\n")
     assert "clearTimeout(r.timer)" in stop and "lpAudio.pause()" in stop and "lpRun = null" in stop   # no stray sound
     for fn in ("async function switchMainTab(", "async function renderFileWords(", "async function renderPriorityView("):

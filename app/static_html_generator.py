@@ -610,10 +610,12 @@ def _shown_sources(lists, source_map):
             continue
         for col in [c for c in df.columns if str(c).startswith("Src ")]:
             shown.update(str(v) for v in df[col].dropna().unique())
-    return {rel for rel in shown if isinstance(source_map.get(rel), dict) and source_map[rel].get("type") == "subtitle"}
+    return {rel for rel in shown if isinstance(source_map.get(rel), dict) and source_map[rel].get("type") in TIMED_TYPES}
 
 
 LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept between renders (the anchor memo's twin)
+LINE_TIMES_MEMO = "line_times.json"     # results/: a playable line's times with the badge off (`AnchorFinder.times`)
+TIMED_TYPES = ("subtitle", "audio")     # a source with timed lines: a subtitle; an audiobook's transcript (its item's)
 
 
 def _line_media(language, rel_paths, memo_path=None, explain=False):
@@ -1225,7 +1227,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                                         settings.get("source_display", "off") != "off") if line_on else (None, [])
     line_timer = None
     if source_finder is None and line_media and any(uri for uri, _why in line_media.values()):
-        line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
+        # its own memo (`LINE_TIMES_MEMO`): the badge's anchor memo is never cut down to the playable files
+        line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, LINE_TIMES_MEMO),
                                   script=_effective_script(target_lang, settings.get("zh_script")),
                                   language=target_lang)
 

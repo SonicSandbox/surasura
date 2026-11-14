@@ -140,7 +140,7 @@ def test_a_book_or_a_text_never_plays_and_one_sources_fault_is_its_own(monkeypat
     rel_a, copies = _in_library("ja", SHOW, f"{SHOW} - 05.ja.srt")
     mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 05.mp4"), b"\x00\x00\x00\x18ftypmp42")
     rel_b, _ = _in_library("ja", SHOW, f"{SHOW} - 06.ja.srt")
-    monkeypatch.setattr(play, "_kinds", lambda language, rels: {rel_a: (None, None), rel_b: (7, "book")})
+    monkeypatch.setattr(play, "_kinds", lambda language, rels, **_: {rel_a: (None, None), rel_b: (7, "book")})
     assert play.files("ja", [rel_a, rel_b]) == {rel_a: mp4, rel_b: None}
     real = play._find
 
@@ -148,7 +148,7 @@ def test_a_book_or_a_text_never_plays_and_one_sources_fault_is_its_own(monkeypat
         if rel_path == rel_a:
             raise RuntimeError("a share that answers with garbage")
         return real(language, rel_path, *a, **k)
-    monkeypatch.setattr(play, "_kinds", lambda language, rels: {})
+    monkeypatch.setattr(play, "_kinds", lambda language, rels, **_: {})
     monkeypatch.setattr(play, "_find", flaky)
     rel_c, copies_c = _in_library("ja", SHOW, f"{SHOW} - 07.ja.srt")
     mp4_c = _stand_in(os.path.join(copies_c, f"{SHOW} - 07.mp4"), b"\x00\x00\x00\x18ftypmp42")
@@ -170,6 +170,111 @@ def test_a_folder_of_many_episodes_is_listed_once(monkeypatch):
     assert len([p for p in listed if os.path.normcase(os.path.abspath(p)) == os.path.normcase(copies)]) == 1
 
 
+def _touch_later(path, magic=b"\x00\x00\x00\x18ftypmp42"):
+    """A file added to a folder a moment later: its folder's mtime moves (NTFS keeps 100 ns; waited out to be sure)."""
+    folder = os.path.dirname(path)
+    before = os.stat(folder).st_mtime_ns
+    for _ in range(50):
+        _stand_in(path, magic)
+        if os.stat(folder).st_mtime_ns != before:
+            return path
+        os.remove(path)
+        time.sleep(0.02)
+    pytest.fail("the folder's mtime never moved")
+
+
+def test_a_redraw_reuses_every_answer_and_looks_again_only_where_a_folder_changed(monkeypatch):
+    """A redraw after a move (the journey's F7 path) runs the render again: the answers kept in the memo are reused —
+    no name parsing, no listing — until what one rests on moves: a video added beside an episode, one taken away."""
+    rels = {}
+    for n in (1, 2):
+        rel, copies = _in_library("ja", f"{SHOW}{n}", f"{SHOW} - {n:02d}.ja.srt")
+        rels[n] = rel
+    mp4 = _stand_in(os.path.join(os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *rels[1].split("/"))),
+                                 f"{SHOW} - 01.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    memo = {}
+    assert play.files("ja", list(rels.values()), memo=memo) == {rels[1]: mp4, rels[2]: None}
+    assert set(memo) == set(rels.values())
+    real = play._find
+    monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("a kept answer is never looked for again"))
+    assert play.files("ja", list(rels.values()), memo=memo) == {rels[1]: mp4, rels[2]: None}
+    looked = []
+    monkeypatch.setattr(play, "_find", lambda language, rel, *a, **k: looked.append(rel) or real(language, rel, *a, **k))
+    folder2 = os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *rels[2].split("/")))
+    added = _touch_later(os.path.join(folder2, f"{SHOW} - 02.mp4"))        # a video arrives beside episode 2
+    assert play.files("ja", list(rels.values()), memo=memo) == {rels[1]: mp4, rels[2]: added}
+    assert looked == [rels[2]]                                             # episode 1's answer still kept
+    looked.clear()
+    before = os.stat(os.path.dirname(mp4)).st_mtime_ns
+    os.remove(mp4)                                                          # episode 1's video taken away
+    if os.stat(os.path.dirname(mp4)).st_mtime_ns == before:
+        pytest.skip("this file system didn't move the folder's mtime")
+    assert play.files("ja", list(rels.values()), memo=memo)[rels[1]] is None
+    assert looked == [rels[1]]
+
+
+def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(monkeypatch):
+    """hato pairs the episode with a video elsewhere: its record moves, so the kept answer goes; a record that
+    couldn't be read (the store busy) is answered as before but never kept — the next render reads it again."""
+    rel, copies = _in_library("ja", SHOW, f"{SHOW} - 08.ja.srt")
+    beside = _stand_in(os.path.join(copies, f"{SHOW} - 08.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    paired = _stand_in(_elsewhere("hato", "第8話.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    record = {}
+    monkeypatch.setattr(play, "_kinds", lambda language, rels: {rel: (5, "anime")})
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: dict(record)})
+    memo = {}
+    assert play.files("ja", [rel], memo=memo) == {rel: beside}
+    record.update(producer="hato", video_path=paired)
+    assert play.files("ja", [rel], memo=memo) == {rel: paired}
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: None})
+    memo.clear()
+    assert play.files("ja", [rel], memo=memo) == {rel: beside} and memo == {}
+
+
+def test_the_render_keeps_its_memo_for_its_own_sources_only(tmp_path, monkeypatch):
+    path = str(tmp_path / "line_media.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"Library/gone.srt": [None, "x", None], "Library/a.srt": ["C:\\a.mp4", "k", 1]}, f)
+    seen = []
+
+    def files(language, rels, memo=None):
+        seen.append(dict(memo))
+        memo["Library/b.srt"] = [None, "k2", None]
+        return {r: None for r in rels}
+    monkeypatch.setattr(play, "files", files)
+    gen._line_media("ja", {"Library/a.srt", "Library/b.srt"}, path)
+    assert "Library/gone.srt" in seen[0]                                   # handed in as it was read
+    with open(path, encoding="utf-8") as f:
+        assert set(json.load(f)) == {"Library/a.srt", "Library/b.srt"}    # what left the lists left the file
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{not json")
+    gen._line_media("ja", {"Library/a.srt"}, path)                         # unreadable: a fresh memo, no failure
+    assert seen[-1] == {}
+
+
+def test_a_freshness_check_reads_each_folder_once_and_gives_what_stat_gives(tmp_path, monkeypatch):
+    """The anchor memo's check (`_file_sig`) from one listing a folder: the same times and size `os.stat` gives, a
+    file the listing doesn't name stat'ed itself, a gone one None — never a stat a file."""
+    folder = tmp_path / "番組"
+    folder.mkdir()
+    paths = []
+    for n in range(5):
+        p = folder / f"第{n}話.srt"
+        p.write_text(LINE_JA, encoding="utf-8")
+        paths.append(str(p))
+    finder = gen.AnchorFinder(language="ja")
+    expect = {p: [os.stat(p).st_mtime, os.stat(p).st_size] for p in paths}
+    stats = []
+    real_stat = os.stat
+    monkeypatch.setattr(os, "stat", lambda p, *a, **k: stats.append(p) or real_stat(p, *a, **k))
+    scans = []
+    real_scan = os.scandir
+    monkeypatch.setattr(os, "scandir", lambda p=".": scans.append(p) or real_scan(p))
+    assert [finder._file_sig(p)[:2] for p in paths] == [expect[p] for p in paths]
+    assert len(scans) == 1 and stats == []
+    assert finder._file_sig(str(folder / "ない.srt")) is None
+
+
 # --- the render: the source table's file, the times with the sources hidden ------------------------------------------ #
 @pytest.mark.parametrize("name,expect", [
     ("第1話.mp4", "play"), ("第1話.M4B", "play"), ("第1話.mp3", "play"), ("第1話.webm", "play"), ("第1話.opus", "play"),
@@ -177,7 +282,7 @@ def test_a_folder_of_many_episodes_is_listed_once(monkeypatch):
 ])
 def test_the_table_carries_a_uri_the_browser_plays_or_the_extension_it_cant(monkeypatch, name, expect):
     path = os.path.join(_elsewhere("Anime", f"{SHOW} #1", "50% 字幕"), name)       # a space, '#', '%', Japanese
-    monkeypatch.setattr(play, "files", lambda language, rels: {r: path for r in rels})
+    monkeypatch.setattr(play, "files", lambda language, rels, **_: {r: path for r in rels})
     [(uri, why)] = gen._line_media("ja", ["Library/x.srt"]).values()
     if expect == "play":
         assert why == "" and uri.startswith("file:///")
@@ -189,11 +294,11 @@ def test_the_table_carries_a_uri_the_browser_plays_or_the_extension_it_cant(monk
 
 def test_a_file_on_a_share_is_a_uri_with_its_server_and_nothing_found_is_no_row(monkeypatch):
     share = "\\\\nas\\media\\杜子春\\杜子春 01.m4b"
-    monkeypatch.setattr(play, "files", lambda language, rels: {"Library/a.srt": share, "Library/b.srt": None})
+    monkeypatch.setattr(play, "files", lambda language, rels, **_: {"Library/a.srt": share, "Library/b.srt": None})
     media = gen._line_media("ja", ["Library/a.srt", "Library/b.srt"])
     assert media == {"Library/a.srt": ["file://nas/media/%E6%9D%9C%E5%AD%90%E6%98%A5/%E6%9D%9C%E5%AD%90%E6%98%A5%2001.m4b",
                                        ""]}
-    monkeypatch.setattr(play, "files", lambda language, rels: (_ for _ in ()).throw(OSError("gone")))
+    monkeypatch.setattr(play, "files", lambda language, rels, **_: (_ for _ in ()).throw(OSError("gone")))
     assert gen._line_media("ja", ["Library/a.srt"]) == {}               # a failed lookup: no ▶, never a failed report
     assert gen._line_media("ja", []) == {}
 
@@ -209,7 +314,7 @@ def test_a_variable_bit_rate_mp3_gets_no_play_and_says_why(monkeypatch, tmp_path
     with open(vbr, "rb") as f, open(info, "wb") as g:
         g.write(f.read().replace(b"Xing", b"Info"))
     found = {"Library/a.srt": vbr, "Library/b.srt": cbr, "Library/c.srt": info}
-    monkeypatch.setattr(play, "files", lambda language, rels: {r: found[r] for r in rels})
+    monkeypatch.setattr(play, "files", lambda language, rels, **_: {r: found[r] for r in rels})
     media = gen._line_media("ja", list(found))
     assert media["Library/a.srt"] == ["", "vbr"]
     assert media["Library/b.srt"][0].startswith("file:///") and media["Library/c.srt"][0].startswith("file:///")

@@ -203,6 +203,7 @@ class AnchorFinder:
         self._memo = self._load_memo()
         self._memo_dirty = False
         self._sigs = {}        # path -> (mtime, size), so the freshness check is one stat per file
+        self._dirs = {}        # folder -> its listing's entries ({name: DirEntry}): `_dir_stat`
         self._entries = {}     # path -> its validated memo entry, so that check happens once too
 
     def _raw(self, path):
@@ -343,7 +344,7 @@ class AnchorFinder:
         measurably worse than the lookup it guards."""
         if path not in self._sigs:
             try:
-                st = os.stat(path)
+                st = self._dir_stat(path)
                 self._sigs[path] = [st.st_mtime, st.st_size]
                 if self._script != "asis":
                     # Answers found through a conversion are re-verified after a script switch.
@@ -352,6 +353,23 @@ class AnchorFinder:
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
+
+    def _dir_stat(self, path):
+        """`os.stat(path)` as its folder's one listing gives it (Kiku-L): on Windows a listing carries each file's times
+        and size, so a render's freshness checks cost one call a folder, not one a file (20k subtitles in 1.7k folders:
+        2.6 s of stats). A file the listing doesn't name (another spelling, a race) is stat'ed itself; raises OSError
+        as `os.stat` does."""
+        folder, name = os.path.split(path)
+        entries = self._dirs.get(folder)
+        if entries is None:
+            try:
+                with os.scandir(folder or ".") as it:
+                    entries = {e.name: e for e in it}
+            except OSError:
+                entries = {}
+            self._dirs[folder] = entries
+        entry = entries.get(name)
+        return entry.stat() if entry is not None else os.stat(path)
 
     def _lines(self):
         """The memo signature's last part: the line reader's version and the engine's (`LINES`)."""
@@ -593,18 +611,42 @@ def _shown_sources(lists, source_map):
     return {rel for rel in shown if (source_map.get(rel) or {}).get("type") == "subtitle"}
 
 
-def _line_media(language, rel_paths):
+LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept between renders (the anchor memo's twin)
+
+
+def _line_media(language, rel_paths, memo_path=None):
     """{rel path: [file URI, why not]} for the journey's ▶ (Kiku-L): the file `play.files` finds for each — its URI when
-    a browser plays it (`PLAYABLE`), else ["", its extension] (".mkv": the badge's hover says why); nothing found, no
-    row. Never raises: a lookup that fails is no ▶, never a failed report."""
+    a browser plays it (`PLAYABLE`), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose
+    bit rate varies); nothing found, no row. `memo_path`: its answers kept between renders (only this render's
+    sources: one that left the lists leaves the file). Never raises: a lookup that fails is no ▶, never a failed
+    report; a memo that can't be read or written only costs time."""
     if not rel_paths:
         return {}
+    memo = {}
+    if memo_path:
+        try:
+            with open(memo_path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            memo = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            memo = {}
+    before = json.dumps(memo, sort_keys=True)
     try:
         from app.services import play
-        found = play.files(language, sorted(rel_paths))
+        found = play.files(language, sorted(rel_paths), memo=memo)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
         return {}
+    if memo_path:
+        memo = {rel: memo[rel] for rel in rel_paths if rel in memo}
+        if json.dumps(memo, sort_keys=True) != before:
+            try:
+                tmp = memo_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(memo, ensure_ascii=False))
+                os.replace(tmp, memo_path)
+            except Exception as e:
+                print(f"Warning: could not save the lines' audio memo: {e}")
     from app import audiobooks
     out = {}
     for rel, path in found.items():
@@ -1151,7 +1193,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 lists[what] = pd.read_csv(path)
             except Exception as e:
                 print(f"Error loading {what} CSV: {e}")
-    line_media = _line_media(language or target_lang, _shown_sources(lists.values(), source_map))
+    line_media = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
+                             os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO))
     line_timer = None
     if source_finder is None and any(uri for uri, _why in line_media.values()):
         line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),

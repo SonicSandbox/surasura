@@ -20,13 +20,20 @@ bare `show01`. A card's key is its source with trailing release tags off (`card_
 every form either Anki Miner could have written for it: folder + name in both cleanings, and the bare name (with and
 without a language tag such as `.ja`) in both — the bare form only when the name says a show AND an episode and is
 no special (`episode_names.identity`: `01`, `OVA`, `Movie`, `NCOP`, `Special 01`, `Part 1` name nothing — another
-show has one too). A card names a file when its key is one of the file's — **exact, never a substring** (`show1` is
+show has one too), or, with no episode, when the file is its folder's own title (a single video,
+`<title>/<title> [id].srt`) of at least `BARE_TITLE_MIN` letters and digits, no special and no part (Junban-X3, based
+on Mattias's #447; `Creditless Opening` in a show's folder, `Trailer`, `猫の動画` stay anyone's). A card names a file
+when its key is one of the file's — **exact, never a substring** (`show1` is
 not `show10`). A key two titles of the library share names neither (`shared_names`). A `MiscInfo` with no time after
 ` @ ` (a Migaku note's hint) names nothing. Anki Miner's fixed series (`Audio` for an audiobook, `YouTube` for a
-fetched video) name no show of their own (`FIXED_SERIES`).
+fetched video) name no show of their own (`FIXED_SERIES`) — but they name an item, from its record (`names_of_record`):
+an audiobook's own files as `Audio — <the file's name>` (only a name carrying its book's title: `01`, `Track 01` are
+every audiobook's), a fetched video's title as `YouTube — <title>` and bare (by the title rule above). Like a bare
+name they are only ever counted: `Audio` is every audiobook's folder.
 
 **Where a stray match would write Anki** (*Study its cards first*, *Take its new cards out*: `pins`), only the folder
-forms are used (`bare=False`): a bare name is only ever counted (the footer, the shows behind the backlog).
+forms are used (`bare=False`): a bare name and the fixed series are only ever counted (the footer, the shows behind
+the backlog), asked for when a card needs them (`only_counted`).
 
 Pure: no Anki, no store, no settings, no files.
 """
@@ -48,6 +55,10 @@ _SOURCE = re.compile(r"^(?P<source>.*\S)\s+@\s+\d{1,3}:\d{2}(?::\d{2})?(?:\.\d+)
 _LANGUAGE_TAG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|chi|zho|chs|cht|sc|tc|cn|tw|zh-hans|zh-hant)$", re.I)
 DASH = " — "                    # Anki Miner's separator between the folder and the name
 FIXED_SERIES = ("audio", "youtube")     # Anki Miner's own series names (an audiobook's, a fetched video's), `plain`
+AUDIO, YOUTUBE = "Audio", "YouTube"      # ... as Anki Miner writes them before DASH
+# A name with no episode is a title of its own from this many letters and digits (`plain`): `Opening`, `Vlog`, `猫の動画`
+# are anyone's (Junban-X3, Mattias's #447: his single video's cards named `笑い過ぎて一生忘れられないTRPG` bare)
+BARE_TITLE_MIN = 10
 _NOT_ALNUM = re.compile(r"[\W_]+")       # what `str.isalnum` refuses (`\w` is alnum and `_`)
 
 
@@ -108,15 +119,22 @@ def series_of(misc_info):
 
 
 @lru_cache(maxsize=65536)
-def _bare_ok(stem):
-    """Does a file's name say a show and its episode, and no special (LM1a's one reading, `episode_names.identity`)?
-    Asked once per name."""
+def _bare_ok(stem, folder=None):
+    """Does a name stand alone as a bare name: a show and its episode, no special (LM1a's one reading,
+    `episode_names.identity`) — or, with no episode, a title of its own: no special, no part, `BARE_TITLE_MIN` letters
+    and digits, and the file its folder's own title (`folder`; None for a record's title, its own already)? Asked once
+    per name."""
     from app import episode_names
     try:
         name = episode_names.identity(stem)
     except Exception:
         return False
-    return bool(name.show) and name.episode is not None and not name.special
+    if not name.show or name.special:
+        return False
+    if name.episode is not None:
+        return True
+    return (name.part is None and len(plain(name.show)) >= BARE_TITLE_MIN and
+            (folder is None or plain(clean(folder)) == plain(clean(stem))))
 
 
 def names_of(path, video_path=None, bare=True):
@@ -141,10 +159,40 @@ def names_of(path, video_path=None, bare=True):
         if folder:
             forms.add(folder + DASH + stem)                         # 3.5.0: as is, then the whole label's tags off
             forms.add(clean(folder) + DASH + clean(stem))           # 3.10: each part cleaned
-        if bare and _bare_ok(_LANGUAGE_TAG.sub("", stem)):
+        if bare and _bare_ok(_LANGUAGE_TAG.sub("", stem), folder):
             forms.add(stem)                                         # before 3.5: the video's own name
             forms.add(_ARR_TAGS.sub("", stem).strip() or stem)
             forms.add(clean(stem))
+    return _keys(forms)
+
+
+def names_of_record(record, bare=True):
+    """The keys Anki Miner's fixed series give an item, from one of its records (none with `bare` False: like a bare
+    name they are only ever counted): each of an audiobook's own files (`audiobook.files`) as `Audio — <its name>`
+    when the name carries the book's title (`title` / `titles`, never the file's own name: a lone `Track 01.mp3`'s
+    titles hold `Track 01`), and a fetched video's title (the YouTube downloader's
+    record) as `YouTube — <title>` and bare when it stands alone (`_bare_ok`)."""
+    if not bare or not isinstance(record, dict):
+        return set()
+    forms = set()
+    book = record.get("audiobook")
+    if isinstance(book, dict):
+        titles = {plain(t) for t in [book.get("title"), *(book.get("titles") or ())] if isinstance(t, str)} - {""}
+        for one in book.get("files") or ():
+            if not isinstance(one, str):
+                continue
+            stem = os.path.splitext(os.path.basename(one.replace("\\", "/")))[0]
+            if any(t in plain(stem) for t in titles - {plain(stem)}):     # (a lone file's own name is a title too)
+                forms |= {AUDIO + DASH + stem, AUDIO + DASH + clean(stem)}
+    title = record.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    if "youtube" in (record.get("media_type"), record.get("producer")) and title and _bare_ok(title):
+        forms |= {YOUTUBE + DASH + title, YOUTUBE + DASH + clean(title), title, clean(title)}
+    return _keys(forms)
+
+
+def _keys(forms):
+    """Each form's key, as is and with 3.5.0's trailing release tags off."""
     names = set()
     for form in forms:
         for variant in (form, _RELEASE_TAGS.sub("", form).strip()):
@@ -163,6 +211,12 @@ def fixed_series(misc_info):
 def is_bare(card):
     """Is a card key (`card_key`) the old form — the video's name alone, no folder?"""
     return bool(card) and "/" not in card
+
+
+def only_counted(card):
+    """Can only the names that are only ever counted (`bare=True`) name this card key: the old bare form, or one of
+    Anki Miner's fixed series (`audio/…`, `youtube/…`)?"""
+    return is_bare(card) or (bool(card) and card.split("/", 1)[0] in FIXED_SERIES)
 
 
 def shared_names(names_by_item, work_of=None):

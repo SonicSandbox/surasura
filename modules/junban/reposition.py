@@ -938,7 +938,7 @@ def _banner(cards, notes, language):
         return []
     from app import analyzer
     from modules.junban import backlog_shows
-    bare = any(source_names.is_bare(keys.get(source)) for source in wanted)
+    bare = any(source_names.only_counted(keys.get(source)) for source in wanted)     # (an `Audio — …` deck too)
     names = set()
     for path, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False):
         names |= source_names.names_of(path, bare=bare)

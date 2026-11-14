@@ -1468,6 +1468,50 @@ def test_a_folder_form_source_of_an_episode_in_the_library_is_never_named_missin
     assert stats["banner"] == []                                         # in the library: never named
 
 
+def _ten(source):
+    """Ten of Anki Miner's cards from `source` (the footer's floor), each a real word in a real sentence."""
+    words = ["甜麺醤", "飯店", "食通", "脚光", "豚バラ肉", "伊勢海老", "干し貝柱", "ヒレ肉", "塩コショウ", "野菜スープ"]
+    return [(word, f"{word}を使った料理だ。", 20000 + i, f"{source} @ 00:0{i}:36") for i, word in enumerate(words)]
+
+
+def test_a_single_videos_bare_title_in_the_library_is_never_named_missing_and_another_name_still_is(tmp_path):
+    """Junban-X3 (based on Mattias's #447, 3.0.10): his single YouTube video's cards carry its bare title, with no
+    episode — the footer named it missing while its subtitle was in the library. The third source he reported is in
+    his library under another name: exact keys only, it is still named."""
+    from app import token_index
+    _results(tmp_path, priority=[("無関係", "無関係", 1, 1)], library={"無関係|ムカンケイ": [1, 1, 0, 0, 1, 10, "無関係"]})
+    title, abroad = "笑い過ぎて一生忘れられないTRPG", "【留学なし】誰から何も言われずに"
+    fake = _mined(_ten(title) + _ten(abroad), start=400)
+    folder = os.path.join(str(tmp_path), "data", "ja", "HighPriority", title)
+    os.makedirs(folder, exist_ok=True)
+    video = os.path.join(folder, f"{title} [IIqUltT_x0c].ja.srt")
+    with open(video, "w", encoding="utf-8") as handle:
+        handle.write("1\n00:00:01,000 --> 00:00:02,000\n甜麺醤を使った料理だ。\n")
+    token_index.reconcile_language("ja", [video])
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(_settings())
+    assert stats["banner"] == [{"source": abroad, "cards": 10}]
+
+
+def test_a_deck_of_audiobook_cards_alone_finds_its_audiobook(tmp_path, monkeypatch):
+    """Junban-X3: `Audio — <name>` is no bare name, yet only the counted names carry it — a deck whose sources are all
+    an audiobook's still reads them (`source_names.only_counted`), so his カラフル is never named missing."""
+    from modules.junban import backlog_shows, source_names
+    _results(tmp_path, priority=[("無関係", "無関係", 1, 1)], library={"無関係|ムカンケイ": [1, 1, 0, 0, 1, 10, "無関係"]})
+    source = "Audio — カラフル (文春文庫) - 森 絵都"
+    record = {"audiobook": {"files": ["//hemma/data/Japanese/Book Sync/カラフル/カラフル (文春文庫) - 森 絵都.m4b"],
+                            "title": "カラフル", "titles": ["カラフル"]}}
+    asked = []
+
+    def counted(language, bare=True):
+        asked.append(bare)
+        return source_names.names_of_record(record, bare=bare)
+    monkeypatch.setattr(backlog_shows, "counted_names", counted)
+    with _patched(_mined(_ten(source), start=400)):
+        _writes, stats = reposition.dry_run(_settings())
+    assert asked == [True] and stats["banner"] == []
+
+
 def test_a_preview_of_a_thousand_cards_takes_under_a_second(tmp_path, priority_rows):
     """Spec §7's performance guard (I8): the whole ladder and every tier over 1,000 cards of real
     words and real sentences, tokenizer start-up included, well under a second on Surasura's side

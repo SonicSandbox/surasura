@@ -87,9 +87,9 @@ def read_deck(url, deck, known=None):
 
 def library(language, bare=True):
     """Every item of the library as `Item(id, tier, work, title, names, text)` — `names` the keys Anki Miner's source
-    can carry for it (its file, its original under the user's folder, its paired video; the old bare name only with
-    `bare`); `text` False for a video still waiting for its subtitle — or None without a store (JSON mode, a 2.x
-    library)."""
+    can carry for it (its file, its original under the user's folder, its paired video; the old bare name, an
+    audiobook's files and a fetched video's title in Anki Miner's fixed series only with `bare`); `text` False for a
+    video still waiting for its subtitle — or None without a store (JSON mode, a 2.x library)."""
     from app import library_store
     from app.path_utils import get_data_path, get_user_files_path
     store = library_store.open_store(language, get_data_path(language), get_user_files_path(language), role="reader")
@@ -102,11 +102,11 @@ def library(language, bare=True):
         records = connect_library.pairings(store)
     items = []
     for item_id, tier, rel, work, title in rows:
-        paths = [rel]
+        paths, names = [rel], set()
         for record in records.get(item_id) or ():
             if isinstance(record, dict):
                 paths += [record.get("origin"), record.get("video_path")]
-        names = set()
+                names |= source_names.names_of_record(record, bare=bare)    # `Audio — …`, `YouTube — …` (Junban-X3)
         for one in dict.fromkeys(p for p in paths if p):
             names |= source_names.names_of(one, bare=bare)
         text = os.path.splitext(str(rel or ""))[1].lower() not in VIDEO_EXTENSIONS
@@ -258,7 +258,7 @@ def refresh(language, settings, url=None, force=False, deck=None):
             same = known is not None and set(map(str, notes)) == set(map(str, known))
             if same and not force and "offer" in kept and kept.get("version") == version:
                 return kept.get("offer")
-            bare = any(source_names.is_bare(source_names.card_key(m)) for m in notes.values())
+            bare = any(source_names.only_counted(source_names.card_key(m)) for m in notes.values())
             items = library(language, bare=bare)
             result = look(notes, items or ())
             record = offer_record(dict(result, deck=deck) if result else None)

@@ -14,9 +14,9 @@ Why these matter: a tester's own vol 1 (an M4B, its `.srt` and its EPUB side by 
 book's and the transcript's. Every look here runs on real files built on disk (an EPUB of real text, M4Bs and MP3s
 with real tags and lengths, transcripts of real sentences) and proves the source folders are never written to.
 """
+import json
 import logging
 import os
-import re
 import unicodedata
 
 import pytest
@@ -441,31 +441,6 @@ def test_a_paired_transcript_rewritten_as_another_text_is_checked_again():
         assert [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == [heard[0]]
 
 
-def test_a_transcript_an_earlier_check_found_another_books_is_checked_again_by_the_next_look():
-    """Mattias's 本好きの下剋上 vol 3: its own transcript found "another book's" by the check before the run in order
-    (a `found` with no `check`) — the next look checks it again: the book's, used for timing, *Needs you* quiet."""
-    import json
-    language = "ja"
-    store, _data_dir, src, srt = _paired(language, STAR, _lines(language)[:12])
-    with store:
-        root = store.add_source(src)
-        _look(store, language, root, first=True)
-        [heard] = [r for r in _book_items(store, STAR)[1] if r[3] == "audio"]
-        with store._writing():                                        # as 3.0.7's check left it
-            for key, _i, rec in store._audiobook_rows(heard[0]):
-                said = rec["audiobook"]["transcript"]
-                said["found"] = {"book": said["found"]["book"], "share": 0.0023}
-                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
-                                   (json.dumps(rec, sort_keys=True, ensure_ascii=False), key))
-            store.conn.execute("DELETE FROM meta WHERE key = ?", (sources.TRANSCRIPT_CHECK,))
-        assert audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.UNCHECKED
-        _look(store, language, root)                                  # a quick look: no folder of it changed
-        rec = _record(store, heard[0])
-        assert audiobooks.transcript_use(rec) == audiobooks.TIMING
-        assert rec["transcript"]["found"]["check"] == audiobooks.FOUND_CHECK
-        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
-
-
 def test_a_book_arriving_after_an_audiobook_counted_by_its_transcript_takes_the_count_back():
     """Alone with its transcript (counted), then its book arrives beside it and pairs: the item waits again in the
     book's title — the book's words count, the transcript's no longer."""
@@ -633,38 +608,6 @@ def test_which_subtitle_is_an_audiobooks_transcript(found, names, want):
     assert audiobooks.transcripts(found, names) == want
 
 
-def test_the_in_order_share_is_the_plain_longest_run_on_real_text():
-    """The index (`found_in_order`) finds exactly the longest run in order a plain search finds — the book's own
-    lines shuffled, repeated and mixed with another text's."""
-    import random
-    book = audiobooks.clean_text("".join(_lines("ja")) * 3)
-    lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
-    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
-    random.Random(7).shuffle(lines)
-
-    def plain(cues, text):              # best[p]: the longest run in order ending with a cue found at place p
-        best = {}
-        for c in cues:
-            at = [m.start() for m in re.finditer(f"(?={re.escape(c)})", text)]
-            got = {p: 1 + max((n for q, n in best.items() if q < p), default=0) for p in at}
-            for p, n in got.items():
-                best[p] = max(best.get(p, 0), n)
-        return max(best.values(), default=0) / len(cues)
-    assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
-
-
-def test_a_cue_found_only_far_off_leaves_the_rest_found():
-    """Mattias's 本好きの下剋上 vol 3: the narrator reads the title first, the EPUB's text holds it only in its colophon
-    (its cover an image) — the check counted 15 of 6548 cues, and the transcript of that very book was "another
-    book's". Every cue after such a one is still found in order."""
-    title = "第一部兵士の娘III"
-    body = ["とうとうこの日が来たとフリーダは", "鎖につけられている鍵は二つある", "一つは祖父の部屋の鍵でもう一つは",
-            "その中にあるのは貴族から金に飽かせて"]
-    book = audiobooks.clean_text("".join(body) + "あとがき" + title + "二〇一五年発行")
-    assert audiobooks.found_in_order([title] + body, book) == 0.8                   # the title alone out of order
-    assert audiobooks.found_in_order(body + [title], book) == 1.0
-
-
 def test_cues_and_the_in_order_share():
     srt = "1\n00:00:01,000 --> 00:00:02,000\n吾輩は猫である。\n名前はまだ無い。\n\n2\n00:00:03,000 --> 00:00:04,000\nにゃ\n"
     assert audiobooks.cues(srt) == ["吾輩は猫である名前はまだ無い"]                # short cues are never looked for
@@ -682,12 +625,169 @@ def test_what_a_transcript_is_for():
     assert audiobooks.transcript_use({"book": None}) is None
     assert audiobooks.transcript_use({"transcript": said, "book": None}) == audiobooks.TEXT
     assert audiobooks.transcript_use({"transcript": said, "book": book}) == audiobooks.UNCHECKED
-    found = lambda share, mark="s1", check=audiobooks.FOUND_CHECK: dict(  # noqa: E731
-        said, found={"book": mark, "share": share, "check": check})
+    found = lambda share, mark="s1": dict(said, found={"book": mark, "share": share,  # noqa: E731
+                                                   "rule": audiobooks.FOUND_RULE})
     assert audiobooks.transcript_use({"transcript": found(0.6), "book": book}) == audiobooks.TIMING
     assert audiobooks.transcript_use({"transcript": found(0.59), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(None), "book": book}) == audiobooks.OTHER
     assert audiobooks.transcript_use({"transcript": found(1.0, "s2"), "book": book}) == audiobooks.UNCHECKED
-    # a check made before the run in order (no `check`): another book's is checked again, the book's stays
-    assert audiobooks.transcript_use({"transcript": found(0.0023, check=None), "book": book}) == audiobooks.UNCHECKED
-    assert audiobooks.transcript_use({"transcript": found(0.99, check=None), "book": book}) == audiobooks.TIMING
+
+
+# --- Kura-AB5: the in-order share is the longest run (based on the diagnosis in #432 by Mattias; 本好きの下剋上 vol 3) - #
+def _colophon_case(language):
+    """The narrator reads the title first; the book's text holds it only in its colophon, at the very end (its cover
+    an image) -> (cues, book text)."""
+    title = {"ja": "本好きの下剋上第一部兵士の娘III", "zh": "西游记第一回灵根育孕源流出"}[language]
+    lines = [audiobooks.clean_text(x) for x in _lines(language)]
+    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
+    book = audiobooks.clean_text("".join(_lines(language)) + "奥付" + title + "発行")
+    return [audiobooks.clean_text(title)] + lines, book, len(lines)
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_a_title_read_first_but_found_only_in_the_colophon_costs_only_itself(language):
+    """#432: the first cue found at the book's end moved the search past every other cue — 15 of 6548 found (0.0023)
+    though 99.88 % are in the book. Now one cue found far off costs only itself."""
+    cues, book, n = _colophon_case(language)
+    assert audiobooks.found_in_order(cues, book) == n / (n + 1)
+    assert audiobooks.found_in_order(cues, book) >= audiobooks.CONTENT_SHARE
+
+
+def test_the_in_order_share_is_the_longest_run_on_real_text():
+    """The index (`found_in_order`) finds exactly the longest run of cues in the book's order a plain search over
+    every place finds — the book's own lines shuffled, repeated and mixed with another text's; a cue repeated in the
+    transcript but once in the book counts once."""
+    import random
+    book = audiobooks.clean_text("".join(_lines("ja")) * 3)
+    lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
+    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
+    random.Random(7).shuffle(lines)
+
+    def plain(cues, text):
+        ends = []                                       # [(place, the longest run ending there)]
+        for c in cues:
+            here = [i for i in range(len(text)) if text.startswith(c, i)]
+            ends += [(i, 1 + max([k for j, k in ends if j < i], default=0)) for i in here]
+        return max([k for _i, k in ends], default=0) / len(cues)
+    assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
+    once = audiobooks.clean_text("".join(_lines("ja")))
+    twice = [lines[0], lines[0]] if lines[0] in once else [audiobooks.clean_text(_lines("ja")[0])] * 2
+    assert audiobooks.found_in_order(twice, once) == 0.5
+
+
+def test_a_book_judged_under_the_first_rule_and_found_wanting_is_judged_again_once():
+    """3.0.8's checks went by the first rule (no `rule`): one found wanting is checked again under this one; one found
+    the book's stays (the longest run is never shorter); one judged by this rule stays judged."""
+    said = {"origin": "x.srt", "rel": "Library/x (audio)/x.srt"}
+    book = {"epub": "b.epub", "sha256": "s1"}
+    old = lambda share: dict(said, found={"book": "s1", "share": share})  # noqa: E731
+    now = lambda share: dict(said, found={"book": "s1", "share": share, "rule": audiobooks.FOUND_RULE})  # noqa: E731
+    assert audiobooks.transcript_use({"transcript": old(0.0023), "book": book}) == audiobooks.UNCHECKED
+    assert audiobooks.transcript_use({"transcript": old(0.9), "book": book}) == audiobooks.TIMING
+    assert audiobooks.transcript_use({"transcript": now(0.0023), "book": book}) == audiobooks.OTHER
+
+
+def test_a_transcript_judged_wanting_by_the_first_rule_is_its_books_at_the_next_look():
+    """Store and look: his vol 3 as 3.0.8 left it — its transcript found wanting (no `rule`). The next look of its
+    folder checks it again: the book's (TIMING), recorded under this rule, and never checked again after."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        _work, rows = _book_items(store, STAR)
+        item = [r for r in rows if r[3] == "audio"][0][0]
+        with store._writing():
+            for key, text in store.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                                (item,)).fetchall():
+                rec = json.loads(text)
+                found = rec["audiobook"]["transcript"]["found"]
+                rec["audiobook"]["transcript"]["found"] = {"book": found["book"], "share": 0.0023}   # as 3.0.8's
+                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (json.dumps(rec), key))
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.UNCHECKED
+        _look(store, "ja", root, full=True)
+        rec = _record(store, item)
+        assert audiobooks.transcript_use(rec) == audiobooks.TIMING
+        assert rec["transcript"]["found"] == {"book": found["book"], "share": 1.0, "rule": audiobooks.FOUND_RULE}
+
+
+def test_a_libraries_first_look_under_a_new_rule_checks_its_transcripts_again_though_no_folder_changed():
+    """Mattias's vol 3 card stayed after the update: Surasura's looks were quick ones, and a quick look weighs no
+    audiobook whose folder is unchanged. A library's first look under a new FOUND_RULE (meta `transcript_rule`), a
+    quick one too, weighs every audiobook once: the card goes. Quiet looks after it still read no record."""
+    store, _data_dir, src, _srt_path = _paired("ja", STAR, _lines("ja")[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        assert str(store.meta()[sources.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        _work, rows = _book_items(store, STAR)
+        item = [r for r in rows if r[3] == "audio"][0][0]
+        with store._writing():                                        # a library 3.0.8 left
+            for key, text in store.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                                (item,)).fetchall():
+                rec = json.loads(text)
+                found = rec["audiobook"]["transcript"]["found"]
+                rec["audiobook"]["transcript"]["found"] = {"book": found["book"], "share": 0.0023}
+                store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (json.dumps(rec), key))
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (sources.TRANSCRIPT_RULE,))
+        assert [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
+        _look(store, "ja", root)                                      # a quick look: no folder of it changed
+        assert audiobooks.transcript_use(_record(store, item)) == audiobooks.TIMING
+        assert str(store.meta()[sources.TRANSCRIPT_RULE]) == str(audiobooks.FOUND_RULE)
+        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
+
+
+def _story(language, name):
+    folder = {"ja": "samples/ja", "zh": "samples/zh"}[language]
+    for tier in ("HighPriority", "LowPriority"):
+        path = os.path.join(os.path.dirname(RESOURCES), os.pardir, folder, tier, name)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8-sig") as f:
+                return f.read()
+    raise FileNotFoundError(name)
+
+
+def _story_cues(text):
+    import re
+    return [x for x in (audiobooks.clean_text(s) for s in re.split(r"(?<=[。！？!?])|\n", text))
+            if len(x) >= audiobooks.CUE_MIN]
+
+
+def test_a_cue_whose_opening_is_common_still_finds_its_late_place():
+    """The lead's check on #432: a cue's every place is checked whole — never only the first places its opening sits
+    at — so a line starting like a hundred earlier ones still finds its one place late in the book."""
+    text = _story("ja", "蜘蛛の糸（芥川龍之介）.txt")
+    cues = _story_cues(text)
+    last = cues[-1]
+    filler = audiobooks.clean_text(_story("ja", "ごん狐（新美南吉）.txt"))[:40]
+    book = audiobooks.clean_text(text.replace(text.rstrip()[-len(text.rstrip()) // 3:], ""))   # its first two thirds
+    book = "".join(last[:audiobooks.CUE_MIN] + filler for _ in range(300)) + book + last         # 300 alike openings
+    assert book.count(last) == 1 and book.count(last[:audiobooks.CUE_MIN]) > 300
+    head = [c for c in cues[:-1] if c in book]
+    assert audiobooks.found_in_order(head + [last], book) == 1.0
+
+
+def test_a_stock_line_all_through_the_book_is_out_of_the_run_and_the_count():
+    """A line the book holds more than FOUND_PLACES times tells neither the order nor the book: never weighed — the
+    right book's share is not lowered by it, a wrong book's never raised; only such lines: no share (None)."""
+    cues = _story_cues(_story("ja", "蜘蛛の糸（芥川龍之介）.txt"))
+    stock = audiobooks.clean_text(_story("ja", "ごん狐（新美南吉）.txt"))[:20]
+    book = (stock * (audiobooks.FOUND_PLACES + 1)) + "".join(cues)
+    assert audiobooks.found_in_order([stock] + cues + [stock], book) == 1.0
+    assert audiobooks.found_in_order([stock, stock], book) is None
+    other = _story_cues(_story("ja", "注文の多い料理店（宮沢賢治）.txt"))
+    assert audiobooks.found_in_order([stock] * 50 + other, book) < 0.1
+
+
+@pytest.mark.parametrize("language,stories", (
+    ("ja", ("蜘蛛の糸（芥川龍之介）.txt", "注文の多い料理店（宮沢賢治）.txt", "ごん狐（新美南吉）.txt")),
+    ("zh", ("故乡（鲁迅）.txt", "孔乙己（鲁迅）.txt", "从百草园到三味书屋（鲁迅）.txt")),     # one author: alike lines
+))
+def test_another_books_transcript_still_scores_low_under_the_longest_run(language, stories):
+    """The other side of #432's rule: the longest run must never let chance matches of short common lines chain into
+    a wrong book's transcript passing — each real story's cues against every other story (one author's, in zh) stay far
+    under CONTENT_SHARE; against its own book, all of them."""
+    for t in stories:
+        cues = _story_cues(_story(language, t))
+        for b in stories:
+            share = audiobooks.found_in_order(cues, audiobooks.clean_text(_story(language, b)))
+            assert share == 1.0 if t == b else share < 0.1, (t, b, share)

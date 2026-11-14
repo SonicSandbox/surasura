@@ -385,3 +385,29 @@ def test_the_answer_with_no_audio_in_the_folder_is_empty():
     empty = _drive("nothing")
     said = _add(language, empty, {"epub": epub, "title": NEKO})["audiobooks"]
     assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+
+
+# --- Kura-AB5: a removed audiobook's folder picked for the book (based on the diagnosis in #429 by Mattias) ------- #
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+def test_an_audiobook_removed_before_comes_back_when_its_folder_is_picked_for_the_book(language, title):
+    """The EPUB asks for its audiobook; the one in the folder was read before and removed (kept out: S6). + Add's
+    *A folder…* of it (no book named) still keeps it out; the book's own *A folder on your computer…* takes it in
+    and the looks' answer says it joined — the learner's word to have it again; nothing in his folder is touched."""
+    store, epub = _book_in(language, title, "source")
+    store.close()
+    audio = os.path.join(_drive("audio"), "audiobook")
+    _untagged(audio, _fit(language))
+    first = _add(language, audio)["audiobooks"]
+    store = ls.open_store(language, *roots(language))
+    with store:
+        store.remove(first["alone"])
+    assert _add(language, audio)["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+    said = _add(language, audio, {"epub": epub, "title": title})["audiobooks"]
+    store = ls.open_store(language, *roots(language))
+    with store:
+        (item,) = _audio_items(store)
+        assert item["id"] not in first["alone"], "a new item: the removed one stays the Removed list's own record"
+        key = _record(store, item["id"])["book"]["key"]
+        assert said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [], "elsewhere": []}
+        assert item["tier"] != "arrivals"
+        assert store.removed() == [], "nothing left to Put back: it is in"

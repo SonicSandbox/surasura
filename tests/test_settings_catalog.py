@@ -913,7 +913,9 @@ def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
     assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
     row = catalog.ROW["connect_needs_miner"]
     assert row.section == "anki" and row.keys == () and row.label == "Cards made for you"
-    assert "Anki Miner" in row.help and row.tip
+    assert row.help == S.CARDS_WHY and row.tip                       # what you get: behind its ? (Kantan-S2)
+    assert catalog.help_line(row, {}, "ja") == S.NEEDS_MINER             # what it needs: its line, in sight
+    assert "connect_needs_miner" in catalog.find("needs anki miner", {}, "ja", NO_MINER)   # the line in sight finds it
 
 
 def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is_offered(monkeypatch, tmp_path):

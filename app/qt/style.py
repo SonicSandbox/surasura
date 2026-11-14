@@ -292,24 +292,24 @@ QWidget#pathrow {{ background: {c['overlay-cut']}; border-radius: {theme.RADII['
 QLabel#pathtick {{ border: 1px solid {c['overlay-ink-faint']}; border-radius: {round(20 * f) // 2}px; color: {fixed['on-accent']};
   {font('badge')} }}
 QLabel#pathtick[done="true"] {{ background: {c['ok']}; border-color: {c['ok']}; }}
+QLabel#pathtick[later="true"] {{ border-style: dashed; }}
 QLabel#pathtitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
-QLabel#pathline {{ color: {c['overlay-ink-dim']}; {font('row-sub')} font-weight: 400; }}
+QLabel#pathtitle[later="true"] {{ color: {c['overlay-ink-dim']}; font-weight: 400; }}
 QLabel#pathdone {{ color: {c['ok']}; {font('eyebrow')} }}
 QLabel#pathright {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} }}
-QLabel#pathmore {{ color: {c['overlay-ink-dim']}; {font('row-sub')} font-weight: 400; }}
 QWidget#nextcard {{ background: {c['raised']}; border-radius: {theme.RADII['r']}px;
   border-left: {px(3)} solid {c['accent']}; }}
 QWidget#nextcard[look="made"] {{ border-left: {px(3)} solid {c['ok']}; }}
 QLabel#nexteyebrow {{ color: {c['accent']}; {font('eyebrow')} }}
 QWidget#nextcard[look="made"] QLabel#nexteyebrow {{ color: {c['ok']}; }}
 QLabel#nexttitle {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
-QLabel#nextline {{ color: {c['ink-dim']}; {font('row-sub')} font-weight: 400; }}
 """
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
     rules += f"""
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#windowheading {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#windowline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#windowlead {{ color: {c['ink']}; {font('body')} }}
 QPushButton#windowlink {{ background: transparent; color: {c['ink-dim']}; border: 2px solid transparent;
   border-radius: 6px; padding: 0 {2 * room}px 0 2px; min-height: 0; text-decoration: underline; {font('body')}
   font-weight: 400; }}

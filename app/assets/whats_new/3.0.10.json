@@ -1,0 +1,20 @@
+{
+  "version": "3.0.10",
+  "date": "2026-11-14",
+  "items": [
+    {"id": "journey-names", "kind": "tweak", "for": ["everyone"], "where": "control:journey",
+     "text": "Your journey names shows and episodes (Show · Ep 1), not their file names."},
+    {"id": "worth", "kind": "tweak", "for": ["everyone"],
+     "text": "A word's Score is now its Worth, and the reference-list badge is gone."},
+    {"id": "junban-question", "kind": "tweak", "for": ["junban"],
+     "text": "順 Junban leads with its question: your new cards in the order you'll meet them?"},
+    {"id": "report-lists-line", "kind": "tweak", "for": ["everyone"],
+     "text": "Send report says so when your included lists name your library's titles."},
+    {"id": "every-core-load", "kind": "tweak", "for": ["everyone"],
+     "text": "Use every core is offered on setup's load screen, once a big library is read."},
+    {"id": "hato-next-in-line", "kind": "tweak", "for": ["hato"],
+     "text": "A video waiting behind another hato search says Next in line…"},
+    {"id": "ai-voice-time", "kind": "tweak", "for": ["ja", "miner"],
+     "text": "The AI voice's time per sentence is in its hover now."}
+  ]
+}

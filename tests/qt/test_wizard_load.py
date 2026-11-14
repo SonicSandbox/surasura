@@ -419,3 +419,99 @@ def test_the_load_asks_the_real_windows_chores_never_an_attribute_the_window_lac
         assert run._chores() is world.services.chores and run._chores() is not None
     finally:
         world.close()
+
+
+# --- Mado-FU2: *Use every core* asked at the load screen's first long read (Fresh-U 19a, Sonic 2026-11-13 yes) ----- #
+def _core(wiz):
+    screen = wiz.covered
+    row = getattr(screen, "offer", None) if isinstance(screen, sort_screen.LoadScreen) else None
+    return row if row is not None and not row.isHidden() else None
+
+
+def test_fresh_u_use_every_core_is_asked_on_the_load_screen_once_a_read_is_long_and_saved_at_once(make, empty_library,
+                                                                                                 tmp_path):
+    """Why (Fresh-U 19a): page 3 asked a reading speed before anything was added. It is asked where reading happens:
+    on the load screen, once the scan's count is long enough for every core to matter (`token_index.POOL_MIN_FILES`
+    files: fewer are read by one process whatever it says), shown as saved, saved the moment it flips (the copy's and
+    the indexer's pools after the scan read the key as they open), and kept on screen to the load's end; no visible
+    line under it (its words in the hover)."""
+    from app import token_index
+    wiz, shell, log = _start(make, tmp_path)
+    assert not hasattr(wiz.page, "every_core"), "page 3 no longer asks it"
+    settings = shell.services.settings
+    asked = _covers(shell, hold=threading.Event())
+    wiz.next()
+    assert wiz._load["step"] == "scan" and _core(wiz) is None
+    wiz._load_said((token_index.POOL_MIN_FILES - 1, 3))
+    assert _core(wiz) is None, "a short read never asks it"
+    wiz._load_said((token_index.POOL_MIN_FILES, 3))                          # the look's count, as page 3 hears it
+    row = _core(wiz)
+    assert row is not None
+    assert row.name.text() == S.EVERY_CORE and row.line.isHidden(), "no visible explainer line"
+    assert row.switch.toolTip().endswith(S.EVERY_CORE_TIP) and not row.switch.isChecked()
+    cores = lambda: [c for c in settings.calls if "use_every_core" in c]
+    assert cores() == [], "shown as saved: nothing written by showing it"
+    row.switch.click()
+    assert cores() == [{"use_every_core": True}]
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)          # the scan ended: still there
+    assert _core(wiz) is row
+    shell.services.chores.running = False                                     # on to the covers: still there
+    assert wait_until(lambda: _task(wiz) == S.LOAD_COVERS.format(done=2, total=2), 5)
+    assert _core(wiz) is row and row.switch.isChecked() and asked == [1]
+
+
+def test_fresh_u_the_indexers_count_never_asks_it_too_late_to_help(make, empty_library, tmp_path):
+    """Why (the adversary's F3): the indexer sizes its pool before its first count, so a switch offered then would
+    speed nothing on screen; a short scan followed by a long index asks nothing."""
+    from app import token_index
+    wiz, shell, log = _start(make, tmp_path)
+    _covers(shell, hold=threading.Event())
+    wiz.next()
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
+    total = token_index.POOL_MIN_FILES * 10
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(f"Indexer: starting (ja)\nIndexer: 3 of {total}\n")
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5)
+    assert _core(wiz) is None                     # (an offer would come in the very call that painted this count)
+
+
+def test_fresh_u_the_scans_count_asks_it_too_and_only_once_shown_as_saved(qapp):
+    """Why: a big library's first look (or its copy) is the first long read — the indexer comes after it, so a flip
+    then counts for every file the words are read from; the switch is made once, whatever counts come after."""
+    from app import token_index
+    from app.qt import wizard
+    made, covered = [], []
+    run = sort_screen.LoadRun(None, covered.append, door="setup", long_read=made.append)
+    screen = run.begin()
+    try:
+        run.said((token_index.POOL_MIN_FILES - 1, 2))
+        assert made == []
+        run.said(("copy", 10, token_index.POOL_MIN_FILES))
+        run.said((token_index.POOL_MIN_FILES + 5, 3))
+        assert made == [screen]
+        outside = sort_screen.LoadRun(None, covered.append, door="again", long_read=made.append)
+        outside.begin()
+        outside.said((token_index.POOL_MIN_FILES * 10, 9))
+        assert made == [screen], "Sort my library again never asks it (setup's own, as before)"
+        row = wizard.SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
+        screen.add_offer(row)
+        assert screen.offer is row and row.parent() is screen and not row.isHidden()
+        items = screen.layout().count()
+        again = wizard.SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
+        screen.add_offer(again)                                   # (F9) it takes the first one's place, no second gap
+        assert screen.offer is again and screen.layout().count() == items and screen.layout().indexOf(row) == -1
+    finally:
+        run.ended = True
+        outside.ended = True
+
+
+def test_fresh_u_use_every_core_on_the_load_screen_shows_the_key_as_saved(make, empty_library):
+    """Why (mutant M20): Settings › Content's row is the same key; on there, on here."""
+    wiz, _shell, _api, settings, _m = make(api=SourcesApi(), data={"use_every_core": True})
+    screen = sort_screen.LoadScreen()
+    try:
+        wiz._load_long(screen)
+        assert screen.offer.switch.isChecked()
+        assert not [c for c in settings.calls if "use_every_core" in c], "showing it writes nothing"
+    finally:
+        screen.deleteLater()

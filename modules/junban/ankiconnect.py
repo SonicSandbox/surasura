@@ -141,6 +141,104 @@ def _write_action(card_id, due, key="due"):
             "params": {"card": card_id, "keys": [key], "newValues": [due]}}
 
 
+# AnkiConnect Extended (add-on 1635024181, a replacement for AnkiConnect) refuses `setSpecificValueOfCard`'s `due`
+# with exactly this message, and offers `repositionNewCards` — Anki's own `sort_cards` — instead (a tester's 3.0.6
+# report: "Junban did not make any changes: Use native scheduling commands for protected state."; based on the
+# approach in #417 by Mattias). Read whole, whatever its case or spacing: any other refusal is that card's failure.
+PROTECTED_STATE = "use native scheduling commands for protected state"
+# The addresses that refused it in this process: their positions go by `repositionNewCards` from then on, so only the
+# first request a process sends there is refused. Plain AnkiConnect never lands here and never sees the new action.
+_REPOSITION_NATIVELY = set()
+_BELOW_ONE = "Anki's own reposition starts at 1, so this card can't be put at {due}."
+
+
+def _protected(reason):
+    """Is `reason` AnkiConnect Extended's refusal of a position (`PROTECTED_STATE`)?"""
+    return " ".join(str(reason).split()).casefold().rstrip(".") == PROTECTED_STATE
+
+
+def _unsupported(reply):
+    """Did AnkiConnect answer a sub-action with "unsupported action" (plain AnkiConnect asked `repositionNewCards`)?"""
+    error = reply.get("error") if isinstance(reply, dict) else None
+    return " ".join(str(error or "").split()).casefold() == "unsupported action"
+
+
+def _native_action(card_id, due):
+    """`repositionNewCards` for ONE new card: `startPosition` its position, `step` 1, no shift. Anki's `sort_cards`
+    numbers the cards it is given per note, and with `shift` moves every new card from the start on — so one card a
+    sub-action, never shifted, puts exactly that card at exactly that position and moves nothing else, as
+    `setSpecificValueOfCard`'s `due` does."""
+    return {"action": "repositionNewCards",
+            "params": {"orderedCardIds": [card_id], "startPosition": due, "step": 1, "shift": False}}
+
+
+def _native_verdict(reply):
+    """Did one `repositionNewCards` move its card? "" when it did, else why not. Moved means `repositioned` is exactly
+    1 (never `true`, a list or nothing): a reply Junban can't read is not evidence of a write. Anki skips a card no
+    longer new (studied meanwhile) or gone — that card's failure, never a write."""
+    if not isinstance(reply, dict):
+        return "Anki sent no reply for this card."
+    if reply.get("error") is not None:
+        return str(reply["error"])
+    result = reply.get("result")
+    moved = result.get("repositioned") if isinstance(result, dict) else None
+    if type(moved) is int and moved == 1:
+        return ""
+    if isinstance(result, dict) and result.get("skippedNotNew"):
+        return "It is no longer a new card."
+    if isinstance(result, dict) and result.get("skippedNotFound"):
+        return "Anki no longer has this card."
+    return f"Anki didn't move the card: {result!r}"
+
+
+def _write_positions(url, batch):
+    """One request of `set_due`'s (`[(card_id, due)]`) -> `(written, failures, stopped)`, `stopped` being why Anki
+    stopped answering ("" while it answers). Never raises.
+
+    Plain AnkiConnect: one `multi` of `setSpecificValueOfCard`, as always. A position refused as protected state
+    (`_protected`) is sent again, in a second `multi`, the native way (`_native_action`), and the address remembered
+    (`_REPOSITION_NATIVELY`): later requests go that way at once. Remembered, and answered "unsupported action" for
+    every card (plain AnkiConnect back at that address), the address is forgotten and the request sent the plain way.
+    """
+    remembered = url in _REPOSITION_NATIVELY
+    written, failures, protected = [], [], []
+    if remembered:
+        protected = list(batch)
+    else:
+        try:
+            replies = multi([_write_action(card_id, due) for card_id, due in batch], url)
+        except AnkiError as e:
+            return [], [(card_id, str(e)) for card_id, _due in batch], str(e)
+        for index, (card_id, due) in enumerate(batch):
+            reason = _verdict(replies[index] if index < len(replies) else None)
+            if reason and _protected(reason):
+                protected.append((card_id, due))
+            elif reason:
+                failures.append((card_id, reason))
+            else:
+                written.append(card_id)
+        if protected:
+            _REPOSITION_NATIVELY.add(url)
+    sendable = [(card_id, due) for card_id, due in protected if due >= 1]
+    failures.extend((card_id, _BELOW_ONE.format(due=due)) for card_id, due in protected if due < 1)
+    if not sendable:
+        return written, failures, ""
+    try:
+        replies = multi([_native_action(card_id, due) for card_id, due in sendable], url)
+    except AnkiError as e:
+        return written, failures + [(card_id, str(e)) for card_id, _due in sendable], str(e)
+    if remembered and replies and all(_unsupported(reply) for reply in replies):
+        _REPOSITION_NATIVELY.discard(url)
+        return _write_positions(url, batch)
+    for index, (card_id, _due) in enumerate(sendable):
+        reason = _native_verdict(replies[index] if index < len(replies) else None)
+        if reason:
+            failures.append((card_id, reason))
+        else:
+            written.append(card_id)
+    return written, failures, ""
+
+
 def _verdict(reply):
     """Did this one sub-action actually write? Returns "" for success, else why not.
 
@@ -233,6 +331,9 @@ def set_due(url, pairs, chunk=150, progress=None):
     Chunked at ~150 by default. AnkiConnect is single-threaded on Anki's Qt GUI thread with a 25 ms
     poll, so one enormous `multi` freezes Anki with no progress bar and no cancel — and gives no
     partial-progress checkpoint if it dies.
+
+    AnkiConnect Extended refuses these writes as protected state: its positions go by `repositionNewCards`, one card a
+    sub-action, at exactly the same numbers (`_write_positions`) — so every caller, Undo included, is exact there too.
     """
     prepared, failures = [], []
     for card_id, due in pairs:
@@ -252,20 +353,11 @@ def set_due(url, pairs, chunk=150, progress=None):
             # Anki went away mid-run. Report the rest honestly instead of hammering a dead socket.
             failures.extend((card_id, stopped) for card_id, _due in batch)
             continue
-        try:
-            replies = multi([_write_action(card_id, due) for card_id, due in batch], url)
-        except AnkiError as e:
-            stopped = str(e)
-            failures.extend((card_id, stopped) for card_id, _due in batch)
+        sent, refused, stopped = _write_positions(url, batch)
+        written.extend(sent)
+        failures.extend(refused)
+        if stopped:
             continue
-
-        for index, (card_id, _due) in enumerate(batch):
-            reply = replies[index] if index < len(replies) else None
-            reason = _verdict(reply)
-            if reason:
-                failures.append((card_id, reason))
-            else:
-                written.append(card_id)
 
         done += len(batch)
         if progress is not None:

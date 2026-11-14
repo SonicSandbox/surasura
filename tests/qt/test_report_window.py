@@ -398,7 +398,7 @@ def test_send_report_is_the_main_button_and_says_the_promise_always(main):
     assert w.send_button.property("kind") == "primary" and w.zip_button.property("kind") != "primary"
     assert w.send_button.text() == "Send report" and w.zip_button.text() == "Make a zip instead"
     assert not w.send_button.isEnabled() and w.send_button.toolTip() == strings.REPORT_SEND_NONE_TIP
-    assert w.promise.text() == "No personal data or identification is included" and not w.promise.isHidden()
+    assert w.promise.text().startswith("No personal data or identification is included") and not w.promise.isHidden()
     w.what.setPlainText(JA_WHAT)                                       # words typed: ready (they're saved first)
     assert w.send_button.isEnabled() and w.send_button.toolTip() == strings.REPORT_SEND_TIP
     w.what.setPlainText("")
@@ -406,6 +406,22 @@ def test_send_report_is_the_main_button_and_says_the_promise_always(main):
     _save(w, ZH_WHAT)                                                  # a saved report: ready with the form empty
     assert w.send_button.isEnabled() and not w.promise.isHidden()
     assert not hasattr(w, "discord_button")                            # SR-Q1: Send report takes its place
+
+
+def test_fresh_u_the_promise_keeps_sonics_words_and_says_the_lists_name_titles_only_while_they_go(main):
+    # Fresh-U 18 (Sonic 2026-11-13 yes; the tail's words PROVISIONAL): "No personal data or identification is
+    # included" stood right above a hint that the lists name the library's titles. His line stays as written; while
+    # *Include my last lists* is ticked (its default) the same line adds that they do, and drops it once unticked
+    w = _press(main)
+    assert w.include_results.isChecked()
+    said = strings.REPORT_PROMISE + strings.REPORT_PROMISE_LISTS
+    assert strings.REPORT_PROMISE == "No personal data or identification is included"
+    assert strings.REPORT_PROMISE_LISTS == " · your lists name your library's titles"
+    assert w.promise.text() == said and w.promise.accessibleName() == said
+    w.include_results.setChecked(False)
+    assert w.promise.text() == strings.REPORT_PROMISE == w.promise.accessibleName()
+    w.include_results.setChecked(True)
+    assert w.promise.text() == said and not w.promise.isHidden()
 
 
 def test_a_typed_discord_name_is_said_to_go_and_is_at_most_32_characters(main):

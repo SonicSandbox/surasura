@@ -10,6 +10,7 @@ JUNBAN_NAME = "順番 (Junban)"
 JUNBAN_HEADER = "順番 (Junban)"
 JUNBAN_HEADER_TIP = ("Puts the new cards waiting in Anki into Surasura's learn order. Nothing is added, deleted or "
                      "rescheduled.")
+JUNBAN_LEAD = "Put your new cards in the order you'll meet them?"        # Fresh-U 14 (PROVISIONAL): its one question
 JUNBAN_BACKFILL = "Backfill…"
 JUNBAN_BACKFILL_TIP = "Fill fields on your cards from Surasura."
 JUNBAN_RECHECK_NAME = "Check Anki again"
@@ -153,6 +154,11 @@ JUNBAN_RESTORE = "Undo the last reorder"
 JUNBAN_RESTORE_TIP = ("Put the cards back where they were before the last reorder, using the saved snapshot. Anki's own "
                       "Undo cannot do this.")
 JUNBAN_PUT_BACK_NAME = "Put Anki back"
+# Junban-X2 (Sonic 2026-11-13): a Reorder refused only for other decks' stopped runs — one press (PROVISIONAL)
+JUNBAN_PUT_BACK_FIRST = "Put that one back, then reorder"
+JUNBAN_PUT_BACK_FIRST_TIP = "Undo the reorder that stopped part way on the other deck, then reorder this one."
+JUNBAN_PUT_BACK_FIRST_HELP = "Only {decks} goes back; this deck is reordered as previewed."
+JUNBAN_PUT_BACK_FIRST_ELSEWHERE = "the other deck"
 # Backlog onboarding (Sonic 2026-10-29): undo said plainly, the backlog's picture before the first reorder, Try it
 JUNBAN_UNDO_NOTE = "Every card can go back exactly as it was"
 JUNBAN_UNDO_NOTE_TIP = ("Before any card moves, Surasura saves where every card it moves was. Undo the last reorder puts "

@@ -1559,11 +1559,7 @@ class ShowsPage(_Page):
         lbox.addWidget(self.yt_risk)
         self.links_part.setVisible(False)
         fbox.addWidget(self.links_part)
-        self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
-        self.every_core.switch.toggled.connect(self.wiz.use_every_core)
-        fbox.addWidget(self.every_core)                   # Mado-O (Sonic 2026-10-30): decided before the load
-        self.every_core.setVisible(False)                 # Kantan-B1 (A2): a reading speed — shown once a folder is
-                                                          # ... picked (`_paint_folders`), never asked before one
+        # (K5 C4's *Use every core* is asked on the load screen's first long read: `SetupWizard._load_long`, Mado-FU2)
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
@@ -1603,7 +1599,6 @@ class ShowsPage(_Page):
     def load(self, answers):
         self.covers.switch.set_quiet(bool((answers or {}).get("covers", True)))
         settings = self.wiz._settings()
-        self.every_core.switch.set_quiet(bool(settings.get("use_every_core", False)))
         self.yt_risk.switch.set_quiet(bool(settings.get("youtube_risk_acknowledged", False)))
 
     def answers(self):
@@ -1730,7 +1725,6 @@ class ShowsPage(_Page):
             self.folder_list.addWidget(w)
         _show(self.btn_skip, bool(self.folders))          # only inside a folder picked
         _enable(self.btn_skip, self.wiz.reading is None)
-        _show(self.every_core, bool(self.folders) and not self.every_core.property("resort-hidden"))   # Kantan-B1
         _enable(self.btn_its_folder, self.wiz.reading is None)
         text = S.PICK_ANOTHER if self.folders else S.PICK_FOLDER
         if self.btn_pick.text() != text:
@@ -3132,7 +3126,7 @@ class SetupWizard(QWidget):
                 self.reading_now[os.path.normcase(os.path.normpath(row["path"]))] = row["id"]
                 page.folders.append(row["path"])
         self.steps.setVisible(False)
-        for w in (page.covers, page.every_core, page.btn_samples):   # setup's own: none of them is a folder change
+        for w in (page.covers, page.btn_samples):         # setup's own: none of them is a folder change
             w.setVisible(False)
             w.setProperty("resort-hidden", True)
         _set_text(self.btn_later, S.RESORT_BACK)
@@ -3772,8 +3766,8 @@ class SetupWizard(QWidget):
                              failed=lambda info: (self.alive(failed)(info), needs_look()))
 
     def use_every_core(self, on):
-        """K5 C4: page 3's *Use every core* (beside the big library's warning), saved at once — the copy's pools read it
-        as they open, so a look still listing takes it (Settings › Content's row is the same key)."""
+        """K5 C4: *Use every core* (the load screen's, `_load_long`), saved at once — the copy's and the indexer's pools
+        read it as they open, so a read after the flip takes it (Settings › Content's row is the same key)."""
         try:
             self.services.settings.set({"use_every_core": bool(on)})
         except Exception as e:
@@ -3868,10 +3862,19 @@ class SetupWizard(QWidget):
                                         language=lambda: self.language, sort=lambda: self._load_sort(),
                                         after=self.alive(self._load_sorted), empty=self._load_empty,
                                         sync_running=lambda: self._sync_running,
-                                        fetching=lambda: self.fetching is not None, parent=self)
+                                        fetching=lambda: self.fetching is not None, long_read=self._load_long,
+                                        parent=self)
         screen = self._run.begin()
         if self.fetching is not None:                     # alpha 8: YouTube's line beside the task, from the start
             screen.set_side(S.YOUTUBE_FETCHING.format(what=_count(S.YOUTUBE_VIDEOS, self.fetching["links"])))
+
+    def _load_long(self, screen):
+        """Mado-FU2 (Fresh-U 19a, Sonic 2026-11-13; was page 3's): the load's first long read asks *Use every core* on
+        the load screen — shown as saved, saved the moment it flips; its words in its hover, no line under it."""
+        row = SwitchRow(S.EVERY_CORE, "", S.EVERY_CORE_TIP)
+        row.switch.set_quiet(bool(self._settings().get("use_every_core", False)))
+        row.switch.toggled.connect(self.use_every_core)
+        screen.add_offer(row)
 
     def _load_said(self, said):
         """The scan's progress, as page 3 hears it: the wait, the copy's count, or what it found."""

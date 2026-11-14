@@ -727,6 +727,8 @@ def length_text(seconds):
 TRANSCRIPT_EXTENSIONS = (".srt", ".ass", ".ssa")     # a timed subtitle the library reads (never a `.txt`: a book's)
 CUE_MIN = 8                     # a cue this long (clean characters) or longer is looked for in the book
 CONTENT_SHARE = 0.6             # this share of its cues found in the book, in order, and the transcript is the book's
+FOUND_PLACES = 64               # a cue the book holds more often than this is a stock line: never weighed (`found_in_order`)
+FOUND_RULE = 2                  # `found_in_order`'s rule, kept with each check (#432: 1 = each cue after the last found)
 TEXT, TIMING, OTHER, UNCHECKED, ASKED = "text", "timing", "other", "unchecked", "asked"   # `transcript_use`
 _RUBY = re.compile(r"<rt>.*?</rt>|<rp>.*?</rp>", re.S | re.I)
 _ASS_TAGS = re.compile(r"\{[^}]*\}")
@@ -795,35 +797,38 @@ def cues(text):
     return out
 
 
-FOUND_CHECK = 2                 # the in-order check a `found` was made with: 2, the longest run in order. A transcript
-                                # found another book's by an earlier one (1: a scan that never looked back) is checked
-                                # again at the next look; one found the book's stays (the run in order finds no less)
-FOUND_PLACES = 64               # a cue's places in the book the in-order share weighs at most (a line said that often
-                                # tells nothing of the order; the bound keeps another book's check milliseconds)
-
-
 def found_in_order(lines, book_text):
-    """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d) in the book's order -> 0.0–
-    1.0: the most cues whose places in the book go forward as the transcript does (its longest run in order, not a
-    scan that only looks after the last cue found — one cue found far off, like the title the narrator reads first
-    that the book's text holds only in its colophon, would leave every cue after it unfound); None when the
-    transcript has no cue to look for. One pass over the book (its CUE_MIN-character runs' places), each cue tried
-    only where its first run sits, then a patience sort over the places: milliseconds even for another book's."""
+    """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d) in the book's order: the
+    longest run of cues each found further on than the one before (FOUND_RULE 2) -> 0.0–1.0; None when the transcript
+    has no cue to look for. Based on the diagnosis in #432 by Mattias: rule 1 looked for each cue only after the last
+    one found, so a title read first that the book holds only in its colophon lost every cue after it (15 of 6548);
+    now a cue found far off costs only itself. A stock line the book holds more than FOUND_PLACES times tells neither
+    the order nor the book: out of both the run and the count (in the count alone it would lower the right book's
+    share; counted found, raise a wrong book's). One pass over the book (its CUE_MIN-character runs' places), each cue
+    checked whole at every place its first run sits, then a patience sort over its places, latest first."""
     if not lines:
         return None
     places = {}
     for i in range(len(book_text) - CUE_MIN + 1):
         places.setdefault(book_text[i:i + CUE_MIN], []).append(i)
-    tails = []                          # tails[k]: the least place a run in order of k + 1 cues can end at
+    ends, weighed = [], 0                                # ends[k]: the earliest place a run of k + 1 cues ends at
     for line in lines:
-        found = [i for i in places.get(line[:CUE_MIN], ())[:FOUND_PLACES] if book_text.startswith(line, i)]
-        for i in reversed(found):       # last place first: one cue never counts twice in one run
-            k = bisect.bisect_left(tails, i)
-            if k == len(tails):
-                tails.append(i)
+        found = []
+        for i in places.get(line[:CUE_MIN]) or ():       # (the whole line checked at each place its start sits)
+            if book_text.startswith(line, i):
+                found.append(i)
+                if len(found) > FOUND_PLACES:
+                    break
+        if len(found) > FOUND_PLACES:                    # a stock line, all through the book: it says nothing about
+            continue                                     # the order, nor which book — out of the run and the count
+        weighed += 1
+        for i in reversed(found):                        # (latest first: one cue lengthens a run once)
+            k = bisect.bisect_left(ends, i)
+            if k == len(ends):
+                ends.append(i)
             else:
-                tails[k] = i
-    return len(tails) / len(lines)
+                ends[k] = i
+    return len(ends) / weighed if weighed else None
 
 
 def transcript_use(rec):
@@ -844,7 +849,8 @@ def transcript_use(rec):
     share = found.get("share")
     if isinstance(share, (int, float)) and share >= CONTENT_SHARE:
         return TIMING
-    return OTHER if found.get("check") == FOUND_CHECK else UNCHECKED
+    # (found wanting by rule 1, 3.0.8's: checked once more by this one — #432; a TIMING one stays)
+    return OTHER if found.get("rule") == FOUND_RULE or share is None else UNCHECKED
 
 
 def _book_mark(book):

@@ -301,6 +301,10 @@ class JunbanWindow(windows.SecondaryWindow):
                                    name=qs.JUNBAN_RECHECK_NAME)
         head.addWidget(self.btn_recheck)
         self.body.addLayout(head)
+        self.lead = _label(self, qs.JUNBAN_LEAD, "windowlead")     # Fresh-U 14: its one question, before the options
+        self.lead.setAccessibleName(qs.JUNBAN_LEAD)
+        self.lead.setWordWrap(True)
+        self.body.addWidget(self.lead)
 
         # Scope.
         row = QHBoxLayout()

@@ -2205,6 +2205,8 @@
             if (item.data && item.data.filename) tab.dataset.file = item.data.filename;
             // Natural sidebar position, so un-marking a completed file restores it here.
             if (item._order !== undefined) tab.dataset.order = item._order;
+            // Fresh-U 13: the row shows its show and episode (`shownName`); its file name stays findable in the hover
+            if (item.data && item.data.filename) tab.title = item.data.filename;
 
             if (item.type === 'prog') {
                 const fileData = item.data;
@@ -2215,12 +2217,12 @@
                     goalIndicator = `<span class="tier-chip" data-content="Goal" title="From your Goal: someday, in no order" migaku_ignore data-yomichan-ignore></span>`;
                 }
 
-                const safeFilename = escapeHtml(fileData.filename);
+                const safeName = escapeHtml(shownName(fileData));
                 tab.dataset.filename = fileData.filename;
                 if (fileData.aside) {
                     // Watched and set aside (Keep studying watched episodes off): in its place, *watched* where its
                     // count would be; its words aren't counted, so a click says so instead of listing none.
-                    tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
+                    tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeName}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
                     tab.dataset.aside = "1";    // never opened by itself (stillToStudy); a click still opens its panel
                     applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                     tab.onclick = () => {
@@ -2232,7 +2234,7 @@
                 }
                 const inAnkiCount = ankiBacklogCount(fileData.words);
                 const countText = inAnkiCount ? `${fileData.words.length} · ${inAnkiCount}<span class="priority-marker marker-anki" style="font-size: 0.8em; margin-left: 2px;" title="${inAnkiCount} already in your Anki backlog"></span>` : `${fileData.words.length}`;
-                tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeName}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
                 applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2242,9 +2244,9 @@
                 }
             } else {
                 const fileData = item.data;
-                const safeFilename = escapeHtml(fileData.filename);
+                const safeName = escapeHtml(shownName(fileData));
                 tab.style.opacity = "0.7";
-                tab.innerHTML = `${journeyStone(fileData)}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}<span class="hidden-content" data-content="${safeName}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
                 tab.onclick = () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -2258,6 +2260,12 @@
         // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark. Its
         // edge is the window's light edge (theme.GEM sapphire), so it reads on the dark sidebar.
         const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" overflow="visible" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="none" stroke="#d6e7ff" stroke-width="0.7" stroke-linejoin="round"/></svg>';
+
+        // Fresh-U 13 (PROVISIONAL): what a file is called on screen — the generator's `name` (its show and episode,
+        // `static_html_generator.shown_name`); a report from before it has none: the file name, as it was.
+        function shownName(fileData) {
+            return (fileData && (fileData.name || fileData.filename)) || "";
+        }
 
         function journeyStone(fileData) {
             if (!fileData || fileData.watched !== true) return "";
@@ -2294,7 +2302,7 @@
                     <div style="font-size: 4rem; margin-bottom: 20px; color: #4caf50;">✓</div>
                     <h2 style="color: var(--on-surface);">Target Met</h2>
                     <p style="font-size: 1.2rem; margin-bottom: 30px;">
-                        You have already met your target coverage for <strong>${fileData.filename}</strong>.
+                        You have already met your target coverage for <strong>${escapeHtml(shownName(fileData))}</strong>.
                     </p>
                     
                     <div style="display: inline-block; text-align: left; background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--card-border); min-width: 300px;">
@@ -2945,33 +2953,6 @@
             const c1Title = c1Trim.trimmed ? ` title="${escapeHtml(c1Full)}"` : '';
 
 
-            // Parse Tier data and create tier badges
-            let tierBadgesHtml = '';
-            if (data.Tier) {
-                const tierStr = String(data.Tier).trim();
-                if (tierStr === 'Outside') {
-                    tierBadgesHtml = '';
-                } else {
-                    // Format: "Source1:Tier1;Source2:Tier2" or old format "1"
-                    const tierParts = tierStr.split(';');
-                    tierBadgesHtml = tierParts.map(part => {
-                        if (part.includes(':')) {
-                            const [source, tier] = part.split(':');
-
-                            // Strictly abbreviate to the first letter in caps
-                            // e.g., "global50k" -> "G", "anime" -> "A"
-                            let displaySource = source.charAt(0).toUpperCase();
-
-                            // Format: "G-3"
-                            return `<span class="tier-badge tier-${tier}" title="${source}">${displaySource}-${tier}</span>`;
-                        } else {
-                            // Fallback for old format
-                            return `<span class="tier-badge tier-${part}">${part}</span>`;
-                        }
-                    }).join('');
-                }
-            }
-
             // Stored as a data-attribute (HTML-escaped); the browser decodes it back to the raw
             // sentence for playAudio. Avoids fragile inline-JS-string quoting that broke on any
             // sentence containing a double-quote (it prematurely closed the onclick attribute).
@@ -3015,13 +2996,10 @@
                     </div>
                     <div style="display:flex; align-items:center; gap: 15px;">
                         <div class="stats" style="font-size: 0.9rem; color: var(--text-secondary);">
-                            ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
+                            ${data.Score !== undefined ? `<span>Worth: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
                         ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now and soon, not only in the next few weeks"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
-                        <div style="display:flex; gap: 5px; flex-wrap: wrap;">
-                            ${tierBadgesHtml}
-                        </div>
                     </div>
                 </div>
                 <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}</div>

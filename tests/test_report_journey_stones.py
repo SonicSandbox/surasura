@@ -86,7 +86,7 @@ def test_every_watched_tab_draws_the_stone_and_none_without_the_key():
     tab = _function(source, "createSidebarTab")
     assert tab.count("${journeyStone(fileData)}") == 3, "the aside tab, a counted tab and a Target Met tab"
     counted = tab[tab.index("const inAnkiCount"):tab.index("} else {")]
-    assert counted.index("${journeyStone(fileData)}") < counted.index("data-content=\"${safeFilename}\""), \
+    assert counted.index("${journeyStone(fileData)}") < counted.index("data-content=\"${safeName}\""), \
         "before the name (the ✓ comes after it)"
 
 

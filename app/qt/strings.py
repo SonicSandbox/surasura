@@ -1827,6 +1827,7 @@ REPORT_SEND_TIP = ("Make the report (what you've typed is saved to your list fir
                    "before anything leaves this PC.\n• Only Sonic, Surasura's developer, sees it")
 REPORT_SEND_NONE_TIP = "Send report: write what happened first"
 REPORT_PROMISE = "No personal data or identification is included"              # Sonic's words, as written
+REPORT_PROMISE_LISTS = " · your lists name your library's titles"   # Fresh-U 18 (PROVISIONAL): while the lists go
 REPORT_NAME_LABEL = "Your Discord name (optional, so Sonic can reply)"
 REPORT_NAME_HINT = "Discord name"
 REPORT_NAME_TIP = ("Your Discord name, if you'd like Sonic to reply there. It goes only when it's typed here, and this "

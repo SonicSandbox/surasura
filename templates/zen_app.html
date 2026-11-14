@@ -582,7 +582,7 @@
                 headerDiv.style.marginBottom = "20px";
                 headerDiv.style.borderBottom = "1px solid #333";
                 headerDiv.style.paddingBottom = "10px";
-                headerDiv.innerHTML = `<h2 style="color: #fff; font-size: 1.4rem; font-weight: bold; margin: 0;">${fileData.filename.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</h2>`;
+                headerDiv.innerHTML = `<h2 style="color: #fff; font-size: 1.4rem; font-weight: bold; margin: 0;">${escapeHtml(fileData.name || fileData.filename)}</h2>`;   // Fresh-U 13: its show and episode
                 sectionDiv.appendChild(headerDiv);
 
                 // --- Per-File Stats ---

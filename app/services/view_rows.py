@@ -332,12 +332,14 @@ STRINGS = {
     # Michi-NS (PROVISIONAL words; SPEC §9): a waiting video's subtitle found online (hato) or made from its audio
     "subs_making": "Making its subtitle from the audio…", "subs_making_n": "Making subtitles from the audio…",
     "subs_looking": "Looking for subtitles…",
+    "subs_queued": "Next in line…",                                         # Mado-FU2 (PROVISIONAL): hato waits its turn
     "subs_not_found": "Not on jimaku yet · looks again {date}",
     "subs_not_found_zh": "Not found online yet · looks again {date}",       # Zh-H: assrt.net / OpenSubtitles
     "subs_no_speech": "No speech found", "subs_unreadable": "Its audio couldn't be read",
     "tip_subs_making": "Anki Miner is listening to its {word} and writing its subtitle on this computer: it lights up "
                        "when it's done",
     "tip_subs_looking": "hato is looking for its subtitle online, by its show's title",
+    "tip_subs_queued": "hato looks for its subtitle once its search before this one ends",
     "tip_subs_not_found": "hato found no subtitle for it on jimaku yet, and looks again on {date}. Needs you can make "
                           "one from its audio meanwhile",
     "tip_subs_not_found_zh": "hato found no subtitle for it on assrt.net or OpenSubtitles yet, and looks again on "
@@ -347,6 +349,7 @@ STRINGS = {
     "tip_subs_unreadable": "Anki Miner couldn't open its {word}'s audio, so no subtitle was made. A subtitle file put "
                            "beside it is still read by itself",
     "arr_subs_making": "making subtitles from the audio…", "arr_subs_looking": "looking for subtitles…",
+    "arr_subs_queued": "next in line…",
     "arr_subs_not_found": "not on jimaku yet · looks again {date}", "arr_subs_no_speech": "no speech found",
     "arr_subs_not_found_zh": "not found online yet · looks again {date}",
     "arr_subs_unreadable": "its audio couldn't be read",
@@ -881,7 +884,7 @@ def status_of(eps, word, line_n):
         label = STRINGS["subs_making_n" if kind == no_subs_mod.MAKING and len(no_subs) > 1 else name].format(
             date=date)
         return Status("no_subs", label, STRINGS["tip_" + name].format(word=word, date=date),
-                      "dim" if kind in (no_subs_mod.MAKING, no_subs_mod.LOOKING) else "faint"), None
+                      "dim" if kind in (no_subs_mod.MAKING,) + no_subs_mod.HATO_NOTES else "faint"), None
     elif no_subs and len(no_subs) == len(unmined):                  # SRC W1b: only videos waiting for subtitles
         label = STRINGS["no_subs"] if len(no_subs) == 1 else STRINGS["no_subs_n"].format(n=len(no_subs))
         tip = STRINGS["tip_no_subs"].format(word=word)
@@ -1844,7 +1847,8 @@ def per_episode(item_ids, estimates):
 
 no_subs_mod = no_subs          # (`status_of` names its waiting episodes `no_subs`)
 NOT_FOUND_ZH = "not-found-zh"  # Zh-H: what `subs_said` calls a Chinese NOT_FOUND (its note's third part), never stored
-SUBS_KEYS = {no_subs.MAKING: "subs_making", no_subs.LOOKING: "subs_looking", no_subs.NOT_FOUND: "subs_not_found",
+SUBS_KEYS = {no_subs.MAKING: "subs_making", no_subs.LOOKING: "subs_looking", no_subs.QUEUED: "subs_queued",
+             no_subs.NOT_FOUND: "subs_not_found",
              no_subs.NO_SPEECH: "subs_no_speech", no_subs.UNREADABLE: "subs_unreadable",
              NOT_FOUND_ZH: "subs_not_found_zh"}
 
@@ -1859,6 +1863,8 @@ def subs_said(eps):
         return None
     if no_subs.MAKING in kinds:
         return no_subs.MAKING, None
+    if no_subs.LOOKING in kinds and set(kinds) <= set(no_subs.HATO_NOTES):   # Mado-FU2: one looked for, the rest next
+        return no_subs.LOOKING, None
     if kinds[0] in SUBS_KEYS and all(k == kinds[0] for k in kinds):
         dates = sorted(n[1] for n in notes if isinstance(n, tuple) and isinstance(n[1], str) and n[1])
         zh = kinds[0] == no_subs.NOT_FOUND and any(isinstance(n, tuple) and n[2:3] == ("zh",) for n in notes)

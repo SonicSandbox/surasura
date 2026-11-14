@@ -1562,9 +1562,11 @@ class _Look:
                 folder, names = os.path.dirname(os.path.normpath(folder)), None     # the source's own folder)
             if all(f != folder for f, _n in folders):
                 folders.append((folder, names))
-        stale = books_came or self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1"
+        meta = self.store.meta()
+        stale = books_came or meta.get(ls.AUDIOBOOKS_STALE) == "1"
+        due = str(meta.get(ls.TRANSCRIPT_RULE)) != str(audiobooks.FOUND_RULE)   # Kura-AB6: weighed by another rule
         if not folders and not stale:
-            self._transcripts()
+            self._transcripts(due)
             return
         self._load()
         held_in = self.store.audiobooks()                    # one per item
@@ -1672,7 +1674,7 @@ class _Look:
                 self.store.pair_audiobook(item_id, book=said["book"], ask=said["ask"])
         if stale and self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1":
             self.store.audiobooks_weighed()
-        self._transcripts()
+        self._transcripts(due)
 
     def _meant(self, fresh, held_in=()):
         """Kura-AB4 (Mattias, 3.0.6: the book asked for its audiobook, he picked its folder, and it sat in New arrivals
@@ -1811,15 +1813,21 @@ class _Look:
                 gone.add(t[1])
         return [t for t in left if t[1] not in gone]
 
-    def _transcripts(self):
+    def _transcripts(self, due=False):
         """a6: this look's transcripts written on their audiobooks' items (after the audiobooks were taken in, so a
         new one's item is there): a new one copied into the item's `Library` folder and recorded (`set_transcript`);
         one already an item's own text makes that item the audiobook's (`from_item`); one recorded whose file changed
         copied again over its copy (S5) and checked again; a check that couldn't be made yet, made. An audiobook
-        kept out (Removed, S6) keeps its transcript out too: never a title of its own."""
+        kept out (Removed, S6) keeps its transcript out too: never a title of its own. `due` (Kura-AB6, based on
+        Mattias's #432: his vol 3 stayed unchecked after the update, as quick looks weigh no audiobook whose folder is
+        unchanged): the library was last weighed by another `audiobooks.FOUND_RULE` (meta `TRANSCRIPT_RULE`) — every
+        audiobook is weighed once, a quick look too, so a verdict the rule changes (UNCHECKED) is made again; then the
+        meta says this rule, unless the look was stopped or the store busy (the next one weighs them again). A check
+        that can't be made yet (the book's copy unreadable) waits, as before, for a look listing its folder — never
+        every audiobook weighed at every look for it."""
         claimed, listed = self.claimed, self.transcribed
         self.claimed, self.transcribed = [], []
-        held = self.store.audiobooks(every=True) if claimed or listed or self.heard else []
+        held = self.store.audiobooks(every=True) if claimed or listed or self.heard or due else []
         by_file = {ls.path_key(os.path.abspath(f)): r for r in held for f in r["audiobook"].get("files") or ()}
         by_item = {}                                         # (each source's record: its files; one per item below)
         for r in held:
@@ -1854,6 +1862,8 @@ class _Look:
         for r in by_item.values():                           # a check that waited (a book's copy unreadable then)
             if audiobooks.transcript_use(r["audiobook"]) == audiobooks.UNCHECKED and not self.stopped():
                 self.store.set_transcript(r["item_id"])
+        if due and not self.stopped():
+            self.store.transcripts_weighed()
 
     def _transcript_followed(self, item, path, st, said):
         """A recorded transcript listed this look: its copy written again when it is gone from `Library` (Item 8a's

@@ -527,6 +527,36 @@ def _group_label(rel_path):
     return "/".join(parts) if parts else str(rel_path)
 
 
+_YOUTUBE_ID = re.compile(r"\[[0-9A-Za-z_-]{11}\]\s*$")    # a downloaded video's `[id]` (or a release's 11-character
+                                                            # tag): only a strong episode mark counts then
+
+
+def shown_name(filename):
+    """Fresh-U 13 (Sonic 2026-11-13; PROVISIONAL): what the journey shows for a file — its show and its episode as the
+    window's rows say them (`Hoshikuzu Station S01E01.ja.srt` → *Hoshikuzu Station · Ep 1*; a text's part *· Part 1*; a
+    book's part named by its chapter, that chapter), read from the name alone (LM1a's `episode_names.identity`, the
+    rows' `view_rows.chapter_part`); a special, a name with no number, or one ending in an 11-character tag (a YouTube
+    `[id]` — `Top 10 …` is no episode 10, as on the window's rows — unless a strong mark names one: `- 05`, `S01E05`,
+    `第05話`), its stem without its marks; nothing to read,
+    the name as it is. Never raises. Shown only: the file name stays the report's key."""
+    name = filename or ""
+    try:
+        from app.episode_names import identity
+        from app.services import view_rows
+        chapter = view_rows.chapter_part(name)
+        n = identity(name, bare_numbers=True)
+        show = (n.show or "").strip()
+        if chapter is not None:
+            return f"{show} · {chapter[1]}" if show else chapter[1]
+        if n.special or n.episode is None or (_YOUTUBE_ID.search(n.stem) and identity(name).episode is None):
+            return view_rows.stem(n.stem).strip() or name
+        number = int(n.episode) if float(n.episode).is_integer() else n.episode
+        label = view_rows.STRINGS["part" if name.lower().endswith(".txt") else "ep"].format(n=number)
+        return f"{show} · {label}" if show else label
+    except Exception:
+        return name
+
+
 def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None):
     """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
 
@@ -1137,6 +1167,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
         drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
         _logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
         _journey_folds(data, all_files_order, drawn, bool(_logic.get("inline_completed_files", False)))
+    for entry in data["progressive"] + data["completed_files"]:    # Fresh-U 13: what the sidebar shows (the key stays)
+        entry["name"] = shown_name(entry["filename"])
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):

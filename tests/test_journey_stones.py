@@ -29,6 +29,7 @@ import pandas as pd
 import pytest
 
 from app import library_store as ls
+from app.static_html_generator import shown_name
 from tests.plan_file_cases import _split_lines, _split_srt, child_env
 from tests.test_generate_watched import SHOWS, _read
 from tests.test_library_store_support import LANGUAGES, entry, migrated, roots, write_manifest
@@ -129,7 +130,8 @@ def test_a_set_aside_stone_sits_in_its_place_with_no_counts_and_in_the_inline_or
     assert shown == [counted[0], names[1]] + counted[1:-1], "the stone in its place; the last file is Target Met"
     stone = data["progressive"][1]
     assert stone == {"filename": names[1], "watched": True, "aside": True, "words": [], "total_words": 0,
-                     "is_goal_content": False, "unlisted": []}
+                     "is_goal_content": False, "unlisted": [],
+                     "name": shown_name(names[1])}               # Fresh-U 13: what its sidebar row shows
     assert not any("watched" in e for e in data["progressive"] if e is not stone), "no other file is watched"
     assert data["file_order"] == [counted[0], names[1]] + counted[1:], "its name in the inline order, in its place"
     assert names[1] not in [f["filename"] for f in data["completed_files"]], "never Target Met"

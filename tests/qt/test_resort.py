@@ -446,7 +446,7 @@ def test_change_folders_hides_setups_samples_covers_and_cores_and_esc_is_back(ma
     wiz = W.SetupWizard(shell, parent=shell.centralWidget(), api=api, resort=handed.append)
     page = wiz.page
     page.entered()
-    assert page.btn_samples.isHidden() and page.covers.isHidden() and page.every_core.isHidden()
+    assert page.btn_samples.isHidden() and page.covers.isHidden() and not hasattr(page, "every_core")
     QTest.keyClick(wiz, Qt.Key.Key_Escape)
     assert wiz._gone and handed == []
 

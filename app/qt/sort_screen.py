@@ -448,6 +448,8 @@ class LoadScreen(QWidget):
         box.addSpacing(_px(14))
         self.line = _FadeLine(self.lines[0] if self.lines else "", self)
         box.addWidget(self.line)
+        self.offer = None                             # Mado-FU2: what the load asks while it reads (`add_offer`)
+        self._offer_at = box.count()
         box.addStretch(4)
         foot = QHBoxLayout()
         foot.addStretch(1)
@@ -479,6 +481,22 @@ class LoadScreen(QWidget):
             self.side.setAccessibleName(text)
         if self.side.isHidden() == bool(text):
             self.side.setVisible(bool(text))
+
+    def add_offer(self, widget):
+        """Mado-FU2 (Fresh-U 19a): one control the load asks while it reads (setup's *Use every core*), centred
+        under the gentle line, kept to the load's end; a second one takes the first one's place."""
+        box, old = self.layout(), self.offer
+        if old is not None and not sip.isdeleted(old):
+            box.removeWidget(old)
+            old.hide()
+            old.deleteLater()
+        else:
+            box.insertSpacing(self._offer_at, _px(22))
+        self.offer = widget
+        widget.setParent(self)
+        widget.setMaximumWidth(_px(480))
+        box.insertWidget(self._offer_at + 1, widget, 0, Qt.AlignmentFlag.AlignHCenter)
+        widget.show()
 
     def stopping(self):
         self.btn_stop.setEnabled(False)
@@ -1266,7 +1284,7 @@ class LoadRun(QObject):
     (`shell.bridge.indexed`)."""
 
     def __init__(self, shell, cover, door="setup", stop_scan=None, language=None, sort=None, after=None, empty=None,
-                 sync_running=None, fetching=None, parent=None):
+                 sync_running=None, fetching=None, long_read=None, parent=None):
         super().__init__(parent)
         self.shell, self._cover, self.door = shell, cover, door
         self.setup = door == "setup"
@@ -1275,6 +1293,7 @@ class LoadRun(QObject):
         self._sort, self._after, self._empty = sort, after, empty
         self._sync_running = sync_running or (lambda: False)
         self._fetching = fetching or (lambda: False)
+        self._long_read = long_read if self.setup else None    # Mado-FU2: `long_read(screen)`, once (`_reading`)
         self.state = None
         self.loading = None                           # the load screen (gone with the cover once the sorting opens)
         self.ended = False
@@ -1319,8 +1338,29 @@ class LoadRun(QObject):
                 self.task(S.LOAD_WAIT)
         elif said[0] == "copy":
             self.task(S.LOAD_COPY.format(done=said[1], total=said[2]))
+            self._reading(said[2])
         else:
             self.task(S.LOAD_SCAN.format(episodes=_count(S.EPISODES, said[0]), shows=_count(S.SHOWS_N, said[1])))
+            self._reading(said[0])
+
+    def _reading(self, files):
+        """Mado-FU2 (Fresh-U 19a, Sonic 2026-11-13): the load's first long read — the scan's or the copy's count of
+        at least `token_index.POOL_MIN_FILES` files (fewer are read by one process, whatever *Use every core* says) —
+        asks the caller's `long_read(screen)` once (setup's *Use every core*). Never the indexer's count: its pool is
+        sized before its first count, so a flip then would speed nothing on screen; asked during the scan, it counts
+        for the indexer after it, and for the copy's pools when the scan is long."""
+        ask = self._long_read
+        screen = self.loading
+        if ask is None or screen is None or sip.isdeleted(screen):
+            return
+        from app.token_index import POOL_MIN_FILES
+        try:
+            if int(files) < POOL_MIN_FILES:
+                return
+        except (TypeError, ValueError):
+            return
+        self._long_read = None
+        ask(screen)
 
     def stop(self):
         """*Stop*: the step under way keeps what it did (the scan stops between files; the indexer and the covers go on

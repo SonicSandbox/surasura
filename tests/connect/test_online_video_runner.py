@@ -318,3 +318,84 @@ def test_a_videos_own_trouble_once_seen_never_counts_again_at_the_next_start(tmp
     _run(tmp_path, ledger, plan, steps=steps)
     assert not ledger.needs("ja", unseen=True), "seen once: not counted again while it stands"
     assert [n["say"] for n in ledger.needs("ja")] == [say], "still listed"
+
+
+# --- Michi-YT2 (based on Mattias's #455): machine captions, no speech model -> YouTube's captions, said once --------- #
+class CaptionedSteps(OnlineSteps):
+    """OnlineSteps whose videos have only machine captions (`online`'s "captions"), each fetched with the plan's
+    `source` (what `Steps.download` asked Anki Miner for: "captions" when it has no speech model)."""
+
+    def online(self, lang, job):
+        web = super().online(lang, job)
+        return None if web is None else dict(web, captions=self.plan.get("captions", "native auto"))
+
+    def download(self, lang, job, web, on_progress=None):
+        before = len(self.log)
+        got = super().download(lang, job, web, on_progress)
+        if len(self.log) > before:          # fetched now (a video kept from before asks Anki Miner nothing)
+            self.fetched_with = dict(getattr(self, "fetched_with", {}),
+                                     **{str(job["id"]): self.plan.get("source", "captions")})
+        return got
+
+
+def _captioned(tmp_path, items=(1,), **plan):
+    return CaptionedSteps(str(tmp_path), dict({"line": {"ja": list(items)}, "queue": {"ja": list(items)},
+                                               "online": list(items)}, **plan))
+
+
+def _kept(ledger):
+    return [n for n in ledger.needs("ja") if n["kind"] == online.CAPTIONS_KEPT_KIND]
+
+
+def test_without_a_speech_model_the_cards_are_made_and_it_is_said_once_however_many_videos_and_runs(tmp_path,
+                                                                                                   ledger):
+    # why: no speech model is no reason to hold a learner's YouTube cards back; one quiet note, never one per video
+    steps = _captioned(tmp_path, items=(1, 2))
+    for _ in range(2):
+        _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert sorted(j["item_id"] for j in ledger.jobs("ja") if j["state"] == "done") == [1, 2], ledger.jobs("ja")
+    kept = _kept(ledger)
+    assert len(kept) == 1 and kept[0]["item_id"] is None and kept[0]["say"] == online.CAPTIONS_KEPT, kept
+    assert not [n for n in ledger.needs("ja") if n["kind"] != online.CAPTIONS_KEPT_KIND], "nothing else to do"
+    assert _online_left(tmp_path) == []
+
+
+def test_a_persons_captions_say_nothing(tmp_path, ledger):
+    # why: the note is only for captions no person wrote
+    steps = _captioned(tmp_path, captions="manual")
+    _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert ledger.jobs("ja")[0]["state"] == "done" and not ledger.needs("ja")
+
+
+def test_once_a_video_is_made_from_its_audio_the_note_goes_by_itself(tmp_path, ledger):
+    # why: a speech model installed since (by the learner's own yes elsewhere): the note's cause is gone
+    steps = _captioned(tmp_path)
+    _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert len(_kept(ledger)) == 1
+    plan = dict(steps.plan, line={"ja": [2]}, queue={"ja": [2]}, online=[2], source="transcribe")
+    _run(tmp_path, ledger, plan, steps=_captioned(tmp_path, items=(2,), source="transcribe"))
+    assert _kept(ledger) == [], "fixed by itself"
+
+
+def test_a_dismissed_note_stays_dismissed(tmp_path, ledger):
+    # why: said once means once: a dismissed note never comes back while its cause stands (S19)
+    steps = _captioned(tmp_path, items=(1, 2))
+    steps.plan.update(line={"ja": [1]}, queue={"ja": [1]})
+    _run(tmp_path, ledger, steps.plan, steps=steps)
+    ledger.dismiss(_kept(ledger)[0]["id"])
+    steps.plan.update(line={"ja": [2]}, queue={"ja": [2]})
+    _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert ledger.jobs("ja") and _kept(ledger) == []
+
+
+def test_a_video_kept_from_a_transcribed_fetch_raises_no_note(tmp_path, ledger, monkeypatch):
+    # why (review r1 NIT 8): a job's video kept for a second look asks Anki Miner nothing — what it was fetched with
+    # is unknown there, so the note is neither raised nor fixed by it
+    steps = _captioned(tmp_path, source="transcribe")
+    monkeypatch.setattr(ledger, "set_state", lambda *a, **k: None)
+    job = {"id": 1, "item_id": 1}
+    web = steps.online("ja", job)
+    for _ in range(2):
+        assert runner._download(steps, ledger, "ja", job, web) is not None
+    assert [e for e in steps.log if e[0] == "download"] == [("download", 1)], "the second time it was kept"
+    assert _kept(ledger) == []

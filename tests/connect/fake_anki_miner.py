@@ -675,8 +675,12 @@ def _fetch(argv, plan):
     """Z-8 (Michi-YT): `fetch` of one YouTube video as the plan's `fetch` says — {"video": the video file's text,
     "subtitle": the caption file's (an .srt; "vtt": true writes it as WebVTT), "error": a run's code ("message",
     "transient"), "call": the whole call's code ("message"), "hold": seconds it downloads (progress at stage 2, its
-    cancel seen: CANCELLED, its folder gone — API.md), "outside": the json names a file outside its folder}. The yt-dlp
-    PATH would give it is logged (`fetch_ytdlp`)."""
+    cancel seen: CANCELLED, its folder gone — API.md), "outside": the json names a file outside its folder,
+    "heard": the .srt its speech model makes of the video's audio, "heard_nothing": its speech model hears none}. The yt-dlp PATH would give it is logged
+    (`fetch_ytdlp`). Michi-YT2: an episode's `youtube_subtitle_source` "transcribe" skips YouTube's captions (3.11.0 /
+    3.12.0 `classify_probe_result`) — with the plan's speech model not installed (`speech`) the run is refused
+    SETUP_ERROR before anything downloads (`fetch.py` `speech_problem`: no model is ever downloaded here); else its
+    subtitle is `heard`, progress at stage 3 first."""
     try:
         data = _jobs_file(argv[1])
     except (OSError, ValueError, IndexError):
@@ -705,19 +709,43 @@ def _fetch(argv, plan):
             runs.append({"run_id": run_id, "ok": False, "error": spec["error"], "message": spec.get("message"),
                          "file": None, "failure_is_transient": bool(spec.get("transient"))})
             continue
+        heard = episode.get("youtube_subtitle_source") == "transcribe"
+        if heard and ("speech" in plan or "speech_setup" in plan):
+            ok, model = _speech_ok(["--profile", data["profile"]] if data.get("profile") else [], plan)
+            if not ok:
+                shutil.rmtree(out, ignore_errors=True)
+                runs.append({"run_id": run_id, "ok": False, "error": "SETUP_ERROR", "failure_is_transient": False,
+                             "message": f"The speech model {model} is not installed. Install it with setup "
+                                        "--speech-model, or in Anki Miner: Settings -> Transcription & Alignment.",
+                             "file": None})
+                continue
+        if heard:
+            for stage, done in ((2, 100), (3, 60)):     # the download, then its subtitle heard (API.md's stages)
+                with open(os.path.join(folder, "progress.json"), "w", encoding="utf-8") as f:
+                    json.dump({"schema": 1, "stage": stage, "stages": 3, "done": done, "total": 100}, f)
+                if spec.get("transcribe_hold"):
+                    time.sleep(float(spec["transcribe_hold"]) / 2)
+            if spec.get("heard_nothing"):               # 3.12.0 youtube_postfetch: TranscriptionProducedNothingError
+                shutil.rmtree(out, ignore_errors=True)
+                runs.append({"run_id": run_id, "ok": False, "error": "FETCH_FAILED", "failure_is_transient": False,
+                             "message": "Local transcription recognised no speech in the downloaded video.",
+                             "file": None})
+                continue
         vid = "dQw4w9WgXcQ"
         video = os.path.join(out, f"{vid}.mp4")
         with open(video, "w", encoding="utf-8") as f:
             f.write(spec.get("video", "a fetched video"))
-        sub = os.path.join(out, f"{vid}.ja.{'vtt' if spec.get('vtt') else 'srt'}")
+        sub = os.path.join(out, f"{vid}.ja.{'vtt' if spec.get('vtt') and not heard else 'srt'}")
         with open(sub, "w", encoding="utf-8") as f:
-            f.write(spec.get("subtitle", "1\n00:00:01,000 --> 00:00:03,500\n今日はいい天気ですね\n"))
+            f.write(spec.get("heard", "1\n00:00:01,200 --> 00:00:03,400\n今日はいい天気ですね\n") if heard else
+                    spec.get("subtitle", "1\n00:00:01,000 --> 00:00:03,500\n今日はいい天気ですね\n"))
         if spec.get("outside"):
             video = os.path.join(data["run_dir"], "..", "elsewhere.mp4")    # a real file, outside its folder
             with open(video, "w", encoding="utf-8") as f:
                 f.write("a video somewhere else")
         with open(os.path.join(folder, "fetch-1.json"), "w", encoding="utf-8") as f:
-            json.dump({"schema": 1, "run_id": run_id, "video_file": video, "subtitle_file": sub, "sub_source": "manual",
+            json.dump({"schema": 1, "run_id": run_id, "video_file": video, "subtitle_file": sub,
+                       "sub_source": "transcribe" if heard else "manual",
                        "video_id": vid, "title": "a fetched video", "duration": 180,
                        "episode_name_override": f"YT:{vid}", "series_name_override": "YouTube",
                        "source_label_override": "a fetched video"}, f, ensure_ascii=False)

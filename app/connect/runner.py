@@ -1555,6 +1555,7 @@ def _online(steps, lang, job):
 
 
 DOWNLOADING = "downloading"     # the job's saved progress step while its video comes down (`status._progress`)
+TRANSCRIBING = "transcribing"   # Michi-YT2: … and while Anki Miner makes its subtitle from the audio after it
 
 
 def _download(steps, ledger, lang, job, web):
@@ -1567,20 +1568,28 @@ def _download(steps, ledger, lang, job, web):
         raise wait
     jid, shown = job["id"], [None]
 
-    def progress(percent):
-        if percent // PROGRESS_STEP == shown[0]:
+    def progress(percent, step=None):
+        step = TRANSCRIBING if step is not None else DOWNLOADING
+        if (step, percent // PROGRESS_STEP) == shown[0]:
             return
-        shown[0] = percent // PROGRESS_STEP
+        shown[0] = (step, percent // PROGRESS_STEP)
         try:
-            ledger.set_state(jid, "picking", progress={"step": DOWNLOADING, "percent": int(percent)})
+            ledger.set_state(jid, "picking", progress={"step": step, "percent": int(percent)})
         except Exception:
             log.warning("Connect couldn't save the download's progress", exc_info=True)
     progress(0)
     got = steps.download(lang, job, web, progress)
     ledger.set_state(jid, "picking", progress=None)
+    from app.connect import online
+    # Michi-YT2: the source this fetch asked for (`Steps.fetched_with`; none for a video kept from before)
+    used = (getattr(steps, "fetched_with", None) or {}).pop(str(jid), None)
+    if used == online.CAPTIONS and online.subtitle_source(web) == online.TRANSCRIBE:
+        # machine captions taken, Anki Miner having no speech model: said once (standing), never a wait
+        if ledger.need(lang, online.CAPTIONS_KEPT_KIND, online.CAPTIONS_KEPT, standing=True):
+            log.info("Connect: a video's machine captions used (%s): Anki Miner has no speech model", lang)
     if got is not None:
-        from app.connect import online
-        _fixed(ledger, lang, kinds=(online.KIND,))
+        kinds = (online.KIND,) + ((online.CAPTIONS_KEPT_KIND,) if used == online.TRANSCRIBE else ())
+        _fixed(ledger, lang, kinds=kinds)   # (made from its audio: the note's cause gone)
     return got
 
 
@@ -2706,6 +2715,7 @@ class Steps:
             return None
         if "Z-8" not in anki_miner.features(setup[0]):
             raise Needs(online.KIND, online.NO_FETCH, standing=True)
+        source = self._subtitle_source(lang, web, miner, setup[1], job["id"])
         staged = []
 
         def should_end():
@@ -2715,12 +2725,21 @@ class Steps:
             return False
         try:
             got = online.fetch(miner, setup[1], lang, job["id"], web["url"], on_progress=on_progress,
-                               should_end=should_end)
+                               should_end=should_end, source=source)
         except stopping.Stopped:
             if staged:
                 raise Wait(STOPPED_FOR_UPDATE, look=False) from None
             raise
         except online.Trouble as t:
+            if source == online.TRANSCRIBE and t.say in (online.NO_SPEECH, online.NOT_HEARD):
+                # its speech model gone since it was asked (refused before anything downloaded), or it heard
+                # nothing: YouTube's captions after all (said once) — the model asked about again only later
+                if t.say == online.NO_SPEECH:
+                    anki_miner._SPEECH.pop((miner, lang, setup[1]), None)
+                    self._no_speech = dict(getattr(self, "_no_speech", {}), **{lang: time.monotonic()})
+                else:
+                    self._not_heard = getattr(self, "_not_heard", set()) | {str(job["id"])}
+                return self.download(lang, job, web, on_progress)
             if t.standing:
                 if t.say in online.HELD or youtube_hold.is_words(t.say):    # offline, a bot check (its hold,
                     # Yt-B), no room: no other fetch this run (review r2 S1)
@@ -2731,7 +2750,29 @@ class Steps:
             self._anki_miner_held(lang).clear()
             raise _miner_wait_or_needs(e, self.url) from None
         self._fetched = dict(getattr(self, "_fetched", {}), **{str(job["id"]): got})
+        self.fetched_with = dict(getattr(self, "fetched_with", {}), **{str(job["id"]): source})
         return got
+
+    def _subtitle_source(self, lang, web, miner, profile, job_id):
+        """Michi-YT2 (based on Mattias's #455): Anki Miner's `youtube_subtitle_source` for this video ->
+        `online.subtitle_source` — TRANSCRIBE for YouTube's own speech recognition — only while Anki Miner has a
+        speech model (`anki_miner.speech_ready`: one it has, never a download — `fetch` downloads none, and nothing
+        here asks for one); without one, CAPTIONS (`fetched_with`: `_download`'s one note). Never a wait (review r1
+        S4): Anki Miner not answering the question is CAPTIONS too; so is a video it heard nothing in this run, and
+        a refusal for the model is kept as long as `speech_ready`'s own no (`SPEECH_NO_S`)."""
+        from app.connect import anki_miner, lineup, online
+        source = online.subtitle_source(web)
+        if source != online.TRANSCRIBE or str(job_id) in getattr(self, "_not_heard", set()):
+            return online.CAPTIONS
+        refused = getattr(self, "_no_speech", {}).get(lang)
+        if refused is not None and time.monotonic() - refused < anki_miner.SPEECH_NO_S:
+            return online.CAPTIONS
+        try:
+            ready = anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH))
+        except anki_miner.AnkiMinerError as e:
+            log.info("Connect: Anki Miner's speech model couldn't be asked about (%s): YouTube's captions", e.message)
+            ready = False
+        return source if ready else online.CAPTIONS
 
     def drop_online(self, job):
         """Michi-YT: the job's downloaded video gone (`online.drop`), and forgotten."""

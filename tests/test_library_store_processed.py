@@ -206,3 +206,57 @@ def test_drag_move_finish_and_undo_work_on_the_new_titles_and_nothing_on_disk_mo
     assert _disk(data_dir) == disk, "nothing on disk moved"
     assert json.dumps(_titles(store), ensure_ascii=False).count(ls.PROCESSED_FOLDER) == 0
     store.close()
+
+
+def _arrival_rows(store):
+    """New arrivals as its tray draws it: one row per piece, its items in the tier's order."""
+    rows = {}
+    for item_id, piece in store.conn.execute("SELECT id, piece_id FROM items WHERE tier = 'arrivals' ORDER BY ord, id"):
+        rows.setdefault(piece, []).append(item_id)
+    return list(rows.values())
+
+
+def _arrivals_on(store):
+    with store._writing():
+        store._set_meta({"arrivals_on": 1})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_channels_video_added_after_another_channels_joins_its_row_in_new_arrivals(language):
+    """Mattias's report (3.0.10): two channels, two videos each, added one after another (A, B, B, A) — B's two were
+    one row, A's second a row of its own, titled by its video. A new arrival lands right after its title's last one
+    there and joins its row: two rows, one a channel. Current's order is never touched."""
+    store = migrated(language)
+    _arrivals_on(store)
+    data_dir, _u = roots(language)
+    w = names(language)
+    current = list(store.conn.execute("SELECT id, ord FROM items WHERE tier IN ('now', 'soon') ORDER BY id"))
+    a1 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[81]} - {w[82]} [yuhZP5BnWWI].txt"),
+                        _youtube("yuhZP5BnWWI", w[81])).added[0]
+    b1 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[83]} - {w[84]} [ub05E5rev7E].txt"),
+                        _youtube("ub05E5rev7E", w[83])).added[0]
+    b2 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[83]} - {w[85]} [MQzFMVzOEc4].txt"),
+                        _youtube("MQzFMVzOEc4", w[83])).added[0]
+    a2 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[81]} - {w[86]} [HZ8bb5k22po].txt"),
+                        _youtube("HZ8bb5k22po", w[81])).added[0]
+    assert {store.item(i)["tier"] for i in (a1, b1, b2, a2)} == {"arrivals"}
+    assert _arrival_rows(store) == [[a1, a2], [b1, b2]], "a channel's videos one row, in the order they came"
+    assert list(store.conn.execute("SELECT id, ord FROM items WHERE tier IN ('now', 'soon') ORDER BY id")) == \
+        current, "Current's order is the learner's"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_arrival_with_no_earlier_one_of_its_title_stays_where_it_came(language):
+    store = migrated(language)
+    _arrivals_on(store)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a1 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[81]} - {w[82]} [yuhZP5BnWWI].txt"),
+                        _youtube("yuhZP5BnWWI", w[81])).added[0]
+    b1 = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{w[83]} - {w[84]} [ub05E5rev7E].txt"),
+                        _youtube("ub05E5rev7E", w[83])).added[0]
+    assert _arrival_rows(store) == [[a1], [b1]], "each its own row, in the order they came"
+    assert pieces_ok(store) is None
+    store.close()

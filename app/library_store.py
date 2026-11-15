@@ -3742,8 +3742,40 @@ class Store:
             self._tidy_asks()
         if cmd.line_set or cmd.tiers & set(CURRENT):
             self._keep_line(cmd)
+        if "arrivals" in cmd.tiers:
+            self._gather_arrivals(cmd)
         self._fix_pieces(cmd)
         self._write_feed(cmd)
+
+    def _gather_arrivals(self, cmd):
+        """Mattias's report (3.0.10): two YouTube channels' videos, two each, added one after another — a channel's
+        second video came in after the other channel's and became a row of its own (*New arrivals* draws a row per
+        piece: a run of one work's items in the tier's order), titled by its video. A new item in New arrivals now
+        lands right after its own work's last item there, so it joins that row (`_fix_pieces`: a new item joins the
+        piece of its work it lands beside) — only an item this command brought (no piece yet, no undo's hint), never
+        one moved there, and only in New arrivals: Current's and Soon's order is the learner's."""
+        moved = [i for i in cmd.moved if i not in cmd.hints]
+        rows = []
+        for chunk in _chunks(moved, 500):
+            rows += self.conn.execute(f"SELECT id, ord, work_id FROM items WHERE tier = 'arrivals' AND piece_id IS NULL "
+                                      f"AND work_id IS NOT NULL AND id IN ({','.join('?' * len(chunk))})",
+                                      chunk).fetchall()
+        for item_id, ord_, work in sorted(rows, key=lambda r: (r[1], r[0])):
+            anchor = self.conn.execute("SELECT id, ord FROM items WHERE tier = 'arrivals' AND work_id = ? AND id != ? "
+                                       "AND (ord, id) < (?, ?) ORDER BY ord DESC, id DESC LIMIT 1",
+                                       (work, item_id, ord_, item_id)).fetchone()
+            if anchor is None:
+                continue
+            after = self.conn.execute("SELECT id, ord FROM items WHERE tier = 'arrivals' AND (ord, id) > (?, ?) "
+                                      "ORDER BY ord, id LIMIT 1", (anchor[1], anchor[0])).fetchone()
+            if after is None or after[0] == item_id:
+                continue                    # beside it already
+            place = (anchor[1] + after[1]) / 2
+            if not anchor[1] < place < after[1]:
+                continue                    # no room between the two (never: ords are spaced), left where it came
+            self.conn.execute("UPDATE items SET ord = ? WHERE id = ?", (place, item_id))
+            cmd.touch(("arrivals",), within=True)
+            cmd.fed.add(item_id)
 
     def _new_work(self, title, fk, cmd, titles=()):
         titles = [t for t in titles if t and t != title]

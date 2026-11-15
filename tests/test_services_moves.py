@@ -3257,9 +3257,19 @@ def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commi
     assert row["trashed_path"] == own, "its trash row names its own copy, never an older file of its name"
     assert os.path.getmtime(os.path.join(lib.data_dir, *own.split("/"))) > time.time() - 600, "its clock restarted"
     w2.restore([row["id"]])
-    assert h.until(lambda: os.path.exists(path)), "Put back brings the file back"
-    with open(path, "rb") as f:
-        assert f.read() == body
+    back = []
+
+    def reads():
+        # until it reads, not until it is there: on Windows a file the store's `os.rename` just named can still refuse
+        # an open (PermissionError) while the rename's own handle closes (FLAKES.md, Flake-F3)
+        try:
+            with open(path, "rb") as f:
+                back.append(f.read())
+            return True
+        except OSError:
+            return False
+    assert h.until(reads), "Put back brings the file back"
+    assert back[-1] == body
 
 
 def test_H7_the_copy_a_replay_takes_has_the_items_size_and_no_row_of_its_own(lib):

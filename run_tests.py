@@ -6,6 +6,7 @@ import os
 import glob
 import shutil
 import threading
+import textwrap
 import time
 import locale
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -580,6 +581,9 @@ def _end_tree(proc):
         pass
 
 
+FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--help", "-h")     # main's (a value follows some)
+
+
 def _value_after(args, flag):
     """The value given after `flag` (`--flag V` or `--flag=V`), or None."""
     for i, a in enumerate(args):
@@ -600,10 +604,20 @@ def main():
     `python run_tests.py --stress [N]`  runs the stress set (tests/stress/) N times (1).
     `python run_tests.py --stress-changed [BASE]`  runs every test changed since BASE (origin/3.0-dev) 20 times
         under load (a lane's check before READY): by test function, not whole files.
+    `python run_tests.py --help`  prints this and runs nothing; so does a flag it doesn't know (exit 2).
     """
+    # 0. --help, or a flag it doesn't know: the usage, nothing run (either used to start the whole core suite — outside
+    #    with-lock.sh and its throwaway data folders: Flake-F3, 2026-11-15)
+    args = sys.argv[1:]
+    helping = "--help" in args or "-h" in args
+    unknown = [a for a in args if a.startswith("-") and a.split("=", 1)[0] not in FLAGS]
+    if helping or unknown:
+        if not helping:
+            print(f"run_tests.py: no such option {unknown[0]!r}: nothing was run.\n")
+        print(textwrap.dedent("    " + main.__doc__.strip()))
+        sys.exit(0 if helping else 2)
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
-    args = sys.argv[1:]
     for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev")),
                       ("--stress", lambda v: run_stress(project_root, int(v) if v and v.isdigit() else 1))):
         if flag in args or any(a.startswith(flag + "=") for a in args):

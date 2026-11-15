@@ -185,14 +185,22 @@ def test_a_held_file_is_tried_again_then_left_for_the_next_sweep(monkeypatch, tm
 
 # --- Steps.download: the gate, the site, the feature --------------------------------------------------------------- #
 @pytest.fixture
-def steps(fake_miner, monkeypatch):
+def steps(fake_miner, monkeypatch, tmp_path):
     from app.cli import verbs
     s = runner.Steps({"connect_anki_miner_path": fake_miner.path})
     settings = {"youtube_risk_acknowledged": True}
     monkeypatch.setattr(s, "_settings", lambda lang: dict(settings, target_language=lang))
     monkeypatch.setattr(s, "title", lambda lang, job: "ゆっくり日本語 - 第3話")
     info = {"app": "3.11.0", "features": ["fetch"]}
-    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: (info, "p1", None))
+
+    def setup(loaded, lang, run_dir, held=None):
+        # as `verbs._anki_miner_setup`: the profile's settings export read and kept in the run's set (Michi-YT5: the
+        # speech model it names)
+        export = anki_miner.settings_export(fake_miner.path, lang, str(tmp_path / "settings-export.json"), "p1")
+        if held is not None:
+            held.update(set=(info, "p1", None, export))
+        return info, "p1", None
+    monkeypatch.setattr(verbs, "_anki_miner_setup", setup)
     monkeypatch.setattr(anki_miner, "POLL_S", 0.1)
     fake_miner.plan(app="3.11.0", features=["fetch"], fetch={})
     s.test_settings, s.test_info = settings, info
@@ -425,8 +433,11 @@ TRANSCRIPTS = {   # language -> (title, channel, the cues): real lines, as the d
     "zh": ("台北夜市美食之旅", "小明的頻道",
            "[00:00:00] 大家好，歡迎回到我的頻道。\n[00:00:03] 今天我们要去台北的夜市吃东西。"),
 }
-HAS_MODEL = {"installed": ["small"], "model": "small"}
-NO_MODEL = {"installed": [], "model": "small"}
+# (Michi-YT5: a Japanese video is heard only with a large model — `SMALL_MODEL` keeps YouTube's captions; Anki
+# Miner's own default is large-v3)
+HAS_MODEL = {"installed": ["large-v3"], "model": "large-v3"}
+SMALL_MODEL = {"installed": ["small"], "model": "small"}
+NO_MODEL = {"installed": [], "model": "large-v3"}
 
 
 @pytest.fixture(autouse=True)
@@ -529,7 +540,8 @@ def test_without_a_speech_model_youtubes_captions_are_taken_and_nothing_download
     assert _episode(fake_miner)["youtube_subtitle_source"] == "captions"
     assert steps.fetched_with == {"21": "captions"}, "for `_download`'s one note"
     assert fake_miner.commands().count("fetch") == 1
-    assert set(fake_miner.commands()) <= {"version", "check", "settings-import", "fetch"}, fake_miner.commands()
+    assert set(fake_miner.commands()) <= {"version", "check", "settings-export", "settings-import", "fetch"}, \
+        fake_miner.commands()
 
 
 def test_a_speech_model_gone_after_the_check_falls_back_to_captions_for_the_rest_of_the_run(steps, fake_miner):
@@ -640,3 +652,110 @@ def test_a_character_cut_at_the_header_read_still_reads_its_kind(tmp_path, monke
     assert cut.decode("utf-8", "ignore").encode("utf-8") != cut, "the read ends mid-character"
     path.write_bytes(raw)
     assert online.of("zh", item)["captions"] == "native auto"
+
+
+# --- Michi-YT5: heard only with a large speech model (Sonic 2026-11-15, after Michi-YT4's measurement) ------------- #
+def _sources(fake_miner):
+    return [c["episodes"][0]["youtube_subtitle_source"] for c in fake_miner.calls() if c.get("episodes")]
+
+
+@pytest.mark.parametrize("speech, source, used", (
+    (HAS_MODEL, "transcribe", "transcribe"),                                       # large-v3: clearly better
+    ({"installed": ["large-v3-turbo"], "model": "large-v3-turbo"}, "transcribe", "transcribe"),   # its family
+    (SMALL_MODEL, "captions", online.NOT_LARGE),                                   # about level with YouTube's
+    ({"installed": ["medium"], "model": "medium"}, "captions", online.NOT_LARGE),  # unmeasured (PROVISIONAL)
+    ({"installed": ["large-v2"], "model": "large-v2"}, "captions", online.NOT_LARGE),     # not large-v3's family
+), ids=["large-v3", "large-v3-turbo", "small", "medium", "large-v2"])
+def test_a_japanese_video_with_machine_captions_is_heard_only_with_a_large_speech_model(steps, fake_miner, speech,
+                                                                                       source, used):
+    # why: small spends minutes of CPU a video for about the captions YouTube already has (8 wins, 4 losses as big);
+    # the learner who picked it for speed gets YouTube's captions at no cost — and no note, since a model is there
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech=speech)
+    _video, subtitle = steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == [source] and steps.fetched_with == {"21": used}
+    with open(subtitle, encoding="utf-8") as f:
+        assert ("00:00:01,200" in f.read()) is (source == "transcribe"), "made from the audio, or YouTube's captions"
+    assert "setup" not in fake_miner.commands(), "nothing installed"
+
+
+@pytest.mark.parametrize("export", (
+    {"anki_miner_settings": 1, "settings": {"anki_deck_name": "DevTest"}},     # an older build's: no model named
+    {"anki_miner_settings": 1, "settings": {"asr_model": None}},
+    {"anki_miner_settings": 1, "settings": {"asr_model": 3}},
+    {"anki_miner_settings": 1, "settings": "large-v3"},
+    {"anki_miner_settings": 1},
+), ids=["no-model", "null", "a-number", "settings-not-a-map", "no-settings"])
+def test_a_model_not_known_keeps_youtubes_captions_never_guessed_large(steps, fake_miner, export):
+    # why: large-v3 installed, but the export can't say it is the profile's model: never guessed large
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech=HAS_MODEL, export=export)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == ["captions"] and steps.fetched_with == {"21": online.NOT_LARGE}
+
+
+def test_no_settings_export_in_the_runs_set_keeps_youtubes_captions(steps, fake_miner, monkeypatch):
+    # why: the run's set of look-ups emptied (any failure of them clears it; an export Anki Miner can't write stops
+    # the download before this) leaves no model to read: captions
+    from app.cli import verbs
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None:
+                        (steps.test_info, "p1", None))
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == ["captions"] and steps.fetched_with == {"21": online.NOT_LARGE}
+
+
+def test_a_profile_switched_to_small_by_the_speech_check_keeps_youtubes_captions(steps, fake_miner):
+    # why: the profile names large-v3 (its export, read first) but only small is installed — `speech_ready` sets small
+    # on Surasura's own profile, and small is what would listen: YouTube's captions, never a small transcription
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech={"installed": ["small"], "model": "large-v3"})
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert "settings-import" in fake_miner.commands(), "the model was switched"
+    assert _sources(fake_miner) == ["captions"] and steps.fetched_with == {"21": online.NOT_LARGE}
+
+
+def test_a_profile_switched_up_to_large_v3_is_heard_once_its_export_says_so(steps, fake_miner):
+    # why: the profile names small, only large-v3 is installed — `speech_ready` sets large-v3; the export read before
+    # still says small, so that video keeps YouTube's captions (never guessed large); the next export names large-v3
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech={"installed": ["large-v3"], "model": "small"})
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == ["captions"] and steps.fetched_with.pop("21") == online.NOT_LARGE
+    steps.download("ja", dict(JOB, id=22, item_id=6), dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == ["captions", "transcribe"] and steps.fetched_with == {"22": "transcribe"}
+
+
+@pytest.mark.parametrize("speech", (HAS_MODEL, SMALL_MODEL), ids=["large-v3", "small"])
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_a_persons_captions_are_never_replaced_on_any_model(steps, fake_miner, language, speech):
+    # why: a person's captions are the best subtitle there is, whatever model Anki Miner has
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech=speech)
+    steps.download(language, JOB, dict(WEB, captions="manual"))
+    assert _sources(fake_miner) == ["captions"] and steps.fetched_with == {"21": "captions"}
+
+
+def test_a_chinese_video_with_machine_captions_is_heard_with_a_small_model_as_before(steps, fake_miner):
+    # why: the measurement is Japanese only — Chinese keeps 3.0.11's rule (any model Anki Miner has; PROVISIONAL)
+    fake_miner.plan(app="3.12.0", features=["fetch"], fetch={}, speech=SMALL_MODEL)
+    steps.download("zh", JOB, dict(WEB, captions="native auto"))
+    assert _sources(fake_miner) == ["transcribe"] and steps.fetched_with == {"21": "transcribe"}
+
+
+@pytest.mark.parametrize("model, large", (
+    ("large-v3", True), ("large-v3-turbo", True), (" Large-V3 ", True), ("small", False), ("medium", False),
+    ("large-v2", False), ("large", False), ("distil-large-v3", False), ("", False), (None, False), (3, False)))
+def test_only_large_v3_and_its_family_count_as_large(model, large):
+    # why: the names Anki Miner 3.12 offers are large-v3 and small (`KNOWN_MODELS`); a later build's name is large
+    # only when it is large-v3's own (turbo measured better too), never a guess
+    assert anki_miner.is_large(model) is large
+
+
+def test_the_model_speech_ready_set_is_the_one_that_listens(fake_miner):
+    # why: the export was read before `speech_ready` may set another model on the profile; both must say large
+    export = {"settings": {"asr_model": "large-v3"}}
+    key = (fake_miner.path, "ja", "p1")
+    assert anki_miner.listens_large(*key, export)
+    anki_miner._SPEECH[key] = (True, time.monotonic())                 # asked earlier, nothing set (an older answer)
+    assert anki_miner.listens_large(*key, export)
+    anki_miner._SPEECH[key] = (True, time.monotonic(), "small")
+    assert not anki_miner.listens_large(*key, export)
+    anki_miner._SPEECH[key] = (True, time.monotonic(), "large-v3")
+    assert anki_miner.listens_large(*key, export)
+    assert not anki_miner.listens_large(*key, {"settings": {"asr_model": "small"}}), "the export says small"

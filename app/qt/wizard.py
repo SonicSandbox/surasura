@@ -2719,7 +2719,7 @@ def _index_reading(chores, numbers):
         if not chores.indexing():
             return None
         from app.services import setup_load
-        got = setup_load.read_count(chores.index_log(), time.time() - INDEX_FRESH_S)
+        got = setup_load.read_count(chores.index_log(), time.time_ns() - INDEX_FRESH_S * 1_000_000_000)
     except Exception:                                     # (no count: *Counting* stays, as before)
         return None
     return got[1] if got else None

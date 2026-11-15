@@ -78,3 +78,19 @@ def test_the_fast_re_plans_job_weaves_the_same_order_as_a_window_run(tmp_path, s
         report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
     assert again.queue_order() == [row.word for row in window["order"]]
+
+
+def test_each_turn_takes_the_word_with_the_most_impact_not_the_one_met_first(tmp_path, monkeypatch):
+    """Decision 3 (the word's place on the whole list), with Junban in content order: title A holds 散歩 (met first,
+    in file 1, Score 20) and 老婆 (file 3, Score 30) — A's turn takes 老婆 first; B's 冒険 between them."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: SIDE)
+    fake = scene(tmp_path, without_connect([("散歩", "毎朝<b>散歩</b>に出かける。", 3000, [], 0),
+                                            ("老婆", "老婆が笑った。", 7000, [], 0),
+                                            ("冒険", "冒険が始まった。", 2000, [], 0)]))
+    for word, source in (("散歩", A_SOURCE), ("老婆", A_SOURCE), ("冒険", B_SOURCE)):
+        fake.notes[fake.card_of(word)["note"]]["fields"]["MiscInfo"]["value"] = source
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+    assert [row.word for row in stats["order"]] == ["老婆", "冒険", "散歩"]

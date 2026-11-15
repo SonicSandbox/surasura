@@ -181,9 +181,10 @@ def test_a_click_in_the_preview_weaves_as_the_run_will():
 
 def test_a_pinned_cards_word_counts_as_picked_for_the_weave():
     """KA-9: B's own 図書館 card shares its word with the pinned 図書館 — no pick of its own (it goes ahead of the turns,
-    beside the pin's word); B's 宇宙, whose sentence needs only 図書館, is i+1 from the start."""
+    beside the pin's word); B's 世界 (off the list), whose sentence needs only 図書館, is i+1 from the start and goes
+    ahead of B's 時間, planned before it."""
     cards = [_card(1, "図書館", sort=(0,)), _card(2, "約束", sort=(1,)), _card(3, "図書館", sort=(10,)),
-             _card(4, "老婆", tier="multi", sort=(1, 7000), needs=("時計",)),
-             _card(5, "宇宙", tier="multi", sort=(1, 8000), needs=("図書館",))]
+             _card(4, "時間", tier="multi", sort=(1, 7000), needs=("時計",)),
+             _card(5, "世界", tier="multi", sort=(1, 8000), needs=("図書館",))]
     _writes, stats = P.plan(cards, RANK, pins=[[1]], weave=[[2], [3, 4, 5]])
     assert [row.card_id for row in stats["order"]] == [1, 3, 2, 5, 4]

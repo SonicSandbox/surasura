@@ -56,7 +56,12 @@ LINING_UP = "lining_up"
 # Mattias's field report (3.0.0, #5): an item whose newest job ended failed (Anki Miner stopped twice on its batch),
 # no open job — `status`'s `failed`; its row offers *Try again* (`view_rows._connected`), whatever cards it made
 FAILED = "failed"
-KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP, FAILED)
+# Kura-NT (based on Mattias's #454): an item whose newest job found no word to make a card from, no open job, no card
+# ever made of it — `status`'s `nothing`: every word it holds has a card in Anki already; its row says so
+# (`view_rows._connected`), never "cards you deleted". The strip and *Needs you* pass it by (no slot, no entry)
+NOTHING = "nothing"
+KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP, FAILED,
+         NOTHING)
 # A7N-3 (Sonic 2026-10-30): Connect's needs that are faults, nothing to decide — its own Generate failed. Red, never
 # amber: ス says it as a Generate you start does (the window, `shell._connect_fault`); its card stays on *Needs you*,
 # and an episode it holds is a plain wait (never HELD)
@@ -76,6 +81,7 @@ WORDS = {
     ASKED: "Asked: its cards come next",
     LINING_UP: "Lining up its audiobook",
     FAILED: "Anki Miner stopped before its cards were made",
+    NOTHING: "Nothing new to mine",
 }
 # *Mine anyway* on a pairing hato placed by its name only (`verdict: untimed`, 09-hato-layer v2 §1.2; hato's
 # wrong-episode finding): the warning W3.2's *Needs you* entry carries (row 4.1.9)
@@ -160,6 +166,10 @@ def build(record, language):
             continue
         items[item_id] = Item(kind=FAILED, words=WORDS[FAILED], tip=failed.get("reason") or WORDS[FAILED],
                               job=failed.get("job"), made=failed.get("made") or 0, total=failed.get("words") or 0)
+    for item_id in rec.get("nothing") or ():   # Kura-NT: after the open jobs and the failed — a new try's is its own
+        if item_id is None or item_id in items:
+            continue
+        items[item_id] = Item(kind=NOTHING, words=WORDS[NOTHING], tip=WORDS[NOTHING], job=None, made=0, total=0)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")),
                 miner=miner_of((record or {}).get("stamp")))

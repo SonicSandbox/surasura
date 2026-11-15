@@ -156,7 +156,8 @@ def _store_path(lang):
 
 def _empty(lang):
     return {"line": "Up to date", "state": "idle", "jobs": [], "needs": [], "unseen": 0, "undo": [],
-            "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0, "updating": False, "failed": []}
+            "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0, "updating": False, "failed": [],
+            "nothing": []}
 
 
 def read(languages=None, words=False, path=None):
@@ -221,6 +222,7 @@ def _language(conn, lang, is_running, words):
                            f"ORDER BY j.updated_at DESC, j.id DESC LIMIT ?", (lang,) + FINISHED_WITH_CARDS + (UNDO_SHOWN,))
     needs = _needs(conn, lang)
     failed = _failed(conn, lang)
+    nothing = _nothing(conn, lang)
     items = _items(lang, {j["item_id"] for j in open_jobs} | {u["item_id"] for u in undoable}
                    | {n["item_id"] for n in needs if n["item_id"] is not None})
 
@@ -258,6 +260,7 @@ def _language(conn, lang, is_running, words):
     rec["unseen"] = sum(1 for n in needs if not n.get("seen_at"))
     rec["skipped"] = _skipped(conn, lang)       # T2 (alpha 2's try): refusals you dismissed — no waiting episode
     rec["failed"] = failed                      # Mattias #5: parts Anki Miner stopped on — the rows' *Try again*
+    rec["nothing"] = nothing                    # Kura-NT: parts mined with nothing new to make — *Nothing new to mine*
     rec["undo"] = [{"job": u["id"], "item": u["item_id"], "title": items.get(u["item_id"], {}).get("title"),
                     "kind": u["kind"] or "mine", "made": u["made"], "at": u["updated_at"],
                     "not_made": _not_made(conn, u["id"])} for u in undoable]
@@ -288,6 +291,26 @@ def _failed(conn, lang):
                  (lang, book.LEVEL) + book.OPEN)
     return [{"job": r["id"], "item": r["item_id"], "made": r["made"], "words": len(_picked_words(r["picked"])),
              "reason": r["reason"]} for r in rows]
+
+
+def _nothing(conn, lang):
+    """Kura-NT (based on Mattias's #454, his 3.0.10 report): the items whose newest job — a first mining or an ask's,
+    never a level raise's (it mines only an item's newly listed words) — ended `done` with no word to make a card from
+    (`runner.NO_WORDS`: every word it holds has a card in Anki already, one an earlier episode of the same run made
+    too), that no open job holds, and of which no job ever made a card (one that did and holds none now had its cards
+    deleted: *No cards in Anki* stays true): [item id], the newest first. Its row read *No cards in Anki* — "cards you
+    deleted" — when none was ever made. One pass over the language's jobs (grouped, never a look per job: such parts
+    are common in a library of familiar shows, and a per-job look was 14 s over 5,000 of them; the record is read at
+    every stamp that moved)."""
+    from app.connect import runner
+    marks = ",".join("?" * len(book.OPEN))
+    return [r["item_id"] for r in _rows(
+        conn, "SELECT j.item_id FROM jobs j JOIN (SELECT MAX(id) AS id FROM jobs WHERE language = ? AND kind != ? "
+              "GROUP BY item_id) n ON j.id = n.id WHERE j.state = 'done' AND j.reason = ? AND j.item_id NOT IN "
+              f"(SELECT item_id FROM jobs WHERE language = ? AND state IN ({marks})) AND j.item_id NOT IN "
+              "(SELECT k.item_id FROM jobs k JOIN outcomes o ON o.job_id = k.id AND o.outcome = 'made' WHERE "
+              "k.language = ?) ORDER BY j.id DESC",
+        (lang, book.LEVEL, runner.NO_WORDS, lang) + book.OPEN + (lang,))]
 
 
 def _turns(entries, is_running, between=False):

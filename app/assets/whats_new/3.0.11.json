@@ -1,0 +1,26 @@
+{
+  "version": "3.0.11",
+  "date": "2026-11-15",
+  "items": [
+    {"id": "piyo-anki-sources", "kind": "new", "for": ["piyo", "anki"], "where": "settings:practice_ai",
+     "text": "Piyo practises from Anki: your leeches, today's cards, or the cards you know well."},
+    {"id": "piyo-listening", "kind": "new", "for": ["piyo", "ja"], "where": "settings:practice_ai",
+     "text": "Piyo listening rounds: an mp3 with timed subtitles and a copy with pauses, five voices."},
+    {"id": "title-words-hover", "kind": "new", "for": ["everyone"], "where": "tab:current",
+     "text": "Hover a title's N new to see its new words, each with its sentence from that title."},
+    {"id": "line-player", "kind": "new", "for": ["everyone"], "where": "settings:line_player",
+     "text": "▶ plays a line's own audio in the journey, on a loop, with pause."},
+    {"id": "nothing-to-mine", "kind": "tweak", "for": ["miner"],
+     "text": "A part with no new words says Nothing new to mine, not No cards in Anki."},
+    {"id": "youtube-auto-captions", "kind": "tweak", "for": ["shows", "miner"],
+     "text": "YouTube videos with only machine captions get cards from Anki Miner's own transcription."},
+    {"id": "speech-timing", "kind": "tweak", "for": ["shows", "miner", "ja"],
+     "text": "A video with no subtitle track inside is timed against its own speech (Japanese)."},
+    {"id": "transcript-recheck", "kind": "fix", "for": ["audiobooks"],
+     "text": "An audiobook's transcript is checked again after an update."},
+    {"id": "junban-footer-sources", "kind": "fix", "for": ["junban", "audiobooks"],
+     "text": "順's footer finds an audiobook's and a single video's cards."},
+    {"id": "processed-title", "kind": "fix", "for": ["shows"],
+     "text": "A video dropped straight into Processed is titled by its channel."}
+  ]
+}

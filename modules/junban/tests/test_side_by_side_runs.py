@@ -174,6 +174,17 @@ def test_when_a_title_runs_out_the_next_one_steps_in_through_every_run(tmp_path,
     assert again.queue_order() == want
 
 
+def test_a_card_two_titles_claim_by_different_rules_is_in_both_groups_as_before():
+    """`pins._matched` walks the cards once now (it is handed every Current title): a card the store's notes give to
+    title A and whose Anki Miner source names title B's episode is still in both groups — the plan then gives it to
+    the first, as it did when each group walked the cards itself."""
+    notes_by_id = {500: {"fields": {"MiscInfo": B_SOURCE}}, 501: {"fields": {"MiscInfo": ""}}}   # as `_plan_scope` hands them
+    cards = [{"card_id": 10, "note": 500}, {"card_id": 11, "note": 501}]
+    got = pins._matched([[1], [2], [3]], cards, notes_by_id, {1: [500], 3: [501]},
+                        {2: {pins.source_of(B_SOURCE)}})
+    assert got == [[10], [10], [11]]
+
+
 def test_each_turn_takes_the_word_with_the_most_impact_not_the_one_met_first(tmp_path, monkeypatch):
     """Decision 3 (the word's place on the whole list), with Junban in content order: title A holds 散歩 (met first,
     in file 1, Score 20) and 老婆 (file 3, Score 30) — A's turn takes 老婆 first; B's 冒険 between them."""

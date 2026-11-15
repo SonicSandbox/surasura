@@ -36,29 +36,33 @@ def _row_of(view, item_id):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-@pytest.mark.parametrize("which", ["loose_to_top", "b_above_a", "b_above_a_one_missing"])
-def test_a_drop_draws_the_side_by_side_line_at_once_where_the_store_will(language, which):
+@pytest.mark.parametrize("which, line", [("loose_to_top", 4), ("b_above_a", 4), ("b_above_a", 3),
+                                         ("b_above_a_one_missing", 4), ("as_is", 8)])
+def test_a_drop_draws_the_side_by_side_line_at_once_where_the_store_will(language, which, line):
     """The line at 4 over show A (6), show B (3) and a loose file. Dropped first, the loose file is a title of its own:
     the turns mine it beside A1, then B steps into its place: A2, B1 (the line through B's row after 1). B dropped
     above A: B1, A1, B2, A2 (the
     line through A's row after 2); with B1's file missing, B2, A1, B3, A2 (a missing file never takes a turn; it waits
     in the top above B2). The drop's own view (`drag.reordered`) has the store's line and top, before the store has
-    moved anything."""
+    moved anything. At 3, B dropped above A: B1, A1, B2 — the last turn's file is B's, but the line goes after the
+    lowest row the turns mine in (A's, after 1). At 8, as it is: A1–A4, B, the loose file — the line after the loose
+    file's whole row, no split."""
     store, a, b, loose, d = _library(language)
-    store.set_library_options(mine_line=4, side_by_side=True)
+    store.set_library_options(mine_line=line, side_by_side=True)
     if which.endswith("missing"):
         with store._writing():
             store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (b[0],))
     view = _view(store)
     assert _top(view) is not None
     keys = [r.key for r in view.rows]
-    moved = view.rows[_row_of(view, loose if which == "loose_to_top" else b[0])].key
-    keys.remove(moved)
-    keys.insert(0, moved)
+    if which != "as_is":
+        moved = view.rows[_row_of(view, loose if which == "loose_to_top" else b[0])].key
+        keys.remove(moved)
+        keys.insert(0, moved)
     dropped = drag.reordered(view, keys)
     if which == "loose_to_top":
         store.move([loose], "now", before_id=a[0])
-    else:
+    elif which != "as_is":
         store.move(b, "now", before_id=a[0])
     stored = _view(store)
     assert [r.key for r in dropped.rows] == [r.key for r in stored.rows]

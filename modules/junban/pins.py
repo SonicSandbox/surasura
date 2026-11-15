@@ -97,6 +97,13 @@ def groups(language, cards, notes_by_id, pinned=None):
     item_groups = plan_rules.pin_groups([(item_id, at) for item_id, _path, at in pins],
                                         place=lambda item_id: (path_of.get(item_id) or "", item_id))
     names = {item_id: names_of(path_of.get(item_id), videos.get(item_id)) - shared for item_id in path_of}
+    out = _matched(item_groups, cards, notes_by_id, store_notes, names)
+    return out if any(out) else None
+
+
+def _matched(item_groups, cards, notes_by_id, store_notes, names):
+    """`[[card_id, …], …]`, one per group of items: the cards in scope that are the group's items' — the store's notes
+    for them (`store_notes`: {item_id: [note ids]}), or an Anki Miner source naming one (`names`: {item_id: {keys}})."""
     out = []
     for items in item_groups:
         notes = set()
@@ -115,7 +122,57 @@ def groups(language, cards, notes_by_id, pinned=None):
             if source is not None and source in wanted:
                 ids.append(card["card_id"])
         out.append(ids)
+    return out
+
+
+# --- Kyou-A: *New cards come from: Current's top two, side by side* (SCOPE §2; Sonic's answers 1–5, 2026-11-15) ---- #
+def read_side(language):
+    """The titles side by side for the run, read once: `(titles, notes, names)` — `titles` = the store's
+    `side_by_side()` ([[item id, …], …]: Current's first two titles' items, [] while it's off or there aren't two),
+    `notes` = `{item_id: [note ids]}` (`cards_of`), `names` = `{item_id: {source keys}}` (a key two titles of the library
+    share names neither, as a pin's). Empty `titles` when pins are off (2.x), there's no store, or the store has no
+    such option. Never raises: a store that can't be read weaves nothing this run."""
+    if not connect.PINS:
+        return [], {}, {}
+    try:
+        store = _open_store(language)
+        if store is None:
+            return [], {}, {}
+        with store:
+            side = getattr(store, "side_by_side", None)
+            titles = side() if side is not None else []
+            if not titles:
+                return [], {}, {}
+            ids = [item_id for title in titles for item_id in title]
+            cards_of = getattr(store, "cards_of", None)
+            notes = cards_of(ids) if cards_of is not None else {}
+            from app.connect import library
+            records = library.pairings(store)
+            rows = _items(store)
+        videos = {}
+        for item_id, item_records in records.items():
+            for record in item_records or ():
+                if isinstance(record, dict) and record.get("video_path"):
+                    videos[item_id] = record["video_path"]
+        work = {item_id: w for item_id, _path, w in rows}
+        every = {i: names_of(path, videos.get(i)) for i, path, _w in rows}
+        shared = source_names.shared_names(every, work.get)
+        wanted = set(ids)
+        return titles, notes, {i: every.get(i, set()) - shared for i in wanted}
+    except Exception:
+        return [], {}, {}
+
+
+def side_groups(language, cards, notes_by_id, side=None):
+    """`plan`'s `weave`: `[[card_id, …], [card_id, …]]`, Current's first two titles' cards in scope by the pins' own
+    matching (`_matched`: the store's notes, or an Anki Miner source naming one of the title's items). `side`: what
+    `read_side` returns (read here when None). None while side by side is off, or no title has a card in scope."""
+    titles, store_notes, names = read_side(language) if side is None else side
+    if not titles:
+        return None
+    out = _matched(titles, cards, notes_by_id, store_notes, names)
     return out if any(out) else None
+# --- end Kyou-A
 
 
 # --- P4.1 L2: *Take its new cards out* (05 §5.7, D14; W1.2 01-scope fc) — the same matching as a pin's ---------- #

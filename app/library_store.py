@@ -161,6 +161,75 @@ def _scheduled_sql(keep_watched=False):
     return f"tier = ? AND {counts_sql(keep_watched)} AND availability != 'waiting'"
 
 
+# --- Kyou-A (side by side; the SCOPE's decisions 1–5, Sonic 2026-11-15): *New cards come from* Current's top two ---- #
+# The library's own option `side_by_side` (meta; absent = off, as `keep_watched`). On, Current's first two TITLES (a
+# work, or an item with no work: its own) that still hold a file to study — available and counting (W-1) — are taken
+# in turns, one file each (one that runs out drops out, the other goes on), the turns standing where the first title's
+# first file stood. One rule (`turns`, `side_titles`, `woven`) read by the mine line (`_mine_ids`: Connect's top N),
+# Generate's order (`schedule` / `scheduled_ids`: each tier's files, so a file keeps its own tier's weight), the Soon
+# line (`_keep_line`: both titles stay above it) and the window's drawn lines (`view_rows`). Off — or fewer than two
+# titles — every one of them reads exactly as before. Junban weaves the two titles' cards on its own (`plan(weave=)`).
+SIDE_BY_SIDE = "side_by_side"
+SIDE_TITLES = 2                 # the setting's two; `turns` / `woven` take any number (Today's set's pieces)
+
+
+def turns(seqs):
+    """`seqs` (lists) taken in turns, one from each in order; one that runs out drops out, the rest go on."""
+    queues = [list(s) for s in seqs]
+    out, at = [], [0] * len(queues)
+    while True:
+        moved = False
+        for k, q in enumerate(queues):
+            if at[k] < len(q):
+                out.append(q[at[k]])
+                at[k] += 1
+                moved = True
+        if not moved:
+            return out
+
+
+def title_key(item_id, work_id):
+    """An item's title: its work, else the item itself (an item with no work is a title of its own)."""
+    return ("w", work_id) if work_id is not None else ("i", item_id)
+
+
+def side_titles(rows, keep=False, n=SIDE_TITLES):
+    """Current's first `n` titles that hold a file to study -> their `title_key`s, in Current's order. `rows`:
+    Current in order, `(id, tier, work_id, availability, watched)`; a file to study is available and counts (`counts`,
+    `keep`: the library's `keep_watched`)."""
+    out = []
+    for item_id, tier, work_id, availability, watched in rows:
+        if availability != "available" or not counts(tier, watched, keep):
+            continue
+        key = title_key(item_id, work_id)
+        if key not in out:
+            out.append(key)
+            if len(out) == n:
+                break
+    return out
+
+
+def woven(ids, title_of, titles):
+    """`ids` (in order) with the files of `titles` taken in turns (`turns`, in `titles`' order), the turns standing
+    where the first of them stood; every other id keeps its order. `title_of`: id -> its `title_key`."""
+    rank = {key: k for k, key in enumerate(titles)}
+    groups = [[] for _t in titles]
+    for item_id in ids:
+        k = rank.get(title_of(item_id))
+        if k is not None:
+            groups[k].append(item_id)
+    out, placed = [], False
+    for item_id in ids:
+        if title_of(item_id) in rank:
+            if not placed:
+                out.extend(turns(groups))
+                placed = True
+            continue
+        out.append(item_id)
+    return out
+# --- end Kyou-A
+
+
 TIER_OF_PHASE = {v[0]: t for t, v in TIERS.items() if v[0]}
 TIER_OF_FOLDER = {v[1]: t for t, v in TIERS.items() if v[1]}
 FOLDER_OF_TIER = {t: v[1] for t, v in TIERS.items() if v[1]}
@@ -253,7 +322,7 @@ TWIN_HASHES = 8                  # hato's file is checked by its bytes against t
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
-            "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined")
+            "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side")
 
 
 class StoreError(Exception):
@@ -908,7 +977,8 @@ WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
 COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups",   # LM2
                   "keep_watched",                                                          # W-1
-                  "audiobook_answers")                                                     # Hon, H-8
+                  "audiobook_answers",                                                     # Hon, H-8
+                  "side_by_side")                                                          # Kyou-A
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
                "mine_asked")
@@ -2281,7 +2351,14 @@ class Store:
     def _mine_ids(self, n, keep=None):
         """The mine line: the top N of Current's AVAILABLE items (a missing item never counts) that count (W-1: a
         watched one while `keep_watched` is off has nothing left to mine). `keep`: `keep_watched` as the caller read it."""
-        rule = counts_sql(self._keep_watched() if keep is None else keep)
+        keep = self._keep_watched() if keep is None else keep
+        side = self._side(keep)
+        if side is not None:                    # Kyou-A: Current's top two in turns, then title 3 onward as before
+            rows, titles = side
+            title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
+            ok = [r[0] for r in rows if r[3] == "available" and counts(r[1], r[4], keep)]   # only these take turns
+            return woven(ok, title_of, titles)[:max(int(n), 0)]
+        rule = counts_sql(keep)
         ids = [r[0] for r in self.conn.execute(
             f"SELECT id FROM items WHERE tier = 'now' AND availability = 'available' AND {rule} ORDER BY ord, id "
             "LIMIT ?", (n,))]
@@ -2295,6 +2372,62 @@ class Store:
         """The library's `keep_watched` option (W-1): 1 when on; absent (every library before it) is off."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = 'keep_watched'").fetchone()
         return _keep_value(row[0] if row else None)
+
+    # --- Kyou-A: side by side (the rule above `TIER_OF_PHASE`) ------------------------------------------------------ #
+    def _side_on(self):
+        """The library's `side_by_side` option: 1 when on; absent (every library before it) is off."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (SIDE_BY_SIDE,)).fetchone()
+        return _keep_value(row[0] if row else None)
+
+    def _current_rows(self):
+        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched)`."""
+        return self.conn.execute(
+            "SELECT id, tier, work_id, availability, watched FROM items WHERE tier IN ('now', 'soon') "
+            "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall()
+
+    def _side(self, keep=None, on=None):
+        """(Current's rows, its first two titles) while side by side is on and Current holds two titles to study; else
+        None — and every reader of the rule reads as before. `on`: the option as the caller has it (a command setting
+        it), else the library's."""
+        if not (self._side_on() if on is None else on):
+            return None
+        rows = self._current_rows()
+        titles = side_titles(rows, self._keep_watched() if keep is None else keep)
+        return (rows, titles) if len(titles) == SIDE_TITLES else None
+
+    def side_by_side(self):
+        """The titles side by side, for a reader (Junban's groups): `[[item id, …], …]` — Current's first two titles'
+        items (every item of the title in Current, in Current's order), or [] while it is off or there aren't two."""
+        with self._reading():
+            side = self._side()
+        if side is None:
+            return []
+        rows, titles = side
+        groups = {key: [] for key in titles}
+        for r in rows:
+            key = title_key(r[0], r[2])
+            if key in groups:
+                groups[key].append(r[0])
+        return [groups[key] for key in titles]
+
+    def _side_line(self, n, side, keep=None):
+        """The Soon line's count while side by side is on (Sonic's answer 5): never fewer rows above it than today's
+        `n`, and every row down to the last of the first `n` files to study the turns take (a file with text that
+        counts) — so the two titles studied side by side both stay above it, a watched show above them or not. `n` 0,
+        or fewer than `n` files to study: `n`, as before."""
+        if n <= 0:
+            return n
+        rows, titles = side
+        keep = self._keep_watched() if keep is None else keep
+        title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
+        study = [r[0] for r in rows if r[3] != "waiting" and counts(r[1], r[4], keep)]
+        taken = woven(study, title_of, titles)[:n]
+        if len(taken) < n:
+            return n
+        place = {r[0]: k for k, r in enumerate(rows)}
+        last = max(place[i] for i in taken)
+        return max(n, sum(1 for r in rows[:last + 1] if r[3] != "waiting"))
+    # --- end Kyou-A
 
     def _root_id(self):
         cmd = self._cmd                 # once a command (R6: an Add read it twice, a folder's look once a folder); no
@@ -2317,7 +2450,15 @@ class Store:
         with self._reading():
             keep = self._keep_watched()
             scheduled = _scheduled_sql(keep)
+            side = self._side_order(keep)
             for tier in ANALYSED:
+                if side is not None and tier in CURRENT:     # Kyou-A: each tier's files of the two titles in turns
+                    rows = {i: {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
+                            for i, p, s, t, f in self.conn.execute(
+                                f"SELECT id, rel_path, source_type, title, parent_folder FROM items WHERE {scheduled} "
+                                "ORDER BY ord, id", (tier,))}
+                    out[TIERS[tier][0]] = [rows[i] for i in side(list(rows))]
+                    continue
                 out[TIERS[tier][0]] = [
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
                     for p, s, t, f in self.conn.execute(
@@ -2344,9 +2485,24 @@ class Store:
         """[(item_id, tier)] of what `schedule` lists, in its order (NOW, Soon, 6+ Months; each tier by ord, id): its
         rows' ids alone, no entry read — the window's numbers read the order with it after every arrival (W4.1)."""
         with self._reading():
-            scheduled = _scheduled_sql(self._keep_watched())
+            keep = self._keep_watched()
+            scheduled = _scheduled_sql(keep)
+            side = self._side_order(keep)
+            if side is not None:                # Kyou-A: `schedule`'s order, the two titles in turns
+                return [(i, tier) for tier in ANALYSED for i in (side if tier in CURRENT else list)(
+                    [r[0] for r in self.conn.execute(f"SELECT id FROM items WHERE {scheduled} ORDER BY ord, id",
+                                                     (tier,))])]
             return [(i, tier) for tier in ANALYSED for (i,) in self.conn.execute(
                 f"SELECT id FROM items WHERE {scheduled} ORDER BY ord, id", (tier,))]
+
+    def _side_order(self, keep):
+        """Kyou-A: `ids -> ids` with the two titles' files in turns (`woven`), while side by side is on; else None."""
+        side = self._side(keep)
+        if side is None:
+            return None
+        rows, titles = side
+        title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
+        return lambda ids: woven(ids, title_of, titles)
 
     def item_keys(self):
         """{rel_key: item_id} of every item, no entry read: a file's `path_key` is its item's `rel_key` (a plan's files
@@ -2417,7 +2573,8 @@ class Store:
                 "works": [dict(zip(FEED_WORK_FIELDS, r)) for r in works], "gone": gone,
                 "pieces": [dict(zip(FEED_PIECE_FIELDS, r)) for r in pieces],
                 "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
-                            "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0)}}
+                            "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0),
+                            "side_by_side": meta.get(SIDE_BY_SIDE, 0)}}
 
     def prune_gone(self, now=None):
         """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest
@@ -3740,8 +3897,8 @@ class Store:
         self._settle_works(cmd)
         if (cmd.meta.get("rename_asks") or "[]") != "[]":
             self._tidy_asks()
-        if cmd.line_set or cmd.tiers & set(CURRENT):
-            self._keep_line(cmd)
+        if cmd.line_set or cmd.tiers & set(CURRENT) or (cmd.bump_order and self._side_on()):
+            self._keep_line(cmd)            # (Kyou-A: a mark that moves what counts can change the two titles)
         self._fix_pieces(cmd)
         self._write_feed(cmd)
 
@@ -4291,6 +4448,9 @@ class Store:
         n = self._soon_line()
         if n is None:
             return
+        side = self._side()
+        if side is not None:                # Kyou-A: the two titles side by side both stay above the line
+            n = self._side_line(n, side)
         # Hon (H-6): a row waiting for its text (an audiobook beside its book) is no row the line counts — it stays
         # with the row before it, on the same side of the line
         now = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now' AND availability != 'waiting'").fetchone()[0]
@@ -5093,10 +5253,12 @@ class Store:
             change.options = [("soon_line", old, n)]
             return change
 
-    def set_library_options(self, mine_line=None, arrivals_on=None, keep_watched=None):
+    def set_library_options(self, mine_line=None, arrivals_on=None, keep_watched=None, side_by_side=None):
         """The user's library options (Mado's gap 3): how many of Current's top rows Connect mines, whether drops wait
         in New arrivals (D30), and (W-1) whether watched episodes keep counting (`keep_watched`, absent = off): flipping
-        it bumps `order_version` only when a watched item sits in an analysed tier. Undo by the value check."""
+        it bumps `order_version` only when a watched item sits in an analysed tier; (Kyou-A) whether Current's top two
+        titles are studied side by side (`side_by_side`, absent = off): flipping it, with two titles to study, moves the
+        order (Generate's, the mine line's, the Soon line's: `_keep_line`). Undo by the value check."""
         wanted = {}
         if mine_line is not None:
             if int(mine_line) < 0:
@@ -5106,18 +5268,22 @@ class Store:
             wanted["arrivals_on"] = 1 if arrivals_on else 0
         if keep_watched is not None:
             wanted["keep_watched"] = 1 if keep_watched else 0
+        if side_by_side is not None:
+            wanted[SIDE_BY_SIDE] = 1 if side_by_side else 0
         if not wanted:
             return None
         with self._command("set_library_options") as cmd:
             meta = self._meta()
             options = [(k, meta.get(k), v) for k, v in wanted.items()
-                       if meta.get(k, 0 if k == "keep_watched" else None) != v]      # W-1: absent is off
+                       if meta.get(k, 0 if k in ("keep_watched", SIDE_BY_SIDE) else None) != v]   # absent is off
             if not options:
                 return None
             self._set_meta({k: v for k, _o, v in options})
             if "mine_line" in wanted:
                 cmd.mine_n = wanted["mine_line"]               # the log's crossings read the new line
             cmd.touch(order=any(k == "keep_watched" for k, _o, _v in options) and self._watched_aside())
+            if any(k == SIDE_BY_SIDE for k, _o, _v in options) and self._side(on=True) is not None:
+                cmd.touch(CURRENT)                  # Kyou-A: the order moved; the settling step keeps the Soon line
             change = self._change(cmd, "set_library_options")
             change.options = options
             return change
@@ -5153,6 +5319,8 @@ class Store:
             if "mine_line" in back:
                 cmd.mine_n = int(back["mine_line"])
             cmd.touch(order="keep_watched" in back and self._watched_aside())     # W-1
+            if SIDE_BY_SIDE in back and self._side(on=True) is not None:
+                cmd.touch(CURRENT)                                              # Kyou-A
             out.options = [(k, change_new, back[k]) for k, _o, change_new in change.options if k in back]
         return out, skipped
 

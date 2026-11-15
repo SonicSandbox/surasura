@@ -166,6 +166,9 @@ View = namedtuple("View", View._fields + ("airing",), defaults=tuple(View._field
 # --- 3.0.1 item 12: `mine_line`, how many files the top line holds as the rows were built with it (None: Connect off —
 # nothing in the top — or the first screen's cache): what the window's own orders read the top by (`topped`)
 View = namedtuple("View", View._fields + ("mine_line",), defaults=tuple(View._field_defaults.values()) + (None,))
+# --- Kyou-A: `side_by_side`, the library's option as the feed's options gave it (Current's top two mine in turns: the
+# window's own orders leave the top to the store's next view, `drag.lines_for` / `drag.topped`); False in the cache
+View = namedtuple("View", View._fields + ("side_by_side",), defaults=tuple(View._field_defaults.values()) + (False,))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -1808,6 +1811,48 @@ def keep_watched(options):
         return False
 
 
+def side_by_side(options):
+    """Kyou-A: the library's *New cards come from: Current's top two, side by side* in the feed's `options` (absent:
+    off)."""
+    try:
+        return bool(int((options or {}).get("side_by_side") or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def side_order(current, keep=False):
+    """Kyou-A: the files of Current that can be mined (available, counting) in the store's side-by-side order
+    (`library_store.woven`: its first two titles to study in turns), or None when it holds fewer than two — the
+    store's `_mine_ids` read on the feed's rows."""
+    from app.library_store import SIDE_TITLES, counts, side_titles, title_key, woven
+    rows = [(r["id"], r.get("tier"), r.get("work_id"), r.get("availability"), r.get("watched")) for r in current]
+    titles = side_titles(rows, keep)
+    if len(titles) < SIDE_TITLES:
+        return None
+    by_id = {r["id"]: r for r in current}
+    title_of = {i: title_key(i, w) for i, _t, w, _a, _w in rows}.get
+    ok = [i for i, tier, _w, availability, watched in rows if availability == "available" and counts(tier, watched, keep)]
+    return [by_id[i] for i in woven(ok, title_of, titles)]
+
+
+def _side_in_top(current, top_ids):
+    """Kyou-A: what is *in the top* while side by side is on — the files the turns mine, and each missing file whose
+    title's next file to mine is one of them (it waits on the top, as above a line it would: Needs you's)."""
+    from app.library_store import title_key
+    in_top = set(top_ids)
+    nxt = {}
+    for r in reversed(current):
+        key = title_key(r["id"], r.get("work_id"))
+        if r["id"] in in_top:
+            nxt[key] = True
+        elif r.get("availability") == "missing":
+            if nxt.get(key):
+                in_top.add(r["id"])
+        elif r.get("availability") != "waiting":
+            nxt[key] = False
+    return in_top
+
+
 def mark_moves_list(tier, ep, keep):
     """W-1: does marking `ep` (an episode of a row in `tier`) watched, or not, move what the list counts? The store's
     one rule (`library_store.counts`, `keep` the library's `keep_watched`); a video waiting for its subtitle is in no
@@ -2228,10 +2273,14 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     tiers = tiers if tiers is not None else _by_tier(items)
     current = tiers["now"] + tiers["soon"]
     keep = keep_watched(options)                                  # W-1
-    top_ids = [] if off else _mine_ids(current, line_n, keep)    # row 13: Connect off → nothing "in the top"
+    side = side_by_side(options)                                  # Kyou-A
+    turned = side_order(current, keep) if side and not off else None
+    top_ids = [] if off else _mine_ids(turned or current, line_n, keep)     # row 13: Connect off → nothing in the top
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
     in_top = set()
-    if top_ids:
+    if turned is not None:              # Kyou-A: the second title's first files are in the top too (`_side_in_top`)
+        in_top = _side_in_top(current, top_ids)
+    elif top_ids:
         last = top_ids[-1]
         for r in current:
             in_top.add(r["id"])
@@ -2277,6 +2326,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     lines = []
     if len(top_ids) >= line_n and line_n > 0:
         last = top_ids[-1]
+        if turned is not None:          # Kyou-A: after the lowest row the turns mine in (the second title's, often)
+            place = {r["id"]: k for k, r in enumerate(current)}
+            last = max(top_ids, key=place.__getitem__)
         at = next(i for i, row in enumerate(rows) if any(e.id == last for e in row.episodes))
         row = rows[at]
         k = next(j for j, e in enumerate(row.episodes) if e.id == last) + 1
@@ -2424,7 +2476,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups,
                 connect=connect,                    # --- P4.1 L2
                 keep_watched=keep,                  # --- W-1
-                mine_line=None if off else line_n)  # --- 3.0.1 item 12
+                mine_line=None if off else line_n,  # --- 3.0.1 item 12
+                side_by_side=side)                  # --- Kyou-A
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #

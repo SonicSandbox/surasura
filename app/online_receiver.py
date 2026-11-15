@@ -36,11 +36,14 @@ import secrets
 import threading
 
 HOST, PORT = "127.0.0.1", 27631
-CONTRACT, SCHEMA = 1, 1
+CONTRACT, SCHEMA = 2, 1              # 2: mining after the fact (the jobs, their clips, done: `connect.browser`)
 LANGUAGES = ("ja", "zh")
 SITES = {"netflix": "Netflix", "disneyplus": "Disney+"}     # `source_type` -> the site's name (`play.SITES` too)
 PRODUCER = "browser"                    # the pairing record's producer (`placing_rules`' `browser`)
 MAX_BODY = 4 * 1024 * 1024              # a two-hour film's cues are about 200 KB
+MAX_CLIP = 40 * 1024 * 1024             # one recorded line, a few seconds of video and sound
+_CLIP_PATH = re.compile(r"/v1/jobs/(\d{1,9})/clips/(\d{1,5})")
+_DONE_PATH = re.compile(r"/v1/jobs/(\d{1,9})/done")
 MAX_CUES = 20000
 EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
 TOKEN_HEADER = "X-Surasura-Token"
@@ -259,8 +262,9 @@ class Receiver:
     503) — the window's (`windows.start_receiver`); `version` for `hello`. `start()` -> True when listening (False: the
     port is taken — another Surasura, or another program); `stop()` at the window's close."""
 
-    def __init__(self, token, deliver, version="", host=HOST, port=PORT):
+    def __init__(self, token, deliver, version="", host=HOST, port=PORT, clips=None):
         self.token, self.deliver, self.version = token, deliver, version
+        self.clips = clips                  # Connect's `browser` folder (None: `connect.browser.folder()`)
         self.host, self.port = host, port
         self._server = self._thread = None
 
@@ -318,37 +322,57 @@ def _handler(receiver):
                 return True
             return False
 
-        def do_GET(self):
-            if self._refused():
-                return
-            if self.path != "/v1/hello":
-                self._send(404, {"ok": False, "why": "not found"})
-                return
-            self._send(200, {"app": "surasura", "version": receiver.version, "contract": CONTRACT,
-                             "languages": list(LANGUAGES)})
+        def _token(self):
+            if token_ok(self.headers.get(TOKEN_HEADER), receiver.token()):
+                return True
+            self._send(401, {"ok": False, "why": "wrong or missing token"})
+            return False
 
-        def do_POST(self):
-            if self._refused():
-                return
-            if self.path != "/v1/online-subtitle":
-                self._send(404, {"ok": False, "why": "not found"})
-                return
-            if not token_ok(self.headers.get(TOKEN_HEADER), receiver.token()):
-                self._send(401, {"ok": False, "why": "wrong or missing token"})
-                return
+        def _body(self, limit):
+            """The body's bytes, or None (answered: no length, or over `limit` — never read)."""
             try:
                 length = int(self.headers.get("Content-Length") or -1)
             except ValueError:
                 length = -1
             if length < 0:
                 self._send(411, {"ok": False, "why": "Content-Length is needed"})
-                return
-            if length > MAX_BODY:
+                return None
+            if length > limit:
                 self.close_connection = True        # the body is never read
                 self._send(413, {"ok": False, "why": "the body is too large"})
+                return None
+            return self.rfile.read(length)
+
+        def do_GET(self):
+            if self._refused():
+                return
+            if self.path == "/v1/hello":
+                self._send(200, {"app": "surasura", "version": receiver.version, "contract": CONTRACT,
+                                 "languages": list(LANGUAGES)})
+            elif self.path == "/v1/jobs":
+                if self._token():
+                    from app.connect import browser
+                    self._send(200, {"jobs": browser.waiting(receiver.clips)})
+            else:
+                self._send(404, {"ok": False, "why": "not found"})
+
+        def do_POST(self):
+            if self._refused():
+                return
+            clip, done = _CLIP_PATH.fullmatch(self.path), _DONE_PATH.fullmatch(self.path)
+            if self.path != "/v1/online-subtitle" and not clip and not done:
+                self._send(404, {"ok": False, "why": "not found"})
+                return
+            if not self._token():
+                return
+            if clip or done:
+                self._job(clip, done)
+                return
+            body = self._body(MAX_BODY)
+            if body is None:
                 return
             try:
-                sub = subtitle(self.rfile.read(length))
+                sub = subtitle(body)
                 added, item = receiver.deliver(sub)
             except Bad as e:
                 self._send(400, {"ok": False, "why": str(e)})
@@ -360,6 +384,47 @@ def _handler(receiver):
                 self._send(503, {"ok": False, "why": f"Surasura couldn't take it in ({type(e).__name__})"})
                 return
             self._send(200, {"ok": True, "added": bool(added), "item": item})
+
+        def _job(self, clip, done):
+            """v2: a recorded line's clip (`X-Clip-Start` / `X-Clip-End`: its first and last frame's video time), or
+            the job's done; a job or line that no longer waits -> 404 (the extension skips it)."""
+            from app.connect import browser
+            if clip:
+                try:
+                    start, end = (float(self.headers.get(h) or "nan") for h in ("X-Clip-Start", "X-Clip-End"))
+                except ValueError:
+                    start = end = float("nan")
+                if not (0 <= start < end):
+                    self._send(400, {"ok": False, "why": "X-Clip-Start and X-Clip-End must be the clip's seconds"})
+                    return
+                body = self._body(MAX_CLIP)
+                if body is None:
+                    return
+                if not body:
+                    self._send(400, {"ok": False, "why": "the clip is empty"})
+                    return
+                job, n = int(clip.group(1)), int(clip.group(2))
+                try:
+                    kept = browser.keep_clip(job, n, body, start, end, receiver.clips)
+                except OSError as e:
+                    self._send(503, {"ok": False, "why": f"Surasura couldn't keep the clip ({e.strerror or e})"})
+                    return
+            else:
+                body = self._body(MAX_BODY)
+                if body is None:
+                    return
+                try:
+                    failed = json.loads(body.decode("utf-8") or "{}").get("failed") or []
+                    if not isinstance(failed, list):
+                        raise ValueError
+                except (UnicodeDecodeError, ValueError, AttributeError):
+                    self._send(400, {"ok": False, "why": "the body must be {\"failed\": [...]}"})
+                    return
+                kept = browser.finish(int(done.group(1)), failed, receiver.clips)
+            if kept:
+                self._send(200, {"ok": True})
+            else:
+                self._send(404, {"ok": False, "why": "that job or line doesn't wait for a clip"})
 
         def do_OPTIONS(self):                       # no CORS: a web page's preflight is never answered yes
             self._send(403, {"ok": False, "why": "only the browser extension on this computer"})

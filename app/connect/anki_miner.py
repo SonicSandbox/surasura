@@ -486,8 +486,8 @@ def mines(kind, info=None):
     this Anki Miner names it. Until then such an item waits by itself, never a *No video* (alpha 4 M1 / A4M1-3, Sonic
     2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."); `info` None asks only whether this
     Surasura could."""
-    ask = WAITS.get(kind)           # ("browser": no ask of Anki Miner's opens it — the browser extension records it)
-    if ask is None or ask not in FEATURES.values():
+    ask = WAITS[kind]
+    if ask not in FEATURES.values():
         return False
     return info is None or ask in features(info or {})
 

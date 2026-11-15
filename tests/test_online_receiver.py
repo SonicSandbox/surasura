@@ -115,7 +115,7 @@ def _post(receiver, body, token=TOKEN, **headers):
 def test_hello_says_who_answers_and_never_opens_the_door_to_a_web_page(listening):
     receiver = listening[0]
     code, got, headers = _ask(receiver, "GET", "/v1/hello")
-    assert code == 200 and got == {"app": "surasura", "version": "3.0.0", "contract": 1, "languages": ["ja", "zh"]}
+    assert code == 200 and got == {"app": "surasura", "version": "3.0.0", "contract": 2, "languages": ["ja", "zh"]}
     assert not any(k.lower().startswith("access-control") for k in headers), "no CORS: a page can't read it"
     code, _got, _h = _ask(receiver, "GET", "/v1/hello", headers={"Origin": "https://evil.example"})
     assert code == 403, "a web page's script is refused, even for hello"
@@ -254,22 +254,176 @@ def test_the_names_type_is_the_site_and_never_a_bare_bracket():
     assert path_utils.infer_source_type("Processed/星の旅 [81234567].txt") == "text"
 
 
-# --- mining: never fetched, a quiet wait ----------------------------------------------------------------------------- #
-def test_connect_sets_a_netflix_episode_aside_with_plain_words_never_a_download():
-    from app.connect import anki_miner, library, online, runner
-    item = {"source_type": "netflix", "rel_path": "Processed/星の旅 S01E03 [netflix-81234567].txt"}
-    assert library.waits_for(item) == "browser" and online.is_online(item)
-    assert anki_miner.mines("browser") is False and anki_miner.mines_now("browser") is False
-    assert runner.WAIT_REASONS["browser"] == runner.BROWSER_WAIT
-    assert "browser extension" in runner.BROWSER_WAIT and "No video" not in runner.BROWSER_WAIT
+# --- v2: mining after the fact (`app/connect/browser.py`, `runner._browser_clips`) ----------------------------------- #
+CUES = [(700.0, 703.5, "雨の日の散歩で見つけた"), (705.29, 708.84, "小さな発見を話そう"), (709.0, 711.0, "朝ごはんを五分で作る"),
+        (912.0, 915.5, "古本屋めぐりは楽しい")]
+WEB = {"site": "netflix", "url": "https://www.netflix.com/watch/81234567", "video_id": "81234567"}
 
 
-def test_a_download_of_a_browser_site_is_refused_before_anything_is_asked():
-    """`Steps.download` (Anki Miner's fetch) is never reached for these: a Skip with the wait's words, before the
-    YouTube tick or Anki Miner are looked at."""
+def _words():
+    """Two words on 小さな発見を話そう (one card each, the same line), one on 古本屋めぐり expanded to the line before."""
+    return [{"word": "発見", "reading": "はっけん", "line_start": 705.29, "line_expansion": [0, 0]},
+            {"word": "話す", "reading": "はなす", "line_start": 705.29, "line_expansion": [0, 0]},
+            {"word": "古本屋", "reading": "ふるほんや", "line_start": 912.0, "line_expansion": [1, 0]}]
+
+
+def _handed(root, job=412):
+    from app.connect import browser
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(job, WEB, "雲の上の郵便屋さん S01E03", lines, root)
+    return lines
+
+
+def test_a_jobs_lines_are_its_words_lines_once_each_widened_as_their_cards_are(tmp_path):
+    from app.connect import browser
+    lines = _handed(str(tmp_path))
+    assert [(ln["n"], ln["start"], ln["end"]) for ln in lines] == [(0, 705.29, 708.84), (1, 709.0, 915.5)]
+    assert lines[1]["text"] == "朝ごはんを五分で作る 古本屋めぐりは楽しい"
+    assert browser.state(412, str(tmp_path)) == "waiting"
+
+
+def test_the_listener_lists_the_waiting_lines_takes_clips_whole_and_404s_what_doesnt_wait(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    _handed(root)
+    receiver = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0, clips=root)
+    assert receiver.start()
+    try:
+        assert _ask(receiver, "GET", "/v1/jobs")[0] == 401, "the token, as v1"
+        token = {rx.TOKEN_HEADER: TOKEN}
+        code, got, _h = _ask(receiver, "GET", "/v1/jobs", headers=token)
+        assert code == 200 and [j["job"] for j in got["jobs"]] == [412]
+        assert got["jobs"][0]["lines"] == [{"n": 0, "start": 705.29, "end": 708.84},
+                                           {"n": 1, "start": 709.0, "end": 915.5}]
+        assert got["jobs"][0]["pad_before"] == 1.0 and got["jobs"][0]["url"] == WEB["url"]
+        clip = dict(token, **{"Content-Type": "video/webm", "X-Clip-Start": "704.29", "X-Clip-End": "709.84"})
+        page = dict(clip, Origin="https://www.netflix.com")
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/0", b"webm", page)[0] == 403, "never a web page"
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/0", b"\x1aE\xdf\xa3webm", clip)[0] == 200
+        assert not [p for p in os.listdir(os.path.join(root, "b412")) if p.endswith(".part")], "renamed whole"
+        assert [ln["n"] for ln in _ask(receiver, "GET", "/v1/jobs", headers=token)[1]["jobs"][0]["lines"]] == [1]
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/7", b"webm", clip)[0] == 404, "no such line"
+        assert _ask(receiver, "POST", "/v1/jobs/999/clips/0", b"webm", clip)[0] == 404, "no such job"
+        bad = dict(clip, **{"X-Clip-Start": "abc"})
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/1", b"webm", bad)[0] == 400
+        monkeypatch.setattr(rx, "MAX_CLIP", 8)
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/1", b"x" * 64, clip)[0] == 413
+        done = dict(token, **{"Content-Type": "application/json"})
+        assert _ask(receiver, "POST", "/v1/jobs/412/done", {"failed": [{"n": 1, "why": "seek failed"}]}, done)[0] == 200
+        assert _ask(receiver, "GET", "/v1/jobs", headers=token)[1]["jobs"] == [], "done: no longer listed"
+        assert _ask(receiver, "POST", "/v1/jobs/412/clips/1", b"webm", clip)[0] == 404, "a clip after done"
+        assert _ask(receiver, "POST", "/v1/jobs/412/done", {"failed": []}, done)[0] == 404
+    finally:
+        receiver.stop()
+
+
+class _Ledger:
+    def __init__(self):
+        self.needs, self.states = [], []
+
+    def need(self, lang, kind, say, item_id=None, job_id=None, **_kw):
+        self.needs.append((kind, say))
+        return True
+
+    def set_state(self, jid, state, **kw):
+        self.states.append((state, kw))
+
+
+class _Steps:
+    def title(self, lang, job):
+        return "雲の上の郵便屋さん"
+
+
+def _picked(srt):
+    return {"online": "netflix", "url": WEB["url"], "video": srt, "words": _words(),
+            "names": ["Processed", "雲の上の郵便屋さん S01E03 [netflix-81234567]"]}
+
+
+def _srt():
+    from app.connect import browser
+    here = browser.place(412)
+    os.makedirs(here, exist_ok=True)
+    path = os.path.join(here, browser.SUBTITLE)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(browser.srt_of(CUES))
+    return path
+
+
+def test_connect_hands_the_lines_off_and_waits_for_the_browser_with_plain_words():
+    from app.connect import browser, runner
+    ledger, job = _Ledger(), {"id": 412, "item_id": 7}
+    with pytest.raises(runner.Wait) as w:
+        runner._browser_clips(_Steps(), ledger, "ja", job, _picked(_srt()))
+    assert w.value.reason == runner.BROWSER_WAIT and w.value.resume == "mining" and w.value.look
+    handed = browser.waiting()
+    assert handed[0]["job"] == 412 and handed[0]["video_id"] == "81234567"
+    assert handed[0]["title"] == "雲の上の郵便屋さん S01E03"
+    with pytest.raises(runner.Wait):            # looked at again: still waiting, nothing handed twice
+        runner._browser_clips(_Steps(), ledger, "ja", job, _picked(_srt()))
+    assert not ledger.needs
+
+
+def test_once_done_each_clip_is_a_video_of_its_own_and_a_lost_line_is_said_plainly():
+    from app.connect import browser, runner
+    ledger, job = _Ledger(), {"id": 412, "item_id": 7}
+    picked = _picked(_srt())
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert browser.keep_clip(412, 0, b"\x1aE\xdf\xa3", 704.29, 709.84)
+    assert browser.finish(412, [{"n": 1, "why": "seek failed"}])
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert [w["word"] for w in got["words"]] == ["発見", "話す"] and {w["clip"] for w in got["words"]} == {0}
+    clip = got["clips"]["0"]
+    assert clip["shift"] == 704.29 and clip["video"].endswith("clip-0.webm")
+    assert browser.read_srt(clip["subtitle"]) == [(1.0, 4.55, "小さな発見を話そう"), (4.71, 5.55, "朝ごはんを五分で作る")], \
+        "its lines in clip time"
+    (kind, say), = ledger.needs
+    assert kind == runner.BROWSER_LINE
+    assert say == "雲の上の郵便屋さん: the line at 11:49 (「朝ごはんを五分で作る 古本屋めぐりは楽しい」) wasn't recorded in " \
+                  "the browser (seek failed). Mine it to ask again."
+
+
+def test_no_clip_at_all_ends_the_job_with_words_to_ask_again():
+    from app.connect import browser, runner
+    ledger, job = _Ledger(), {"id": 412, "item_id": 7}
+    picked = _picked(_srt())
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    browser.finish(412, [{"n": 0, "why": "the tab was closed"}, {"n": 1, "why": "the tab was closed"}])
+    with pytest.raises(runner._Finished):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked, record=False)
+    assert ledger.states[-1][0] == "skipped" and ledger.states[-1][1]["reason"] == runner.BROWSER_NONE
+    assert len(ledger.needs) == 2 and not os.path.exists(browser.place(412)), "its folder gone"
+
+
+def test_anki_miner_gets_one_episode_a_clip_with_the_lines_start_in_clip_time(monkeypatch):
+    """`Steps.mine`: a run a clip — its webm as the video, its own .srt, offset 0, the words' line start moved into clip
+    time; the cards' Source still names the transcript (`names`). The outcomes come back by word."""
     from app.connect import runner
+    sent = []
+
+    def one(self, lang, job, picked, words, attempt):
+        sent.append((picked["video"], picked["subtitle"], picked["offset"], picked["names"],
+                     [(w["word"], w["line_start"]) for w in words]))
+        return {"outcomes": [dict(w, outcome="made") for w in words], "app": "3.12.0", "doubt": False}
+    monkeypatch.setattr(runner.Steps, "_mine_one", one)
+    words = [dict(w, clip=0) for w in _words()[:2]] + [dict(_words()[2], clip=1)]
+    picked = {"names": ["Processed", "雲の上の郵便屋さん S01E03 [netflix-81234567]"], "words": words,
+              "clips": {"0": {"video": "c0.webm", "subtitle": "c0.srt", "shift": 704.29},
+                        "1": {"video": "c1.webm", "subtitle": "c1.srt", "shift": 708.0}}}
+    got = runner.Steps.mine(runner.Steps.__new__(runner.Steps), "ja", {"id": 412}, picked, words, 1)
+    assert sent == [("c0.webm", "c0.srt", 0.0, picked["names"], [("発見", 1.0), ("話す", 1.0)]),
+                    ("c1.webm", "c1.srt", 0.0, picked["names"], [("古本屋", 204.0)])]
+    assert [o["outcome"] for o in got["outcomes"]] == ["made"] * 3
+
+
+def test_a_netflix_episode_is_picked_from_its_own_cues_never_downloaded(library):
+    """`Steps.download` for Netflix / Disney+: no fetch, no YouTube tick — the transcript's cues as the subtitle the
+    words are picked from (its sidecar's start and end)."""
+    from app.connect import browser, runner
+    store, writer, language = library
+    _added, item = rx.take_in(writer, rx.subtitle(json.dumps(_sub(language)).encode()))
     steps = runner.Steps.__new__(runner.Steps)
     steps._settings = lambda lang: pytest.fail("nothing is read for a browser site")
-    with pytest.raises(runner.Skip) as e:
-        steps.download("ja", {"id": 1}, {"site": "disneyplus", "url": "https://www.disneyplus.com/video/x"})
-    assert e.value.why == runner.BROWSER_WAIT
+    steps._open = lambda lang: ls.open_store(lang, *roots(lang))
+    srt, again = steps.download(language, {"id": 9, "item_id": item}, {"site": "netflix", "url": WEB["url"]})
+    assert srt == again and browser.read_srt(srt)[0] == (12.34, 15.02, f"{names(language)[3]}{names(language)[4]}")

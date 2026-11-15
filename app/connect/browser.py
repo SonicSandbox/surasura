@@ -1,0 +1,242 @@
+"""Netflix and Disney+ mined after the fact (the browser extension's contract v2): Connect never downloads these videos
+(DRM), so the lines a job picked are recorded in the learner's own browser tab, one short clip each, and each clip is
+given to Anki Miner as any video is.
+
+Two processes share one folder, and nothing else: Connect (its own process) and the window's listener
+(`app/online_receiver.py`). The job's folder is `<connect>/browser/b<job>/` — never the library, never swept with the
+fetched YouTube videos (`online.sweep`: a recording outlives a Connect restart):
+
+- `subtitle.srt` — the episode's cues from the library's transcript sidecar (`srt_of`), the file the words are picked
+  from (Connect, at the pick: `Steps.download`).
+- `lines.json` — the hand-off (Connect, once the words are picked: `hand_off`): the job's site, page and title and each
+  line to record, {"n", "start", "end", "text"} in video seconds (a word's line with the lines its card expands to).
+- `clip-<n>.webm` and `clip-<n>.json` {"start", "end"} — each recorded clip and the video time of its first and last
+  frame (the listener: `keep_clip`, written whole under `.part` and renamed).
+- `done.json` {"failed": [{"n", "why"}]} — the extension recorded what it could (the listener: `finish`).
+
+Connect looks at the folder at each look (`state`): no `done.json` yet → its job waits (`runner.BROWSER_WAIT`); done
+→ each clip gets a one-cue-per-line `.srt` of its own (`clip_subtitle`: the lines it holds in clip time) and its words
+go to Anki Miner with their line's start in clip time (`runner.Steps.mine`); the folder goes once the cards are made
+(`drop`). Standard library only; no Qt.
+"""
+import json
+import os
+import re
+import shutil
+
+FOLDER = "browser"
+PAD_BEFORE, PAD_AFTER = 1.0, 1.0        # seconds the extension records before and after a line (the contract's pads)
+LINES, DONE, SUBTITLE = "lines.json", "done.json", "subtitle.srt"
+_N = re.compile(r"\d{1,5}")
+
+
+def folder():
+    """<local data>/connect/browser — every job waiting for (or holding) the browser's clips."""
+    from app.cli.verbs import _connect_folder
+    return os.path.join(_connect_folder(), FOLDER)
+
+
+def place(job_id, root=None):
+    return os.path.join(root or folder(), f"b{int(job_id)}")
+
+
+def _write_json(path, data):
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+# --- the subtitle ---------------------------------------------------------------------------------------------------- #
+def _stamp(seconds):
+    ms = max(0, int(round(seconds * 1000)))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def srt_of(cues):
+    """[(start, end, text), …] -> an .srt's text."""
+    return "".join(f"{n}\n{_stamp(s)} --> {_stamp(e)}\n{t}\n\n" for n, (s, e, t) in enumerate(cues, 1))
+
+
+def sidecar_cues(transcript):
+    """The cues the browser extension sent, from the transcript's sidecar ([text, start, end] each) -> [(start, end,
+    text)]; [] when it has none (a transcript from before v1 kept no ends)."""
+    from app.path_utils import SIDECAR_SUFFIX
+    side = _read_json(os.path.splitext(transcript)[0] + SIDECAR_SUFFIX) or {}
+    out = []
+    for cue in side.get("cues") or ():
+        if isinstance(cue, list) and len(cue) == 3 and isinstance(cue[0], str):
+            try:
+                out.append((float(cue[1]), float(cue[2]), cue[0]))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def subtitle(job_id, transcript, root=None):
+    """The episode's `subtitle.srt` in the job's folder (written again each time: the library's transcript is the
+    truth) -> its path, or None when its sidecar holds no timed cues."""
+    cues = sidecar_cues(transcript)
+    if not cues:
+        return None
+    here = place(job_id, root)
+    os.makedirs(here, exist_ok=True)
+    path = os.path.join(here, SUBTITLE)
+    with open(path + ".part", "w", encoding="utf-8", newline="\n") as f:
+        f.write(srt_of(cues))
+    os.replace(path + ".part", path)
+    return path
+
+
+def read_srt(path):
+    """An .srt this module wrote -> [(start, end, text)]."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            blocks = f.read().strip().split("\n\n")
+    except OSError:
+        return []
+
+    def sec(stamp):
+        h, m, rest = stamp.split(":")
+        s, ms = rest.split(",")
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+    out = []
+    for block in blocks:
+        lines = block.split("\n")
+        if len(lines) >= 3 and " --> " in lines[1]:
+            a, b = lines[1].split(" --> ")
+            out.append((sec(a), sec(b), "\n".join(lines[2:])))
+    return out
+
+
+# --- Connect's side: the hand-off ------------------------------------------------------------------------------------ #
+def lines_for(words, cues):
+    """Each picked word's line (its `line_start`, widened by its `line_expansion` [before, after] to the lines its card
+    holds) -> ([{"n", "start", "end", "text"}], {(line_start, before, after): n}); one line for words that share one."""
+    starts = [c[0] for c in cues]
+    out, index = [], {}
+    for w in words:
+        key = (float(w["line_start"]), *(int(x) for x in (w.get("line_expansion") or (0, 0))))
+        if key in index or not cues:
+            continue
+        at = min(range(len(starts)), key=lambda i: abs(starts[i] - key[0]))
+        first, last = max(0, at - key[1]), min(len(cues) - 1, at + key[2])
+        index[key] = len(out)
+        out.append({"n": len(out), "start": cues[first][0], "end": cues[last][1],
+                    "text": " ".join(c[2] for c in cues[first:last + 1])})
+    return out, index
+
+
+def line_key(word):
+    return (float(word["line_start"]), *(int(x) for x in (word.get("line_expansion") or (0, 0))))
+
+
+def hand_off(job_id, web, title, lines, root=None):
+    """`lines.json` for the extension (written once; the same job asks again with what it has)."""
+    here = place(job_id, root)
+    os.makedirs(here, exist_ok=True)
+    path = os.path.join(here, LINES)
+    if not os.path.isfile(path):
+        _write_json(path, {"job": int(job_id), "site": web["site"], "video_id": web.get("video_id") or "",
+                           "url": web.get("url") or "", "title": title, "pad_before": PAD_BEFORE,
+                           "pad_after": PAD_AFTER, "lines": lines})
+    return path
+
+
+def state(job_id, root=None):
+    """None (nothing handed off), "waiting" (no `done.json` yet), or the done dict {"failed": [...]}."""
+    here = place(job_id, root)
+    if not os.path.isfile(os.path.join(here, LINES)):
+        return None
+    done = _read_json(os.path.join(here, DONE))
+    return done if done is not None else "waiting"
+
+
+def clip(job_id, n, root=None):
+    """(clip path, its {"start", "end"}) for line `n`, or None when none arrived."""
+    here = place(job_id, root)
+    video, times = os.path.join(here, f"clip-{n}.webm"), _read_json(os.path.join(here, f"clip-{n}.json"))
+    if not os.path.isfile(video) or not times or not isinstance(times.get("start"), (int, float)):
+        return None
+    return video, times
+
+
+def clip_subtitle(job_id, n, cues, start, end, root=None):
+    """The clip's own .srt (beside it): the cues inside [start, end] in clip time (each cut to the clip) -> its path."""
+    inside = [(max(s, start) - start, min(e, end) - start, t) for s, e, t in cues if e > start and s < end]
+    path = os.path.join(place(job_id, root), f"clip-{n}.srt")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(srt_of(inside))
+    return path
+
+
+def drop(job_id, root=None):
+    """The job's folder gone (its cards made, or the job ended) -> True; none there counts."""
+    shutil.rmtree(place(job_id, root), ignore_errors=True)
+    return not os.path.exists(place(job_id, root))
+
+
+# --- the listener's side --------------------------------------------------------------------------------------------- #
+def waiting(root=None):
+    """`GET /v1/jobs`: every handed-off job not done, oldest first, each with only its lines still missing a clip."""
+    root = root or folder()
+    try:
+        names = [n for n in os.listdir(root) if n.startswith("b") and _N.fullmatch(n[1:])]
+    except OSError:
+        return []
+    out = []
+    for name in sorted(names, key=lambda n: int(n[1:])):
+        here = os.path.join(root, name)
+        if os.path.exists(os.path.join(here, DONE)):
+            continue
+        job = _read_json(os.path.join(here, LINES))
+        if not job:
+            continue
+        missing = [{"n": ln["n"], "start": ln["start"], "end": ln["end"]} for ln in job.get("lines") or ()
+                   if not os.path.isfile(os.path.join(here, f"clip-{ln['n']}.webm"))]
+        out.append({k: job.get(k) for k in ("job", "site", "video_id", "url", "title", "pad_before", "pad_after")}
+                   | {"lines": missing})
+    return out
+
+
+def _open_job(job_id, root):
+    here = place(job_id, root)
+    job = _read_json(os.path.join(here, LINES))
+    if job is None or os.path.exists(os.path.join(here, DONE)):
+        return None, None
+    return here, job
+
+
+def keep_clip(job_id, n, body, start, end, root=None):
+    """A clip for line `n` of a waiting job -> True; False when the job or its line doesn't wait (a 404). Written whole
+    under `.part`, then renamed; its times beside it first."""
+    here, job = _open_job(job_id, root)
+    if job is None or not any(ln.get("n") == n for ln in job.get("lines") or ()):
+        return False
+    video = os.path.join(here, f"clip-{n}.webm")
+    _write_json(os.path.join(here, f"clip-{n}.json"), {"start": float(start), "end": float(end)})
+    with open(video + ".part", "wb") as f:
+        f.write(body)
+    os.replace(video + ".part", video)
+    return True
+
+
+def finish(job_id, failed, root=None):
+    """`done`: the extension recorded what it could -> True; False when the job doesn't wait (a 404)."""
+    here, job = _open_job(job_id, root)
+    if job is None:
+        return False
+    known = {ln.get("n") for ln in job.get("lines") or ()}
+    kept = [{"n": f["n"], "why": str(f.get("why") or "")[:200]} for f in failed
+            if isinstance(f, dict) and f.get("n") in known]
+    _write_json(os.path.join(here, DONE), {"failed": kept})
+    return True

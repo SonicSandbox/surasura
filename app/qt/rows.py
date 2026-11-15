@@ -448,7 +448,6 @@ STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mi
                "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
                "asked": "waiting",                                     # R47: an ask Connect has read
                "books": "waiting",                                     # alpha 4 M1: waits for Anki Miner to read books
-               "browser": "waiting",                                   # Netflix / Disney+: waits for the extension
                "retry": "mine"}                                        # Mattias #5: Anki Miner stopped on it: Try again
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is

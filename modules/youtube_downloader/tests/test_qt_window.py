@@ -258,12 +258,12 @@ def test_a_download_hands_on_only_the_new_files_to_on_complete(main, fake_ytdlp)
     assert main.sets == []                                           # a download writes no setting
 
 
-def test_without_on_complete_the_files_stay_in_processed_and_the_line_says_so(main, fake_ytdlp):
+def test_without_on_complete_the_files_stay_in_the_library_folder_and_the_line_says_so(main, fake_ytdlp):
     w = _downloader(main, ack=True)
     w.links.setPlainText(VIDEO)
     w.download.click()
     assert wait_until(lambda: w.running is None)
-    assert w.status.text() == S.NEW_IN_PROCESSED.format(what=S.new_transcripts(1))
+    assert w.status.text() == S.NEW_KEPT.format(what=S.new_transcripts(1))
 
 
 def test_the_run_is_in_the_log_the_window_opens(main, fake_ytdlp, opened):
@@ -372,11 +372,13 @@ def test_update_yt_dlp_runs_off_the_window(main, monkeypatch):
     assert ran == [False] and w.status.text() == S.FINISHED
 
 
-def test_open_the_processed_folder(main, opened):
+def test_open_the_library_folder(main, opened):
+    """(3.0.12, Kura-PR2) YouTube's videos go into `YouTube/<channel>/`, bilibili.tv's into Processed: ⋯ opens the
+    library folder that holds both, and makes no empty `YouTube` folder."""
     w = _downloader(main)
     w.open_folder.trigger()
     assert wait_until(lambda: opened)
-    assert opened == [os.path.join(get_data_path("ja"), "Processed")]
+    assert opened == [get_data_path("ja")] and not os.path.exists(os.path.join(opened[0], "YouTube"))
 
 
 def test_an_idle_downloader_follows_the_main_windows_language(main):
@@ -924,14 +926,15 @@ def test_the_run_log_is_made_on_the_runs_thread(main, fake_ytdlp, monkeypatch):
 
 
 @pytest.mark.parametrize("n", [1, 2])
-def test_new_transcripts_are_said_to_wait_in_processed(main, fake_ytdlp, n):
-    # IK-32: 3.0 has no Content Manager to send the user to; until W3.2's arrivals, the files wait in Processed.
+def test_new_transcripts_are_said_to_wait_in_the_library_folder(main, fake_ytdlp, n):
+    # IK-32: with no host to hand them to, the files wait where they were written (YouTube's channel folders,
+    # bilibili.tv's Processed: the library folder, 3.0.12).
     w = _downloader(main, ack=True)
     w.links.setPlainText("\n".join([VIDEO, "https://youtu.be/9bZkp7q19f0"][:n]))
     w.download.click()
     assert wait_until(lambda: w.running is None)
-    assert w.status.text() == ("1 new transcript waits in Processed." if n == 1 else
-                               "2 new transcripts wait in Processed.")
+    assert w.status.text() == ("1 new transcript waits in your library folder." if n == 1 else
+                               "2 new transcripts wait in your library folder.")
 
 
 def test_a_later_opener_never_takes_a_running_downloads_files(main, held_extract):

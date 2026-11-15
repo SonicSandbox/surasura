@@ -711,9 +711,9 @@ YT_ARRIVED_WAITING = "{what} in New arrivals"
 YT_ARRIVED_PLACED = "{what} placed by your rules for new arrivals"
 YT_ARRIVED_BOTH = "{waiting} in New arrivals · {placed} placed by your rules"
 YT_ARRIVED_LABEL = "New transcripts"
-YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in Processed"
-YT_NO_LIBRARY = "no library is open: the transcripts wait in Processed"
-YT_OTHER_LIBRARY = "the language changed while they downloaded: the transcripts wait in the other library's Processed"
+YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in your library folder"
+YT_NO_LIBRARY = "no library is open: the transcripts wait in your library folder"
+YT_OTHER_LIBRARY = "the language changed while they downloaded: the transcripts wait in the other library's folder"
 YT_NOT_ADDED = "{what} couldn't be added (gone, or not in your library folder)"
 
 
@@ -1307,7 +1307,7 @@ ANKI_RESTORE_CHANGED = "Your known words changed since you asked; here are the n
 # --- W3.4 row 4: Koe and YouTube — their doors on the Settings tab's list (the windows' own words are each module's
 # qt_strings.py)
 DOOR_TRANSCRIPTS = "Video transcripts"
-DOOR_TRANSCRIPTS_TIP = "Download YouTube and bilibili.tv transcripts into your Processed folder"
+DOOR_TRANSCRIPTS_TIP = "Download YouTube and bilibili.tv transcripts into your library folder"
 DOOR_PREVIEW = "Preview a video"
 DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
 DOOR_SPEECH = "Speech"

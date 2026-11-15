@@ -249,7 +249,9 @@ class PreviewGui(tk.Toplevel):
             if not ytdlp_manager.ensure_available(lambda *_: None):
                 self.q.put(("__ERR__", "Could not get yt-dlp. Check your connection and try again."))
                 return
-            core.extract([target_url], ws, lang=self.lang_name, channel_first=True, log=lambda *_: None)
+            processed = os.path.join(ws, "Processed")            # (YouTube's beside it, in the workspace: 3.0.12)
+            os.makedirs(processed, exist_ok=True)
+            core.extract([target_url], processed, lang=self.lang_name, channel_first=True, log=lambda *_: None)
             txts = sorted(glob.glob(os.path.join(ws, "**", "*.txt"), recursive=True))
             if not txts:
                 if core.site_of(url) == 'bilibili':

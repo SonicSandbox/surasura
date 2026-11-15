@@ -102,6 +102,19 @@ class TestVideoGuard(unittest.TestCase):
                 self.assertTrue(pv.video_in_library("VID12345678", "ja"))
                 self.assertFalse(pv.video_in_library("OTHERID1234", "ja"))
 
+    def test_a_video_in_the_youtube_channel_folders_is_in_the_library(self):
+        # (3.0.12, Kura-PR2) the downloader writes YouTube's videos into `YouTube/<channel>/` (a playlist's inside it)
+        with tempfile.TemporaryDirectory() as d:
+            playlist = os.path.join(d, "YouTube", "ゆる日本語チャンネル", "初級の旅")
+            os.makedirs(playlist)
+            channel = os.path.join(d, "YouTube", "ゆる日本語チャンネル")
+            open(os.path.join(channel, "ゆる日本語 - 第1回 [YTC12345678].txt"), "w", encoding="utf-8").close()
+            open(os.path.join(playlist, "ゆる日本語 - 第2回 [YTP12345678].txt"), "w", encoding="utf-8").close()
+            with patch.object(pv, "get_data_path", return_value=d):
+                self.assertTrue(pv.video_in_library("YTC12345678", "ja"))
+                self.assertTrue(pv.video_in_library("YTP12345678", "ja"))
+                self.assertFalse(pv.video_in_library("OTHERID1234", "ja"))
+
     def test_with_no_content_folder_the_guard_answers_as_before(self):
         # A 2.x-shaped library (every tier folder, no Library): found where it was found, nowhere else.
         with tempfile.TemporaryDirectory() as d:
@@ -373,6 +386,29 @@ class TestCommitToFront(unittest.TestCase):
 
         self.assertEqual(open(manifest_path, "rb").read(), before, "the order must be untouched")
         self.assertFalse(os.path.exists(os.path.join(data_root, "HighPriority", "Chan - Title [VID].txt")))
+
+
+class TestPreviewWorkspace(unittest.TestCase):
+    def test_a_youtube_video_is_fetched_inside_the_workspace(self):
+        # (3.0.12, Kura-PR2; the review's B1) the downloader puts YouTube's videos beside the Processed it is given
+        # (`YouTube/<channel>`): the preview gives it one inside its workspace, so the video is found there and the
+        # workspace's removal takes it — never `%TEMP%\YouTube`
+        from modules.youtube_downloader import downloader as core
+        written = []
+
+        def extract(urls, folder, **_kw):              # the real routing, a fake download
+            for _urls, target in core.plan_buckets([(urls[0], {"id": "dQw4w9WgXcQ", "channel": "ゆる日本語"})],
+                                                   folder):
+                os.makedirs(target, exist_ok=True)
+                written.append(os.path.join(target, "ゆる日本語 - 第1回 [dQw4w9WgXcQ].txt"))
+                with open(written[-1], "w", encoding="utf-8") as f:
+                    f.write("今日は公園で猫を見ました。")
+        with tempfile.TemporaryDirectory() as ws:
+            txts, why = pv.fetch_here("https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ", "ja", ws,
+                                      extract=extract, ensure=lambda log: True)
+            self.assertIsNone(why)
+            self.assertEqual(txts, written)
+            self.assertTrue(os.path.abspath(txts[0]).startswith(os.path.abspath(ws) + os.sep))
 
 
 if __name__ == "__main__":

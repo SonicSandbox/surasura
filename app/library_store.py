@@ -243,11 +243,17 @@ GRADUATED_FOLDER = "Graduated"
 # 3.0's Sources (SRC): every new text copy goes into one content folder of Surasura's own, `Library/<show>/<file>`,
 # whatever its place; grouping only (`_below_tier` strips it), never a place (a place is the store's alone)
 CONTENT_FOLDER = "Library"
-# Surasura's own output folder, `data/<lang>/Processed` (the YouTube downloader's, Extract's, the EPUB importer's): a
-# file directly in it is a loose drop, as one in hato's drop folder (`_below_tier`) — the downloader writes a single
-# video's transcript there, so it is titled by its record's show (the channel), never "Processed" (Kura-PR, based on
-# Mattias's #449). A folder below it (a playlist's, Extract's `Processed/<name>`) is a folder as before
+# Surasura's own output folder, `data/<lang>/Processed` (Extract's, the EPUB importer's; bilibili.tv's downloads, and
+# YouTube's before 3.0.12): a file directly in it is a loose drop, as one in hato's drop folder (`_below_tier`) — the
+# downloader wrote a single video's transcript there, so it is titled by its record's show (the channel), never
+# "Processed" (Kura-PR, based on Mattias's #449). A folder below it (a playlist's, Extract's `Processed/<name>`) is a
+# folder as before
 PROCESSED_FOLDER = "Processed"
+# The YouTube downloader's own folder since 3.0.12 (Kura-PR2, the lead's lean, PROVISIONAL):
+# `YouTube/<channel>/<video>`, a playlist's videos in a folder inside their channel's. Read as the content folder is (`_below_tier` strips it), and
+# a channel folder holds ONE title: everything below it is that channel's (a playlist joins its channel's title, as its
+# record's channel id already made it). Never walked or watched, as `Processed`: the downloader hands its files over
+YOUTUBE_FOLDER = "YouTube"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
@@ -274,6 +280,14 @@ SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
 SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `join_specials` read
+# The commands that put rows back where they were (an Undo, *Put back* from Removed, the sort screen's unsort): New
+# arrivals' gathering (`Store._gather_arrivals`) never moves what they bring back
+PUT_BACK_KINDS = ("undo", "restore", "unsort")
+# … and its read of a title's last item before a new one there: `+tier` keeps it on the title's index (items_work),
+# never a walk back through the tier (a big take-in of one-file titles: each would read every earlier row)
+ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = 'arrivals' AND (ord, id) < (?, ?) "
+                      "ORDER BY ord DESC, id DESC LIMIT 1")
+PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
@@ -322,7 +336,8 @@ TWIN_HASHES = 8                  # hato's file is checked by its bytes against t
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
-            "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side")
+            "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side",
+            "processed_split")
 
 
 class StoreError(Exception):
@@ -402,14 +417,23 @@ def _below_tier(rel):
     as written; '' for a loose file (directly in a tier folder, in hato's drop folder or directly in `PROCESSED_FOLDER`:
     the whole folder compared, so a show folder named `Processed` inside a tier folder stays a show's). The content
     folder counts as one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any
-    case the file system reads as it (as `take_in` and the sync compare it)."""
+    case the file system reads as it (as `take_in` and the sync compare it). The downloader's `YOUTUBE_FOLDER` too,
+    down to its channel folder only (`YouTube/<channel>/<playlist>/x.txt` → '<channel>'; a file directly in it:
+    '')."""
     folder = _rel_dir(_strip(rel))
     if not folder or path_key(folder) in (path_key(HATO_FOLDER), path_key(PROCESSED_FOLDER)):
         return ""
     parts = folder.split("/")
+    if path_key(parts[0]) == path_key(YOUTUBE_FOLDER):        # `YouTube/<channel>/…`: the channel's folder alone
+        return parts[1] if len(parts) > 1 else ""
     if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):
         parts = parts[1:]
     return "/".join(parts)
+
+
+def _in_youtube(rel):
+    """A file in the downloader's `YOUTUBE_FOLDER` (or a folder below it), as the file system compares it."""
+    return path_key(_strip(rel).split("/", 1)[0]) == path_key(YOUTUBE_FOLDER)
 
 
 def _in_hato(rel):
@@ -2783,6 +2807,133 @@ class Store:
                     self._set_meta({SPECIALS_JOINED: cmd.version if ours and since_top <= ours else top})
                     return gone                         # (its own joins never read again; anyone else's are)
 
+    def split_processed(self):
+        """Once a store, in the helper's run (Kura-PR2, Sonic 2026-11-15: the longer-term fix): a title 3.0.10's rule
+        made of the downloader's loose drops — named "Processed" by its folder (key `processed`), never by the learner
+        (`title_by_user`: a renamed one is his) — becomes one title per channel, each video's by its record (its
+        channel id, the channel's name its `show.title`): the old title's id goes to the first channel in the order
+        (New arrivals, Current, Soon, Goal, Finished — each by its rows) that no other title holds, each other channel
+        a new title — or the title already holding that channel's id, when one does. A loose video with no channel
+        (bilibili.tv's, an Add's) gets its own name's title (`_stranded_work`, never the first channel's). Anything else
+        in it (a learner's own show folder named `Processed`: no channel, not loose in `Processed`) keeps the old title,
+        its name and key; the channels' ids and names leave it. A YouTube cover none of its videos is now the old
+        title's goes (fetched again). No item, tier, order, mark, pin, pairing or file touched: only which title each
+        item is (the pieces cut where it changes, as *Not part of this title*). ONE command, its Change undone by
+        `undo` (the works' value check): the single title back, as it was even after the helper's tidy took it empty.
+        The mark (`meta.processed_split`) is set in that command, so the next run finds nothing. -> the Change, or
+        None (nothing to split)."""
+        if self._meta().get(PROCESSED_SPLIT):
+            return None
+        with self._command("split_processed", "sync") as cmd:
+            if self._meta().get(PROCESSED_SPLIT):           # another helper got there first
+                return None
+            self._set_meta({PROCESSED_SPLIT: 1})
+            rank = {t: v[3] for t, v in TIERS.items()}
+            loose_in = path_key(PROCESSED_FOLDER)
+            change = None
+            for (old,) in self.conn.execute("SELECT id FROM works WHERE folder_key = ? AND title_by_user = 0 "
+                                            "ORDER BY id", (loose_in,)).fetchall():
+                rows = self.conn.execute(
+                    f"SELECT i.id, i.rel_path, i.title, i.tier, i.ord, p.pairing FROM items i LEFT JOIN pairings p ON "
+                    f"p.item_id = i.id AND {_PREFERRED_ROW} WHERE i.work_id = ? ORDER BY i.id", (old,)).fetchall()
+                items = {}                                  # {item: [its place, rel, title, channel id, its name]}
+                for item_id, rel, title, tier, order, text in rows:
+                    held = items.setdefault(item_id, [(rank.get(tier, 9), order, item_id), rel, title, None, None])
+                    try:
+                        record = json.loads(text) if text and held[3] is None else None
+                    except ValueError:
+                        record = None
+                    if _work_ids_of(record)["youtube_channel"] is not None:     # (two records: its first with one)
+                        held[3], held[4] = _work_ids_of(record)["youtube_channel"], _show_title(record)
+                channels, stranded, kept = {}, [], []
+                for item_id, (_place, rel, title, cid, name) in sorted(items.items(), key=lambda kv: kv[1][0]):
+                    if cid is not None:
+                        group = channels.setdefault(cid, {"names": [], "items": []})   # in their first video's order
+                        group["items"].append(item_id)
+                        if name and name not in group["names"]:
+                            group["names"].append(name)
+                    elif path_key(_rel_dir(_strip(rel))) == loose_in:
+                        stranded.append((item_id, rel, title))
+                    else:
+                        kept.append(item_id)
+                if not channels and not stranded:
+                    continue
+                w = self._work_row(old)
+                if change is None:
+                    change = self._change(cmd, "split_processed")
+                    change.works = {"rows": [], "items": [], "fields": [], "created": []}
+                change.works["rows"].append(dict(w))     # (emptied, the helper's tidy may take it: Undo puts it back)
+                order = list(channels)
+                holder = {cid: self.conn.execute("SELECT id FROM works WHERE youtube_channel = ? AND id != ? ORDER BY "
+                                                 "id LIMIT 1", (cid, old)).fetchone() for cid in order}
+                # the first channel in the order that no other title holds keeps the old title's id (one held already
+                # joins its holder: one title a channel)
+                mine = None if kept else next((cid for cid in order if holder[cid] is None), None)
+                if mine is not None:
+                    names = channels[mine]["names"] or [mine]
+                    fields = {"title": names[0], "titles": _dumps(names[1:]), "folder_key": None,
+                              "youtube_channel": mine}
+                    stays = set(channels[mine]["items"])
+                else:                                       # the rest keep it, its name and key: the channels leave
+                    gone = {n for g in channels.values() for n in g["names"]}
+                    fields = {"titles": _dumps([t for t in json.loads(w["titles"] or "[]") if t not in gone]),
+                              "youtube_channel": None}
+                    stays = set(kept)
+                if w["cover_source"] == "youtube" and not w["cover_locked"] and not self._cover_video_in(
+                        w["cover_ref"], stays):
+                    fields.update(cover_source=None, cover_ref=None, cover_path=None, cover_fetched_at=None)
+                self._set_work_fields(cmd, change, old, fields)
+                top = self.conn.execute("SELECT MAX(id) FROM works").fetchone()[0] or 0
+                moves = []
+                for cid in order:
+                    if cid == mine:
+                        continue
+                    group = channels[cid]
+                    if holder[cid] is not None:
+                        target = holder[cid][0]
+                    else:
+                        names = group["names"] or [cid]
+                        target = self._new_work(names[0], None, cmd, titles=names[1:])
+                        change.works["created"].append(target)
+                        self._set_work_fields(cmd, change, target, {"youtube_channel": cid,
+                                                                     "media_type": w["media_type"],
+                                                                     "media_type_by": w["media_type_by"]})
+                    moves += [(i, target) for i in group["items"]]
+                cache, own = {}, {}
+                for item_id, rel, title in stranded:
+                    target = self._stranded_work(rel, title, cmd, cache)
+                    if target == old:                       # (its name read as the first channel's: its own title)
+                        name = show_of_name(rel.rsplit("/", 1)[-1]) or title or rel.rsplit("/", 1)[-1]
+                        if name not in own:
+                            own[name] = self._new_work(name, None, cmd)
+                        target = own[name]
+                    if target > top and target not in change.works["created"]:
+                        change.works["created"].append(target)
+                    moves.append((item_id, target))
+                if moves:
+                    self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(t, i) for i, t in moves])
+                    change.works["items"] += [(i, old, t) for i, t in moves]
+                    cmd.reworked.update(i for i, _t in moves)
+                    cmd.feed(i for i, _t in moves)
+                cmd.fed_works.add(old)
+                cmd.touch()
+            return change
+
+    def _cover_video_in(self, video_id, item_ids):
+        """`split_processed`'s: is `video_id` (a YouTube cover's `cover_ref`) one of these items' videos (a record's
+        `video_id`)?"""
+        if not video_id or not item_ids:
+            return False
+        for chunk in _chunks(sorted(item_ids), 500):
+            for (text,) in self.conn.execute(f"SELECT pairing FROM pairings WHERE item_id IN "
+                                             f"({','.join('?' * len(chunk))})", chunk):
+                try:
+                    if (json.loads(text) or {}).get("video_id") == video_id:
+                        return True
+                except (ValueError, AttributeError):
+                    continue
+        return False
+
     def _specials_home_of(self, wid):
         """`join_specials`' title for the specials title `wid`, as it is now: the title of the folder its folder sits
         in, found as a new file of it would find it (`_specials_work`, from one of its files in that folder), or None
@@ -3673,6 +3824,13 @@ class Store:
                         change.excluded_key = key          # N1: its Undo takes the exclusion back too
                         cmd.touch()
             elif row is None:
+                fk = folder_key_of(rel)
+                if fk is not None and _in_youtube(rel) and _show_title(pairing) and \
+                        self._work_by_record(pairing) is None and \
+                        self.conn.execute("SELECT 1 FROM works WHERE folder_key = ?", (fk,)).fetchone() is None:
+                    # Kura-PR2: a channel's first video — its folder's title named by the channel (the record), never
+                    # by its folder's safe spelling (`ハチ: 公式` is the folder `ハチ 公式`: kept among its titles)
+                    self._new_work(_show_title(pairing), fk, cmd, titles=(_below_tier(rel),))
                 # Mado-Q: a playlist's video goes in its list's order among its title's videos of that list
                 spot = self._series_spot(pairing, ("arrivals",) if meta.get("arrivals_on") else CURRENT)
                 if spot is not None:
@@ -3685,7 +3843,7 @@ class Store:
                                        "register", by, 0)
                 item_id = change.added[0]
                 work = self._work_by_record(pairing)            # the record names its title first (K81)
-                if work is None and _show_title(pairing) and folder_key_of(rel) is None:
+                if work is None and _show_title(pairing) and fk is None:
                     work = self._new_work(_show_title(pairing), None, cmd)     # a loose drop: titled by its show
                 if work is not None:
                     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
@@ -3899,8 +4057,44 @@ class Store:
             self._tidy_asks()
         if cmd.line_set or cmd.tiers & set(CURRENT) or (cmd.bump_order and self._side_on()):
             self._keep_line(cmd)            # (Kyou-A: a mark that moves what counts can change the two titles)
+        if "arrivals" in cmd.tiers:
+            self._gather_arrivals(cmd)
         self._fix_pieces(cmd)
         self._write_feed(cmd)
+
+    def _gather_arrivals(self, cmd):
+        """A title's new arrival joins its row (Kura-PR2, 3.0.12; based on the diagnosis in #466 by Mattias): New
+        arrivals draws a row per piece, and a new item joins only the piece of its own title it lands beside
+        (`_fix_pieces`) — so a channel's video registered after another channel's came in at the tier's end, a row of
+        its own. Each item this command BROUGHT into New arrivals (a new row: no piece yet, no Undo's hint; never in a
+        command that puts rows back where they were — an Undo, *Put back*, the sort screen's unsort:
+        `PUT_BACK_KINDS`), in the order they came, that doesn't already follow its own title's item there lands right
+        after its title's last item before it (`_put`: a local re-space when the gap is spent), and `_fix_pieces` joins
+        it to that row. Never an item moved there or put back by an Undo (where it stands is the learner's), never
+        Current or Soon; the tray keeps its rows newest first by `added_at`, which the item keeps. A title with nothing
+        earlier there: where it came. Before `_fix_pieces`, after the works are settled (`_settle`)."""
+        if cmd.kind in PUT_BACK_KINDS:
+            return
+        new = [i for i in cmd.moved if i not in cmd.hints]
+        rows = []
+        for chunk in _chunks(new, 500):
+            rows += self.conn.execute(f"SELECT id, ord, work_id FROM items WHERE tier = 'arrivals' AND piece_id IS "
+                                      f"NULL AND work_id IS NOT NULL AND id IN ({','.join('?' * len(chunk))})",
+                                      chunk).fetchall()
+        brought = {r[0] for r in rows}
+        for item_id, _ord, work in sorted(rows, key=lambda r: (r[1], r[0])):
+            at = self._key(item_id)                 # (as it is now: an earlier one's re-space may have moved it)
+            above = self._beyond("arrivals", at, (), -1, 1)
+            if not above:
+                continue                            # first in the tier
+            below = self._beyond("arrivals", at, brought, 1, 1)     # (a row there already: never one brought too)
+            if any(self.conn.execute("SELECT work_id FROM items WHERE id = ?", (n[0][0],)).fetchone()[0] == work
+                   for n in (above, below) if n):
+                continue                            # beside its own title already (placed before its row: episode
+                                                    # order, a playlist's: it joins that row where it is)
+            anchor = self.conn.execute(ARRIVAL_ANCHOR_SQL, (work, at[1], at[0])).fetchone()
+            if anchor is not None:
+                self._put("arrivals", [item_id], ("after", anchor[0]), cmd.version, anchor=tuple(anchor), in_tier=True)
 
     def _new_work(self, title, fk, cmd, titles=()):
         titles = [t for t in titles if t and t != title]
@@ -8439,6 +8633,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.join_specials()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"join_specials failed: {type(exc).__name__}: {exc}")
+        try:
+            did = bool(store.split_processed()) or did
+        except Exception as exc:                # as above: the next run tries again
+            _log(db_path, f"split_processed failed: {type(exc).__name__}: {exc}")
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:

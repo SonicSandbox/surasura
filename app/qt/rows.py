@@ -798,6 +798,9 @@ def paint_mark(p, mark, right, y_mid, dpr=1.0, audio=False):
 PCT_INK = {"ok": "ok", "warn": "warn", "plain": "ink"}  # `view_rows.pct_tone` -> its ink (the brief's bands, ✅)
 
 
+NEW_PART = "new"                                     # Hover-W: a row's *N new* — its word card (`words_*` signals)
+
+
 FADED_ALPHA = 0.45                                       # U-1: a kept *N new* (the last plan's), drawn at this much
 
 
@@ -1564,6 +1567,8 @@ class RowDelegate(QStyledItemDelegate):
                 if name == "play" and pl is not None and not pl.can_play:
                     continue                             # row 55: nothing to open, no ▶ (its column stays: IK-6)
                 out.append((name, r, tip, pl))
+            if payload.n_new is not None:            # --- Hover-W: the row's *N new* (the % beside it too) shows its words
+                out.append((NEW_PART, g["diff"], None, None))
             out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
             if not is_open and self._sheet_there() and not view_rows.audio_only(payload):  # L4: a stone is hit
@@ -1768,6 +1773,8 @@ class RowDelegate(QStyledItemDelegate):
                                                               cols["stat"].center().y() - size.height() // 2,
                                                               size.width(), size.height()),
                                              ep.media_word or row.media_word))       # LM11b G1: its own type's word
+            if ep.n_new is not None and not hero:   # --- Hover-W: the episode's *N new* shows its words
+                out.append((NEW_PART, cols["diff"], None, ep))
             state = stone_state(ep)
             out.append(("stone", cols["tick"], stone_tip(
                 ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
@@ -3208,12 +3215,18 @@ class RowsView(QListView):
     # --- end P4.1 L2
     stop_requested = pyqtSignal(object, object)    # --- R47: (the Row, the Ask: its file, its job) a Mining pill's Stop
     check_requested = pyqtSignal(object, object)   # --- Michi-NT: (the Row, the Ask: its files) *Not timed*'s Check again
+    # --- Hover-W: a row's *N new* (an opened episode's, Up Next's *N new words ↗*) — (the Row, the Episode or None, its
+    # rect in the viewport): the pointer rests on it / a click keeps its card open; words_left: the pointer left it
+    words_hover = pyqtSignal(object, object, object)
+    words_keep = pyqtSignal(object, object, object)
+    words_left = pyqtSignal()
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
         self.setObjectName("rows")
         self.setAccessibleName(name)
         self.tooltips = tooltips
+        self._words_at = None                        # Hover-W: the *N new* the pointer rests on (its card asked)
         self.setModel(RowsModel(self))
         self.delegate = RowDelegate(self)
         self.delegate.step = whole_step(self.viewport().devicePixelRatioF() or 1.0)     # (`_follow_ratio` after)
@@ -4483,18 +4496,48 @@ class RowsView(QListView):
         from PyQt6.QtCore import QEvent
         if event.type() == QEvent.Type.DevicePixelRatioChange:
             self._follow_ratio()
+        if event.type() in (QEvent.Type.Wheel, QEvent.Type.Leave) and self._words_at is not None:
+            self._words_at = None                    # --- Hover-W: a scroll takes the hover card away (as the bubble)
+            self.words_left.emit()
         if event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate):
             # QAbstractItemView repaints its whole viewport here, yet no row paints the window's active state:
             # nothing visible changes (S19; review D-5). The focus ring follows focus in / out (`focusInEvent`).
             return True
         if event.type() == QEvent.Type.ToolTip:
             idx, part = self.part_at(event.pos())
+            if part is not None and idx.isValid() and self._words_part(idx, part):
+                if self.tooltips is not None:
+                    self.tooltips.hide()
+                self._words_at = QRect(part[1])
+                self.words_hover.emit(self.model().entries[idx.row()][1], part[3], QRect(part[1]))
+                return True
             if part is not None and part[2] and self.tooltips is not None:
                 self.tooltips.request(self.viewport(), part[1], part[2])
             elif self.tooltips is not None:
                 self.tooltips.hide()
             return True
         return super().viewportEvent(event)
+
+    def words_rect(self, key):
+        """Hover-W: the rect (in the viewport) of the row `key`'s *N new*, or None when it isn't on screen."""
+        model = self.model()
+        for i, entry in enumerate(model.entries):
+            if getattr(entry[1], "key", None) == key and entry[0] == ROW:
+                rect = self.visualRect(model.index(i, 0))
+                if not rect.intersects(self.viewport().rect()):
+                    return None
+                for part in self.delegate.parts(entry, rect):
+                    if part[0] == NEW_PART:
+                        return QRect(part[1])
+        return None
+
+    def _words_part(self, idx, part):
+        """Hover-W: whether `part` shows a word card — a row's or an opened episode's *N new*, or Up Next's *N new
+        words ↗* (its next episode's: its click still opens the journey)."""
+        if part[0] == NEW_PART:
+            return True
+        return (part[0] == "journey" and self.model().entries[idx.row()][0] == HERO and part[3] is not None
+                and getattr(part[3], "n_new", None) is not None)
 
     def mouseMoveEvent(self, event):
         press = self._press
@@ -4521,6 +4564,9 @@ class RowsView(QListView):
         self._q8_hover(at, part)                     # --- W3.2 Q8: the ✂ seam, the episode the hand is on
         if self.tooltips is not None:
             self.tooltips.hide_part_unless(self.viewport(), event.pos())
+        if self._words_at is not None and not self._words_at.contains(event.pos()):
+            self._words_at = None                    # --- Hover-W: the pointer left *N new*
+            self.words_left.emit()
         super().mouseMoveEvent(event)
 
     def _set_line_hover(self, hot):
@@ -4664,6 +4710,8 @@ class RowsView(QListView):
             self.episode_menu_requested.emit(row, payload, self.viewport().mapToGlobal(rect.bottomLeft()))
         elif name == "journey":
             self.journey_requested.emit(row, payload)
+        elif name == NEW_PART:                       # --- Hover-W: a click keeps the word card open
+            self.words_keep.emit(row, payload, QRect(rect))
         elif name == "top-line":                     # --- P4.1 L2 (row 4.1.14): the top-20 line opens its setting
             self.line_requested.emit("top")
         elif name == "put-back":                     # --- W3.2 Q4

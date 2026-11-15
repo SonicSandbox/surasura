@@ -13,6 +13,11 @@ tracks/window/reviews/hover-w-mock-2026-11-14.html, hover-w-register.md.
   title on one line under the words, the word in the accent, and the part it is from; a click keeps it there. A word
   with none shows nothing.
 - **Waiting to update**: while the rows' figures are faded (the last plan's), a band in the head says so.
+- **Known / Ignore** (Kotoba-K, the lead's draft for Sonic; leans PROVISIONAL): kept open, a new word's hover shows a
+  small ✓ and ⊘ under it (a word's own click stays its sentence, Hover-W); a click marks it (`word_marks`: Known — you
+  know it; Ignore — not a word to learn), a second click on the lit one clears it. A marked word stays in place,
+  dimmed, with its mark after it, until the card closes; the counts follow as the numbers do (no Generate first).
+  *I know all of these* in the foot marks the title's every *New here* word known, then reads *Undo* for that one batch.
 
 Built once per window (`R5`: an open sets words, makes no widget); every colour a theme token; nothing decided here.
 """
@@ -21,7 +26,7 @@ from PyQt6.QtGui import QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QPushButton, QScrollArea, QToolButton, QWidget
 
 from app import theme
-from app.qt import motion, shadow, strings, style, tooltip
+from app.qt import motion, press, shadow, strings, style, tooltip
 from app.qt.rows import TEXT, c, faded, fz
 
 GRID_COLS, GRID_ROWS = 3, 4                    # the hover's New here: three across, four down (lean 2)
@@ -31,6 +36,9 @@ PAD_X, PAD_Y = 14, 11
 WORD_ROLE, HEAD_ROLE = "episode-label", "eyebrow"
 GRACE_MS = 220                                 # the pointer may cross from *N new* to the card (or back) this long
 FADED = 0.6                                    # Waiting to update: the numbers and words dim, still readable
+MARKED_INK = 0.38                              # a word marked Known / Ignore: dimmed, still readable, its mark after it
+MARK_CELL = 21                                 # the ✓ / ⊘ pair under a hovered word: each cell's side (× text size)
+MARKS = ("known", "ignore")
 
 
 class _Item:
@@ -77,17 +85,30 @@ class _Sheet(QWidget):
         rule = c("line-hi")
         for y in self.bands:
             p.fillRect(QRect(0, y, self.width(), 1), rule)
+        marked = self.card.marked
         for it in self.items:
             ink = it.ink
             if stale and it.word is not None:
                 ink = faded_q(ink, FADED)
+            mark = marked.get(getattr(it.word, "word", None)) if it.word is not None and markable(it.word) else None
+            if mark is not None:
+                ink = faded_q(ink, MARKED_INK)
             TEXT.draw(p, it.rect.left(), it.y_mid, it.text, it.role, it.rect.width() + 2, ink, weight=it.weight,
                       elide=False)
+            if mark is not None:
+                glyph = strings.WORDS_MARK_GLYPH[mark]
+                TEXT.draw(p, it.rect.right() + round(3 * fz()), it.y_mid, glyph, "badge",
+                          _adv(glyph, "badge") + 2, c("accent") if mark == "known" else c("overlay-ink-dim"),
+                          elide=False)
             if it.more is not None and it is self.card.hot_more:
                 p.fillRect(QRect(it.rect.left(), it.rect.bottom() - 1, it.rect.width(), 1), c("accent"))
+        self.card.paint_pair(p)
         p.end()
 
     def item_at(self, pos):
+        pair = self.card.pair_at(pos)
+        if pair is not None:
+            return pair
         for it in self.items:
             if (it.word is not None or it.more is not None) and it.rect.adjusted(-3, -2, 3, 2).contains(pos):
                 return it
@@ -115,6 +136,20 @@ def faded_q(q, alpha):
     return out
 
 
+def markable(word):
+    """A word the card can mark: a list word of New here or Learned on the way (`title_words.CardWord`), never one of
+    Anki's (its card says what it is)."""
+    return hasattr(word, "label") and hasattr(word, "reading")
+
+
+class _Pair:
+    """The ✓ / ⊘ cell under the pointer: what `_Sheet.item_at` answers on it (the word it marks, which mark)."""
+    __slots__ = ("item", "mark", "rect", "word", "more")
+
+    def __init__(self, item, mark, rect):
+        self.item, self.mark, self.rect, self.word, self.more = item, mark, rect, item.word, None
+
+
 class _Away(QObject):
     """A press outside the kept card closes it, as Esc does; the press goes on to what it was on."""
 
@@ -135,6 +170,7 @@ class WordPeek(motion.Overlay):
     how = "pop"
     shadow_name = "menu"
     journey_asked = pyqtSignal(object)         # the card's `episode`: *Open in the journey ↗*
+    mark_asked = pyqtSignal(object)            # Kotoba-K: [(word, mark, before)] — a ✓ / ⊘ click (None: cleared)
     sentences_wanted = pyqtSignal(object)      # the kept card's key: its words' sentences, once
     pointer_in = pyqtSignal(bool)              # (hover) the pointer came onto the card / left it
 
@@ -150,6 +186,9 @@ class WordPeek(motion.Overlay):
         self._sentences_key = None             # the card whose sentences were asked (once a card)
         self.hot_word = self.picked_word = None
         self.hot_more = None
+        self.marked = {}                       # Kotoba-K: {word: "known" | "ignore"} marked on this card while open
+        self.hot_item = None                   # the kept card's hovered markable word (its ✓ / ⊘ under it)
+        self.hot_pair = None                   # ... and the cell under the pointer
         self.anchor = QRect()
         self.head_h = 0
         self.sheet = _Sheet(self)
@@ -174,6 +213,13 @@ class WordPeek(motion.Overlay):
         self.journey.setToolTip(strings.WORDS_JOURNEY_TIP)
         self.journey.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.journey.clicked.connect(lambda _c=False: self.journey_asked.emit(self.card.episode if self.card else None))
+        self.all_known = press.room(QPushButton(strings.WORDS_ALL_KNOWN, self))   # Kotoba-K: the host connects it
+        self.all_known.setObjectName("wordpeekallknown")
+        self.all_known.setToolTip(strings.WORDS_ALL_KNOWN_TIP)
+        self.all_known.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.all_known.hide()
+        self.all_done = None                   # the words *I know all of these* marked (its Undo shows), or None
+        self.all_undo_id = None                # ... and its write's undo id
         self.marks = []
         for i in range(3):
             mark = tooltip.AboutMark(strings.WORDS_HELP_MARK, self.sheet)
@@ -195,6 +241,7 @@ class WordPeek(motion.Overlay):
             self.sentences, self.hot_word, self.picked_word, self.hot_more = None, None, None, None
             self._sentences_key = None
             self.card = None
+            self.marked, self.all_done = {}, None
         if card is not None:
             self.card = card
         self.kept = bool(kept) or (same and self.kept and self.isVisible())
@@ -206,6 +253,9 @@ class WordPeek(motion.Overlay):
     def set_card(self, card):
         if card is None or self.row is None or card.key != getattr(self.row, "key", None):
             return
+        if self.marked and self.card is not None and self.card.key == card.key:
+            from app.services.title_words import keep_marked
+            card = keep_marked(self.card, card, self.marked)    # a marked word stays in place while the card is open
         self.card = card
         self._relayout()
         self._sync_kept()
@@ -244,6 +294,8 @@ class WordPeek(motion.Overlay):
     def _forget(self):
         self.kept = False
         self.hot_word = self.picked_word = self.hot_more = None
+        self.hot_item = self.hot_pair = None
+        self.marked, self.all_done = {}, None   # (the next open reads the words as they are: marked ones gone)
         QApplication.instance().removeEventFilter(self._away)
 
     def _sync_kept(self):
@@ -276,6 +328,22 @@ class WordPeek(motion.Overlay):
     def hovered(self, item):
         word = item.word if item is not None and self.kept else None
         more = item if item is not None and item.more is not None else None
+        pair = item if isinstance(item, _Pair) else None
+        hot_item = pair.item if pair is not None else (item if self.kept and item is not None and item.word is not None
+                                                          and markable(item.word) else None)
+        if hot_item is not self.hot_item or pair is not self.hot_pair:
+            for old in (self.hot_item, hot_item):
+                if old is not None:
+                    self.sheet.update(self._pair_rect(old).adjusted(-2, -2, 2, 2))
+            self.hot_item, self.hot_pair = hot_item, pair
+            self.sheet.setCursor(Qt.CursorShape.PointingHandCursor if pair is not None
+                                 else Qt.CursorShape.ArrowCursor)
+            tips = getattr(self, "tooltips", None)
+            if tips is not None:
+                if pair is not None:
+                    tips.request(self.sheet, pair.rect, strings.WORDS_MARK_TIP[pair.mark])
+                else:
+                    tips.hide_part_unless(self.sheet, QPoint(-1, -1))
         changed = False
         if more is not self.hot_more:
             self.hot_more = more
@@ -288,6 +356,13 @@ class WordPeek(motion.Overlay):
             self.update(self._sentence_rect())
 
     def clicked(self, item):
+        if isinstance(item, _Pair):
+            word = item.word.word
+            before = self.marked.get(word)
+            mark = None if before == item.mark else item.mark                    # the lit side again: cleared
+            self.set_marks({word: mark})
+            self.mark_asked.emit([(word, mark, before)])
+            return
         if item is not None and item.more is not None:
             self.keep(item.more)
         elif not self.kept:
@@ -296,6 +371,73 @@ class WordPeek(motion.Overlay):
             self.picked_word = None if self.picked_word is item.word else item.word
             if self.sentences:
                 self.update(self._sentence_rect())
+
+    # --- Known / Ignore (Kotoba-K) ------------------------------------------------------------------------------ #
+    def set_marks(self, marks):
+        """{word: mark or None} painted at once (a press reacts in its own frame; the write follows)."""
+        for word, mark in marks.items():
+            if mark is None:
+                self.marked.pop(word, None)
+            else:
+                self.marked[word] = mark
+        self.sheet.update()
+
+    def _pair_rect(self, item):
+        """The ✓ / ⊘ pair's rect under `item` (the sheet's coordinates), kept inside the sheet."""
+        f = fz()
+        side = round(MARK_CELL * f)
+        x = max(0, min(item.rect.left(), self.sheet.width() - 2 * side - 1))
+        return QRect(x, item.rect.bottom() - round(2 * f), 2 * side + 1, side)
+
+    def pair_at(self, pos):
+        item = self.hot_item
+        if item is None or not self.kept:
+            return None
+        r = self._pair_rect(item)
+        if not r.contains(pos):
+            return None
+        half = r.width() // 2
+        known = QRect(r.left(), r.top(), half, r.height())
+        if known.contains(pos):
+            return _Pair(item, "known", known)
+        return _Pair(item, "ignore", QRect(r.left() + half + 1, r.top(), r.width() - half - 1, r.height()))
+
+    def paint_pair(self, p):
+        """The hovered word's ✓ / ⊘, drawn over the words under it (the card's raised fill, a hairline)."""
+        item = self.hot_item
+        if item is None or not self.kept:
+            return
+        r = self._pair_rect(item)
+        lit = self.marked.get(item.word.word)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(c("line-hi"), 1))
+        p.setBrush(c("raised"))
+        radius = theme.RADII["r-sm"]
+        p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        half = r.width() // 2
+        for i, mark in enumerate(MARKS):
+            cell = QRect(r.left() + (half + 1) * i, r.top(), half if i == 0 else r.width() - half - 1, r.height())
+            on = lit == mark
+            hot = self.hot_pair is not None and self.hot_pair.mark == mark
+            if on:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c("accent-deep") if mark == "known" else c("line-hi"))
+                p.drawRoundedRect(QRectF(cell).adjusted(2, 2, -2, -2), radius, radius)
+            ink = c("ink") if (on or hot) else c("overlay-ink-dim")
+            glyph = strings.WORDS_MARK_GLYPH[mark]
+            TEXT.draw(p, cell.center().x() - _adv(glyph, "row-sub") / 2, cell.center().y(), glyph, "row-sub",
+                      cell.width(), ink, elide=False)
+        p.fillRect(QRect(r.left() + half, r.top() + 3, 1, r.height() - 6), c("line-hi"))
+
+    def set_all_done(self, words, undo_id=None):
+        """*I know all of these* landed (`words`: what it marked; `undo_id`: its write, which Undo puts back) — its
+        button reads Undo — or (None) undone."""
+        self.all_done = list(words) if words else None
+        self.all_undo_id = undo_id if words else None
+        self.all_known.setText(strings.WORDS_ALL_UNDO.format(n=len(self.all_done)) if self.all_done
+                               else strings.WORDS_ALL_KNOWN)
+        self.all_known.setToolTip(strings.WORDS_ALL_UNDO_TIP if self.all_done else strings.WORDS_ALL_KNOWN_TIP)
+        self._relayout()
 
     # --- layout ------------------------------------------------------------------------------------------------ #
     def _relayout(self):
@@ -336,7 +478,7 @@ class WordPeek(motion.Overlay):
                     items.append(_Item(QRect(x_at[col], y + r * word_h, widths[col], word_h), w.label, WORD_ROLE,
                                        c("ink"), word=w))
                 y += -(-len(shown_new) // cols) * word_h
-                rest = card.n_new - len(shown_new)
+                rest = len(card.new) - len(shown_new)
                 if rest > 0:
                     text = strings.WORDS_MORE.format(n=rest)
                     items.append(_Item(QRect(0, y, _adv(text, "row-sub"), word_h), text, "row-sub", c("accent"),
@@ -350,7 +492,7 @@ class WordPeek(motion.Overlay):
             if card.before:
                 y = self._before(items, bands, y, card, inner, word_h, head_role_h, f)
         self.sheet.items, self.sheet.bands = items, bands
-        sheet_h = y + round(4 * f)
+        sheet_h = y + round(4 * f) + (round(MARK_CELL * f) if self.kept else 0)   # (room for the last row's ✓ / ⊘)
         width = inner + 2 * px
         self.head_h = self._head_height(f)
         foot_h = round(_line_h("row-sub") + 8 * f) if not self.kept else round(theme.SIZES["button-sm"] * f + 12 * f)
@@ -376,6 +518,12 @@ class WordPeek(motion.Overlay):
         if self.journey.isVisible():
             self.journey.adjustSize()
             self.journey.move(px, self._foot_y + round(4 * f))
+        self.all_known.setVisible(self.kept and self.card is not None and (bool(self.card.new) or bool(self.all_done)))
+        if self.all_known.isVisible():
+            self.all_known.adjustSize()
+            self.all_known.move(self.width() - px - self.all_known.width(), self._foot_y + round(4 * f))
+        if self.hot_item is not None and self.hot_item not in items:   # (a relayout made new items)
+            self.hot_item = self.hot_pair = None
         self._place()
         self.sheet.update()
         self.update()
@@ -613,6 +761,7 @@ class _Relay(QObject):
     """The provider's answers, from its worker, to the window's thread."""
     card = pyqtSignal(object, object)
     sentences = pyqtSignal(object, object)
+    wrote = pyqtSignal(object, object)         # Kotoba-K: (the answer's callback, the write's result or its error)
 
 
 class PeekHost(QObject):
@@ -620,15 +769,24 @@ class PeekHost(QObject):
     short grace so the pointer can reach the card), a click (kept open). `provider()`: the window's
     `title_words.TitleWords` or None; `view()`: the view the rows were built from (for the titles of what's taught where)."""
 
-    def __init__(self, parent, provider, view, tooltips=None, router=None, open_journey=None):
+    def __init__(self, parent, provider, view, tooltips=None, router=None, open_journey=None, mark=None, undo=None,
+                 say=None):
         super().__init__(parent)
         self.card = WordPeek(parent)
         self.provider, self.view, self.tooltips, self.open_journey = provider, view, tooltips, open_journey
+        # Kotoba-K: `mark(marks)` / `undo()` write (a worker's: they block) and answer a `word_marks.Marked`; `say(line)`
+        # the bar's (a failure). Without them the card marks nothing (no ✓ / ⊘, no *I know all of these*).
+        self.mark, self.undo, self.say = mark, undo, say
+        self.card.tooltips = tooltips
+        self.card.mark_asked.connect(self._mark)
+        self.card.all_known.clicked.connect(self._all_known)
+        self._writes = None                        # the card's one write queue, in click order (made at the first)
         if router is not None:
             router.register(self.card)
         self.relay = _Relay(self)
         self.relay.card.connect(self._card_came)
         self.relay.sentences.connect(lambda key, found: self.card.set_sentences(key, found))
+        self.relay.wrote.connect(self._answered)
         self.card.sentences_wanted.connect(self._want_sentences)
         self.card.journey_asked.connect(self._journey)
         self.card.pointer_in.connect(self._pointer_in)
@@ -742,3 +900,119 @@ class PeekHost(QObject):
     def _journey(self, episode):
         if self.open_journey is not None:
             self.open_journey(self.card.journey, episode)
+
+    # --- Kotoba-K: Known / Ignore ------------------------------------------------------------------------------ #
+    def _mark(self, marks):
+        """A ✓ / ⊘ click (painted already): written on a worker; a failure puts back each word this click still shows
+        (a later click on it wins) and says why. An answer for a card that has since moved to another row changes
+        nothing on screen."""
+        before = {w: was for w, _m, was in marks}
+        sent = {w: m for w, m, _was in marks}
+        if self.mark is None:
+            self.card.set_marks(before)
+            return
+        key = self._key()
+        self._write(self.mark, (list(sent.items()),), lambda answer: self._marked(answer, key, sent, before))
+
+    def _write(self, fn, args, then):
+        """`fn(*args)` on the card's one write queue — the writes land in the order they were clicked (a review's
+        finding: two clicks on a worker pool could race for the lock, a ✓ then its clear landing Known) — and
+        `then(result or the error's words)` on the window's thread."""
+        if self._writes is None:
+            from app.services.automation import Worker
+            self._writes = Worker("word-card-marks")
+        relay = self.relay
+
+        def job():
+            try:
+                answer = fn(*args)
+            except Exception as e:                  # (said in the bar; the queue goes on)
+                answer = str(e) or e.__class__.__name__
+            relay.wrote.emit(then, answer)
+        self._writes.put(job)
+
+    def _answered(self, then, answer):
+        """A write's answer on the window's thread — none once the card is gone (a quit while a write was on its way:
+        the write itself has landed)."""
+        from PyQt6 import sip
+        if not sip.isdeleted(self.card):
+            then(answer)
+
+    def _key(self):
+        return getattr(self.card.row, "key", None)
+
+    def _here(self, key):
+        """The card still shows the row `key` (open): an answer may change what it paints."""
+        return self.card.isVisible() and self._key() == key
+
+    def _still(self, sent):
+        """Of `sent` {word: mark}, the words the card still shows with that mark (no later click on them)."""
+        return [w for w, m in sent.items() if self.card.marked.get(w) == m]
+
+    def _marked(self, result, key, sent, before):
+        error = result if isinstance(result, str) else result.error
+        if error is not None:
+            if self._here(key):
+                self.card.set_marks({w: before[w] for w in self._still(sent)})
+            if self.say is not None:
+                self.say(strings.WORDS_MARK_FAILED.format(why=error))
+            return
+        if self._here(key):
+            self._again()
+
+    def _all_known(self, _checked=False):
+        """*I know all of these*: the title's every unmarked *New here* word known, in one write; then the button is
+        that batch's Undo. (A press while one is on its way does nothing: `press.run`.)"""
+        card = self.card
+        if card.card is None or self.mark is None:
+            return
+        key = self._key()
+        win = card.window()
+        if card.all_done:
+            words, undo_id = list(card.all_done), card.all_undo_id
+            p = press.begin(card.all_known, "words:undo-all", win=win)
+            if p is not None:
+                self._write(self.undo, (undo_id,), lambda result, w=words: self._all_undone(result, w, key, p, win))
+            return
+        words = [w.word for w in card.card.new if card.marked.get(w.word) is None]
+        if not words:
+            return
+        p = press.begin(card.all_known, "words:all-known", win=win)     # the arc painted, then the words with it
+        if p is None:
+            return
+        card.set_marks({w: "known" for w in words})
+        self._write(self.mark, ([(w, "known") for w in words],),
+                    lambda result, w=words: self._all_marked(result, w, key, p, win))
+
+    def _all_marked(self, result, words, key, p, win):
+        error = result if isinstance(result, str) else result.error
+        press.end(p, win, failed=error is not None)
+        here = self._here(key)
+        if error is not None:
+            if here:
+                self.card.set_marks({w: None for w in self._still({w: "known" for w in words})})
+            if self.say is not None:
+                self.say(strings.WORDS_MARK_FAILED.format(why=error))
+            return
+        if here:
+            self.card.set_all_done(words, result.undo_id)
+            self._again()
+
+    def _all_undone(self, result, words, key, p, win):
+        error = result if isinstance(result, str) else result.error
+        press.end(p, win, failed=error is not None)
+        if error is not None:
+            if self.say is not None:
+                self.say(strings.WORDS_MARK_FAILED.format(why=error))
+            return
+        if self._here(key):
+            self.card.set_marks({w: None for w in self._still({w: "known" for w in words})})
+            self.card.set_all_done(None)
+            self._again()
+
+    def _again(self):
+        """The card's words asked again after a mark landed: its counts follow the numbers (the marked words kept in
+        place while it is open: `title_words.keep_marked`)."""
+        row = self.card.row
+        if row is not None and self.card.isVisible():
+            self._ask(row)

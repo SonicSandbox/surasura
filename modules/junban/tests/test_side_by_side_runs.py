@@ -80,6 +80,100 @@ def test_the_fast_re_plans_job_weaves_the_same_order_as_a_window_run(tmp_path, s
     assert again.queue_order() == [row.word for row in window["order"]]
 
 
+# --- Kyou-B: one slot a word, the list words first ---------------------------------------------------------------- #
+def _fake_with(tmp_path, entries, sources):
+    """The scene with `entries` (word, sentence, FreqSort); `sources[k]` the episode the k-th card names (None: none)."""
+    fake = scene(tmp_path, without_connect([(w, s, f, [], 0) for w, s, f in entries]))
+    for card, source in zip(sorted(fake.cards.values(), key=lambda c: c["cardId"]), sources):
+        if source is not None:
+            fake.notes[card["note"]]["fields"]["MiscInfo"]["value"] = source
+    return fake
+
+
+TWIN = ([("冒険", "冒険が始まった。", 2000), ("散歩", "毎朝<b>散歩</b>に出かける。", 3000),
+         ("冒険", "冒険の話を聞いた。", 2000), ("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼鏡を買った。", 5000),
+         ("須藤", "須藤さんが来た。", 9000)],
+        [A_SOURCE, A_SOURCE, B_SOURCE, B_SOURCE, B_SOURCE, None])
+OFF_LIST = ([("冒険", "冒険が始まった。", 2000), ("図書館", "図書館で本を読んだ。", 6000),
+             ("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼鏡を買った。", 5000),
+             ("散歩", "毎朝<b>散歩</b>に出かける。", 3000), ("須藤", "須藤さんが来た。", 9000)],
+            [A_SOURCE, A_SOURCE, B_SOURCE, B_SOURCE, B_SOURCE, None])
+
+
+def test_a_word_with_cards_in_both_titles_takes_one_slot_and_its_twin_waits_after_the_turns(tmp_path, side):
+    """Rule 1 through a run: B's own 冒険 card (another sentence) takes no turn and no early slot — B's turns go to
+    老婆 and 眼鏡, and the twin waits after the turns, ahead of 須藤 (no title's)."""
+    fake = _fake_with(tmp_path, *TWIN)
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+    words = [row.word for row in stats["order"]]
+    assert words == ["冒険", "老婆", "散歩", "眼鏡", "冒険", "須藤"]
+    assert stats["order"][4].weave[0] == 1 and stats["woven"] == 5
+
+
+def test_both_titles_list_words_come_before_a_titles_card_off_the_list(tmp_path, side):
+    """Rule 2 through a run: A's 図書館 is off the list (i+1); it waits while B still has list words (老婆, 眼鏡, 散歩)."""
+    fake = _fake_with(tmp_path, *OFF_LIST)
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+    words = [row.word for row in stats["order"]]
+    assert words[:2] == ["冒険", "老婆"] and set(words[2:4]) == {"眼鏡", "散歩"}
+    assert words[4:] == ["図書館", "須藤"]
+
+
+@pytest.mark.parametrize("which", ["twin", "off_list"])
+def test_the_window_its_reorder_and_the_fast_re_plan_give_the_kyou_b_order_alike(tmp_path, side, which):
+    """The 順 window's preview, its Reorder and the automatic job (`spaced.Job`) all plan in `_plan_scope`: one order."""
+    entries, sources = TWIN if which == "twin" else OFF_LIST
+    fake = _fake_with(tmp_path, entries, sources)
+    with _patched(fake):
+        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
+        report = reposition.run(settings(junban_unlisted="journey"))
+    assert report["ok"], report["problems"]
+    want = [row.word for row in window["order"]]
+    assert fake.queue_order() == [w for w in want if w in fake.queue_order()]
+    again = _fake_with(tmp_path / "job", entries, sources)
+    with _patched(again):
+        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+    assert report["ok"], report["problems"]
+    assert again.queue_order() == want
+
+
+C_SOURCE = "白銀の書庫番 — 白銀の書庫番 - 03 @ 00:02:10"
+THREE = ([[1], [2], [3]], {}, {1: {pins.source_of(A_SOURCE)}, 2: {pins.source_of(B_SOURCE)},
+                              3: {pins.source_of(C_SOURCE)}})
+HIS = ([("冒険", "冒険が始まった。", 2000),                                   # the book: one card left
+        ("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼鏡を買った。", 5000),       # the channel's two videos
+        ("散歩", "毎朝<b>散歩</b>に出かける。", 3000), ("図書館", "図書館で本を読んだ。", 6000),   # a show
+        ("須藤", "須藤さんが来た。", 9000)],                                         # no title's
+       [A_SOURCE, B_SOURCE, B_SOURCE, C_SOURCE, C_SOURCE, None])
+
+
+def test_when_a_title_runs_out_the_next_one_steps_in_through_every_run(tmp_path, monkeypatch):
+    """Kyou-B, the tester's case through Junban itself: the store hands every title to study (the book, the channel,
+    a show); the book has one card left, so after its one turn the show steps in beside the channel (two at a time,
+    never three: before, the show took a turn from the first round) — in the 順 window's preview, its Reorder and the
+    fast re-plan's job alike."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: THREE)
+    fake = _fake_with(tmp_path, *HIS)
+    with _patched(fake):
+        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
+        report = reposition.run(settings(junban_unlisted="journey"))
+    assert report["ok"], report["problems"]
+    woven = [row for row in window["order"] if row.weave is not None]
+    assert [row.weave[0] for row in woven] == [0, 1, 1, 2, 2]
+    assert [row.word for row in woven][:2] == ["冒険", "老婆"] and window["order"][-1].word == "須藤"
+    want = [row.word for row in window["order"]]
+    assert fake.queue_order() == [w for w in want if w in fake.queue_order()]
+    again = _fake_with(tmp_path / "job", *HIS)
+    with _patched(again):
+        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+    assert report["ok"], report["problems"]
+    assert again.queue_order() == want
+
+
 def test_each_turn_takes_the_word_with_the_most_impact_not_the_one_met_first(tmp_path, monkeypatch):
     """Decision 3 (the word's place on the whole list), with Junban in content order: title A holds 散歩 (met first,
     in file 1, Score 20) and 老婆 (file 3, Score 30) — A's turn takes 老婆 first; B's 冒険 between them."""

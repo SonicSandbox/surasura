@@ -951,7 +951,7 @@ def counts_toward_top(e, tier, keep=False):
     return not e.missing and not getattr(e, "waiting", False) and counts(tier, e.watched, keep)
 
 
-def topped(rows, line_n, keep=False, connect=None):
+def topped(rows, line_n, keep=False, connect=None, side=False):
     """Current's `rows` in an order the window paints ahead of the store (a drop's, a Done's marks: `app/qt/drag`) with
     which files are *in the top* read again by the store's rule (`build`: every file down to the `line_n`-th that
     counts, `counts_toward_top`; with fewer, down to the last) — and what a row reads from that read again by `_row`'s
@@ -960,9 +960,20 @@ def topped(rows, line_n, keep=False, connect=None):
     out of the top only (3.0.1 item 12: the *Waiting* a file takes as it moves into the top showed with the store's
     next view, about a second later). `line_n` None (Connect off: no top) or 0: `rows` as they are. `connect`: the
     feed's items the rows were built with (`View.connect.items`), or None. -> (rows, the places of the rows read
-    again). A row beyond the top is looked at by its first file only (the top holds a row's first files)."""
+    again). A row beyond the top is looked at by its first file only (the top holds a row's first files). `side`
+    (Kyou-B): the library's side by side is on — the top read by its turns (`side_top`) while two titles hold files."""
     if not line_n or not rows:
         return rows, []
+    turned = side_top(rows, line_n, keep) if side else None
+    if turned is not None:                           # Kyou-B: the files the turns mine, whatever row they sit in
+        ids = turned[1]
+        out, changed = list(rows), []
+        for i, r in enumerate(rows):
+            if all(e.in_top == (e.id in ids) for e in r.episodes):
+                continue
+            out[i] = _retopped(r, None, line_n, connect, hero=not i, ids=ids)
+            changed.append(i)
+        return out, changed
     seen, last = 0, None
     for i, r in enumerate(rows):                     # by the rows' counts: a row's files walked only where the line
         c = r.n_top                                  # falls (or its count isn't known)
@@ -1000,12 +1011,14 @@ def topped(rows, line_n, keep=False, connect=None):
     return out, changed
 
 
-def _retopped(row, n, line_n, connect, hero=False):
-    """`row` with its first `n` files in the top, and what it reads from that read again (`topped`)."""
+def _retopped(row, n, line_n, connect, hero=False, ids=None):
+    """`row` with its first `n` files in the top (`ids` given: the files in it), and what it reads from that read
+    again (`topped`)."""
     eps = []
     for k, e in enumerate(row.episodes):
-        if e.in_top != (k < n):
-            e = e._replace(in_top=k < n)
+        inside = e.id in ids if ids is not None else k < n
+        if e.in_top != inside:
+            e = e._replace(in_top=inside)
             st, mark = _ep_status(e, e.media_word, line_n, connect, connect.get(e.id) if connect is not None else None)
             moved = getattr(e.status, "moved", None)
             if moved and st.kind == "no_media":      # MV-2: the folder its video left, as `_episode` said it
@@ -1822,11 +1835,11 @@ def side_by_side(options):
 
 def side_order(current, keep=False):
     """Kyou-A: the files of Current that can be mined (available, counting) in the store's side-by-side order
-    (`library_store.woven`: its first two titles to study in turns), or None when it holds fewer than two — the
+    (`library_store.woven`: its titles to study in turns, two at a time), or None when it holds fewer than two — the
     store's `_mine_ids` read on the feed's rows."""
     from app.library_store import SIDE_TITLES, counts, side_titles, title_key, woven
     rows = [(r["id"], r.get("tier"), r.get("work_id"), r.get("availability"), r.get("watched")) for r in current]
-    titles = side_titles(rows, keep)
+    titles = side_titles(rows, keep)                     # Kyou-B: every title, two at a time (`woven`)
     if len(titles) < SIDE_TITLES:
         return None
     by_id = {r["id"]: r for r in current}
@@ -1851,6 +1864,21 @@ def _side_in_top(current, top_ids):
         elif r.get("availability") != "waiting":
             nxt[key] = False
     return in_top
+
+
+def side_top(rows, line_n, keep=False):
+    """Kyou-B (KA-4): the top of Current's `rows` in an order the window paints ahead of the store (a drop's, its marks)
+    read by the store's side-by-side rule, as `build` reads it on the feed's rows (`side_order`, `_mine_ids`,
+    `_side_in_top`) -> (the ids the turns mine, in their order; what is *in the top*), or None when the rows hold fewer
+    than two titles to study (the store's rule is then today's, by prefix)."""
+    current = [{"id": e.id, "tier": r.tier, "work_id": e.work_id, "watched": e.watched,
+                "availability": "missing" if e.missing else "waiting" if getattr(e, "waiting", False) else "available"}
+               for r in rows for e in r.episodes]
+    turned = side_order(current, keep)
+    if turned is None:
+        return None
+    top_ids = _mine_ids(turned, line_n, keep)
+    return top_ids, _side_in_top(current, top_ids)
 
 
 def mark_moves_list(tier, ep, keep):

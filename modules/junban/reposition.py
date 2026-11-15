@@ -1984,7 +1984,8 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # as unmatched — the same pass, so the run writes the order the preview showed (I5).
     excluded = _excluded(settings)
     number = _numbering(language, decks, job, front)
-    writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave)
+    writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave,
+                         width=pin_feed.SIDE_WIDTH if weave else None)     # Kyou-B: two titles at a time
     if number is not None:
         stats["number"] = number        # the panel re-plans a click with the run's own numbering (I5)
     if parked_tag and not preview:      # M-W1: the 3.0 host's job brings back what it parked with Connect off too

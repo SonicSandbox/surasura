@@ -315,8 +315,19 @@ def lines_for(view, rows_):
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
     n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
-    if getattr(view, "side_by_side", False):         # Kyou-A: the top in turns is the store's — its next view draws it
-        n = None                                     # (never the old line at its old row over the drop's new rows)
+    turned = view_rows.side_top(rows_, n, keep) if n and getattr(view, "side_by_side", False) else None
+    if turned is not None:                           # Kyou-B (KA-4): the top in turns, drawn at once by the store's rule
+        n = None                                     # (the line never leaves the drop's rows to wait for the store)
+        top_ids = turned[0]
+        if len(top_ids) >= view.mine_line:           # after the lowest row the turns mine in, as the reader draws it
+            place = {e.id: (i, k) for i, r in enumerate(rows_) for k, e in enumerate(r.episodes)}
+            i, k = max(place[e] for e in top_ids)
+            row = rows_[i]
+            if k + 1 < len(row.episodes):
+                out.append(view_rows.Line("top", i, view_rows.STRINGS["top_tip_split"].format(
+                    n=view.mine_line, title=row.title, k=k + 1, m=len(row.episodes)), k + 1))
+            else:
+                out.append(view_rows.Line("top", i, view_rows.STRINGS["top_tip"].format(n=view.mine_line), None))
     elif n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
@@ -354,10 +365,9 @@ def topped(view, rows_):
     read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
     rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
     feed = getattr(view, "connect", None)
-    if getattr(view, "side_by_side", False):         # Kyou-A: the top in turns is read again by the store's next view
-        return rows_, []
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
-                            feed.items if feed is not None and feed.on else None)
+                            feed.items if feed is not None and feed.on else None,
+                            side=bool(getattr(view, "side_by_side", False)))     # Kyou-B (KA-4): in turns, at once
 
 
 def mines_itself(lines, place):

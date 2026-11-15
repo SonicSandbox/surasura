@@ -104,31 +104,34 @@ def groups(language, cards, notes_by_id, pinned=None):
 def _matched(item_groups, cards, notes_by_id, store_notes, names):
     """`[[card_id, …], …]`, one per group of items: the cards in scope that are the group's items' — the store's notes
     for them (`store_notes`: {item_id: [note ids]}), or an Anki Miner source naming one (`names`: {item_id: {keys}})."""
-    out = []
-    for items in item_groups:
-        notes = set()
-        wanted = set()
+    # Kyou-B: one walk over the cards whatever the number of groups (side by side hands every Current title in): each
+    # card goes to every group whose notes hold it or whose items its source names — the groups' own lists as before
+    by_note, by_name = {}, {}
+    for g, items in enumerate(item_groups):
         for item_id in items:
-            notes.update(store_notes.get(item_id) or ())
-            wanted |= names.get(item_id, set())
-        ids = []
-        for card in cards or ():
-            note = card.get("note")
-            if note in notes:
-                ids.append(card["card_id"])
-                continue
+            for note in store_notes.get(item_id) or ():
+                by_note.setdefault(note, set()).add(g)
+            for key in names.get(item_id, ()):
+                by_name.setdefault(key, set()).add(g)
+    out = [[] for _items in item_groups]
+    for card in cards or ():
+        note = card.get("note")
+        groups = set(by_note.get(note, ()))
+        if len(groups) < len(out):
             fields = ((notes_by_id or {}).get(note) or {}).get("fields") or {}
             source = source_of(fields.get("MiscInfo"))
-            if source is not None and source in wanted:
-                ids.append(card["card_id"])
-        out.append(ids)
+            if source is not None:
+                groups |= by_name.get(source, set())
+        for g in sorted(groups):
+            out[g].append(card["card_id"])
     return out
 
 
 # --- Kyou-A: *New cards come from: Current's top two, side by side* (SCOPE §2; Sonic's answers 1–5, 2026-11-15) ---- #
 def read_side(language):
     """The titles side by side for the run, read once: `(titles, notes, names)` — `titles` = the store's
-    `side_by_side()` ([[item id, …], …]: Current's first two titles' items, [] while it's off or there aren't two),
+    `side_by_side()` ([[item id, …], …]: Current's titles' items, every title holding a file to study — Kyou-B: the plan
+    takes them two at a time; [] while it's off or there aren't two),
     `notes` = `{item_id: [note ids]}` (`cards_of`), `names` = `{item_id: {source keys}}` (a key two titles of the library
     share names neither, as a pin's). Empty `titles` when pins are off (2.x), there's no store, or the store has no
     such option. Never raises: a store that can't be read weaves nothing this run."""
@@ -163,10 +166,15 @@ def read_side(language):
         return [], {}, {}
 
 
+SIDE_WIDTH = 2                  # Kyou-B: `plan`'s `width` — the store's `SIDE_TITLES`, two titles take turns at a time
+
+
 def side_groups(language, cards, notes_by_id, side=None):
-    """`plan`'s `weave`: `[[card_id, …], [card_id, …]]`, Current's first two titles' cards in scope by the pins' own
-    matching (`_matched`: the store's notes, or an Anki Miner source naming one of the title's items). `side`: what
-    `read_side` returns (read here when None). None while side by side is off, or no title has a card in scope."""
+    """`plan`'s `weave`: `[[card_id, …], …]`, Current's titles' cards in scope (every title holding a file to study, in
+    Current's order — the plan takes them `SIDE_WIDTH` at a time, so a title with no card left hands its turn to the
+    next: Kyou-B) by the pins' own matching (`_matched`: the store's notes, or an Anki Miner source naming one of the
+    title's items). `side`: what `read_side` returns (read here when None). None while side by side is off, or no
+    title has a card in scope."""
     titles, store_notes, names = read_side(language) if side is None else side
     if not titles:
         return None

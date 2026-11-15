@@ -9,6 +9,8 @@ or know already pulled forward — or, switched off, an order that is not exactl
 
 Every card here is a real Japanese word (the scene's own words and Test Resources' kind), never a dummy; no Anki.
 """
+import pytest
+
 from modules.junban import plan as P
 
 # (card_id, word, tier, rank, sort) — the journey's sort is the file it is first met in (content order), so the planned
@@ -100,15 +102,74 @@ def test_a_card_both_titles_claim_goes_with_the_first():
     assert by["図書館"][0] == 0
 
 
-def test_a_word_in_both_titles_is_picked_once_and_its_twin_takes_no_turn():
-    """Conditioned picks (Sonic's question): B's own 約束 card is no pick of its own — it follows A's 約束 at once and B's
-    turn still goes to its next best word, 冒険; the day never spends two of B's slots on a word A already gave."""
+def test_a_word_in_both_titles_takes_one_slot_and_its_twin_waits_after_the_turns():
+    """Conditioned picks, Kyou-B's rule 1: B's own 約束 card is no pick of its own and takes no turn — B's turn still
+    goes to its next best word, 冒険 — and it waits after every turn (as a sibling card waits), so the day's slots go
+    to five different words; title 3's 散歩 after it, as planned."""
     cards, groups = _scene()
     cards.append(_card(7, "約束", sort=(12,)))           # the same word, mined from title B's episode
     groups[1].append(7)
     _writes, stats = P.plan(cards, RANK, weave=groups)
-    assert _words(stats)[:4] == ["約束", "約束", "冒険", "友達"]
+    assert _words(stats) == ["約束", "冒険", "友達", "図書館", "魔法", "約束", "散歩"]
+    assert [row.card_id for row in stats["order"][:2]] == [2, 4]
+    assert stats["order"][5].card_id == 7 and stats["order"][5].weave[0] == 1 and stats["woven"] == 6
+
+
+def test_a_titles_own_second_card_of_a_word_still_follows_its_pick():
+    """Rule 1 is about the other title's twin only: A's own second 約束 card (another sentence) follows A's pick at once,
+    as the plan clusters a word's cards without a weave."""
+    cards, groups = _scene()
+    cards.append(_card(7, "約束", sort=(2,)))             # a second 約束 card, mined from title A's episode
+    groups[0].append(7)
+    _writes, stats = P.plan(cards, RANK, weave=groups)
+    assert _words(stats)[:3] == ["約束", "約束", "冒険"]
     assert [row.card_id for row in stats["order"][:2]] == [2, 7]
+
+
+# Kyou-B in both languages: real words of each (the scene's kind; tests/Test Resources' ja / zh vocabulary).
+WORDS = {"ja": ["約束", "冒険", "友達", "図書館", "世界", "時間", "未来", "散歩"],
+         "zh": ["约定", "冒险", "朋友", "图书馆", "电影", "老师", "音乐", "散步"]}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_word_in_both_titles_takes_one_of_the_days_slots_in_either_language(language):
+    """Rule 1: w0 is in both titles — A picks it first, B's turn goes on to w1, B's own w0 waits after the turns; the
+    first four slots hold four words."""
+    w = WORDS[language]
+    rank = {w[1]: 1, w[0]: 2, w[2]: 5, w[3]: 7, w[7]: 0}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[2], sort=(2,)),
+             _card(3, w[0], sort=(10,)), _card(4, w[1], sort=(11,)), _card(5, w[3], sort=(12,)),
+             _card(6, w[7], sort=(20,))]
+    _writes, stats = P.plan(cards, rank, weave=[[1, 2], [3, 4, 5]])
+    assert _words(stats) == [w[0], w[1], w[2], w[3], w[0], w[7]]
+    assert len(set(_words(stats)[:4])) == 4
+    assert [row.card_id for row in stats["order"]][4] == 3
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_both_titles_list_words_come_before_either_titles_cards_off_the_list(language):
+    """Rule 2: A has one list word (w0) and two cards off the list (i+1); B has two list words and one card with more
+    unknowns. A's off-list cards wait while B still has a list word; then both take turns with the rest. Without the
+    rule A's 世界 / 电影 took A's second turn ahead of B's 図書館 / 图书馆."""
+    w = WORDS[language]
+    rank = {w[0]: 2, w[1]: 1, w[3]: 7}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[4], tier="i+1", sort=(1, 100)),
+             _card(3, w[6], tier="i+1", sort=(1, 300)),
+             _card(4, w[1], sort=(10,)), _card(5, w[3], sort=(11,)), _card(6, w[5], tier="multi", sort=(1, 200))]
+    _writes, stats = P.plan(cards, rank, weave=[[1, 2, 3], [4, 5, 6]])
+    assert _words(stats) == [w[0], w[1], w[3], w[4], w[5], w[6]]
+    assert [row.weave[0] for row in stats["order"]] == [0, 1, 1, 0, 1, 0]
+
+
+def test_a_card_held_for_a_word_joins_the_list_turns_once_the_other_title_picks_that_word():
+    """Rule 2 with "i+1 first": B's 老婆 (list #4) waits for 約束 in its sentence, so it is off the list until A picks
+    約束 — then it is a list word again and takes B's turn (by its list place, ahead of B's 図書館 #8); A's card off the
+    list still waits for B's 図書館."""
+    cards = [_card(1, "約束", sort=(1,)), _card(2, "世界", tier="i+1", sort=(1, 100)),
+             _card(3, "老婆", tier="multi", sort=(1, 7000), held=True, waits=(("約束",), 3)),
+             _card(4, "図書館", sort=(10,))]
+    _writes, stats = P.plan(cards, RANK, weave=[[1, 2], [3, 4]])
+    assert _words(stats) == ["約束", "老婆", "図書館", "世界"]
 
 
 def test_a_sentence_that_waits_only_for_a_word_already_picked_is_i_plus_1_from_there():
@@ -188,3 +249,51 @@ def test_a_pinned_cards_word_counts_as_picked_for_the_weave():
              _card(5, "世界", tier="multi", sort=(1, 8000), needs=("図書館",))]
     _writes, stats = P.plan(cards, RANK, pins=[[1]], weave=[[2], [3, 4, 5]])
     assert [row.card_id for row in stats["order"]] == [1, 3, 2, 5, 4]
+
+
+# --- Kyou-B: a tester on 3.0.12 — a book of many parts (most *Target met*) and a two-video channel on top --------- #
+def _his(language):
+    """The book (its parts mostly *Target met*: two still-new cards left), the channel's two videos (four cards), a
+    show behind them (four cards); every card a list word, real words of each language."""
+    w = WORDS[language] + (["学校", "先生", "電車", "天気"] if language == "ja" else ["学校", "先生", "电车", "天气"])
+    rank = {word: n for n, word in enumerate(w)}
+    cards = [_card(n + 1, w[n], sort=(n,)) for n in range(len(w))]
+    return cards, rank, [[1, 2], [3, 4, 5, 6], [7, 8, 9, 10]]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_two_titles_keep_taking_turns_when_one_runs_out_the_next_steps_in(language):
+    """Side by side's width (2): book, channel, book, channel — the book is out of new cards, so the show steps into
+    its place, never the channel alone; the show waits until then. A day of 10 is never one title's."""
+    cards, rank, groups = _his(language)
+    _writes, stats = P.plan(cards, rank, weave=groups, width=2)
+    assert [row.weave[0] for row in stats["order"][:10]] == [0, 1, 0, 1, 1, 2, 1, 2, 2, 2]
+    day = [row.weave[0] for row in stats["order"][:10]]
+    assert max(day.count(g) for g in (0, 1, 2)) <= 5
+    assert all(row.weave[5] == 2 for row in stats["order"][:10])
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_title_with_no_card_left_takes_no_place_at_all(language):
+    """Every part of the book *Target met* (no card in scope): the channel and the show take turns from the first."""
+    cards, rank, groups = _his(language)
+    cards = [c for c in cards if c["card_id"] not in (1, 2)]
+    _writes, stats = P.plan(cards, rank, weave=[[1, 2]] + groups[1:], width=2)
+    assert [row.weave[0] for row in stats["order"][:8]] == [1, 2, 1, 2, 1, 2, 1, 2]
+
+
+def test_a_click_in_the_preview_keeps_the_runs_width():
+    """I5 with the width: `replan` takes it back from the rows, so a click weaves two at a time as the run does."""
+    cards, rank, groups = _his("ja")
+    _writes, stats = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
+    for off in ([3], [1, 2], [7]):
+        clicked = P.replan(stats["order"], exclude=off)
+        run = P.plan([dict(c) for c in cards], rank, exclude=off, weave=groups, width=2)
+        assert [(r.card_id, r.position) for r in clicked[1]["order"]] == [(r.card_id, r.position) for r in run[1]["order"]]
+
+
+def test_without_a_width_every_group_takes_turns_at_once_as_before():
+    """Today's set's N groups (the lead's N5): no width, all three in turns."""
+    cards, rank, groups = _his("ja")
+    _writes, stats = P.plan(cards, rank, weave=groups)
+    assert [row.weave[0] for row in stats["order"][:6]] == [0, 1, 2, 0, 1, 2]

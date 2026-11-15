@@ -105,10 +105,33 @@ class TestDownloadBucket(unittest.TestCase):
         self.assertEqual(summary, {"written": 0, "no_transcript": 1, "errors": 0})
         self.assertEqual([f for f in os.listdir(out) if f.endswith(".txt")], [])
 
+    def test_the_empty_folders_a_bucket_made_go_and_the_ones_there_before_stay(self):
+        # (3.0.12, Kura-PR2) a playlist's folder inside its channel's, both made for a bucket that brought nothing:
+        # both go (an empty channel folder would be a title of nothing); the YouTube folder that was there stays
+        youtube = os.path.join(tempfile.mkdtemp(prefix="ytt_"), "YouTube")
+        os.makedirs(youtube)
+        target = os.path.join(youtube, "ゆる日本語", "初級の旅")
+        info_map = {"http://X": _info("X", "No Caps", "ゆる日本語", subs={}, autos={})}
+        summary = {"written": 0, "no_transcript": 0, "errors": 0}
+        with patch.object(core, "_run_ytdlp", make_fake_run({}, info_map)):
+            core._download_bucket(["http://X"], target, core.LANGS["Japanese"], "Japanese",
+                                  keep_ts=False, channel_first=True, log=lambda *_: None, summary=summary)
+        self.assertEqual(summary["written"], 0)
+        self.assertTrue(os.path.isdir(youtube))
+        self.assertEqual(os.listdir(youtube), [])
+        os.makedirs(os.path.join(youtube, "ゆる日本語"))           # a channel folder there before: it stays
+        with patch.object(core, "_run_ytdlp", make_fake_run({}, info_map)):
+            core._download_bucket(["http://X"], target, core.LANGS["Japanese"], "Japanese",
+                                  keep_ts=False, channel_first=True, log=lambda *_: None, summary=summary)
+        self.assertEqual(os.listdir(youtube), ["ゆる日本語"])
+        self.assertEqual(os.listdir(os.path.join(youtube, "ゆる日本語")), [])
+
 
 class TestExtractEndToEnd(unittest.TestCase):
-    def test_grouping_into_channel_folder_and_root(self):
-        out = tempfile.mkdtemp(prefix="ytt_")
+    def test_grouping_into_channel_folders(self):
+        # (3.0.12, Kura-PR2) every YouTube video into its channel's folder under YouTube, beside Processed
+        out = os.path.join(tempfile.mkdtemp(prefix="ytt_"), "Processed")
+        channels = os.path.join(os.path.dirname(out), "YouTube")
         probe_map = {
             "http://A": {"id": "A", "channel": "NHK"},
             "http://B": {"id": "B", "channel": "NHK"},
@@ -124,20 +147,19 @@ class TestExtractEndToEnd(unittest.TestCase):
                                    lang="English", channel_first=True, log=lambda *_: None)
 
         self.assertEqual(summary["written"], 3)
-        # NHK pair grouped into a channel subfolder
-        self.assertTrue(os.path.isfile(os.path.join(out, "NHK", "NHK - Alpha [A].txt")))
-        self.assertTrue(os.path.isfile(os.path.join(out, "NHK", "NHK - Beta [B].txt")))
-        # Solo singleton straight into the Processed root
-        self.assertTrue(os.path.isfile(os.path.join(out, "Solo - Gamma [C].txt")))
-        self.assertFalse(os.path.isdir(os.path.join(out, "Solo")))
+        self.assertTrue(os.path.isfile(os.path.join(channels, "NHK", "NHK - Alpha [A].txt")))
+        self.assertTrue(os.path.isfile(os.path.join(channels, "NHK", "NHK - Beta [B].txt")))
+        # a single video too: a channel is a folder (the library titles it by the channel)
+        self.assertTrue(os.path.isfile(os.path.join(channels, "Solo", "Solo - Gamma [C].txt")))
+        self.assertFalse(os.path.exists(out) and os.listdir(out), "nothing loose in Processed")
 
     def test_channel_first_off_keeps_plain_name(self):
-        out = tempfile.mkdtemp(prefix="ytt_")
+        out = os.path.join(tempfile.mkdtemp(prefix="ytt_"), "Processed")
         probe_map = {"http://A": {"id": "A", "channel": "Solo"}}
         info_map = {"http://A": _info("A", "Alpha", "Solo")}
         with patch.object(core, "_run_ytdlp", make_fake_run(probe_map, info_map)):
             core.extract(["http://A"], out, lang="English", channel_first=False, log=lambda *_: None)
-        self.assertTrue(os.path.isfile(os.path.join(out, "Alpha [A].txt")))
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(out), "YouTube", "Solo", "Alpha [A].txt")))
 
     def test_empty_urls_noop(self):
         out = tempfile.mkdtemp(prefix="ytt_")

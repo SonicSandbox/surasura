@@ -92,7 +92,10 @@ def _row_as_25(row):
     nothing is pinned — the only case 2.x knows (E1.3-3) — and is then dropped; a pinned row keeps it, so it can never
     pass for a 2.5 row."""
     # P4.1 L2 (package T): the trailing `out` (*Take its new cards out*) is dropped with it the same way
-    return list(row)[:-2] if row.pinned is None and row.out is None else list(row)
+    # Kyou-A: and the trailing `weave` (side by side's group), None whenever nothing is woven
+    if row.pinned is None and row.out is None and row.weave is None:
+        return list(row)[:-3]
+    return list(row)
 
 
 def _fill_scene():

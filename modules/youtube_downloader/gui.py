@@ -336,17 +336,17 @@ class YoutubeDownloaderGui(tk.Toplevel):
             if not exe:
                 self.q.put("Cannot proceed without yt-dlp.")
                 return
+            from modules.youtube_downloader.downloader_view import _content_files
             out = self._output_dir()
-            before = set(os.listdir(out)) if os.path.isdir(out) else set()
+            before = _content_files(out)                     # Processed and YouTube's channel folders (3.0.12)
             core.extract(urls, out, lang=self.lang.get(),
                          keep_timestamps=self.keep_ts.get(),
                          channel_first=self.channel_first.get(), log=self.q.put)
-            after = set(os.listdir(out)) if os.path.isdir(out) else set()
-            created = [os.path.join(out, name) for name in sorted(after - before)]
+            created = sorted(_content_files(out) - before)
         except Exception as e:
             self.q.put(f"\nUnexpected error: {e}")
         finally:
-            # Carry the new Processed entries so a host (e.g. the Content Manager) can route them
+            # Carry the new transcripts so a host (e.g. the Content Manager) can route them
             # into the active tier. Update runs emit a bare ('__DONE__',) so on_complete stays quiet.
             self.q.put(('__DONE__', created))
 

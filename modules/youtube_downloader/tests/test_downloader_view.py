@@ -71,6 +71,35 @@ def test_run_extract_hands_on_only_the_new_content_files_at_any_depth(language):
     assert lines == ["done"]
 
 
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_new_files_in_the_youtube_channel_folders_are_handed_on_too(language):
+    """(3.0.12, Kura-PR2) YouTube's videos go into `YouTube/<channel>/` (a playlist's inside it), beside Processed: a
+    new one there is handed on as new, a channel folder an earlier download made included; one there before, never.
+    The folder is named by the store's `YOUTUBE_FOLDER`; ⋯ opens the library folder that holds it and Processed."""
+    from app.library_store import YOUTUBE_FOLDER
+    words = names(language)
+    youtube = core.youtube_dir(view.processed_folder(language))
+    assert youtube == os.path.join(get_data_path(language), YOUTUBE_FOLDER)
+    assert view.library_folder(language) == get_data_path(language)
+    channel = os.path.join(youtube, words[10])
+    os.makedirs(channel)
+    before = os.path.join(channel, f"{words[10]} - {words[11]} [aaaaaaaaaaa].txt")
+    with open(before, "w", encoding="utf-8") as f:
+        f.write(words[11])
+    new = [os.path.join(channel, f"{words[10]} - {words[12]} [bbbbbbbbbbb].txt"),
+           os.path.join(youtube, words[13], words[14], f"{words[13]} - {words[15]} [ccccccccccc].txt")]
+
+    def fake_extract(urls, folder, lang, keep_timestamps, channel_first, log, should_stop):
+        assert core.youtube_dir(folder) == youtube
+        for path in new:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(words[16])
+    created = view.run_extract(["https://youtu.be/dQw4w9WgXcQ"], language, "Japanese", False, True, lambda _l: None,
+                               ensure=lambda log: True, extract=fake_extract)
+    assert created == sorted(new)
+
+
 def test_run_extract_without_yt_dlp_downloads_nothing():
     lines = []
     created = view.run_extract(["https://youtu.be/dQw4w9WgXcQ"], "ja", "Japanese", False, True, lines.append,

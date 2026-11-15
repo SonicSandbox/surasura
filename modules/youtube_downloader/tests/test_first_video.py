@@ -130,8 +130,8 @@ def test_first_only_reads_each_links_own_video_or_its_playlists_first_and_turns_
     monkeypatch.setattr(core, "_probe", probe)
     monkeypatch.setattr(core, "_download_bucket", lambda urls, target, *a, **kw: buckets.append((urls, target)))
     log = []
-    summary = core.extract([VIDEO, "https://example.com/video/1", IN_LIST, PLAYLIST], str(tmp_path), lang="Japanese",
-                           log=log.append, first_only=True)
+    summary = core.extract([VIDEO, "https://example.com/video/1", IN_LIST, PLAYLIST], str(tmp_path / "Processed"),
+                           lang="Japanese", log=log.append, first_only=True)
     # Mado-Q: a video's link in a playlist is read as its list (its place known), once, when the list holds it
     assert probed == [(VIDEO, True), (IN_LIST, False), (PLAYLIST, True)], "a video's own link: one read each"
     assert "  ! not a YouTube or bilibili.tv link: https://example.com/video/1" in log and summary["errors"] == 1
@@ -148,7 +148,7 @@ def test_the_smallest_download_goes_first(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_probe", lambda url, log: infos[url])
     order = []
     monkeypatch.setattr(core, "_download_bucket", lambda urls, *a, **kw: order.append((urls, kw.get("counts"))))
-    core.extract([PLAYLIST, VIDEO], str(tmp_path), log=lambda _l: None)
+    core.extract([PLAYLIST, VIDEO], str(tmp_path / "Processed"), log=lambda _l: None)
     assert [urls for urls, _c in order] == [[VIDEO], [PLAYLIST]]
     assert order[0][1] == {PLAYLIST: 44, VIDEO: 1}
 
@@ -204,12 +204,12 @@ def test_setups_download_asks_for_the_links_one_video_never_its_playlist(tmp_pat
     monkeypatch.setattr(core, "_probe", lambda url, log, single=False, **_kw: infos[url])
     calls = []
     monkeypatch.setattr(core, "_run_ytdlp", lambda args, timeout=None, tick=None, **_k: calls.append(args) or Res())
-    core.extract([VIDEO, IN_LIST], str(tmp_path), lang="Japanese", log=lambda _l: None, first_only=True)
+    core.extract([VIDEO, IN_LIST], str(tmp_path / "Processed"), lang="Japanese", log=lambda _l: None, first_only=True)
     assert calls and all("--no-playlist" in args for args in calls)
     assert sorted(u for args in calls for u in args if u.startswith("https://")) == sorted([VIDEO, IN_LIST])
     calls.clear()
     monkeypatch.setattr(core, "_probe", lambda url, log: infos[url])
-    core.extract([VIDEO, IN_LIST], str(tmp_path), lang="Japanese", log=lambda _l: None)
+    core.extract([VIDEO, IN_LIST], str(tmp_path / "Processed"), lang="Japanese", log=lambda _l: None)
     assert calls and not any("--no-playlist" in args for args in calls)
 
 
@@ -226,7 +226,7 @@ def test_a_link_pasted_without_https_is_still_read(tmp_path, monkeypatch):
     probed = []
     monkeypatch.setattr(core, "_probe", lambda url, log, single=False, **_kw: probed.append(url) or None)
     log = []
-    core.extract(["www.youtube.com/watch?v=lecture0001"], str(tmp_path), log=log.append, first_only=True)
+    core.extract(["www.youtube.com/watch?v=lecture0001"], str(tmp_path / "Processed"), log=log.append, first_only=True)
     assert probed == ["https://www.youtube.com/watch?v=lecture0001"] and not [l for l in log if "not a YouTube" in l]
 
 

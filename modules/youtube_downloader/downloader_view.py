@@ -3,17 +3,19 @@
 kept inside its class, moved here so the Qt window (`qt_window.py`) only paints their answers. No Qt, no Tk.
 
 - `links(text)`: one link per non-blank line (the Tk `on_extract`).
-- `processed_folder(language)`: `data/<lang>/Processed`, set up first (the Tk `_output_dir`).
+- `processed_folder(language)`: `data/<lang>/Processed`, set up first (the Tk `_output_dir`);
+  `library_folder(language)`: `data/<lang>`, the folder ⋯ opens — YouTube's videos in its `YouTube/<channel>` since
+  3.0.12 (Kura-PR2), bilibili.tv's in its Processed.
 - `run_extract(...)`: yt-dlp made ready, the download, and **the created-files diff**: the new content files anywhere
-  under Processed (a channel's or a playlist's folder made by an earlier download included; W3.2 L1 B2), which the
-  opener's `on_complete` routes (W3.2's arrivals seam). Its inputs are taken
-  on the window's thread before the worker starts (the Tk window read its Tk variables on the worker: defect 2), and
-  `should_stop` (the window closed) ends the run between videos.
+  under Processed and the YouTube folder (a channel's or a playlist's folder made by an earlier download included; W3.2
+  L1 B2), which the opener's `on_complete` routes (W3.2's arrivals seam). Its inputs are taken on the window's thread
+  before the worker starts (the Tk window read its Tk variables on the worker: defect 2), and `should_stop` (the window
+  closed) ends the run between videos.
 - `backfill_minutes(n)`: the time the *Fill missing timestamps* question names (the Tk `on_backfill`'s formula).
 - `pending_backfill(language)`, `run_backfill(...)`, `run_update(...)`: the other two actions, on a worker.
 
 Known, for W3.2's seam (the intent keeper's IK-15): a re-download over a same-named file is not "created"; and a close
-mid-run leaves the files finished before it in Processed, un-routed.
+mid-run leaves the files finished before it where they were written, un-routed.
 """
 import json
 import os
@@ -43,16 +45,25 @@ def processed_folder(language):
     return path
 
 
+def library_folder(language):
+    """(A worker: it sets the language's folders up.) `data/<lang>`: where both sites' downloads are."""
+    ensure_data_setup(language)
+    return get_data_path(language)
+
+
 def _content_files(folder):
-    """Every content file under `folder` (sidecars and logs aren't): a new video written into a channel's or a
-    playlist's folder an earlier download made is new, though its folder isn't (W3.2 L1 B2)."""
+    """Every content file under `folder` and the YouTube folder beside it (sidecars and logs aren't): a new video
+    written into a channel's or a playlist's folder an earlier download made is new, though its folder isn't (W3.2 L1
+    B2)."""
     from app.library_store import is_content_name
-    return {os.path.join(d, n) for d, _s, names in os.walk(folder) for n in names if is_content_name(n)}
+    return {os.path.join(d, n) for top in (folder, core.youtube_dir(folder))
+            for d, _s, names in os.walk(top) for n in names if is_content_name(n)}
 
 
 def run_extract(urls, language, caption_language, keep_timestamps, channel_first, log, should_stop=None,
                 ensure=None, extract=None, first_only=False, new_only=False, written=None):
-    """(A worker.) Download `urls`' transcripts into the language's Processed folder. -> the new content files'
+    """(A worker.) Download `urls`' transcripts into the language's folders (YouTube's into `YouTube/<channel>`,
+    bilibili.tv's into Processed). -> the new content files'
     paths, at any depth, sorted (the routing contract: only what did not exist before). [] when yt-dlp couldn't be
     had. `first_only` (alpha 8, setup): each link's one video; `new_only` (alpha 8, a playlist's rest): the videos
     not in the library's folder yet; `written(path)`: each transcript as it is written (`core.extract`'s)."""

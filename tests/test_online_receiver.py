@@ -178,6 +178,17 @@ def test_not_loopback_is_refused():
     assert not rx._loopback("192.168.1.20") and not rx._loopback("example.com")
 
 
+def test_the_token_is_made_once_and_kept_outside_settings_json():
+    """A credential never goes in settings.json (it ships inside the release, and leaves with every export): the token
+    is made once in the persistent user data folder, and read back the same."""
+    from app import settings_manager
+    assert rx.read_token() is None
+    token = rx.kept_token()
+    assert rx.kept_token() == token == rx.read_token() and len(token) >= 32
+    assert "persistent_root" in rx.token_path()
+    assert not [k for k in settings_manager.DEFAULT_SETTINGS if "token" in k]
+
+
 def test_the_token_is_compared_whole():
     token = rx.new_token()
     assert len(token) >= 32 and rx.token_ok(token, token)

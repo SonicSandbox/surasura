@@ -13,7 +13,7 @@ picture and sound a card needs come later, from the extension itself (`runner.BR
 
 **Safe on a shared computer** (each its own check, `Receiver`):
 - loopback only: bound to 127.0.0.1, and a peer that isn't loopback is refused all the same;
-- a token the learner copies once from Settings (`new_token`: kept in settings.json, compared in constant time);
+- a token the learner copies once from Settings (`kept_token`: in the persistent user data folder, never settings.json; compared in constant time);
 - no web page: a request naming an `Origin` that isn't a browser extension's is refused (a page's script can reach
   127.0.0.1, an extension's background can't be faked by one), and no CORS header is ever sent;
 - a body over `MAX_BODY` is refused before it is read.
@@ -59,9 +59,41 @@ class Busy(Exception):
     """Surasura can't take it now (no library open, the store busy, read-only): the 503."""
 
 
+TOKEN_FILE = "browser_extension_token.txt"
+
+
 def new_token():
-    """A fresh token for settings.json's `browser_extension_token` (made once, when the learner first turns it on)."""
     return secrets.token_urlsafe(24)
+
+
+def token_path():
+    """Where the token is kept: the persistent user data folder (`path_utils.get_persistent_user_data_path`), never
+    settings.json — a credential there would ship inside the release and leave with every export."""
+    from app.path_utils import get_persistent_user_data_path
+    return os.path.join(get_persistent_user_data_path(), TOKEN_FILE)
+
+
+def read_token(path=None):
+    """The kept token, or None (none made yet, or unreadable)."""
+    try:
+        with open(path or token_path(), encoding="utf-8") as f:
+            token = f.read().strip()
+        return token or None
+    except OSError:
+        return None
+
+
+def kept_token(path=None):
+    """The kept token, made and written once (when the learner first turns the listener on) -> it."""
+    path = path or token_path()
+    token = read_token(path)
+    if token is None:
+        token = new_token()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".part", "w", encoding="utf-8") as f:
+            f.write(token)
+        os.replace(path + ".part", path)
+    return token
 
 
 def token_ok(given, kept):

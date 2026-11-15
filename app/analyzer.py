@@ -4945,7 +4945,7 @@ def settings_signature(settings, language):
         # library_frequency.json it used to switch on.)
         "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
         "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels", "enable_irodori",
-        "browser_extension", "browser_extension_token",     # the browser extension's listener: never what a run reads
+        "browser_extension",            # the browser extension's listener: never what a run reads
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
         # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
         # reads them.

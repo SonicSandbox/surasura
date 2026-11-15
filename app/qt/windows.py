@@ -743,7 +743,7 @@ def _arrived(shell, relay, counts, then=None, quiet=False):
 def start_receiver(shell):
     """(At the window's start.) The extension's listener on 127.0.0.1 while the window is open and Settings' *Browser
     extension* is on (`browser_extension`, off by default: a new door into Surasura is the learner's yes); its token
-    made once when it is first turned on (`browser_extension_token`). A switch in Settings starts or stops it at once;
+    made once when it is first turned on (`online_receiver.kept_token`: outside settings.json). A switch in Settings starts or stops it at once;
     the window's close stops it. A subtitle sent goes in through the open library's writer (`online_receiver.take_in`,
     on the listener's thread: never this one), as the YouTube downloader's transcripts do."""
     if getattr(shell, "_receiver", None) is not None:
@@ -762,7 +762,7 @@ def start_receiver(shell):
         rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
         return online_receiver.take_in(getattr(services, "writer", None), sub, rules)
 
-    receiver = online_receiver.Receiver(lambda: settings().get("browser_extension_token") or None, deliver,
+    receiver = online_receiver.Receiver(online_receiver.read_token, deliver,
                                         version=__version__)
     shell._receiver = receiver
 
@@ -771,8 +771,8 @@ def start_receiver(shell):
             return
         values = settings()
         on = values.get("browser_extension") is True
-        if on and not values.get("browser_extension_token"):
-            services.settings.set({"browser_extension_token": online_receiver.new_token()})
+        if on:
+            online_receiver.kept_token()                  # made once, the first time it is turned on
         if on and not receiver.on and not receiver.start():
             applog.log("windows", f"browser extension: port {online_receiver.PORT} is taken; not listening")
         elif not on and receiver.on:

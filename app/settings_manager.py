@@ -150,10 +150,10 @@ DEFAULT_SETTINGS = {
     "practice_keep_rounds": True,
     # Browser extension (Settings → Connections; app/online_receiver.py): Surasura listens on 127.0.0.1:27631 for the
     # subtitles the learner's browser extension sends from Netflix and Disney+, each a library item. Off by default (a
-    # new door into Surasura is the learner's yes); its token made once, when first turned on, and copied from there
-    # into the extension. Never in a signature.
+    # new door into Surasura is the learner's yes). Its token is no setting: a credential never goes in settings.json
+    # (it ships inside the release), so it is kept in the persistent user data folder (`online_receiver.kept_token`).
+    # Never in a signature.
     "browser_extension": False,
-    "browser_extension_token": "",
     # The version whose setup pages the learner has seen (the setup wizard, WZ-8): "" never — a profile set up in 2.x
     # sees 3.0's wizard once. Never in a signature.
     "setup_seen": "",

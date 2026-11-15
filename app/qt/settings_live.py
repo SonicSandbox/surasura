@@ -1232,7 +1232,8 @@ class Live(QObject):
         """*Copy token*: the browser extension's token to the clipboard (none yet: the switch makes it), and the
         row's line read again. Writes nothing."""
         from PyQt6.QtWidgets import QApplication
-        token = (self._settings() or {}).get("browser_extension_token")
+        from app import online_receiver
+        token = online_receiver.read_token()
         if token:
             QApplication.clipboard().setText(token)
         self.say(S.EXTENSION_COPIED_LINE if token else S.EXTENSION_NO_TOKEN, "browser_extension_token")

@@ -350,7 +350,7 @@ ROWS = (
     # Netflix and Disney+ (app/online_receiver.py): the browser extension's listener, off until the learner's yes;
     # under it its token's *Copy* and whether it listens
     _row("browser_extension", "connect", "toggle", ("browser_extension",)),
-    _row("browser_extension_token", "connect", "custom", ("browser_extension_token",), sub=True),
+    _row("browser_extension_token", "connect", "custom", sub=True),     # its token: kept outside settings.json
     _row("hato", "connect", "status", group="houseki"),
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built

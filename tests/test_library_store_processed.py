@@ -207,3 +207,132 @@ def test_drag_move_finish_and_undo_work_on_the_new_titles_and_nothing_on_disk_mo
     assert _disk(data_dir) == disk, "nothing on disk moved"
     assert json.dumps(_titles(store), ensure_ascii=False).count(ls.PROCESSED_FOLDER) == 0
     store.close()
+
+
+# --- New arrivals: a title's new video joins its row (Kura-PR2, 3.0.12; based on Mattias's #466) ----------------- #
+# His library: two channels, two videos each, came in one after another (A, B, B, A). Each was titled by its channel,
+# but the tray draws a row per piece, and a new item joined only the piece of its title it landed directly after:
+# A's second video came in after B's, a row of its own, shown by its video's name — it looked like another title. An
+# item a command brings into New arrivals now lands right after its title's last item there and joins its row. Never
+# an item moved there or put back by an Undo (where it stands is what the learner did), and never Current or Soon.
+
+def _tray(store):
+    """The tray's rows as the window builds them from the store's feed (`view_rows.build`): each row's item ids, newest
+    row first by `added_at` — and every row's stamp, to hold that order."""
+    from app.services import view_rows
+    feed = store.read_feed()
+    view = view_rows.build({r["id"]: r for r in feed["items"]}, {w["id"]: w for w in feed["works"]}, feed["options"],
+                           language=store.language, pieces={p["id"]: p for p in feed.get("pieces") or ()})
+    return [tuple(a.item_ids) for a in view.arrivals], [a.added_at for a in view.arrivals]
+
+
+def _placed(store):
+    """Every row outside New arrivals, as it stands: (id, tier, ord) — what the gathering may never touch."""
+    return store.conn.execute("SELECT id, tier, ord FROM items WHERE tier != 'arrivals' ORDER BY id").fetchall()
+
+
+def _hato(show, episode):
+    return {"schema": 1, "producer": "hato", "content_key": f"hato:{show}:{episode}",
+            "show": {"title": show, "episode": episode}}
+
+
+def _video(store, data_dir, channel, video, words):
+    return store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{channel} - {words} [{video}].txt"),
+                          _youtube(video, channel)).added[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_channels_video_after_another_channels_joins_its_row_in_new_arrivals(language):
+    """His A, B, B, A: two rows, one a channel, each in the order its videos came, the rows newest first by
+    `added_at` (A's, its newest the last to come). A's video placed in Current before stays where it is: only New
+    arrivals is gathered, and nothing outside it moves."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a0 = _video(store, data_dir, w[81], "yuhZP5BnWW0", w[80])
+    store.move([a0], "now")                                   # the learner sent A's first video to Current
+    before = _placed(store)
+    a1 = _video(store, data_dir, w[81], "yuhZP5BnWWI", w[82])
+    b1 = _video(store, data_dir, w[83], "ub05E5rev7E", w[84])
+    b2 = _video(store, data_dir, w[83], "MQzFMVzOEc4", w[85])
+    a2 = _video(store, data_dir, w[81], "HZ8bb5k22po", w[86])
+    assert {store.item(i)["tier"] for i in (a1, b1, b2, a2)} == {"arrivals"}
+    assert _work(store, a2) == _work(store, a1) == _work(store, a0) != _work(store, b1)
+    rows, stamps = _tray(store)
+    assert rows == [(a1, a2), (b1, b2)], "a channel's videos one row, in the order they came"
+    assert stamps == sorted(stamps, reverse=True), "the rows newest first by added_at"
+    assert _placed(store) == before, "Current, Soon and Goal never touched"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_arrival_whose_title_has_nothing_earlier_there_stays_where_it_came(language):
+    """A, then B: each its own row where it came (B's the newest, first); a third channel's too."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a1 = _video(store, data_dir, w[81], "yuhZP5BnWWI", w[82])
+    b1 = _video(store, data_dir, w[83], "ub05E5rev7E", w[84])
+    c1 = _video(store, data_dir, w[87], "Kd7sLw2Pq0A", w[88])
+    assert store.ids("arrivals") == [a1, b1, c1]
+    assert _tray(store)[0] == [(c1,), (b1,), (a1,)]
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_item_moved_into_new_arrivals_or_put_back_by_undo_stays_where_it_was_put(language):
+    """A's second video goes to Current, B's comes in, then the learner moves A's back into New arrivals (its end):
+    it stays after B's — a row of its own, as he put it. Removed, then its Remove undone (or *Put back* from Removed),
+    it comes back there too.
+    A video of A that comes in later joins the row it lands beside (A's last there)."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a1 = _video(store, data_dir, w[81], "yuhZP5BnWWI", w[82])
+    a2 = _video(store, data_dir, w[81], "HZ8bb5k22po", w[86])
+    store.move([a2], "now")
+    b1 = _video(store, data_dir, w[83], "ub05E5rev7E", w[84])
+    store.move([a2], "arrivals", after_id=b1)
+    assert store.ids("arrivals") == [a1, b1, a2], "moved there by the learner: where he put it"
+    removed = store.remove([a2])
+    assert store.ids("arrivals") == [a1, b1]
+    store.undo(removed)
+    assert store.ids("arrivals") == [a1, b1, a2], "put back by its Undo: where it was"
+    removed = store.remove([a2])
+    store.restore(removed.trash_ids)
+    assert store.ids("arrivals") == [a1, b1, a2], "*Put back* from Removed: where it was"
+    a3 = _video(store, data_dir, w[81], "Zx9pQ2mN4rT", w[88])
+    assert store.ids("arrivals") == [a1, b1, a2, a3], "a new one lands after its title's last: here, already"
+    assert sorted(_tray(store)[0]) == sorted([(a1,), (b1,), (a2, a3)])
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_look_bringing_several_of_a_title_keeps_their_order_inside_its_row(language):
+    """A guard: a look's take-in brings two shows' first episodes (in its shows' name order); the next look brings the
+    first show's next two (one command, two items). The look places a show's new files after its last already (§6.10
+    rule 3); the gathering keeps that — both in its row, in their order, right after its first episode, the other
+    show's row untouched."""
+    from tests.test_library_store_sources import _empty, _found, _source_root
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    show, other = w[90], w[91]
+    with store:
+        root = store.add_source(src)
+        firsts = [_found(language, data_dir, src, show, f"{show} 第01話.srt", 1),
+                  _found(language, data_dir, src, other, f"{other} 第01話.srt", 2)]
+        store.take_in(root, firsts)
+        first, elsewhere = (store.item_id(f["rel"]) for f in firsts)
+        assert sorted(store.ids("arrivals")) == sorted([first, elsewhere])
+        later = [_found(language, data_dir, src, show, f"{show} 第02話.srt", 3),
+                 _found(language, data_dir, src, show, f"{show} 第03話.srt", 4)]
+        store.take_in(root, later)
+        two, three = (store.item_id(f["rel"]) for f in later)
+        ids = store.ids("arrivals")
+        assert ids[ids.index(first):ids.index(first) + 3] == [first, two, three] and elsewhere in ids
+        assert sorted(_tray(store)[0]) == sorted([(first, two, three), (elsewhere,)])
+        assert pieces_ok(store) is None

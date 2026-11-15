@@ -211,6 +211,9 @@ SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
 SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `join_specials` read
+# The commands that put rows back where they were (an Undo, *Put back* from Removed, the sort screen's unsort): New
+# arrivals' gathering (`Store._gather_arrivals`) never moves what they bring back
+PUT_BACK_KINDS = ("undo", "restore", "unsort")
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
@@ -3892,8 +3895,41 @@ class Store:
             self._tidy_asks()
         if cmd.line_set or cmd.tiers & set(CURRENT):
             self._keep_line(cmd)
+        if "arrivals" in cmd.tiers:
+            self._gather_arrivals(cmd)
         self._fix_pieces(cmd)
         self._write_feed(cmd)
+
+    def _gather_arrivals(self, cmd):
+        """A title's new arrival joins its row (Kura-PR2, 3.0.12; based on the diagnosis in #466 by Mattias): New
+        arrivals draws a row per piece, and a new item joins only the piece of its own title it lands beside
+        (`_fix_pieces`) — so a channel's video registered after another channel's came in at the tier's end, a row of
+        its own. Each item this command BROUGHT into New arrivals (a new row: no piece yet, no Undo's hint; never in a
+        command that puts rows back where they were — an Undo, *Put back*, the sort screen's unsort:
+        `PUT_BACK_KINDS`), in the order they came, that doesn't already follow its own title's item there lands right
+        after its title's last item before it (`_put`: a local re-space when the gap is spent), and `_fix_pieces` joins
+        it to that row. Never an item moved there or put back by an Undo (where it stands is the learner's), never
+        Current or Soon; the tray keeps its rows newest first by `added_at`, which the item keeps. A title with nothing
+        earlier there: where it came. Before `_fix_pieces`, after the works are settled (`_settle`)."""
+        if cmd.kind in PUT_BACK_KINDS:
+            return
+        new = [i for i in cmd.moved if i not in cmd.hints]
+        rows = []
+        for chunk in _chunks(new, 500):
+            rows += self.conn.execute(f"SELECT id, ord, work_id FROM items WHERE tier = 'arrivals' AND piece_id IS "
+                                      f"NULL AND work_id IS NOT NULL AND id IN ({','.join('?' * len(chunk))})",
+                                      chunk).fetchall()
+        for item_id, _ord, work in sorted(rows, key=lambda r: (r[1], r[0])):
+            at = self._key(item_id)                 # (as it is now: an earlier one's re-space may have moved it)
+            above = self._beyond("arrivals", at, (), -1, 1)
+            if not above or self.conn.execute("SELECT work_id FROM items WHERE id = ?",
+                                              (above[0][0],)).fetchone()[0] == work:
+                continue                            # first in the tier, or beside its own title already
+            anchor = self.conn.execute("SELECT id, ord FROM items WHERE work_id = ? AND tier = 'arrivals' AND "
+                                       "(ord, id) < (?, ?) ORDER BY ord DESC, id DESC LIMIT 1",
+                                       (work, at[1], at[0])).fetchone()
+            if anchor is not None:
+                self._put("arrivals", [item_id], ("after", anchor[0]), cmd.version, anchor=tuple(anchor), in_tier=True)
 
     def _new_work(self, title, fk, cmd, titles=()):
         titles = [t for t in titles if t and t != title]

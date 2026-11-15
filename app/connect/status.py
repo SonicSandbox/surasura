@@ -335,6 +335,8 @@ STEP_AT = {"picking": (0, "Choosing words"), "fit-check": (4, "Checking the timi
 MINE_FROM, MINE_TO = 8, 60                  # Anki Miner's own run (its percent, `anki_miner.percent`), mapped here
 NAMING = (62, "Naming the clips")
 DOWNLOADING = ("downloading", "Downloading its video ({pct}%)")    # Michi-YT: `runner.DOWNLOADING`'s step, its words
+# Michi-YT2: `runner.TRANSCRIBING`'s — Anki Miner making its subtitle from the audio, after the download (PROVISIONAL)
+TRANSCRIBING = ("transcribing", "Making its subtitles from the audio ({pct}%)")
 STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
                5: "Adding cards"}           # Anki Miner's stages (its progress file)
 
@@ -354,8 +356,10 @@ def _progress(job):
         percent, doing = STEP_AT.get(job["state"], (0, "Choosing words"))
         if job["state"] == "picking":       # Michi-YT: an online title's video coming down first (`runner._download`)
             got = _saved(job)
-            if isinstance(got, dict) and got.get("step") == DOWNLOADING[0] and isinstance(got.get("percent"), int):
-                doing = DOWNLOADING[1].format(pct=max(0, min(99, got["percent"])))
+            words = {DOWNLOADING[0]: DOWNLOADING[1], TRANSCRIBING[0]: TRANSCRIBING[1]}.get(
+                got.get("step")) if isinstance(got, dict) else None
+            if words and isinstance(got.get("percent"), int):
+                doing = words.format(pct=max(0, min(99, got["percent"])))
         return {"percent": percent, "doing": doing}
     try:
         got = json.loads(job.get("progress") or "null")

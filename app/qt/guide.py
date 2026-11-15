@@ -337,7 +337,7 @@ class GuidePanel(motion.Overlay):
         pieces = []
 
         def label(name, text):
-            pieces.append(lambda: col.addWidget(self._label(name, text, body)))
+            pieces.append(lambda: self._row(col, self._label(name, text, body)))
 
         def card(item, folded=False, into=None):
             def make():
@@ -346,7 +346,7 @@ class GuidePanel(motion.Overlay):
                     c.setVisible(False)
                     into[1].append(c)
                 self.cards.append(c)
-                col.addWidget(c)
+                self._row(col, c)
             pieces.append(make)
 
         def fold(entry):
@@ -358,7 +358,7 @@ class GuidePanel(motion.Overlay):
                 b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
                 b.setAutoDefault(False)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
-                col.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+                self._row(col, b, Qt.AlignmentFlag.AlignLeft)
                 entry[0] = b
                 self.folds.append(entry)
                 b.clicked.connect(lambda _c=False, e=entry: self._fold(e))
@@ -398,13 +398,13 @@ class GuidePanel(motion.Overlay):
         p = self.path
 
         def header(chapter, right):
-            pieces.append(lambda: col.addWidget(self._chapter(chapter, right, body)))
+            pieces.append(lambda: self._row(col, self._chapter(chapter, right, body)))
 
         def row(st, later=False):
             def make():
                 r = _StepRow(st, self._show, body, later=later)
                 self.rows.append(r)
-                col.addWidget(r)
+                self._row(col, r)
             pieces.append(make)
 
         first, ready, later = path_service.listed(p.steps)
@@ -416,7 +416,7 @@ class GuidePanel(motion.Overlay):
             for st in ready:
                 row(st)
         if later:
-            pieces.append(lambda: col.addWidget(self._label("guidegroup", strings.PATH_LATER, body)))
+            pieces.append(lambda: self._row(col, self._label("guidegroup", strings.PATH_LATER, body)))
             for st in later:
                 row(st, later=True)
         pieces.append(lambda: col.addStretch(1))
@@ -533,16 +533,36 @@ class GuidePanel(motion.Overlay):
         self.show_me.emit(where)
 
     # --- opening, closing ------------------------------------------------------------------------------------------ #
+    def _widths(self, p):
+        """(the panel's width, its body's width before any scroll bar) under the window `p`."""
+        width = min(round(theme.size("tray", style.current()[1])), max(1, p.width() - 2 * EDGE))
+        m = self.layout().contentsMargins()
+        return width, max(1, width - m.left() - m.right())
+
+    def _row(self, col, widget, align=None):
+        """`widget` into a body's column, polished and its lines wrapped once at the width `place()` will ask, in this
+        piece's own turn: the first `place()` after a build then wraps nothing for the first time (every row's first wrap
+        there took 4.0 ms of its 4 at nine releases' notes, 3.0.11's cut)."""
+        if align is None:
+            col.addWidget(widget)
+        else:
+            col.addWidget(widget, 0, align)
+        p = self.parentWidget()
+        widget.ensurePolished()                  # (its style's font first: a later polish would drop the wrap)
+        if p is not None and widget.hasHeightForWidth():
+            m = col.contentsMargins()
+            widget.heightForWidth(max(1, self._widths(p)[1] - m.left() - m.right()))
+        return widget
+
     def place(self):
         """Under the ✦, its right edge on the ✦'s, kept inside the window; as tall as its content up to the window's
         room, then it scrolls. The body is sized here to its lines wrapped at its width (a scroll area sizing it by
         its hints showed a bar where none was needed): the bar only when the content passes the room."""
         p = self.parentWidget()
         self.ensurePolished()
-        width = min(round(theme.size("tray", style.current()[1])), max(1, p.width() - 2 * EDGE))
+        width, inner = self._widths(p)
         lay = self.layout()
         m = lay.contentsMargins()
-        inner = max(1, width - m.left() - m.right())
         b = self.button
         at = b.mapTo(p, b.rect().bottomRight())
         top = at.y() + 6

@@ -214,6 +214,10 @@ SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `joi
 # The commands that put rows back where they were (an Undo, *Put back* from Removed, the sort screen's unsort): New
 # arrivals' gathering (`Store._gather_arrivals`) never moves what they bring back
 PUT_BACK_KINDS = ("undo", "restore", "unsort")
+# … and its read of a title's last item before a new one there: `+tier` keeps it on the title's index (items_work),
+# never a walk back through the tier (a big take-in of one-file titles: each would read every earlier row)
+ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = 'arrivals' AND (ord, id) < (?, ?) "
+                      "ORDER BY ord DESC, id DESC LIMIT 1")
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
@@ -3919,15 +3923,18 @@ class Store:
             rows += self.conn.execute(f"SELECT id, ord, work_id FROM items WHERE tier = 'arrivals' AND piece_id IS "
                                       f"NULL AND work_id IS NOT NULL AND id IN ({','.join('?' * len(chunk))})",
                                       chunk).fetchall()
+        brought = {r[0] for r in rows}
         for item_id, _ord, work in sorted(rows, key=lambda r: (r[1], r[0])):
             at = self._key(item_id)                 # (as it is now: an earlier one's re-space may have moved it)
             above = self._beyond("arrivals", at, (), -1, 1)
-            if not above or self.conn.execute("SELECT work_id FROM items WHERE id = ?",
-                                              (above[0][0],)).fetchone()[0] == work:
-                continue                            # first in the tier, or beside its own title already
-            anchor = self.conn.execute("SELECT id, ord FROM items WHERE work_id = ? AND tier = 'arrivals' AND "
-                                       "(ord, id) < (?, ?) ORDER BY ord DESC, id DESC LIMIT 1",
-                                       (work, at[1], at[0])).fetchone()
+            if not above:
+                continue                            # first in the tier
+            below = self._beyond("arrivals", at, brought, 1, 1)     # (a row there already: never one brought too)
+            if any(self.conn.execute("SELECT work_id FROM items WHERE id = ?", (n[0][0],)).fetchone()[0] == work
+                   for n in (above, below) if n):
+                continue                            # beside its own title already (placed before its row: episode
+                                                    # order, a playlist's: it joins that row where it is)
+            anchor = self.conn.execute(ARRIVAL_ANCHOR_SQL, (work, at[1], at[0])).fetchone()
             if anchor is not None:
                 self._put("arrivals", [item_id], ("after", anchor[0]), cmd.version, anchor=tuple(anchor), in_tier=True)
 

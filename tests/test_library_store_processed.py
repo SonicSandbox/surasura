@@ -336,3 +336,61 @@ def test_one_look_bringing_several_of_a_title_keeps_their_order_inside_its_row(l
         assert ids[ids.index(first):ids.index(first) + 3] == [first, two, three] and elsewhere in ids
         assert sorted(_tray(store)[0]) == sorted([(first, two, three), (elsewhere,)])
         assert pieces_ok(store) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_several_new_videos_of_a_title_in_one_command_join_its_row_in_their_order(language):
+    """One command bringing two of A's videos after B's (a batch: one settling for both): both land after A's first,
+    in the order they came — A1, A2, A3, then B1."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a1 = _video(store, data_dir, w[81], "yuhZP5BnWWI", w[82])
+    b1 = _video(store, data_dir, w[83], "ub05E5rev7E", w[84])
+    with store._command("register_batch", "sync"):          # (the store's commands nest: one settle at the end)
+        a2 = _video(store, data_dir, w[81], "HZ8bb5k22po", w[86])
+        a3 = _video(store, data_dir, w[81], "Zx9pQ2mN4rT", w[88])
+    assert store.ids("arrivals") == [a1, a2, a3, b1]
+    assert sorted(_tray(store)[0]) == sorted([(a1, a2, a3), (b1,)])
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_episode_placed_before_its_titles_row_stays_in_that_row(language):
+    """The review's case: New arrivals holds S's first episode, another show's, then S's third (the learner moved it
+    there). A look brings S's second: the look places it before the third (episode order), in that row — beside its
+    own title already, so it stays, never pulled up to the first."""
+    from tests.test_library_store_sources import _empty, _found, _source_root
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    show, other = w[90], w[91]
+    with store:
+        root = store.add_source(src)
+        e1, x, e3 = (_found(language, data_dir, src, s, f"{s} 第{n:02d}話.srt", k) for k, (s, n) in
+                     enumerate(((show, 1), (other, 1), (show, 3)), 1))
+        store.take_in(root, [e1, x, e3])
+        e1, x, e3 = (store.item_id(f["rel"]) for f in (e1, x, e3))
+        store.move([e1], "arrivals")                          # (the look's order is its shows' names: set it)
+        store.move([x], "arrivals", after_id=e1)
+        store.move([e3], "arrivals", after_id=x)
+        assert store.ids("arrivals") == [e1, x, e3]
+        e2 = _found(language, data_dir, src, show, f"{show} 第02話.srt", 4)
+        store.take_in(root, [e2])
+        e2 = store.item_id(e2["rel"])
+        assert store.ids("arrivals") == [e1, x, e2, e3], "in its row before the third, where the look put it"
+        assert sorted(_tray(store)[0]) == sorted([(e1,), (x,), (e2, e3)])
+        assert pieces_ok(store) is None
+
+
+def test_the_anchor_read_goes_by_the_titles_index_never_a_walk_through_the_tier():
+    """The review's B1: a title's last item before a new one is read by the title's index (items_work). Through the
+    tier's order index it walks back over every earlier row for a title with none there — on a big take-in of one-file
+    titles (setup's scan, a folder of films), one walk per file under the write lock (3,000: 3.3 s → 7.6 s)."""
+    from tests.test_library_store_support import big_store
+    store = big_store("ja", 200)
+    plan = " ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + ls.ARRIVAL_ANCHOR_SQL, (1, 5.0, 5)))
+    assert "items_work" in plan and "items_order" not in plan, plan
+    store.close()
+

@@ -1505,6 +1505,182 @@
         .sort-menu-item .priority-marker {
             font-size: 1rem;
         }
+
+        /* --- The line player (Kiku-L; F3 loop the line + F19 pause after every line; words and defaults PROVISIONAL):
+           ▶ after a line plays its own audio; one bar floats over the page's foot, made on the first ▶ — nothing on the
+           page moves. Drawn by CSS (dictionary extensions never read it), in the theme's own colours. */
+        body { --lp-ink: var(--secondary); }
+        body.theme-modern-light { --lp-ink: var(--primary); }
+
+        .lp {
+            position: relative;
+            display: inline-block;
+            vertical-align: -0.2em;
+            width: 1.4em;
+            height: 1.4em;
+            margin-left: 0.45em;
+            padding: 0;
+            border: none;
+            border-radius: 50%;
+            background: transparent;
+            cursor: pointer;
+            opacity: 0.55;
+            transition: opacity 0.15s;
+        }
+
+        .lp:hover, .lp:focus-visible { opacity: 1; }
+        .lp:focus-visible { outline: 2px solid var(--lp-ink); outline-offset: 2px; }
+
+        .lp::before {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-35%, -50%);
+            border-style: solid;
+            border-width: 0.36em 0 0.36em 0.6em;
+            border-color: transparent transparent transparent var(--text-secondary);
+        }
+
+        .lp:hover::before { border-left-color: var(--lp-ink); }
+        .lp::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; }
+        .lp.lp-loading, .lp.lp-playing, .lp.lp-pausing, .lp.lp-waiting { opacity: 1; }
+        .lp.lp-loading::after { border-top-color: var(--lp-ink); animation: lp-spin 0.8s linear infinite; }
+
+        /* Playing and its pause: ▶ is ■ (a press stops it); the ring fills over the line's length — one CSS animation
+           a play, never a script a frame. The pause and the wait are drawn still: nothing runs while they last. */
+        .lp.lp-playing::before, .lp.lp-pausing::before {
+            border: none;
+            width: 0.46em;
+            height: 0.46em;
+            background: var(--lp-ink);
+            border-radius: 1px;
+            transform: translate(-50%, -50%);
+        }
+
+        .lp.lp-playing::after {
+            border: none;
+            background: conic-gradient(var(--lp-ink) calc(var(--lp-p) * 1turn), transparent 0);
+            -webkit-mask: radial-gradient(circle, transparent 56%, black 58%);
+            mask: radial-gradient(circle, transparent 56%, black 58%);
+            animation: lp-fill var(--lp-dur, 2s) linear forwards;
+        }
+
+        .lp.lp-pausing::after { border-color: var(--text-secondary); border-style: dashed; }
+        .lp.lp-waiting::before { border-left-color: var(--lp-ink); }
+        .lp.lp-waiting::after { border-color: var(--lp-ink); }
+        .lp.lp-failed { opacity: 0.3; }
+        .lp-on { box-shadow: inset 3px 0 0 var(--lp-ink); }
+
+        @property --lp-p { syntax: '<number>'; inherits: true; initial-value: 0; }
+        @keyframes lp-fill { from { --lp-p: 0; } to { --lp-p: 1; } }
+        @keyframes lp-spin { to { transform: rotate(360deg); } }
+
+        .lp-bar {
+            position: fixed;
+            left: 50%;
+            bottom: 16px;
+            transform: translate(-50%, 160%);
+            width: min(680px, calc(100% - 32px));
+            z-index: 900;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 12px;
+            padding: 8px 10px;
+            background: var(--surface);
+            color: var(--on-surface);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+            font-size: 0.82rem;
+            transition: transform 0.18s ease-out;
+        }
+
+        .lp-bar.lp-shown { transform: translate(-50%, 0); }
+        body.lp-bar-up .word-list-container { padding-bottom: 88px; }   /* the bar never hides a list's last card */
+        .lp-bar button { font: inherit; cursor: pointer; }
+        .lp-bar :focus-visible { outline: 2px solid var(--lp-ink); outline-offset: 1px; }
+
+        .lp-stop {
+            position: relative;
+            flex: none;
+            width: 34px;
+            height: 34px;
+            border: none;
+            border-radius: 50%;
+            background: var(--lp-ink);
+        }
+
+        .lp-stop::before {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 11px;
+            height: 11px;
+            background: var(--surface);
+            border-radius: 2px;
+            transform: translate(-50%, -50%);
+        }
+
+        .lp-where, .lp-grp { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); }
+        .lp-where { gap: 6px; }
+        .lp-dots { display: inline-flex; gap: 4px; }
+        .lp-dots i { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--text-secondary); }
+        .lp-dots i.lp-done, .lp-dots i.lp-now { background: var(--lp-ink); border-color: var(--lp-ink); }
+        .lp-grp > span:first-child { margin-right: 2px; }
+
+        .lp-step, .lp-sel, .lp-seg button {
+            background: transparent;
+            color: var(--on-surface);
+            border: 1px solid var(--card-border);
+            padding: 3px 9px;
+        }
+
+        .lp-step { width: 26px; padding: 3px 0; border-radius: 999px; }
+        .lp-val { min-width: 2em; text-align: center; color: var(--on-surface); font-variant-numeric: tabular-nums; }
+        .lp-sel { border-radius: 999px; }
+        .lp-seg { display: inline-flex; }
+        .lp-seg button:first-child { border-radius: 999px 0 0 999px; }
+        .lp-seg button:last-child { border-radius: 0 999px 999px 0; }
+        .lp-seg button + button { border-left: none; }
+        .lp-seg button[aria-pressed="true"] { border-color: var(--lp-ink); color: var(--lp-ink); }
+
+        .lp-help {
+            position: relative;
+            flex: none;
+            margin-left: auto;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 1px solid var(--text-secondary);
+            background: transparent;
+            color: var(--text-secondary);
+        }
+
+        .lp-help-pop {
+            display: none;
+            position: absolute;
+            right: 0;
+            bottom: 32px;
+            width: min(240px, calc(100vw - 48px));
+            padding: 8px 10px;
+            border-radius: 8px;
+            text-align: left;
+            line-height: 1.45;
+            background: var(--background);
+            color: var(--on-background);
+            border: 1px solid var(--card-border);
+        }
+
+        .lp-help[aria-expanded="true"] .lp-help-pop { display: block; }
+
+        @media (prefers-reduced-motion: reduce) {
+            .lp::after { animation: none !important; }
+            .lp-bar { transition: none; }
+        }
+        /* --- end of the line player */
     </style>
 </head>
 
@@ -1920,6 +2096,7 @@
         // --- Tabs Logic (With DOM Detachment) ---
         async function switchMainTab(tabName) {
             if (document.querySelector(`.main-tab-btn[onclick="switchMainTab('${tabName}')"]`).classList.contains('active')) return;
+            lpStop();                         // the line player: its line leaves the page
 
             // 1. Update UI Tabs
             document.querySelectorAll('.main-tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -2402,6 +2579,7 @@
         }
 
         async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null, unlisted = null) {
+            lpStop();                         // the line player: the list is drawn again
             const listContainer = document.getElementById('progressive-list');
             listContainer.innerHTML = "";
 
@@ -2473,7 +2651,7 @@
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${safeWord}</strong>`);
 
             const rowTip = trimmed.trimmed ? ` title="${escapeHtml(contextFull)}"` : '';
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"], data["End 1"])}`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"], data["End 1"])}${linePlay(data["Src 1"], data["At 1"], data["End 1"], true)}`;
             return el;
         }
 
@@ -2652,6 +2830,7 @@
 
         // --- Priority View Rendering ---
         async function renderPriorityView() {
+            lpStop();                         // the line player: the list is drawn again
             const container = document.getElementById('priority-list');
             container.innerHTML = "";
 
@@ -3002,7 +3181,7 @@
                         ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now and soon, not only in the next few weeks"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
                     </div>
                 </div>
-                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}</div>
+                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}${linePlay(data["Src 1"], data["At 1"], data["End 1"], true)}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -3038,7 +3217,7 @@
                                 // Speaks the WINDOWED text, matching what's on screen (the same
                                 // rule the Listen button follows).
                                 const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n], t.text, data['Aud ' + n], data['End ' + n]);
-                                innerHtmlString += `<div class="context-item"${tip}>${formatted}${badge}</div>`;
+                                innerHtmlString += `<div class="context-item"${tip}>${formatted}${badge}${linePlay(data['Src ' + n], data['At ' + n], data['End ' + n], false)}</div>`;
                             }
                         });
                         extraDiv.innerHTML = innerHtmlString;
@@ -3145,6 +3324,7 @@
 
                 // 4. Remove Card (Visual)
                 const card = btnElement.closest('.card');
+                if (card && lpRun && card.contains(lpRun.btn)) lpStop();   // the line player: its line leaves
                 if (card) {
                     // Fade out and remove
                     card.style.transition = 'all 0.5s ease';
@@ -3208,6 +3388,7 @@
         async function koeSpeak(el) {
             const text = el.dataset.koeText || '';
             if (!text || el.dataset.koeBusy === '1') return;
+            lpStop();                         // the line player's sound never under the spoken sentence
 
             const original = el.innerHTML;
             const originalTitle = el.title;
@@ -3306,6 +3487,9 @@
                     hover += '–' + fmtCueTime(end);
                 }
             }
+            // The journey's ▶ (Kiku-L): a line whose file a browser can't play gets no ▶ — its badge says why.
+            const why = (lpOf(idx) || [])[1];
+            if (why) hover += '\n' + (why === 'vbr' ? LP_WORDS.cantSeek : LP_WORDS.cantPlay.replace('{ext}', why));
             let label;
             if (mode === 'icon') label = icon;
             else if (mode === 'filename') label = escapeHtml(name);
@@ -3539,9 +3723,365 @@
             return { text: (head ? '…' : '') + body + (tail ? '…' : ''), trimmed: true };
         }
 
+        // --- The line player (Kiku-L; Sonic 2026-11-14: F3 loop the line + F19 pause after every line; words and
+        // defaults PROVISIONAL, for his list). ▶ after a line plays that line's own audio: the file the window's ▶ opens
+        // (the source table's [5], found at render: play.files), from just before its start to its end — Repeat times,
+        // a Pause after (or Before) each play, Then stopping, playing the next line or waiting for a press. One <audio>
+        // and one bar for the page, made on the first ▶; one timer at a time (a line's length, a pause), never an
+        // interval or a frame loop: nothing runs while it pauses or waits. Stopped by ■, Esc, ▶ again, another ▶, the
+        // page hidden, a list redrawn (another file or tab) and its line leaving the page. The choices are kept per
+        // browser and language, as the ignored words are. Its step rule (lpNext, lpSpan) is mirrored in
+        // tests/test_report_line_player.py — keep the two in step.
+        const LP_DEFAULTS = { repeat: 3, pause: 1.5, when: 'after', then: 'stop' };
+        const LP_PAUSES = [0, 0.5, 1, 1.5, 2, 3, 5, 10];
+        const LP_MAX_REPEAT = 10;
+        const LP_LEAD = 0.2;          // seconds before the line: Edge lands a constant-rate mp3's seek up to 0.13 s late
+        const LP_MIN_MS = 250;        // a play never shorter than this
+        const LP_WORDS = {
+            play: 'Play this line', playKey: 'Play this line (v)', stop: 'Stop (Esc)', ask: 'What is this?',
+            repeat: 'Repeat', pause: 'Pause', before: 'Before', after: 'After', then: 'Then',
+            thenStop: 'Stop', next: 'Next line', wait: 'Wait', fewer: 'Fewer', more: 'More',
+            repeatTip: 'Times this line plays', pauseTip: 'Quiet time between plays',
+            whenTip: 'Pause before each play, to guess it first', thenTip: 'After the last play',
+            help: 'Hear the line from its own episode, repeated with a pause — then stop, or go on down the list.',
+            failed: "This line's file couldn't be played", cantPlay: "Your browser can't play {ext} files",
+            cantSeek: "Your browser can't find a line in this .mp3: its bit rate varies",
+        };
+        let lpS = null, lpAudio = null, lpBar = null, lpRun = null;
+
+        // One line's next step: o = {repeat, pause (s), when 'before' | 'after', then 'stop' | 'next' | 'wait', played
+        // (plays done), paused (a pause just ended), hasNext (a line after it)} -> ['play'] | ['pause', ms] |
+        // ['then', 'stop' | 'next' | 'wait']. Never fewer than one play; the last line always stops.
+        function lpNext(o) {
+            const ms = Math.round(Math.max(0, o.pause) * 1000);
+            const more = o.played < Math.max(1, o.repeat);
+            const then = o.hasNext ? o.then : 'stop';
+            if (more) {
+                if (ms && !o.paused && (o.when === 'before' || o.played > 0)) return ['pause', ms];
+                return ['play'];
+            }
+            if (then === 'next' && o.when === 'after' && ms && !o.paused) return ['pause', ms];
+            return ['then', then];
+        }
+
+        // How long one play runs, in ms: from LP_LEAD before the line's start to its end, never under LP_MIN_MS.
+        function lpSpan(at, end) {
+            return Math.max(LP_MIN_MS, Math.round((end - Math.max(0, at - LP_LEAD)) * 1000));
+        }
+
+        // ▶ after a line: only where its source has a file a browser plays ([5]) and the line has its times.
+        function linePlay(idx, at, end, first) {
+            if (idx === null || idx === undefined || idx === '') return '';
+            const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
+            const row = table ? table[idx] : null;
+            if (!row || !lpUri(idx) || at === null || at === undefined || at === '' || end === null || end === undefined || end === '') return '';
+            const a = Number(at), b = Number(end);
+            if (!isFinite(a) || !isFinite(b) || b <= a) return '';
+            const span = fmtCueTime(a) === fmtCueTime(b) ? fmtCueTime(a) : fmtCueTime(a) + '–' + fmtCueTime(b);
+            const hover = (row[3] || row[0] || '') + ' @ ' + span + '\n' + (first ? LP_WORDS.playKey : LP_WORDS.play);
+            return `<button type="button" class="lp" migaku_ignore data-yomichan-ignore data-src="${idx}" data-at="${a}" ` +
+                   `data-end="${b}" title="${escapeHtml(hover)}" aria-label="${LP_WORDS.play}" onclick="lpPress(this)"></button>`;
+        }
+
+        function lpKey() {
+            return 'surasura-line-player-' + ((typeof globalLanguage !== 'undefined') ? globalLanguage : 'ja');
+        }
+
+        function lpChoices() {
+            if (lpS) return lpS;
+            lpS = Object.assign({}, LP_DEFAULTS);
+            try {
+                const kept = JSON.parse(localStorage.getItem(lpKey()) || '{}');
+                if (Number.isInteger(kept.repeat) && kept.repeat >= 1 && kept.repeat <= LP_MAX_REPEAT) lpS.repeat = kept.repeat;
+                if (LP_PAUSES.includes(kept.pause)) lpS.pause = kept.pause;
+                if (kept.when === 'before' || kept.when === 'after') lpS.when = kept.when;
+                if (['stop', 'next', 'wait'].includes(kept.then)) lpS.then = kept.then;
+            } catch (e) { /* none kept, or unreadable: the defaults */ }
+            return lpS;
+        }
+
+        function lpKeep() {
+            try { localStorage.setItem(lpKey(), JSON.stringify(lpS)); } catch (e) { /* a private window: this page only */ }
+        }
+
+        function lpPress(btn) {
+            if (lpRun && lpRun.btn === btn) {
+                if (lpRun.phase === 'waiting') lpStep(); else lpStop();
+                return;
+            }
+            lpStart(btn);
+        }
+
+        function lpStart(btn) {
+            lpStop();
+            // the page's other voices stop: the computer's speech, a spoken sentence (Koe)
+            try { window.speechSynthesis.cancel(); } catch (e) { /* no speech here */ }
+            if (typeof koeAudio !== 'undefined' && koeAudio) { try { koeAudio.pause(); } catch (e) { /* none */ } }
+            btn.classList.remove('lp-failed');
+            lpRun = { btn: null, played: 0, paused: false, timer: 0, phase: 'loading', token: null };
+            lpAim(btn);
+            lpShowBar();
+            lpStep();
+        }
+
+        // A source's file as a URI: its folder's (globalLineDirs, once a folder) + its name, encoded here.
+        // A source's line file (the player's own table, globalLinePlay: {source's place: [where, why not]}; the
+        // source rows keep their five fields) as a URI: its folder's (globalLineDirs, once a folder) + its name, encoded.
+        function lpOf(idx) {
+            const plays = (typeof globalLinePlay !== 'undefined' && globalLinePlay) ? globalLinePlay : {};
+            return (idx === null || idx === undefined || idx === '') ? null : (plays[idx] || null);
+        }
+
+        function lpUri(idx) {
+            const where = (lpOf(idx) || [])[0] || '';
+            const cut = where.indexOf('/');
+            const dirs = (typeof globalLineDirs !== 'undefined' && globalLineDirs) ? globalLineDirs : [];
+            const dir = cut > 0 ? dirs[Number(where.slice(0, cut))] : undefined;
+            return dir ? dir + '/' + encodeURIComponent(where.slice(cut + 1)) : '';
+        }
+
+        // The run's line from now on: this ▶'s file and times, its plays counted from none.
+        function lpAim(btn) {
+            const r = lpRun;
+            if (r.btn && r.btn !== btn) lpPaint(r.btn, null);
+            const row = (globalSources && globalSources[Number(btn.dataset.src)]) || [];
+            r.btn = btn;
+            r.uri = lpUri(btn.dataset.src);
+            r.at = Number(btn.dataset.at);
+            r.end = Number(btn.dataset.end);
+            r.played = 0;
+            r.paused = false;
+        }
+
+        // The next ▶ down the list that's open (another sentence of the word when its sentences are open, else the next
+        // card's), or null at the last one drawn.
+        function lpAfter(btn) {
+            // (a line in sight only: a word's closed sentences keep their ▶ in the page, hidden — never played on to)
+            const all = Array.from(document.querySelectorAll('.view.active .lp'))
+                .filter(b => b === btn || b.offsetParent !== null);
+            const i = all.indexOf(btn);
+            return i >= 0 ? (all[i + 1] || null) : null;
+        }
+
+        function lpStep() {
+            const r = lpRun;
+            if (!r) return;
+            clearTimeout(r.timer);
+            if (!r.btn.isConnected) { lpStop(); return; }          // its line left the page
+            const S = lpChoices();
+            const nextBtn = lpAfter(r.btn);
+            const step = lpNext({ repeat: S.repeat, pause: S.pause, when: S.when, then: S.then,
+                                  played: r.played, paused: r.paused, hasNext: !!nextBtn });
+            if (step[0] === 'play') { lpPlay(r); return; }
+            if (step[0] === 'pause') {
+                r.phase = 'pausing';
+                r.paused = true;
+                lpPaint(r.btn, 'pausing');
+                lpDots();
+                r.timer = setTimeout(lpStep, step[1]);
+                return;
+            }
+            if (step[1] === 'next') {
+                lpAim(nextBtn);
+                nextBtn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                lpStep();
+                return;
+            }
+            if (step[1] === 'wait') {
+                lpAim(nextBtn);
+                r.phase = 'waiting';
+                lpPaint(nextBtn, 'waiting');
+                nextBtn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                lpDots();
+                return;
+            }
+            lpStop();
+        }
+
+        function lpPlay(r) {
+            const a = lpEnsureAudio();
+            const token = r.token = {};
+            r.phase = 'loading';
+            if (!r.played) lpPaint(r.btn, 'loading');            // at once on the press, before the file answers
+            lpDots();
+            const go = () => {
+                if (lpRun !== r || r.token !== token) return;
+                try { a.currentTime = Math.max(0, r.at - LP_LEAD); } catch (e) { /* not seekable yet: from its start */ }
+                Promise.resolve(a.play()).then(() => {
+                    if (lpRun !== r || r.token !== token) return;
+                    const ms = lpSpan(r.at, r.end);
+                    r.phase = 'playing';
+                    lpPaint(r.btn, 'playing', ms);
+                    lpDots();
+                    r.timer = setTimeout(() => {                 // the line's end: one timer for its length
+                        if (lpRun !== r || r.token !== token) return;
+                        a.pause();
+                        r.played += 1;
+                        r.paused = false;
+                        lpStep();
+                    }, ms);
+                }, (err) => lpFailed(r, token, err));
+            };
+            const fresh = a.getAttribute('src') !== r.uri;
+            if (fresh || a.error || a.readyState === 0) {        // a new file, or one that failed before: (re)load it
+                a.addEventListener('loadedmetadata', go, { once: true });
+                if (fresh) a.setAttribute('src', r.uri); else a.load();
+            } else {
+                go();
+            }
+        }
+
+        function lpEnsureAudio() {
+            if (!lpAudio) {
+                lpAudio = new Audio();
+                lpAudio.preload = 'auto';
+                lpAudio.addEventListener('error', () => { if (lpRun) lpFailed(lpRun, lpRun.token, lpAudio.error); });
+            }
+            return lpAudio;
+        }
+
+        // The file couldn't be played (gone since the report was drawn, a codec the browser lacks): stopped, and the
+        // ▶ says so on hover.
+        function lpFailed(r, token, err) {
+            if (lpRun !== r || r.token !== token) return;
+            const btn = r.btn;
+            lpStop();
+            btn.classList.add('lp-failed');
+            if (btn.title.indexOf(LP_WORDS.failed) < 0) btn.title += '\n' + LP_WORDS.failed;
+        }
+
+        function lpStop() {
+            const r = lpRun;
+            if (!r) return;
+            lpRun = null;
+            clearTimeout(r.timer);
+            r.token = null;
+            if (lpAudio) { try { lpAudio.pause(); } catch (e) { /* nothing playing */ } }
+            lpPaint(r.btn, null);
+            if (lpBar) {
+                lpBar.classList.remove('lp-shown');
+                lpHelp(false);
+            }
+            document.body.classList.remove('lp-bar-up');
+        }
+
+        function lpPaint(btn, state, ms) {
+            if (!btn) return;
+            btn.classList.remove('lp-loading', 'lp-playing', 'lp-pausing', 'lp-waiting');
+            if (btn.parentElement) btn.parentElement.classList.toggle('lp-on', !!state);
+            if (state === 'playing') {
+                btn.style.setProperty('--lp-dur', ms + 'ms');
+                void btn.offsetWidth;                            // the ring starts again for each play
+            }
+            if (state) btn.classList.add('lp-' + state);
+            btn.setAttribute('aria-label', state && state !== 'waiting' ? LP_WORDS.stop : LP_WORDS.play);
+        }
+
+        function lpShowBar() {
+            if (!lpBar) {
+                const W = LP_WORDS;
+                lpBar = document.createElement('div');
+                lpBar.className = 'lp-bar';
+                lpBar.setAttribute('migaku_ignore', '');
+                lpBar.setAttribute('data-yomichan-ignore', '');
+                lpBar.setAttribute('role', 'region');
+                lpBar.setAttribute('aria-label', W.play);
+                lpBar.innerHTML =
+                    `<button type="button" class="lp-stop" data-lp="stop" title="${W.stop}" aria-label="${W.stop}"></button>` +
+                    `<span class="lp-where"><span class="lp-dots"></span><span class="lp-count"></span></span>` +
+                    `<span class="lp-grp" title="${W.repeatTip}"><span>${W.repeat}</span>` +
+                    `<button type="button" class="lp-step" data-lp="fewer" aria-label="${W.fewer}">−</button>` +
+                    `<span class="lp-val" data-lp-show="repeat"></span>` +
+                    `<button type="button" class="lp-step" data-lp="more" aria-label="${W.more}">+</button></span>` +
+                    `<span class="lp-grp" title="${W.pauseTip}"><span>${W.pause}</span>` +
+                    `<button type="button" class="lp-sel" data-lp="pause"></button>` +
+                    `<span class="lp-seg" title="${W.whenTip}">` +
+                    `<button type="button" data-lp-when="before">${W.before}</button>` +
+                    `<button type="button" data-lp-when="after">${W.after}</button></span></span>` +
+                    `<span class="lp-grp" title="${W.thenTip}"><span>${W.then}</span><span class="lp-seg">` +
+                    `<button type="button" data-lp-then="stop">${W.thenStop}</button>` +
+                    `<button type="button" data-lp-then="next">${W.next}</button>` +
+                    `<button type="button" data-lp-then="wait">${W.wait}</button></span></span>` +
+                    `<button type="button" class="lp-help" data-lp="help" aria-expanded="false" aria-label="${W.ask}">?` +
+                    `<span class="lp-help-pop">${W.help}</span></button>`;
+                lpBar.addEventListener('click', lpBarClick);
+                document.body.appendChild(lpBar);
+            }
+            lpControls();
+            lpBar.classList.add('lp-shown');
+            document.body.classList.add('lp-bar-up');
+        }
+
+        function lpBarClick(e) {
+            const b = e.target.closest('button');
+            if (!b) return;
+            const S = lpChoices();
+            const what = b.dataset.lp;
+            if (e.detail > 0) b.blur();                          // a mouse click: Space stays the waiting line's
+            if (what === 'stop') { lpStop(); return; }
+            if (what === 'help') { lpHelp(b.getAttribute('aria-expanded') !== 'true'); return; }
+            if (what === 'fewer') S.repeat = Math.max(1, S.repeat - 1);
+            else if (what === 'more') S.repeat = Math.min(LP_MAX_REPEAT, S.repeat + 1);
+            else if (what === 'pause') S.pause = LP_PAUSES[(LP_PAUSES.indexOf(S.pause) + 1) % LP_PAUSES.length];
+            else if (b.dataset.lpWhen) S.when = b.dataset.lpWhen;
+            else if (b.dataset.lpThen) S.then = b.dataset.lpThen;
+            else return;
+            lpKeep();
+            lpControls();
+            lpDots();
+        }
+
+        function lpHelp(open) {
+            const h = lpBar && lpBar.querySelector('.lp-help');
+            if (h) h.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        function lpControls() {
+            const S = lpChoices();
+            lpBar.querySelector('[data-lp-show="repeat"]').textContent = S.repeat;
+            lpBar.querySelector('[data-lp="pause"]').textContent = S.pause + ' s ▾';
+            lpBar.querySelectorAll('[data-lp-when]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lpWhen === S.when)));
+            lpBar.querySelectorAll('[data-lp-then]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lpThen === S.then)));
+        }
+
+        function lpDots() {
+            if (!lpBar || !lpRun) return;
+            const S = lpChoices(), r = lpRun;
+            const now = r.phase === 'playing' || r.phase === 'loading';
+            let html = '';
+            for (let i = 0; i < S.repeat; i++) {
+                html += `<i class="${i < r.played ? 'lp-done' : (i === r.played && now ? 'lp-now' : '')}"></i>`;
+            }
+            lpBar.querySelector('.lp-dots').innerHTML = html;
+            lpBar.querySelector('.lp-count').textContent = Math.min(r.played + (now ? 1 : 0), S.repeat) + ' / ' + S.repeat;
+        }
+
+        // Esc stops (or closes the ?); Space and v play the waiting line. Taken before the page's own keys only then.
+        document.addEventListener('keydown', (e) => {
+            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+            if (e.key === 'Escape') {
+                const menu = document.getElementById('sort-menu');
+                if (menu && menu.style.display === 'block') return;     // the sort menu closes first
+                const help = lpBar && lpBar.querySelector('.lp-help[aria-expanded="true"]');
+                if (!help && !lpRun) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                if (help) lpHelp(false); else lpStop();
+                return;
+            }
+            if (lpRun && lpRun.phase === 'waiting' && (e.code === 'Space' || e.key === 'v' || e.key === 'V')) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                lpStep();
+            }
+        }, true);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) lpStop(); });
+        // --- end of the line player
+
         // --- Audio Logic ---
         function playAudio(text, btnElement) {
             if (!text) return;
+            lpStop();                         // the line player's sound never under the computer's voice
             const lang = (typeof globalLanguage !== 'undefined') ?
                 (globalLanguage === 'zh' ? 'zh-CN' : 'ja-JP') : 'ja-JP';
 
@@ -3654,6 +4194,7 @@
         }
 
         function rsRun(raw) {
+            lpStop();                         // the line player: the results are drawn again
             const q = (raw || '').trim();
             const results = document.getElementById('rs-results');
             const summary = document.getElementById('rs-summary');
@@ -3893,8 +4434,12 @@
 
             if (isAudio) {
                 const centeredCard = activeCards[currentIndex];
+                // The line's own audio when it has a ▶ (Kiku-L), else the computer's voice as before.
+                const lineBtn = centeredCard.querySelector('.lp');
                 const audioBtn = centeredCard.querySelector('.btn-audio');
-                if (audioBtn) {
+                if (lineBtn) {
+                    lineBtn.click();
+                } else if (audioBtn) {
                     audioBtn.click();
                 }
             }

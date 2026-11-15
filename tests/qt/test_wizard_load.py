@@ -471,7 +471,10 @@ def test_fresh_u_the_indexers_count_never_asks_it_too_late_to_help(make, empty_l
     total = token_index.POOL_MIN_FILES * 10
     with open(log, "w", encoding="utf-8") as f:
         f.write(f"Indexer: starting (ja)\nIndexer: 3 of {total}\n")
-    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5)
+    # (#461's one red, FLAKES.md: what was on screen, the log's time and the clock's, said if it fails)
+    assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5), \
+        f"the screen says {_task(wiz)!r}; the log written {os.path.getmtime(log)!r}, " \
+        f"now {time.time()!r}"
     assert _core(wiz) is None                     # (an offer would come in the very call that painted this count)
 
 

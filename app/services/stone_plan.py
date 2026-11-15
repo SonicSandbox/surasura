@@ -40,6 +40,10 @@ END_PAD = 12
 TITLE_BASE = 187                            # the title column, × fz (215 at Medium, the page's `--r11-tw`)
 TITLE_FLOOR = 80                            # … narrowed to round(80 × fz) at the least
 VARIANTS = 8                                # a fixed set of variants per state × kind on the stone sheet
+# Kura-NT (PROVISIONAL — Sonic's open call; the lead's lean): a part mined with nothing new to make (its status
+# *Nothing new to mine*, `view_rows._connected`) looks mined — the coloured stone, never dimmed — when True; a grey rock,
+# as a part not mined, when False. Its tip says *nothing new* either way (`tip_state`); its cards count stays 0
+NOTHING_LOOKS_MINED = True
 
 # a work's media type (`view_rows.MEDIA_WORD`'s keys) -> its kind (the page's `gemKind` :2490); None -> shows
 _KIND = {"anime": "shows", "drama": "shows", "movie": "shows", None: "shows",
@@ -103,9 +107,23 @@ def tiers(a, b):
     return out
 
 
+def nothing_new(ep):
+    """Kura-NT: was the file mined with nothing new to make (its status *Nothing new to mine*)?"""
+    return not ep.cards > 0 and getattr(getattr(ep, "status", None), "kind", None) == "nothing"
+
+
+def _looks_mined(ep):
+    return ep.cards > 0 or (NOTHING_LOOKS_MINED and nothing_new(ep))
+
+
+def tip_state(ep):
+    """A stone's state as its tip says it (`app/qt/strings.ROWS_STONE_STATE`'s key): cut · raw · nothing · rock."""
+    return "cut" if ep.watched else "raw" if ep.cards > 0 else "nothing" if nothing_new(ep) else "rock"
+
+
 def _stone(ep, i, key, big):
-    state = "cut" if ep.watched else "raw" if ep.cards > 0 else "rock"
-    dim = not ep.cards > 0 and not ep.watched and not ep.in_top
+    state = "cut" if ep.watched else "raw" if _looks_mined(ep) else "rock"
+    dim = not _looks_mined(ep) and not ep.watched and not ep.in_top
     return Stone(i, state, big, dim, variant(key, i), bool(ep.missing), bool(ep.removed))
 
 
@@ -136,7 +154,7 @@ def plan(episodes, next_index=None, media=None, key="", mix=False):
     items += [_stone(eps[i], i, key, i == nxt) for i in range(s0, s1)]
     if s1 < n:
         rest = eps[s1:]
-        m = sum(1 for e in rest if e.cards > 0)
+        m = sum(1 for e in rest if _looks_mined(e))
         c = sum(1 for e in rest if e.watched)
         fc = c / len(rest)
         cut_points = 0 if not c else 3 if fc > 2 / 3 else 2 if fc > 1 / 3 else 1

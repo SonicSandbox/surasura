@@ -28,7 +28,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
@@ -90,6 +90,7 @@ OVERLAYS = {
     "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "guide.py:GuidePanel",
     "help_card.py:HelpCard", "search.py:Results",
     "settings_live.py:FormatPop", "settings_live.py:CreditsCard", "toast.py:ToastCard",
+    "word_peek.py:WordPeek",
 }
 STARTS = ("animate", "spring", "open_overlay", "fall_into_place")
 _DECLARED = {}                                 # test name -> the entry points it drives (`@drives`)
@@ -455,9 +456,10 @@ def test_sweep_arrivals_the_covers_rest_the_tray_opens_in_place_and_fades_within
 
 @drives("add_menu.py:AddStone._rise", "add_menu.py:PasteCard.open", "add_menu.py:PasteCard", "confirm.py:Confirm.open",
         "confirm.py:Confirm", "frame.py:LevelPop", "duties.py:UpdateSheet", "finished.py:WhatIfCard",
-        "guide.py:GuidePanel")
+        "guide.py:GuidePanel", "word_peek.py:WordPeek")
 def test_sweep_the_windows_cards_and_pops_open_in_place(sweep, world):
-    from app.qt import add_menu, confirm, duties, finished, frame, guide
+    from types import SimpleNamespace
+    from app.qt import add_menu, confirm, duties, finished, frame, guide, word_peek
     seed, win, writer = _reduced_window(sweep, world)
     central = win.centralWidget()
     sweep.on()
@@ -475,6 +477,15 @@ def test_sweep_the_windows_cards_and_pops_open_in_place(sweep, world):
         sweep.still()
         assert card.isVisible() and motion.opening_of(card) is None, type(card).__name__
         card.hide()
+    # Hover-W: the word card, opened as the rows open it (a hover, then kept open): in place, no motion
+    peek = win.words.card if win.words is not None else word_peek.WordPeek(central)
+    peek.show_for(SimpleNamespace(key="k", title=JA, episodes=()), QRect(500, 200, 60, 20))
+    sweep.still()
+    assert peek.isVisible() and motion.opening_of(peek) is None
+    peek.keep()
+    sweep.still()
+    assert peek.isVisible() and peek.kept and motion.opening_of(peek) is None
+    peek.close()
     question = confirm.ask(win, "削除しますか", JA, "削除", "Remove it")
     sweep.still()
     assert question.isVisible() and motion.opening_of(question) is None

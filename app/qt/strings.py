@@ -560,7 +560,8 @@ CHANGE_VIDEO_LINKED_OFF = "Its new video is linked · {why}"
 CHANGE_VIDEO_EPISODE = "this episode"           # (a card whose episode the view doesn't list just now)
 # --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
-ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
+ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": "",
+                    "nothing": " · nothing new: Anki had every word"}      # Kura-NT (PROVISIONAL, the lead's lean)
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
 from app.services.view_rows import STRINGS as _ROWS_STRINGS   # noqa: E402  one sentence, the report's panel's too
@@ -577,6 +578,37 @@ ROWS_HERO_PCT_TIP = ("The words you know, the words you ignore and, in Japanese,
                      "(の, は, を…) with nothing to learn: together {pct}% of its words")
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
+# --- Hover-W: the word card over *N new* (app/qt/word_peek.py; Sonic's yes to the look 2026-11-14; words PROVISIONAL) --
+WORDS_NAME = "Its words"
+WORDS_PARTS = ("New here", "In Anki, not mature yet", "Learned on the way")
+WORDS_HELP = ("Words you'll meet first here, most useful first",
+              "Words here you have cards for that aren't mature yet: watching it helps them stick",
+              "New today, but an earlier title teaches them first, so they won't be new by then")
+WORDS_HELP_MARK = "?"
+WORDS_NEW_WHEN = "new when you get here"
+WORDS_NOTHING_NEW = "Nothing new when you get here"
+WORDS_NOTHING_HERE = "Nothing new here"
+WORDS_TODAY = "{n} today"
+WORDS_MORE = "+{n} more"
+WORDS_KEEP = "• Click to keep it open"
+WORDS_READING = "Reading its words…"
+WORDS_JOURNEY = "Open in the journey ↗"
+WORDS_JOURNEY_TIP = "Your journey, at this title"
+WORDS_CLOSE = "✕"
+WORDS_CLOSE_TIP = "Close"
+WORDS_WAITING = "Waiting to update"
+WORDS_WAITING_LINE = "Shows the last Generate's words"
+WORDS_ANKI_CLOSED = "Anki is closed · open it to see these"
+WORDS_STRUGGLING = "Struggling"
+WORDS_YOUNG = "Young"
+WORDS_FORGOT = "forgot {n}×"
+WORDS_LEECH = "leech"
+WORDS_SCOPE = "{tier} · {n} files"
+WORDS_GROUP = "{title} · {n}"
+WORDS_PLACE = "  — {place}"
+WORDS_EPISODE_TITLE = "{title} · {ep}"
+WORDS_MENU = "Its words"
+WORDS_MENU_TIP = "The words you'll meet in it, kept open"
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"

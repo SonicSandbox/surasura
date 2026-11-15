@@ -529,6 +529,26 @@
             color: var(--error);
         }
 
+        /* Known / Ignore (Kotoba-K): one split toggle on the word card — ✓ Known | ⊘ Ignore. The lit side is the word's
+           mark; pressing it again clears it. A mark waiting for Surasura (closed, or the page opened by hand) shows a
+           small dot until it is sent. */
+        .mark-toggle { display: inline-flex; align-items: stretch; border: 1px solid var(--text-secondary);
+                       border-radius: 4px; overflow: hidden; }
+        .mark-toggle button { background: transparent; border: none; color: var(--text-secondary); cursor: pointer;
+                              padding: 6px 11px; font-size: 0.9rem; transition: background 0.15s, color 0.15s; }
+        .mark-toggle button + button { border-left: 1px solid var(--text-secondary); }
+        .mark-toggle button:hover { color: var(--on-surface); }
+        .mark-toggle .mk-known[aria-pressed="true"] { background: var(--primary); color: #fff; }
+        .mark-toggle .mk-ignore[aria-pressed="true"] { background: var(--text-secondary); color: var(--surface, #1e1e1e); }
+        .mark-toggle button.waiting::after { content: ''; display: inline-block; width: 6px; height: 6px;
+                                             margin-left: 6px; border-radius: 50%; background: currentColor;
+                                             opacity: 0.7; vertical-align: middle; }
+        .mark-help { align-self: center; display: inline-flex; align-items: center; justify-content: center;
+                     width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--text-secondary);
+                     color: var(--text-secondary); font-size: 0.75rem; cursor: help; opacity: 0.7; }
+        .card.marked { opacity: 0.45; transition: opacity 0.2s; }
+        .card.marked:hover { opacity: 0.8; }
+
         /* Word lookup — an icon-only button sitting just left of Ignore. Mirrors .btn-audio (this
            file's established "quiet icon button" idiom): no border, half opacity until hovered, so
            it stays out of the way of the sentence. `currentColor` over var(--text-secondary) is
@@ -949,6 +969,10 @@
             background-color: #ffeaa7;
             color: #d63031;
         }
+
+        body.theme-modern-light .mark-toggle { border-color: #b2bec3; }
+        body.theme-modern-light .mark-toggle button + button { border-left-color: #b2bec3; }
+        body.theme-modern-light .mark-toggle .mk-ignore[aria-pressed="true"] { background: #636e72; color: #fff; }
 
         body.theme-modern-light .card {
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
@@ -1677,6 +1701,9 @@
         .lp-help[aria-expanded="true"] .lp-help-pop { display: block; }
 
         @media (prefers-reduced-motion: reduce) {
+            .mark-toggle button, .card.marked { transition: none; }
+        }
+        @media (prefers-reduced-motion: reduce) {
             .lp::after { animation: none !important; }
             .lp-bar { transition: none; }
         }
@@ -1860,6 +1887,38 @@
         function saveIgnoredWords() {
             localStorage.setItem(storageKey, JSON.stringify([...ignoredWords]));
         }
+
+        // --- Known / Ignore (Kotoba-K): a word's mark reaches Surasura through the door ---------------------------- #
+        // pageMarks {word: 'known' | 'ignore'}: what this browser marked (the cards it hides at the next open, and the
+        // toggle's lit side); markQueue [{word, mark}] (mark '' clears): what Surasura hasn't taken yet — sent at each
+        // press, after the first card is drawn and as the tab comes back, while the page has a door that answers.
+        // The page's old browser-only ignores are carried over once (`markCarriedKey`): queued as Ignore.
+        const marksKey = `surasura_marks_${langSuffix}`;
+        const markQueueKey = `surasura_mark_queue_${langSuffix}`;
+        const markCarriedKey = `surasura_marks_carried_${langSuffix}`;
+        let pageMarks = {};
+        let markQueue = [];
+        try { pageMarks = JSON.parse(localStorage.getItem(marksKey) || '{}') || {}; } catch (e) { pageMarks = {}; }
+        try { markQueue = JSON.parse(localStorage.getItem(markQueueKey) || '[]') || []; } catch (e) { markQueue = []; }
+        function saveMarks() {
+            try {
+                localStorage.setItem(marksKey, JSON.stringify(pageMarks));
+                localStorage.setItem(markQueueKey, JSON.stringify(markQueue));
+            } catch (e) { /* a private window: this tab only */ }
+        }
+        try {
+            if (!localStorage.getItem(markCarriedKey)) {
+                ignoredWords.forEach(w => {
+                    if (!pageMarks[w]) { pageMarks[w] = 'ignore'; markQueue.push({ word: w, mark: 'ignore' }); }
+                });
+                localStorage.setItem(marksKey, JSON.stringify(pageMarks));      // (throws when full: nothing carried)
+                localStorage.setItem(markQueueKey, JSON.stringify(markQueue));
+                localStorage.setItem(markCarriedKey, '1');                      // only once the queue is kept
+                ignoredWords = new Set();
+                localStorage.removeItem(storageKey);
+            }
+        } catch (e) { console.error('The old ignores could not be carried over', e); }
+        function markedOut(word) { return ignoredWords.has(word) || !!pageMarks[word]; }
 
         // --- Manual "Completed Files" tracking (browser-side only) ---
         // Mirrors the ignored-words localStorage pattern; keyed per language.
@@ -2089,19 +2148,19 @@
                 ankiListRows = globalData ? globalData.priority : null;
 
                 // --- Filter Global Data with Local Ignore List ---
-                if (globalData && ignoredWords.size > 0) {
+                if (globalData && (ignoredWords.size > 0 || Object.keys(pageMarks).length > 0)) {
                     // Filter Progressive
                     if (globalData.progressive) {
                         globalData.progressive.forEach(file => {
                             if (file.words) {
-                                file.words = file.words.filter(w => !ignoredWords.has(w.Word));
+                                file.words = file.words.filter(w => !markedOut(w.Word));
                             }
                         });
                     }
                     // Filter Priority
                     if (globalData.priority) {
                         originalPriorityCount = globalData.priority.length;
-                        globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));
+                        globalData.priority = globalData.priority.filter(w => !markedOut(w.Word));
                     }
                 } else if (globalData && globalData.priority) {
                     originalPriorityCount = globalData.priority.length;
@@ -2109,6 +2168,7 @@
 
                 await fetchData();
                 rsFromHash();
+                if (markQueue.length) setTimeout(doorFlush, 0);      // after the first card is drawn, never before
             } catch (e) {
                 console.error("Initialization Error:", e);
                 const loader = document.getElementById('loading-screen');
@@ -3292,8 +3352,9 @@
                 `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>` +
                 `</button>`;
             footer.innerHTML = `<div></div><div class="actions">` + searchBtnHtml +
-                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Ignore</button></div>`;
+                markToggleHtml(data.Word) + `</div>`;
             el.appendChild(footer);
+            wireMarkToggle(el, data.Word);
 
             // Sources (DOM Pruned)
             if (data.Sources) {
@@ -3346,44 +3407,92 @@
             }
         }
 
-        async function ignoreWord(word, btnElement) {
+        // The split toggle (Kotoba-K): ✓ Known | ⊘ Ignore, the word in a data attribute (never an inline string).
+        const MARK_HELP = 'Known: you know it, so it counts as known and leaves your list. Ignore: not a word to learn '
+            + '(a name, a noise), so it leaves your list and never counts as known. Each reaches Surasura while it is '
+            + 'open; closed, it waits here and is sent the next time you open your journey from Surasura.';
+        function markToggleHtml(word) {
+            const mark = pageMarks[word] || '';
+            const waiting = markQueue.some(m => m.word === word);
+            const safe = escapeHtml(word);
+            const side = (kind, label, key, tip) => `<button class="mk mk-${kind}${waiting && mark === kind ? ' waiting' : ''}" `
+                + `data-word="${safe}" data-mark="${kind}" aria-pressed="${mark === kind}" `
+                + `title="${tip} (Hotkey: ${key})\n• Press again to undo">${label}</button>`;
+            return `<span class="mark-toggle" role="group" aria-label="Known or Ignore">`
+                + side('known', '✓ Known', 'k', 'I know this word') + side('ignore', '⊘ Ignore', 'z', 'Not a word to learn')
+                + `</span><span class="mark-help" title="${escapeHtml(MARK_HELP)}" aria-label="About Known and Ignore">?</span>`;
+        }
+
+        function wireMarkToggle(card, word) {
+            card.querySelectorAll('.mark-toggle .mk').forEach(b => {
+                b.onclick = (e) => { e.stopPropagation(); markWord(b.dataset.word, b.dataset.mark, card); };
+            });
+            if (pageMarks[word]) card.classList.add('marked');
+        }
+
+        // A press: the toggle and the card change at once (pending), the mark is queued and sent.
+        function markWord(word, kind, card) {
+            const mark = pageMarks[word] === kind ? '' : kind;               // the lit side again: cleared
+            if (mark) pageMarks[word] = mark; else delete pageMarks[word];
+            markQueue.push({ word: word, mark: mark });
+            saveMarks();
+            if (card) {
+                if (card && lpRun && card.contains(lpRun.btn) && mark) lpStop();   // the line player: its line leaves
+                paintMarkToggle(card, word);
+            }
+            doorFlush();
+        }
+
+        function paintMarkToggle(card, word) {
+            const mark = pageMarks[word] || '';
+            const waiting = markQueue.some(m => m.word === word);
+            card.querySelectorAll('.mark-toggle .mk').forEach(b => {
+                b.setAttribute('aria-pressed', String(b.dataset.mark === mark));
+                b.classList.toggle('waiting', waiting && b.dataset.mark === mark);
+            });
+            card.classList.toggle('marked', !!mark);
+        }
+
+        function repaintMarks() {
+            document.querySelectorAll('.card .mark-toggle').forEach(t => {
+                const b = t.querySelector('.mk');
+                if (b) paintMarkToggle(t.closest('.card'), b.dataset.word);
+            });
+        }
+
+        // The waiting marks sent in calls of MARK_BATCH words at most (the door takes 500 and 64 KB), each word's last
+        // mark only, one call at a time. Kept when there is no door or no answer; a write Surasura couldn't make
+        // (busy, failed) waits too; marks it can't read are let go (they would never go through). The wait is longer
+        // than the route's longest (the known words' lock, 10 s), so a slow answer is never sent twice.
+        const MARK_BATCH = 150;
+        let doorFlushing = false;
+        async function doorFlush() {
+            if (doorFlushing || !markQueue.length || !SURASURA_DOOR) return;
+            doorFlushing = true;
             try {
-                // 1. Add to Local Storage
-                if (!ignoredWords.has(word)) {
-                    ignoredWords.add(word);
-                    saveIgnoredWords();
-                    updateClearButtonVisibility();
+                const last = new Map();
+                let sent = 0;
+                for (const m of markQueue) {
+                    if (!last.has(m.word) && last.size >= MARK_BATCH) break;
+                    last.set(m.word, m.mark);
+                    sent++;
                 }
-
-                // 2. Visual Feedback: Copy to clipboard (legacy behavior)
-                await navigator.clipboard.writeText(word);
-
-                // 3. Update Button State
-                const originalText = btnElement.textContent;
-                btnElement.textContent = "Ignored & Copied";
-                btnElement.classList.add('ignored');
-                btnElement.disabled = true;
-
-                // 4. Remove Card (Visual)
-                const card = btnElement.closest('.card');
-                if (card && lpRun && card.contains(lpRun.btn)) lpStop();   // the line player: its line leaves
-                if (card) {
-                    // Fade out and remove
-                    card.style.transition = 'all 0.5s ease';
-                    card.style.opacity = '0';
-                    card.style.transform = 'scale(0.9)';
-                    setTimeout(() => {
-                        card.remove();
-                        // Optional: trigger a stats update here if desired, 
-                        // but simple removal is usually sufficient for static view.
-                    }, 500);
+                const marks = [...last].map(([word, mark]) => ({ word: word, mark: mark }));
+                const ans = await doorCall('words/mark', { marks: marks }, 30000);
+                if (ans && (ans.ok || ans.kind === 'refused')) {
+                    markQueue.splice(0, sent);
+                    saveMarks();
+                    repaintMarks();
+                    if (markQueue.length) setTimeout(doorFlush, 0);
                 }
-
-            } catch (err) {
-                console.error('Ignore failed', err);
-                alert('Failed to ignore/copy: ' + word);
+            } finally {
+                doorFlushing = false;
             }
         }
+        window.addEventListener('focus', () => { if (markQueue.length) doorFlush(); });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && markQueue.length) doorFlush();
+        });
 
         // --- Utils ---
         // --- Per-sentence source badge ---------------------------------------------------------- #
@@ -4251,7 +4360,7 @@
             if (!rsIndex) rsIndex = rsBuildIndex();
 
             // Words ignored during this session are still in globalData; skip them here.
-            const live = rsIndex.filter(e => !ignoredWords.has(e.row.Word));
+            const live = rsIndex.filter(e => !markedOut(e.row.Word));
             const byRank = (a, b) => (a.rank || Infinity) - (b.rank || Infinity);
             const nq = rsNorm(q);
 
@@ -4388,11 +4497,13 @@
                 return;
             }
 
-            const isNext = e.code === 'Space' || e.code === 'ArrowRight' || e.key === 'z' || e.key === 'Z';
+            const isNext = e.code === 'Space' || e.code === 'ArrowRight' || e.key === 'z' || e.key === 'Z'
+                || e.key === 'k' || e.key === 'K';
             const isPrev = e.code === 'ArrowLeft';
             const isUp = e.code === 'ArrowUp';
             const isDown = e.code === 'ArrowDown';
             const isIgnore = e.key === 'z' || e.key === 'Z';
+            const isKnown = e.key === 'k' || e.key === 'K';
             const isAudio = e.key === 'v' || e.key === 'V';
             const isComplete = e.key === 'w' || e.key === 'W';
             const isSort = e.key === 's' || e.key === 'S';
@@ -4466,12 +4577,10 @@
                 return; // Don't perform navigation
             }
 
-            if (isIgnore) {
+            if (isIgnore || isKnown) {
                 const centeredCard = activeCards[currentIndex];
-                const ignoreBtn = centeredCard.querySelector('.btn-ignore');
-                if (ignoreBtn && !ignoreBtn.disabled) {
-                    ignoreBtn.click();
-                }
+                const side = centeredCard.querySelector(isKnown ? '.mark-toggle .mk-known' : '.mark-toggle .mk-ignore');
+                if (side) side.click();
             }
 
             if (isAudio) {

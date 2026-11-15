@@ -288,6 +288,51 @@ class Services:
         if chores is not None and not self.closing.is_set():
             chores.index(force=True)
 
+    # --- Kotoba-K: Known / Ignore marked by hand (the word card, the journey's door: app/services/word_marks.py) --- #
+    def mark_words(self, language, marks):
+        """(A worker, or the door's thread: it blocks on the files.) `marks` [(word, mark)] written
+        (`word_marks.apply`), then the window follows (`_words_marked`). -> the `Marked`."""
+        from app.services import word_marks
+        result = word_marks.apply(language, marks)
+        if result.done:
+            self._words_marked(language)
+        return result
+
+    def undo_marks(self, language):
+        """(A worker.) The last marks of `language` put back (`word_marks.undo`), followed as a mark is."""
+        from app.services import word_marks
+        result = word_marks.undo(language)
+        if result.done:
+            self._words_marked(language)
+        return result
+
+    def words_marked(self, language):
+        """(A worker.) Settings' word lists wrote a Known or Ignore word: followed as a mark is."""
+        self._words_marked(language)
+
+    def _words_marked(self, language):
+        """A mark landed: the numbers leave every marked word out at once (*N new*, Up next, the word card: no
+        Generate first), the known-words count is read again and the journey keeper's quiet time starts (one quiet
+        Generate after a burst brings the journey and the lists along). Nothing once the quit began."""
+        if self.closing.is_set():
+            return
+        from app.services import word_marks
+        numbers = getattr(self.writer, "numbers", None)
+        if numbers is not None and getattr(numbers, "language", None) == language and hasattr(numbers, "leave_out"):
+            try:
+                numbers.leave_out(word_marks.left_out(language))
+                numbers.idle(NUMBERS_WAIT_S)        # (a worker: the card asked again after this sees them out)
+            except Exception as e:
+                applog.log("shell", f"the numbers after a mark: {e!r}")
+        if language != self.language:
+            return                                  # (another language's lists: its next Generate reads them)
+        automation = self.automation
+        if automation is not None and hasattr(automation, "known_changed"):
+            automation.known_changed()
+        words_marked = getattr(self.replan, "words_marked", None)
+        if words_marked is not None:
+            words_marked()
+
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
         `marked("stone")` (it reads only the Generate's state; its timer asks whether the report is current, after any
@@ -1545,7 +1590,8 @@ class ShellWindow(QMainWindow):
             from app.qt import word_peek
             self.words = word_peek.PeekHost(central, self._words_provider, lambda: current.view_model,
                                             tooltips=self.tooltips, router=self.router,
-                                            open_journey=self._words_journey)
+                                            open_journey=self._words_journey, mark=self._card_mark,
+                                            undo=self._card_undo, say=self.say)
             lst = current.list
 
             def _at(rect):
@@ -3073,6 +3119,23 @@ class ShellWindow(QMainWindow):
             at = QRect(central.width() // 2, central.height() // 3, 1, 1)
         self.words.keep(row, at)
 
+    # --- Kotoba-K: Known / Ignore — the journey's door and the word card ------------------------------------------ #
+    def door_routes(self):
+        """The journey's door's routes (`app/door.py`, started after the first frame): the page's ✓ Known / ⊘ Ignore
+        and their clears (`word_marks.door_route`: one call for any number of them, a press or the marks that waited
+        in the page), written and followed as the card's are (`Services.mark_words`)."""
+        from app.services import word_marks
+        return {"words/mark": word_marks.door_route(self.services.mark_words)}
+
+    def _card_mark(self, marks):
+        """(A worker: the word card's ✓ / ⊘ and *I know all of these*, `PeekHost`.) Written in the window's language
+        -> the `Marked`."""
+        return self.services.mark_words(self.language, list(marks))
+
+    def _card_undo(self):
+        """(A worker: *I know all of these*'s Undo.) -> the `Marked`."""
+        return self.services.undo_marks(self.language)
+
     def _words_journey(self, control, episode):
         """*Open in the journey ↗* on the kept card: the journey's one press, on its button, at that title."""
         self._open_journey(control=control, episode=episode)
@@ -4497,6 +4560,7 @@ def stop_door():
         applog.log("shell", f"the journey's door at quit: {e!r}")
 
 
+NUMBERS_WAIT_S = 2.0                # Kotoba-K: a mark's write waits this long at most for the numbers to follow it
 SESSION_JOB = "anki-session"        # IK-6: the window's start look at Anki, a registry job (`jobs.RESOURCES`)
 
 

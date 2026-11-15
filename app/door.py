@@ -92,7 +92,7 @@ def _handler(door):
             except ValueError:
                 length = -1
             if length < 0 or length > MAX_BODY:
-                return self._send(413, {"ok": False, "error": "too big"})
+                return self._send(413, {"ok": False, "error": "too big", "kind": "refused"})
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except (ValueError, UnicodeDecodeError):

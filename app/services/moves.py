@@ -44,6 +44,9 @@
   stands aside or one that no longer describes the library, `why()` says so and the moves answer nothing.
   Hover-W: `words(ids)` — a title's words as its *N new* counts them, from the engine whose figures the rows show (the
   last one, kept, while they are faded).
+  Kotoba-K: `leave_out(words)` — the words marked Known or Ignore (`app/services/word_marks.py`) out of *N new*, Up
+  next and the word card at once (`Engine.leave_out`), before the Generate that follows; each plan read leaves out
+  the words marked then (`marked(language)`, read on the worker), so a restart before that Generate shows them out too.
 
 - **`plan_check(language, settings)`**: `Numbers`' full staleness verdict (the replan host's `plan_engine.check`);
   **`open_library(language)`**: the reader and the numbers on one opener (the writer takes the same opener).
@@ -2482,8 +2485,9 @@ class Numbers:
     `refresh`); `log(line)`: why *N new* stops or starts following the order, each time that changes (the app's log).
     """
 
-    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None, log=None):
+    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None, log=None, marked=None):
         self.opener = opener
+        self._marked = marked                       # Kotoba-K: language -> the marked words (word_marks.left_out)
         self._log = log or _nothing
         self.language = language
         self.plan_file = plan_file
@@ -2566,6 +2570,35 @@ class Numbers:
 
     def idle(self, timeout=None):
         return self.worker.idle(timeout)
+
+    def leave_out(self, words):
+        """Kotoba-K (any thread): `words` — every word marked Known or Ignore now, the whole set — left out of the
+        engine's numbers on the worker; the rows whose *N new* moved are published (a new version)."""
+        self.worker.put(self._leave_out, frozenset(words or ()))
+
+    def _leave_out(self, words):
+        with self._lock:
+            eng = self._engine
+            if eng is None:
+                return                              # no numbers shown: the next plan read leaves them out
+            counts = self._table
+            if not eng.leave_out(words):
+                return
+            table = self._figures(eng, counts)
+            changed = {i for i, v in table.items() if counts.get(i) != v}
+            self._publish(table, changed)
+        self._call_change()
+
+    def _marked_now(self):
+        """The words marked Known or Ignore now (an empty set when they can't be read)."""
+        try:
+            if self._marked is not None:
+                return frozenset(self._marked(self.language) or ())
+            from app.services import word_marks
+            return frozenset(word_marks.left_out(self.language))
+        except Exception as e:
+            print(f"Window numbers: the marked words couldn't be read: {e!r}")
+            return frozenset()
 
     def close(self):
         self.worker.put(self._close_handle)
@@ -2719,6 +2752,9 @@ class Numbers:
             eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
             del plan                                # the per-file lines go: the engine keeps its own tables
             eng._numbers(order)
+            marked = self._marked_now()             # Kotoba-K: words marked since the plan, out of it at once
+            if marked:
+                eng.leave_out(marked)
         except plan_engine.PlanError as e:
             self._set(None, self._kept(counts), f"stale: {e}", key)
             return

@@ -450,6 +450,13 @@ class Replan:
         keeper, _host = self._pair()
         keeper.changed("level")
 
+    def words_marked(self):
+        """Kotoba-K: a word marked Known or Ignore (the word card, the journey's door): the keeper's quiet time starts
+        again, so the journey and the lists follow in one quiet Generate after the last mark of a burst (the window's
+        numbers already have: `Numbers.leave_out`)."""
+        keeper, _host = self._pair()
+        keeper.changed("known")
+
     def report_changed(self):
         """A setting only the report reads written (Settings' Journey rows: the theme, a switch; a6 #5): the keeper
         looks as for a stone (`marked`: a Generate in flight is never withdrawn), so its quiet run re-renders the

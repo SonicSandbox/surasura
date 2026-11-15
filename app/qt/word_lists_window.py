@@ -257,7 +257,8 @@ class WordListsWindow(SecondaryWindow):
         self._count()
 
     def show_kind(self, kind):
-        """The Ignore list (`ignore`) or the Blacklist (`blacklist`), read on a worker."""
+        """The Ignore list (`ignore`), the Blacklist (`blacklist`) or the words marked known (`known`), read on a
+        worker."""
         if not self.kind_buttons[kind].isChecked():
             self.kind_buttons[kind].setChecked(True)
         if kind == self.kind:
@@ -330,8 +331,15 @@ class WordListsWindow(SecondaryWindow):
         if self.busy():
             return
         kind, language = self.kind, self.language
-        fn = word_lists.add if adding else word_lists.remove
+        write = word_lists.add if adding else word_lists.remove
         args = (kind, language, list(words)) + (() if adding else (source,))
+        follow = getattr(getattr(self.shell, "services", None), "words_marked", None)
+
+        def fn(*a):                                       # (the worker) Known / Ignore: the window's numbers follow
+            change = write(*a)
+            if follow is not None and change.done and kind in ("ignore", word_lists.KNOWN):
+                follow(language)
+            return change
         self.begin_write()
         if qpress.run(control, "words:write", fn, *args, win=self,
                       then=lambda change: self._written(kind, language, _line(change, adding)),

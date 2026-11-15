@@ -278,3 +278,148 @@ def test_hover_w_r1_a_click_asks_for_the_words_again_even_with_the_rows_card_hel
     part = _new_part(lst, i)
     QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part[1].center())
     assert wait_until(lambda: win.words.card.kept, 3) and len(provider.asked) == n + 1
+
+
+# --- Kotoba-K: Known / Ignore on the kept card ------------------------------------------------------------------- #
+class Marks:
+    """The window's writer for the card's marks (`PeekHost.mark` / `undo`, a worker's): records each call and answers
+    as `word_marks` would — or with `error`."""
+
+    def __init__(self, error=None):
+        self.calls, self.undos, self.error = [], 0, error
+
+    def mark(self, marks):
+        from app.services.word_marks import Marked
+        self.calls.append(list(marks))
+        if self.error:
+            return Marked(error=self.error, busy=True)
+        return Marked(done=[(w, None, m) for w, m in marks])
+
+    def undo(self):
+        from app.services.word_marks import Marked
+        self.undos += 1
+        return Marked(done=[("x", "known", None)])
+
+
+def _kept_with_marks(peek, error=None):
+    win, lst, i, provider = peek
+    marks = Marks(error)
+    said = []
+    win.words.mark, win.words.undo, win.words.say = marks.mark, marks.undo, said.append
+    part = _new_part(lst, i)
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part[1].center())
+    card = win.words.card
+    assert wait_until(lambda: card.isVisible() and card.kept and card.card is not None, 3)
+    return win, card, marks, said, provider
+
+
+def _word_item(card, text):
+    return next(it for it in card.sheet.items if it.text == text and it.word is not None)
+
+
+def _pair(card, item, mark):
+    card.hovered(item)
+    r = card._pair_rect(item)
+    at = QPoint(r.left() + r.width() // 4, r.center().y()) if mark == "known" else \
+        QPoint(r.right() - r.width() // 4, r.center().y())
+    hit = card.pair_at(at)
+    assert hit is not None and hit.mark == mark and hit.word is item.word
+    return hit
+
+
+def test_kotoba_k_a_kept_words_hover_shows_known_and_ignore_and_a_click_marks_it_at_once(peek):
+    win, card, marks, _said, _provider = _kept_with_marks(peek)
+    gentleman = _word_item(card, "紳士")
+    hit = _pair(card, gentleman, "known")
+    assert card.hot_item is gentleman
+    card.hovered(hit)                                                   # the pointer on the pair keeps it up
+    assert card.hot_item is gentleman and card.hot_pair is hit
+    card.clicked(hit)
+    assert card.marked == {"紳士": "known"}                              # painted before the write
+    assert wait_until(lambda: marks.calls == [[("紳士", "known")]], 3)
+    card.clicked(_pair(card, _word_item(card, "紳士"), "known"))         # the lit side again: cleared
+    assert card.marked == {}
+    assert wait_until(lambda: marks.calls[-1] == [("紳士", None)], 3)
+    card.clicked(_pair(card, _word_item(card, "紳士"), "ignore"))
+    assert card.marked == {"紳士": "ignore"}
+    assert wait_until(lambda: marks.calls[-1] == [("紳士", "ignore")], 3)
+    assert _word_item(card, "紳士")                                       # it stays in place, dimmed, while open
+
+
+def test_kotoba_k_learned_on_the_way_words_are_marked_too_and_the_hover_card_has_no_pair(peek):
+    win, lst, i, _provider = peek
+    _rest_on(lst, i)
+    card = win.words.card
+    assert wait_until(card.isVisible, 3) and not card.kept
+    card.hovered(_word_item(card, "紳士"))
+    assert card.hot_item is None and card.pair_at(QPoint(0, 0)) is None   # the hover card only shows: no marks
+    card.hide()
+    win2, card, marks, _said, _provider = _kept_with_marks(peek)
+    hit = _pair(card, _word_item(card, "遠慮"), "ignore")
+    card.clicked(hit)
+    assert wait_until(lambda: marks.calls == [[("遠慮", "ignore")]], 3)
+
+
+def test_kotoba_k_a_mark_that_fails_puts_the_word_back_and_says_why(peek):
+    from app.qt import strings
+    win, card, marks, said, _provider = _kept_with_marks(peek, error="Your known words are being updated by Anki.")
+    card.clicked(_pair(card, _word_item(card, "鉄砲"), "known"))
+    assert card.marked == {"鉄砲": "known"}
+    assert wait_until(lambda: said, 3) and card.marked == {}
+    assert said == [strings.WORDS_MARK_FAILED.format(why="Your known words are being updated by Anki.")]
+
+
+def test_kotoba_k_i_know_all_of_these_marks_every_new_word_in_one_write_and_its_undo_puts_them_back(peek):
+    from app.qt import strings
+    win, card, marks, _said, _provider = _kept_with_marks(peek)
+    card.clicked(_pair(card, _word_item(card, "紳士"), "ignore"))       # one marked already: left as it is
+    assert wait_until(lambda: len(marks.calls) == 1, 3)
+    assert card.all_known.isVisible() and card.all_known.text() == strings.WORDS_ALL_KNOWN
+    assert card.all_known.toolTip()
+    card.all_known.click()
+    expect = [w for w in NEW if w != "紳士"]
+    assert all(card.marked[w] == "known" for w in expect)               # painted with the press
+    assert wait_until(lambda: len(marks.calls) == 2 and card.all_done, 3)
+    assert marks.calls[1] == [(w, "known") for w in expect]
+    assert card.all_known.text() == strings.WORDS_ALL_UNDO.format(n=len(expect))
+    card.all_known.click()
+    assert wait_until(lambda: marks.undos == 1 and card.all_done is None, 3)
+    assert card.marked == {"紳士": "ignore"} and card.all_known.text() == strings.WORDS_ALL_KNOWN
+
+
+def test_kotoba_k_the_words_asked_again_keep_a_marked_word_in_place_while_the_counts_follow(peek):
+    win, card, marks, _said, provider = _kept_with_marks(peek)
+    provider.kw = dict(new=[w for w in NEW if w != "鉄砲"])             # the numbers have left it out
+    card.clicked(_pair(card, _word_item(card, "鉄砲"), "known"))
+    assert wait_until(lambda: card.card.n_new == len(NEW) - 1, 3)       # asked again after the write: the count follows
+    assert [w.label for w in card.card.new] == NEW                       # ... and the word stays, dimmed, in its place
+    card.close()
+    assert card.marked == {}                                             # the next open reads the words as they are
+
+
+def test_kotoba_k_keep_marked_keeps_only_the_marked_words_and_adds_new_ones():
+    old = TW.Card(key="k", title="t", tier="Soon", n_files=1, n_new=3, today=4,
+                  new=(_w("紳士"), _w("鉄砲"), _w("白熊")), anki=None,
+                  before=(TW.Group("喫茶店の朝", (_w("遠慮"),)),), kept=False, episode=None, items=())
+    new = old._replace(n_new=2, new=(_w("紳士"), _w("西洋")), before=())
+    got = TW.keep_marked(old, new, {"鉄砲": "known", "遠慮": "ignore"})
+    assert [w.label for w in got.new] == ["紳士", "鉄砲", "西洋"] and got.n_new == 2
+    assert [(g.title, [w.label for w in g.words]) for g in got.before] == [("喫茶店の朝", ["遠慮"])]
+
+
+def test_kotoba_k_the_doors_route_writes_the_word_lists_and_the_numbers_follow(peek, monkeypatch):
+    from app.services import word_lists, word_marks
+    win, _lst, _i, _provider = peek
+    numbers = getattr(win.services.writer, "numbers", None)
+    left = []
+    if numbers is not None:
+        monkeypatch.setattr(numbers, "leave_out", lambda words: left.append(set(words)))
+    word_lists._BACKED_UP.clear()
+    route = win.door_routes()["words/mark"]
+    assert route({"lang": "ja", "marks": [{"word": "鉄砲", "mark": "ignore"}, {"word": "紳士", "mark": "known"}]}) \
+        == {"done": 2}
+    assert word_marks.marks("ja") == {**{w: "ignore" for w in word_marks.marks("ja") if w != "紳士"},
+                                      "鉄砲": "ignore", "紳士": "known"}
+    if numbers is not None:
+        assert left and {"鉄砲", "紳士"} <= left[-1]
+    word_marks.apply("ja", [("鉄砲", None), ("紳士", None)])

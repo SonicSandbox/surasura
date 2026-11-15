@@ -12,6 +12,9 @@ keeps every line it doesn't change, byte for byte.
   add always writes the list file: KnownWord.json stays the sync's, decision 41).
 - `remove(kind, language, words, source="list")` -> a `Change`: every line naming exactly that word (as the line holds
   it, trimmed) goes; `source="known"` takes KnownWord.json's IGNORED entries of that dictForm out instead.
+- **Known** (`kind="known"`, Kotoba-K): the words marked known in Surasura (KnownWord.json's `source: "Surasura"`
+  entries, `app/services/word_marks.py`) — read, added and taken off through `word_marks`, its rules; a word known any
+  other way (Anki, an import) is never one of them.
 - `words_in(text, language, kind)` -> the candidate words of pasted text, read by the library's own tokenizer
   (`analyzer.JapaneseTokenizer`: `join_affixes` with the library's tables; `ChineseTokenizer`: `chinese_cut` /
   `chinese_word`), each a `Candidate(word, spelling, status)`: `word` is the lemma (the identity everywhere, what a
@@ -49,6 +52,8 @@ from dataclasses import dataclass, field
 from app import anki_sync, path_utils
 
 KINDS = {"ignore": "IgnoreList.txt", "blacklist": "Blacklist.txt"}
+KNOWN = "known"                     # Kotoba-K: the words marked known (word_marks), beside the two lists
+LISTS = tuple(KINDS) + (KNOWN,)
 # The first line of a list made here, as `path_utils.ensure_data_setup` makes it.
 HEADERS = {"ignore": "# Add words to ignore here (one per line)", "blacklist": "# {language} Blacklist"}
 VERB = "Word lists"
@@ -203,6 +208,10 @@ def _unreadable(name):
 def read(kind, language):
     """The list's words for the window (see the module docstring) -> a `Listing`."""
     listing = Listing()
+    if kind == KNOWN:
+        from app.services import word_marks
+        listing.entries = [Entry(w, "list") for w, mark in word_marks.marks(language).items() if mark == "known"]
+        return listing
     path = list_path(kind, language)
     try:
         listing.entries = [Entry(w, "list") for w in _File(path, language).words()]
@@ -244,6 +253,8 @@ def _names(language):
 # --- writing ------------------------------------------------------------------------------------------------ #
 def add(kind, language, words):
     """Put `words` on the list (see the module docstring) -> a `Change`."""
+    if kind == KNOWN:
+        return _marked(language, words, "known")
     change = Change()
     path = list_path(kind, language)
 
@@ -277,6 +288,8 @@ def add(kind, language, words):
 
 def remove(kind, language, words, source="list"):
     """Take `words` off the list (see the module docstring) -> a `Change`."""
+    if kind == KNOWN:
+        return _marked(language, words, None)
     change = Change()
     wanted = [str(w or "").strip() for w in words if str(w or "").strip()]
     if source == "known":
@@ -301,6 +314,20 @@ def remove(kind, language, words, source="list"):
             change.done = found
 
     return _held(language, change, work)
+
+
+def _marked(language, words, mark):
+    """The Known tab's add (`mark` "known") or ✕ (None), through `word_marks` -> a `Change`."""
+    from app.services import word_marks
+    change = Change()
+    wanted = list(dict.fromkeys(str(w or "").strip() for w in words if str(w or "").strip()))
+    result = word_marks.apply(language, [(w, mark) for w in wanted])
+    change.error, change.busy = result.error, result.busy
+    change.backup = result.backups[0] if result.backups else None
+    done = {w for w, _before, after in result.done if after == mark}
+    change.done = [w for w in wanted if w in done]
+    change.skipped = [w for w in wanted if w not in done]
+    return change
 
 
 def _write(f, change):
@@ -385,9 +412,14 @@ def words_in(text, language, kind="ignore"):
         p = os.path.join(user_files, name)
         return path_utils.read_text(p, language).splitlines() if os.path.isfile(p) else []
 
-    other = "blacklist" if kind == "ignore" else "ignore"
-    listed = analyzer._list_words(lines(KINDS[kind]), script)
-    left_out = analyzer._list_words(lines(KINDS[other]) + lines("GraduatedList.txt"), script)
+    if kind == KNOWN:                               # the words marked known; the lists' words are left out
+        from app.services import word_marks
+        listed = {w for w, mark in word_marks.marks(language).items() if mark == "known"}
+        left_out = analyzer._list_words(lines(KINDS["ignore"]) + lines(KINDS["blacklist"]), script)
+    else:
+        other = "blacklist" if kind == "ignore" else "ignore"
+        listed = analyzer._list_words(lines(KINDS[kind]), script)
+        left_out = analyzer._list_words(lines(KINDS[other]) + lines("GraduatedList.txt"), script)
     ignored = analyzer.load_ignored_entries(user_files, script, language)
     if kind == "ignore":
         listed |= ignored
@@ -550,7 +582,7 @@ def find_main():
     try:
         request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         language, kind = request["language"], request.get("kind", "ignore")
-        if language not in ("ja", "zh") or kind not in KINDS:
+        if language not in ("ja", "zh") or kind not in LISTS:
             raise ValueError(f"no such list: {kind} ({language})")
         found = words_in(str(request["text"]), language, kind)
     except Exception:

@@ -1280,8 +1280,8 @@ class LoadRun(QObject):
     over the caller (None: neither); `stop_scan()` stops the caller's look between files; `sort()` (the wizard's
     `_load_sort`) opens the sorting, `open_sort` by default; `after(how)` once the sort screen closed (`state["ids"]`:
     the scan's items); `empty()` when the scan took nothing in (the cover gone). `language()`: whose indexer runs
-    count. `state`: {"step", "ids", "stopped", "indexed", "since"}. Outside setup it hears the window's indexer itself
-    (`shell.bridge.indexed`)."""
+    count. `state`: {"step", "ids", "stopped", "indexed", "since" (a time.time_ns())}. Outside setup it hears the
+    window's indexer itself (`shell.bridge.indexed`)."""
 
     def __init__(self, shell, cover, door="setup", stop_scan=None, language=None, sort=None, after=None, empty=None,
                  sync_running=None, fetching=None, long_read=None, parent=None):
@@ -1400,7 +1400,7 @@ class LoadRun(QObject):
         once this run wrote it)."""
         load = self.state
         load["step"] = "index"
-        load["since"] = time.time()
+        load["since"] = time.time_ns()                # (ns: `setup_load.read_count`'s, never float seconds)
         chores = self._chores()
         asked = chores.index(force=True) if chores is not None else "none"
         if asked not in (None, "busy"):               # off (a test's switch), closed, no chores: nothing to wait for

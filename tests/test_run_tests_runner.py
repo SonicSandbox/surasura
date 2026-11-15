@@ -44,6 +44,41 @@ def test_default_run_is_unchanged(monkeypatch):
     assert exit_info.value.code == 3, "pytest's exit code is passed on"
 
 
+# --- --help, and a flag it doesn't know (2026-11-15) ------------------------------------------------------------------
+def _no_run(monkeypatch):
+    """Any pytest started — the default run, --all's suites and shards, the stress runs — fails the test."""
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda *a, **k: pytest.fail(f"a run started: {a[0] if a else k}"))
+    monkeypatch.setattr(run_tests.subprocess, "Popen", lambda *a, **k: pytest.fail(f"a run started: {a[0] if a else k}"))
+
+
+@pytest.mark.parametrize("argv", [["--help"], ["-h"], ["--all", "--help"], ["--shard", "1/4", "-h"]])
+def test_help_prints_the_usage_and_starts_nothing(monkeypatch, capsys, argv):
+    """Why: the runner had no --help, so `python run_tests.py --help` started the whole core suite — outside
+    with-lock.sh and its throwaway data folders (two lanes in one day). It prints the usage and exits 0, whatever else
+    is on the line."""
+    _no_run(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    for flag in ("--all", "--shard I/N", "--stress [N]", "--stress-changed [BASE]", "--help"):
+        assert flag in out, f"the usage names {flag}"
+
+
+@pytest.mark.parametrize("argv", [["--verbose"], ["--all", "-x"], ["--stres"], ["--shard=1/4", "--al"]])
+def test_a_flag_it_does_not_know_runs_nothing_and_fails(monkeypatch, capsys, argv):
+    """The same trap through a typo: an unknown flag was ignored and the whole core suite ran. It says which flag, prints
+    the usage and exits 2 (argparse's code for a bad command line), nothing run."""
+    _no_run(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert exit_info.value.code == 2
+    out = capsys.readouterr().out
+    assert repr(argv[-1]) in out and "--stress-changed [BASE]" in out
+
+
 # --- Which suites --all runs ----------------------------------------------------------------------
 def test_suites_are_core_first_then_each_module_suite_on_disk(tmp_path):
     _layout(str(tmp_path), {"youtube_downloader": True, "immersion_architect": True, "koe": False})

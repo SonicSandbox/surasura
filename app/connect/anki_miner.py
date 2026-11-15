@@ -615,7 +615,9 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
     raise AnkiMinerError("failed", "Anki Miner's setup didn't finish" + (" — " + "; ".join(failed) if failed else "."))
 
 
-_SPEECH = {}            # `speech_ready`'s answers: {(path, language, profile): (True / False, when)}, this Connect run
+# `speech_ready`'s answers, this Connect run: {(path, language, profile): (True / False, when, the model it set on
+# that profile, or None)}
+_SPEECH = {}
 SPEECH_ITEM = "speech_model"
 SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: never five launches every look)
 
@@ -632,22 +634,43 @@ def speech_ready(path, language, profile, folder):
     said = _SPEECH.get(key)
     if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
         return said[0]
-    ok = _speech_ok(check(path, language, profile))
+    ok, set_to = _speech_ok(check(path, language, profile)), None
     for model in SPEECH_MODELS if not ok and profile else ():
         try:
             settings_import(path, language, {"asr_model": model}, folder, profile=profile)
         except AnkiMinerError:
             break                       # the window's profile, or a busy Anki Miner: as it is
+        set_to = model
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
-    _SPEECH[key] = (ok, time.monotonic())
+    _SPEECH[key] = (ok, time.monotonic(), set_to)
     return ok
 
 
 def _speech_ok(answer):
     items = {item.get("name"): item for item in (answer or {}).get("items") or () if isinstance(item, dict)}
     return bool((items.get(SPEECH_ITEM) or {}).get("ok"))
+
+
+# Michi-YT5 (Sonic 2026-11-15, after Michi-YT4's measurement against a person's captions): the speech models whose
+# transcription is clearly better than YouTube's machine captions — large-v3 and its family (turbo measured better
+# too); `small` about level with them; `medium` unmeasured (PROVISIONAL: not large); any other name, or none, isn't
+def is_large(model):
+    name = model.strip().lower() if isinstance(model, str) else ""
+    return name == "large-v3" or name.startswith("large-v3-")
+
+
+def listens_large(path, language, profile, export):
+    """Does `profile` listen with a large speech model (`is_large`)? Its `asr_model` as the learner set it, in the
+    settings export Connect reads (`settings_export`: 3.12 writes every setting but the machine's own), and — when
+    `speech_ready` set another model on it this run, after that export was read — that one too: large only when both
+    say so. An export that names no model (unreadable, an older build) -> False: never guessed large."""
+    settings = export.get("settings") if isinstance(export, dict) else None
+    said = _SPEECH.get((path, language, profile)) or ()
+    set_to = said[2] if len(said) > 2 else None
+    return is_large(settings.get("asr_model") if isinstance(settings, dict) else None) and \
+        (set_to is None or is_large(set_to))
 
 
 def speech_setup_args(language, profile, progress_path, model=SPEECH_MODEL):

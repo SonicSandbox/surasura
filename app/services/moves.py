@@ -102,6 +102,7 @@ JOURNALLED += ("register",)
 KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
+KEPT += ("side_by_side",)                       # Kyou-A: the library's *New cards come from* (Current's top two)
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
@@ -367,12 +368,13 @@ class Writer:
             return None
         return cmd["seq"]
 
-    def set_options(self, soon_line=None, mine_line=None, keep_watched=None):
+    def set_options(self, soon_line=None, mine_line=None, keep_watched=None, side_by_side=None):
         """Settings' two store lines (W3.3 P6): `soon_line` -> `Store.set_soon_line(n)`, `mine_line` ->
         `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it); W-1's `keep_watched` (True /
-        False, None to leave it) -> `Store.set_library_options(keep_watched=)`. -> the command's number, or None when
-        refused (read-only) or there is nothing to set."""
-        if soon_line is None and mine_line is None and keep_watched is None:
+        False, None to leave it) -> `Store.set_library_options(keep_watched=)`; Kyou-A's `side_by_side` (True / False,
+        None to leave it) the same way. -> the command's number, or None when refused (read-only) or there is nothing
+        to set."""
+        if soon_line is None and mine_line is None and keep_watched is None and side_by_side is None:
             return None
         cmd = {"op": "set_options", "ids": []}
         if soon_line is not None:
@@ -381,6 +383,8 @@ class Writer:
             cmd["mine_line"] = int(mine_line)
         if keep_watched is not None:
             cmd["keep_watched"] = bool(keep_watched)
+        if side_by_side is not None:
+            cmd["side_by_side"] = bool(side_by_side)
         for value in (cmd.get("soon_line"), cmd.get("mine_line")):
             if value is not None and value < 0:
                 raise ValueError("a line can't be negative")
@@ -1355,11 +1359,16 @@ class Writer:
             changes.append(store.set_soon_line(cmd["soon_line"]))
             moved = changes[-1] is not None
         counted = False
-        if cmd.get("mine_line") is not None or cmd.get("keep_watched") is not None:
-            order = _order_version(store) if cmd.get("keep_watched") is not None else None
+        if cmd.get("mine_line") is not None or cmd.get("keep_watched") is not None or \
+                cmd.get("side_by_side") is not None:
+            order = _order_version(store) if cmd.get("keep_watched") is not None or \
+                cmd.get("side_by_side") is not None else None
             changes.append(store.set_library_options(mine_line=cmd.get("mine_line"),
-                                                     keep_watched=cmd.get("keep_watched")))
+                                                     keep_watched=cmd.get("keep_watched"),
+                                                     side_by_side=cmd.get("side_by_side")))
             counted = order is not None and changes[-1] is not None and _order_version(store) != order   # W-1
+            # Kyou-A: side by side can move rows across the Soon line (both titles stay above it)
+            moved = moved or (counted and cmd.get("side_by_side") is not None)
         if moved:                                   # the rows it moved changed tier: the moves queued behind it
             with self._cond:                        # compare against what it left (a crash's replay keeps them)
                 later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}

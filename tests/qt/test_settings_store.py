@@ -515,3 +515,69 @@ def test_W1_the_toggle_through_the_real_writer_is_one_command_and_its_undo_resto
 
 
 from tests.test_services_moves import lib, make_writer  # noqa: E402,F401  (the real store's fixtures)
+
+
+# --- Kyou-A: *New cards come from* — the library's `side_by_side`, a choice the store rows draw ----------------- #
+def _choose_top_two(rows):
+    """The second choice, by the keyboard as a learner would: Right, then Space."""
+    rows.side.setFocus()
+    QTest.keyClick(rows.side, Qt.Key.Key_Right)
+    QTest.keyClick(rows.side, Qt.Key.Key_Space)
+
+
+def test_side_the_row_sits_under_new_cards_a_day_and_shows_the_librarys_choice(qapp):
+    """Under *New cards a day* in Anki & mining (Sonic: reuse what exists, sorted where it belongs); its explainer is
+    the row's ?, never a visible line under it; a library without the option reads *Current's order*."""
+    from app.qt import settings_catalog as catalog
+    anki = [row.id for row in catalog.ROWS if row.section == "anki"]
+    assert anki.index("new_cards_from") == anki.index("new_cards_a_day") + 1
+    for options, value in ((dict(LINES, side_by_side=1), "top_two"), (dict(LINES), "current"),
+                           (dict(LINES, side_by_side=0), "current")):
+        page, rows, _shell, store = make(options)
+        try:
+            assert rows.side.value() == value and rows.side.isEnabled()
+            assert page.custom_row("new_cards_from").layout().indexOf(rows.side) >= 0
+            assert rows.side.toolTip() == S.ROWS["new_cards_from"][2]
+            assert store.calls == []                                   # nothing written by showing it
+        finally:
+            _close(page)
+
+
+def test_side_a_choice_shows_at_once_and_writes_one_command_never_settings_json(qapp):
+    writer = Writer()
+    page, rows, _shell, store = make(dict(LINES), writer=writer)
+    try:
+        _choose_top_two(rows)
+        assert rows.side.value() == "top_two"                          # in the frame of the press
+        assert writer.calls == [{"side_by_side": True}]                # one command, the option alone
+        assert store.calls == []                                       # the library's value, not the file's
+    finally:
+        _close(page)
+
+
+def test_side_a_refused_choice_goes_back_and_the_bar_says_why(qapp):
+    writer = Writer(refuse=True)
+    page, rows, shell, _store = make(dict(LINES), writer=writer)
+    try:
+        writer._reason = "damaged"
+        _choose_top_two(rows)
+        assert writer.calls == [{"side_by_side": True}]
+        assert rows.side.value() == "current"
+        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
+    finally:
+        _close(page)
+
+
+def test_side_through_the_real_writer_the_store_weaves_and_its_undo_puts_it_back(qapp, lib, make_writer):
+    from tests import services_helpers as h
+    changes = []
+    w, _heard = make_writer(after_commit=lambda change, op: changes.append((change, op)))
+    page, rows, _shell, _store = make(dict(LINES), writer=w)
+    try:
+        _choose_top_two(rows)
+        assert h.until(lambda: lib.store.meta().get("side_by_side") == 1)
+        assert w.idle(5) and [op for _c, op in changes] == ["set_options"]
+        lib.store.undo(changes[0][0])
+        assert not lib.store.meta().get("side_by_side")
+    finally:
+        _close(page)

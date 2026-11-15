@@ -610,7 +610,7 @@ def sentence_span(raw, word):
     return (text, at, at + len(word)) if at >= 0 else None
 
 
-def unknowns_beside(word, raw, tokenize, unknown, units=None, skip=None):
+def unknowns_beside(word, raw, tokenize, unknown, units=None, skip=None, words=None):
     """How many words of the card's sentence the learner does not know yet OUTSIDE the card's own
     word: 0 makes the card i+1 — the one new thing in its sentence is the card (a phrase made of
     known words counts, D1). `None` when there is no sentence to read or no word to find in it.
@@ -629,6 +629,8 @@ def unknowns_beside(word, raw, tokenize, unknown, units=None, skip=None):
     for the list is its parts when all of them are free (analyzer.LearningView). Each is judged by `unknown`.
     `skip(text, tokens)`, when given, names the tokens that are no word to learn THERE — a one-kanji word standing as
     a piece of something else, 年 in 三年 (analyzer.unoffered) — never an unknown beside the card.
+    `words` (Kyou-A), when given, a list: each unknown counted is appended to it as its lemma (the side-by-side weave's
+    "this sentence is i+1 once those words are picked").
     """
     found = sentence_span(raw, word)
     if found is None:
@@ -647,6 +649,12 @@ def unknowns_beside(word, raw, tokenize, unknown, units=None, skip=None):
             continue
         placed.append((token, pos < end and at > start))       # inside the card's own word?
     own = {(token[0], token[1]) for token, inside in placed if inside}
+    if words is not None:
+        found = [unit for token, inside in placed if not inside
+                 for unit in (units(token) if units else (token,))
+                 if (unit[0], unit[1]) not in own and unknown(unit)]
+        words.extend(unit[0] for unit in found)
+        return len(found)
     return sum(1 for token, inside in placed if not inside
                for unit in (units(token) if units else (token,))
                if (unit[0], unit[1]) not in own and unknown(unit))

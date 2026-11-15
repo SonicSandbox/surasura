@@ -174,6 +174,11 @@ GRADUATED_FOLDER = "Graduated"
 # 3.0's Sources (SRC): every new text copy goes into one content folder of Surasura's own, `Library/<show>/<file>`,
 # whatever its place; grouping only (`_below_tier` strips it), never a place (a place is the store's alone)
 CONTENT_FOLDER = "Library"
+# Surasura's own output folder, `data/<lang>/Processed` (the YouTube downloader's, Extract's, the EPUB importer's): a
+# file directly in it is a loose drop, as one in hato's drop folder (`_below_tier`) — the downloader writes a single
+# video's transcript there, so it is titled by its record's show (the channel), never "Processed" (Kura-PR, based on
+# Mattias's #449). A folder below it (a playlist's, Extract's `Processed/<name>`) is a folder as before
+PROCESSED_FOLDER = "Processed"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
@@ -325,11 +330,12 @@ def search_fold(text, language=None):
 
 def _below_tier(rel):
     """The folder a file sits in, below its tier folder ('HighPriority/Frieren/Season 1/x.srt' → 'Frieren/Season 1'),
-    as written; '' for a loose file (directly in a tier folder, or in hato's drop folder). The content folder counts as
-    one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any case the file
-    system reads as it (as `take_in` and the sync compare it)."""
+    as written; '' for a loose file (directly in a tier folder, in hato's drop folder or directly in `PROCESSED_FOLDER`:
+    the whole folder compared, so a show folder named `Processed` inside a tier folder stays a show's). The content
+    folder counts as one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any
+    case the file system reads as it (as `take_in` and the sync compare it)."""
     folder = _rel_dir(_strip(rel))
-    if not folder or path_key(folder) == path_key(HATO_FOLDER):
+    if not folder or path_key(folder) in (path_key(HATO_FOLDER), path_key(PROCESSED_FOLDER)):
         return ""
     parts = folder.split("/")
     if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):
@@ -3881,11 +3887,11 @@ class Store:
         return kept
 
     def _stranded_work(self, rel, title, cmd, cache=None):
-        """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so
-        its show is read from its file name (`show_of_name`): the work whose title (or another title) folds the
-        same (else, a8, is the same show by `episode_names.show_key`), else a new work titled by that show; a name no
-        show is read from stays a title of its own, by its title. Only a new item comes here (`_settle_works`): an
-        existing work is never regrouped and never renamed."""
+        """A loose file's work (SRC-11): one in hato's drop folder, directly in a tier folder or directly in `Processed`
+        (`PROCESSED_FOLDER`) has no show folder, so its show is read from its file name (`show_of_name`): the work whose
+        title (or another title) folds the same (else, a8, is the same show by `episode_names.show_key`), else a new
+        work titled by that show; a name no show is read from stays a title of its own, by its title. Only a new item
+        comes here (`_settle_works`): an existing work is never regrouped and never renamed."""
         show = show_of_name(rel.rsplit("/", 1)[-1])
         if show is None:
             return self._new_work(title or rel.rsplit("/", 1)[-1], None, cmd)

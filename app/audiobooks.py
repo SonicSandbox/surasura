@@ -251,8 +251,9 @@ def _mp3_tags(path):
                 track=_int_of(values.get("track")), disc=_int_of(values.get("disc")), seconds=seconds)
 
 
-def _mp3_seconds(head, start, size):
-    """An MP3's length: its Xing / Info or VBRI frame count, else its bytes at the first frame's bit rate (CBR)."""
+def _mp3_frame(head, start):
+    """The first MPEG audio layer III frame at or after `start` -> (its offset, sample rate or None, kbps, samples a
+    frame, where a Xing / Info / VBRI frame's tag may sit [after the side info, at 36]), or None."""
     i = head.find(b"\xff", start)
     while 0 <= i < len(head) - 4:
         b1, b2, b3 = head[i + 1], head[i + 2], head[i + 3]
@@ -260,22 +261,50 @@ def _mp3_seconds(head, start, size):
             version = (b1 >> 3) & 3                          # 3: MPEG-1, 2: MPEG-2, 0: MPEG-2.5
             rate = _RATES[version][(b2 >> 2) & 3] if version in _RATES else None
             kbps = _BITRATES[1 if version == 3 else 2][b2 >> 4]
-            if rate is None:
-                return None
             mono = (b3 >> 6) == 3
             samples = 1152 if version == 3 else 576
             side = (17 if mono else 32) if version == 3 else (9 if mono else 17)
-            for at in (i + 4 + side, i + 36):
-                tag = head[at:at + 4]
-                if tag in (b"Xing", b"Info") and len(head) >= at + 12 and head[at + 7] & 1:
-                    frames = struct.unpack(">I", head[at + 8:at + 12])[0]
-                    return frames * samples / rate if frames else None
-                if tag == b"VBRI" and len(head) >= at + 18:
-                    frames = struct.unpack(">I", head[at + 14:at + 18])[0]
-                    return frames * samples / rate if frames else None
-            return (size - i) * 8 / (kbps * 1000) if kbps else None
+            return i, rate, kbps, samples, (i + 4 + side, i + 36)
         i = head.find(b"\xff", i + 1)
     return None
+
+
+def _mp3_seconds(head, start, size):
+    """An MP3's length: its Xing / Info or VBRI frame count, else its bytes at the first frame's bit rate (CBR)."""
+    frame = _mp3_frame(head, start)
+    if frame is None or frame[1] is None:
+        return None
+    i, rate, kbps, samples, places = frame
+    for at in places:
+        tag = head[at:at + 4]
+        if tag in (b"Xing", b"Info") and len(head) >= at + 12 and head[at + 7] & 1:
+            frames = struct.unpack(">I", head[at + 8:at + 12])[0]
+            return frames * samples / rate if frames else None
+        if tag == b"VBRI" and len(head) >= at + 18:
+            frames = struct.unpack(">I", head[at + 14:at + 18])[0]
+            return frames * samples / rate if frames else None
+    return (size - i) * 8 / (kbps * 1000) if kbps else None
+
+
+def mp3_variable(path):
+    """Whether an MP3 is variable bit rate — its first frame a Xing or VBRI frame (LAME's constant-rate files carry
+    Info) — True / False, or None when it can't be read or holds no frame. The journey's ▶ (Kiku-L): a browser seeks in
+    one only roughly (Edge, measured on a real reading: 0.8–1.6 s either way), so its lines get no ▶. Never writes."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(HEAD_BYTES)
+            start = 0
+            if head[:3] == b"ID3" and len(head) >= 10:
+                start = 10 + _syncsafe(head[6:10]) + (10 if head[5] & 0x10 else 0)
+                if start + 4096 > len(head):                # a big tag (a cover picture): its end, then the frame
+                    f.seek(start)
+                    head, start = f.read(64 << 10), 0
+    except OSError:
+        return None
+    frame = _mp3_frame(head, start)
+    if frame is None:
+        return None
+    return any(head[at:at + 4] in (b"Xing", b"VBRI") for at in frame[4])
 
 
 _MP4_IDS = {b"\xa9nam": "title", b"\xa9alb": "album", b"\xa9ART": "artist", b"aART": "album_artist",

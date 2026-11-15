@@ -11,10 +11,16 @@ A YouTube title in the library is only its transcript (the downloader's `.txt` a
   subtitle the job picks its words from and Anki Miner cuts from: they came down with that video, timed to it (the
   library's transcript keeps whole seconds only). Its quality is Anki Miner's own (`YOUTUBE_MAX_HEIGHT` 720, best
   audio); the card audio is the profile's own bitrate, never lowered here.
-- **Captions no person wrote** (Mattias's ask, 3.0.10: "I don't want YouTube's auto-generated subs, they are never
-  good"): a video whose library transcript came from YouTube's speech recognition or its machine translation (the
-  header's `Captions: ja (native auto)`) is fetched with `youtube_subtitle_source` "transcribe" instead — Anki
-  Miner's own whisper model makes its subtitle from the video's audio (`subtitle_source`).
+- **Captions no person wrote** (Michi-YT2, based on Mattias's #455: "I don't want YouTube's auto-generated subs. They
+  are never good."): a video whose library transcript names YouTube's speech recognition or its machine translation
+  in its header (`Captions: ja (native auto)`, `HEARD`) is fetched with `youtube_subtitle_source` "transcribe" —
+  Anki Miner skips YouTube's captions and makes the subtitle from the video's audio with the speech model it has
+  (`subtitle_source`). Never an "auto-translated" one (review r1 M1): its captions are translated from another spoken
+  language (the downloader's `resolve_caption`), so the audio isn't the library's language — Anki Miner's own
+  captions-and-dub rule (`auto_dub`) or its refusal stand, as before. Only one it has: Anki Miner's `fetch` refuses "transcribe" before downloading
+  anything when it has none (3.11.0 / 3.12.0 `cli/api/fetch.py` `speech_problem`) and never downloads a model there,
+  so `Steps.download` asks first (`anki_miner.speech_ready`) and, with none, takes YouTube's captions as before and
+  says so once (`CAPTIONS_KEPT`). A person's captions, or a header naming no kind, are taken as before.
 - **yt-dlp:** the YouTube downloader's own binary (`modules/youtube_downloader/ytdlp_manager`, kept up to date by it)
   is put on Anki Miner's PATH for the call; one Anki Miner downloaded itself comes first (its resolver's order).
 - **Gone after** (`drop`): as soon as Anki Miner has made the job's clips and pictures, and whenever the job stops
@@ -53,6 +59,9 @@ KIND = "online-video"                   # Connect's *Needs you* kind for all of 
 FOLDER = "online"                       # <connect>/online: every fetched video, and nothing else
 FLOOR = 3 * 1024 ** 3                   # free bytes before a fetch: a 2-hour 720p video (Anki Miner's longest) fits
 FETCH_TIMEOUT = 2 * 60 * 60.0           # one video, probed and downloaded (Anki Miner's own probe and download limits)
+# … and its subtitle made from its audio after (review r1 S2): Anki Miner's longest video (2 h) heard by large-v3 on a
+# CPU (about 1x real time: the 3.0 plan's AB/measure.md) on top
+TRANSCRIBE_TIMEOUT = 2 * FETCH_TIMEOUT
 UPDATE_EVERY = 2                        # polls (a second each) between two looks for an update staged
 
 # The words (PROVISIONAL: lean A, asked of the lead) — the language's own trouble, once for it
@@ -77,6 +86,22 @@ STALE = "yt-dlp needs updating to download this video: open YouTube… and choos
 NO_FFMPEG = "Anki Miner can't find ffmpeg, which it needs to download videos."
 BILIBILI = "bilibili.tv videos can't be downloaded to make cards yet: ▶ opens its page."
 FAILED = "Its video couldn't be downloaded ({why})."
+# Michi-YT2: Anki Miner's `youtube_subtitle_source` — YouTube's captions (a person's first), or its own speech model
+# on the video's audio (`subtitle_source`)
+CAPTIONS, TRANSCRIBE = "captions", "transcribe"
+NO_SPEECH = "Anki Miner has no speech model to make this video's subtitles from its audio."
+NOT_HEARD = "Anki Miner couldn't make this video's subtitles from its audio."     # (no speech heard, or its sound)
+# The caption kinds whose video is heard instead (`subtitle_source`): YouTube's own speech recognition, in the video's
+# own language — one of `analyzer.AUTO_CAPTIONS`, never its machine translation
+# … and Connect's own: a transcript the transcription was written over (`keep_transcript`), heard again at its next
+# mining — never YouTube's captions for it after all
+HEARD = frozenset(("native auto", "transcribed"))
+# … said once (its own *Needs you* note, never a wait: the cards are made from YouTube's captions meanwhile;
+# PROVISIONAL words)
+CAPTIONS_KEPT_KIND = "online-captions"
+CAPTIONS_KEPT = ("Cards from YouTube videos whose only captions are YouTube's automatic ones are made from those "
+                 "captions for now: Anki Miner has no speech model to make better subtitles from the audio. Once it "
+                 "has one, the next videos get subtitles made from their audio.")
 # The language's troubles no other video gets past this run (`Steps.download`): asking each would only wait them out
 HELD = (OFFLINE, BOT, NO_ROOM)
 
@@ -87,6 +112,8 @@ _SAYS = (
     (youtube_hold.REFUSED, BOT, True),             # (Yt-B: HTTP 429 too; said as the hold, `fetch`)
     (re.compile(r"update yt.?dlp|downloadable format|requested format", re.I), STALE, True),
     (re.compile(r"ffmpeg", re.I), NO_FFMPEG, True),
+    (re.compile(r"speech model|speech engine", re.I), NO_SPEECH, True),    # (Michi-YT2: "transcribe" refused)
+    (re.compile(r"transcri|recogni[sz]ed no speech", re.I), NOT_HEARD, False),     # (… or it heard nothing)
     (re.compile(r"private video|video is private|\bprivate\b", re.I), PRIVATE, False),
     (re.compile(r"members[- ]only|join this channel|channel members", re.I), MEMBERS, False),
     (re.compile(r"live stream|is live|premieres? in|live event", re.I), LIVE, False),
@@ -125,20 +152,23 @@ def of(language, item, pairing=None):
     url, _why = play.online_link(language, rel, pairing)
     folder, name = os.path.basename(os.path.dirname(rel)), os.path.splitext(os.path.basename(rel))[0]
     return {"site": item["source_type"], "url": url, "names": [folder or name, name],
-            "captions": _captions(language, rel), "rel": rel}
+            "captions": _caption_kind(language, rel), "rel": rel}
 
 
-def _captions(language, rel):
-    """The caption kind the transcript at `rel` (in the language's data folder) names in its header, or None (no such
-    header, or unreadable): its first lines only."""
+HEAD = 4096                             # bytes of a transcript read for its header (six short lines)
+
+
+def _caption_kind(language, rel):
+    """The caption kind the transcript at `rel` (in the language's data folder) names in its header — its first HEAD
+    bytes, decoded by the one rule (`path_utils.decode_text`) — or None (no such header; gone or unreadable)."""
     from app import analyzer
-    from app.path_utils import get_data_path
+    from app.path_utils import decode_text, get_data_path
     try:
-        with open(os.path.join(get_data_path(language), *rel.split("/")), encoding="utf-8", errors="replace") as f:
-            head = f.read(4096)
+        with open(os.path.join(get_data_path(language), *rel.split("/")), "rb") as f:
+            raw = f.read(HEAD)
     except (OSError, ValueError):
         return None
-    return analyzer.caption_kind(head)
+    return analyzer.caption_kind(decode_text(raw, language, head=len(raw) == HEAD))
 
 
 def keep_transcript(language, rel, subtitle):
@@ -166,7 +196,7 @@ def keep_transcript(language, rel, subtitle):
     except (OSError, UnicodeDecodeError):
         return False
     kind = analyzer.caption_kind(text)
-    if kind not in analyzer.AUTO_CAPTIONS or kind == analyzer.TRANSCRIBED:
+    if kind not in HEARD or kind == analyzer.TRANSCRIBED:     # YouTube's own speech recognition only
         return False
     cues = []
     for start, _end, line in lineup.srt_cues(subtitle):
@@ -207,12 +237,10 @@ def keep_transcript(language, rel, subtitle):
 
 
 def subtitle_source(web):
-    """Anki Miner's `youtube_subtitle_source` for a video (`of`'s) -> "transcribe" when the library's transcript of it
-    came from captions no person wrote (`analyzer.AUTO_CAPTIONS`: YouTube's speech recognition, or its machine
-    translation) — Anki Miner then transcribes the video's own audio with its whisper model, never YouTube's
-    recognizer; else "captions" (a person's captions, or a transcript that names none)."""
-    from app import analyzer
-    return "transcribe" if (web or {}).get("captions") in analyzer.AUTO_CAPTIONS else "captions"
+    """Anki Miner's `youtube_subtitle_source` for a video (`of`'s) -> TRANSCRIBE when the library's transcript of it
+    came from YouTube's own speech recognition (`HEARD`); else CAPTIONS (a person's captions, a machine translation —
+    its audio in another language —, or a transcript that names none)."""
+    return TRANSCRIBE if (web or {}).get("captions") in HEARD else CAPTIONS
 
 
 def folder():
@@ -330,13 +358,14 @@ def plain(message, transient=False):
     return FAILED.format(why=short[:200]), False
 
 
-def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None, env=None, source="captions"):
+def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None, env=None, source=CAPTIONS):
     """Anki Miner's `fetch` of one YouTube video for job `job_id` -> (video, subtitle): both inside `place(job_id)`.
     Raises Trouble (plain words), `stopping.Stopped` (the job's *Stop* — the program ended within a second —, or
     `should_end()` true, asked every UPDATE_EVERY polls: an update staged, ended within a few seconds, its folder left for the caller's `drop`), and AnkiMinerError for a call
-    with no verdict (absent, crashed, timeout). `on_progress(percent)`: the download's own percent, as it goes.
-    `source`: Anki Miner's `youtube_subtitle_source` — "captions" (YouTube's: a person's first), or "transcribe" (its
-    whisper model on the video's audio: `subtitle_source`)."""
+    with no verdict (absent, crashed, timeout). `on_progress(percent)`: the download's own percent, as it goes;
+    `on_progress(percent, TRANSCRIBE)` while Anki Miner makes the subtitle from the audio after it. `source`: Anki
+    Miner's `youtube_subtitle_source` — CAPTIONS (YouTube's, a person's first), or TRANSCRIBE (its speech model on the
+    video's audio: `subtitle_source`; refused with NO_SPEECH when it has none, before anything downloads)."""
     from app.connect import anki_miner
     until = youtube_hold.held()
     if until:                               # (Yt-B) YouTube's bot check holds every YouTube call: nothing asked
@@ -362,8 +391,12 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
             return stopping.END
         if on_progress is not None:
             progress = anki_miner.read_progress(here, rid)
-            if progress and progress.get("stage") == 2 and progress.get("total"):
-                on_progress(max(0, min(99, int(100 * progress["done"] / progress["total"]))))
+            if progress and progress.get("stage") in (2, 3) and progress.get("total"):
+                percent = max(0, min(99, int(100 * progress["done"] / progress["total"])))
+                if progress["stage"] == 2:
+                    on_progress(percent)
+                elif source == TRANSCRIBE:  # (Michi-YT2) its subtitle made from the audio, after the download
+                    on_progress(percent, TRANSCRIBE)
         return None
 
     def given_up():
@@ -373,7 +406,8 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
             until = youtube_hold.held()
             if until:                       # (begun by another program while this one waited its turn)
                 raise Trouble(youtube_hold.words(until), standing=True)
-            verdict = anki_miner.api(exe, ["fetch", path], timeout=FETCH_TIMEOUT, on_poll=poll, look_up=True,
+            verdict = anki_miner.api(exe, ["fetch", path], on_poll=poll, look_up=True,
+                                     timeout=TRANSCRIBE_TIMEOUT if source == TRANSCRIBE else FETCH_TIMEOUT,
                                      env=env if env is not None else child_env())
             if youtube_hold.refused(_failure(verdict, rid)):
                 try:

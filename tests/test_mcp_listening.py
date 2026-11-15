@@ -9,6 +9,7 @@ import os
 import pytest
 
 from app import listening, practice_rounds
+from app.cli import mcp_server
 from tests.test_listening import LINES, FakeVoice, _checker, real_lines
 from tests.test_mcp_server import _run, _state
 
@@ -151,3 +152,71 @@ def test_r2_a_record_that_cant_be_kept_leaves_no_round_stuck_new(voice, monkeypa
     assert error and "couldn't save the round" in text and voice.started == []
     (rid,) = os.listdir(practice_rounds.folder("ja"))
     assert listening.read("ja", rid)["state"] == "failed" and listening.waiting_rounds("ja") == []
+
+
+# --- Iro-V: the round's voice ------------------------------------------------------------------------------------- #
+def _with_voices(voice):
+    voice.voices = lambda: ["woman-20s", "woman-30s", "man-20s"]
+    voice.unknown = lambda name: None if name in voice.voices() else f"There is no voice {name!r}: choose one of x."
+
+
+def test_a_round_naming_a_voice_keeps_it_and_an_unknown_one_makes_nothing(voice):
+    _with_voices(voice)
+    state = _known_state(LINES)
+    out = _data(state, "surasura_listening_round", {"lines": LINES, "voice": " man-20s "})
+    assert out["queued"] is True and listening.read("ja", out["round_id"])["voice"] == "man-20s"
+    listening.make_waiting("ja", settings={}, tool=None)
+    assert voice.asked == [{"voice": "man-20s"}]
+    voice.started = []
+    before = set(os.listdir(practice_rounds.folder("ja")))
+    text, error = _call(state, "surasura_listening_round", {"lines": LINES, "voice": "robot"})
+    assert error and "There is no voice 'robot'" in text and "Nothing was made." in text
+    assert voice.started == [] and set(os.listdir(practice_rounds.folder("ja"))) == before
+
+
+def test_a_round_naming_no_voice_is_queued_for_the_default(voice):
+    _with_voices(voice)
+    out = _data(_known_state(LINES), "surasura_listening_round", {"lines": LINES})
+    assert listening.read("ja", out["round_id"])["voice"] == ""
+
+
+def test_the_tools_description_lists_the_voices_in_one_line_the_first_the_default(voice):
+    async def tools(client):
+        return await client.list_tools()
+
+    def described():
+        got = _run(_state(), tools)
+        (tool,) = [t for t in got.tools if t.name == "surasura_listening_round"]
+        schema = tool.input_schema if hasattr(tool, "input_schema") else tool.inputSchema
+        return tool.description, schema["properties"]
+    text, props = described()
+    assert text == mcp_server.LISTENING_ROUND and "voice" in props          # no choice of voices: no voice line
+    _with_voices(voice)
+    text, _props = described()
+    extra = text[len(mcp_server.LISTENING_ROUND):]
+    assert text.startswith(mcp_server.LISTENING_ROUND) and "\n" not in extra
+    assert "voice: one of woman-20s, woman-30s, man-20s (the first if left out)" in extra and len(extra) < 160
+
+
+def test_r1_a_rounds_voice_is_listed_and_named_when_its_files_are_gone(voice):
+    # review r1 #1: remade from its lines, the round comes back in the voice it had, never the default by accident
+    import shutil
+    _with_voices(voice)
+    state = _known_state(LINES)
+    rid = _data(state, "surasura_listening_round", {"lines": LINES, "voice": "woman-30s"})["round_id"]
+    listed = _data(state, "surasura_rounds", {})["rounds"]
+    assert listed[0]["round_id"] == rid and listed[0]["voice"] == "woman-30s"
+    shutil.rmtree(listening.folder("ja", rid))
+    text, error = _call(state, "surasura_practice_start", {"again": rid})
+    assert "files are gone" in text and "voice=woman-30s" in text
+    plain = _data(state, "surasura_listening_round", {"lines": LINES})["round_id"]
+    shutil.rmtree(listening.folder("ja", plain))
+    text, _error = _call(state, "surasura_practice_start", {"again": plain})
+    assert "files are gone" in text and "voice=" not in text
+    assert "voice" not in [r for r in _data(state, "surasura_rounds", {})["rounds"] if r["round_id"] == plain][0]
+
+
+def test_r1_a_voice_of_only_spaces_is_the_default(voice):
+    _with_voices(voice)
+    out = _data(_known_state(LINES), "surasura_listening_round", {"lines": LINES, "voice": "   "})
+    assert out["queued"] is True and listening.read("ja", out["round_id"])["voice"] == ""

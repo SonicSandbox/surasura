@@ -286,44 +286,361 @@ def test_online_of_reads_the_link_and_names_from_the_item(monkeypatch):
         ["会話 [dQw4w9WgXcQ]", "会話 [dQw4w9WgXcQ]"]
 
 
-# --- captions no person wrote: Anki Miner transcribes the video instead (Mattias's ask, 3.0.10) ---------------------- #
-def _transcript(kind):
-    """The YouTube downloader's transcript as `build_text` writes it: its six header lines, then the cues."""
-    return "\n".join(["誰から何も言われずに1人で英語学習継続できるようになる方法", "ユートのチャンネル | 2024-05-01 | 41:12",
-                      f"Captions: ja ({kind})", LINK, "", "-" * 60,
-                      "[00:00:00] 今から皆さんにめちゃくちゃ難しい質問します"])
+# --- the window: its row's words while it downloads; never *No video* ------------------------------------------- #
+def test_the_row_says_its_video_is_downloading_with_its_percent():
+    job = {"state": "picking", "progress": json.dumps({"step": runner.DOWNLOADING, "percent": 45})}
+    assert status._progress(job)["doing"] == "Downloading its video (45%)"
+    assert status._progress({"state": "picking", "progress": None})["doing"] == "Choosing words"
 
 
-@pytest.mark.parametrize("kind,source", (("manual", "captions"), ("native auto", "transcribe"),
-                                         ("auto-translated", "transcribe")))
-def test_a_videos_captions_no_person_wrote_are_transcribed_by_anki_miner_instead(monkeypatch, tmp_path, kind, source):
-    """"I don't want YouTube's auto-generated subs, they are never good": a transcript whose header says YouTube's own
-    speech recognition (or its machine translation) made it has Anki Miner transcribe the video's audio; a person's
-    captions are taken as before."""
+def test_an_online_title_with_a_no_video_from_before_is_a_wait_never_no_video():
+    # why: a Connect from before this lane left *No video* on every YouTube title; it now mines at its next start
+    from app.services import view_rows as vr
+    st = vr.Status("mine", "Mine", "", "ink")
+    item = feed.Item(kind=feed.NO_VIDEO, words=feed.WORDS[feed.NO_VIDEO], tip=runner.NO_VIDEO, job=3, made=0, total=0)
+    got = vr._connected(st, item, "video", online="youtube")
+    assert got.kind == "waiting" and got.tip == feed.NEXT_START
+    assert vr._connected(st, item, "video").kind == "no_media", "an episode on disk keeps its *No video*"
+
+
+# --- review round 1 ------------------------------------------------------------------------------------------------ #
+def test_the_sweep_removes_a_killed_fetchs_own_file_too():
+    # why (review S2): a Connect killed mid-fetch leaves `fetch-v<job>.json` beside the folders
+    os.makedirs(online.folder())
+    with open(os.path.join(online.folder(), "fetch-v5.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    online.sweep()
+    assert os.listdir(online.folder()) == []
+
+
+def test_a_whole_call_refusal_is_the_languages_trouble(fake_miner, monkeypatch):
+    # why (review S3): a profile Anki Miner can't read refuses every video alike: once for the language
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, call="PROFILE_UNREADABLE", message="The profile can't be read.")
+    assert raised.value.standing
+
+
+def test_after_the_languages_trouble_no_other_video_is_fetched_this_run(steps, fake_miner):
+    # why (review S4): offline once, every other online episode would wait out a fetch of its own
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED", "transient": True,
+                                                               "message": "getaddrinfo failed"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert raised.value.say == online.OFFLINE and raised.value.standing
+    assert fake_miner.commands().count("fetch") == 1
+
+
+def test_webvtt_entities_are_read_as_text(tmp_path):
+    vtt = tmp_path / "x.ja.vtt"
+    vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n雨&amp;風&nbsp;です\n", encoding="utf-8")
+    assert "雨&風\xa0です" in open(online.as_srt(str(vtt)), encoding="utf-8").read()
+
+
+def test_one_videos_format_trouble_never_holds_the_others(steps, fake_miner):
+    # why (review r2 S1): "requested format is not available" can be one video's alone (members' formats only)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED",
+                                                               "message": "Requested format is not available"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert raised.value.say == online.STALE
+    assert fake_miner.commands().count("fetch") == 2, "each video still tried"
+
+
+# --- Yt-B: YouTube's bot check holds every YouTube call for a day -------------------------------------------------- #
+# Sonic 2026-11-12: "will this hit from my own network and then will I have issues in the future with too many
+# requests?" Connect's video is asked from the learner's own address, like the downloader's transcripts: one refusal
+# holds both for a day, said with when it tries again; never asked again in that time.
+@pytest.mark.parametrize("message", [
+    "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser or --cookies",
+    "ERROR: [youtube] dQw4w9WgXcQ: Unable to download webpage: HTTP Error 429: Too Many Requests",
+], ids=["bot", "429"])
+def test_a_refusal_holds_every_youtube_call_and_says_when(fake_miner, monkeypatch, message):
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, error="FETCH_FAILED", message=message, transient=True)
+    until = youtube_hold.held()
+    assert until and raised.value.standing
+    assert raised.value.say == youtube_hold.words(until) and youtube_hold.is_words(raised.value.say)
+    with pytest.raises(online.Trouble) as again:
+        online.fetch(fake_miner.path, "p-surasura", "ja", 8, LINK)
+    assert again.value.say == raised.value.say and fake_miner.commands().count("fetch") == 1, \
+        "nothing asked of YouTube while the hold runs"
+
+
+def test_an_age_check_holds_nothing(fake_miner, monkeypatch):
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, error="YOUTUBE_REFUSED",
+               message="Sign in to confirm your age. This video may be inappropriate for some users.")
+    assert raised.value.say == online.AGE and youtube_hold.held() is None
+
+
+def test_a_hold_the_downloader_began_is_met_before_anki_miner_starts(fake_miner, monkeypatch):
+    youtube_hold.hold()
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch)
+    assert youtube_hold.is_words(raised.value.say) and raised.value.standing
+    assert "fetch" not in fake_miner.commands()
+
+
+def test_a_held_trouble_stops_every_other_fetch_this_run(steps, fake_miner):
+    # why (review S4, as offline): every other online episode would only meet the same hold
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED", "transient": True,
+                                                               "message": "Sign in to confirm you're not a bot"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert youtube_hold.is_words(raised.value.say) and raised.value.standing
+    assert fake_miner.commands().count("fetch") == 1
+
+
+def test_a_fetch_waits_its_turn_and_a_stop_ends_the_wait(fake_miner, monkeypatch):
+    # why: never two YouTube calls at once from this computer; a Stop never waits behind the window's playlist
+    other = locks.take(youtube_hold.LOCK, "the window's playlist", owner=object())     # (another program)
+    try:
+        monkeypatch.setattr(stopping, "pressed", lambda: True)
+        started = time.monotonic()
+        with pytest.raises(stopping.Stopped):
+            _fetch(fake_miner, monkeypatch)
+        assert time.monotonic() - started < QUICK and "fetch" not in fake_miner.commands()
+    finally:
+        other.release()
+
+
+def test_a_held_fetch_never_waits_for_the_turn(fake_miner, monkeypatch):
+    # why (mutant C4): behind the window's half-hour playlist, Connect would wait all that time to learn it is held
+    youtube_hold.hold()
+    monkeypatch.setattr(youtube_hold, "turn", lambda *a, **k: pytest.fail("asked for the turn while held"))
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch)
+    assert youtube_hold.is_words(raised.value.say) and "fetch" not in fake_miner.commands()
+
+
+# --- Michi-YT2 (based on Mattias's #455): captions no person wrote -> Anki Miner's speech model on the audio -------- #
+# "I don't want YouTube's auto-generated subs. They are never good." The library's transcript names its captions'
+# kind in its header (the downloader's `build_text`); a kind no person wrote has Anki Miner make the cards' subtitle
+# from the video's audio — only with a speech model it has: never a download, else YouTube's captions, said once.
+TRANSCRIPTS = {   # language -> (title, channel, the cues): real lines, as the downloader writes them after its header
+    "ja": ("誰から何も言われずに1人で英語学習継続できるようになる方法", "ユートのチャンネル",
+           "[00:00:00] 今から皆さんにめちゃくちゃ難しい質問します\n[00:00:04] 今日はいい天気ですね"),
+    "zh": ("台北夜市美食之旅", "小明的頻道",
+           "[00:00:00] 大家好，歡迎回到我的頻道。\n[00:00:03] 今天我们要去台北的夜市吃东西。"),
+}
+HAS_MODEL = {"installed": ["small"], "model": "small"}
+NO_MODEL = {"installed": [], "model": "small"}
+
+
+@pytest.fixture(autouse=True)
+def _speech_asked_afresh(monkeypatch):
+    # why: `speech_ready` keeps its answer for the run; each test is a run of its own
+    monkeypatch.setattr(anki_miner, "_SPEECH", {})
+
+
+def _transcript(tmp_path, monkeypatch, language, kind, crlf=False, bom=False):
+    """The downloader's transcript of a video in the language's data folder (`build_text`, its own header) ->
+    its item."""
     from app import path_utils
     from app.services import play
-    rel = "Processed/ユートのチャンネル - 誰から何も言われずに [pitFobM6z80].txt"
-    (tmp_path / "Processed").mkdir()
-    (tmp_path / rel).write_text(_transcript(kind), encoding="utf-8")
-    monkeypatch.setattr(path_utils, "get_data_path", lambda language: str(tmp_path))
+    from modules.youtube_downloader import downloader
+    title, channel, body = TRANSCRIPTS[language]
+    info = {"title": title, "channel": channel, "webpage_url": LINK, "upload_date": "20240501", "duration": 2472}
+    text = downloader.build_text(info, body, language, kind)
+    rel = f"Processed/{channel} - {title} [dQw4w9WgXcQ].txt"
+    (tmp_path / "Processed").mkdir(exist_ok=True)
+    data = text.replace("\n", "\r\n") if crlf else text
+    (tmp_path / rel).write_bytes((b"\xef\xbb\xbf" if bom else b"") + data.encode("utf-8"))
+    monkeypatch.setattr(path_utils, "get_data_path", lambda lang: str(tmp_path))
     monkeypatch.setattr(play, "online_link", lambda language, rel, record=None: (LINK, None))
-    web = online.of("ja", {"source_type": "youtube", "rel_path": rel})
+    return {"source_type": "youtube", "rel_path": rel}
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+@pytest.mark.parametrize("kind, source", (("manual", online.CAPTIONS), ("native auto", online.TRANSCRIBE),
+                                          ("auto-translated", online.CAPTIONS)))
+def test_machine_captions_have_anki_miner_transcribe_and_a_persons_keep_youtubes(tmp_path, monkeypatch, language,
+                                                                                 kind, source):
+    # why: YouTube's speech recognition misspells words and cuts clips badly; a person's captions are the best
+    # subtitle there is and stay as they were; a machine translation (review r1 M1) is of a video spoken in another
+    # language — its audio heard by a ja / zh model would be nonsense, so Anki Miner's own rule stands as before
+    web = online.of(language, _transcript(tmp_path, monkeypatch, language, kind))
     assert web["captions"] == kind
     assert online.subtitle_source(web) == source
 
 
-def test_a_transcript_naming_no_captions_or_gone_keeps_youtubes_captions():
-    assert online.subtitle_source({"captions": None}) == "captions"
-    assert online.subtitle_source({}) == "captions"
-    assert online.subtitle_source(None) == "captions"
+@pytest.mark.parametrize("crlf, bom", ((True, False), (False, True)), ids=["crlf", "bom"])
+def test_the_header_is_read_whatever_its_line_ends_or_bom(tmp_path, monkeypatch, crlf, bom):
+    # why: a transcript copied between computers (or saved by an editor) keeps its header's meaning
+    web = online.of("ja", _transcript(tmp_path, monkeypatch, "ja", "native auto", crlf=crlf, bom=bom))
+    assert web["captions"] == "native auto" and online.subtitle_source(web) == online.TRANSCRIBE
 
 
-@pytest.mark.parametrize("kind,source", (("native auto", "transcribe"), ("manual", "captions"), (None, "captions")))
-def test_steps_download_asks_anki_miner_for_its_transcription_of_a_video_with_auto_captions(steps, fake_miner, kind,
-                                                                                             source):
-    steps.download("ja", JOB, dict(WEB, captions=kind))
-    call = next(c for c in fake_miner.calls() if c.get("episodes"))
-    assert call["episodes"][0]["youtube_subtitle_source"] == source
+def test_a_transcript_naming_no_kind_gone_or_unreadable_keeps_youtubes_captions(tmp_path, monkeypatch):
+    # why: only a header that says "no person wrote these" changes anything; everything else works as before
+    item = _transcript(tmp_path, monkeypatch, "ja", "manual")
+    (tmp_path / item["rel_path"]).write_text("今日はいい天気ですね。\n明日も晴れるでしょう。\n", encoding="utf-8")
+    assert online.of("ja", item)["captions"] is None, "a text with no header"
+    (tmp_path / item["rel_path"]).write_bytes(b"")
+    assert online.of("ja", item)["captions"] is None, "an empty file"
+    os.remove(tmp_path / item["rel_path"])
+    assert online.of("ja", item)["captions"] is None, "gone"
+    for web in ({"captions": None}, {}, None):
+        assert online.subtitle_source(web) == online.CAPTIONS
+
+
+def test_a_long_transcript_is_read_for_its_header_alone(tmp_path, monkeypatch):
+    # why: only the first HEAD bytes are read (a two-hour video's transcript is never read whole for six lines); a
+    # title of a few hundred characters still leaves the header inside them
+    item = _transcript(tmp_path, monkeypatch, "ja", "native auto")
+    path = tmp_path / item["rel_path"]
+    text = path.read_text(encoding="utf-8")
+    path.write_text("長いタイトル" * 60 + text[text.index("\n"):] + "\n" + "[00:00:09] 一生懸命に走り出す\n" * 400,
+                    encoding="utf-8")
+    assert os.path.getsize(path) > online.HEAD
+    assert online.of("ja", item)["captions"] == "native auto"
+
+
+def _episode(fake_miner):
+    return [c for c in fake_miner.calls() if c.get("episodes")][-1]["episodes"][0]
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+@pytest.mark.parametrize("kind, source", (("native auto", "transcribe"), ("auto-translated", "captions"),
+                                          ("manual", "captions"), (None, "captions")))
+def test_steps_download_asks_for_the_transcription_only_of_machine_captions(steps, fake_miner, language, kind,
+                                                                            source):
+    # why: the fetch file is the one thing Anki Miner reads; with a speech model it has, machine captions are skipped
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
+    _video, subtitle = steps.download(language, JOB, dict(WEB, captions=kind))
+    assert _episode(fake_miner) == {"run_id": "v21", "youtube_url": LINK, "youtube_subtitle_source": source,
+                                    "youtube_align_captions": False}
+    assert steps.fetched_with == {"21": source}
+    with open(subtitle, encoding="utf-8") as f:
+        assert ("00:00:01,200" in f.read()) is (source == "transcribe"), "the subtitle made from the audio is used"
+    assert "setup" not in fake_miner.commands(), "nothing installed"
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_without_a_speech_model_youtubes_captions_are_taken_and_nothing_downloads_but_the_video(steps, fake_miner,
+                                                                                               language):
+    # why: the learner never said yes to the speech model; Anki Miner would refuse the transcription, so the cards
+    # come from YouTube's captions as before — never a model downloaded, never `setup`
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=NO_MODEL)
+    video, _subtitle = steps.download(language, JOB, dict(WEB, captions="native auto"))
+    assert os.path.isfile(video)
+    assert _episode(fake_miner)["youtube_subtitle_source"] == "captions"
+    assert steps.fetched_with == {"21": "captions"}, "for `_download`'s one note"
+    assert fake_miner.commands().count("fetch") == 1
+    assert set(fake_miner.commands()) <= {"version", "check", "settings-import", "fetch"}, fake_miner.commands()
+
+
+def test_a_speech_model_gone_after_the_check_falls_back_to_captions_for_the_rest_of_the_run(steps, fake_miner):
+    # why: Anki Miner's own refusal (before it downloads anything) must never become a stuck video or a message that
+    # sends the learner to Anki Miner's window: YouTube's captions after all, and no second try at each video
+    anki_miner._SPEECH[(fake_miner.path, "ja", "p1")] = (True, time.monotonic())   # (asked earlier this run)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=NO_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    sources = [c["episodes"][0]["youtube_subtitle_source"] for c in fake_miner.calls() if c.get("episodes")]
+    assert sources == ["transcribe", "captions"] and steps.fetched_with == {"21": "captions"}
+    assert (fake_miner.path, "ja", "p1") not in anki_miner._SPEECH, "its yes forgotten: asked again next time"
+    steps.download("ja", dict(JOB, id=22, item_id=6), dict(WEB, captions="native auto"))
+    sources = [c["episodes"][0]["youtube_subtitle_source"] for c in fake_miner.calls() if c.get("episodes")]
+    assert sources == ["transcribe", "captions", "captions"], "the next video asks for captions at once"
+
+
+def test_anki_miners_speech_refusal_is_plain_words():
+    # why: never "Install it with setup --speech-model, or in Anki Miner: Settings …" on the learner's screen
+    say, standing = online.plain("The speech model small is not installed. Install it with setup --speech-model, or "
+                                 "in Anki Miner: Settings -> Transcription & Alignment.")
+    assert say == online.NO_SPEECH and standing and "Anki Miner:" not in say
+
+
+def test_without_the_risk_tick_a_machine_captioned_video_asks_nothing_of_anki_miner(steps, fake_miner):
+    # why: the YouTube risk tick gates the whole fetch, the speech model's question included
+    steps.test_settings["youtube_risk_acknowledged"] = False
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
+    with pytest.raises(runner.Needs) as raised:
+        steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert raised.value.say == online.NOT_TICKED and fake_miner.commands() == []
+
+
+def test_the_row_says_its_subtitles_are_made_from_the_audio_while_anki_miner_transcribes(fake_miner, monkeypatch):
+    # why: a 20-minute video takes minutes to transcribe on a CPU; the row never sits on "Downloading (99%)" meanwhile
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.1)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"transcribe_hold": 1.0})
+    seen = []
+    online.fetch(fake_miner.path, "p-surasura", "ja", 7, LINK, on_progress=lambda *a: seen.append(a),
+                 source=online.TRANSCRIBE)
+    assert (60, online.TRANSCRIBE) in seen, seen
+    job = {"state": "picking", "progress": json.dumps({"step": runner.TRANSCRIBING, "percent": 60})}
+    assert status._progress(job)["doing"] == "Making its subtitles from the audio (60%)"
+
+
+# --- review round 1 (Michi-YT2) ------------------------------------------------------------------------------------ #
+def test_a_video_it_heard_nothing_in_keeps_youtubes_captions(steps, fake_miner):
+    # why (review r1 S4): Anki Miner's "recognised no speech" (music, a quiet video) must never cost the video its cards
+    # nor say "couldn't be downloaded": YouTube's captions after all, for that video
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"heard_nothing": True}, speech=HAS_MODEL)
+    _video, subtitle = steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    sources = [c["episodes"][0]["youtube_subtitle_source"] for c in fake_miner.calls() if c.get("episodes")]
+    assert sources == ["transcribe", "captions"] and steps.fetched_with == {"21": "captions"}
+    with open(subtitle, encoding="utf-8") as f:
+        assert "00:00:01,000" in f.read(), "YouTube's captions"
+    steps.drop_online(JOB)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    sources = [c["episodes"][0]["youtube_subtitle_source"] for c in fake_miner.calls() if c.get("episodes")]
+    assert sources[-1] == "captions", "that video isn't heard again this run"
+
+
+def test_anki_miner_not_answering_the_speech_question_is_youtubes_captions_never_a_wait(steps, fake_miner,
+                                                                                         monkeypatch):
+    # why (review r1 S4): before this lane the video came down; a question about a model must never hold it back
+    def busy(*a, **k):
+        raise anki_miner.AnkiMinerError("timeout", "Anki Miner didn't answer in time.")
+    monkeypatch.setattr(anki_miner, "speech_ready", busy)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert _episode(fake_miner)["youtube_subtitle_source"] == "captions"
+
+
+def test_a_video_kept_from_before_says_nothing_of_how_it_was_fetched(steps, fake_miner):
+    # why (review r1 NIT 7): `_download` reads what THIS fetch asked for; a video kept for the job asks Anki Miner
+    # nothing, so it must neither raise the note nor fix it
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert steps.fetched_with.pop("21") == "transcribe"
+    steps.download("ja", JOB, dict(WEB, captions="native auto"))
+    assert steps.fetched_with == {} and fake_miner.commands().count("fetch") == 1
+
+
+def test_a_transcribing_fetch_gets_the_time_its_audio_takes(fake_miner, monkeypatch):
+    # why (review r1 S2): a two-hour video heard by large-v3 on a CPU outlasts the download's two hours
+    seen = {}
+    real = anki_miner.api
+
+    def api(exe, args, **kw):
+        seen[args[0]] = kw.get("timeout")
+        return real(exe, args, **kw)
+    monkeypatch.setattr(anki_miner, "api", api)
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.1)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={})
+    online.fetch(fake_miner.path, "p-surasura", "ja", 7, LINK, source=online.TRANSCRIBE)
+    assert seen["fetch"] == online.TRANSCRIBE_TIMEOUT > online.FETCH_TIMEOUT
+    online.fetch(fake_miner.path, "p-surasura", "ja", 8, LINK)
+    assert seen["fetch"] == online.FETCH_TIMEOUT
+
+
+def test_a_character_cut_at_the_header_read_still_reads_its_kind(tmp_path, monkeypatch):
+    # why (review r1 NIT 8): HEAD bytes end inside a 3-byte character (a Chinese body): the head is decoded as a head,
+    # never a damaged file, and the header's kind stands
+    item = _transcript(tmp_path, monkeypatch, "zh", "native auto")
+    path = tmp_path / item["rel_path"]
+    raw = path.read_bytes()
+    body = "[00:00:09] 這家店的牛肉麵非常有名，每天都有很多人排隊。\n".encode("utf-8")
+    pad = online.HEAD - len(raw) - 1
+    raw += b"a" * (pad % 3) + body * (pad // len(body) + 2)
+    cut = raw[:online.HEAD]
+    assert cut.decode("utf-8", "ignore").encode("utf-8") != cut, "the read ends mid-character"
+    path.write_bytes(raw)
+    assert online.of("zh", item)["captions"] == "native auto"
 
 
 # --- the transcription becomes the library's transcript (Mattias: "it wants words that aren't even in the video") -- #
@@ -386,11 +703,16 @@ def test_steps_download_writes_the_transcription_over_the_transcript_only_when_i
                                                                                                 monkeypatch):
     kept = []
     monkeypatch.setattr(online, "keep_transcript", lambda lang, rel, subtitle: kept.append((rel, subtitle)) or True)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
     steps.download("ja", JOB, dict(WEB, captions="native auto", rel="Processed/x [dQw4w9WgXcQ].txt"))
     assert [r for r, _s in kept] == ["Processed/x [dQw4w9WgXcQ].txt"] and kept[0][1].endswith(".srt")
     steps.drop_online(JOB)
     steps.download("ja", JOB, dict(WEB, captions="manual", rel="Processed/x [dQw4w9WgXcQ].txt"))
     assert len(kept) == 1, "a person's captions: nothing written"
+    steps.drop_online(JOB)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=NO_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto", rel="Processed/x [dQw4w9WgXcQ].txt"))
+    assert len(kept) == 1, "no speech model: YouTube's captions, its transcript as it was"
 
 
 # --- the window: its row's words while it downloads; never *No video* ------------------------------------------- #

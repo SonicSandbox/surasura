@@ -612,7 +612,9 @@ def test_a_running_connect_is_waited_for_never_stopped_and_stop_all_skips_it(wor
     assert updater.can_update_now() is False
     svc = world.offered(world.service())
     assert svc.start()
-    assert h.until(lambda: svc.state().state == U.WAITING and len(svc.state().programs) == 2, seconds=10)
+    # (#461's one red, FLAKES.md: the state, its programs and its message said if it fails)
+    assert h.until(lambda: svc.state().state == U.WAITING and len(svc.state().programs) == 2, seconds=10), \
+        svc.state()
     programs = {p.key: p for p in svc.state().programs}
     assert (programs[CONNECT_PID].name, programs[CONNECT_PID].can_stop) == (updater.CONNECT_ROW, False)
     assert (programs[WINDOW_PID].name, programs[WINDOW_PID].can_stop) == ("Another Surasura window", True)

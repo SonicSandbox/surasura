@@ -36,7 +36,7 @@ EDGE = 8                            # px the panel keeps from the window's edges
 FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
 RELOOK_MS = 2000                    # the path's look, this long after the view's few numbers moved (one per burst)
 FOCUS_RELOOK_S = 30                 # ... and on the window's activation, at most this often
-SLICES_KEPT = 64                    # the last pieces' times kept (tests: the largest slice ≤ 4 ms)
+SLICES_KEPT = 256                   # the last pieces' times kept (tests: the largest slice ≤ 4 ms; 64 fell under 3.0.12's 69 cards)
 
 
 def release_name(release):

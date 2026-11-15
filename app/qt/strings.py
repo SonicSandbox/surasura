@@ -609,6 +609,16 @@ WORDS_PLACE = "  — {place}"
 WORDS_EPISODE_TITLE = "{title} · {ep}"
 WORDS_MENU = "Its words"
 WORDS_MENU_TIP = "The words you'll meet in it, kept open"
+# Kotoba-K: Known / Ignore on the kept card (leans PROVISIONAL)
+WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘"}
+WORDS_MARK_TIP = {"known": "Known: you know it\n• It counts as known and leaves your list · click again to undo",
+                  "ignore": "Ignore: not a word to learn (a name, a noise)\n• It leaves your list, never counted as "
+                            "known · click again to undo"}
+WORDS_ALL_KNOWN = "I know all of these"
+WORDS_ALL_KNOWN_TIP = "Mark every New here word of this title known\n• Undo puts them back"
+WORDS_ALL_UNDO = "Undo · {n} marked known"
+WORDS_ALL_UNDO_TIP = "Put back the words I know all of these marked"
+WORDS_MARK_FAILED = "Nothing was marked: {why}"
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"

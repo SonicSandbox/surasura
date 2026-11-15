@@ -108,7 +108,7 @@ def _chips(w):
 def test_every_control_is_wired_tipped_and_named(main):
     w = _open(main)
     assert w.windowTitle() == "Words to leave out — Surasura"
-    assert [b.text() for b in w.kind_buttons.values()] == ["Ignore list", "Blacklist"]
+    assert [b.text() for b in w.kind_buttons.values()] == ["Ignore list", "Blacklist", "Marked known"]
     assert w.kind_buttons["ignore"].isChecked() and not w.kind_buttons["blacklist"].isChecked()
     for field in (w.search, w.add_field, w.text, w.list, w.chips, w.kinds):
         assert field.accessibleName()

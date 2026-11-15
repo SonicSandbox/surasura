@@ -2,11 +2,13 @@
 `strings.py`, as a module keeps its `qt_strings.py`, until Settings' table (`settings_strings.py`) takes them in."""
 
 WORD_LISTS_NAME = "Words to leave out"
-WORD_LISTS_TIP = ("Your Ignore list and Blacklist: see, add and remove the words every Generate leaves out\n"
-                  "• Paste text to pick its words")
+WORD_LISTS_TIP = ("Your Ignore list, Blacklist and the words you marked known: see, add and remove the words every "
+                  "Generate leaves out\n• Paste text to pick its words")
 
 WORD_LISTS_KINDS = (("ignore", "Ignore list", "Words you never want on your list: IgnoreList.txt"),
-                    ("blacklist", "Blacklist", "Words you never want on your list: Blacklist.txt"))
+                    ("blacklist", "Blacklist", "Words you never want on your list: Blacklist.txt"),
+                    ("known", "Marked known", "Words you marked known in Surasura: they count as known\n"
+                                              "• Kept in your known words file, KnownWord.json"))
 WORD_LISTS_KINDS_NAME = "Which list"
 
 WORD_LISTS_SEARCH = "Search the words"

@@ -706,7 +706,8 @@ def _claim_qt_warnings():
 # for the test's monkeypatch, so it ends before that undoes the root — in every suite, each suite's own root fixture).
 _TREE_SETTINGS = os.path.join(_PROJECT, "settings.json")
 _SETTINGS_WRITES = []     # [what, the test running then, thread, the test that started it, where, claimed]
-_SETTINGS_REFUSED = set()     # the threads already named (a refused write is retried every 0.25 s: named once)
+_SETTINGS_REFUSED = None      # the threads already named (a WeakSet: a refused write is retried every 0.25 s, named
+#                               once; never by ident, which Windows gives again to a later thread)
 _WRITERS = None               # every SettingsWriter made (a WeakSet, filled by `_guard_tree_settings`)
 LAND_WAIT_S = 10.0            # how long a test's end waits for its queued settings writes to land
 
@@ -742,8 +743,8 @@ def _guard_tree_settings():
     def write(path, to_save):
         if os.path.normcase(os.path.abspath(path)) == os.path.normcase(_TREE_SETTINGS):
             thread = threading.current_thread()
-            if thread.ident not in _SETTINGS_REFUSED:
-                _SETTINGS_REFUSED.add(thread.ident)
+            if thread not in _SETTINGS_REFUSED:
+                _SETTINGS_REFUSED.add(thread)
                 _SETTINGS_WRITES.append([f"a write of {_changed_keys(path, to_save)}", _test_now(), thread.name,
                                          getattr(thread, _STARTED_IN, None), _where(), False])
             raise PermissionError(f"the test harness refused a write of this checkout's own settings.json "
@@ -751,9 +752,9 @@ def _guard_tree_settings():
         return real(path, to_save)
     write._tree_settings_guard = True
     settings_manager._write_atomically = write
-    global _WRITERS
+    global _WRITERS, _SETTINGS_REFUSED
     import weakref
-    _WRITERS = weakref.WeakSet()
+    _WRITERS, _SETTINGS_REFUSED = weakref.WeakSet(), weakref.WeakSet()
     made = settings_manager.SettingsWriter.__init__
 
     def init(self, *args, **kwargs):

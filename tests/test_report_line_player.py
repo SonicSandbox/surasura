@@ -453,15 +453,14 @@ def test_with_the_sources_hidden_a_playable_lines_times_are_read_and_nothing_els
                   other: {"name": "other.srt", "type": "subtitle", "abs": source}}
     records = [{"Context 1": sentence, "Src 1": rel}, {"Context 1": sentence, "Src 1": other}]
     timer = gen.AnchorFinder(cache_path=str(tmp_path / "anchor_cache.json"), language=language)
-    table, index = [], {}
+    table, index, plays = [], {}, {}
     gen._intern_sources(records, source_map, table, index, None, None,
-                        media={rel: ["file:///C:/a.mp4", ""], other: ["", ".mkv"]}, timer=timer)
+                        media={rel: ["0/a.mp4", ""], other: ["", ".mkv"]}, timer=timer, plays=plays)
     assert (records[0]["At 1"], records[0]["End 1"]) == times
     assert "Frag 1" not in records[0]
     assert "At 1" not in records[1] and "End 1" not in records[1]
-    assert table[records[0]["Src 1"]][5:] == ["file:///C:/a.mp4", ""]
-    assert table[records[1]["Src 1"]][5:] == ["", ".mkv"]
-    assert len(table[0]) == len(table[1]) == 7                            # [name, type, path, group, link, uri, why]
+    assert plays == {records[0]["Src 1"]: ["0/a.mp4", ""], records[1]["Src 1"]: ["", ".mkv"]}   # the ▶'s own table
+    assert [len(row) for row in table] == [5, 5]          # the source rows' contract: [name, type, path, group, link]
 
 
 def test_times_kept_without_an_anchor_are_reused_and_the_badge_still_finds_its_anchor_later(tmp_path):
@@ -509,10 +508,11 @@ def _render(tmp_path, records_by_file, source_map, settings=None):
     data = json.loads(re.search(r"let globalData = (\{.*?\});\n", html, re.S).group(1))
     table = json.loads(re.search(r"let globalSources = (\[.*?\]);\n", html, re.S).group(1))
     dirs = json.loads(re.search(r"let globalLineDirs = (\[.*?\]);\n", html, re.S).group(1))
-    for row in table:                                       # each playable source's [5] as the page puts it together
-        if len(row) > 5:
-            row[5] = _uri(row[5], dirs) if row[5] else ""
-    return data, table
+    plays = json.loads(re.search(r"let globalLinePlay = (\{.*?\});\n", html, re.S).group(1))
+    assert all(len(row) == 5 for row in table), "the source rows keep their five fields"
+    # for the asserts: each row with the ▶'s answer put after it, its URI as the page puts it together (`lpUri`)
+    return data, [row + ([_uri(plays[str(i)][0], dirs) if plays[str(i)][0] else "", plays[str(i)][1]]
+                         if str(i) in plays else ["", ""]) for i, row in enumerate(table)]
 
 
 def _rows(compressed):
@@ -604,10 +604,10 @@ def test_with_its_switch_off_the_journey_is_drawn_as_before_the_player(tmp_path,
     monkeypatch.setattr(play, "files", lambda *a, **k: pytest.fail("off: no line's file is looked for"))
     monkeypatch.setattr(cues, "timeline", lambda *a, **k: pytest.fail("off: no line's times are read"))
     data, table = _render(tmp_path / "off", lists, source_map, {"line_player": False})
-    assert [len(row) for row in table] == [5]                               # as before the line player
+    assert table[0][5:] == ["", ""]                                         # no ▶ answer at all
     assert "At 1" not in _rows(data["progressive"][0]["words"])[0]
     html = (tmp_path / "off" / "results" / "reading_list_static.html").read_text(encoding="utf-8")
-    assert "let globalLineDirs = [];" in html
+    assert "let globalLineDirs = [];" in html and "let globalLinePlay = {};" in html
 
 
 def test_the_switch_is_one_settings_row_on_by_default_with_its_words_in_one_place():
@@ -660,7 +660,7 @@ def _player(page):
 
 def test_play_is_drawn_only_for_a_line_with_a_playable_file_and_its_times(page):
     fn = _block(page, "function linePlay(", "\n        }\n")
-    assert "lpUri(row)" in fn and "b <= a" in fn and "isFinite" in fn
+    assert "lpUri(idx)" in fn and "b <= a" in fn and "isFinite" in fn
     uri = _block(page, "function lpUri(", "\n        }\n")
     assert "globalLineDirs" in uri and "encodeURIComponent(where.slice(cut + 1))" in uri
     assert 'class="lp" migaku_ignore data-yomichan-ignore' in fn                  # dictionaries never read it
@@ -724,10 +724,10 @@ def test_the_player_draws_with_the_themes_own_colours(page):
 
 def test_the_badge_says_why_an_mkv_line_has_no_play(page):
     badge = _block(page, "function sourceBadge(", "\n        }\n")
-    assert "row[6]" in badge and "LP_WORDS.cantPlay" in badge
+    assert "lpOf(idx)" in badge and "LP_WORDS.cantPlay" in badge
     assert "Your browser can't play {ext} files" in _player(page)
     # one line, its break escaped — a raw break inside a JS string stops the whole page's script
-    assert "if (row[6]) hover += '\\n' + (row[6] === 'vbr' ? LP_WORDS.cantSeek" in badge
+    assert "if (why) hover += '\\n' + (why === 'vbr' ? LP_WORDS.cantSeek" in badge
     assert "its bit rate varies" in _player(page)
 
 

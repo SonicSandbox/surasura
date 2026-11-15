@@ -688,18 +688,20 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
     return out, dirs
 
 
-def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None):
+def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None,
+                    plays=None):
     """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
 
     The CSVs carry the readable relative path so exports stay human-readable, but a big library
     repeats the same few hundred paths across tens of thousands of sentences — interning keeps the
     injected payload to one small int per sentence instead of a full path string.
 
-    Table rows are compact arrays: [name, type, fullPath, groupLabel, videoLink, playUri, whyNot]. The badge DISPLAYS
-    `name`, HOVERS `groupLabel` (group/file — enough to place the sentence without a wall of path), and
-    COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
-    made before sources.json carried absolute paths fall back to the relative one. `playUri` / `whyNot`: the
-    journey's ▶ (Kiku-L) — `media`'s answer for the source (`_line_media`), else "".
+    Table rows are compact arrays: [name, type, fullPath, groupLabel, videoLink] — five fields, a contract other
+    readers keep. The badge DISPLAYS `name`, HOVERS `groupLabel` (group/file — enough to place the sentence without a
+    wall of path), and COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
+    made before sources.json carried absolute paths fall back to the relative one. The journey's ▶ (Kiku-L) keeps its
+    own table, `plays` ({row's place: [where, why not]}: `media`'s answer for the source, `_line_media`), only for
+    the sources that have one — never a field of the rows.
 
     With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
     in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
@@ -731,12 +733,13 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                               meta.get("type") or "text",
                               abs_path,
                               _group_label(val),
-                              vid,
-                              *((media.get(val) or ("", "")) if media is not None else ())])
+                              vid])
+                if media is not None and plays is not None and media.get(val):
+                    plays[idx] = list(media[val])
             rec[key] = idx
 
             n = key[4:]                                      # "Src 2" -> "2"
-            timed = timer is not None and len(table[idx]) > 5 and bool(table[idx][5])
+            timed = timer is not None and plays is not None and bool((plays.get(idx) or ("",))[0])
             sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None or timed) else None
 
             if finder is not None:
@@ -1226,6 +1229,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                                         os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO),
                                         settings.get("source_display", "off") != "off") if line_on else (None, [])
     line_timer = None
+    line_plays = {}                           # the ▶'s own table: {source row's place: [where, why not]}
     if source_finder is None and line_media and any(uri for uri, _why in line_media.values()):
         # its own memo (`LINE_TIMES_MEMO`): the badge's anchor memo is never cut down to the playable files
         line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, LINE_TIMES_MEMO),
@@ -1293,7 +1297,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             for filename in files_order:
                 words = by_file[filename]
                 _intern_sources(words, source_map, source_table, source_index, source_finder,
-                                audio_probe, line_media, line_timer)
+                                audio_probe, line_media, line_timer, line_plays)
                 compressed_words = compress_list_of_dicts(words)
                 
                 # Get total words from stats if available
@@ -1339,7 +1343,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             df = lists["priority"]
             raw_priority = df.to_dict(orient="records")
             _intern_sources(raw_priority, source_map, source_table, source_index, source_finder,
-                            audio_probe, line_media, line_timer)
+                            audio_probe, line_media, line_timer, line_plays)
             data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
@@ -1441,6 +1445,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
     # The line player's folders (`_line_media`: a playable source's [5] names one of them by its place).
     line_dirs_json_str = json.dumps(line_dirs, ensure_ascii=False).replace("</", "<\\/")
+    line_plays_json_str = json.dumps({str(i): v for i, v in sorted(line_plays.items())},
+                                     ensure_ascii=False).replace("</", "<\\/")
     # Word lookup button (⌕). Validated here rather than trusted, exactly like source_display: a
     # hand-edited settings.json must not be able to put arbitrary text into the report's URL.
     _ws = settings if 'settings' in locals() else {}
@@ -1476,7 +1482,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalLinePlay = {line_plays_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

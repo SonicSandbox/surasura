@@ -1789,6 +1789,48 @@
     </script>
 
     <script>
+        // The journey's door (app/door.py; #385's, split out): the window opens this page through a one-time page that
+        // hands it the door's port and this session's token in the address (`#door=<port>.<token>`, then the page's
+        // own `file=…`). Taken out of the address before anything reads it (never left in the bar or the history) and
+        // kept for this tab only, so a reload keeps it. Opened any other way: no door, and a press says so.
+        const SURASURA_DOOR = (function () {
+            let door = null;
+            const m = /^#door=(\d+)\.([A-Za-z0-9_-]+)(?:&(.*))?$/.exec(location.hash);
+            if (m) {
+                door = { port: Number(m[1]), token: m[2] };
+                const rest = m[3] ? '#' + m[3] : '';
+                try { history.replaceState(null, '', location.href.split('#')[0] + rest); }
+                catch (e) { location.replace(rest || '#'); }
+                try { sessionStorage.setItem('surasura-door', JSON.stringify(door)); } catch (e) {}
+            } else {
+                try { door = JSON.parse(sessionStorage.getItem('surasura-door') || 'null'); } catch (e) {}
+            }
+            return door && door.port && door.token ? door : null;
+        })();
+
+        // One call through the door -> its JSON answer, or {ok: false, offline: true, why}: 'unopened' (this page
+        // wasn't opened from Surasura, or Surasura was opened again since: an old token), 'closed' (no answer). Asked
+        // only on a press: the page never waits on the app to open.
+        async function doorCall(route, body, ms) {
+            const door = SURASURA_DOOR;
+            if (!door) return { ok: false, offline: true, why: 'unopened' };
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), ms || 8000);
+            try {
+                const lang = (typeof globalLanguage !== 'undefined' && globalLanguage) ? globalLanguage : 'ja';
+                const r = await fetch(`http://127.0.0.1:${door.port}/v1/${route}`, {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' }, signal: ctl.signal,
+                    body: JSON.stringify(Object.assign({ token: door.token, lang: lang }, body || {})) });
+                if (r.status === 403) return { ok: false, offline: true, why: 'unopened' };
+                return await r.json();
+            } catch (e) {
+                return { ok: false, offline: e.name !== 'AbortError', why: 'closed',
+                         error: e.name === 'AbortError' ? 'Surasura took too long to answer.' : undefined };
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
         let globalData = null;
         let ignoredWords = new Set();
         let originalPriorityCount = 0;

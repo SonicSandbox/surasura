@@ -4450,12 +4450,14 @@ def main(argv=None, after_gate=None):
         hud.Probe(window, probe_file, hud=meter)
     window.first_frame.connect(window.start_duties)  # W3.5: the duties after the first paint
     window.first_frame.connect(services.load_numbers)  # W3.2 P0: the plan's numbers after it too
+    window.first_frame.connect(lambda: start_door(window))   # the journey's door (`app/door.py`), after it too
     window.show_first()
     hud.mark("shown")
     try:
         code = app.exec()
     finally:
         unwire_idle()                                     # (the loop has ended: the quit's saves never wait for it)
+        stop_door()
         try:
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
@@ -4472,6 +4474,27 @@ def main(argv=None, after_gate=None):
                     applog.log("shell", f"the HUD at quit: {e!r}")
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
+
+
+def start_door(window):
+    """The journey's door (`app/door.py`, #385's): a loopback server the page asks only on a press, with the window's
+    routes (`ShellWindow.door_routes`). Never raises: no door, the page says Surasura isn't open."""
+    try:
+        from app import door
+        from app.path_utils import get_user_file
+        routes = getattr(window, "door_routes", None)
+        door.start(routes() if routes is not None else {}, get_user_file("results"),
+                   on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"))
+    except Exception as e:
+        applog.log("shell", f"the journey's door: {e!r}")
+
+
+def stop_door():
+    try:
+        from app import door
+        door.stop()
+    except Exception as e:
+        applog.log("shell", f"the journey's door at quit: {e!r}")
 
 
 SESSION_JOB = "anki-session"        # IK-6: the window's start look at Anki, a registry job (`jobs.RESOURCES`)

@@ -1822,7 +1822,7 @@ def same_subtitle(copy, other, language, dropped=0):
 def _fit(steps, ledger, lang, job):
     jid = job["id"]
     picked = ledger.picked(jid) or {}
-    ledger.set_state(jid, "fit-check")
+    ledger.set_state(jid, "fit-check", progress=None)      # Tsu-W: never an earlier check's *Listening…*
     pairing = steps.pairing(lang, job)
     if fit_check.version(pairing) != picked.get("pairing"):
         raise Repick()                      # E17: hato re-timed it, or a new subtitle
@@ -1846,7 +1846,17 @@ def _fit(steps, ledger, lang, job):
         picked["offset"] = 0.0
         ledger.set_state(jid, "mining", picked=picked)
         return
-    verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+
+    def listening():                    # Tsu-W: a raw video's speech heard by tsubasa — minutes: the row says so
+        try:
+            ledger.set_state(jid, "fit-check", progress={"step": fit_check.LISTENING})
+        except Exception:
+            log.warning("Connect couldn't save that it's listening to an episode", exc_info=True)
+    steps.on_listening = listening      # read by `Steps.fit` for this job's check only
+    try:
+        verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    finally:
+        steps.on_listening = None
     if who == SPEECH_NEED:                  # AB-Q5: the spot-check needs the speech model — its one question
         ledger.need(lang, SPEECH_NEED, why, standing=True)
         raise Wait(why, look=False)
@@ -3373,17 +3383,23 @@ class Steps:
                 "profile": miner.get("profile"), "anki_miner": miner.get("app"),
                 "absent": out.get("skipped") == "anki miner absent"}
 
+    on_listening = None     # Tsu-W: `_fit`'s callback for the job being checked (the row's *Listening…*), else None
+
     def fit(self, lang, job, pairing, video, subtitle):
         """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it);
         `connect_trust_timing` (off by default; read from settings.json as it is now, so a switch turned mid-run counts
         for the next episode) mines an episode nothing here can check at its own times. An audio file's subtitle is
-        spot-checked by listening (AB-Q5, `_spot`) while Anki Miner can, before anything else is asked."""
+        spot-checked by listening (AB-Q5, `_spot`) while Anki Miner can, before anything else is asked. A video with no
+        subtitle track inside is heard by tsubasa through Anki Miner's speech files (Tsu-W, `fit_check.speech_setup`:
+        a Japanese library only), `on_listening()` called as it starts."""
         from app.connect import anki_miner
-        trust = self._settings(lang).get("connect_trust_timing") is True
+        settings = self._settings(lang)
+        trust = settings.get("connect_trust_timing") is True
         spot = None
         if not trust and anki_miner.is_audio(video) and anki_miner.can_now(anki_miner.SPOT_CHECK):
             spot = lambda: self._spot(lang, job, video, subtitle)      # noqa: E731
-        return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot)
+        return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot,
+                             speech=fit_check.speech_setup(lang, settings), listening=self.on_listening)
 
     def retimed(self, lang, job, video, subtitle):
         """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
@@ -3414,7 +3430,7 @@ class Steps:
         part = full + RETIME_PART
         was = _stamp(full)
         try:
-            made = fit_check.retime(video, full, out_dir)
+            made = fit_check.retime(video, full, out_dir, speech=fit_check.speech_setup(lang, self._settings(lang)))
             if made == fit_check.RETRY:
                 return None
             if made is None or not same_subtitle(full, made.path, lang, made.dropped):

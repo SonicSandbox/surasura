@@ -337,6 +337,7 @@ NAMING = (62, "Naming the clips")
 DOWNLOADING = ("downloading", "Downloading its video ({pct}%)")    # Michi-YT: `runner.DOWNLOADING`'s step, its words
 # Michi-YT2: `runner.TRANSCRIBING`'s — Anki Miner making its subtitle from the audio, after the download (PROVISIONAL)
 TRANSCRIBING = ("transcribing", "Making its subtitles from the audio ({pct}%)")
+LISTENING = ("listening", "Listening to its audio to check the timing")     # Tsu-W: `fit_check.LISTENING` (PROVISIONAL)
 STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
                5: "Adding cards"}           # Anki Miner's stages (its progress file)
 
@@ -360,6 +361,10 @@ def _progress(job):
                 got.get("step")) if isinstance(got, dict) else None
             if words and isinstance(got.get("percent"), int):
                 doing = words.format(pct=max(0, min(99, got["percent"])))
+        if job["state"] == "fit-check":     # Tsu-W: tsubasa hearing a raw video's speech (`fit_check._listen`)
+            got = _saved(job)
+            if isinstance(got, dict) and got.get("step") == LISTENING[0]:
+                doing = LISTENING[1]
         return {"percent": percent, "doing": doing}
     try:
         got = json.loads(job.get("progress") or "null")

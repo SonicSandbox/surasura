@@ -22,6 +22,15 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   they match → mine at its own times (no shift); they don't → not timed (never a wrong clip: *Mine anyway* stays
   yours); the model's question passed on as it is; no answer now → the rules below, as before (tsubasa has no
   reference inside an audio file). *Trust my subtitles' timing* is asked first: you said they are synced.
+- **A raw video heard** (Tsu-W, tsubasa 0.1.13's `--vad`; based on Mattias's #452; PROVISIONAL): tsubasa's ERROR
+  for a video with no subtitle track inside, in a Japanese library, and Anki Miner's own speech files on this PC
+  (`speech_setup`: its `whisper.dll` and Silero model and one of its whisper models, the small one first — found, never
+  downloaded) → tsubasa asked again with `--vad`: the timing from the speech in the video's own audio, its words
+  checked by whisper (minutes, not a second: `Speech.timeout`; the row says so, `listening`). CONFIDENT with one
+  segment → mine at its offset; two → part-way, re-timed as a track's (`retime` listens to a raw too); a refusal → not
+  timed in plain words (`SPEECH_REFUSED`); the speech not measured (another whisper.cpp) → the raw's reason as before.
+  A video with a track is asked exactly as before (one quick run, no `--vad`); Chinese, an audio file, hato's own
+  record and *Trust my subtitles' timing* (which mines a raw at once) never listen.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
@@ -43,6 +52,7 @@ Standard library only; no Tk.
 """
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -50,6 +60,8 @@ import sys
 from collections import namedtuple
 
 from app.connect import stopping
+
+log = logging.getLogger("surasura-cli")
 
 TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
@@ -65,6 +77,11 @@ SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `
 # subtitle's source) — one shift can't cut it: not timed, and the runner has tsubasa re-time the library copy itself
 # (`retime`; Michi-NT2, based on Mattias's #364)
 PART_WAY = "Its timing changes part-way through the {media}, so no cards."
+# Tsu-W: a raw video's speech — tsubasa didn't confirm its subtitle's timing by listening (its words or timing disagreed,
+# or the words couldn't be checked); tsubasa's own reason goes to the log (PROVISIONAL)
+SPEECH_REFUSED = ("Connect listened to its video and couldn't confirm the subtitle's timing, so no cards. Mine anyway "
+                  "only if you know it plays in time.")
+LISTENING = "listening"         # the job's saved progress step while tsubasa listens (`status.LISTENING`'s words)
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
                  "another line. Mine anyway only if you know it plays in time.")
 
@@ -75,6 +92,54 @@ def version(pairing):
         return None
     text = json.dumps(pairing, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+# Tsu-W (tsubasa 0.1.13 `--vad`, based on Mattias's #452): the speech files tsubasa reads a raw video with — found where
+# Anki Miner installs them for its own subtitle making, never bundled, never downloaded. Its whisper.cpp
+# (`<its program's folder>\_internal\whisper.dll`) and, under its home's `asr_models\ggml` (3.10.1's
+# `ggml_model_installer`), its Silero model and a whisper model, by the exact names Anki Miner writes — the ones
+# tsubasa was measured with. The small model first: Tsu-V measured it separating right from wrong as cleanly as
+# large-v3 at about a fifth of the time (~2 min an episode on CPU against ~11); large alone still listens, given longer.
+SPEECH_LANGUAGES = ("ja",)      # Chinese is unmeasured on tsubasa's speech path (Sonic, 2026-11-15: wait)
+SPEECH_LIBRARY = {"win32": "whisper.dll", "darwin": "libwhisper.dylib"}     # else libwhisper.so
+SPEECH_VAD = "ggml-silero-v6.2.0.bin"
+SPEECH_ASR = (("ggml-small-q5_1.bin", 20 * 60), ("ggml-large-v3-q5_0.bin", 60 * 60))    # (model, its check's timeout)
+Speech = namedtuple("Speech", "args env timeout")
+
+
+def speech_setup(language, settings=None, library=None, models=None):
+    """Tsu-W: `Speech(["--vad"], the environment with TSUBASA_WHISPER / TSUBASA_VAD_MODEL / TSUBASA_ASR_MODEL, the
+    listening run's timeout)` when a `language` library can listen and Anki Miner's whisper.cpp and both its models are
+    on this PC, else None (tsubasa as before). `library` (the folder holding whisper.cpp) defaults to Anki Miner's
+    program's own `_internal` (`anki_miner.find(settings)`: none under a test root), `models` to its home's
+    `asr_models/ggml` (`anki_miner.home()`). Only looks: nothing is made or written."""
+    if language not in SPEECH_LANGUAGES:
+        return None
+    try:
+        return _speech_files(settings, library, models)
+    except Exception:               # a look that fails (the registry, the home folder) is no speech: tsubasa as before
+        log.warning("Connect couldn't look for Anki Miner's speech files", exc_info=True)
+        return None
+
+
+def _speech_files(settings, library, models):
+    from app.connect import anki_miner
+    if library is None:
+        program = anki_miner.find(settings or {})
+        if not program:
+            return None
+        library = os.path.join(os.path.dirname(program), "_internal")
+    if models is None:
+        models = os.path.join(anki_miner.home(), "asr_models", "ggml")
+    if not os.path.isfile(os.path.join(library, SPEECH_LIBRARY.get(sys.platform, "libwhisper.so"))):
+        return None
+    vad = os.path.join(models, SPEECH_VAD)
+    asr = next(((os.path.join(models, name), timeout) for name, timeout in SPEECH_ASR
+                if os.path.isfile(os.path.join(models, name))), None)
+    if not os.path.isfile(vad) or asr is None:
+        return None
+    env = dict(os.environ, TSUBASA_WHISPER=library, TSUBASA_VAD_MODEL=vad, TSUBASA_ASR_MODEL=asr[0])
+    return Speech(["--vad"], env, asr[1])
 
 
 def find_tsubasa():
@@ -160,10 +225,12 @@ def others(pairing):
     return str(pairing.get("producer") or "hato").strip() not in OWN_PRODUCERS
 
 
-def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False, spot=None):
+def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False, spot=None, speech=None,
+        listening=None):
     """`check`, with the shift to cut by -> (verdict, who, why, offset in seconds: tsubasa's one segment's, else
     0.0). `spot()`: an audio file's spot-check (AB-Q5) -> SPOT_MATCHED / SPOT_NOT_MATCHED / None (no answer now), or a
-    whole answer of its own (the speech model's question), passed on."""
+    whole answer of its own (the speech model's question), passed on. `speech` (`speech_setup`'s, Tsu-W): a raw video
+    is asked again with it, `listening()` called first (the row's words)."""
     if hato_timed(pairing, subtitle):
         return TIMED, "hato", None, 0.0
     if track_timed(pairing, subtitle):
@@ -185,8 +252,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
         return NOT_TIMED, None, NO_CHECKER, 0.0
     command = [exe, "--pair", video, subtitle, "--dry-run", "--json", "--no-results"]
     try:
-        stdout = _run(command, timeout) if run is None else run(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
+        stdout = _ask(command, timeout, run)
     except subprocess.TimeoutExpired:
         # no answer in time (a file read whole over a slow share or a slow disk): asked again — the hourglass says so
         # (LF56-1: Sonic's laptop sat at *Checking the timing* with no word why)
@@ -198,25 +264,43 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
                                   "again at its next look."), 0.0
     answer = _answer(stdout)
     outcome = (answer or {}).get("outcome")
-    segments = (answer or {}).get("segments")
-    if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) == 1:
-        offset = _offset(answer)
-        if offset is None:          # nothing to cut by: 0.0 could be seconds off, so not timed
-            return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
-        return TIMED, "tsubasa", None, offset
-    if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
-        return NOT_TIMED, "tsubasa", PART_WAY.format(media=_media(video)), 0.0
     if outcome == "CONFIDENT":
-        return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
+        return _confident(answer, video)
     reason = (answer or {}).get("reason")
     raw = outcome == "ERROR" and isinstance(reason, str) and NO_TRACK in reason and not others(pairing)
     if raw and trust:               # nothing inside the video to time against, and you trust your subtitles
         return TIMED, "you", None, 0.0
+    if raw and speech is not None and _media(video) == "video":
+        heard = _listen(command, speech, run, listening)
+        if isinstance(heard, tuple):            # no answer this time: asked again
+            return heard
+        if heard is not None and heard.get("reference_kind") == SPEECH_MASK:
+            if heard.get("outcome") == "CONFIDENT":     # read as any CONFIDENT answer: one segment, two, or none
+                return _confident(heard, video)
+            log.info("Connect: tsubasa listened to %s and didn't confirm its subtitle: %s", os.path.basename(video),
+                     heard.get("reason"))
+            return NOT_TIMED, "tsubasa", SPEECH_REFUSED, 0.0
+        if heard is not None:                   # its speech not measured (an ERROR): the raw's reason, said as before
+            outcome, reason = heard.get("outcome"), heard.get("reason")
+            raw = outcome == "ERROR" and isinstance(reason, str) and NO_TRACK in reason
     if outcome in ("REFUSED", "ERROR"):
         return NOT_TIMED, "tsubasa", f"Not timed to its {_media(video)} ({outcome.lower()}), so no cards." + (
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _confident(answer, video):
+    """tsubasa's CONFIDENT answer -> `fit`'s: one segment timed at its offset, two or more part-way, none no timing."""
+    segments = answer.get("segments")
+    if isinstance(segments, list) and len(segments) == 1:
+        offset = _offset(answer)
+        if offset is None:          # nothing to cut by: 0.0 could be seconds off, so not timed
+            return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
+        return TIMED, "tsubasa", None, offset
+    if isinstance(segments, list) and len(segments) > 1:
+        return NOT_TIMED, "tsubasa", PART_WAY.format(media=_media(video)), 0.0
+    return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
 
 
 def part_way(why):
@@ -234,14 +318,15 @@ Retimed = namedtuple("Retimed", "path dropped undetermined")
 # starting inside one (`pick.pick`'s `unsure`). Empty from a tsubasa before 0.1.12.
 
 
-def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
+def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S, speech=None):
     """Michi-NT2 (based on Mattias's #364): tsubasa's re-timed copy of `subtitle` for `video` -> `Retimed`, else None;
     RETRY when tsubasa gave no answer this time (it timed out, or couldn't start).
     `tsubasa --pair VIDEO SUB --out DIR --json --no-results`: every segment its own shift, written under `out_dir`
     only (emptied first) — an explicit pair never trashes anything, `--out` never writes beside the video or over
     the subtitle, `--no-results` records nothing of tsubasa's. None: not a text subtitle, no tsubasa, a refusal or
     an error, a write that failed, or no file inside `out_dir` where it says it wrote one. The job's *Stop* ends it as
-    the check does (`stopping.Stopped`)."""
+    the check does (`stopping.Stopped`). `speech` (Tsu-W): a video tsubasa says has no subtitle track (its ERROR naming
+    `NO_TRACK`) is asked again with `--vad` and its files — a video with a track is re-timed exactly as before."""
     if not subtitle or os.path.splitext(subtitle)[1].lower() not in RETIME_EXTENSIONS:
         return None
     exe = tsubasa if tsubasa is not None else find_tsubasa()
@@ -251,11 +336,13 @@ def retime(video, subtitle, out_dir, tsubasa=None, run=None, timeout=TIMEOUT_S):
     os.makedirs(out_dir, exist_ok=True)
     command = [exe, "--pair", video, subtitle, "--out", out_dir, "--json", "--no-results"]
     try:
-        stdout = _run(command, timeout) if run is None else run(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
+        answer = _answer(_ask(command, timeout, run)) or {}
+        reason = answer.get("reason")
+        if answer.get("outcome") == "ERROR" and isinstance(reason, str) and NO_TRACK in reason and \
+                speech is not None and _media(video) == "video":
+            answer = _answer(_ask(command + list(speech.args), max(timeout, speech.timeout), run, speech.env)) or {}
     except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
         return RETRY
-    answer = _answer(stdout) or {}
     path = answer.get("output_path")
     if answer.get("outcome") != "CONFIDENT" or answer.get("write_failed") or not isinstance(path, str) or not path:
         return None
@@ -315,13 +402,46 @@ def _span(seconds):
     return f"{seconds} second{'' if seconds == 1 else 's'}"
 
 
-def _run(command, timeout):
+SPEECH_MASK = "speech mask"     # tsubasa's `reference_kind` for a pair timed against the speech (0.1.13, verdict.py)
+
+
+def _listen(command, speech, run, listening):
+    """Tsu-W: tsubasa asked again with `--vad` -> its answer (a dict; None: unreadable), or RETRY's whole tuple when it
+    gave none this time (it took longer than `speech.timeout`, or wouldn't start). `listening()` first: minutes, not a
+    second, and the row says so."""
+    if listening is not None:
+        listening()
+    try:
+        return _answer(_ask(command + list(speech.args), max(TIMEOUT_S, speech.timeout), run, speech.env))
+    except subprocess.TimeoutExpired:
+        return RETRY, "tsubasa", (f"Listening to its audio took longer than {_span(speech.timeout)}; Connect tries "
+                                  "again at its next look."), 0.0
+    except (OSError, subprocess.SubprocessError) as e:
+        return RETRY, "tsubasa", (f"Listening to its audio didn't start this time ({type(e).__name__}); Connect tries "
+                                  "again at its next look."), 0.0
+
+
+def _ask(command, timeout, run=None, env=None):
+    """tsubasa's stdout: `_run`, or `run` (`subprocess.run`'s stand-in, tests) given `env` only when there is one."""
+    if run is None:
+        return _run(command, timeout) if env is None else _run(command, timeout, env)
+    extra = {"env": env} if env is not None else {}
+    return run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+               **extra).stdout
+
+
+def _run(command, timeout, env=None):
     """tsubasa's stdout, waited for in slices (row 56, `stopping.wait`): the job's *Stop* ends it within a second and
     raises `stopping.Stopped` (the job stops before its fit check); past `timeout` it is ended and TimeoutExpired
-    raised (asked again)."""
+    raised (asked again). `env`: its environment (Tsu-W's speech files), else Connect's own."""
     options = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    if env is not None:
+        options["env"] = env
     proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             **options)
+    if env is not None:             # Tsu-W: minutes of listening end with Connect, however it ends (as Anki Miner does)
+        from app.connect import anki_miner
+        anki_miner._bind(proc)
     try:
         return stopping.wait(proc, timeout, look_up=True)[0]
     except subprocess.TimeoutExpired:

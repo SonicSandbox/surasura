@@ -244,6 +244,12 @@ ROWS = {
                            "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
                            "line, on your list or not",
                            "words to make cards from mine mode which words all unknown i+1 list"),
+    # Kyou-A (Sonic's answers 1–5, 2026-11-15; words PROVISIONAL): the library's own option (settings_store.py)
+    "new_cards_from": ("New cards come from",
+                       "Side by side: your new cards a day split evenly between Current's first two titles, the most "
+                       "useful words first. Study its cards first still goes ahead",
+                       "Where tomorrow's new cards come from: Current in order, or its first two titles side by side",
+                       "new cards side by side top two titles split order mine"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
                   "How many files at the top of Current mine themselves", "auto top mines itself mine line"),
     "connect_send_grammar": ("Send grammar words", "Particles and endings get cards too",
@@ -658,6 +664,7 @@ OPTIONS = {
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "new_cards_from": {"current": "Current’s order", "top_two": "Top two, side by side"},     # Kyou-A (PROVISIONAL)
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},

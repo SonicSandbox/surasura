@@ -7,8 +7,9 @@ the next reader (`word_states`). Like the young cards' sync (`anki_sync.sync_you
 cardsInfo, no search per card — each search names the notes with a card of one standing (Anki's `prop:lapses=n`,
 `prop:ivl`, `prop:d`, `prop:ease`, `tag:leech`, `introduced:1`), so a note's standing is the searches it is found by,
 and a note with two cards (recognition and production) is one note: its worst card for lapses and hardness, mature
-only once every studied card is. The word of a note is the known sync's (`anki_sync._note_word`: the chosen word
-field, read as Junban reads a card), and two notes of one word count once.
+only once every studied card is, learned today only when no card of it was studied before Anki's today — and a word
+learned today only when no other note of it was either (Piyo-T). The word of a note is the known sync's
+(`anki_sync._note_word`: the chosen word field, read as Junban reads a card), and two notes of one word count once.
 
 Qt-free and Tk-free; no settings key of its own (the decks and fields are the known sync's, `anki_sync_decks` /
 `anki_sync_fields`). Never writes Anki. `tests/test_anki_words.py`.
@@ -34,9 +35,9 @@ SOURCES = {
                    "none": "No card in the learner's Anki decks is a leech or has been forgotten yet",
                    "rule": "These are words the learner keeps forgetting in Anki: use each one more than once, in "
                            "easy sentences, so it sticks."},
-    "today": {"short": "the cards they learned in Anki today",
+    "today": {"short": "the words they learned today: new in Anki today, as Anki counts the day",
               "what": "the cards the learner learned in Anki today",
-              "none": "The learner hasn't learned a new card in Anki today yet",
+              "none": "The learner hasn't learned a new word in Anki today yet",
               "rule": "These are words the learner met for the first time in Anki today: use each one more than once."},
     "known": {"short": "the cards they know well (mature in Anki)",
               "what": "the learner's well-known Anki cards",
@@ -67,7 +68,7 @@ class Standing:
     hard: int = 0           # how many of HARD_D / HARD_EASE's steps its hardest card is past
     young: bool = False     # a studied card under MATURE_DAYS
     mature: bool = False    # every studied card mature
-    today: bool = False     # first studied today (Anki's `introduced:1`)
+    today: bool = False     # learned today: a card first studied today (Anki's `introduced:1`), none before it
 
 
 def _terms(decks):
@@ -77,7 +78,11 @@ def _terms(decks):
 
 def _searches(decks):
     """[(slot, query, needed)]: every search one read asks, in one `multi`. `needed`: a refused search fails the read
-    (a missing one would rank wrongly); the others (FSRS's difficulty, `introduced:`) an older Anki may not know."""
+    (a missing one would rank wrongly); the others (FSRS's difficulty, `introduced:`) an older Anki may not know.
+    Learned today is two searches: a card first studied today (`introduced:1`, Anki's own day — its rollover hour, never
+    midnight or a clock of ours; a card put away since still counts), and the notes with a card studied before it
+    (`-introduced:1`, a put-away card too: a new card never was) — Anki's `introduced:` is a card's, and a word whose
+    recognition card was learned last week is no word learned today when its production card first comes up today."""
     studied = f"{_terms(decks)} -is:new -is:suspended"
     # a leech Anki suspended (its default leech action in older versions) is still a struggling card
     worked = f"{_terms(decks)} -is:new (-is:suspended OR tag:leech)"
@@ -88,15 +93,18 @@ def _searches(decks):
     out += [(("hard", "ease", e), f"{worked} prop:ease<{e}", True) for e in HARD_EASE]
     out.append(("young", f"{studied} prop:ivl<{MATURE_DAYS}", True))
     out.append(("mature", f"{studied} prop:ivl>={MATURE_DAYS}", True))
-    out.append(("today", f"{studied} introduced:1", False))
+    out.append(("today", f"{_terms(decks)} -is:new introduced:1", False))
+    out.append(("before", f"{_terms(decks)} -is:new -introduced:1", False))
     return out
 
 
 @dataclass
 class Reading:
-    """One read of the decks: each studied note's Standing, and whether Anki could say what was learned today."""
+    """One read of the decks: each studied note's Standing, whether Anki could say what was learned today, and the
+    notes with a card studied before today (`before`: an older note of a word learned today makes it no new word)."""
     notes: dict
     today_known: bool = True
+    before: frozenset = frozenset()
 
 
 def read(url, decks):
@@ -111,11 +119,12 @@ def read(url, decks):
     found = {}
     for (slot, _query, needed), reply in zip(searches, replies):
         ok = isinstance(reply, dict) and reply.get("error") is None and isinstance(reply.get("result"), list)
-        if not ok:
-            if needed:          # through `refusal`: a slot refused only while Anki is busy is marked busy
-                raise anki_connect.refusal("findNotes", (reply.get("error") if isinstance(reply, dict) else None)
+        if not ok:              # through `refusal`: a slot refused only while Anki is busy is marked busy
+            refused = anki_connect.refusal("findNotes", (reply.get("error") if isinstance(reply, dict) else None)
                                            or "no answer")
-            if slot == "today":
+            if needed or anki_connect.is_busy(refused):     # busy is busy, never "too old" (Piyo-T)
+                raise refused
+            if slot in ("today", "before"):     # either missing: today's words can't be told from older ones
                 today_known = False
             continue
         found[slot] = set(anki_connect._int_ids(reply["result"]))
@@ -135,14 +144,16 @@ def read(url, decks):
         note(note_id).young = True
     for note_id in found.get("mature", set()) - found.get("young", set()):
         note(note_id).mature = True
-    for note_id in found.get("today", ()):
-        note(note_id).today = True
-    return Reading(notes, today_known)
+    before = frozenset(found.get("before", ())) if today_known else frozenset()
+    if today_known:
+        for note_id in found.get("today", set()) - before:
+            note(note_id).today = True
+    return Reading(notes, today_known, before)
 
 
 def ranked(reading, source):
     """The note ids `source` (SOURCES) practises, in its order: struggling — Anki's leeches first, then the most
-    lapses, then the hardest, then the newest note; today — the notes first studied today, the newest first; known —
+    lapses, then the hardest, then the newest note; today — the notes learned today, the newest first; known —
     the mature notes (no leech), the newest first."""
     notes = reading.notes.values()
     if source == "struggling":
@@ -183,8 +194,9 @@ def _scope(settings, language):
 def practise(language, source, limit, settings):
     """`source`'s words for a practice round, at most `limit`: [{"word", "note", "lapses", "leech"}], in its order
     (`ranked`); [] when the source has no card; None when the source is `today` and this Anki can't say (too old for
-    `introduced:`). Raises NoDecks, NoneStudied (no studied card in the decks at all), NoWords (cards, but no word in
-    any) or AnkiError (Anki closed, busy, a search refused)."""
+    `introduced:`). `today` drops a word another note of which was studied before today (a word mined twice): those
+    notes' words are read only when today has a word. Raises NoDecks, NoneStudied (no studied card in the decks at
+    all), NoWords (cards, but no word in any) or AnkiError (Anki closed, busy, a search refused)."""
     if source not in SOURCES:
         raise ValueError(f"no source {source!r}")
     url, decks, fields = _scope(settings, language)
@@ -194,7 +206,17 @@ def practise(language, source, limit, settings):
     if source == "today" and not reading.today_known:
         return None
     note_ids = ranked(reading, source)
-    found = words(url, note_ids, fields, language, limit)
+    if source == "today":                   # every word of today's few notes, then those older notes say again
+        found = words(url, note_ids, fields, language, len(note_ids))
+        if found and reading.before:
+            older = {word for word, _note in words(url, sorted(reading.before), fields, language, len(reading.before),
+                                                   chunk=250)}
+            found = [(word, note_id) for word, note_id in found if word not in older]
+            if not found:
+                return []
+        found = found[:limit]
+    else:
+        found = words(url, note_ids, fields, language, limit)
     if note_ids and not found:
         raise NoWords("no word in the cards' word field")
     out = []

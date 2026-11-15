@@ -315,6 +315,13 @@ def journey_sort(order, numbers, rank=None):
     return (first_file, -score, -total, listed, rank if rank is not None else 0)
 
 
+def impact(numbers, rank=None):
+    """Kyou-A: a word's place on the whole list as one sortable key — the priority list's own order (Score, then
+    occurrences, both highest first; a listed word first on a tie, then its row): the SCOPE's decision 3, "the word's
+    place on your whole list", whichever order Junban follows (`journey_sort("priority", …)`'s key)."""
+    return journey_sort("priority", numbers, rank)
+
+
 def _file_names(language):
     """The library's files in study order, by the short names the sentence dictionary uses (release
     tags, ids and quality tags trimmed) — for the "why" column. [] when the library cannot be read."""
@@ -531,7 +538,7 @@ def _singles(settings):
 
 
 def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None, tokenize=None, library=None,
-                    forms=False, lean=False, known_memo=None):
+                    forms=False, lean=False, known_memo=None, needs=False):
     """Junban_Backlog_Spec §5.4 / §5.5 for every card the list, the library and the phrase lookup left
     unplaced — and, before that, for every card whose word the learner already KNOWS, which goes last
     (D3) whatever else matched it: a known phrase is still known.
@@ -553,7 +560,8 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
     `lean` (an automatic job, E3.1): no fallback for a card placed with the list and no §16 suggestion — both are the
     順 window's, for a card the user takes off the list or answers; every card's place is the same. `known_memo`
     (`_known_memo`, a job's): the known sets as last read, and each word's "known?" answer, kept while their files
-    are unchanged.
+    are unchanged. `needs` (Kyou-A, side by side on): a card placed with more unknowns carries them as `needs` (their
+    lemmas), so the weave makes it i+1 once they are picked (`plan`'s `weave`).
     """
     from app import analyzer
     from modules.junban import connect
@@ -595,15 +603,18 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         except Exception:
             phrase_set = None
 
-    def waiting(word):
+    def waiting(word, beside=None):
         if phrase_set is None:
             return 0
         index = phrase_set.of_word("".join(token[0] for token in tokenize(word)))
         if index is None:
             return 0
-        return len(phrase_rules.waiting(phrase_set.entry(index),
-                                        lambda key: not word_unknown(key[0], key[1], key[0]),
-                                        lambda key: analyzer.single_kind(key, _singles(settings)) != 1)[0])
+        words = phrase_rules.waiting(phrase_set.entry(index),
+                                     lambda key: not word_unknown(key[0], key[1], key[0]),
+                                     lambda key: analyzer.single_kind(key, _singles(settings)) != 1)[0]
+        if beside is not None:                      # Kyou-A: the weave's `needs` hold them too
+            beside.extend(key[0] for key in words)
+        return len(words)
 
     def by_sentence(card):
         """`(tier, sort, why)` from the card's own sentence: i+1, then fewest unknowns, then the rest."""
@@ -612,12 +623,15 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         fields = note.get("fields") or {}
         rank = _freqsort(fields)
         by_freq = rank if rank is not None else float("inf")
-        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), tokenize, unknown, units, skip)
+        beside = [] if needs else None
+        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), tokenize, unknown, units, skip, beside)
                     if tokenize and word else None)
         if unknowns is None and note.get("unsure"):
             return "rest", (by_freq,), connect.UNSURE
         if unknowns is not None:
-            unknowns += waiting(word)
+            unknowns += waiting(word, beside)
+        if beside:
+            card["needs"] = tuple(sorted(set(beside)))
         if unknowns == 0:
             return "i+1", (by_freq,), "i+1"
         if unknowns:
@@ -809,7 +823,8 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
             freq = _freqsort(((notes or {}).get(card.get("note")) or {}).get("fields") or {})
             card.update(tier="multi", sort=(len(needed), freq if freq is not None else float("inf")),
                         why="waits for " + "、".join(needed) + " · " + (card.get("why") or ""),
-                        fallback=None, held=True)
+                        fallback=None, held=True,
+                        waits=(tuple(needed), card.get("impact")))    # Kyou-A: the weave's, once picked
             held += 1
             continue
         for n, other_card in enumerate(bring):
@@ -1798,6 +1813,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         outs = {card_id: items for card_id, items in outs.items()
                 if not match.lookup(word_of.get(card_id) or "", marks_of or {}, language)}
         # --- end P4.1 L2 ---
+        # Kyou-A: *New cards come from: Current's top two, side by side* — the two titles' cards, by the pins' matching
+        weave = pin_feed.side_groups(language, cards, detail["notes"])
+    else:
+        weave = None
     if not marks_of and not any(pins or ()):
         # M-W2-1: no list at all (`marks_of` covers every row; `only` narrows `rank_of` alone) and no pinned item — nothing
         # is placed, tagged or suspended: the run writes nothing (`_run`), the preview says the list is empty. With a pin
@@ -1889,6 +1908,8 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             card["why"] = f"list #{rank_of[key] + 1:,}" + (MATCHED_BY_YOU if card.get("matched") else "")
         if key and tiers:
             card["sort"] = journey_sort(order, index.journey_of.get(key), rank_of[key])
+        if key:
+            card["impact"] = impact(index.journey_of.get(key), rank_of[key])      # Kyou-A: the weave's "most useful"
         if key and index.journey_of.get(key):
             card["file"] = index.journey_of[key][0]     # #50: the show it's for (`show_tags`)
         if not key and library:
@@ -1897,6 +1918,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             if found:
                 card["tier"] = "library"
                 card["sort"] = journey_sort(order, moved(library[found]))
+                card["impact"] = impact(library[found])
                 card["file"] = moved(library[found])[0]
                 card["why"] = _where(moved(library[found]), names)
     banner = []
@@ -1916,6 +1938,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
                 continue                # too rare for the list's own bar: by its sentence, below
             card["tier"] = "library" if journey else "phrase"
             card["sort"] = journey_sort(order, numbers)
+            card["impact"] = impact(numbers)
             card["file"] = numbers[0]
             card["why"] = "phrase · " + _where(numbers, names)
     suggestions = {}
@@ -1923,7 +1946,8 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         # Known words last; everything still unplaced by its own sentence, then FreqSort (§5.4).
         _place_the_rest(cards, detail["notes"], language, settings, rank_of=rank_of, answers=answers,
                         tokenize=tokenize, library=counted, forms=preview, lean=lean,
-                        known_memo=_known_memo(language, settings) if job is not None else None)
+                        known_memo=_known_memo(language, settings) if job is not None else None,
+                        needs=bool(weave))
         banner = _banner(cards, detail["notes"], language)
         # §16: one entry per card word for "Same word as one on your list?", and on each card the
         # place a tick gives it (`suggestion`) — the very place a recorded "yes" gives it in a run.
@@ -1960,7 +1984,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # as unmatched — the same pass, so the run writes the order the preview showed (I5).
     excluded = _excluded(settings)
     number = _numbering(language, decks, job, front)
-    writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs))
+    writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave)
     if number is not None:
         stats["number"] = number        # the panel re-plans a click with the run's own numbering (I5)
     if parked_tag and not preview:      # M-W1: the 3.0 host's job brings back what it parked with Connect off too

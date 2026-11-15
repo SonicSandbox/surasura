@@ -6,10 +6,11 @@ Drives the managed yt-dlp binary (see ytdlp_manager) via its CLI, so the tool
 keeps working as YouTube changes (one-click "Update yt-dlp"). Writes clean .txt
 transcripts into the active language's Processed folder.
 
-Grouping (per the agreed rules):
-  - a playlist            -> subfolder  "<Channel> - <PlaylistTitle> (playlist)"
-  - >= 2 links, one channel -> subfolder "<Channel>"
-  - single video / mixed singles -> straight into Processed
+Grouping (3.0.12, Kura-PR2: a channel is a folder, so the library titles a channel's videos as one show):
+  - a YouTube video, alone or with others -> "YouTube/<Channel>/" (the language folder's `YOUTUBE_FOLDER`)
+  - a YouTube playlist                    -> "YouTube/<Channel>/<PlaylistTitle>/"
+  - bilibili.tv (it names no uploader)    -> a season "Processed/<Show> (playlist)/", an episode straight into
+    Processed, as before
 
 Caption resolution mirrors the original tool: manual -> native auto -> auto-
 translation, for the chosen language.
@@ -156,6 +157,18 @@ def slug(name, limit=150):
     name = INVALID_FS.sub('', name or '').strip().rstrip('.')
     name = re.sub(r'\s+', ' ', name)
     return name[:limit].strip() or 'untitled'
+
+
+# Names Windows keeps for its devices, with or without an extension: a folder of one can't be made (`CON`, `NUL.txt`)
+RESERVED_FS = re.compile(r'^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$', re.I)
+
+
+def folder_name(name, limit=80):
+    """A channel's or a playlist's folder (Kura-PR2): `slug`'s name — a channel of only marks is "untitled" — and
+    one Windows keeps for a device (`CON`, `COM1`…) with an underscore after it, so it can always be made, on any
+    system (the library may move between them)."""
+    out = slug(name, limit).rstrip('. ') or 'untitled'
+    return f"{out}_" if RESERVED_FS.match(out) else out
 
 
 def _fmt_date(yyyymmdd):
@@ -331,12 +344,23 @@ def sublang_patterns(spec):
     return ','.join(pats)
 
 
+def youtube_dir(processed_dir):
+    """The language folder's YouTube folder, beside `processed_dir` (its Processed): `library_store.YOUTUBE_FOLDER`,
+    the name's one place."""
+    from app.library_store import YOUTUBE_FOLDER
+    return os.path.join(os.path.dirname(os.path.abspath(processed_dir)), YOUTUBE_FOLDER)
+
+
 def plan_buckets(probe_results, processed_dir):
     """Turn probe results into download buckets: list of (urls, target_dir).
 
     `probe_results` is a list of (url, info_dict) where info_dict is the flat JSON
-    yt-dlp returned (or None to skip). Pure function — easy to unit-test.
+    yt-dlp returned (or None to skip). Pure function — easy to unit-test. A YouTube video goes into its channel's
+    folder under the YouTube folder beside `processed_dir` (`youtube_dir`), a playlist into a folder of its own inside
+    its channel's; one that names no channel (no `channel`, no `uploader`) loose in the YouTube folder — the library
+    titles it by its name, never one "Unknown" title for every such video; bilibili.tv's into `processed_dir` as before.
     """
+    channels = youtube_dir(processed_dir)
     playlists, loose, singletons = [], [], []
     for url, info in probe_results:
         if not info:
@@ -347,14 +371,15 @@ def plan_buckets(probe_results, processed_dir):
         if info.get('_type') == 'playlist' or info.get('entries') is not None:
             ptitle = info.get('title') or 'Playlist'
             if bilibili:
-                folder = slug(f"{ptitle} (playlist)")
+                target = os.path.join(processed_dir, slug(f"{ptitle} (playlist)"))
             else:
-                folder = slug(f"{channel_of(info)} - {ptitle} (playlist)")
-            playlists.append((url, os.path.join(processed_dir, folder)))
+                named = info.get('channel') or info.get('uploader')
+                target = os.path.join(channels, *([folder_name(named)] if named else []), folder_name(ptitle, 150))
+            playlists.append((url, target))
         elif bilibili:
             singletons.append(url)
         else:
-            loose.append((url, channel_of(info)))
+            loose.append((url, info.get('channel') or info.get('uploader')))
 
     buckets = [([url], target) for url, target in playlists]
 
@@ -362,11 +387,8 @@ def plan_buckets(probe_results, processed_dir):
     for url, ch in loose:
         by_channel.setdefault(ch, []).append(url)
 
-    for ch, ch_urls in by_channel.items():
-        if len(ch_urls) >= 2:
-            buckets.append((ch_urls, os.path.join(processed_dir, slug(ch, 80))))
-        else:
-            singletons.extend(ch_urls)
+    for ch, ch_urls in by_channel.items():          # one folder a channel, however many of its videos
+        buckets.append((ch_urls, os.path.join(channels, folder_name(ch)) if ch else channels))
     if singletons:
         buckets.append((singletons, processed_dir))
     return buckets
@@ -624,7 +646,10 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
     (a playlist's rest records it at once: a crash after it never leaves it out of the library). `places`: {video id:
     its playlist place} (`series_places`), written into its sidecar; `reverse`: the playlist links read newest first
     (`series_reversed`), fetched from their end (`--playlist-reverse`): a run stopped half-way keeps the series' start."""
-    existed = os.path.isdir(target_dir)
+    made, up = [], os.path.abspath(target_dir)      # the folders this call makes (a channel's and its playlist's)
+    while not os.path.isdir(up) and os.path.dirname(up) != up:
+        made.append(up)
+        up = os.path.dirname(up)
     os.makedirs(target_dir, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='surasura_yt_') as tmp, \
             tempfile.TemporaryDirectory(prefix='surasura_yt_have_') as have:
@@ -748,12 +773,12 @@ def _download_bucket(urls, target_dir, spec, lang, keep_ts, channel_first, log, 
 
     # A folder made for this bucket that stayed empty (every episode region-locked, a playlist with
     # no captions) would be picked up as "new" and land in the library as an empty group. rmdir only
-    # ever removes an EMPTY directory, and only one this call created.
-    if not existed:
+    # ever removes an EMPTY directory, and only one this call created (the playlist's, then its channel's).
+    for folder in made:
         try:
-            os.rmdir(target_dir)
+            os.rmdir(folder)
         except OSError:
-            pass
+            break
 
 
 # Matches the id at the end of a stem, tolerating the `_<timestamp>` suffixes Graduate/Demote append

@@ -15,6 +15,7 @@ under the list's floor) stays as the last Generate left it until the next one (D
     eng.set_pins(pins)
     result = eng.result()
     new, before = eng.words_of(item_ids)               # Hover-W: a title's words (the window's word card)
+    eng.leave_out(lemmas)                              # Kotoba-K: words marked Known / Ignore since, out at once
     first_sentences(path)                              # Hover-W: each listed word's first sentence per file
 
 **Pure** (rule 3): the standard library and `app.plan_rules` only — no Qt, Tk, pandas or tokenizer, no settings, no
@@ -714,6 +715,8 @@ class Engine:
             if line.get("sp"):
                 self._sp[f] = {sp[0]: (sp[1], sp[2]) for sp in line["sp"]}
         self._pins = []
+        self._gone = frozenset()             # (Kotoba-K) the keys `leave_out` holds out of every file's uses
+        self._whole = {}                     # ... and the uses of each file it took them from, as the plan has them
         self._added, self._reasons = [], {}     # the items `add` placed, in order; {item: [gates]}: those not exact
         self.renumbered = 0                  # how many times a move found no room and spaced every item afresh
         self.unread = 0                      # (F7) the shown sentences the last re-pick couldn't read the text of
@@ -771,7 +774,7 @@ class Engine:
         # First files: the walk below finds the common keys', each rare key looks among its own files after it — unless
         # the order holds fewer uses than the rare keys have plan files (most items left out): then the walk finds all.
         walk_all = sum(len(uses[f][0]) for f in fs) < self._rare_held
-        unseen = set(range(n)) if walk_all else set(self._common)   # the keys the walk still looks for
+        unseen = (set(range(n)) if walk_all else set(self._common)) - self._gone   # the keys the walk looks for
         # One pass over every use (most of a re-plan's time): each tier's counts only; the weights are whole numbers
         # (stands_aside), so the Score summed from the tiers' counts is the Score summed use by use.
         for f, slot in zip(fs, tiers):
@@ -793,8 +796,9 @@ class Engine:
         for i, f in enumerate(fs):
             seq[f] = i
         place = seq.__getitem__
+        gone = self._gone
         for k in () if walk_all else range(n):
-            if first[k] is not None:
+            if first[k] is not None or k in gone:
                 continue
             held = self._files_of[k]
             i = min(map(place, held), default=missing)
@@ -1043,6 +1047,9 @@ class Engine:
         f = len(self._uses)
         self._ids.append(item_id)
         self._f_of[item_id] = f
+        if self._gone and not self._gone.isdisjoint(ks):     # (Kotoba-K) a word marked since stays out of it too
+            self._whole[f] = (ks, us)
+            ks, us = self._without(ks, us)
         self._uses.append((ks, us))
         self._source.append(str(record.get("name") or str(item_id).replace("\\", "/").rsplit("/", 1)[-1]))
         self._prog.append(prog)
@@ -1050,11 +1057,15 @@ class Engine:
         if sp:
             self._sp[f] = sp
             self._order_v += 1                  # (a new file's tied spellings: the kept ones are stale)
-        for i, k in enumerate(ks):
+        whole = self._whole.get(f)
+        for i, k in enumerate(ks if whole is None else whole[0]):     # (a held-out word's files: all of them)
             self._files_of[k].append(f)
             if self._idx_in[k] is not None:
-                self._idx_in[k].append(i)
-                self._rare_held += 1
+                if whole is None:
+                    self._idx_in[k].append(i)
+                    self._rare_held += 1
+                else:
+                    self._idx_in[k] = None              # (its place among the file's words: found by looking)
         for k, (orths, surfaces) in spc.items():
             tie = self._ties.get(k)
             if tie is not None:                         # the tied words' counts, which `result()` works Orth out from
@@ -1326,6 +1337,70 @@ class Engine:
                 kept += (shown, where(st[plan_rules.SRC]))
             out[k] = kept
         return out
+
+    def leave_out(self, lemmas):
+        """Kotoba-K: the words marked Known or Ignore since the plan (`lemmas`: every such word now — the whole set,
+        not a change) left out of the numbers at once, as the next Generate leaves them out: no first place, no *N new*,
+        no rank, never in `words_of`; every other word's numbers as that Generate's (a word's place among its first
+        file's words counts only the words still there). A word taken out of `lemmas` again (an undo, a clear) comes
+        back with its plan numbers (worked out from scratch; a mark is taken out in place). -> True when the numbers
+        changed."""
+        lemmas = frozenset(lemmas or ())
+        gone = frozenset(k for k, lemma in enumerate(self._lemma) if lemma in lemmas) if lemmas else frozenset()
+        if gone == self._gone:
+            return False
+        only_added = self._gone <= gone             # a mark (the common case): its keys taken out in place
+        touched = set()
+        for k in gone ^ self._gone:
+            touched.update(self._files_of[k])
+        added = gone - self._gone
+        self._gone = gone
+        for f in touched:
+            ks, us = self._whole.get(f) or self._uses[f]
+            if gone.isdisjoint(ks):
+                self._whole.pop(f, None)
+                self._uses[f] = (ks, us)
+            else:
+                self._whole[f] = (ks, us)
+                self._uses[f] = self._without(ks, us)
+            idx_in = self._idx_in
+            for k in ks:                            # a place among the file's words moved: found by looking
+                idx_in[k] = None
+        if only_added:
+            self._taken_out(added, touched)
+        else:                                       # a clear brings words back: worked out from scratch
+            self._numbers([(self._ids[f], TIERS[self._tier[f]]) for f in self._order])
+        return True
+
+    def _taken_out(self, keys, touched):
+        """`keys` just held out (their files' uses already without them): each loses its first place, its *N new* and
+        its rank; a word still in a touched file whose first file that is takes its place among the words left there
+        (the rank's tie-break, a Generate's insertion order), its rank moved with it. Equals `_numbers` (the tests)."""
+        first, ranked = self._first, self._ranked
+        for k in keys:
+            f = first[k]
+            if f is not None:
+                self._n_new[f] -= 1
+                first[k] = None
+            if self._rank_of[k] is not None:
+                del ranked[bisect.bisect_left(ranked, self._rank_of[k])]
+                self._rank_of[k] = None
+            self._raw[k] = 0
+            self._counts[k] = [0, 0, 0]
+        for f in touched:
+            for i, k in enumerate(self._uses[f][0]):
+                if first[k] == f and self._first_idx[k] != i:
+                    self._first_idx[k] = i
+                    if self._rank_of[k] is not None:
+                        del ranked[bisect.bisect_left(ranked, self._rank_of[k])]
+                        r = self._rank(k)
+                        bisect.insort(ranked, r)
+                        self._rank_of[k] = r
+
+    def _without(self, ks, us):
+        gone = self._gone
+        kept = [(k, u) for k, u in zip(ks, us) if k not in gone]
+        return array("i", (k for k, _u in kept)), array("i", (u for _k, u in kept))
 
     def words_of(self, item_ids):
         """Hover-W: a title's words in this order — `item_ids` its files (any not held or out of the order are left

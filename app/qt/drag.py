@@ -315,7 +315,9 @@ def lines_for(view, rows_):
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
     n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
-    if n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
+    if getattr(view, "side_by_side", False):         # Kyou-A: the top in turns is the store's — its next view draws it
+        n = None                                     # (never the old line at its old row over the drop's new rows)
+    elif n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
             eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
@@ -352,6 +354,8 @@ def topped(view, rows_):
     read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
     rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
     feed = getattr(view, "connect", None)
+    if getattr(view, "side_by_side", False):         # Kyou-A: the top in turns is read again by the store's next view
+        return rows_, []
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
                             feed.items if feed is not None and feed.on else None)
 

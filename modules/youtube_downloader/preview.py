@@ -184,7 +184,9 @@ def video_in_library(video_id, language):
         return False
     token = f"[{video_id}]"
     base = get_data_path(language)
-    for sub in ("HighPriority", "LowPriority", "GoalContent", "Processed", "Graduated", "Library"):   # Library: 3.0's copies
+    from app.library_store import YOUTUBE_FOLDER          # 3.0.12: the downloader's channel folders
+    for sub in ("HighPriority", "LowPriority", "GoalContent", "Processed", "Graduated",
+                "Library", YOUTUBE_FOLDER):                           # Library: 3.0's copies
         d = os.path.join(base, sub)
         if not os.path.isdir(d):
             continue
@@ -708,8 +710,11 @@ def fetch_here(target_url, url, lang, ws, should_stop=None, extract=None, ensure
     with core.stopping(should_stop):
         if not ensure(quiet):
             return [], NO_YTDLP
-        extract([target_url], ws, lang=core.LANG_BY_CODE.get(lang, core.DEFAULT_LANG), channel_first=True, log=quiet,
-                should_stop=should_stop)
+        # `ws/Processed`: YouTube's videos go beside it (`ws/YouTube/<channel>`, 3.0.12), inside the workspace too
+        processed = os.path.join(ws, "Processed")
+        os.makedirs(processed, exist_ok=True)
+        extract([target_url], processed, lang=core.LANG_BY_CODE.get(lang, core.DEFAULT_LANG), channel_first=True,
+                log=quiet, should_stop=should_stop)
     txts = sorted(glob.glob(os.path.join(ws, "**", "*.txt"), recursive=True))
     if not txts:
         from app import youtube_hold

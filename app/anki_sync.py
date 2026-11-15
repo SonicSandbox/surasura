@@ -55,6 +55,10 @@ SOURCE = "AnkiConnect"
 # keeps them.
 GRADUATED_SOURCE = "GraduatedList"
 GRADUATED_MARK = "graduated"        # an entry the merge raised to KNOWN: kept_graduated keeps it known too
+# A word marked known by hand in Surasura (app/services/word_marks.py, Kotoba-K): Replace keeps it, as it keeps a past
+# Graduate's word — the same kind of word, one the learner said they know.
+MARKED_SOURCE = "Surasura"
+KEPT_SOURCES = (GRADUATED_SOURCE, MARKED_SOURCE)
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
 BACKLOG_FILE = "anki_backlog.json"
@@ -307,6 +311,20 @@ def may_sync(language, settings, throttle=True, now=None):
         if age is not None and 0 <= age < SYNC_EVERY:
             return "throttled", f"synced {int(age)} s ago"
     return None
+
+
+def follow_known_write(language, before_sig):
+    """A writer that only added or took its own entries of KnownWord.json (a word marked known by hand,
+    `app/services/word_marks.py`) moves the sync's recorded signature with its write — when the state recorded the
+    file as it was just before (`before_sig`), the sync's view of it still holds, so the next sync stays a delta
+    instead of a full one (D4). Never raises: a state it can't write leaves the next sync a full one (harmless)."""
+    try:
+        state = _read_state(language, quarantine=False)
+        if state and state.get("known_sig") == before_sig:
+            state["known_sig"] = known_signature(_known_path(language))
+            _save_state(language, state)
+    except Exception as e:
+        print(f"Warning: the sync's state didn't follow the known words' write ({e}).")
 
 
 def _save_state(language, state):
@@ -1151,7 +1169,7 @@ def kept_graduated(path, language, words):
         return []
     graduated = {}
     for entry in current:
-        if isinstance(entry, dict) and (entry.get("source") == GRADUATED_SOURCE or entry.get(GRADUATED_MARK) is True):
+        if isinstance(entry, dict) and (entry.get("source") in KEPT_SOURCES or entry.get(GRADUATED_MARK) is True):
             key = _norm(entry.get("dictForm"))
             if key:
                 graduated.setdefault(key, entry)

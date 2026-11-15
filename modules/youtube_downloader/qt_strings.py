@@ -17,11 +17,11 @@ HELP_TIP = ("<b>Bring in videos to learn from.</b> Paste YouTube or bilibili.tv 
             "episodes or seasons — and press Download: each video's captions come into your library as a transcript, "
             "its channel first in its name, every line's time kept so a sentence can open its moment in the video."
             "<br>• Captions: which to pull (manual → auto → auto-translated)"
-            "<br>• ⋯: fill missing timestamps, update yt-dlp, the Processed folder, the log, the risks"
+            "<br>• ⋯: fill missing timestamps, update yt-dlp, the library folder, the log, the risks"
             "<br>• Close it while it downloads: it goes on in its icon at the bottom right")
 MORE = "⋯"
 MORE_NAME = "More"
-MORE_TIP = ("More: fill missing timestamps · update yt-dlp · open the Processed folder · open the log · "
+MORE_TIP = ("More: fill missing timestamps · update yt-dlp · open the library folder · open the log · "
             "I understand the risks")
 PROGRESS_NAME = "How far the run is"
 PICTURE_NAME = "The video being downloaded"
@@ -39,15 +39,17 @@ RISK_TIP = ("Acknowledge before use. Downloading from YouTube or bilibili.tv can
             "\n• It also lets Connect download a video for a few minutes to make its cards: the video is deleted as "
             "soon as its cards are made")
 DOWNLOAD = "Download"
-DOWNLOAD_TIP = "Download the transcripts into your Processed folder"
+DOWNLOAD_TIP = "Download the transcripts into your library folder: a folder for each YouTube channel"
 BACKFILL = "Fill missing timestamps"
 BACKFILL_TIP = ("Fetch cue times for transcripts downloaded before Surasura kept them, so the report can jump to the "
                 "right moment in the video.\n• Asks first with the count and the time; your transcripts are never "
                 "rewritten")
 UPDATE = "Update yt-dlp"
 UPDATE_TIP = "Update the downloader engine (yt-dlp). Use this if downloading stops working."
-OPEN_FOLDER = "Open the Processed folder"
-OPEN_FOLDER_TIP = "Open the Processed folder where transcripts are saved"
+# Kura-PR2 (3.0.12, PROVISIONAL words): YouTube's videos go into `YouTube/<channel>/` (bilibili.tv's stay in Processed)
+OPEN_FOLDER = "Open the library folder"
+OPEN_FOLDER_TIP = ("Open your library folder: YouTube's transcripts are in YouTube, a folder for each channel; "
+                   "bilibili.tv's in Processed")
 OPEN_LOG = "Open the log"
 OPEN_LOG_TIP = "Open the full log of the last download, timestamp fill or update"
 
@@ -62,11 +64,11 @@ FAILED = "Something went wrong: {why}"
 FINISHED = "Finished."
 NONE_NEW = "Finished: no new transcripts."
 # Until W3.2 routes them into the library (its arrivals), the new files stay where yt-dlp put them (IK-32).
-NEW_IN_PROCESSED = "{what} in Processed."
+NEW_KEPT = "{what} in your library folder."
 NEW_ROUTED = "Finished: {what} handed to your library."
 SEE_IN_ARRIVALS = "See them in New arrivals"                         # W3.2-2: the done line's link to the tray
 STOPPED = "Stopped."
-STOPPED_KEPT = "Stopped. {what} in Processed."
+STOPPED_KEPT = "Stopped. {what} in your library folder."
 WAITING = "Waiting for the other video run to end…"
 FILL_LANGUAGE_CHANGED = "The language changed while you were asked, so nothing was fetched. Ask again for this language."
 NO_LOG = "No log yet: nothing has run."

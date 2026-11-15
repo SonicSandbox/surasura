@@ -74,6 +74,10 @@ class CardCollection(FakeCollection):
             return False
         if "tag:leech" in rest and not leech:
             return False
+        if "-introduced:1" in rest:                 # first studied before Anki's today (a new card never was)
+            if c["today"]:
+                return False
+            rest = rest.replace("-introduced:1", "")
         if "introduced:1" in rest and not c["today"]:
             return False
         for prop, op, value in re.findall(r"prop:(\w+)(>=|<|=)([\d.]+)", rest):
@@ -168,6 +172,102 @@ def test_ten_lapses_or_more_count_as_the_most():
 def test_today_is_the_cards_first_studied_today_the_newest_first():
     fake, _ids = _deck()
     assert [w for w, *_ in _practise(fake, "today")] == ["今夜", "求める"]
+
+
+def test_today_never_counts_a_word_whose_other_card_was_studied_before_today():
+    """A tester asked for the words learned today and got older ones too (Piyo-T, 2026-11-15). Anki's `introduced:1`
+    is a card's: a note whose recognition card was learned last week and whose production card comes up first today
+    is no word learned today. Only a note with no card studied before Anki's today counts (a new sibling never was)."""
+    fake = CardCollection()
+    fake.card_note("冒険", [{"ivl": 9}, {"ivl": 0, "today": True}])               # learned before: its sibling today
+    fake.card_note("求める", [{"ivl": 1, "today": True}, {"new": True}])           # learned today; its sibling to come
+    fake.card_note("今夜", [{"ivl": 0, "today": True}, {"ivl": 1, "today": True}])  # both cards first today
+    fake.card_note("危険", [{"ivl": 30, "suspended": True}, {"ivl": 0, "today": True}])  # one put away, studied before
+    assert [w for w, *_ in _practise(fake, "today")] == ["今夜", "求める"]
+    with mock.patch("urllib.request.urlopen", fake):
+        states = anki_words.word_states("ja", _settings())
+    assert not states["冒険"].today and states["求める"].today
+    assert len(fake.multis()) == 2, "still one request of searches each (the notes' words aside)"
+
+
+def test_today_is_anki_s_own_day_never_a_clock_or_the_files_dates():
+    """Anki's day ends at its own hour (its rollover, 4 a.m. by default), not at midnight: a card first studied at
+    01:30 belongs to Anki's yesterday. Surasura never works the day out itself — no review log, no card info, no
+    KnownWord.json date (the sync stamps a word when it reads it, which says nothing of when it was learned) — it asks
+    Anki's `introduced:1`. Here the fake Anki decides by its rollover, and only its today comes back."""
+    import datetime
+    fake = CardCollection()
+    rollover = datetime.datetime(2026, 11, 15, 4, 0)
+    for word, first in (("冒険", datetime.datetime(2026, 11, 15, 1, 30)),     # after midnight, before Anki's day
+                        ("準備", datetime.datetime(2026, 11, 14, 22, 0)),     # last night
+                        ("求める", datetime.datetime(2026, 11, 15, 9, 15)),   # this morning
+                        ("今夜", datetime.datetime(2026, 11, 15, 4, 0))):     # the rollover itself
+        fake.card_note(word, [{"ivl": 1, "today": first >= rollover}])
+    assert [w for w, *_ in _practise(fake, "today")] == ["今夜", "求める"]
+    asked = [a["action"] for r in fake.multis() for a in r["params"]["actions"]]
+    assert set(asked) == {"findNotes"}, "no review log, no card info: Anki's search alone"
+    assert {r["action"] for r in fake.requests if r["action"] != "multi"} == {"notesInfo"}
+    queries = [a["params"]["query"] for r in fake.multis() for a in r["params"]["actions"]]
+    assert any(q.endswith(" introduced:1") for q in queries)
+
+
+def test_chinese_cards_learned_today():
+    fake = CardCollection()
+    fake.card_note("冒险", [{"ivl": 1, "today": True}], deck="中文")
+    fake.card_note("挑战", [{"ivl": 6}, {"ivl": 0, "today": True}], deck="中文")     # its first card: last week
+    fake.card_note("勇敢", [{"ivl": 0, "today": True}], deck="中文")
+    assert [w for w, *_ in _practise(fake, "today", language="zh",
+                                     settings=_settings(decks=["中文"], language="zh"))] == ["勇敢", "冒险"]
+
+
+def test_an_anki_that_refuses_the_studied_before_search_cant_say_what_was_learned_today():
+    """Both of today's searches say "introduced"; an Anki that refuses either can't tell a word learned today from a
+    card's sibling: no answer for today (None), never the notes of the one search alone."""
+    fake = CardCollection()
+    fake.card_note("求める", [{"ivl": 1, "today": True}])
+    original = fake._answer
+    fake._answer = lambda p: ({"result": None, "error": "Invalid search"} if p["action"] == "findNotes"
+                              and "-introduced:1" in p["params"]["query"] else original(p))
+    assert _practise(fake, "today") is None
+    assert _practise(fake, "struggling") == []
+
+
+def test_a_word_mined_again_today_is_no_word_learned_today_when_its_older_note_was_studied_before():
+    """A word is learned once: 冒険 mined again today (a second note, here in a subdeck) whose first note was studied
+    last week isn't today's. Those older notes' words are read only when today has a word to check."""
+    fake = CardCollection()
+    fake.card_note("冒険", [{"ivl": 9}])
+    fake.card_note("冒険", [{"ivl": 0, "today": True}], deck=JA_DECK + "::Today")
+    fake.card_note("求める", [{"ivl": 1, "today": True}])
+    assert [w for w, *_ in _practise(fake, "today")] == ["求める"]
+    only_old = CardCollection()
+    only_old.card_note("冒険", [{"ivl": 9}])
+    only_old.card_note("冒険", [{"ivl": 0, "today": True}])
+    assert _practise(only_old, "today") == []
+    quiet = CardCollection()
+    quiet.card_note("価値", [{"ivl": 40}])
+    quiet.card_note("出かける", [{"ivl": 90}])
+    assert _practise(quiet, "today") == []
+    assert [r["action"] for r in quiet.requests] == ["multi"], "nothing learned today: no word of the old notes read"
+
+
+def test_a_card_learned_today_and_put_away_since_still_counts_as_learned_today():
+    fake = CardCollection()
+    fake.card_note("求める", [{"ivl": 1, "today": True, "suspended": True}])
+    fake.card_note("今夜", [{"ivl": 0, "today": True}])
+    assert [w for w, *_ in _practise(fake, "today")] == ["今夜", "求める"]
+
+
+def test_anki_busy_on_todays_searches_is_busy_never_too_old():
+    fake = CardCollection()
+    fake.card_note("求める", [{"ivl": 1, "today": True}])
+    original = fake._answer
+    fake._answer = lambda p: ({"result": None, "error": "a collection operation is active"}
+                              if p["action"] == "findNotes" and "-introduced:1" in p["params"]["query"]
+                              else original(p))
+    with mock.patch("urllib.request.urlopen", fake), pytest.raises(AnkiError) as raised:
+        anki_words.practise("ja", "today", 5, _settings())
+    assert anki_connect.is_busy(raised.value)
 
 
 def test_known_is_the_mature_cards_only_when_every_studied_card_of_the_note_is_mature():

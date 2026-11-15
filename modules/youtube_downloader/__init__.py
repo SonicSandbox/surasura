@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """YouTube Transcript Downloader — optional, self-contained Surasura module.
 
-Pulls clean .txt transcripts from YouTube into the active language's Processed
-folder. Lazy-imported behind a settings toggle; the app runs normally if absent.
+Pulls clean .txt transcripts from YouTube into the active language's YouTube folder
+(one folder a channel; bilibili.tv's into Processed). Lazy-imported behind a settings toggle;
+the app runs normally if absent.
 
 This package owns its own settings (SETTINGS_DEFAULTS) and its launch entry points
 (open_downloader / open_preview), so the core app only needs thin, generic hooks —
@@ -26,7 +27,7 @@ def open_downloader(host, language=None, on_complete=None):
     Minimal host contract: `host` may be the MasterDashboardApp (main page) or any object exposing
     `.root` (e.g. the Content Manager). Pass `language` (a code like 'ja') to run host-agnostically —
     the GUI then reads/writes the risk-ack via settings_manager instead of the app. `on_complete`
-    fires with the new Processed entries after a successful download, so a host can route them (the
+    fires with the new transcripts after a successful download, so a host can route them (the
     Content Manager copies them into the active tier).
 
     On 3.0 `host` may be the main window (Qt): the window is `qt_window`'s, imported only here, following the main

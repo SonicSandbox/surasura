@@ -74,6 +74,26 @@ def card(answer, row, where, standing=None, counts=None, language="ja"):
                 episode=view_rows.journey_episode(row), items=tuple(e.id for e in eps))
 
 
+def keep_marked(old, new, marked):
+    """Kotoba-K: the card `new` (the words asked again after a mark) with the words marked on the open card `old`
+    (`marked`: {word: mark}) kept where they were — the numbers leave them out, but the open card shows them dimmed
+    with their mark until it closes (a second click clears one). The counts are `new`'s. -> a Card."""
+    def key(w):
+        return (w.word, w.reading)
+
+    def merged(old_words, new_words):
+        held = {key(w) for w in new_words}
+        before = {key(w) for w in old_words}
+        return tuple([w for w in old_words if key(w) in held or w.word in marked]
+                     + [w for w in new_words if key(w) not in before])
+    groups = {g.title: g for g in new.before}
+    before = [Group(g.title, merged(g.words, groups[g.title].words if g.title in groups else ()))
+              for g in old.before]
+    known = {g.title for g in old.before}
+    before += [g for g in new.before if g.title not in known]
+    return new._replace(new=merged(old.new, new.new), before=tuple(g for g in before if g.words))
+
+
 def anki_part(standing, counts, answer=None, language="ja"):
     """In Anki, not mature yet: the title's words with a card that is struggling (a leech, or forgotten) or young —
     struggling first (a leech, then the most forgotten), then young; each by its uses in the title. `ANKI_CLOSED` /

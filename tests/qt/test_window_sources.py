@@ -83,7 +83,9 @@ def _library():
     write_manifest(user_files_dir, doc)
     assert ls.maintain("ja", data_dir, user_files_dir) == ls.EXIT_DONE
     opener = ls.StoreOpener("ja", data_dir, user_files_dir)
-    assert opener.check() == "store"
+    opener.check()
+    opener.wait()                     # (a busy first look settles on the opener's worker: Flake-F3)
+    assert opener.mode == "store"
     return opener, data_dir, user_files_dir
 
 

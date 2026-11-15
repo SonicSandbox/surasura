@@ -55,6 +55,10 @@ DEFAULT_SETTINGS = {
     # re-analyzes (see analyzer.compute_render_signature).
     "word_search_enabled": True,
     "word_search_category": "all",   # all | anime | liveaction | youtube
+    # The journey's line player (▶ after a sentence plays that line's own audio). PROVISIONAL: this default and the
+    # Settings row's words (`settings_strings.ROWS["line_player"]`) are the two places to change. Off, the journey's
+    # draw does none of its work. Presentation only: re-renders, never re-analyses (compute_render_signature).
+    "line_player": True,
     # Sentence dictionary export (app/sentence_corpus.py): show a short file name under each
     # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
     # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).

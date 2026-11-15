@@ -4908,6 +4908,7 @@ def settings_signature(settings, language):
         "open_count", "skipped_version", "failed_update_version",
         "source_display",   # badge rendering only — re-renders (see compute_render_signature)
         "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
+        "line_player",                  # the journey's line player: the render's work and data only
         "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
         "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
         "use_every_core",               # K5 C4: how many cores the pools take — speed only
@@ -5114,6 +5115,8 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         # carries. Both are INJECTED into the report, so both must re-render — the same rule that
         # words_per_day was missing above.
         bool(_s.get("word_search_enabled", True)),
+        # The journey's line player: off, the render looks for no line's file and reads no line's times.
+        bool(_s.get("line_player", True)),
         _s.get("word_search_category", "all"),
         _s.get("words_per_day", 5),
         bool(_s.get("show_words_per_day", True)),

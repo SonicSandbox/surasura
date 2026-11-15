@@ -115,7 +115,7 @@ def _post(receiver, body, token=TOKEN, **headers):
 def test_hello_says_who_answers_and_never_opens_the_door_to_a_web_page(listening):
     receiver = listening[0]
     code, got, headers = _ask(receiver, "GET", "/v1/hello")
-    assert code == 200 and got == {"app": "surasura", "version": "3.0.0", "contract": 2, "languages": ["ja", "zh"]}
+    assert code == 200 and got == {"app": "surasura", "version": "3.0.0", "contract": 3, "languages": ["ja", "zh"]}
     assert not any(k.lower().startswith("access-control") for k in headers), "no CORS: a page can't read it"
     code, _got, _h = _ask(receiver, "GET", "/v1/hello", headers={"Origin": "https://evil.example"})
     assert code == 403, "a web page's script is refused, even for hello"
@@ -438,3 +438,47 @@ def test_a_netflix_episode_is_picked_from_its_own_cues_never_downloaded(library)
     steps._open = lambda lang: ls.open_store(lang, *roots(lang))
     srt, again = steps.download(language, {"id": 9, "item_id": item}, {"site": "netflix", "url": WEB["url"]})
     assert srt == again and browser.read_srt(srt)[0] == (12.34, 15.02, f"{names(language)[3]}{names(language)[4]}")
+
+
+# --- v3: YouTube links to the transcript downloader ------------------------------------------------------------------ #
+def test_youtube_links_go_to_the_downloader_only_as_its_window_would_take_them(tmp_path):
+    """`POST /v1/youtube`: YouTube's own https links only (400 else), the token as v1, and the window's answer passed
+    on — 409 with its words when the downloader is off or its tick not given, `queued` when it runs them."""
+    got, answer = [], {"refuse": "Surasura's YouTube downloader needs your OK first"}
+
+    def youtube(urls):
+        if answer["refuse"]:
+            raise rx.Refused(answer["refuse"])
+        got.append(urls)
+        return len(urls)
+    receiver = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0, youtube=youtube)
+    assert receiver.start()
+    try:
+        headers = {rx.TOKEN_HEADER: TOKEN, "Content-Type": "application/json"}
+        links = ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/playlist?list=PLjfPBTv1Zr1J8"]
+        body = {"schema": 1, "urls": links}
+        assert _ask(receiver, "POST", "/v1/youtube", body)[0] == 401
+        code, said, _h = _ask(receiver, "POST", "/v1/youtube", body, headers)
+        assert code == 409 and said["why"] == answer["refuse"] and got == []
+        answer["refuse"] = None
+        code, said, _h = _ask(receiver, "POST", "/v1/youtube", body, headers)
+        assert code == 200 and said == {"ok": True, "queued": 2} and got == [links]
+        for bad in (["https://evil.example/watch?v=x"], ["http://www.youtube.com/watch?v=x"], [], ["x"] * 51):
+            assert _ask(receiver, "POST", "/v1/youtube", {"schema": 1, "urls": bad}, headers)[0] == 400
+    finally:
+        receiver.stop()
+    bare = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0)       # no downloader here: 409, never a run
+    assert bare.start()
+    try:
+        assert _ask(bare, "POST", "/v1/youtube", body, headers)[0] == 409
+    finally:
+        bare.stop()
+
+
+def test_the_window_never_runs_links_past_the_downloaders_switch_or_its_risk_tick():
+    from app.qt import strings, windows
+    assert windows.youtube_refused({}) == strings.EXT_YT_OFF
+    assert windows.youtube_refused({"enable_youtube_transcripts": True}) == strings.EXT_YT_TICK
+    assert windows.youtube_refused({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": "yes"}) == \
+        strings.EXT_YT_TICK
+    assert windows.youtube_refused({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True}) is None

@@ -539,6 +539,11 @@ MAKE_CARDS_NONE = "Nothing left to make: each of those episodes has its cards ma
 MAKE_CARDS_GONE = "Surasura has no record of those episodes' cards now: nothing was made"
 # --- end P4.1 WF
 # alpha 4 M1: a book's or a text's *Mine* while Anki Miner reads no book — never its window
+# The browser extension's YouTube links (`POST /v1/youtube`): the 409's words, said in the extension
+EXT_YT_ABSENT = "This Surasura has no YouTube downloader."
+EXT_YT_OFF = "Surasura's YouTube downloader is off: turn on YouTube transcripts in Settings → Content."
+EXT_YT_TICK = ("Surasura's YouTube downloader needs your OK first: open + Add → YouTube… in Surasura and tick "
+               "“I understand the risks”.")
 MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Surasura makes these cards by itself once it can "
                    "read books and texts")
 # IK-6: the window's start look at Anki (its line in the bar while it runs; *Opening Anki for you…* says the rest)

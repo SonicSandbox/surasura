@@ -36,14 +36,17 @@ import secrets
 import threading
 
 HOST, PORT = "127.0.0.1", 27631
-CONTRACT, SCHEMA = 2, 1              # 2: mining after the fact (the jobs, their clips, done: `connect.browser`)
+CONTRACT, SCHEMA = 3, 1              # 2: mining after the fact (`connect.browser`); 3: YouTube links
 LANGUAGES = ("ja", "zh")
 SITES = {"netflix": "Netflix", "disneyplus": "Disney+"}     # `source_type` -> the site's name (`play.SITES` too)
 PRODUCER = "browser"                    # the pairing record's producer (`placing_rules`' `browser`)
 MAX_BODY = 4 * 1024 * 1024              # a two-hour film's cues are about 200 KB
+DRAIN = 1024 * 1024                     # an over-large body this small is read and dropped before the 413
 MAX_CLIP = 40 * 1024 * 1024             # one recorded line, a few seconds of video and sound
 _CLIP_PATH = re.compile(r"/v1/jobs/(\d{1,9})/clips/(\d{1,5})")
 _DONE_PATH = re.compile(r"/v1/jobs/(\d{1,9})/done")
+YOUTUBE_HOSTS = ("www.youtube.com", "youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
+MAX_LINKS = 50
 MAX_CUES = 20000
 EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
 TOKEN_HEADER = "X-Surasura-Token"
@@ -53,6 +56,10 @@ _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 class Bad(ValueError):
     """A body the contract doesn't take: `why` in plain words (the 400's)."""
+
+
+class Refused(Exception):
+    """Surasura won't take it as things stand (the YouTube downloader off, its risk tick not given): the 409's words."""
 
 
 class Busy(Exception):
@@ -244,6 +251,25 @@ def record(sub, language):
     return out
 
 
+def youtube_links(body):
+    """v3's `POST /v1/youtube` body -> its links (1 to MAX_LINKS https links on YouTube's own hosts); raises Bad."""
+    try:
+        got = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Bad("the body isn't JSON") from None
+    urls = got.get("urls") if isinstance(got, dict) and got.get("schema") == SCHEMA else None
+    if not isinstance(urls, list) or not 1 <= len(urls) <= MAX_LINKS:
+        raise Bad(f"urls must be 1 to {MAX_LINKS} links")
+    from urllib.parse import urlsplit
+    out = []
+    for url in urls:
+        parts = urlsplit(url.strip()) if isinstance(url, str) else None
+        if parts is None or parts.scheme != "https" or (parts.hostname or "") not in YOUTUBE_HOSTS:
+            raise Bad("each link must be a YouTube https link")
+        out.append(url.strip())
+    return out
+
+
 def take_in(writer, sub, rules=None, timeout=30.0):
     """(The listener's thread.) The subtitle into the library open now -> (added, item id): one video already in
     (its pairing's `content_key`) -> (False, its item), nothing written; else its files into Processed, registered
@@ -294,8 +320,9 @@ class Receiver:
     503) — the window's (`windows.start_receiver`); `version` for `hello`. `start()` -> True when listening (False: the
     port is taken — another Surasura, or another program); `stop()` at the window's close."""
 
-    def __init__(self, token, deliver, version="", host=HOST, port=PORT, clips=None):
+    def __init__(self, token, deliver, version="", host=HOST, port=PORT, clips=None, youtube=None):
         self.token, self.deliver, self.version = token, deliver, version
+        self.youtube = youtube              # v3: `youtube(urls)` -> how many queued (raises Refused / Busy), or None
         self.clips = clips                  # Connect's `browser` folder (None: `connect.browser.folder()`)
         self.host, self.port = host, port
         self._server = self._thread = None
@@ -370,7 +397,9 @@ def _handler(receiver):
                 self._send(411, {"ok": False, "why": "Content-Length is needed"})
                 return None
             if length > limit:
-                self.close_connection = True        # the body is never read
+                self.close_connection = True        # the body is never kept: a small one read and dropped (an
+                if length <= DRAIN:                 # unread one makes Windows reset the socket before the 413 is read)
+                    self.rfile.read(length)
                 self._send(413, {"ok": False, "why": "the body is too large"})
                 return None
             return self.rfile.read(length)
@@ -392,6 +421,10 @@ def _handler(receiver):
             if self._refused():
                 return
             clip, done = _CLIP_PATH.fullmatch(self.path), _DONE_PATH.fullmatch(self.path)
+            if self.path == "/v1/youtube":
+                if self._token():
+                    self._youtube()
+                return
             if self.path != "/v1/online-subtitle" and not clip and not done:
                 self._send(404, {"ok": False, "why": "not found"})
                 return
@@ -416,6 +449,28 @@ def _handler(receiver):
                 self._send(503, {"ok": False, "why": f"Surasura couldn't take it in ({type(e).__name__})"})
                 return
             self._send(200, {"ok": True, "added": bool(added), "item": item})
+
+        def _youtube(self):
+            """v3: YouTube links to the transcript downloader, as if pasted in its window — only while it is on and
+            its risk tick given (409 with which, never past it)."""
+            body = self._body(64 * 1024)
+            if body is None:
+                return
+            try:
+                urls = youtube_links(body)
+                if receiver.youtube is None:
+                    raise Refused("This Surasura has no YouTube downloader")
+                queued = receiver.youtube(urls)
+            except Bad as e:
+                self._send(400, {"ok": False, "why": str(e)})
+                return
+            except Refused as e:
+                self._send(409, {"ok": False, "why": str(e)})
+                return
+            except Busy as e:
+                self._send(503, {"ok": False, "why": str(e) or "Surasura is busy: try again later"})
+                return
+            self._send(200, {"ok": True, "queued": int(queued)})
 
         def _job(self, clip, done):
             """v2: a recorded line's clip (`X-Clip-Start` / `X-Clip-End`: its first and last frame's video time), or

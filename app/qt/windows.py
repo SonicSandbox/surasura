@@ -739,6 +739,39 @@ def _arrived(shell, relay, counts, then=None, quiet=False):
 # --- end W3.2 B
 
 
+def youtube_refused(values):
+    """Why the browser extension's YouTube links aren't taken (the 409's words), or None: the downloader is here, on
+    (`enable_youtube_transcripts`) and its risk tick given (`youtube_risk_acknowledged`) — never past the tick."""
+    if importlib.util.find_spec("modules.youtube_downloader") is None:
+        return strings.EXT_YT_ABSENT
+    if not values.get("enable_youtube_transcripts"):
+        return strings.EXT_YT_OFF
+    if values.get("youtube_risk_acknowledged") is not True:
+        return strings.EXT_YT_TICK
+    return None
+
+
+def _youtube_links(shell, urls):
+    """(The window's thread.) The browser extension's YouTube links run as the downloader's window runs pasted ones
+    (`fetch_links`), the transcripts into New arrivals as its own do (`youtube_arrivals`)."""
+    try:
+        from modules.youtube_downloader import fetch_links
+        writer = shell.services.writer
+        arrived = youtube_arrivals(shell)
+
+        def ended(created, problems):
+            if problems:
+                say_in_bar(shell, problems[0])
+            if created:
+                try:
+                    arrived(created)
+                except RuntimeError as e:                 # (the library switched meanwhile: they wait in Processed)
+                    say_in_bar(shell, str(e))
+        fetch_links(shell, urls, writer.language, lambda _line: None, ended)
+    except Exception as e:                                # the module gone or broken: said, the app goes on
+        applog.log("windows", f"browser extension's YouTube links: {e!r}")
+
+
 # --- the browser extension's subtitles (Netflix, Disney+; app/online_receiver.py) ----------------------------------- #
 def start_receiver(shell):
     """(At the window's start.) The extension's listener on 127.0.0.1 while the window is open and Settings' *Browser
@@ -762,7 +795,21 @@ def start_receiver(shell):
         rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
         return online_receiver.take_in(getattr(services, "writer", None), sub, rules)
 
-    receiver = online_receiver.Receiver(online_receiver.read_token, deliver,
+    relay = bridge.Relay(parent=shell)                     # v3: the links run from this thread (the job's own)
+    relay.said.connect(lambda urls: _youtube_links(shell, urls))
+
+    def youtube(urls):
+        """(The listener's thread.) The links queued for the downloader, as if pasted in its window: only while it is
+        here, on, and its risk tick given — never past the tick."""
+        refused = youtube_refused(settings())
+        if refused:
+            raise online_receiver.Refused(refused)
+        if getattr(services, "writer", None) is None:
+            raise online_receiver.Busy(strings.YT_NO_LIBRARY)
+        relay.call(list(urls))
+        return len(urls)
+
+    receiver = online_receiver.Receiver(online_receiver.read_token, deliver, youtube=youtube,
                                         version=__version__)
     shell._receiver = receiver
 

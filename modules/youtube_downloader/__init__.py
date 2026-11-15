@@ -66,6 +66,12 @@ def fetch_first(shell, urls, language, said, ended):
     return qt_window.fetch_first(shell, urls, language, said, ended)
 
 
+def fetch_links(shell, urls, language, said, ended):
+    """The browser extension's YouTube links, downloaded as if pasted in the window (`qt_window.fetch_links`)."""
+    from modules.youtube_downloader import qt_window
+    return qt_window.fetch_links(shell, urls, language, said, ended)
+
+
 from modules.youtube_downloader.qt_strings import STOPPED  # noqa: E402  (3.0, alpha 8: a run's stop line, words only)
 
 

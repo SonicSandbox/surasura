@@ -1,7 +1,9 @@
 import os
+import pathlib
 import re
 import sys
 import json
+import urllib.parse
 import pandas as pd
 import webbrowser
 
@@ -202,6 +204,7 @@ class AnchorFinder:
         self._memo = self._load_memo()
         self._memo_dirty = False
         self._sigs = {}        # path -> (mtime, size), so the freshness check is one stat per file
+        self._dirs = {}        # folder -> its listing's entries ({name: DirEntry}): `_dir_stat`
         self._entries = {}     # path -> its validated memo entry, so that check happens once too
 
     def _raw(self, path):
@@ -342,7 +345,7 @@ class AnchorFinder:
         measurably worse than the lookup it guards."""
         if path not in self._sigs:
             try:
-                st = os.stat(path)
+                st = self._dir_stat(path)
                 self._sigs[path] = [st.st_mtime, st.st_size]
                 if self._script != "asis":
                     # Answers found through a conversion are re-verified after a script switch.
@@ -351,6 +354,23 @@ class AnchorFinder:
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
+
+    def _dir_stat(self, path):
+        """`os.stat(path)` as its folder's one listing gives it (Kiku-L): on Windows a listing carries each file's times
+        and size, so a render's freshness checks cost one call a folder, not one a file (20k subtitles in 1.7k folders:
+        2.6 s of stats). A file the listing doesn't name (another spelling, a race) is stat'ed itself; raises OSError
+        as `os.stat` does."""
+        folder, name = os.path.split(path)
+        entries = self._dirs.get(folder)
+        if entries is None:
+            try:
+                with os.scandir(folder or ".") as it:
+                    entries = {e.name: e for e in it}
+            except OSError:
+                entries = {}
+            self._dirs[folder] = entries
+        entry = entries.get(name)
+        return entry.stat() if entry is not None else os.stat(path)
 
     def _lines(self):
         """The memo signature's last part: the line reader's version and the engine's (`LINES`)."""
@@ -363,24 +383,43 @@ class AnchorFinder:
 
         A file's entries are dropped whenever its (mtime, size) changes, so an edited source can
         never serve a stale anchor."""
+        entry = self._entry(abs_path)
+        hit = entry["a"].get(sentence)
+        if isinstance(hit, list) and len(hit) == 3 and hit[0] is not None:   # (a gone file's entry: its sig is None)
+            return hit[0], hit[1], hit[2]
+
+        anchor = self.anchor(abs_path, sentence)
+        # A times-only answer (`times`: [None, start, end]) keeps its times; its anchor is looked for now.
+        start, end = (hit[1], hit[2]) if isinstance(hit, list) and len(hit) == 3 else self.line(abs_path, sentence)
+        entry["a"][sentence] = [anchor, start, end]
+        self._memo_dirty = True
+        return anchor, start, end
+
+    def times(self, abs_path, sentence):
+        """(start, end) alone, for the journey's ▶ with the sources hidden (Kiku-L): the memo's answer when it has one,
+        else the line reader's — kept as [None, start, end], its anchor never looked for (that reads the whole file:
+        only `resolve`, for the badge, does)."""
+        entry = self._entry(abs_path)
+        hit = entry["a"].get(sentence)
+        if isinstance(hit, list) and len(hit) == 3:
+            return hit[1], hit[2]
+        start, end = self.line(abs_path, sentence)
+        entry["a"][sentence] = [None, start, end]
+        self._memo_dirty = True
+        return start, end
+
+    def _entry(self, abs_path):
+        """The memo's entry for a file, checked against its signature once a render."""
         entry = self._entries.get(abs_path)
         if entry is None:
             entry = self._memo.get(abs_path)
-            if entry is None or entry.get("sig") != self._file_sig(abs_path):
+            if not isinstance(entry, dict) or not isinstance(entry.get("a"), dict) or \
+                    entry.get("sig") != self._file_sig(abs_path):
                 entry = {"sig": self._file_sig(abs_path), "a": {}}
                 self._memo[abs_path] = entry
                 self._memo_dirty = True
             self._entries[abs_path] = entry
-
-        hit = entry["a"].get(sentence)
-        if hit is not None and len(hit) == 3:       # (a gone file's old entry: its signature is None either way)
-            return hit[0], hit[1], hit[2]
-
-        anchor = self.anchor(abs_path, sentence)
-        start, end = self.line(abs_path, sentence)
-        entry["a"][sentence] = [anchor, start, end]
-        self._memo_dirty = True
-        return anchor, start, end
+        return entry
 
     def save_memo(self):
         """Persist the memo, keeping ONLY the files this render actually used.
@@ -557,22 +596,119 @@ def shown_name(filename):
         return name
 
 
-def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None):
+# The journey's ▶ (Kiku-L): the files a browser's <audio> plays from the report's file:// page — `play.PLAYABLE`, the
+# one list (`play.files`' gate reads it too). Those it doesn't hold get no ▶, and the badge's hover says why.
+from app.services.play import PLAYABLE  # noqa: E402
+
+
+def _shown_sources(lists, source_map):
+    """The timed sources (subtitles, transcripts) the report's lists name in their `Src N` columns — the only ones the
+    journey's ▶ looks a file up for (sources.json holds every file of the library)."""
+    shown = set()
+    for df in lists:
+        if df is None:
+            continue
+        for col in [c for c in df.columns if str(c).startswith("Src ")]:
+            shown.update(str(v) for v in df[col].dropna().unique())
+    return {rel for rel in shown if isinstance(source_map.get(rel), dict) and source_map[rel].get("type") in TIMED_TYPES}
+
+
+LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept between renders (the anchor memo's twin)
+LINE_TIMES_MEMO = "line_times.json"     # results/: a playable line's times with the badge off (`AnchorFinder.times`)
+TIMED_TYPES = ("subtitle", "audio")     # a source with timed lines: a subtitle; an audiobook's transcript (its item's)
+
+
+def _line_media(language, rel_paths, memo_path=None, explain=False):
+    """({rel path: [where, why not]}, [folder URI, ...]) for the journey's ▶ (Kiku-L): the file `play.files` finds for
+    each — when a browser plays it (`PLAYABLE`), `where` is "<its folder's place in the list>/<its name as it is>" (the
+    page puts the URI together: a folder's URI once, a name never percent-encoded in the page — 20k sources were 2 MB
+    more), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose bit rate varies); nothing
+    found, no row. `memo_path`: its answers kept between renders (only this render's sources: one that left the lists
+    leaves the file). `explain`: the badge is shown, so a line with no ▶ says why (`play.files`' hint). Never raises: a
+    lookup that fails is no ▶, never a failed report; a memo that can't be read or written only costs time."""
+    if not rel_paths:
+        return {}, []
+    memo = {}
+    if memo_path:
+        try:
+            with open(memo_path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            memo = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            memo = {}
+    before = dict(memo)                         # (`play.files` replaces an entry, never changes one in place)
+    try:
+        from app.services import play
+        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain)
+    except Exception as e:
+        print(f"Warning: could not look for the lines' audio: {e}")
+        return {}, []
+    from app import audiobooks
+    folders, dirs, out = {}, [], {}
+    for rel, path in found.items():
+        if not isinstance(path, str) or not os.path.isabs(path):
+            continue                             # nothing found (or never a relative path: no URI, no ▶)
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in PLAYABLE:
+            out[rel] = ["", ext]
+            continue
+        if ext == ".mp3":
+            # A browser seeks in a VBR mp3 only roughly (±1–2 s): never the wrong words. The verdict is kept with the
+            # answer (a 4th field), read again only when the answer is looked for again; one that couldn't be read
+            # (None: a share's hiccup) plays and is never kept.
+            kept = memo.get(rel)
+            if isinstance(kept, list) and len(kept) == 4 and kept[0] == path and isinstance(kept[3], bool):
+                variable = kept[3]
+            else:
+                variable = audiobooks.mp3_variable(path)
+                if variable is not None and isinstance(kept, list) and len(kept) == 3 and kept[0] == path:
+                    memo[rel] = kept + [variable]
+            if variable:
+                out[rel] = ["", "vbr"]
+                continue
+        cut = max(path.rfind("\\"), path.rfind("/"))
+        folder, name = (path[:cut], path[cut + 1:]) if cut > 2 else os.path.split(path)
+        try:
+            if folder not in folders:            # each folder's URI once (20k files, 1.7k folders)
+                dirs.append(pathlib.Path(folder).as_uri().rstrip("/"))
+                folders[folder] = len(dirs) - 1
+            out[rel] = [f"{folders[folder]}/{name}", ""]
+        except ValueError:                       # a path no URI can name: no ▶, never a failed report
+            continue
+    if memo_path:
+        memo = {rel: memo[rel] for rel in rel_paths if rel in memo}
+        if memo != before:
+            try:
+                tmp = memo_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(memo, ensure_ascii=False))
+                os.replace(tmp, memo_path)
+            except Exception as e:
+                print(f"Warning: could not save the lines' audio memo: {e}")
+    return out, dirs
+
+
+def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None,
+                    plays=None):
     """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
 
     The CSVs carry the readable relative path so exports stay human-readable, but a big library
     repeats the same few hundred paths across tens of thousands of sentences — interning keeps the
     injected payload to one small int per sentence instead of a full path string.
 
-    Table rows are compact arrays: [name, type, fullPath, groupLabel]. The badge DISPLAYS `name`,
-    HOVERS `groupLabel` (group/file — enough to place the sentence without a wall of path), and
-    COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
-    made before sources.json carried absolute paths fall back to the relative one.
+    Table rows are compact arrays: [name, type, fullPath, groupLabel, videoLink] — five fields, a contract other
+    readers keep. The badge DISPLAYS `name`, HOVERS `groupLabel` (group/file — enough to place the sentence without a
+    wall of path), and COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
+    made before sources.json carried absolute paths fall back to the relative one. The journey's ▶ (Kiku-L) keeps its
+    own table, `plays` ({row's place: [where, why not]}: `media`'s answer for the source, `_line_media`), only for
+    the sources that have one — never a field of the rows.
 
     With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
     in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
     `At N` / `End N` — the seconds its lines start and end at, as Connect's line reader reads them (E5.1).
-    Deliberately NOT named "Context …": both templates collect example sentences with startsWith('Context ')."""
+    Without one (the badge off), a sentence whose source ▶ can play gets its `At N` / `End N` from `timer`
+    (`AnchorFinder.times`: no anchor looked for). Deliberately NOT named "Context …": both templates collect example
+    sentences with startsWith('Context ')."""
     for rec in records:
         for key in [k for k in rec if k.startswith("Src ")]:
             val = rec.get(key)
@@ -598,10 +734,13 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                               abs_path,
                               _group_label(val),
                               vid])
+                if media is not None and plays is not None and media.get(val):
+                    plays[idx] = list(media[val])
             rec[key] = idx
 
             n = key[4:]                                      # "Src 2" -> "2"
-            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None) else None
+            timed = timer is not None and plays is not None and bool((plays.get(idx) or ("",))[0])
+            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None or timed) else None
 
             if finder is not None:
                 if isinstance(sentence, str) and sentence:
@@ -613,6 +752,11 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                     if at is not None:
                         rec[f"At {n}"] = at
                         rec[f"End {n}"] = end
+            elif timed and isinstance(sentence, str) and sentence:
+                at, end = timer.times(table[idx][2], sentence)    # ▶ plays it: its times, never its anchor
+                if at is not None:
+                    rec[f"At {n}"] = at
+                    rec[f"End {n}"] = end
 
             # Optional speech module: mark sentences whose audio is already on disk, so the badge
             # can show that clicking will play instantly instead of pausing to generate. Named
@@ -1069,6 +1213,29 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                                   language=target_lang)
                      if settings.get("source_display", "off") != "off" else None)
 
+    # The two lists, read once here: the journey's ▶ (Kiku-L) looks up, in one go before anything is interned, the file
+    # each timed source they show plays from (`play.files`: the window's ▶'s lookup); its lines' times are read only
+    # for those — with the badge off, by a times-only finder (no anchor, no other file).
+    lists = {}
+    for what, path in (("progressive", PROGRESSIVE_CSV), ("priority", PRIORITY_CSV)):
+        if os.path.exists(path):
+            try:
+                lists[what] = pd.read_csv(path)
+            except Exception as e:
+                print(f"Error loading {what} CSV: {e}")
+    # Its switch (`line_player`, Settings): off, none of this — no lookup, no times, the source table as before.
+    line_on = bool(settings.get("line_player", True))
+    line_media, line_dirs = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
+                                        os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO),
+                                        settings.get("source_display", "off") != "off") if line_on else (None, [])
+    line_timer = None
+    line_plays = {}                           # the ▶'s own table: {source row's place: [where, why not]}
+    if source_finder is None and line_media and any(uri for uri, _why in line_media.values()):
+        # its own memo (`LINE_TIMES_MEMO`): the badge's anchor memo is never cut down to the playable files
+        line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, LINE_TIMES_MEMO),
+                                  script=_effective_script(target_lang, settings.get("zh_script")),
+                                  language=target_lang)
+
     # Optional speech module: which sentences already have generated audio. Gated on the badge
     # being visible, since the badge is the only thing that would show it.
     audio_probe = None
@@ -1115,9 +1282,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
         print(f"Warning: could not read the library tiers for the report: {e}")
 
     # Load Progressive
-    if os.path.exists(PROGRESSIVE_CSV):
+    if "progressive" in lists:
         try:
-            df = pd.read_csv(PROGRESSIVE_CSV)
+            df = lists["progressive"]
             # Group by Source File
             files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
@@ -1130,7 +1297,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             for filename in files_order:
                 words = by_file[filename]
                 _intern_sources(words, source_map, source_table, source_index, source_finder,
-                                audio_probe)
+                                audio_probe, line_media, line_timer, line_plays)
                 compressed_words = compress_list_of_dicts(words)
                 
                 # Get total words from stats if available
@@ -1171,19 +1338,20 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
         entry["name"] = shown_name(entry["filename"])
 
     # Load Priority
-    if os.path.exists(PRIORITY_CSV):
+    if "priority" in lists:
         try:
-            df = pd.read_csv(PRIORITY_CSV)
+            df = lists["priority"]
             raw_priority = df.to_dict(orient="records")
             _intern_sources(raw_priority, source_map, source_table, source_index, source_finder,
-                            audio_probe)
+                            audio_probe, line_media, line_timer, line_plays)
             data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
 
     # Every source is resolved by now — persist so the next render is a lookup, not a rescan.
-    if source_finder is not None:
-        source_finder.save_memo()
+    for finder in (source_finder, line_timer):
+        if finder is not None:
+            finder.save_memo()
 
     data["file_order"] = all_files_order
 
@@ -1275,6 +1443,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
     # Per-sentence source badge: the interned table + the display mode chosen in Advanced Settings.
     sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
+    # The line player's folders (`_line_media`: a playable source's [5] names one of them by its place).
+    line_dirs_json_str = json.dumps(line_dirs, ensure_ascii=False).replace("</", "<\\/")
+    line_plays_json_str = json.dumps({str(i): v for i, v in sorted(line_plays.items())},
+                                     ensure_ascii=False).replace("</", "<\\/")
     # Word lookup button (⌕). Validated here rather than trusted, exactly like source_display: a
     # hand-edited settings.json must not be able to put arbitrary text into the report's URL.
     _ws = settings if 'settings' in locals() else {}
@@ -1310,7 +1482,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalLinePlay = {line_plays_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

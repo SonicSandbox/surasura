@@ -256,6 +256,10 @@ STRINGS = {
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
     "tip_deleted": "It was mined, but none of its cards are in Anki now: cards you deleted aren't made again "
                    "unless you ask",
+    # Kura-NT (based on Mattias's #454; PROVISIONAL words, his): mined, and no card made — every word it holds already
+    # had one in Anki (`feed.NOTHING`)
+    "nothing": "Nothing new to mine", "nothing_n": "Nothing new to mine · {n}",
+    "tip_nothing": "It was mined, but every word in it already has a card in Anki, so no card was made",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
     # new try for the words its cards don't hold yet (`rows`' *Try again*)
@@ -1207,6 +1211,10 @@ def _connected(st, item, word, online=None):
         tip = (STRINGS["tip_retry"].format(tip=item.tip, k=item.made, n=item.total) if item.made else
                STRINGS["tip_retry_none"].format(tip=item.tip))
         return Status("retry", STRINGS["retry"], tip, "warn")
+    if item is not None and item.kind == connect_feed.NOTHING:
+        # Kura-NT: mined, no card ever made of it (`feed.NOTHING`) — said so while it holds no card, never "cards you
+        # deleted"; anything else (✓, a new try's) stays its own
+        return _nothing(1) if st.kind == "deleted" else st
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
     if online and item.kind == connect_feed.NO_VIDEO:
@@ -1261,6 +1269,13 @@ def _connected(st, item, word, online=None):
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
 
 
+def _nothing(n):
+    """Kura-NT: *Nothing new to mine* (· n for a row of several such parts), its tip why — quiet, as *No cards in
+    Anki* is."""
+    return Status("nothing", STRINGS["nothing"] if n == 1 else STRINGS["nothing_n"].format(n=n), STRINGS["tip_nothing"],
+                  "faint")
+
+
 def since_words(utc_text, now=None):
     """*since 14:02* for a ledger time (`reason_at`: UTC, "2026-11-06T22:02:00Z"), in the one time rule
     (`causes.when`); "" when there is none or it can't be read."""
@@ -1288,6 +1303,12 @@ def _row_connected(st, eps, connect, word):
     one with its cards in Anki or whose cards were deleted (P4.1 WF, adversary S1: a level job on an episode already
     mined is no reason to turn the row's *Mine rest* into *Waiting*, whose *Mine now* asks for its other files)."""
     retry = None        # Mattias #5: the first part Anki Miner failed on — unless one is mining or waits on you
+    if st.kind == "deleted":
+        # Kura-NT: a row of parts holding no card, every one mined with nothing new to make, says so; one part whose
+        # cards were deleted keeps the row's *No cards in Anki* (its words are true of that part)
+        gone = [e for e in eps if e.deleted and not e.cards]
+        if gone and all(getattr(connect.get(e.id), "kind", None) == connect_feed.NOTHING for e in gone):
+            return _nothing(len(gone))
     for e in eps:
         item = connect.get(e.id)
         if (e.cards or e.deleted) and getattr(item, "kind", None) != connect_feed.FAILED:

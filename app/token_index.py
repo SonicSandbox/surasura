@@ -701,6 +701,35 @@ class Store:
         """The set-aside files' keys (W-1): tokenized and cached, never counted, the name tables' evidence."""
         return [r[0] for r in self.conn.execute(f"SELECT path FROM files WHERE {_STATE} = 2 ORDER BY rowid")]
 
+    def holding(self, paths, keys=(), runs=(), most=None):
+        """The `paths` (in their order) whose counted words hold one of `keys` ((lemma, reading)) or every lemma of one
+        of `runs` (a several-word target) — a byte search of each file's counts blob, never its sentences: the cheap
+        first look before a pass that reads them (Piyo's rounds from Anki, `sentence_corpus.files_holding`). `most`:
+        each key or run's first `most` files only (a common word is in nearly every file; a run's words may stand
+        apart in a file, 手 … を … 出す, so a caller looks again without `most` for what those didn't give). The counts
+        are the tokenizer's words, before the name tables: a name they join (app/names.py) is found as its parts."""
+        wanted = [[json.dumps(make_key(lemma, reading), ensure_ascii=False).encode("utf-8")] for lemma, reading in keys]
+        wanted += [[json.dumps(lemma, ensure_ascii=False)[:-1].encode("utf-8") + b"|" for lemma in run]
+                   for run in runs if run]
+        found = [0] * len(wanted)
+        out = []
+        for path in paths:
+            if most is not None and all(n >= most for n in found):
+                break
+            row = self.conn.execute("SELECT counts FROM files WHERE path=?", (_norm(path),)).fetchone()
+            try:
+                text = zlib.decompress(row[0]) if row and row[0] else b""
+            except zlib.error:
+                text = b""
+            hit = False
+            for at, parts in enumerate(wanted):
+                if (most is None or found[at] < most) and all(p in text for p in parts):
+                    found[at] += 1
+                    hit = True
+            if hit:
+                out.append(path)
+        return out
+
     def file_tokens(self, path):
         """Cached tokenized sentences for a file: [(s_text, [[lemma,reading,surface],...]),...].
         Empty list if the file isn't indexed. Lets Generate reuse tokens for unchanged files.

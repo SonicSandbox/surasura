@@ -181,9 +181,9 @@ def test_a_write_under_way_always_finishes_a_read_gets_its_wait():
 
     calls = mcp_server.Calls()
     with calls.call(writes=False):
-        started = time.monotonic()
+        started = time.perf_counter()               # (not monotonic: Windows' 15.6 ms tick reads a wait short)
         assert calls.leave(read_wait=0.2) is False      # a read still under way: it ends after its wait anyway
-        assert time.monotonic() - started >= 0.18
+        assert time.perf_counter() - started >= 0.18
 
 
 def test_no_call_starts_once_it_steps_aside():
@@ -261,7 +261,8 @@ def test_the_tools_keep_their_schemas_and_writes_are_told_from_reads():
     # the tools counted as writes: by their annotations, as the AI app's listing shows them
     writes = {name for name, t in tools.items() if t.annotations and t.annotations.read_only_hint is False}
     assert writes == {"surasura_save_round", "surasura_send_report", "surasura_write_translations",
-                      "surasura_undo_translations"}
+                      "surasura_undo_translations",
+                      "surasura_listening_round", "surasura_listening_status"}     # a round's own folder (Piyo-LR)
 
 
 def test_a_str_answer_under_way_ends_with_the_line():

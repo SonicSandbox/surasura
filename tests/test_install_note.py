@@ -244,6 +244,6 @@ def test_a_writer_waits_for_another_writers_lock(frozen_install):
     held = path_utils.try_lock(os.path.join(root, "installs.lock"))
     assert held is not None
     threading.Timer(0.4, path_utils.release_lock, args=(held,)).start()
-    start = time.monotonic()
+    start = time.perf_counter()                     # (not monotonic: Windows' 15.6 ms tick reads a wait short)
     assert path_utils.write_install_note() is True
-    assert time.monotonic() - start >= 0.35
+    assert time.perf_counter() - start >= 0.35

@@ -17,6 +17,11 @@ the same lookup (`_find`, the click's), asked of many episodes at once (`look`: 
 open, each folder listed once a round, Connect's index read once) by `Looks`, which keeps each episode's answer, looks
 on a worker of its own — never the window's thread, nor the reader's — and only when what an answer rests on changed
 (S19; the window track's `work/row55/NOTES.md`).
+
+The journey page's ▶ (Kiku-L, F3 / F19: a line's own audio, looped): `files`, the file each timed source the report
+shows plays from — the same lookup, so the page and the window never disagree; an audiobook's line plays from its one
+file (its record's, whatever the transcript is called), one of several files from none (the transcript's times run
+across them all).
 """
 import itertools
 import json
@@ -236,6 +241,260 @@ def look(language, asks, listings=None, find=None):
             print(f"Play: an episode's file couldn't be looked for ({e!r})")
             out[item_id] = False
     return out
+
+
+PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav", ".mp4", ".m4v", ".webm")
+# ^ the files a browser's <audio> plays from the journey's file:// page (Chromium: Edge, Chrome) — the journey's ▶
+#   (Kiku-L). Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary).
+
+
+def files(language, rel_paths, memo=None, explain=False):
+    """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
+    once for every timed source it shows — at a cost the render barely feels where nothing can play (most anime
+    libraries) and only while something changed where it can.
+
+    **What the store knows, in one open** (`_rows`): each source's item, its title's type and every pairing row it has,
+    and the library's sources. **The gate:** each folder a source's file could be in (`_places`: the copy's, the
+    original's, a named or moved video's, an audiobook's) is listed once — the listings `_find` reuses — and only a
+    source with a `PLAYABLE` file in one of them goes on; a source with no pairing row also when Connect's index holds a
+    playable file (`_index_playable`: a video only the index knows). A book or a text never goes on (its ▶ opens the
+    book). **The lookup**, for those alone and only when the memo can't answer: the record `pairing_of` picks
+    (`_pairings`) and `_find`, the window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays,
+    several don't). The render's worker; never writes; one source's fault is its None alone.
+
+    `memo` (the render's, kept between renders: {rel: [answer, key, its folder's digest, ...the caller's own]}): an
+    answer stands while `_memo_key` (its title's type, its pairing rows, the sources, the listings of its folders,
+    Connect's index file) and the listing of the answer's own folder are what they were; else it is looked for again
+    and written as a new entry of three.
+
+    `explain` (the badge is shown: its hover says why a line has no ▶): a source the gate keeps out answers the media
+    file named as it is in one of its folders' listings (`_named_beside`: an `.mkv` the browser can't play), else
+    None — a hint from the listings already made, never a lookup."""
+    from app import path_utils
+    from app.services.view_rows import MEDIA_WORD
+    rel_paths = list(dict.fromkeys(rel_paths))
+    out = dict.fromkeys(rel_paths)
+    known, sources = _rows(language, rel_paths)
+    data_dir = path_utils.get_data_path(language)
+    listings, playable, digests, stamps, copies = {}, {}, {}, {}, {}
+    gated = {}
+    for rel in rel_paths:
+        item_id, media, texts, rows = known.get(rel, _UNKNOWN)
+        if MEDIA_WORD.get(media, "video") in ("video", "audio"):
+            gated[rel] = _places(data_dir, rel, rows, copies)
+    _list_all({p for places in gated.values() for p in places}, listings)
+    asks = {}
+    for rel, places in gated.items():
+        if any(_holds_playable(p, listings, playable) for p in places) or \
+                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps)):
+            asks[rel] = places
+        elif explain:
+            out[rel] = _named_beside(rel, places, listings)
+    misses = {}
+    for rel, places in asks.items():
+        item_id, media, texts, _records = known.get(rel, _UNKNOWN)
+        key = _memo_key(language, media, texts, sources, places, listings, digests, stamps)
+        kept = memo.get(rel) if memo is not None else None
+        if isinstance(kept, list) and len(kept) >= 3 and kept[1] == key and \
+                (kept[0] is None or (isinstance(kept[0], str) and
+                                     _digest(_folder_of(kept[0]), listings, digests) == kept[2])):
+            out[rel] = kept[0]
+        else:
+            misses[rel] = key
+    if not misses:
+        return out
+    ids = sorted({known[r][0] for r in misses if r in known})
+    moved = {}
+    records = _pairings(language, ids, moved) if ids else {}
+    find = _finder(language, listings)
+    for rel, key in misses.items():
+        item_id, media = known.get(rel, _UNKNOWN)[:2]
+        record = records.get(item_id) if item_id is not None else {}
+        try:
+            book = (record or {}).get("audiobook")
+            if isinstance(book, dict):
+                parts = book.get("files") or []
+                out[rel] = parts[0] if len(parts) == 1 and _on_disk(parts[0], listings) else None
+            else:
+                out[rel] = _find(language, rel, media, record, listings, find, moved.get(item_id))[0]
+            if memo is not None and record is not None:    # (a record that couldn't be read is never kept)
+                memo[rel] = [out[rel], key, _digest(_folder_of(out[rel]), listings, digests) if out[rel] else None]
+        except Exception as e:                      # one source's fault never stops the others
+            print(f"Play: a line's file couldn't be looked for ({e!r})")
+    return out
+
+
+_UNKNOWN = (None, None, (), ())         # `_rows`' answer for a source the store doesn't hold (or no store)
+
+
+def _rows(language, rel_paths):
+    """({rel path: (item id, its title's type, its pairing rows as stored, each row's (origin, video_path, audiobook
+    files as JSON) as SQLite reads them)}, the library's sources as one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
+    source then looked at as a 2.x library's file). No record is picked here (`pairing_of` picks, for the few the
+    gate and the memo send on)."""
+    from app import library_store, path_utils
+    data_dir = path_utils.get_data_path(language)
+    try:
+        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+            return {}, ""
+        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
+        if store is None:
+            return {}, ""
+        with store:
+            ids = {rel: i for rel, i in zip(rel_paths, store.item_ids(rel_paths)) if i is not None}
+            wanted = sorted(set(ids.values()))
+            works, texts, fields = {}, {}, {}
+            pick = "CASE WHEN json_valid(pairing) THEN json_extract(pairing, '$.{}') END"
+            for at in range(0, len(wanted), 500):
+                chunk = wanted[at:at + 500]
+                marks = ",".join("?" * len(chunk))
+                works.update(store.conn.execute(f"SELECT id, work_id FROM items WHERE id IN ({marks})", chunk))
+                # the gate's fields read by SQLite (no record parsed here); the rows as stored for the memo's key
+                for item_id, text, origin, video, files in store.conn.execute(
+                        f"SELECT item_id, pairing, {pick.format('origin')}, {pick.format('video_path')}, "
+                        f"{pick.format('audiobook.files')} FROM pairings WHERE item_id IN ({marks}) ORDER BY rowid",
+                        chunk):
+                    texts.setdefault(item_id, []).append(text if isinstance(text, str) else "")
+                    fields.setdefault(item_id, []).append((origin, video, files))
+            types = {w: (store.media_type(w)[0] if w is not None else None) for w in set(works.values())}
+            sources = json.dumps(sorted((s.get("id"), s.get("path")) for s in store.sources(all=True, counts=False)),
+                                 default=str)
+        known = {rel: (item_id, types.get(works.get(item_id)), texts.get(item_id, []), fields.get(item_id, []))
+                 for rel, item_id in ids.items()}
+        return known, sources
+    except Exception as e:
+        print(f"Play: the lines' records couldn't be read ({e!r})")
+        return {}, ""
+
+
+def _places(data_dir, rel, rows, copies):
+    """Every folder a source's file could be found in by `_find` (a superset): its copy's (`copies`: once a folder),
+    and each pairing row's original's, named video's (moved ones too) and audiobook files' (`_rows`' fields)."""
+    folder = rel.rpartition("/")[0]
+    if folder not in copies:
+        copies[folder] = os.path.join(data_dir, *folder.split("/")) if folder else data_dir
+    places = [copies[folder]]
+    for origin, video, files in rows:
+        for value in (origin, video):
+            if isinstance(value, str):
+                if "#" in value:
+                    value = re.sub(r"#\d+$", "", value)
+                where = _folder_of(value)
+                if where:
+                    places.append(where)
+        if isinstance(files, str):
+            try:
+                files = json.loads(files)
+            except ValueError:
+                files = None
+            if isinstance(files, list):
+                places += [w for w in map(_folder_of, (f for f in files if isinstance(f, str))) if w]
+    return list(dict.fromkeys(places))
+
+
+def _folder_of(path):
+    """An absolute path's folder ("" for a relative one) — `os.path.dirname` by string work for the paths the store
+    keeps (`C:\\…\\name`, `\\\\server\\share\\…\\name`): a 20k-source render calls it twice a source."""
+    i = max(path.rfind("\\"), path.rfind("/"))
+    if i > 2 and (path[1:3] == ":\\" or path[1:3] == ":/") and path[0].isalpha():
+        return path[:i]
+    return os.path.dirname(path) if os.path.isabs(path) else ""
+
+
+def _list_all(folders, listings):
+    """Each folder not listed yet, listed once (`_listing`'s form) — side by side when there are many: a listing waits
+    on the disk (a share most of all), not on Python."""
+    todo = [f for f in folders if f not in listings]
+    if len(todo) < 16:
+        for f in todo:
+            _listing(f, listings)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(folder):
+        try:
+            return folder, {n.lower(): n for n in os.listdir(folder or ".")}
+        except OSError:
+            return folder, False
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        listings.update(pool.map(one, todo))
+
+
+def _listing(folder, listings):
+    """A folder's one listing in `runner.beside`'s own form ({lower name: name}; False when it can't be listed), kept in
+    `listings` — the same dict `_find` is handed, so it is never listed twice."""
+    names = listings.get(folder)
+    if names is None:
+        try:
+            names = {n.lower(): n for n in os.listdir(folder or ".")}
+        except OSError:
+            names = False
+        listings[folder] = names
+    return names
+
+
+def _holds_playable(folder, listings, playable):
+    """Whether a folder holds a `PLAYABLE` file (its listing; the answer kept in `playable`)."""
+    if folder not in playable:
+        names = _listing(folder, listings)
+        playable[folder] = bool(names) and any(n.endswith(PLAYABLE) for n in names)
+    return playable[folder]
+
+
+def _digest(folder, listings, digests):
+    """A folder's listing as a short digest — it moves when a file in it is added, removed or renamed."""
+    if folder not in digests:
+        import hashlib
+        names = _listing(folder, listings)
+        text = "\0".join(sorted(names)) if names else ("" if names == {} else "\1unlistable")
+        digests[folder] = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=8).hexdigest()
+    return digests[folder]
+
+
+def _named_beside(rel, places, listings):
+    """A video or audio file named as the subtitle is (`Show - 05.ja.srt` → `Show - 05.mkv`: its name without its last
+    one or two extensions) in one of `places`' listings (already made by the gate) -> its path, else None."""
+    from app.connect import runner
+    name = rel.rsplit("/", 1)[-1].lower()
+    stems = [name.rsplit(".", n)[0] for n in (1, 2) if name.count(".") >= n]
+    for folder in places:
+        names = listings.get(folder)
+        if names:
+            for stem in stems:
+                for ext in runner.VIDEO_EXTENSIONS + AUDIO_EXTS:
+                    found = names.get(stem + ext)
+                    if found:
+                        return os.path.join(folder, found)
+    return None
+
+
+def _index_playable(language, stamps):
+    """Whether Connect's video index (as last saved) holds any `PLAYABLE` file — once a call."""
+    if "index_playable" not in stamps:
+        try:
+            from app.connect import videos
+            dirs = videos.Index(language).data.get("dirs") or {}
+            stamps["index_playable"] = any(str(name).lower().endswith(PLAYABLE) for entry in dirs.values()
+                                           if isinstance(entry, dict) for name in (entry.get("videos") or {}))
+        except Exception:
+            stamps["index_playable"] = True             # unknown: look, as before the gate
+    return stamps["index_playable"]
+
+
+def _memo_key(language, media, texts, sources, places, listings, digests, stamps):
+    """What `files`' answer rests on, as one short digest: its title's type, its pairing rows as stored (the record
+    `pairing_of` picks and the MV-2 marks are read from them), the library's sources (a moved video's root), the
+    listings of the folders it could be found in (`_places`) and Connect's index file (a video only it knows)."""
+    import hashlib
+    if "index" not in stamps:
+        try:
+            from app.connect import videos
+            stamps["index"] = str(os.stat(videos.index_path(language)).st_mtime_ns)
+        except OSError:
+            stamps["index"] = ""
+    raw = "\x1f".join([str(media), sources, stamps["index"], *sorted(texts),
+                       *(_digest(p, listings, digests) for p in places)])
+    return hashlib.blake2b(raw.encode("utf-8", "surrogatepass"), digest_size=12).hexdigest()
 
 
 def _find(language, rel_path, media, record, listings, find, moved=None):

@@ -42,6 +42,8 @@
   any file over the tokens counted: order-free, as the last Generate left it); *N new* is the engine's, kept live by
   `after_move` (the touched rows within RP-6's 50 ms) and `resync()` for everything else. With no plan, a plan that
   stands aside or one that no longer describes the library, `why()` says so and the moves answer nothing.
+  Hover-W: `words(ids)` — a title's words as its *N new* counts them, from the engine whose figures the rows show (the
+  last one, kept, while they are faded).
 
 - **`plan_check(language, settings)`**: `Numbers`' full staleness verdict (the replan host's `plan_engine.check`);
   **`open_library(language)`**: the reader and the numbers on one opener (the writer takes the same opener).
@@ -55,7 +57,7 @@ import os
 import re
 import threading
 import time
-from collections import deque
+from collections import deque, namedtuple
 
 from app.services.automation import Worker
 from app.services import window_idle
@@ -2469,6 +2471,9 @@ def _patiently(call, *args):
 # The numbers at the drop (RP-6)
 # ------------------------------------------------------------------------------------------------------------------ #
 
+TitleAnswer = namedtuple("TitleAnswer", "new before kept plan key data_dir rel")     # Hover-W: `Numbers.words`
+
+
 class Numbers:
     """The reader's numbers provider over the plan engine. `opener`: `StoreOpener`'s shape (its handle is opened on this
     provider's own worker); `plan_file`: the plan (default: the results folder's); `check(plan, store)`: the caller's
@@ -2490,6 +2495,9 @@ class Numbers:
         self._engine = None
         self._plan_key = None
         self._why = "not read yet"
+        self._shown = None                          # Hover-W: (engine, plan key) whose *N new* the rows show — the
+        #                                             live one, or the last one while its figures are kept (faded)
+        self._data_dir = None                       # the library's data folder, as the store last said (`words`)
         self._changed = {}                          # version -> the item ids it changed (None: all)
         self._ahead = 0                             # moves the engine followed (`after_move`) not landed in the store
         #                                             yet (`landed`): the store's order is behind the engine's meanwhile
@@ -2515,6 +2523,21 @@ class Numbers:
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""
         with self._lock:
             return self._why
+
+    def words(self, ids):
+        """Hover-W (any thread): a title's words as the rows' *N new* count them — `TitleAnswer` (`new`, `before`:
+        `plan_engine.TitleWord`s; `kept`: the last plan's, while the rows' figures are faded; `plan`, `key`: the plan file
+        and its key when read; `data_dir`; `rel`: {plan file: rel_path} of the title's files the plan holds) — or None when the rows
+        show no *N new* (no plan, one standing aside, not read yet). Read under the lock: a few ms (Hover-W §2)."""
+        with self._lock:
+            shown = self._shown
+            if shown is None:
+                return None
+            eng, key = shown
+            new, before = eng.words_of(ids)
+            files, f_of = eng.plan.files, eng._f_of
+            rel = {f_of[i]: files[f_of[i]][0] for i in ids if i in f_of}
+            return TitleAnswer(new, before, eng is not self._engine, self._plan_path(), key, self._data_dir, rel)
 
     def changed(self, since):
         """The item ids whose figures changed after version `since` — None when unknown (too far back, or a whole new
@@ -2679,6 +2702,7 @@ class Numbers:
         if store is None:                           # asked again at the next resync (no key kept)
             self._set(None, {}, f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
+        self._data_dir = getattr(store, "data_dir", None)
         by_key = store.item_keys()
         ids = [by_key.get(library_store.path_key(entry[0])) for entry in plan.files]
         counts = {}
@@ -2818,6 +2842,10 @@ class Numbers:
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
+            if eng is not None:
+                self._shown = (eng, key)
+            elif not isinstance(table, Kept):
+                self._shown = None                  # no figure shown: no words (a kept table keeps the last engine's)
             self._at = None
             self._publish(table, changed if self._table is last else None)
         if why != said:

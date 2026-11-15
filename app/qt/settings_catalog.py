@@ -364,6 +364,7 @@ ROWS = (
     _row("anki_backlog_on_generate", "reading", "toggle", ("anki_backlog_on_generate",), when=_anki_set_up),
     _row("inline_completed_files", "reading", "toggle", ("logic.inline_completed_files",)),
     _row("hide_audio_button", "reading", "toggle", ("logic.hide_audio_button",)),
+    _row("line_player", "reading", "toggle", ("line_player",)),            # the journey's line player
     _row("word_search_category", "reading", "choice", ("word_search_category",),
          options=("all", "anime", "liveaction", "youtube"), adv=True, when=_ja),
     _row("zen_limit", "reading", "number", ("zen_limit",), adv=True, bounds=(25, 125)),

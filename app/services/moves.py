@@ -27,6 +27,8 @@
     fields, a join or an import (`GUARDED`) is checked against what it touched as queued: changed since → listed, what
     it writes there already (it landed, its entry left behind) → let go quietly;
   - `None` (nothing to change: the items gone, or already there) → `on_reread()`;
+  - a move the store put in its show's episode order instead (`Change.show_order`, Kura-EO) → the numbers follow the
+    store's place and `on_reread()` (the window's drop order goes at once: the store's view stands);
   - `ValueError` (the anchor gone or out of the tier meanwhile) → placed again by id beside the nearest neighbour the
     window named (`near`) that is still in that tier, else at the top of the tier, with one note and `on_reread()`;
   - `StoreConflict` / a refused undo → *Can't undo — that item changed since* (E21), the change let go, nothing written;
@@ -1068,6 +1070,10 @@ class Writer:
         self._refresh_before(store, cmd, change)
         if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
             cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
+        elif getattr(change, "show_order", False):  # Kura-EO: the store put it in its show's episode order, not where
+            cmd["followed"] = note is None and self._numbers_follow(cmd, store)   # asked: the numbers follow the
+        if getattr(change, "show_order", False):    # store's place (they had the drop's), and the window's own order
+            cmd["elsewhere"] = True                 # goes at once (`on_reread`): the store's view stands
         stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
         if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
             with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
@@ -1093,12 +1099,12 @@ class Writer:
             self._call(self.after_commit, change, op)
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
             self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
-        if change is None or note is not None or cmd.get("auto"):
+        if change is None or note is not None or cmd.get("auto") or cmd.get("elsewhere"):
             if change is None:                  # W3.2 (S5): its ticket settles, others pending
                 self._empty(cmd)
             self._call(self.on_reread)
         if op not in UNORDERED and not cmd.get("followed") and (
-                op != "move" or change is None or note is not None or
+                op != "move" or change is None or note is not None or cmd.get("elsewhere") or
                 cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
         elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then

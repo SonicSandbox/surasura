@@ -329,6 +329,22 @@ def test_A2_27_the_top_icon_places_the_arrival_through_the_writer_and_the_tray_s
     assert win.arrivals_inset.count == 4
 
 
+@pytest.mark.parametrize("in_current", [True, False])
+def test_top_of_an_episode_whose_show_is_in_current_says_it_went_in_with_its_show(world, in_current, monkeypatch):
+    """(Kura-EO.) *Top* of an episode whose show is in Current already lands in the show's episode order
+    (`Store._into_show`), not at the top: its toast says it is in Current with its show, never "at the top"; with no
+    part of its show there, *at the top of Current*, as before. The same place either way (one writer call)."""
+    monkeypatch.setattr(arrivals.ArrivalsTray, "_has_show", lambda _self, _a: in_current)
+    seed, win, writer = world()
+    open_tray(win)
+    row = tray_rows(win)[1]
+    ids, title = list(row.arrival.item_ids), row.arrival.title
+    row.click("icon")
+    assert calls(writer, "place") == [("place", ids, {"where": "top"})]
+    want = strings.TRAY_PLACED_WITH_SHOW if in_current else strings.TRAY_PLACED["top"]
+    assert win.toasts.card.base == want.format(title=title)
+
+
 @pytest.mark.parametrize("name", ["top", "after-show", "soon", "goal"])
 def test_each_menu_place_calls_the_writer_with_its_place(world, name, monkeypatch):
     monkeypatch.setattr(arrivals.ArrivalsTray, "_has_show", lambda _self, _a: True)    # (its show in Current)

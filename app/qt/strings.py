@@ -842,7 +842,8 @@ TRAY_ALL_TITLES = "{n} watched titles"
 TRAY_MINE_TOO = "Mine them too"
 TRAY_MINE_TOO_TIP = "Make cards from the already-watched arrivals as well"
 TRAY_ICON = {
-    "top": ("Top", "Top · Add to the top of Current, the next thing you watch or read"),
+    "top": ("Top", "Top · Add to the top of Current, the next thing you watch or read\n• An episode of a show "
+                   "already there joins it in episode order"),           # Kura-EO (PROVISIONAL)
     "finished": ("Finished", "Finished · Record it as finished: you've watched it already\n• Then choose whether its "
                              "new cards stay"),
 }
@@ -851,7 +852,8 @@ TRAY_MORE_TIP = "More · Place it elsewhere, open its folder, or remove it"
 TRAY_MENU_NAME = "Where {title} goes"
 TRAY_NO_SHOW = "None of its show is in Current: Top of Current puts it there"                 # W3.2 fix round (N1)
 TRAY_MENU = {
-    "top": ("Top of Current", "The top of Current: the next thing you watch or read"),
+    "top": ("Top of Current", "The top of Current: the next thing you watch or read. An episode of a show already "
+                              "there joins it in episode order"),             # Kura-EO (PROVISIONAL)
     "after-show": ("After its show", "Right after the episodes of its show already in Current"),
     "soon": ("Soon", "Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Goal: someday, in no order"),
@@ -868,6 +870,9 @@ TRAY_PLACED = {
     "soon": "{title} → Soon",
     "goal": "{title} moved to Goal",
 }
+# Kura-EO (PROVISIONAL): *Top* when part of its show is in Current already — it joins the show in episode order there
+# (`Store._into_show`), so "at the top" would be wrong
+TRAY_PLACED_WITH_SHOW = "{title} is in Current with its show"
 TRAY_REMOVE_TITLE = "Remove {title}?"
 TRAY_REMOVE_BODY = "Its {n} files go to the trash, kept there for 30 days. Undo puts them back."
 TRAY_REMOVE_BODY_ONE = "Its file goes to the trash, kept there for 30 days. Undo puts it back."

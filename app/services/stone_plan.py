@@ -40,9 +40,9 @@ END_PAD = 12
 TITLE_BASE = 187                            # the title column, × fz (215 at Medium, the page's `--r11-tw`)
 TITLE_FLOOR = 80                            # … narrowed to round(80 × fz) at the least
 VARIANTS = 8                                # a fixed set of variants per state × kind on the stone sheet
-# Kura-NT (PROVISIONAL — Sonic's open call; the lead's lean): a part mined with nothing new to make (its status
-# *Nothing new to mine*, `view_rows._connected`) looks mined — the coloured stone, never dimmed — when True; a grey rock,
-# as a part not mined, when False. Its tip says *nothing new* either way (`tip_state`); its cards count stays 0
+# Kura-NT (ruled by Sonic 2026-11-15: lean a): a part mined with nothing new to make (its status *Nothing new
+# to mine*, `view_rows._connected`) looks mined — the coloured stone, never dimmed — when True; a grey rock, as a
+# part not mined, when False. Its tip says *nothing new* either way (`tip_state`); its cards count stays 0
 NOTHING_LOOKS_MINED = True
 
 # a work's media type (`view_rows.MEDIA_WORD`'s keys) -> its kind (the page's `gemKind` :2490); None -> shows

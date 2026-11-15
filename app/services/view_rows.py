@@ -257,9 +257,9 @@ STRINGS = {
     "tip_deleted": "It was mined, but none of its cards are in Anki now: cards you deleted aren't made again "
                    "unless you ask",
     # Kura-NT (based on Mattias's #454; PROVISIONAL words, his): mined, and no card made — every word it holds already
-    # had one in Anki (`feed.NOTHING`)
+    # had one in Anki or is one you know (`feed.NOTHING`; the tip's truer words, Kura-PR2 2026-11-15, PROVISIONAL)
     "nothing": "Nothing new to mine", "nothing_n": "Nothing new to mine · {n}",
-    "tip_nothing": "It was mined, but every word in it already has a card in Anki, so no card was made",
+    "tip_nothing": "It was mined, but every word in it already has a card or is one you know, so no card was made",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
     # new try for the words its cards don't hold yet (`rows`' *Try again*)

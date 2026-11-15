@@ -7,8 +7,9 @@ first channel's video made a title named "Processed" — and every later channel
 key), one title holding many channels. A file directly in `Processed` is a loose drop now, as one in hato's drop
 folder: titled by its record's show (the channel), else by its own name. What must not change: a playlist's folder
 below `Processed` (still a title by its folder); a user's own show folder named `Processed` inside a tier folder or
-`Library` (a show's, as before); a title already called "Processed" (never regrouped or renamed: the learner renames
-it); the commands on the new titles (a drag, a move, Finished, Undo); and nothing on disk moves (S-R-1). Every test runs
+`Library` (a show's, as before); a title already called "Processed" (never regrouped or renamed by a hand-over or a
+sync: the helper's one-time split does that, test_library_store_processed_split.py); the commands on the new
+titles (a drag, a move, Finished, Undo); and nothing on disk moves (S-R-1). Every test runs
 for Japanese and Chinese under the per-test SURASURA_TEST_ROOT, with real words from tests/Test Resources/.
 """
 
@@ -141,10 +142,10 @@ def test_the_folder_is_matched_as_the_file_system_reads_it():
 def test_an_existing_processed_title_is_never_regrouped_or_renamed(language, monkeypatch):
     """A library 3.0.10 titled already holds a title "Processed" (the old rule: its folder key `processed`, the first
     channel's id, every joined channel's name among its other titles). It stays as it is — its name, key, ids and
-    items — through a new channel's video, the same video handed over again and a disk sync (Sonic's choice: no quiet
-    fix). A channel never seen is a title of its own; a channel already inside it still joins it by its record (its id
-    or its name among the title's others, `_work_by_record`) — the known limit, a lean for him (register). Renaming it
-    is the learner's (`rename_work`)."""
+    items — through a new channel's video, the same video handed over again and a disk sync. A channel never seen is a
+    title of its own; a channel already inside it still joins it by its record (its id or its name among the title's
+    others, `_work_by_record`) until the helper's one-time split (Kura-PR2, 3.0.12: `Store.split_processed`, its own
+    tests) makes it one title per channel. Renaming it is the learner's (`rename_work`)."""
     store = migrated(language)
     data_dir, _u = roots(language)
     w = names(language)

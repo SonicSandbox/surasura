@@ -660,9 +660,9 @@ def youtube_arrivals(shell, then=None, quiet=False):
     status line and the bottom bar say where they went. Always the callable (the downloader's window is kept and
     raised: one opened before the library must still hand its files over; L1 N2). Raises when no library is open, the
     files aren't in the open library's folder (the language switched mid-download; L1 S3) or the store can't be
-    written — the downloader says why; the files wait in Processed. `then(waiting, placed, missed)` (alpha 8, setup's
-    *YouTube*): told once they landed, on the window's thread; `quiet` (a playlist's rest, which says its own line):
-    the bar and the downloader's line say nothing."""
+    written — the downloader says why; the files wait in the library folder. `then(waiting, placed, missed)` (alpha
+    8, setup's *YouTube*): told once they landed, on the window's thread; `quiet` (a playlist's rest, which says its own
+    line): the bar and the downloader's line say nothing."""
 
     def complete(paths):
         writer = getattr(shell.services, "writer", None)  # the library open now (a switch makes another)

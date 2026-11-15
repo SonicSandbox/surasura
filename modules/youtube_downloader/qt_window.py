@@ -7,7 +7,7 @@ hover); the links (one per line) — the one way in; the one-time risk acknowled
 setup's page 3, alpha 8 — when the user ticks or unticks it: never on open, never by anything else), on the window
 until it is given, then in ⋯ (unticked there, back on the window); a run's bar (how many of its videos are read, else
 turning); one row: the caption language, ⋯ (*Fill missing timestamps* — asks first with the count and the time —,
-*Update yt-dlp*, *Open the Processed folder*, *Open the log*, the risk tick) and *Download* (off until the risk is
+*Update yt-dlp*, *Open the library folder*, *Open the log*, the risk tick) and *Download* (off until the risk is
 acknowledged); and the status line (the last thing the run said — a transcript written as ✓ its name —; the whole run
 in the log). With *Download covers* on (Settings; Sonic 2026-11-02, Mado-Y2), the video it downloads shows beside the
 bar — the link's video, then each transcript's as it is written —: its thumbnail through the covers' own fetcher
@@ -26,7 +26,7 @@ puts the window into its icon in the bottom bar and the run goes on; the icon's 
 *Close* there or the app's quit stop a download or a timestamp fill at once: the yt-dlp child running then is ended (`downloader.stopping`). A run
 that ends after its window closed says its last line in the bottom bar. **The created files go to the `on_complete
 (paths)` the run started with** (AD4-15) — W3.2 routes them into the library's arrivals; until then the door passes
-none and the files wait in Processed, which the status line says (IK-32).
+none and the files wait in the library folder, which the status line says (IK-32).
 """
 import html
 import re
@@ -398,11 +398,12 @@ class DownloaderWindow(windows.SecondaryWindow):
 
     def _handed(self, created, on_complete):
         """The created files (only entries that weren't there before) to the run's `on_complete`, as the Tk window
-        handed them to the Content Manager; no callback yet (W3.2): they wait in Processed, and the line says so."""
+        handed them to the Content Manager; no callback yet (W3.2): they wait in the library folder, and the line says
+        so."""
         if not created:
             return S.NONE_NEW
         if on_complete is None:
-            return S.NEW_IN_PROCESSED.format(what=S.new_transcripts(len(created)))
+            return S.NEW_KEPT.format(what=S.new_transcripts(len(created)))
         try:
             on_complete(list(created))
         except Exception as e:
@@ -470,10 +471,11 @@ class DownloaderWindow(windows.SecondaryWindow):
 
     # --- folders ------------------------------------------------------------------------------------------------- #
     def _open_folder(self):
-        """The processed folder found and opened on a worker (`press.open`: never the window's thread), the window's
-        corner arc turning meanwhile (a menu's press, IK-2: ⋯'s item since try a9.1)."""
+        """The library folder (Kura-PR2: YouTube's videos in its `YouTube/<channel>`, bilibili.tv's in its Processed)
+        found and opened on a worker (`press.open`: never the window's thread), the window's corner arc turning
+        meanwhile (a menu's press, IK-2: ⋯'s item since try a9.1)."""
         language = self.language
-        qpress.open(self, lambda: view.processed_folder(language), key="youtube:folder",
+        qpress.open(self, lambda: view.library_folder(language), key="youtube:folder",
                     failed=self.alive(lambda info: self.say(S.FOLDER_FAILED.format(why=info[0]))))
 
     def _open_log(self):

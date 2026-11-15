@@ -181,9 +181,9 @@ def test_a_write_under_way_always_finishes_a_read_gets_its_wait():
 
     calls = mcp_server.Calls()
     with calls.call(writes=False):
-        started = time.monotonic()
+        started = time.perf_counter()               # (not monotonic: Windows' 15.6 ms tick reads a wait short)
         assert calls.leave(read_wait=0.2) is False      # a read still under way: it ends after its wait anyway
-        assert time.monotonic() - started >= 0.18
+        assert time.perf_counter() - started >= 0.18
 
 
 def test_no_call_starts_once_it_steps_aside():

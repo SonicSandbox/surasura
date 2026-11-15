@@ -89,9 +89,9 @@ def test_a_settings_save_waits_for_another_programs_write_then_writes():
     """Another program holds `settings` for its write: a save waits for it, then writes, whole."""
     with Holder("settings", "saving settings") as other:
         threading.Timer(0.4, other.release).start()
-        started = time.monotonic()
+        started = time.perf_counter()               # (not monotonic: Windows' 15.6 ms tick reads a wait short)
         assert settings_manager.save_settings({"target_language": "ja", "words_per_day": 7}, wait=5.0)
-        assert time.monotonic() - started >= 0.3, "it waited for the other program's write"
+        assert time.perf_counter() - started >= 0.3, "it waited for the other program's write"
     assert _on_disk()["words_per_day"] == 7
 
 

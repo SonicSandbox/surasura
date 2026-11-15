@@ -17,6 +17,8 @@ Every look runs on real files built on disk (an EPUB of real Japanese / Chinese 
 proves the source folders are never written to (`_look`).
 """
 import os
+import sqlite3
+from unittest.mock import patch
 
 import pytest
 
@@ -244,10 +246,33 @@ def test_a_book_gone_before_the_look_leaves_the_audiobook_alone_and_nothing_brea
 
 # --- what the looks answer the window ---------------------------------------------------------------------------- #
 def _Opener(language):
-    """A window's store opener on the test's library, checked as the window checks it."""
+    """A window's store opener on the test's library, checked as the window checks it — and, as a headless caller
+    does, its retry of a busy look waited for (`wait`): the check never waits, and a store busy that moment (the
+    helper an earlier look spawned, still writing the copy) answers the mode cached before, "json" at a first check
+    (Flake-F3)."""
     opener = ls.StoreOpener(language, *roots(language))
-    assert opener.check() == "store"
+    opener.check()
+    opener.wait()
+    assert opener.state() == ("store", None)
     return opener
+
+
+def test_the_tests_opener_waits_out_a_store_busy_at_its_first_look():
+    """Why (Flake-F3, Piyo-T's --all, core 1/6): with every test slot busy, `_Opener`'s first check found the store
+    busy and read the opener's placeholder, "json": the test failed before it began. The store busy for one look: the
+    opener settles on its worker and the helper waits for it."""
+    store, _data = _empty("ja")
+    store.close()
+    real, looks = ls._read_only, []
+
+    def busy_once(path, busy_ms):
+        looks.append(path)
+        if len(looks) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(path, busy_ms)
+    with patch.object(ls, "_read_only", busy_once):
+        opener = _Opener("ja")
+    assert opener.mode == "store" and len(looks) >= 2
 
 
 def _add(language, folder, book=None):

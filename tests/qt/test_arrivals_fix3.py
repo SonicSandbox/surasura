@@ -64,33 +64,57 @@ class Library:
         return self.build(changed={item_id}, changed_works={self.items[item_id]["work_id"]})
 
 
-def _one_arrival_ms(make_tray, n, language):
+def _one_arrival_work(make_tray, n, language, monkeypatch):
+    """Five arrivals into an open tray of `n` -> (the row work each did, the median ms). The work, per arrival: the rows
+    made, inserted, repainted, the rows' keys read on the window's thread, and whether the rows were rebuilt in order
+    (`_reorder`) — what finding 6's arrival did to every row."""
     lib = Library(n, language)
     tray = make_tray(lib.view)
     tray.open()
     _filled(tray, n)
-    took = []
+    model, work, took = tray.model, [], []
+    real_make, real_insert, real_reorder, real_refresh = model.make, model._insert, model._reorder, model._refresh
+    seen = {}
+    monkeypatch.setattr(model, "make", lambda keys, objs: seen.__setitem__("made", seen["made"] + len(keys))
+                        or real_make(keys, objs))
+    monkeypatch.setattr(model, "_insert", lambda at, keys, objs, made=None: seen.__setitem__(
+        "inserted", seen["inserted"] + len(keys)) or real_insert(at, keys, objs, made))
+    monkeypatch.setattr(model, "_reorder", lambda keys, objs: seen.__setitem__("reordered", True)
+                        or real_reorder(keys, objs))
+    monkeypatch.setattr(model, "_refresh", lambda rows_: seen.__setitem__(
+        "repainted", seen["repainted"] + len(rows_)) or real_refresh(rows_))
+    real_key = arrivals._KEY
+    monkeypatch.setattr(arrivals, "_KEY", lambda row: seen.__setitem__("keys_read", seen["keys_read"] + 1)
+                        or real_key(row))
     for k in range(5):
         view = lib.arrive(k)
+        seen.update(made=0, inserted=0, repainted=0, keys_read=0, reordered=False)
         t = time.perf_counter()
         tray.set_groups(view.arrival_groups)
         took.append((time.perf_counter() - t) * 1000)
+        work.append(dict(seen))
         for _ in range(3):
             QApplication.processEvents()
         assert tray.keys()[0] == view.arrival_groups[0].rows[0].key        # the arrival is the top row
     assert len(tray.keys()) == n + 5
     took.sort()
-    return took[2]
+    return work, took[2]
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_one_arrival_with_the_tray_open_costs_about_the_same_at_20000_arrivals_as_at_2000(bare_tray, language):
+def test_one_arrival_with_the_tray_open_costs_about_the_same_at_20000_arrivals_as_at_2000(bare_tray, language,
+                                                                                        monkeypatch):
     # finding 6: an arrival laid every row of the list out again and read every row's key on the window's thread —
     # 7–12 ms at 20,000 against ~1 at 2,000. A table's insert costs the rows inserted; the keys come from the reader.
-    small = _one_arrival_ms(bare_tray, 2_000, language)
-    big = _one_arrival_ms(bare_tray, 20_000, language)
-    print(f"one arrival, tray open: 2k {small:.2f} ms, 20k {big:.2f} ms (median of 5)")
-    assert big <= 3 * small + 2.0, (small, big)
+    # Flake-F3: measured as the row work, the same at both sizes, never as a ratio of two clocks — what is left of the
+    # time grows with the list (C-speed passes over its keys: the compare, the diff), and other processes on the
+    # machine slow those (the cycles this thread spent grew with them): Kyou-A's --all, 4.7 ms against a 4.3 bound.
+    small, small_ms = _one_arrival_work(bare_tray, 2_000, language, monkeypatch)
+    big, big_ms = _one_arrival_work(bare_tray, 20_000, language, monkeypatch)
+    print(f"one arrival, tray open: 2k {small_ms:.2f} ms, 20k {big_ms:.2f} ms (median of 5, not asserted)")
+    one = {"made": 1, "inserted": 1, "repainted": 0, "keys_read": 0, "reordered": False}
+    assert small == [one] * 5, "the arrival's own row made and inserted, no row repainted, no key read, no reorder"
+    assert big == small, "the same row work at 20,000 as at 2,000"
 
 
 def test_the_reader_hands_each_group_its_rows_keys_in_order():

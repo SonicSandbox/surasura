@@ -693,17 +693,142 @@ def _claim_qt_warnings():
     return lines
 
 
+# --- No test writes this checkout's own settings.json (Flake-F3, 2026-11-15) ---------------------------------------- #
+# With no test root, settings.json is the checkout's own (`path_utils.get_settings_path`: beside the user data, the
+# project root in a source checkout) — run from Sonic's tree, his settings. In Kura-PR2's --all one was written there
+# (`setup_seen`). So every write of it through `settings_manager._write_atomically` (save_settings, save_keys, the 2.x
+# import: each writer of the file) is refused, and the file's stamp is read again after every test for any other
+# route; either fails the test it happened in, naming the thread and the code — or, past the last test, the run.
+# The leak itself: a window's settings service queues its writes (`SettingsWriter`, 0.25 s after the last), and the
+# tests' `services.shutdown(0.5)` gives them half a second — under load a queued write (the setup wizard's
+# `setup_seen`) landed after the test's root was gone. So every writer is known here, and each test's queued writes
+# land in its own root before the root goes (`land_settings_writes`, at the start of `_guard_anki_port`'s end: it asks
+# for the test's monkeypatch, so it ends before that undoes the root — in every suite, each suite's own root fixture).
+_TREE_SETTINGS = os.path.join(_PROJECT, "settings.json")
+_SETTINGS_WRITES = []     # [what, the test running then, thread, the test that started it, where, claimed]
+_SETTINGS_REFUSED = None      # the threads already named (a WeakSet: a refused write is retried every 0.25 s, named
+#                               once; never by ident, which Windows gives again to a later thread)
+_WRITERS = None               # every SettingsWriter made (a WeakSet, filled by `_guard_tree_settings`)
+LAND_WAIT_S = 10.0            # how long a test's end waits for its queued settings writes to land
+
+
+def _settings_stamp():
+    try:
+        st = os.stat(_TREE_SETTINGS)
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+_SETTINGS_STAMP = [_settings_stamp()]
+
+
+def _changed_keys(path, to_save):
+    """The keys `to_save` changes in the file at `path` (what a refused write would have written)."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            now = json.load(f)
+    except (OSError, ValueError):
+        now = {}
+    now = now if isinstance(now, dict) else {}
+    return sorted(k for k in to_save if now.get(k, object()) != to_save[k])
+
+
+def _guard_tree_settings():
+    from app import settings_manager
+    real = settings_manager._write_atomically
+    if getattr(real, "_tree_settings_guard", False):
+        return
+
+    def write(path, to_save):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(_TREE_SETTINGS):
+            thread = threading.current_thread()
+            if thread not in _SETTINGS_REFUSED:
+                _SETTINGS_REFUSED.add(thread)
+                _SETTINGS_WRITES.append([f"a write of {_changed_keys(path, to_save)}", _test_now(), thread.name,
+                                         getattr(thread, _STARTED_IN, None), _where(), False])
+            raise PermissionError(f"the test harness refused a write of this checkout's own settings.json "
+                                  f"({_TREE_SETTINGS}): a test writes only its test root's (tests/harness_guards.py)")
+        return real(path, to_save)
+    write._tree_settings_guard = True
+    settings_manager._write_atomically = write
+    global _WRITERS, _SETTINGS_REFUSED
+    import weakref
+    _WRITERS, _SETTINGS_REFUSED = weakref.WeakSet(), weakref.WeakSet()
+    made = settings_manager.SettingsWriter.__init__
+
+    def init(self, *args, **kwargs):
+        made(self, *args, **kwargs)
+        _WRITERS.add(self)
+    settings_manager.SettingsWriter.__init__ = init
+
+
+_guard_tree_settings()
+
+
+def land_settings_writes(timeout=LAND_WAIT_S):
+    """A test's end, before its root goes: every settings write still queued lands (in that root), up to `timeout`
+    in all. -> the writers that didn't (a held lock past it): no longer waited for at a later test's end (one stuck
+    writer would cost every test after it the wait); the guard names their write if it comes."""
+    deadline = time.monotonic() + timeout
+    late = []
+    for writer in list(_WRITERS or ()):
+        if writer.pending() and not writer.flush(max(0.0, deadline - time.monotonic())):
+            late.append(writer)
+            _WRITERS.discard(writer)
+    return late
+
+
+def _claim_settings_writes():
+    """The refused writes not yet claimed, and a change of the file's stamp since the last look -> one line each."""
+    stamp = _settings_stamp()
+    if stamp != _SETTINGS_STAMP[0]:
+        _SETTINGS_STAMP[0] = stamp
+        _SETTINGS_WRITES.append([f"the file changed by another route (now {stamp})", _test_now(),
+                                 threading.current_thread().name, None, "", False])
+    lines = []
+    for write in _SETTINGS_WRITES:
+        if write[5]:
+            continue
+        write[5] = True
+        what, during, thread, started_in, where = write[:5]
+        line = f"{what} during {during}, thread {thread!r}"
+        if started_in and started_in.rsplit(" (", 1)[0] != during.rsplit(" (", 1)[0]:
+            line += f" started in {started_in}"
+        lines.append(line + (f", from {where}" if where else ""))
+    return lines
+
+
+def _report_late_settings_writes(reporter):
+    """The writes no test's end claimed (after the last test, a stopped run's teardown) -> how many."""
+    late = _claim_settings_writes()
+    for line in late:
+        line = f"THIS CHECKOUT'S settings.json WRITTEN after its test had ended (refused): {line}"
+        if reporter:
+            reporter.write_sep("!", line, red=True)
+            reporter.stats.setdefault("settings.json", []).append(line)
+        else:
+            print(line)
+    return len(late)
+
+
 @pytest.fixture(autouse=True)
-def _guard_anki_port():
+def _guard_anki_port(monkeypatch):
     """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
     its own code, a thread left by an earlier test, or a try in the gap before it — naming each try. And one during
     which anything opened a browser or a viewer (refused), a child of it included. And one that undid its own
     monkeypatch mid-test (its root put back). And one during which Qt warned of a Qt object used from another
-    thread."""
+    thread. And one during which this checkout's own settings.json was written. First, while the test's root is still
+    set (`monkeypatch` ends after this), its queued settings writes land there."""
     yield
+    land_settings_writes()
     undone, tries, opened = _claim_undone(), _claim_anki_tries(), _claim_opens()    # all claimed: none left to the next
-    crossed = _claim_qt_warnings()
+    crossed, written = _claim_qt_warnings(), _claim_settings_writes()
     problems = []
+    if written:
+        problems.append("this checkout's own settings.json was written, or tried (refused): a test writes only its "
+                        "test root's — a write queued on a settings service lands after the test's root is gone "
+                        "unless the test waits for it (`flush`): " + "; ".join(written))
     if crossed:
         problems.append("Qt warned of a Qt object used from a thread other than its own (it can crash the process "
                         "later, in another test): give it a parent, delete it on its own thread, or hand the work to "
@@ -842,7 +967,8 @@ def session_finish_guards(session=None):
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
     reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
-    late = _report_late_anki_tries(reporter) + _report_late_opens(reporter) + _report_late_qt_warnings(reporter)
+    late = (_report_late_anki_tries(reporter) + _report_late_opens(reporter) + _report_late_qt_warnings(reporter)
+            + _report_late_settings_writes(reporter))
     if late and session is not None and session.exitstatus == 0:
         session.exitstatus = 1  # a try or an open after the test loop (an interrupted run's, or at the session's end)
 

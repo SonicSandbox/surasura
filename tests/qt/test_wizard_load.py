@@ -471,7 +471,10 @@ def test_fresh_u_the_indexers_count_never_asks_it_too_late_to_help(make, empty_l
     total = token_index.POOL_MIN_FILES * 10
     with open(log, "w", encoding="utf-8") as f:
         f.write(f"Indexer: starting (ja)\nIndexer: 3 of {total}\n")
-    # (#461's one red, FLAKES.md: what was on screen, the log's time and the clock's, said if it fails)
+    # Flake-F3 (#461's and train 36's red): written in the step's own clock tick, as it was there — the log's time is
+    # the step's `since` to the nanosecond, every run (a float compare read it as an earlier run's log)
+    at = wiz._load["since"]
+    os.utime(log, ns=(at, at))
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=total), 5), \
         f"the screen says {_task(wiz)!r}; the log written {os.path.getmtime(log)!r}, " \
         f"now {time.time()!r}"

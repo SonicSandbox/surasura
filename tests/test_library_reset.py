@@ -697,7 +697,9 @@ def test_the_looks_first_summary_names_an_unfinished_reset_once_a_run():
     (folder,) = _backups(user_files_dir)
 
     opener = ls.StoreOpener("zh", data_dir, user_files_dir)
-    assert opener.check() == "store"
+    opener.check()
+    opener.wait()                     # (a busy first look settles on the opener's worker: Flake-F3)
+    assert opener.mode == "store"
     seen = []
     looks = source_looks.SourceLooks(opener, "zh", on_result=seen.append, kind=lambda _p: "network")
     try:

@@ -628,6 +628,33 @@ def test_a_library_store_that_cant_be_read_now_leaves_a_missing_item_counted(lan
         assert _kept_text(tokens).held().get(ti._norm(now2)) is True, "its text kept once it was found gone"
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_generates_lists_wait_out_a_library_store_busy_for_a_moment(language):
+    """Why (Flake-F3, drill A4's red): Generate spawns the store's helper to write the copy and never waits for it, then
+    reads the store's lists for the token store (`run_lists`). Read with no wait, a store the helper held that moment
+    answered (None, None), the run fell back to its own list, and the token store never learned which files are set
+    aside: a watched episode it had no row for was tokenized again by the next Generate. Generate's read waits a busy
+    store out, as an open does (`BUSY_AT_OPEN`); the busy test above keeps one busy for good. The plain
+    `token_store_lists` still never waits (the 2.x window asks on its own thread)."""
+    store, data_dir, ids = _library(language)
+    now1, now2, soon1, soon2, goal1, goal2 = list(ids)
+    store.close()
+    real, looks = ls._read_only, []
+
+    def busy_twice(path, busy_ms):                                     # SQLite's answer while the helper writes
+        looks.append(path)
+        if len(looks) <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real(path, busy_ms)
+    with patch.object(ls, "_read_only", busy_twice), ti.open_store(language) as tokens:
+        counted, more = indexer.run_lists(language, data_dir, [now1, soon1, soon2, goal1, goal2], tokens)
+    assert "moved" in more, "the library store's own lists, not the run's list alone (the fallback)"
+    assert ti._norm(now2) in {ti._norm(p) for p in counted} and len(looks) > 2
+    looks.clear()
+    with patch.object(ls, "_read_only", busy_twice):
+        assert indexer.token_store_lists(language, data_dir, [now1]) == (None, None), "no wait unless asked"
+
+
 # --- mutant kills (E2.2 flag pass; Haiku-written K01–K08, K06 rewritten) ------------------------------ #
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_store_of_kept_files_only_has_no_tokens(language, tmp_path):

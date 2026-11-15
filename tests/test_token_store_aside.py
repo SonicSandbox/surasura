@@ -240,7 +240,7 @@ def test_generate_with_the_library_store_unreadable_drops_no_row_its_list_doesnt
     tokens = {p: store.file_tokens(p) for p in (b, c)}
     tok.calls.clear()
     with monkeypatch.context() as patched:
-        patched.setattr(indexer, "token_store_lists", lambda *_a: (None, None))     # the library store can't be read
+        patched.setattr(indexer, "token_store_lists", lambda *_a, **_k: (None, None))   # the library store can't be read
         counted, more = indexer.run_lists(language, os.path.dirname(a), [a], store)
     store.reconcile(counted, tok, **more)
     assert tok.calls == [] and {p: store.file_tokens(p) for p in (b, c)} == tokens

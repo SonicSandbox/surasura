@@ -206,7 +206,9 @@ def test_a_copy_with_no_record_is_looked_up_when_connects_index_holds_a_playable
     videos.Index("ja").refresh([], [_elsewhere("Videos")])                  # Connect's own refresh, saved
     assert play.files("ja", [rel]) == {rel: far}
     os.remove(far)
-    _video(_elsewhere("Videos", SHOW, f"{SHOW} - 09.mkv"))
+    # (FLAKES.md: Connect's index keeps a folder whose mtime is unchanged; on a coarse file clock the remove and the
+    # write could land in the first refresh's tick, so the .mkv is written once the folder's mtime has moved)
+    _touch_later(_elsewhere("Videos", SHOW, f"{SHOW} - 09.mkv"), b"\x1a\x45\xdf\xa3")
     videos.Index("ja").refresh([], [_elsewhere("Videos")])
     monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("the index holds nothing playable"))
     assert play.files("ja", [rel]) == {rel: None}

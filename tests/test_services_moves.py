@@ -1407,6 +1407,44 @@ def test_hover_w_a_titles_words_are_its_rows_new_and_a_stale_plan_keeps_the_last
     gone.close()
 
 
+def test_kotoba_k_a_marked_word_leaves_n_new_at_once_and_every_plan_read_after_leaves_it_out(tmp_path):
+    """Kotoba-K: `leave_out(words)` takes the marked words out of the rows' *N new* on the numbers' worker — a new
+    version naming only the rows that moved, the word card's words with them — and a plan read again (a restart before
+    the Generate) leaves out the words marked then (`marked`)."""
+    seed, analysed, path = _small(tmp_path)
+    marked = set()
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, marked=lambda language: set(marked))
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    v0, table0 = numbers()
+    eng = numbers._engine
+    k = next(k for k in range(eng._n) if eng._first[k] is not None)
+    word, item = eng.plan.keys[k][0], eng._ids[eng._first[k]]
+    firsts = {}
+    for j in range(eng._n):
+        if eng.plan.keys[j][0] == word and eng._first[j] is not None:
+            firsts[eng._ids[eng._first[j]]] = firsts.get(eng._ids[eng._first[j]], 0) + 1
+    ids = [r["id"] for r in analysed]
+    assert word in {w.word for w in numbers.words(ids).new}
+    numbers.leave_out({word})
+    assert numbers.idle(30)
+    v1, table1 = numbers()
+    assert v1 == v0 + 1 and numbers.changed(v0) == set(firsts)
+    assert all(table1[i][2] == table0[i][2] - firsts.get(i, 0) for i in ids)
+    assert table1[item][:2] == table0[item][:2]                        # % known stays the plan's until the Generate
+    assert word not in {w.word for w in numbers.words(ids).new}
+    numbers.leave_out({word})                                         # the same set again: nothing new
+    assert numbers.idle(30) and numbers()[0] == v1
+    numbers.close()
+    marked.add(word)
+    again = M.Numbers(seed.opener, "ja", plan_file=path, marked=lambda language: set(marked))
+    again.load()
+    assert again.idle(30) and again()[1] == table1
+    again.leave_out(())                                               # cleared: back to the plan's figures
+    assert again.idle(30) and again()[1] == table0
+    again.close()
+
+
 def test_a_plan_missing_a_file_the_library_counts_is_stale(tmp_path):
     seed, analysed, path = _small(tmp_path, drop=1)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)
@@ -3219,9 +3257,19 @@ def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commi
     assert row["trashed_path"] == own, "its trash row names its own copy, never an older file of its name"
     assert os.path.getmtime(os.path.join(lib.data_dir, *own.split("/"))) > time.time() - 600, "its clock restarted"
     w2.restore([row["id"]])
-    assert h.until(lambda: os.path.exists(path)), "Put back brings the file back"
-    with open(path, "rb") as f:
-        assert f.read() == body
+    back = []
+
+    def reads():
+        # until it reads, not until it is there: on Windows a file the store's `os.rename` just named can still refuse
+        # an open (PermissionError) while the rename's own handle closes (FLAKES.md, Flake-F3)
+        try:
+            with open(path, "rb") as f:
+                back.append(f.read())
+            return True
+        except OSError:
+            return False
+    assert h.until(reads), "Put back brings the file back"
+    assert back[-1] == body
 
 
 def test_H7_the_copy_a_replay_takes_has_the_items_size_and_no_row_of_its_own(lib):

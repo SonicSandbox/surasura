@@ -21,6 +21,9 @@ A YouTube title in the library is only its transcript (the downloader's `.txt` a
   anything when it has none (3.11.0 / 3.12.0 `cli/api/fetch.py` `speech_problem`) and never downloads a model there,
   so `Steps.download` asks first (`anki_miner.speech_ready`) and, with none, takes YouTube's captions as before and
   says so once (`CAPTIONS_KEPT`). A person's captions, or a header naming no kind, are taken as before.
+  **Only with a large speech model** (Michi-YT5, Sonic 2026-11-15, after Michi-YT4's measurement): in `LARGE_ONLY`'s
+  languages a video is heard only while the profile's model is a large one (`anki_miner.listens_large`); with `small`,
+  `medium` (PROVISIONAL) or a model not known it keeps YouTube's captions, saying nothing (`NOT_LARGE`).
 - **yt-dlp:** the YouTube downloader's own binary (`modules/youtube_downloader/ytdlp_manager`, kept up to date by it)
   is put on Anki Miner's PATH for the call; one Anki Miner downloaded itself comes first (its resolver's order).
 - **Gone after** (`drop`): as soon as Anki Miner has made the job's clips and pictures, and whenever the job stops
@@ -93,9 +96,16 @@ NO_SPEECH = "Anki Miner has no speech model to make this video's subtitles from 
 NOT_HEARD = "Anki Miner couldn't make this video's subtitles from its audio."     # (no speech heard, or its sound)
 # The caption kinds whose video is heard instead (`subtitle_source`): YouTube's own speech recognition, in the video's
 # own language — one of `analyzer.AUTO_CAPTIONS`, never its machine translation
-# … and Connect's own: a transcript the transcription was written over (`keep_transcript`), heard again at its next
-# mining — never YouTube's captions for it after all
+# … and Connect's own: a transcript the transcription was written over (`keep_transcript`), heard again at its
+# next mining — never YouTube's captions for it after all
 HEARD = frozenset(("native auto", "transcribed"))
+# Michi-YT5: the languages heard only with a large speech model (Japanese: measured against a person's captions —
+# small about level with YouTube's, large-v3's family clearly better); Chinese is heard with any model, as in 3.0.11
+# (PROVISIONAL: unmeasured)
+LARGE_ONLY = frozenset(("ja",))
+# … and `Steps.fetched_with`'s word for a video whose captions were kept for that (the model a small one, or not
+# known): fetched with CAPTIONS, never the no-model note
+NOT_LARGE = "not-large"
 # … said once (its own *Needs you* note, never a wait: the cards are made from YouTube's captions meanwhile;
 # PROVISIONAL words)
 CAPTIONS_KEPT_KIND = "online-captions"

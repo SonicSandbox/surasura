@@ -1,0 +1,12 @@
+{
+  "version": "3.0.13",
+  "date": "2026-11-15",
+  "items": [
+    {"id": "youtube-captions-large-model", "kind": "tweak", "for": ["shows", "miner", "ja"],
+     "text": "Auto-captioned YouTube videos are transcribed only with Anki Miner's large speech model."},
+    {"id": "watched-stays-aside", "kind": "fix", "for": ["everyone"],
+     "text": "A Generate right after a library change no longer reads your watched episodes again."},
+    {"id": "load-screen-count", "kind": "fix", "for": ["everyone"],
+     "text": "The load screen's run count is right from the first line."}
+  ]
+}

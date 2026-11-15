@@ -1,0 +1,16 @@
+{
+  "version": "3.0.12",
+  "date": "2026-11-15",
+  "items": [
+    {"id": "side-by-side", "kind": "new", "for": ["everyone", "anki", "junban"], "where": "settings:new_cards_from",
+     "text": "Mine your top two titles side by side: new cards take turns, each title's most useful word first."},
+    {"id": "piyo-today", "kind": "tweak", "for": ["piyo", "anki"], "where": "settings:practice_ai",
+     "text": "Piyo's \"the words I learned today\" gives only the words first learned today."},
+    {"id": "known-ignore-card", "kind": "new", "for": ["everyone"], "where": "tab:current",
+     "text": "Mark a word Known or Ignore straight from its word card; press again to undo."},
+    {"id": "youtube-channel-folders", "kind": "tweak", "for": ["shows"],
+     "text": "YouTube downloads go in their own channel folder; an old Processed title is split by channel, once."},
+    {"id": "arrivals-channel-row", "kind": "fix", "for": ["shows"],
+     "text": "New arrivals keeps a channel's new videos in one row."}
+  ]
+}

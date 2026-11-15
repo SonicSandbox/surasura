@@ -42,7 +42,7 @@ def _content_files(data_dir, language=None):
     return files
 
 
-def token_store_lists(language, data_dir, files):
+def token_store_lists(language, data_dir, files, busy_wait=0.0):
     """The token store's lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
     found files): (counted, {"kept", "aside", "elsewhere", "forgotten", "moved"}) — `Store.reconcile(counted, ...,
     **more)`, and `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted
@@ -55,17 +55,18 @@ def token_store_lists(language, data_dir, files):
     Absolute paths under `data_dir`. Without one (JSON mode, no library store): (`files`, {}) — the kept and set-aside
     rows and their text left as they are. (None, None) when a library store is there but its lists can't be read now
     (busy, read-only, an error): don't reconcile — `files` lacks its missing items, which would leave the token store
-    with their text unkept."""
+    with their text unkept. `busy_wait`: how long a busy store is waited out, at its check and at its open (none by
+    default: the 2.x window asks on its own thread; Generate's `run_lists` waits, Flake-F3)."""
     try:
         from app import library_store
         from app.path_utils import get_user_files_path
-        mode, reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
+        mode, reason = library_store.check_mode(language, data_dir, busy_wait=busy_wait)
         if mode == "json":
             return files, {}
         if mode != "store":
             return None, None
         store = library_store.open_store(language, data_dir, get_user_files_path(language), role="reader",
-                                         busy_wait=0.0)
+                                         busy_wait=busy_wait)
         if store is None:
             return None, None
         with store:
@@ -97,8 +98,13 @@ def run_lists(language, data_dir, files, store):
     """Generate's lists for `store.reconcile` (the token store `store`): `token_store_lists`; when the library store
     can't be read now (busy, read-only), the run's list alone, with every other counted or set-aside row the token
     store holds handed on as set aside — summed nowhere, dropped never (a watched episode the indexer hasn't moved
-    yet keeps its tokens); the indexer's next pass, with the library's lists, puts each where it belongs."""
-    counted, more = token_store_lists(language, data_dir, files)
+    yet keeps its tokens); the indexer's next pass, with the library's lists, puts each where it belongs.
+    A store busy for a moment is waited out, as an open waits (`BUSY_AT_OPEN`; Generate is a child process): the run
+    reads these lists while the store's helper it spawned at its start writes the copy, and a read with no wait lost
+    the set-aside list there — a watched episode the token store had no row for was read again by the next Generate
+    (Flake-F3)."""
+    from app.library_store import BUSY_AT_OPEN
+    counted, more = token_store_lists(language, data_dir, files, busy_wait=BUSY_AT_OPEN)
     if counted is not None:
         return counted, more
     from app.token_index import _norm

@@ -45,9 +45,25 @@ def test_a_log_last_written_before_the_ask_is_an_earlier_runs(tmp_path):
     """`since`: the run asked for hasn't written its log yet — the earlier run's last count (often its whole total) is
     never shown as this one's."""
     path = _log(tmp_path, "Indexer: 5000 of 5000\n")
-    written = os.path.getmtime(path)
-    assert setup_load.read_count(path, since=written + 5) is None
-    assert setup_load.read_count(path, since=written - 5) == (5000, 5000)
+    written = os.stat(path).st_mtime_ns
+    assert setup_load.read_count(path, since_ns=written + 5_000_000_000) is None
+    assert setup_load.read_count(path, since_ns=written - 5_000_000_000) == (5000, 5000)
+
+
+# An instant whose two float forms disagree: st_mtime (seconds + nanoseconds * 1e-9) is one bit below time.time()'s
+# (nanoseconds / 1e9) for this same 100 ns stamp. Measured on Windows: ~1 write in 8 made in the tick the clock was read.
+SAME_TICK_NS = 1794728078459412200
+
+
+def test_a_log_written_in_the_asks_own_clock_tick_is_this_runs(tmp_path):
+    """Why (FLAKES.md, test_wizard_load's fresh_u red on GitHub): Windows stamps a file from the same coarse clock
+    time.time() reads, so a log written in the very tick the step began carries the step's own time — and compared as
+    floats it can read as a moment *before* it, an earlier run's: the run's count was never shown."""
+    path = _log(tmp_path, "Indexer: starting (ja)\nIndexer: 3 of 640\n")
+    os.utime(path, ns=(SAME_TICK_NS, SAME_TICK_NS))
+    assert os.path.getmtime(path) < SAME_TICK_NS / 1e9, "the trap: the same instant, one bit apart as floats"
+    assert setup_load.read_count(path, since_ns=SAME_TICK_NS) == (3, 640)
+    assert setup_load.read_count(path, since_ns=SAME_TICK_NS + 1) is None, "a nanosecond on: an earlier run's"
 
 
 def test_no_log_reads_as_none(tmp_path):

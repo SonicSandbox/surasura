@@ -271,6 +271,91 @@ def test_anki_closed_busy_or_with_no_deck_answers_in_one_sentence_that_offers_so
     assert fake.requests == []
 
 
+# --------------------------------------------------------------------------- #
+# The words learned today (Piyo-T, 2026-11-15: a tester's story of "today's 10 words" came with older ones — the AI
+# had taken `recent`): Anki's day only, said plainly when Anki is closed, and the AI told which source it is
+# --------------------------------------------------------------------------- #
+def _synced_today(language, words):
+    """KnownWord.json as the Anki sync leaves it the day it reads `words`: each stamped `created` now — the time of
+    the sync, not of the learning (a card learned last week, synced today, carries today's date)."""
+    from datetime import datetime
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", language, "KnownWord.json")
+    now = datetime.now().isoformat(timespec="seconds")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": w, "knownStatus": "KNOWN", "hasCard": 1, "created": now, "language": language}
+                             for w in words]}, f, ensure_ascii=False)
+
+
+def test_the_words_learned_today_are_anki_s_alone_never_the_newest_known_or_the_days_synced_words():
+    _library("ja", JA_LINES, [JA_DECK])
+    _synced_today("ja", ["価値", "出かける", "冒険"])          # synced today, learned long ago
+    state = _state(known_texts=JA_LINES)
+    fake = _deck()
+    fake.card_note("冒険家", [{"ivl": 12}, {"ivl": 0, "today": True}])      # its production card first today
+    today = _data(_call(fake, state, "surasura_words", {"which": "today", "limit": 10}))
+    assert today["anki"] == "open"
+    assert [w["word"] for w in today["words"]] == ["有名", "求める"]
+    recent = _data(_call(fake, state, "surasura_words", {"which": "recent"}))
+    assert recent == {"language": "ja", "which": "recent", "words": state.checker("ja").recent_words(20)},         "recent stays as it was"
+    brief = _data(_call(fake, state, "surasura_practice_start", {"words": 10, "source": "today", "kind": "reading"}))
+    assert [w["word"] for w in brief["round_words"]] == ["有名", "求める"] and brief["round"]["words"] == 2
+
+
+def test_the_words_learned_today_with_anki_closed_say_so_in_the_answer_at_once_and_pass_nothing_else_off():
+    """Only Anki knows which cards were first studied today: Surasura's files hold no such date (KnownWord.json's is
+    the sync's, the young cards' record holds intervals). So with Anki closed the answer says so in its own field,
+    with no words — never the day's synced words or the newest known as today's — and no error, no wait."""
+    import time
+    _library("ja", JA_LINES, [JA_DECK])
+    _synced_today("ja", ["価値", "出かける"])
+    closed = CardCollection(offline=True)
+    started = time.monotonic()
+    answer = _call(closed, _state(known_texts=JA_LINES), "surasura_words", {"which": "today"})
+    assert not answer.is_error
+    got = _data(answer)
+    assert (got["which"], got["anki"], got["words"]) == ("today", "closed", [])
+    assert "open Anki" in got["note"] and "recent" in got["note"], "what to do, and why recent isn't it"
+    assert len([r for r in closed.requests if r["action"] == "multi"]) <= 1, "one try: no retries"
+    assert time.monotonic() - started < 10, "no wait on a closed Anki"
+    # a round can't start from no words: one sentence that offers soon or top, as before
+    text = _said(_call(closed, _state(), "surasura_practice_start", {"source": "today"}))
+    assert text.startswith("Anki isn't open") and "soon" in text
+
+
+def test_an_empty_day_is_an_empty_list_with_its_reason_and_anki_open():
+    _library("zh", ZH_LINES, ["中文"])
+    fake = CardCollection()
+    fake.card_note("冒险", [{"ivl": 6}, {"ivl": 0, "today": True}], deck="中文")   # learned before: not today's
+    got = _data(_call(fake, _zh_state(keep=False), "surasura_words", {"which": "today"}))
+    assert (got["anki"], got["words"]) == ("open", [])
+    assert got["note"] == anki_words.SOURCES["today"]["none"] + "."
+
+
+def test_chinese_words_learned_today_come_with_their_lines():
+    _library("zh", ZH_LINES, ["中文"])
+    fake = CardCollection()
+    fake.card_note("挑战", [{"ivl": 1, "today": True}], deck="中文")
+    fake.card_note("冒险", [{"ivl": 40}], deck="中文")
+    got = _data(_call(fake, _zh_state(keep=False), "surasura_words", {"which": "today"}))
+    assert got["anki"] == "open"
+    assert got["words"] == [{"word": "挑战", "reading": got["words"][0]["reading"],
+                             "lines": [{"line": "冒险总是伴随着巨大的挑战。", "from": "第01話.txt"}]}]
+
+
+def test_the_ai_is_told_plainly_which_source_is_the_words_learned_today():
+    """The tester's AI took `recent` for "the 10 new words I learned today": the words tool, the round's tool, the
+    wrong-choice error and the instructions each say that today is that request, and that recent is not."""
+    async def calls(client):
+        return (await client.list_tools(),
+                await client.call_tool("surasura_words", {"which": "learned_today"}))
+    tools, wrong = _run(_state(), calls)
+    texts = {t.name: t.description for t in tools.tools}
+    for text in (texts["surasura_words"], wrong.content[0].text, mcp_server.INSTRUCTIONS):
+        assert "learned today" in text and "today" in text and "recent" in text, text
+        assert "never recent" in text, text
+    assert "learned today" in texts["surasura_practice_start"]
+
+
 def test_an_anki_too_old_for_today_says_so():
     _library("ja", JA_LINES, [JA_DECK])
     fake = CardCollection(introduced=False)

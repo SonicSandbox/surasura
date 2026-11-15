@@ -83,6 +83,7 @@ FILLED_BY = {
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "settings_file": "app.qt.settings_io",                 # --- a6: *Export settings…* · *Import settings…*
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
+    "new_cards_from": _STORE,                   # --- Kyou-A: the library's *New cards come from*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
@@ -227,6 +228,7 @@ ROWS = (
     # Anki & mining
     _row("anki_connection", "anki", "status"),
     _row("new_cards_a_day", "anki", "custom", ("words_per_day",), bounds=(0, None)),       # P9: Anki's own value
+    _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a choice the store draws
     _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
     _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),

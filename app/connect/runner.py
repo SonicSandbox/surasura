@@ -1588,8 +1588,10 @@ def _download(steps, ledger, lang, job, web):
         if ledger.need(lang, online.CAPTIONS_KEPT_KIND, online.CAPTIONS_KEPT, standing=True):
             log.info("Connect: a video's machine captions used (%s): Anki Miner has no speech model", lang)
     if got is not None:
-        kinds = (online.KIND,) + ((online.CAPTIONS_KEPT_KIND,) if used == online.TRANSCRIBE else ())
-        _fixed(ledger, lang, kinds=kinds)   # (made from its audio: the note's cause gone)
+        kinds = (online.KIND,) + ((online.CAPTIONS_KEPT_KIND,) if used in (online.TRANSCRIBE, online.NOT_LARGE)
+                                  else ())
+        _fixed(ledger, lang, kinds=kinds)   # (made from its audio, or captions kept with a model there: the
+        # note's cause, no speech model, gone)
     return got
 
 
@@ -2735,7 +2737,8 @@ class Steps:
             return False
         try:
             got = online.fetch(miner, setup[1], lang, job["id"], web["url"], on_progress=on_progress,
-                               should_end=should_end, source=source)
+                               should_end=should_end,
+                               source=online.CAPTIONS if source == online.NOT_LARGE else source)
         except stopping.Stopped:
             if staged:
                 raise Wait(STOPPED_FOR_UPDATE, look=False) from None
@@ -2777,7 +2780,10 @@ class Steps:
         speech model (`anki_miner.speech_ready`: one it has, never a download — `fetch` downloads none, and nothing
         here asks for one); without one, CAPTIONS (`fetched_with`: `_download`'s one note). Never a wait (review r1
         S4): Anki Miner not answering the question is CAPTIONS too; so is a video it heard nothing in this run, and
-        a refusal for the model is kept as long as `speech_ready`'s own no (`SPEECH_NO_S`)."""
+        a refusal for the model is kept as long as `speech_ready`'s own no (`SPEECH_NO_S`).
+        Michi-YT5 (Sonic 2026-11-15): in `online.LARGE_ONLY`'s languages, only while that model is a large one
+        (`anki_miner.listens_large`, from the profile's settings export this run read); a small one, medium or one
+        not known -> `online.NOT_LARGE` (fetched with CAPTIONS, never the no-model note)."""
         from app.connect import anki_miner, lineup, online
         source = online.subtitle_source(web)
         if source != online.TRANSCRIBE or str(job_id) in getattr(self, "_not_heard", set()):
@@ -2790,7 +2796,13 @@ class Steps:
         except anki_miner.AnkiMinerError as e:
             log.info("Connect: Anki Miner's speech model couldn't be asked about (%s): YouTube's captions", e.message)
             ready = False
-        return source if ready else online.CAPTIONS
+        if not ready:
+            return online.CAPTIONS
+        if lang in online.LARGE_ONLY:
+            held = self._anki_miner_held(lang).get("set")
+            if not anki_miner.listens_large(miner, lang, profile, held[3] if held else None):
+                return online.NOT_LARGE
+        return source
 
     def drop_online(self, job):
         """Michi-YT: the job's downloaded video gone (`online.drop`), and forgotten."""

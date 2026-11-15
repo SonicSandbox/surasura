@@ -791,3 +791,75 @@ def test_every_module_suite_on_disk_takes_the_harness_guards():
             assert not rebound, f"{path} binds {sorted(rebound)} again after importing it from tests.harness_guards"
             taken |= as_is
         assert wanted <= taken, f"{path} does not import {sorted(wanted - taken)} from tests.harness_guards"
+
+
+# --- no test writes this checkout's own settings.json (Flake-F3, 2026-11-15) ----------------------------------------- #
+# Kura-PR2's --all wrote `setup_seen` into its copy's own settings.json: a write that met no test root. The file is
+# stood in for here (a temp file the guard takes for the checkout's), so neither the red run nor the green one can
+# touch the real one.
+def _tree_settings_stood_in(monkeypatch, tmp_path):
+    from app import path_utils, settings_manager
+    tree = tmp_path / "settings.json"
+    tree.write_text(json.dumps({"theme": "Dark Flow", "setup_seen": ""}), encoding="utf-8")
+    monkeypatch.setattr(harness_guards, "_TREE_SETTINGS", str(tree))
+    monkeypatch.setattr(harness_guards, "_SETTINGS_STAMP", [harness_guards._settings_stamp()])
+    monkeypatch.setattr(path_utils, "get_settings_path", lambda: str(tree))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(tree))
+    return tree
+
+
+def test_a_write_of_this_checkouts_settings_json_is_refused_and_names_its_test(monkeypatch, tmp_path):
+    from app import settings_manager
+    tree = _tree_settings_stood_in(monkeypatch, tmp_path)
+    before = tree.read_bytes()
+    assert settings_manager.save_settings({"theme": "Dark Flow", "setup_seen": "3.0"}) is False, "refused"
+    assert tree.read_bytes() == before, "nothing written"
+    (line,) = harness_guards._claim_settings_writes()
+    assert "'setup_seen'" in line and "test_a_write_of_this_checkouts_settings_json" in line, line
+    assert harness_guards._claim_settings_writes() == [], "claimed once"
+
+
+def test_this_checkouts_settings_json_changed_another_way_is_named_too(monkeypatch, tmp_path):
+    tree = _tree_settings_stood_in(monkeypatch, tmp_path)
+    tree.write_text(json.dumps({"theme": "Dark Flow", "setup_seen": "3.0", "x": 1}), encoding="utf-8")
+    (line,) = harness_guards._claim_settings_writes()
+    assert "changed by another route" in line and "test_this_checkouts_settings_json_changed" in line, line
+
+
+LATE_PROBE = "SURASURA_TEST_LATE_SETTINGS_PROBE"
+LATE = {}
+
+
+def test_a_settings_write_queued_at_a_tests_end_lands_in_its_root_never_the_checkouts(tmp_path):
+    # A real pytest run of the two helpers below: the first queues a settings write and ends at once — as a test's
+    # window does with its 0.5 s shutdown under load — so the write would land after its root was gone, in this
+    # checkout's settings.json (refused by the guard, which fails the run). It lands in the first helper's root; the
+    # second helper waits for the writer to be done and finds it written there.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[LATE_PROBE] = "1"
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    tree = os.path.join(PROJECT, "settings.json")
+    before = os.stat(tree).st_mtime_ns if os.path.exists(tree) else None
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "tests/test_harness_guards.py",
+         "-k", "test_late_helper"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "2 passed" in text, text
+    assert (os.stat(tree).st_mtime_ns if os.path.exists(tree) else None) == before, "this checkout's untouched"
+
+
+@pytest.mark.skipif(not os.environ.get(LATE_PROBE), reason="a helper of the nested run above")
+def test_late_helper_1_queues_a_write_and_ends():
+    from app.services.settings import SettingsService
+    LATE["root"], LATE["svc"] = os.environ["SURASURA_TEST_ROOT"], SettingsService(delay=0.3)
+    LATE["svc"].set({"setup_seen": "3.0"})               # queued: written 0.3 s from now, after this test
+
+
+@pytest.mark.skipif(not os.environ.get(LATE_PROBE), reason="a helper of the nested run above")
+def test_late_helper_2_finds_it_in_the_first_helpers_root():
+    writer = LATE["svc"].writer
+    assert writer.flush(5), "the first helper's write is done"
+    with open(os.path.join(LATE["root"], "settings.json"), encoding="utf-8") as f:
+        assert json.load(f)["setup_seen"] == "3.0", "written in its own test root"

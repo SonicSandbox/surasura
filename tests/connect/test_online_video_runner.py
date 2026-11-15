@@ -399,3 +399,23 @@ def test_a_video_kept_from_a_transcribed_fetch_raises_no_note(tmp_path, ledger, 
         assert runner._download(steps, ledger, "ja", job, web) is not None
     assert [e for e in steps.log if e[0] == "download"] == [("download", 1)], "the second time it was kept"
     assert _kept(ledger) == []
+
+
+# --- Michi-YT5: a small speech model keeps YouTube's captions, saying nothing ------------------------------------ #
+def test_with_a_small_speech_model_the_captions_are_kept_saying_nothing(tmp_path, ledger):
+    # why: Sonic 2026-11-15 — no new line on the learner's screen; "no speech model" would be untrue: there is one
+    steps = _captioned(tmp_path, items=(1, 2), source=online.NOT_LARGE)
+    for _ in range(2):
+        _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert sorted(j["item_id"] for j in ledger.jobs("ja") if j["state"] == "done") == [1, 2], ledger.jobs("ja")
+    assert not ledger.needs("ja"), ledger.needs("ja")
+
+
+def test_the_no_model_note_goes_once_a_small_model_is_there(tmp_path, ledger):
+    # why: the note's cause (no speech model) is gone once Anki Miner has one, even one that keeps the captions
+    steps = _captioned(tmp_path)
+    _run(tmp_path, ledger, steps.plan, steps=steps)
+    assert len(_kept(ledger)) == 1
+    plan = dict(steps.plan, line={"ja": [2]}, queue={"ja": [2]}, online=[2], source=online.NOT_LARGE)
+    _run(tmp_path, ledger, plan, steps=_captioned(tmp_path, items=(2,), source=online.NOT_LARGE))
+    assert _kept(ledger) == [], "fixed by itself"

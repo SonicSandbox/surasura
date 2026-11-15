@@ -60,7 +60,8 @@ and `extract` copies a track's text as the plan gives it into `<run_dir>/<run_id
 Michi-AB Stage B (3.11's Z-17 `sync`, Z-22 `setup --speech-model`, Z-18 `transcribe`, Z-10 `media` of an audio file):
 the speech models installed live in the test's Anki Miner home (`ANKI_MINER_HOME/fake-models.json`: {"installed": [..],
 "profiles": {id: model}, "model"}); `check` names `speech_model` ok while the profile's model is installed;
-`settings-import` of `asr_model` sets a profile's model; `setup --speech-model --model M` installs M (and sets it).
+`settings-import` of `asr_model` sets a profile's model; `setup --speech-model --model M` installs M (and sets it);
+`settings-export` (with no "export" in the plan) names the profile's model as `asr_model`, as 3.12's does (Michi-YT5).
 
     {"speech": {"installed": ["small"], "model": "large-v3"},   # the home as it starts (else none installed, large-v3)
      "speech_setup": "installed" | "failed" | "busy" | "hang",  # setup's outcome (hang: until its cancel file, <= 5 s)
@@ -792,7 +793,12 @@ def main(argv):
         verdict = _check(argv, plan)
     elif command == "settings-export":
         out = argv[argv.index("--out") + 1]
-        text = json.dumps(plan.get("export", LAPIS_EXPORT), ensure_ascii=False)
+        export = plan.get("export")
+        if export is None:
+            export = json.loads(json.dumps(LAPIS_EXPORT))
+            if "speech" in plan or "speech_setup" in plan:  # (Michi-YT5) as 3.12's: the profile's model with the rest
+                export["settings"]["asr_model"] = _speech_ok(argv, plan)[1]
+        text = json.dumps(export, ensure_ascii=False)
         with open(out, "w", encoding="utf-8") as f:
             if plan.get("export_cut"):  # row 56: still writing when the job's Stop ends it — half on disk
                 f.write(text[:len(text) // 2])

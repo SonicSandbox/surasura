@@ -36,6 +36,7 @@ PLACED = {
     "open_book": "neither", "open_book_program": "neither",     # what ▶ opens an EPUB with (Content): never a run
     "finish_cards": "neither",               # When you finish something (Content): its cards' choice, never a run
     "practice_keep_rounds": "neither",       # A6: the practice server keeps its rounds, never a run
+    "browser_extension": "neither", "browser_extension_token": "neither",   # the extension's listener: never a run
     "setup_seen": "neither",                 # the setup pages seen (the setup wizard, WZ-8): never a run
     "hints_seen": "neither",                 # W-1: the one-time hints shown, each per library: never a run
     "setup_passed": "neither",               # the setup pages saved before setup finished (IK2-2): never a run

@@ -198,7 +198,14 @@ LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait fo
 BOOKS_WAIT = "Waits for Anki Miner to read books: Surasura makes its cards by itself once Anki Miner can."
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
 AUDIO_WAIT = "Waits for Anki Miner to mine audio: Surasura makes its cards by itself once Anki Miner can."
-WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
+# Netflix and Disney+ (the browser extension's subtitles, `app/online_receiver.py`): their video is never fetched
+# (DRM: nothing tries), so their jobs are set aside the same way, quietly — never *No video*, never a download. THE
+# SEAM for the next version: such a job's picked lines (each word, its line's start and end, from the transcript's
+# sidecar) are handed to the extension, which plays and records each line's clip and picture in the browser in one
+# batch and gives them back; Anki Miner makes the cards from those clips, and the job is queued again
+# (`ledger.reopen_skipped`) once `anki_miner.mines_now("browser")` (or its successor) answers yes.
+BROWSER_WAIT = "Waits for the browser extension to record its lines: its video can't be downloaded (DRM)."
+WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT, "browser": BROWSER_WAIT}     # `library.waits_for`'s kinds
 # Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
 # here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
 BOOK_UNREADABLE = "{title}: Anki Miner couldn't read this book or text ({why})."
@@ -2701,6 +2708,8 @@ class Steps:
         kept = getattr(self, "_fetched", {}).get(str(job["id"]))
         if kept and all(_on_disk(p) for p in kept):
             return kept
+        if web.get("site") in online.BROWSER_SITES:     # never fetched (DRM): set aside before any pick, never here
+            raise Skip(BROWSER_WAIT)
         if self._settings(lang).get("youtube_risk_acknowledged") is not True:
             raise Needs(online.KIND, online.NOT_TICKED, standing=True)
 

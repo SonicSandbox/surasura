@@ -39,7 +39,7 @@ WHY = {
     "moved": "its {word} isn't where it was ({folder})",           # MV-2: it left its folder, the source still there
     "no-link": "its video's address wasn't kept",                 # an online video's: no id, no page (try a9.1)
 }
-SITES = {"youtube": "YouTube", "bilibili": "bilibili.tv"}      # an online item's `source_type` -> its site's name
+SITES = {"youtube": "YouTube", "bilibili": "bilibili.tv", "netflix": "Netflix", "disneyplus": "Disney+"}      # an online item's `source_type` -> its site's name
 _UNLISTED = object()                # `runner.beside`'s answer for a folder that can't be listed
 
 
@@ -185,7 +185,8 @@ def to_open(language, item_id, rel_path, media, online=None):
 def online_link(language, rel_path, record=None):
     """(A worker; never writes.) What ▶ opens for an online video (try a9.1, Sonic: "the play button for a youtube
     video should be the video … opens up in the web browser"): its own page in the browser — YouTube's
-    `watch?v=<id>`, bilibili.tv's episode page — from what the downloader kept: the pairing record (`video_id`,
+    `watch?v=<id>`, bilibili.tv's, Netflix's or Disney+'s episode page (the page the browser extension sent it from) —
+    from what the downloader kept: the pairing record (`video_id`,
     `url`), else the cue sidecar beside the transcript, else the id its name ends with (YouTube's; a bilibili.tv page
     can't be built from its id). -> (link, None), or (None, why)."""
     from app import path_utils
@@ -207,7 +208,7 @@ def online_link(language, rel_path, record=None):
                     pass
             held.append(got if isinstance(got, dict) else {})
         return held[0]
-    if path_utils._BILIBILI_ID_RE.search(stem) or str(record.get("content_key") or "").startswith("bilibili:"):
+    if path_utils._BILIBILI_ID_RE.search(stem) or path_utils.SITE_ID_RE.search(stem) or             str(record.get("content_key") or "").startswith(("bilibili:", "netflix:", "disneyplus:")):
         url = str(record.get("url") or side().get("url") or "").split("#", 1)[0]     # (yt-dlp's season fragment)
         return (url, None) if url.startswith(("https://", "http://")) else (None, WHY["no-link"])
     m = path_utils._YOUTUBE_ID_RE.search(stem)

@@ -1686,6 +1686,23 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     assert anime.status.kind != "books" and not anime.episodes[0].text
 
 
+def test_a_netflix_episode_waits_for_the_browser_extension_never_no_video_and_its_play_opens_its_page():
+    """The browser extension's subtitles (`app/online_receiver.py`): a Netflix or Disney+ episode's video is never
+    downloaded (DRM), so its row says plainly that it waits for the extension to record its lines — faint, nothing to
+    press, never *No video* nor *Mine* — and ▶ opens its page (`online`); an anime beside it is untouched."""
+    work(8, "雲の上の郵便屋さん", media="drama")
+    names = ["雲の上の郵便屋さん S01E01 [netflix-81234567].txt", "雲の上の郵便屋さん S01E02 [netflix-81234568].txt"]
+    items = items_of([("now", 8, 80, names, {0: {"source_type": "netflix"}, 1: {"source_type": "netflix"}}),
+                      ("now", 1, 10, eps("星降る街の小さな工房", 1, 1), {})])
+    rows = {r.title: r for r in vr.build(items, dict(WORKS), {"mine_line": 20}).rows}
+    show = rows["雲の上の郵便屋さん"]
+    assert (show.status.kind, show.status.label, show.status.tone) == ("browser", vr.STRINGS["browser_wait"], "faint")
+    assert show.status.tip == vr.STRINGS["tip_browser_wait"] and "No video" not in show.status.tip
+    assert all(e.text == "browser" and e.online == "netflix" for e in show.episodes)
+    anime = rows["星降る街の小さな工房"]
+    assert anime.status.kind != "browser" and not anime.episodes[0].text
+
+
 # --- a8: a stone's Done painted ahead of the store (`marked`, the window's `drag.DragController`) ----------------------- #
 def _a8_items():
     """A row of each kind a stone sits on: a show part-watched with more files than its chips, a light novel's parts, a

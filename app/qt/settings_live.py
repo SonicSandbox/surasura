@@ -711,6 +711,12 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False, r=row_id: self.export(r))
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"export": door}
+        elif row_id == "browser_extension_token":                  # --- the browser extension's token: Copy
+            door = sc.Door(S.EXTENSION_COPY, tooltip=row.tip, name=row.label)
+            door.clicked.connect(lambda _c=False: self.copy_extension_token())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"copy": door}
+            self._words(row_id, self.extension_line(), keep=False)
         elif row_id == "practice_ai":                              # --- A6: one Copy per AI app
             slot = self._slot(row_id).layout()
             copies = {}
@@ -1210,6 +1216,27 @@ class Live(QObject):
                     door.setText(name)
             QTimer.singleShot(2000, back)
         self.say(said, "practice_ai")
+
+    def extension_line(self):
+        """Whether the browser extension's listener runs now (`windows.start_receiver`), in plain words."""
+        from app import online_receiver
+        receiver = getattr(self.shell, "_receiver", None)
+        if receiver is None:                    # no window's listener (a page on its own): nothing listens
+            return S.EXTENSION_OFF
+        if receiver.on:
+            return S.EXTENSION_LISTENING.format(port=receiver.port)
+        on = (self._settings() or {}).get("browser_extension") is True
+        return S.EXTENSION_TAKEN.format(port=online_receiver.PORT) if on else S.EXTENSION_OFF
+
+    def copy_extension_token(self):
+        """*Copy token*: the browser extension's token to the clipboard (none yet: the switch makes it), and the
+        row's line read again. Writes nothing."""
+        from PyQt6.QtWidgets import QApplication
+        token = (self._settings() or {}).get("browser_extension_token")
+        if token:
+            QApplication.clipboard().setText(token)
+        self.say(S.EXTENSION_COPIED_LINE if token else S.EXTENSION_NO_TOKEN, "browser_extension_token")
+        self._words("browser_extension_token", self.extension_line(), keep=False)
 
     def open_logs(self):
         """*Folders* › *Logs*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""

@@ -40,7 +40,7 @@ from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
-from app.path_utils import infer_source_type
+from app.path_utils import ONLINE_TYPES, infer_source_type
 from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
 from app import no_subs                           # Michi-NS: a waiting video's subtitle, found or made (std library)
 from app.services import stone_plan
@@ -223,7 +223,7 @@ Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
 Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
-# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
+# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` (`path_utils.ONLINE_TYPES`): ▶ opens its page in the
 # browser (`play.online_link`); None for a file on disk and in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 # --- Michi-NS (PROVISIONAL): `subs`, what `no_subs.note` says of its subtitle — a waiting video's "making", "looking",
@@ -315,6 +315,11 @@ STRINGS = {
     "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
     # alpha 4 M1: a book or a text, while Anki Miner reads none — quiet, nothing to press (never its window)
     "books_wait": "Waits for Anki Miner",
+    # Netflix / Disney+ (the browser extension's subtitles): never downloaded (DRM), quiet, nothing to press
+    "browser_wait": "Waits for the browser extension",
+    "tip_browser_wait": "Its video can't be downloaded (it's protected), so Surasura doesn't try. A later version of "
+                        "the browser extension records its lines while it plays, and Surasura makes the cards from "
+                        "them. Nothing to do meanwhile; ▶ opens its page",
     # Michi-U (alpha 9.1 try: the tip said "once a later update lets it read books" when 3.11 already did): what's
     # true now (`_wait_tip`) — the update that opens it and where its button is; else the Anki Miner it waits for
     "tip_wait_update": "Needs Anki Miner {version} to make cards from {what}. Surasura makes these cards by itself "
@@ -863,12 +868,17 @@ def status_of(eps, word, line_n):
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
         # Anki Miner's window). An audiobook's own item with no text (Hon, H-7) waits so whatever Anki Miner mines;
         # the rest say what's true (Michi-U, `_wait_tip`)
-        if ready:
-            tip = _wait_tip({e.text for e in ready}, line_n is not None, looked=True)   # (`_mines` just asked)
-        else:                                       # only its own item, no text: an update makes no card of it
-            from app.connect import anki_miner
-            tip = STRINGS["tip_heard_wait"] if anki_miner.mines("audio") else _wait_tip({"audio"}, line_n is not None)
-        st = Status("books", STRINGS["books_wait"], tip, "faint")
+        if ready and all(getattr(e, "text", False) == "browser" for e in ready + heard):
+            # Netflix / Disney+ (the browser extension's): its video is never downloaded — it waits for the extension
+            # to record its lines (`runner.BROWSER_WAIT`), never *No video*
+            st = Status("browser", STRINGS["browser_wait"], STRINGS["tip_browser_wait"], "faint")
+        else:
+            if ready:
+                tip = _wait_tip({e.text for e in ready}, line_n is not None, looked=True)   # (`_mines` just asked)
+            else:                                   # only its own item, no text: an update makes no card of it
+                from app.connect import anki_miner
+                tip = STRINGS["tip_heard_wait"] if anki_miner.mines("audio") else                     _wait_tip({"audio"}, line_n is not None)
+            st = Status("books", STRINGS["books_wait"], tip, "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -1093,7 +1103,7 @@ def _mines(kind):
     setup record last found names it — Connect's jobs' own answer)? Alpha 4 M1; Z-9 (books and texts) known since
     2026-10-28, Z-16 (audio) since 2026-11-02 (Michi-AB)."""
     from app.connect import anki_miner
-    return anki_miner.mines_now("audio" if kind == "audio" else "books")
+    return anki_miner.mines_now(kind if kind in ("audio", "browser") else "books")
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
@@ -1132,7 +1142,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     verb = VERB[word]
     # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
     # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
-    online = item.get("source_type") in ("youtube", "bilibili")
+    online = item.get("source_type") in ONLINE_TYPES       # (Netflix and Disney+: the browser extension's)
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says

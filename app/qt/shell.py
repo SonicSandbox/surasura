@@ -2861,7 +2861,8 @@ class ShellWindow(QMainWindow):
         self._read_level()
         from app.qt import windows
         windows.resume_youtube(self)
-        from app.qt import guide as guide_ui                # the feature guide: its first look, once the start settles
+        windows.start_receiver(self)                      # the browser extension's subtitles, while it is switched on
+        from app.qt import guide as guide_ui               # the feature guide: its first look, once the start settles
         QTimer.singleShot(guide_ui.FIRST_LOOK_MS, self._guide_look)
 
     # --- the feature guide (Hoshi-S, 2026-11-12; app/services/guide.py, app/qt/guide.py) ------------------------- #

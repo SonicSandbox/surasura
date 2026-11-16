@@ -696,3 +696,70 @@ def test_the_token_a_paired_extension_holds_comes_over_from_settings_json_once()
     assert rx.OLD_SETTING not in kept and kept["browser_extension"] is True
     assert rx.adopt_token(SettingsService(delay=0.0).get()) is False      # once: nothing left to take over
     assert rx.read_token() == "kumo-no-ue-no-old-token"
+
+
+# --- the cover (v1's optional `cover`) ------------------------------------------------------------------------------- #
+def _png(pad=0):
+    """A real 1×1 PNG (`pad` bytes of a text chunk make it as big as wanted)."""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + (chunk(b"tEXt", b"Comment\x00" + b"x" * pad) if pad else b"")
+            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+
+
+def _cover_of(store, item_id):
+    return store.conn.execute("SELECT w.cover_source, w.cover_ref, w.cover_path, w.cover_locked FROM items i JOIN "
+                              "works w ON w.id = i.work_id WHERE i.id = ?", (item_id,)).fetchone()
+
+
+class _CoverWriter(_Writer):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
+        assert auto, "nobody's choice: never on the Undo stack"
+        got = self.opener.handle().set_cover(work_id, source, ref=ref, path=path, locked=locked)
+        self.opener.close()
+        return 1 if got is not None else None
+
+
+@pytest.fixture
+def covered(library):
+    store, _writer, language = library
+    return store, _CoverWriter(language), language
+
+
+def _with_cover(language, data, **kw):
+    import base64
+    body = _sub(language, **kw)
+    body["cover"] = base64.b64encode(data).decode("ascii") if isinstance(data, bytes) else data
+    return rx.subtitle(json.dumps(body).encode())
+
+
+def test_the_pages_artwork_becomes_the_cover_of_a_title_with_none(covered):
+    from app import path_utils
+    store, writer, language = covered
+    _added, item = rx.take_in(writer, _with_cover(language, _png()), cover=rx.keep_cover)
+    source, ref, path, locked = _cover_of(store, item)
+    assert (source, ref, locked) == ("user", "browser:netflix", 0) and path.startswith("user:") and path.endswith(".png")
+    assert os.path.isfile(os.path.join(path_utils.get_user_files_path(language), "covers", path[len("user:"):]))
+
+
+def test_a_title_with_a_cover_of_its_own_keeps_it(covered):
+    store, writer, language = covered
+    _added, item = rx.take_in(writer, _with_cover(language, _png(), episode=1), cover=rx.keep_cover)
+    work = store.item(item)["work_id"]
+    assert store.set_cover(work, "file", ref="Processed/folder.jpg") is not None      # its own art, say
+    _added, again = rx.take_in(writer, _with_cover(language, _png(pad=40), video="81234599", episode=2),
+                               cover=rx.keep_cover)
+    assert store.item(again)["work_id"] == work
+    assert _cover_of(store, again)[:3] == ("file", "Processed/folder.jpg", None)
+
+
+@pytest.mark.parametrize("bad", ["not base64 at all!", b"GIF89a this is no PNG at all, only text", "big"])
+def test_a_broken_or_too_big_cover_is_left_out_and_the_subtitle_still_arrives(covered, bad):
+    store, writer, language = covered
+    data = _png(pad=rx.MAX_COVER) if bad == "big" else bad
+    added, item = rx.take_in(writer, _with_cover(language, data), cover=rx.keep_cover)
+    assert added is True and _cover_of(store, item)[0] in (None, "generated")

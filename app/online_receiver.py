@@ -26,7 +26,11 @@ whose title is its record's show (a film: its own title). The file's name ends `
 
 Standard library only; no Qt (the window's glue is `app/qt/windows.py` `start_receiver`).
 """
+import base64
+import binascii
+import hashlib
 import hmac
+import logging
 import http.server
 import ipaddress
 import json
@@ -34,6 +38,8 @@ import os
 import re
 import secrets
 import threading
+
+log = logging.getLogger(__name__)
 
 HOST, PORT = "127.0.0.1", 27631
 CONTRACT, SCHEMA = 3, 1              # 2: mining after the fact (`connect.browser`); 3: YouTube links
@@ -48,6 +54,7 @@ _DONE_PATH = re.compile(r"/v1/jobs/(\d{1,9})/done")
 YOUTUBE_HOSTS = ("www.youtube.com", "youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
 MAX_LINKS = 50
 MAX_CUES = 20000
+MAX_COVER = 400 * 1024                  # the show's artwork as the page shows it (the contract's limit)
 EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
 TOKEN_HEADER = "X-Surasura-Token"
 _ID = re.compile(r"[A-Za-z0-9-]{1,64}")         # Netflix's digits, Disney+'s UUID-like ids
@@ -201,7 +208,8 @@ def subtitle(body):
     if not tidy:
         raise Bad("every cue is empty")
     return {"site": site, "video_id": video, "url": url.split("#", 1)[0], "language": language,
-            "title": title or show["title"], "show": show, "cues": tidy}
+            "title": title or show["title"], "show": show, "cues": tidy,
+            "cover": got["cover"] if isinstance(got.get("cover"), str) else None}
 
 
 def content_key(sub):
@@ -290,7 +298,58 @@ def youtube_links(body):
     return out
 
 
-def take_in(writer, sub, rules=None, timeout=30.0):
+def keep_cover(writer, sub, item_id):
+    """The show's artwork the extension sent (`cover`: base64 JPEG or PNG, at most MAX_COVER) as its title's cover —
+    only while the title has none of its own (none, or the generated one: never its own art, an AniList or TMDB cover,
+    nor your pick). Kept as *Choose an image…* keeps one (`covers.keep_user_bytes`' folder, name and checks) and recorded
+    through the window's writer as nobody's choice (`auto`: never on the Undo stack), unlocked: *Change cover…* still
+    replaces it, and an online fetch never does (`Store.set_cover`'s rule). -> its record's path, or None; never
+    raises (a cover is never a reason for the subtitle to fail: the why is logged)."""
+    raw = sub.get("cover")
+    if not raw:
+        return None
+    try:
+        data = base64.b64decode(raw, validate=True)
+        if len(data) > MAX_COVER:
+            raise ValueError(f"{len(data)} bytes, over {MAX_COVER}")
+        from app import path_utils
+        from app.services import covers
+        ext = covers.image_ext(data)
+        if ext is None:
+            raise ValueError("not a JPEG or PNG")
+        try:
+            store = writer.opener.handle()
+            with store._reading():
+                row = store.conn.execute("SELECT w.id, w.cover_source, w.cover_locked FROM items i JOIN works w ON "
+                                         "w.id = i.work_id WHERE i.id = ?", (item_id,)).fetchone()
+        finally:
+            writer.opener.close()
+        if row is None or row[1] not in (None, "generated") or row[2]:
+            return None                         # a title with a cover of its own keeps it
+        language = writer.language
+        name = f"{covers._digest('work', language, row[0])[:12]}-{hashlib.sha256(data).hexdigest()[:16]}{ext}"
+        target = os.path.join(path_utils.get_user_files_path(language), covers.USER_COVERS, name)
+        if not os.path.isfile(target) and not covers._write_whole(target, data):
+            raise OSError(f"couldn't write {target}")
+        if writer.set_cover(row[0], "user", ref=f"browser:{sub['site']}", path="user:" + name, locked=False,
+                            auto=True) is None:
+            raise OSError("the library can't be written now")
+        return "user:" + name
+    except (binascii.Error, ValueError, OSError) as e:
+        log.warning("The browser extension's cover wasn't kept: %s", e)
+    except Exception:
+        log.exception("The browser extension's cover wasn't kept")
+    return None
+
+
+def _cover_later(writer, sub, item_id):
+    """`keep_cover` on a thread of its own: the subtitle's answer never waits for it."""
+    if sub.get("cover"):
+        threading.Thread(target=keep_cover, args=(writer, sub, item_id), name="browser-extension-cover",
+                         daemon=True).start()
+
+
+def take_in(writer, sub, rules=None, timeout=30.0, cover=_cover_later):
     """(The listener's thread.) The subtitle into the library open now -> (added, item id): one video already in
     (its pairing's `content_key`) -> (False, its item), nothing written; else its files into Processed, registered
     through the window's writer (`Writer.register`: New arrivals unless the learner's `placing_rules` place it) and
@@ -319,6 +378,7 @@ def take_in(writer, sub, rules=None, timeout=30.0):
             writer.opener.close()               # this thread's handle: never kept between requests
     item = look()
     if item is not None:
+        cover(writer, sub, item)                # (sent again: a title still without one takes it now)
         return False, item
     path = write(os.path.join(writer.opener.data_dir, "Processed"), sub)
     landed = threading.Event()
@@ -331,6 +391,7 @@ def take_in(writer, sub, rules=None, timeout=30.0):
     item = look(path)
     if item is None:
         raise Busy("Surasura couldn't add it: try again later")
+    cover(writer, sub, item)
     return True, item
 
 

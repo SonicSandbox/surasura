@@ -4108,7 +4108,9 @@ def test_S1_a_pin_unpinned_elsewhere_while_another_rows_tick_landed_is_still_lis
     monkeypatch.setattr(ls.Store, "pin", real_pin)
     w2, heard2 = make_writer()
     assert w2.replay()
-    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    # the replay's note comes after its command leaves the queue and the journal (`_landed` → `_replay_finished`):
+    # waited for itself, never read the moment the queue is empty (FLAKES.md)
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending() and heard2.notes)
     assert lib.store.item(now[1])["pinned"] is None and heard2.notes == [WORDS["crash_one"]]
 
 

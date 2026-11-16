@@ -2122,7 +2122,8 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
     doesn't hold its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why) — its words
     stay unmade, so a *Mine* asks for them again; never a clip with the line outside it. No clip at all: the job ends
     skipped (BROWSER_NONE). Worked out again from the folder at every look while it is there (a job saved before this
-    rule, its clips matched by order, is matched again by place); the folder gone (its cards made): `picked` as it is."""
+    rule, its clips matched by order, is matched again by place); the folder gone (its cards made): `picked` as it
+    is."""
     from app.connect import browser
     jid = job["id"]
     got = browser.state(jid)

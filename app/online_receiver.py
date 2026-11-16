@@ -13,7 +13,8 @@ picture and sound a card needs come later, from the extension itself (`runner.BR
 
 **Safe on a shared computer** (each its own check, `Receiver`):
 - loopback only: bound to 127.0.0.1, and a peer that isn't loopback is refused all the same;
-- a token the learner copies once from Settings (`kept_token`: in the persistent user data folder, never settings.json; compared in constant time);
+- a token the learner copies once from Settings (`kept_token`: in the persistent user data folder, never
+  settings.json; compared in constant time);
 - no web page: a request naming an `Origin` that isn't a browser extension's is refused (a page's script can reach
   127.0.0.1, an extension's background can't be faked by one), and no CORS header is ever sent;
 - a body over `MAX_BODY` is refused before it is read.
@@ -301,7 +302,8 @@ def youtube_links(body):
 def keep_cover(writer, sub, item_id):
     """The show's artwork the extension sent (`cover`: base64 JPEG or PNG, at most MAX_COVER) as its title's cover —
     only while the title has none of its own (none, or the generated one: never its own art, an AniList or TMDB cover,
-    nor your pick). Kept as *Choose an image…* keeps one (`covers.keep_user_bytes`' folder, name and checks) and recorded
+    nor your pick). Kept as *Choose an image…* keeps one (`covers.keep_user_bytes`' folder, name and checks) and
+    recorded
     through the window's writer as nobody's choice (`auto`: never on the Undo stack), unlocked: *Change cover…* still
     replaces it, and an online fetch never does (`Store.set_cover`'s rule). -> its record's path, or None; never
     raises (a cover is never a reason for the subtitle to fail: the why is logged)."""

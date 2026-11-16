@@ -56,7 +56,7 @@ def _read_json(path):
         return None
 
 
-# --- the subtitle ---------------------------------------------------------------------------------------------------- #
+# --- the subtitle --------------------------------------------------------------------------------------------------- #
 def _stamp(seconds):
     ms = max(0, int(round(seconds * 1000)))
     return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
@@ -118,7 +118,7 @@ def read_srt(path):
     return out
 
 
-# --- Connect's side: the hand-off ------------------------------------------------------------------------------------ #
+# --- Connect's side: the hand-off ----------------------------------------------------------------------------------- #
 def lines_for(words, cues):
     """Each picked word's line (its `line_start`, widened by its `line_expansion` [before, after] to the lines its card
     holds) -> ([{"n", "start", "end", "text"}], {(line_start, before, after): n}); one line for words that share one."""
@@ -260,7 +260,7 @@ def drop(job_id, root=None):
     return not os.path.exists(place(job_id, root))
 
 
-# --- the listener's side --------------------------------------------------------------------------------------------- #
+# --- the listener's side -------------------------------------------------------------------------------------------- #
 def waiting(root=None):
     """`GET /v1/jobs`: every handed-off job not done, oldest first, each with only its lines still missing a clip."""
     root = root or folder()

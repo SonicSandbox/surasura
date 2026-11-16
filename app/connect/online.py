@@ -58,7 +58,7 @@ from app.connect import stopping
 
 log = logging.getLogger("surasura-cli")
 
-SITES = ("youtube", "bilibili", "netflix", "disneyplus")    # the online items' `source_type`s (`path_utils.ONLINE_TYPES`)
+SITES = ("youtube", "bilibili", "netflix", "disneyplus")    # the online items' `source_type`s (`ONLINE_TYPES`)
 # Netflix and Disney+ (the browser extension's, `app/online_receiver.py`): never fetched — their video is DRM'd, and
 # nothing here ever tries — their lines are recorded in the browser instead (`connect.browser`)
 BROWSER_SITES = ("netflix", "disneyplus")

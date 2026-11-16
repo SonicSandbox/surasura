@@ -111,7 +111,7 @@ def _post(receiver, body, token=TOKEN, **headers):
     return _ask(receiver, "POST", "/v1/online-subtitle", body, headers)
 
 
-# --- the listener ---------------------------------------------------------------------------------------------------- #
+# --- the listener --------------------------------------------------------------------------------------------------- #
 def test_hello_says_who_answers_and_never_opens_the_door_to_a_web_page(listening):
     receiver = listening[0]
     code, got, headers = _ask(receiver, "GET", "/v1/hello")
@@ -195,7 +195,7 @@ def test_the_token_is_compared_whole():
     assert not rx.token_ok(token[:-1], token) and not rx.token_ok(token, "") and not rx.token_ok(None, token)
 
 
-# --- the item it makes ----------------------------------------------------------------------------------------------- #
+# --- the item it makes ---------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("library", LANGUAGES, indirect=True)
 def test_an_episode_arrives_titled_by_its_show_with_its_number_and_its_page(library):
     """The real listener, a real store: the posted episode is one item in its show's title, season and episode kept,
@@ -215,7 +215,8 @@ def test_an_episode_arrives_titled_by_its_show_with_its_number_and_its_page(libr
     assert item["rel_path"].startswith("Processed/") and item["rel_path"].endswith("[netflix-81234567].txt")
     assert _title(store, got["item"]) == w[1], "titled by its show, never by the episode's own title"
     pairing = _pairing(store, got["item"])
-    assert pairing["show"] == {"title": w[1], "season": 1, "episode": 3} and pairing["content_key"] == "netflix:81234567"
+    assert pairing["show"] == {"title": w[1], "season": 1, "episode": 3}
+    assert pairing["content_key"] == "netflix:81234567"
     path = os.path.join(writer.opener.data_dir, *item["rel_path"].split("/"))
     from app import analyzer
     with open(path, encoding="utf-8") as f:
@@ -265,7 +266,7 @@ def test_the_names_type_is_the_site_and_never_a_bare_bracket():
     assert path_utils.infer_source_type("Processed/星の旅 [81234567].txt") == "text"
 
 
-# --- v2: mining after the fact (`app/connect/browser.py`, `runner._browser_clips`) ----------------------------------- #
+# --- v2: mining after the fact (`app/connect/browser.py`, `runner._browser_clips`) ---------------------------------- #
 CUES = [(700.0, 703.5, "雨の日の散歩で見つけた"), (705.29, 708.84, "小さな発見を話そう"), (709.0, 711.0, "朝ごはんを五分で作る"),
         (912.0, 915.5, "古本屋めぐりは楽しい")]
 WEB = {"site": "netflix", "url": "https://www.netflix.com/watch/81234567", "video_id": "81234567"}
@@ -440,7 +441,7 @@ def test_a_netflix_episode_is_picked_from_its_own_cues_never_downloaded(library)
     assert srt == again and browser.read_srt(srt)[0] == (12.34, 15.02, f"{names(language)[3]}{names(language)[4]}")
 
 
-# --- v3: YouTube links to the transcript downloader ------------------------------------------------------------------ #
+# --- v3: YouTube links to the transcript downloader ----------------------------------------------------------------- #
 def test_youtube_links_go_to_the_downloader_only_as_its_window_would_take_them(tmp_path):
     """`POST /v1/youtube`: YouTube's own https links only (400 else), the token as v1, and the window's answer passed
     on — 409 with its words when the downloader is off or its tick not given, `queued` when it runs them."""
@@ -484,7 +485,7 @@ def test_the_window_never_runs_links_past_the_downloaders_switch_or_its_risk_tic
     assert windows.youtube_refused({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True}) is None
 
 
-# --- a pick again after the hand-off (the user's jobs 461–464, 2026-11-15) ------------------------------------------- #
+# --- a pick again after the hand-off (the user's jobs 461–464, 2026-11-15) ------------------------------------------ #
 # 俺のこと、なんか言ってた？ S01E08: five lines out of time order, as a pick ranks them
 EP8 = [(129.708, 131.458, "〈貴様の頬が裂けるまで〉"), (265.75, 268.25, "「リア王」と初日 一緒だなって"),
        (337.042, 339.917, "もともと こちらの大物俳優役は どなたが？"), (1241.792, 1246.625, "〈稲妻よ 電光石火の硫黄の火〉"),
@@ -698,7 +699,7 @@ def test_the_token_a_paired_extension_holds_comes_over_from_settings_json_once()
     assert rx.read_token() == "kumo-no-ue-no-old-token"
 
 
-# --- the cover (v1's optional `cover`) ------------------------------------------------------------------------------- #
+# --- the cover (v1's optional `cover`) ------------------------------------------------------------------------------ #
 def _png(pad=0):
     """A real 1×1 PNG (`pad` bytes of a text chunk make it as big as wanted)."""
     import struct
@@ -742,7 +743,8 @@ def test_the_pages_artwork_becomes_the_cover_of_a_title_with_none(covered):
     store, writer, language = covered
     _added, item = rx.take_in(writer, _with_cover(language, _png()), cover=rx.keep_cover)
     source, ref, path, locked = _cover_of(store, item)
-    assert (source, ref, locked) == ("user", "browser:netflix", 0) and path.startswith("user:") and path.endswith(".png")
+    assert (source, ref, locked) == ("user", "browser:netflix", 0)
+    assert path.startswith("user:") and path.endswith(".png")
     assert os.path.isfile(os.path.join(path_utils.get_user_files_path(language), "covers", path[len("user:"):]))
 
 
@@ -763,3 +765,29 @@ def test_a_broken_or_too_big_cover_is_left_out_and_the_subtitle_still_arrives(co
     data = _png(pad=rx.MAX_COVER) if bad == "big" else bad
     added, item = rx.take_in(writer, _with_cover(language, data), cover=rx.keep_cover)
     assert added is True and _cover_of(store, item)[0] in (None, "generated")
+
+
+def test_links_sent_again_while_their_run_goes_on_start_no_second_run():
+    """Mattias pressed it twice for an 8-video playlist: two yt-dlp runs. A link already running is refused (the 409's
+    *already*), nothing held for it; once its run ends, it can be sent again."""
+    from app.qt import windows
+    runs = windows.LinkRuns()
+    playlist = ["https://www.youtube.com/playlist?list=PLjfPBTv1Zr1J8"]
+    assert runs.claim(playlist) is True
+    assert runs.claim(playlist) is False
+    assert runs.claim(playlist + ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]) is False
+    assert runs.claim(["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]) is True, "another link runs beside it"
+    runs.release(playlist)
+    assert runs.claim(playlist) is True
+
+
+def test_a_runs_progress_shows_in_the_bar_at_most_every_two_seconds():
+    from app.qt import strings, windows
+    said, now = [], [100.0]
+    bar = windows.BarLines(said.append, every=2.0, clock=lambda: now[0])
+    assert bar("1 of 8 videos read") is True
+    now[0] += 0.5
+    assert bar("2 of 8 videos read") is False and bar("") is False
+    now[0] += 2.0
+    assert bar("3 of 8 videos read") is True
+    assert said == [strings.EXT_YT_PROGRESS.format(line=f"{n} of 8 videos read") for n in (1, 3)]

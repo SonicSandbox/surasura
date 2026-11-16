@@ -544,6 +544,11 @@ EXT_YT_ABSENT = "This Surasura has no YouTube downloader."
 EXT_YT_OFF = "Surasura's YouTube downloader is off: turn on YouTube transcripts in Settings → Content."
 EXT_YT_TICK = ("Surasura's YouTube downloader needs your OK first: open + Add → YouTube… in Surasura and tick "
                "“I understand the risks”.")
+EXT_YT_RUNNING = ("These links are being downloaded already: their transcripts come into New arrivals as they're "
+                  "read.")
+EXT_YT_STARTED = "YouTube links from the browser extension: downloading their transcripts ({n} links)…"
+EXT_YT_PROGRESS = "YouTube from the browser extension: {line}"
+EXT_YT_NONE_NEW = "YouTube links from the browser extension: no new transcripts (they're in your library already)."
 MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Surasura makes these cards by itself once it can "
                    "read books and texts")
 # IK-6: the window's start look at Anki (its line in the bar while it runs; *Opening Anki for you…* says the rest)

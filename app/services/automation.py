@@ -45,6 +45,7 @@ from app.services import jobs as jobs_module
 SYNC_EVERY = 300.0          # _maybe_anki_sync: FocusIn fires for every widget, so 5 minutes, not a debounce
 GENERATE_EVERY = 600.0      # _maybe_auto_generate: at most every 10 minutes
 JUNBAN_EVERY = 300.0        # _maybe_junban_auto: like the sync
+JUNBAN_SAME_AT_MOST = 3600.0    # s: a focus that finds nothing moved for 順 (`AutoJunban`) starts nothing, this long
 START_DELAY = 2.0           # the Tk `root.after(2000, lambda: self._maybe_anki_sync(force=True))`
 CHECK_SETTLE = 0.6          # _schedule_journey_state: one journey check for a burst of triggers
 # The child processes the automatic Generate waits for: the Tk window's, and the 3.0 importers' (a known-words import,
@@ -510,10 +511,15 @@ class AutoJunban:
     def __init__(self, owner):
         self._owner = owner
         self._last = float("-inf")
+        self._seen = None               # (`auto.moment` after the last run, when it ended) — the focus's "nothing moved"
 
     def maybe(self, force=False, cause=None):
         """(The worker.) None when the reorder was asked for, else why not. `cause`: its trigger (`causes.Cause`;
-        none: the window came back into focus)."""
+        none: the window came back into focus). A focus whose moment (`auto.moment`: the deck's new cards, the order
+        list, 順's settings) is the one the last run left starts nothing — "unchanged" — for up to JUNBAN_SAME_AT_MOST
+        after that run (Mattias, 2026-11-16: 順 ran at every return to the window, nothing changed, and held Anki meanwhile
+        so Connect's jobs waited); a moment that can't be read (Anki closed) runs as before. After a Generate (`force`)
+        it always runs."""
         o = self._owner
         now = o.clock()
         if not force and now - self._last < JUNBAN_EVERY:
@@ -536,6 +542,12 @@ class AutoJunban:
             # 順's window is open (a lock look, on this worker): the step would do nothing, and a `junban` job ending
             # tells that window Anki moved — its preview thrown away for a re-order that never ran (Mattias, alpha 3)
             return "window"
+        moment = getattr(auto, "moment", None)
+        if not force and moment is not None and self._seen is not None and \
+                now - self._seen[1] < JUNBAN_SAME_AT_MOST:
+            here = moment(settings)
+            if here is not None and here == self._seen[0]:
+                return "unchanged"
         self._last = now
         language = o.language
 
@@ -549,6 +561,11 @@ class AutoJunban:
                 message = f"順 (automatic) skipped: {e}"
             finally:
                 job.finish(ok=True, message=message or None)
+                try:                                # what this run left: the next focus with nothing moved stays quiet
+                    seen = moment(settings) if moment is not None else None
+                    self._seen = (seen, o.clock()) if seen is not None else None
+                except Exception:
+                    self._seen = None
             if message:
                 o.publish(junban=message)
         o.registry.submit("junban", JUNBAN_LABEL, automatic=True, on_quit="wait",

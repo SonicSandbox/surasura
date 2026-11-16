@@ -760,6 +760,51 @@ def test_junban_with_its_window_open_starts_no_job_and_runs_once_it_closes(live,
     auto.close()
 
 
+def test_junban_on_focus_starts_nothing_while_nothing_moved_and_runs_once_something_did(live, monkeypatch):
+    """Mattias (2026-11-16): 順 ran at every return to the window with nothing changed, and held Anki meanwhile
+    (Connect's jobs waited). A focus whose moment (`auto.moment`: the deck's new cards, the order list, 順's settings)
+    is the one the last run left starts no job; a changed moment runs; one that can't be read (Anki closed: None)
+    runs as before; and after JUNBAN_SAME_AT_MOST even an unchanged one runs again. A Generate still forces it."""
+    calls = _junban(monkeypatch)
+    fake = sys.modules["modules.junban.auto"]
+    state = {"moment": "a"}
+    fake.moment = lambda settings: state["moment"]
+    clock = _Clock(0.0)
+    auto, registry, controller, launches = _make(_settings(anki_sync_auto=False), clock=clock,
+                                                 journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 1
+    clock.now = A.JUNBAN_EVERY + 1                  # past the 5 minutes: nothing moved, so nothing starts
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 1 and [v.kind for v in registry.snapshot()].count("junban") == 1
+    state["moment"] = "b"                           # a card made, the list written again: it runs
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 2
+    clock.now += A.JUNBAN_EVERY + 1
+    state["moment"] = None                          # Anki closed: as before, the step itself says "not now"
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 3
+    state["moment"] = "c"
+    clock.now += A.JUNBAN_EVERY + 1                 # (the run left None: the next focus runs)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 4
+    clock.now += A.JUNBAN_SAME_AT_MOST + 1          # an hour on, unchanged: once again all the same
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 5
+    run = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches, settle=0)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    run.ended(0)
+    assert h.until(lambda: len(calls) == 6, seconds=5), "a Generate forces it, moment or not"
+    _settle(auto, registry)
+    auto.close()
+
+
 def test_backlog_read_before_a_generate_only_with_decks(live, monkeypatch):
     """`_maybe_backlog_sync`: the decks' new cards beside a Generate; nothing without decks, or with it off."""
     anki = _Anki(monkeypatch)

@@ -345,6 +345,20 @@ def test_top_of_an_episode_whose_show_is_in_current_says_it_went_in_with_its_sho
     assert win.toasts.card.base == want.format(title=title)
 
 
+def test_only_tops_toast_names_its_show_and_never_for_two_titles_at_once(world, monkeypatch):
+    """(Kura-EO.) *Soon* keeps its own words though its show is in Current; *Top* of two titles' picks has no one
+    episode order (the store puts the block at the top) — its toast says the top, as before."""
+    monkeypatch.setattr(arrivals.ArrivalsTray, "_has_show", lambda _self, _a: True)
+    seed, win, writer = world()
+    tray = open_tray(win)
+    rows_ = [r.arrival for r in tray_rows(win)]
+    assert tray._placed_words([rows_[1]], "soon", "x") == strings.TRAY_PLACED["soon"].format(title="x")
+    two = [a for a in rows_ if a.work_id is not None]
+    two = [two[0], next(a for a in two if a.work_id != two[0].work_id)]
+    assert tray._placed_words(two, "top", "x") == strings.TRAY_PLACED["top"].format(title="x")
+    assert tray._placed_words(two[:1], "top", "x") == strings.TRAY_PLACED_WITH_SHOW.format(title="x")
+
+
 @pytest.mark.parametrize("name", ["top", "after-show", "soon", "goal"])
 def test_each_menu_place_calls_the_writer_with_its_place(world, name, monkeypatch):
     monkeypatch.setattr(arrivals.ArrivalsTray, "_has_show", lambda _self, _a: True)    # (its show in Current)

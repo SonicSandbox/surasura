@@ -4164,7 +4164,8 @@ def test_a_move_the_store_puts_in_its_shows_episode_order_is_followed_where_the_
     assert h.until(lambda: heard.saved)
     assert lib.ids("now")[:2] == [ep8, ep9]
     assert numbers.moves == [([ep9], "now", None, None), ([ep9], "now", None, ep8)]
-    assert numbers.resyncs == 0 and numbers.landings == 1 and heard.rereads == 1
+    assert h.until(lambda: heard.rereads == 1)          # (told after `on_saved`, on the writer's thread)
+    assert numbers.resyncs == 0 and numbers.landings == 1
     a = lib.ids("now")[3]                               # a move the store leaves where it was asked: no second follow
     w.move([lib.ids("goal")[0]], "now", after_id=a, label="moved")
     assert h.until(lambda: len(heard.saved) == 2)

@@ -230,18 +230,75 @@ def test_a_6_months_episode_moved_up_joins_its_show_and_a_put_back_keeps_the_top
     assert store.ids("now")[:2] == [ep8, ep9] and up.show_order is True
     store.undo(up)
     assert store.item(ep9)["tier"] == "goal"
-    ep7 = _episode(store, language, show, 7)
-    store.finish([ep7])
-    assert store.item(ep7)["tier"] == "graduated"
-    store.put_back_finished([ep7])
-    assert store.ids("now")[:2] == [ep7, ep8]
+    ep10 = _episode(store, language, show, 10)
+    store.finish([ep10])
+    assert store.item(ep10)["tier"] == "graduated"
+    store.put_back_finished([ep10])
+    assert store.ids("now")[:2] == [ep10, ep8], "back at the top, not after its show's 8"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_at_nows_end_just_above_its_show_in_soon_takes_the_order(language):
+    """The Soon line is no gap: episode 8 leads Soon; episode 9 dropped at NOW's end (after NOW's last row, right
+    above 8 across the line) is a drop on the show's row's edge — it goes after 8, never left above it."""
+    store = migrated(language, shows=2, episodes=3)
+    w = names(language)
+    show = w[158]
+    ep8 = _episode(store, language, show, 8)
+    store.place([ep8], "soon")
+    assert store.ids("soon")[0] == ep8, "the setup: its show leads Soon"
+    ep9 = _episode(store, language, show, 9)
+    change = store.move([ep9], "now", after_id=store.ids("now")[-1])
+    current = _current(store)
+    assert current.index(ep9) == current.index(ep8) + 1 and change.show_order is True
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_show_whose_item_in_current_names_no_episode_cant_be_ordered_top_stays_the_top(language):
+    """One of its show's items in Current names no episode (a file of the show without a number): the order can't be
+    read, so *Top* stays the top — never "after the title's last item", `after-show`'s own fallback."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    show = w[159]
+    record = {"schema": 1, "producer": "browser", "language": language, "content_key": "netflix:81900001",
+              "video_id": "81900001", "title": show, "show": {"title": show, "season": 1}}
+    loose = store.register(touch(data_dir, f"{ls.PROCESSED_FOLDER}/{show} [netflix-81900001].txt", f"{show}\n"),
+                           record).added[0]
+    store.place([loose], "top")
+    ep8 = _episode(store, language, show, 8)
+    assert store.item(ep8)["work_id"] == store.item(loose)["work_id"], "the setup: one title"
+    store.move([loose], "now", after_id=store.ids("now")[2])
+    change = store.place([ep8], "top")
+    assert store.ids("now")[0] == ep8 and change.show_order is False
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_of_two_titles_at_once_goes_where_asked(language):
+    """A block of two titles (the tray's picks, a selection) has no one episode order: *Top* puts the block at the
+    top, though both have their show in Current."""
+    store = migrated(language, shows=2, episodes=3)
+    w = names(language)
+    show, second = w[162], w[163]
+    one = _episode(store, language, second, 1)
+    store.place([one], "top")
+    ep8 = _episode(store, language, show, 8)
+    store.place([ep8], "top")
+    assert store.ids("now")[:2] == [ep8, one], "the setup: both titles lead NOW"
+    ep9 = _episode(store, language, show, 9)
+    two = _episode(store, language, second, 2)
+    change = store.place([ep9, two], "top")
+    assert set(store.ids("now")[:2]) == {ep9, two} and change.show_order is False
     store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_another_seasons_episode_is_another_shows_and_goes_to_the_top(language):
-    """Seasons stay apart (`after-show`'s own reading): season 2's first episode is no neighbour of season 1's 8 and
-    9 — *Top* puts it at the top, and season 1 keeps its order below it."""
+    """Seasons stay apart (`after-show`'s own reading): season 2's episode 10 is no neighbour of season 1's 8 and 9
+    (a reading blind to seasons would put it after 9) — *Top* puts it at the top, and season 1 keeps its order."""
     store = migrated(language, shows=2, episodes=3)
     w = names(language)
     show = w[153]
@@ -249,7 +306,7 @@ def test_another_seasons_episode_is_another_shows_and_goes_to_the_top(language):
     store.place([ep8], "top")
     ep9 = _episode(store, language, show, 9)
     store.place([ep9], "top")
-    s2 = _episode(store, language, show, 1, season=2)
+    s2 = _episode(store, language, show, 10, season=2)
     store.place([s2], "top")
     assert store.ids("now")[:3] == [s2, ep8, ep9]
     store.close()
@@ -287,12 +344,13 @@ def test_an_item_whose_order_cant_be_read_still_goes_to_the_top(language):
     store.close()
 
 
-def test_is_any_of_the_title_in_current_goes_by_the_titles_index_never_a_walk_through_current():
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_is_any_of_the_title_in_current_goes_by_the_titles_index_never_a_walk_through_current(language):
     """Kura-PR2's B1 rule for every title read on a move's path: the check runs inside each move into Current (the
     write lock held), so it reads the title's index (items_work), never Current's order index — a 20k library's
     NOW is never walked for it."""
     from tests.test_library_store_support import big_store
-    store = big_store("ja", 200)
+    store = big_store(language, 200)
     plan = " ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + ls.SHOW_IN_CURRENT_SQL, (1,)))
     assert "items_work" in plan and "items_order" not in plan, plan
     store.close()

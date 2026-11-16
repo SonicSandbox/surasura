@@ -1,0 +1,14 @@
+{
+  "version": "3.0.14",
+  "date": "2026-11-16",
+  "items": [
+    {"id": "side-by-side-next-title", "kind": "tweak", "for": ["everyone", "anki", "junban"], "where": "settings:new_cards_from",
+     "text": "Side by side keeps alternating: when a title has nothing new, the next one in Current steps in."},
+    {"id": "side-by-side-one-slot", "kind": "fix", "for": ["anki", "junban"],
+     "text": "A word with cards in both titles now uses one of the day's new cards, not two."},
+    {"id": "side-by-side-list-first", "kind": "fix", "for": ["anki", "junban"],
+     "text": "Side by side puts the words on your list first, before cards that aren't on it."},
+    {"id": "mine-line-after-drop", "kind": "fix", "for": ["everyone"],
+     "text": "The mine line no longer vanishes for a moment after a drop."}
+  ]
+}

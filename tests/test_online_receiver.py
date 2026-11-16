@@ -598,3 +598,80 @@ def test_a_clip_that_doesnt_hold_its_line_is_a_lost_line_never_sent():
     assert [w["word"] for w in got["words"]] == ["大物"]
     (kind, say), = ledger.needs
     assert "34:04" in say and "its clip doesn't hold the line" in say
+
+
+# --- a job made again for the same episode (Mattias, トークサバイバー Ep 3 / 6, 2026-11-16) ---------------------------- #
+class _JobsLedger(_Ledger):
+    """The ledger as `_earlier_jobs` reads it: the episode's jobs."""
+
+    def __init__(self, jobs):
+        import sqlite3
+        super().__init__()
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE jobs (id INTEGER, language TEXT, item_id INTEGER)")
+        self.conn.executemany("INSERT INTO jobs VALUES (?, 'ja', ?)", jobs)
+
+
+def _recorded(job, words, clips=None, done=True):
+    """An earlier job's folder as the extension left it: its lines, a clip for each (or `clips`: {n: (start, end)})."""
+    from app.connect import browser
+    _ep8_srt(job)
+    lines, _index = browser.lines_for(words, EP8)
+    browser.hand_off(job, WEB, "トークサバイバー！ S01E03", lines)
+    for ln in lines:
+        start, end = (clips or {}).get(ln["n"], (ln["start"] - 0.7, ln["end"] + 0.7))
+        if start is not None:
+            assert browser.keep_clip(job, ln["n"], b"webm", start, end)
+    if done:
+        browser.finish(job, [])
+
+
+def test_a_job_made_again_takes_the_earlier_jobs_clips_and_goes_straight_to_its_cards():
+    """Jobs 470 → 476: the earlier job was dropped (the list reordered) after its clips came in; the new one, in
+    another order, takes them over by their line's place and needs no recording."""
+    from app.connect import browser, runner
+    words = [_ep8_word("大物", 337.042), _ep8_word("稲妻", 1241.792), _ep8_word("初日", 265.75)]
+    _recorded(470, words)
+    ledger, job = _JobsLedger([(470, 2900), (476, 2900), (475, 2905)]), {"id": 476, "item_id": 2900}
+    picked = dict(_picked(_ep8_srt(476)), words=list(reversed(words)))
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert sorted(w["word"] for w in got["words"]) == ["初日", "大物", "稲妻"] and not ledger.needs
+    for w in got["words"]:
+        assert 0 <= w["line_start"] - got["clips"][str(w["clip"])]["shift"] <= 1.0
+    assert browser.waiting() == [], "nothing for the extension to record"
+
+
+def test_only_the_lines_no_earlier_job_holds_wait_for_recording():
+    """An earlier job with one clip that doesn't hold its line (another moment) and one line never recorded: only those
+    two wait; the clip that holds its line is taken over. An earlier folder still waiting is closed: its job is
+    gone, so the extension is never asked for it again."""
+    from app.connect import browser, runner
+    words = [_ep8_word("大物", 337.042), _ep8_word("稲妻", 1241.792), _ep8_word("初日", 265.75)]
+    _recorded(473, words, clips={1: (2212.2, 2216.4), 2: (None, None)}, done=False)
+    ledger, job = _JobsLedger([(473, 2903), (477, 2903)]), {"id": 477, "item_id": 2903}
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, dict(_picked(_ep8_srt(477)), words=words))
+    (waits,) = browser.waiting()
+    assert waits["job"] == 477 and [ln["start"] for ln in waits["lines"]] == [1241.792, 265.75]
+
+
+def test_a_wait_for_the_browser_says_so_on_its_row():
+    from app.connect import feed, runner
+    from app.services import view_rows as vr
+    item = feed.Item(kind=feed.WAITING, words=feed.WORDS[feed.WAITING], tip=runner.BROWSER_WAIT, job=476, made=0,
+                     total=0)
+    st = vr._connected(vr.Status("mine", vr.STRINGS["mine"], "", "ok"), item, "video", online="netflix")
+    assert (st.kind, st.label, st.tip) == ("waiting", "Record in browser", runner.BROWSER_WAIT)
+
+
+def test_a_job_already_waiting_when_the_earlier_clips_were_left_takes_them_at_its_next_look():
+    """Mattias's 476 / 477: made again (and handed off, waiting) before this rule — its next look takes the earlier
+    job's clips over and goes on to its cards."""
+    from app.connect import browser, runner
+    words = [_ep8_word("大物", 337.042), _ep8_word("稲妻", 1241.792)]
+    _recorded(473, words)
+    lines, _index = browser.lines_for(list(reversed(words)), EP8)
+    browser.hand_off(477, WEB, "トークサバイバー！ S01E06", lines)
+    ledger, job = _JobsLedger([(473, 2903), (477, 2903)]), {"id": 477, "item_id": 2903}
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, dict(_picked(_ep8_srt(477)), words=words))
+    assert sorted(w["word"] for w in got["words"]) == ["大物", "稲妻"] and browser.waiting() == []

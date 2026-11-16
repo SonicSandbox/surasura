@@ -286,6 +286,7 @@ STRINGS = {
     # folder you pick as one Surasura reads, and the show finds its episodes there
     "tip_connect_moved": "{tip}\n• Find its folder or link its video",
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
+    "record_browser": "Record in browser",     # a Netflix / Disney+ episode waiting for the extension's clips
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
@@ -1249,6 +1250,8 @@ def _connected(st, item, word, online=None):
         return Status("no_media", STRINGS["no_media"].format(word=word),
                       STRINGS["tip_connect_moved" if moved else "tip_connect_no_media"].format(tip=item.tip), "warn",
                       moved=moved)
+    if item.kind == connect_feed.WAITING and item.tip == _browser_wait():      # Netflix / Disney+ (`connect.browser`)
+        return Status("waiting", STRINGS["record_browser"], item.tip, "dim")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
     if item.kind == connect_feed.SKIPPED:   # T2: refused, its entry dismissed — quiet, never a *Waiting* to mine
@@ -1267,6 +1270,11 @@ def _connected(st, item, word, online=None):
     if item.kind in (connect_feed.ANKI, connect_feed.ANKI_WAIT, connect_feed.BATTERY):
         tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=tip)
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
+
+
+def _browser_wait():
+    from app.connect import runner
+    return runner.BROWSER_WAIT
 
 
 def _nothing(n):

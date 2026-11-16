@@ -2100,6 +2100,16 @@ def _alone(ledger, jid):
     return got if isinstance(got, dict) else None
 
 
+def _earlier_jobs(ledger, lang, job):
+    """The episode's other jobs, the newest first (a job dropped when you reordered the list, or one that failed: its
+    clips are taken over at the hand-off, `browser.take_over`)."""
+    conn = getattr(ledger, "conn", None)
+    if conn is None:
+        return []
+    return [r[0] for r in conn.execute("SELECT id FROM jobs WHERE language = ? AND item_id = ? AND id != ? "
+                                       "ORDER BY id DESC", (lang, job["item_id"], job["id"]))]
+
+
 def _browser_clips(steps, ledger, lang, job, picked, record=True):
     """Netflix / Disney+ (contract v2, `connect.browser`): the job's lines handed to the browser extension, then a wait
     (BROWSER_WAIT, looked at again in 2 minutes; resumed at mining by a later run) until it says it is done ->
@@ -2127,13 +2137,19 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
                                "video_id": site_id.group(2) if site_id else ""},
                          path_utils.SITE_ID_RE.sub("", name).strip(), lines)
         log.info("Connect: job %s handed %d line(s) to the browser extension", jid, len(lines))
-        raise Wait(BROWSER_WAIT, resume="mining")
     numbered = browser.handed(jid)
     new = [ln for ln in lines if browser.span(ln) not in numbered]
     if new:
         numbered.update(browser.add_lines(jid, new))
         log.info("Connect: job %s asked the browser extension for %d more line(s)", jid, len(new))
-        raise Wait(BROWSER_WAIT, resume="mining")
+    got = browser.state(jid)
+    if not isinstance(got, dict):
+        # an earlier job of the episode (dropped when the list was reordered, or failed) may hold some of its clips:
+        # taken over at every look while it waits, so only the lines nobody recorded wait for the browser
+        taken = browser.take_over(jid, _earlier_jobs(ledger, lang, job))
+        if taken:
+            log.info("Connect: job %s took over %d clip(s) an earlier job of its episode recorded", jid, taken)
+        got = browser.state(jid)
     if not isinstance(got, dict):
         raise Wait(BROWSER_WAIT, resume="mining")
     failed = {f.get("n"): f.get("why") for f in got.get("failed") or () if isinstance(f, dict)}

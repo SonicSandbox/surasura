@@ -196,6 +196,37 @@ def covers(times, line):
     return start <= float(line["start"]) + COVER_SLACK and end >= float(line["end"]) - COVER_SLACK
 
 
+def take_over(job_id, earlier, root=None):
+    """The clips earlier jobs of the same episode recorded (`earlier`: their job ids, the newest first — a job dropped
+    when you reordered the list, or one that failed) copied into this job's folder for the lines it hands off and they
+    hold (`covers`): those lines never need recording again. Each earlier folder still waiting is closed (`done.json`):
+    its job is gone, so the extension is never asked for it again. A line this job has a clip for already is never
+    touched; once every line has one, the job is done -> how many lines were taken over."""
+    here = place(job_id, root)
+    want = handed(job_id, root)
+    lines = {span(ln): ln for ln in (_read_json(os.path.join(here, LINES)) or {}).get("lines") or ()}
+    have = {n for n in want.values() if clip(job_id, n, root) is not None}
+    taken = set()
+    for old in earlier:
+        there = place(old, root)
+        if not os.path.isdir(there):
+            continue
+        for key, n in handed(old, root).items():
+            mine = want.get(key)
+            kept = clip(old, n, root)
+            if mine is None or mine in have or mine in taken or kept is None or not covers(kept[1], lines[key]):
+                continue
+            _write_json(os.path.join(here, f"clip-{mine}.json"), kept[1])
+            shutil.copyfile(kept[0], os.path.join(here, f"clip-{mine}.webm.part"))
+            os.replace(os.path.join(here, f"clip-{mine}.webm.part"), os.path.join(here, f"clip-{mine}.webm"))
+            taken.add(mine)
+        if not os.path.exists(os.path.join(there, DONE)) and os.path.isfile(os.path.join(there, LINES)):
+            _write_json(os.path.join(there, DONE), {"failed": []})
+    if taken and len(have | taken) == len(want) and not os.path.exists(os.path.join(here, DONE)):
+        _write_json(os.path.join(here, DONE), {"failed": []})      # every line held: nothing to record
+    return len(taken)
+
+
 def state(job_id, root=None):
     """None (nothing handed off), "waiting" (no `done.json` yet), or the done dict {"failed": [...]}."""
     here = place(job_id, root)

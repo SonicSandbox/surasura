@@ -103,3 +103,50 @@ def test_side_top_is_none_off_the_turns_and_reads_the_turns_while_two_titles_hol
     only_a = [r for r in view.rows if all(e.id in a for e in r.episodes)]
     assert view_rows.side_top(only_a, 4) is None
     store.close()
+
+
+# --- Kyou-C: the count Junban writes (who takes turns), and one read a drop ------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("which", ["loose_to_top", "a_to_top"])
+def test_a_drop_reads_junbans_count_as_the_store_does(language, which):
+    """A counted no still-new card and its next file is mined: it steps aside (B and the loose file take turns, D steps
+    in). A drop reads the top by that count at once, as the store's next view does — the loose file dropped first, or
+    A dropped first (still aside: a place in Current gives no card Anki would weave)."""
+    from app import library_store as ls
+    store, a, b, loose, d = _library(language)
+    store.set_library_options(mine_line=4, side_by_side=True)
+    store.receipt(a[0], ls._now())
+    store.set_side_cards([(a, 0), (b, 2), ([loose], 1), (d, 1)])
+    view = _view(store)
+    assert view.side_cards and _in_top(view) == set(store._mine_ids(4))
+    keys = [r.key for r in view.rows]
+    moved = view.rows[_row_of(view, loose if which == "loose_to_top" else a[0])].key
+    keys.remove(moved)
+    keys.insert(0, moved)
+    dropped = drag.reordered(view, keys)
+    if which == "loose_to_top":
+        store.move([loose], "now", before_id=a[0])
+    else:
+        store.move(a, "now", before_id=store.ids("now")[0])
+    stored = _view(store)
+    assert [r.key for r in dropped.rows] == [r.key for r in stored.rows]
+    assert _top(dropped) == _top(stored) and _top(stored) is not None
+    assert _in_top(dropped) == _in_top(stored) and not _in_top(stored) & set(a)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_reads_the_turns_once(language, monkeypatch):
+    """The drop's rows are read by the turns once (`drag.side_read`), for its *in the top* and its line both — at 1,000
+    titles / 20k files each read was 0.7 s on the window's thread, and a drop made two."""
+    store, a, b, loose, d = _library(language)
+    store.set_library_options(mine_line=4, side_by_side=True)
+    view = _view(store)
+    calls = []
+    real = view_rows.side_top
+    monkeypatch.setattr(view_rows, "side_top", lambda *args, **kw: calls.append(1) or real(*args, **kw))
+    keys = [r.key for r in view.rows]
+    keys.insert(0, keys.pop(_row_of(view, b[0])))
+    dropped = drag.reordered(view, keys)
+    assert len(calls) == 1 and _top(dropped) is not None
+    store.close()

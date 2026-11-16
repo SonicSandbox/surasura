@@ -1,0 +1,44 @@
+{
+  "version": "3.0.15",
+  "date": "2026-11-16",
+  "items": [
+    {
+      "id": "episodes-in-order",
+      "kind": "fix",
+      "for": [
+        "everyone",
+        "shows"
+      ],
+      "text": "A show's episodes brought into Current one at a time now land in episode order."
+    },
+    {
+      "id": "side-by-side-quick-drop",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "junban"
+      ],
+      "text": "Side by side: a drop stays quick on a big library, and the window shows Anki's two titles."
+    },
+    {
+      "id": "anki-miner-3-13",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "miner",
+        "books",
+        "zh"
+      ],
+      "text": "Anki Miner 3.13: book cards keep exactly the right sentence; Chinese cards get their measure word."
+    },
+    {
+      "id": "line-said-twice-once",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "A line said twice in a clip now shows once in the card's sentence (Anki Miner 3.13)."
+    }
+  ]
+}

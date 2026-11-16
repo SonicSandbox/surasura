@@ -29,7 +29,6 @@ Standard library only; no Qt (the window's glue is `app/qt/windows.py` `start_re
 """
 import base64
 import binascii
-import hashlib
 import hmac
 import logging
 import http.server
@@ -314,10 +313,8 @@ def keep_cover(writer, sub, item_id):
         data = base64.b64decode(raw, validate=True)
         if len(data) > MAX_COVER:
             raise ValueError(f"{len(data)} bytes, over {MAX_COVER}")
-        from app import path_utils
         from app.services import covers
-        ext = covers.image_ext(data)
-        if ext is None:
+        if covers.image_ext(data) is None:
             raise ValueError("not a JPEG or PNG")
         try:
             store = writer.opener.handle()
@@ -328,15 +325,11 @@ def keep_cover(writer, sub, item_id):
             writer.opener.close()
         if row is None or row[1] not in (None, "generated") or row[2]:
             return None                         # a title with a cover of its own keeps it
-        language = writer.language
-        name = f"{covers._digest('work', language, row[0])[:12]}-{hashlib.sha256(data).hexdigest()[:16]}{ext}"
-        target = os.path.join(path_utils.get_user_files_path(language), covers.USER_COVERS, name)
-        if not os.path.isfile(target) and not covers._write_whole(target, data):
-            raise OSError(f"couldn't write {target}")
-        if writer.set_cover(row[0], "user", ref=f"browser:{sub['site']}", path="user:" + name, locked=False,
-                            auto=True) is None:
-            raise OSError("the library can't be written now")
-        return "user:" + name
+        kept = covers.keep_user_bytes(writer.language, row[0], data, writer, source="user",
+                                      ref=f"browser:{sub['site']}", locked=False, auto=True)
+        if kept is None:
+            raise OSError("it couldn't be written, or the library can't be written now")
+        return kept
     except (binascii.Error, ValueError, OSError) as e:
         log.warning("The browser extension's cover wasn't kept: %s", e)
     except Exception:

@@ -969,7 +969,7 @@ def counts_toward_top(e, tier, keep=False):
     return not e.missing and not getattr(e, "waiting", False) and counts(tier, e.watched, keep)
 
 
-def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, cards=None):
+def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, cards=None, line=None, seasons=None):
     """Current's `rows` in an order the window paints ahead of the store (a drop's, a Done's marks: `app/qt/drag`) with
     which files are *in the top* read again by the store's rule (`build`: every file down to the `line_n`-th that
     counts, `counts_toward_top`; with fewer, down to the last) — and what a row reads from that read again by `_row`'s
@@ -981,11 +981,12 @@ def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, card
     again). A row beyond the top is looked at by its first file only (the top holds a row's first files). `side`
     (Kyou-B): the library's side by side is on — the top read by its turns (`side_top`) while two titles hold files;
     `turned` (Kyou-C): `side_top`'s answer for these rows when the caller read it already (a drop reads it once);
-    `cards`: Junban's last count (the view's `side_cards`)."""
+    `cards`: Junban's last count (the view's `side_cards`); `line`, `seasons` (Kyou-D): the view's `side_line`,
+    `side_seasons` (`side_top`'s)."""
     if not line_n or not rows:
         return rows, []
     if turned is None:
-        turned = side_top(rows, line_n, keep, cards) if side else None
+        turned = side_top(rows, line_n, keep, cards, line, seasons) if side else None
     if turned is not None:                           # Kyou-B: the files the turns mine, whatever row they sit in
         ids = turned[1]
         out, changed = list(rows), []

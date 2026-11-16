@@ -82,6 +82,28 @@ def test_the_pill_moves_at_the_drop_where_the_store_will_put_it(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_reads_the_soon_line_as_the_store_does(language):
+    """A (1), B (5), C (5), the Soon line at 3, the top at 4. B dropped first: B and A take turns; when A runs out, C
+    is below the line, so B goes on alone — B1 A1 B2 B3, not C1 (as with no line). The drop's own read of the top
+    (its *in the top*, its line, its pills) is the store's."""
+    store, ids = _library(language, [("A", 1), ("B", 5), ("C", 5)], 3, mine=4)
+    view = _view(store)
+    keys = [r.key for r in view.rows]
+    b_key = next(r.key for r in view.rows if r.episodes[0].id in ids["B"])
+    keys.remove(b_key)
+    keys.insert(0, b_key)
+    dropped = drag.reordered(view, keys)
+    store.move(ids["B"], "now", before_id=ids["A"][0])
+    stored = _view(store)
+    assert store._mine_ids(4) == [ids["B"][0], ids["A"][0], ids["B"][1], ids["B"][2]]
+    in_top = lambda v: {e.id for r in v.rows for e in r.episodes if e.in_top}      # noqa: E731
+    assert in_top(dropped) == in_top(stored) == set(store._mine_ids(4))
+    assert [ln for ln in dropped.lines if ln.kind == "top"] == [ln for ln in stored.lines if ln.kind == "top"]
+    assert _pills(dropped, ids) == _pills(stored, ids) and set(_pills(stored, ids)) == {"A", "B"}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_pill_is_painted_with_its_tooltip_on_up_next_and_a_row(qapp, language):
     """The list paints the pill into the two rows' pictures (Up Next's beside its *UP NEXT*, a row's at its title's
     end) and each has a hit area whose tooltip names the other title; no other row has one."""
@@ -108,4 +130,22 @@ def test_the_pill_is_painted_with_its_tooltip_on_up_next_and_a_row(qapp, languag
     assert tips == {a: view_rows.STRINGS["side_tip"].format(other=b), b: view_rows.STRINGS["side_tip"].format(other=a)}
     assert strings.ROWS_SIDE_PILL
     host.close()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_done_painted_ahead_moves_the_pill_at_once(language):
+    """A (1), B (3), C (3), the line at 6: A and B are on. A Done on A's one file (keep-watched off) leaves A nothing to
+    study, so C (above the line) steps in — the Done's own view (`_with_marks`, painted ahead of the store) moves the
+    pill from A to C, as the store's next view has it."""
+    store, ids = _library(language, [("A", 1), ("B", 3), ("C", 3)], 6)
+    view = _view(store)
+    assert set(_pills(view, ids)) == {"A", "B"}
+    a_row = next(r for r in view.rows if r.episodes[0].id in ids["A"])
+    ctl = type("C", (), {"expect_marks": {ids["A"][0]: [True, None, None, a_row.key]}})()
+    ctl._holding = lambda v: drag.DragController._holding(ctl, v)
+    shown = drag.DragController._with_marks(ctl, view)
+    store.set_watched(ids["A"])
+    stored = _view(store)
+    assert _pills(shown, ids) == _pills(stored, ids) == {"B": _title(view, ids, "C"), "C": _title(view, ids, "B")}
     store.close()

@@ -67,12 +67,12 @@ def _now(store, ids):
 
 def test_above_the_line_is_the_lines_own_count_with_its_waiting_rows():
     """The first `line` rows with text, and the waiting rows right after (as `_keep_line` cuts)."""
-    rows = [(1, "now", 10, "available", 0), (2, "now", 10, "waiting", 0), (3, "now", 11, "available", 0),
-            (4, "now", 11, "waiting", 0), (5, "soon", 12, "available", 0), (6, "soon", None, "available", 0)]
-    assert ls.above_line(rows, 1) == {("w", 10)}
-    assert ls.above_line(rows, 2) == {("w", 10), ("w", 11)}, "the waiting row after the 2nd stays with it"
+    rows = [(1, "now", 10, "available", 0), (2, "now", 13, "waiting", 0), (3, "now", 11, "available", 0),
+            (4, "now", 14, "waiting", 0), (5, "soon", 12, "available", 0), (6, "soon", None, "available", 0)]
+    assert ls.above_line(rows, 1) == {("w", 10), ("w", 13)}, "the waiting row after the 1st stays with it"
+    assert ls.above_line(rows, 2) == {("w", 10), ("w", 13), ("w", 11), ("w", 14)}
     assert ls.above_line(rows, 0) == set()
-    assert ls.above_line(rows, 9) == {("w", 10), ("w", 11), ("w", 12), ("i", 6)}
+    assert ls.above_line(rows, 9) == {("w", 10), ("w", 13), ("w", 11), ("w", 14), ("w", 12), ("i", 6)}
 
 
 def test_the_reach_takes_the_turns_files_but_never_more_than_the_count_it_doesnt_take():
@@ -84,11 +84,13 @@ def test_the_reach_takes_the_turns_files_but_never_more_than_the_count_it_doesnt
     assert ls.side_reach(rows, 3, [1, 12, 2]) == 3
     watched = [(i, "now", 1, "available", 1) for i in range(1, 12)] + [(12, "now", 2, "available", 0)]
     assert ls.side_reach(watched, 3, [12]) == 12, "a watched row is free (KA-7)"
+    waiting = [(1, "now", 1, "available", 0), (2, "now", 1, "available", 0), (3, "now", 1, "available", 0)] +         [(i, "now", 3, "waiting", 0) for i in range(4, 10)] + [(10, "now", 2, "available", 0)]
+    assert ls.side_reach(waiting, 2, [1, 10]) == 4, "a waiting row is no row the line counts, and costs nothing"
 
 
 def test_two_seasons_of_one_show_folder_are_one_title_and_nothing_else_is():
     works = [(3, "frieren/season 2"), (2, "frieren/season 1"), (4, "frieren"), (5, "other/season 1"),
-             (6, "solo/extras"), (7, None)]
+             (6, "solo/extras"), (7, None), (8, "frieren/movie"), (9, "frieren/specials")]
     assert ls.season_works(works) == {2: 2, 3: 2}, "one season alone, a show's own folder, specials: as they are"
 
 

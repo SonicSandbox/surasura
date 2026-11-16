@@ -392,7 +392,8 @@ def topped(view, rows_, turned=None):
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
                             feed.items if feed is not None and feed.on else None,
                             side=bool(getattr(view, "side_by_side", False)),     # Kyou-B (KA-4): in turns, at once
-                            turned=turned, cards=getattr(view, "side_cards", None))
+                            turned=turned, cards=getattr(view, "side_cards", None),
+                            line=getattr(view, "side_line", None), seasons=getattr(view, "side_seasons", None))
 
 
 def mines_itself(lines, place):

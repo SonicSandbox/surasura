@@ -155,8 +155,8 @@ def test_side_by_side_off_reads_no_count(language):
 def test_the_rule_pure_steps_aside_only_a_mined_title_counted_none():
     """`side_pair` on rows: w1 counted 0 and its next file mined -> aside; w2 counted 0, next file not mined -> on;
     w3 not counted -> on; fewer than two titles to study -> None."""
-    rows = [(1, "now", 1, "available", 0, "2026-11-16"), (2, "now", 1, "available", 0, None),
-            (3, "now", 2, "available", 0, None), (4, "now", 2, "available", 0, "2026-11-16"),
+    rows = [(1, "now", 1, "available", 0, "2026-10-16"), (2, "now", 1, "available", 0, None),
+            (3, "now", 2, "available", 0, None), (4, "now", 2, "available", 0, "2026-10-16"),
             (5, "soon", 3, "available", 0, None)]
     cards = {"w1": 0, "w2": 0}
     w1, w2, w3 = ("w", 1), ("w", 2), ("w", 3)

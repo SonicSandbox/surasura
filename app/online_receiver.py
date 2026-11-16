@@ -90,6 +90,26 @@ def read_token(path=None):
         return None
 
 
+OLD_SETTING = "browser_extension_token"      # where a build before 8e1d45e7 kept the token (settings.json)
+
+
+def adopt_token(values, path=None):
+    """The token a build before 8e1d45e7 kept in settings.json (`OLD_SETTING` in `values`) put in the token's file,
+    over one made since: an extension paired then holds it, and the one made in its place reached no extension (a
+    pairing needs a *Copy token*, and the old value was still there to win). -> True when there was one to take over
+    (the caller then takes the key out of settings.json); False otherwise."""
+    old = values.get(OLD_SETTING) if hasattr(values, "get") else None     # (the settings service's frozen view)
+    if not isinstance(old, str) or not old.strip():
+        return False
+    path = path or token_path()
+    if read_token(path) != old.strip():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".part", "w", encoding="utf-8") as f:
+            f.write(old.strip())
+        os.replace(path + ".part", path)
+    return True
+
+
 def kept_token(path=None):
     """The kept token, made and written once (when the learner first turns the listener on) -> it."""
     path = path or token_path()

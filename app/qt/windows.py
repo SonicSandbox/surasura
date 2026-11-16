@@ -817,6 +817,8 @@ def start_receiver(shell):
         if keys is not None and "browser_extension" not in keys:
             return
         values = settings()
+        if online_receiver.adopt_token(values):            # a build before 8e1d45e7 kept it in settings.json
+            services.settings.set({}, update=lambda s: s.pop(online_receiver.OLD_SETTING, None))
         on = values.get("browser_extension") is True
         if on:
             online_receiver.kept_token()                  # made once, the first time it is turned on

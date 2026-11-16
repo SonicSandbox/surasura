@@ -675,3 +675,24 @@ def test_a_job_already_waiting_when_the_earlier_clips_were_left_takes_them_at_it
     ledger, job = _JobsLedger([(473, 2903), (477, 2903)]), {"id": 477, "item_id": 2903}
     got = runner._browser_clips(_Steps(), ledger, "ja", job, dict(_picked(_ep8_srt(477)), words=words))
     assert sorted(w["word"] for w in got["words"]) == ["大物", "稲妻"] and browser.waiting() == []
+
+
+def test_the_token_a_paired_extension_holds_comes_over_from_settings_json_once():
+    """A build before 8e1d45e7 kept the token in settings.json, and an extension paired then holds it: the first start
+    of this one puts it in the token's file — over a token made there meanwhile, which no extension holds — and takes
+    the key out of settings.json, through the settings service's own write. Nothing to take over: nothing happens."""
+    import json as _json
+    from app.path_utils import get_settings_path
+    from app.services.settings import SettingsService
+    from tests import services_helpers as h
+    h.write_settings({"target_language": "ja", "browser_extension": True, rx.OLD_SETTING: "kumo-no-ue-no-old-token"})
+    made_since = rx.kept_token()                       # the new build's first start made one (Mattias, 06:42)
+    service = SettingsService(delay=0.0)
+    assert rx.adopt_token(service.get()) is True
+    service.set({}, update=lambda s: s.pop(rx.OLD_SETTING, None), now=True)
+    assert rx.read_token() == "kumo-no-ue-no-old-token" != made_since
+    with open(get_settings_path(), encoding="utf-8") as f:
+        kept = _json.load(f)
+    assert rx.OLD_SETTING not in kept and kept["browser_extension"] is True
+    assert rx.adopt_token(SettingsService(delay=0.0).get()) is False      # once: nothing left to take over
+    assert rx.read_token() == "kumo-no-ue-no-old-token"

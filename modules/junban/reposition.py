@@ -1814,9 +1814,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
                 if not match.lookup(word_of.get(card_id) or "", marks_of or {}, language)}
         # --- end P4.1 L2 ---
         # Kyou-A: *New cards come from: Current's top two, side by side* — the two titles' cards, by the pins' matching
-        weave = pin_feed.side_groups(language, cards, detail["notes"])
+        side = pin_feed.read_side(language)
+        weave = pin_feed.side_groups(language, cards, detail["notes"], side=side)
     else:
-        weave = None
+        side = weave = None
     if not marks_of and not any(pins or ()):
         # M-W2-1: no list at all (`marks_of` covers every row; `only` narrows `rank_of` alone) and no pinned item — nothing
         # is placed, tagged or suspended: the run writes nothing (`_run`), the preview says the list is empty. With a pin
@@ -1986,6 +1987,11 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     number = _numbering(language, decks, job, front)
     writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave,
                          width=pin_feed.SIDE_WIDTH if weave else None)     # Kyou-B: two titles at a time
+    if side is not None and side[0]:
+        # Kyou-C: every title's count — the cards the weave could take (none in scope: 0) — for the host to record
+        # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`)
+        picks = stats.get("side_picks") or [0] * len(side[0])
+        stats["side_cards"] = [[list(ids), int(n)] for ids, n in zip(side[0], picks)]
     if number is not None:
         stats["number"] = number        # the panel re-plans a click with the run's own numbering (I5)
     if parked_tag and not preview:      # M-W1: the 3.0 host's job brings back what it parked with Connect off too

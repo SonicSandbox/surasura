@@ -4108,7 +4108,9 @@ def test_S1_a_pin_unpinned_elsewhere_while_another_rows_tick_landed_is_still_lis
     monkeypatch.setattr(ls.Store, "pin", real_pin)
     w2, heard2 = make_writer()
     assert w2.replay()
-    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    # the replay's note comes after its command leaves the queue and the journal (`_landed` → `_replay_finished`):
+    # waited for itself, never read the moment the queue is empty (FLAKES.md)
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending() and heard2.notes)
     assert lib.store.item(now[1])["pinned"] is None and heard2.notes == [WORDS["crash_one"]]
 
 
@@ -4144,6 +4146,32 @@ def test_a_followed_move_lands_once_for_the_numbers_and_a_join_ahead_never(lib, 
     w.join([later, piece], label="joined", ahead=True)
     assert h.until(lambda: len(heard.saved) == 2)
     assert numbers.landings == 1
+
+
+def test_a_move_the_store_puts_in_its_shows_episode_order_is_followed_where_the_store_put_it(lib, make_writer):
+    """(Kura-EO.) A 6+ Months episode's *Up next* (a move to NOW, no anchor): the numbers follow the drop before the
+    write (the top of NOW), but the store puts it after its show's episode 8 (`Store._into_show`). The writer sees it
+    (`Change.show_order`): the numbers follow the store's place once more — never left at the top, never a full
+    re-plan — and the window is told to let its own order go (`on_reread`), so the row shows where it really is."""
+    from tests.test_library_store_episode_order import _episode
+    w_ = names(lib.language)
+    show = w_[154]
+    ep8 = _episode(lib.store, lib.language, show, 8)
+    lib.store.place([ep8], "top")
+    ep9 = _episode(lib.store, lib.language, show, 9)
+    lib.store.move([ep9], "goal")
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move([ep9], "now", label="up next")
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[:2] == [ep8, ep9]
+    assert numbers.moves == [([ep9], "now", None, None), ([ep9], "now", None, ep8)]
+    assert h.until(lambda: heard.rereads == 1)          # (told after `on_saved`, on the writer's thread)
+    assert numbers.resyncs == 0 and numbers.landings == 1
+    a = lib.ids("now")[3]                               # a move the store leaves where it was asked: no second follow
+    w.move([lib.ids("goal")[0]], "now", after_id=a, label="moved")
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert len(numbers.moves) == 3 and heard.rereads == 1
 
 
 def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):

@@ -667,8 +667,11 @@ def unmake(store, item_id, note_ids, words=()):
 
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
-    `explicit` says). Returns the store's Change, or None for a no-op."""
-    return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit)
+    `explicit` says). Returns the store's Change, or None for a no-op. A place a program names (`place --position`)
+    is exactly that place; with none (a rule's target, `--to current`) an episode joins its show in episode order
+    (`Store._into_show`, Kura-EO)."""
+    return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit,
+                      in_order=before_id is None and after_id is None)
 
 
 def finish(store, item_id, source="user", explicit=None):

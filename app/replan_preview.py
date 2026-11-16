@@ -710,6 +710,7 @@ class Host:
                 return False
             report = self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
             _record_cards_out(store, report)             # P4.1 L2
+            _record_side(store, report)                  # Kyou-C
             if report is not None and report.get("ok") and not report.get("left") and not report.get("failures"):
                 store.record_planned(versions["order_version"], versions["pins_version"])
                 return True
@@ -741,6 +742,7 @@ class Host:
         job = spaced.Job(automatic=True, rows=rows, cards=self._card_map(), places=places(self._plan, ids, result))
         report = self._write(settings, job, kind)
         _record_cards_out(store, report)                 # P4.1 L2
+        _record_side(store, report)                      # Kyou-C
         done = bool(report is not None and report.get("ok") and not report.get("left") and not report.get("failures"))
         if done:
             store.record_planned(versions["order_version"], versions["pins_version"])
@@ -1086,6 +1088,18 @@ def _record_cards_out(store, report):
         pins.record(store, report, by="replan")      # TF fix 10 (IK #12): the host's own, never "connect"
     except Exception as e:
         _log_shadow(f"the cards Junban took out of the order weren't recorded: {e}")
+
+
+def _record_side(store, report):
+    """Kyou-C: a job's count of each side-by-side title's still-new cards into the store (`pins.record_side`), so the
+    window and Connect's top N pick the titles Anki weaves. Never raises: logged."""
+    try:
+        if not ((report or {}).get("stats") or {}).get("side_cards"):
+            return
+        from modules.junban import pins
+        pins.record_side(store, report, by="replan")
+    except Exception as e:
+        _log_shadow(f"Junban's count of the titles side by side wasn't recorded: {e}")
 
 
 def _cards_out_line(report):

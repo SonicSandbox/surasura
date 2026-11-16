@@ -79,7 +79,7 @@ def test_an_anki_miner_older_than_the_approved_one_that_cant_read_books_is_opene
 @pytest.mark.parametrize("registry, recorded, features, why", [
     (None, None, None, "Anki Miner not known at all: nothing to offer (Settings' card installs it)"),
     (am_release.APPROVED, OLD, NO_READING, "updated by hand: the installer's version is the approved one already"),
-    ("3.12.0", OLD, NO_READING, "a newer one installed by hand: never offered an older one"),
+    ("99.0.0", OLD, NO_READING, "a newer one installed by hand: never offered an older one"),
     (None, am_release.APPROVED, NO_READING, "the approved one found: an update to it opens nothing"),
     (None, OLD, READING, "it reads books already: nothing waits on the update"),
     (None, "unknown", NO_READING, "a version with no digits is no version"),

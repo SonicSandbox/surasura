@@ -818,6 +818,7 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     outcome, report = done["outcome"], done.get("report") or {}
     if not positions_only:
         _record_cards_out(lang, report)     # P4.1 L2: whatever landed, before any answer below (a stop part way too)
+    _record_side(lang, report)              # Kyou-C: Junban's count, the titles side by side takes turns with
     if outcome == "needs-deck":
         raise CliError("needs-you", JUNBAN_ONE_DECK, ask="choose a deck in 順", need="junban-deck")
     if outcome == "anki-closed":
@@ -901,6 +902,24 @@ def _record_cards_out(lang, report):
     except Exception as e:
         contract.log.warning("the cards Junban took out of the order weren't recorded: %s", e)
 # --- end P4.1 L2 ---
+
+
+def _record_side(lang, report):
+    """Kyou-C: the run's count of each side-by-side title's still-new cards into the store (`pins.record_side`; Junban's
+    own store handle is read-only), so the window and Connect's top N pick the titles Anki weaves. Opened only when the
+    run counted any. A store that can't be written now is only logged: the next run counts again."""
+    try:
+        if not ((report or {}).get("stats") or {}).get("side_cards"):
+            return
+        from app.connect import library
+        from modules.junban import pins
+        store = library.open_store(lang)
+        if store is None:
+            return
+        with store:
+            pins.record_side(store, report)
+    except Exception as e:
+        contract.log.warning("Junban's count of the titles side by side wasn't recorded: %s", e)
 
 
 def _record_planned(lang, versions):
@@ -1383,7 +1402,8 @@ def pick(args):
                                                   tags=runfile.job_tag(job))
             else:
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
-                                          runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
+                                          runfile.word_requests(chosen["words"], named, app=info.get("app")),
+                                          tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named,
                                                            word_audio=runfile.word_audio_on(loaded, lang)))

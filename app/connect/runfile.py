@@ -100,6 +100,18 @@ def sends_sentence_keys(app, features=()):
     return version is not None and version[:2] <= (3, 6)
 
 
+# Z-26 (Michi-AM13's F2, Sonic's yes): Anki Miner 3.13.0 takes `line_skip` on a word — the card's lines whose text its
+# Sentence leaves out, their time kept in the clip (3.13.0 `cli/api/files.py` `parse_skip`). It names no feature for
+# it, and 3.12 refuses a word with an unknown key (`BAD_RUN_FILE`): sent only to the version that takes it
+LINE_SKIP_FROM = (3, 13, 0)
+
+
+def sends_line_skip(app):
+    """Does Anki Miner `app` take a word's `line_skip` (3.13.0 or newer; a version that can't be read: no)?"""
+    version = version_tuple(app)
+    return version is not None and (version + (0, 0, 0))[:3] >= LINE_SKIP_FROM
+
+
 def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
     """The run's `config`: every filter off, and the deck, note type and fields `mapping` names (fields.Mapping); the
     target bolded in its sentence where Anki Miner takes that (Z-5, 08-zero: sent per run; Junban and Backfill read
@@ -158,7 +170,7 @@ def entries(word, features=()):
     return list(word["sent"][:1]) if from_line(features) else list(word["sent"])
 
 
-def word_requests(words, features=(), book=False):
+def word_requests(words, features=(), book=False, app=None):
     """The run file's `words` for picked words (pick.pick's): each name `entries` gives, with the line's start in
     seconds and its expansion, always sent (IS:260). Where Anki Miner makes a word from its line (Z-2), the entry also
     carries the word as this line writes it (`surface`, when it differs: 借り for 借りる, a set phrase's own words), and,
@@ -170,8 +182,11 @@ def word_requests(words, features=(), book=False):
 
     `book` (Z-9, a book or a text): each entry names its sentence (`line_text`, as `cues.reading` writes it) and,
     only when the pick knows it, the unit Anki Miner numbers it by (`unit_index`, from Z-19's unit list: never
-    guessed) — no time and no expansion (Zero's smaller version takes `line_text` alone)."""
-    out, made = [], from_line(features)
+    guessed) — no time and no expansion (Zero's smaller version takes `line_text` alone).
+
+    `app` (Anki Miner's `version`): a subtitle line's card names the copies inside it (pick's `line_skip`, Z-26) only
+    for 3.13.0 or newer (`sends_line_skip`), and only when there is one."""
+    out, made, skips = [], from_line(features), sends_line_skip(app)
     for word in words:
         for name in entries(word, features):
             if book:
@@ -181,6 +196,8 @@ def word_requests(words, features=(), book=False):
             else:
                 entry = {"word": name, "line_start": float(word["line_start"]),
                          "line_expansion": [int(n) for n in word["line_expansion"]]}
+                if skips and word.get("line_skip"):
+                    entry["line_skip"] = [int(n) for n in word["line_skip"]]
             if made:
                 surface, reading = word.get("surface"), word.get("front_reading")
                 if surface and surface.strip() and surface != name:

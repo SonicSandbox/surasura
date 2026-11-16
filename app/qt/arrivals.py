@@ -2082,8 +2082,15 @@ class ArrivalsTray(motion.Overlay):
         elif name == "remove":
             self.ask_remove_many(title, ids)
         else:
-            give_place(moves, strings.TRAY_PLACED[name].format(title=title), ids, name)
+            give_place(moves, self._placed_words(rows_, name, title), ids, name)
         self.clear_picks()
+
+    def _placed_words(self, rows_, name, title):
+        """A place's toast. Kura-EO: *Top* of one title with part of its show in Current already says it went in with
+        its show — the store puts it there in episode order (`Store._into_show`), not at the top."""
+        if name == "top" and len({a.work_id for a in rows_}) == 1 and self._has_show(rows_[0]):
+            return strings.TRAY_PLACED_WITH_SHOW.format(title=title)
+        return strings.TRAY_PLACED[name].format(title=title)
 
     def sort_all(self):
         """*Sort them all…* (Mado-O, Sonic 2026-10-30): the tray closes and setup's sort screen opens over the window —
@@ -2157,7 +2164,7 @@ class ArrivalsTray(motion.Overlay):
         elif name == "remove":
             self.ask_remove(arrival)
         else:
-            give_place(moves, strings.TRAY_PLACED[name].format(title=arrival.title), ids, name)
+            give_place(moves, self._placed_words([arrival], name, arrival.title), ids, name)
 
     def finish(self, title, ids):
         """To Finished (`place(…, "finished")`) and the finish toast's choice, D14 (IK-11), as Settings' *When you

@@ -370,10 +370,10 @@ def _weave_word(card):
 
 def _weave(ordered, weave_of, groups, lift, skip, width=None):
     """`ordered` (`plan`'s `(rank, tier, sort, card)` entries, the pinned ones first) with the groups' cards woven in
-    turns after the pins and your own cards -> (entries, how many were woven, each group's cards it could take — its
-    picks: Kyou-C, Junban's count the store's side by side follows). `weave_of`: {card_id: group}; `skip`: the cards
-    never woven (pinned, clicked off, taken out); `width`: how many groups take turns at once. See `plan`'s
-    `weave`."""
+    turns after the pins and your own cards -> (entries, how many were woven, each group's still-new cards — its picks
+    and its pinned and *yours* cards, which go ahead of the turns: Kyou-C, Junban's count the store's side by side
+    follows). `weave_of`: {card_id: group}; `skip`: the cards never woven (pinned, clicked off, taken out); `width`:
+    how many groups take turns at once. See `plan`'s `weave`."""
     import heapq
     if width is not None and not (_exact_int(width) and width > 0):
         width = None                                # Kyou-B: no real width (0, garbled) is every group at once
@@ -383,8 +383,9 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
     head, body = ordered[:lead], ordered[lead:]
     picks = [entry for entry in body if entry[3]["card_id"] in weave_of and entry[3]["card_id"] not in skip
              and entry[1] not in ("known", "yours")]
-    per = [0] * groups                              # Kyou-C: each group's picks (a group with none takes no turn)
-    for entry in picks:
+    per = [0] * groups                              # Kyou-C: each group's picks, and its pinned and *yours* cards
+    for entry in picks + [entry for entry in ordered if entry[3]["card_id"] in weave_of     # (train 40's keeper:
+                          and (entry[3]["card_id"] in lift or entry[1] == "yours")]:        # a pinned title stays)
         per[weave_of[entry[3]["card_id"]]] += 1
     if not picks:
         return ordered, 0, per

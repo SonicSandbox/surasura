@@ -291,3 +291,26 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     top = store._mine_ids(4)
     assert top[:2] == [b[0], loose] and not set(top) & set(a), "the store: the same two titles, A aside"
     store.close()
+
+
+def test_a_title_whose_new_cards_are_all_pinned_is_counted_with_them_through_a_run(tmp_path, monkeypatch):
+    """Kyou-C (train 40's keeper, note 1) through Junban itself: the book's one card (冒険) is pinned, so it goes ahead
+    of every turn and the weave takes none of it — the run still counts it for the store (1, not 0), so the store keeps
+    the title the learner pinned first, in the preview, the Reorder and the fast re-plan's job alike."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
+    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    for where, job in ((tmp_path, None), (tmp_path / "job", spaced.Job(automatic=True))):
+        fake = _fake_with(where, *HIS)
+        book = fake.card_of("冒険")["cardId"]
+        monkeypatch.setattr(pins, "groups", lambda language, cards, notes, pinned=None, card=book: [[card]])
+        with _patched(fake):
+            if job is None:
+                _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+                assert stats["order"][0].word == "冒険" and stats["side_cards"] == want
+                report = reposition.run(settings(junban_unlisted="journey"))
+            else:
+                report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=job)
+        assert report["ok"], report["problems"]
+        assert report["stats"]["side_cards"] == want

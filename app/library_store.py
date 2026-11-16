@@ -33,6 +33,7 @@ Rules that bite (spec §6.2, §8)
 
 import bisect
 import hashlib
+import itertools
 import json
 import ntpath
 import os
@@ -178,17 +179,33 @@ def turns(seqs, width=None):
     """`seqs` (lists) taken in turns, one from each in order; one that runs out drops out, the rest go on. `width`
     (Kyou-B): only the first `width` that still hold one take turns — one that runs out hands its place to the next
     (Current's top two stay two while any title has a file left); None: every one at once."""
-    queues = [list(s) for s in seqs]
-    out, at = [], [0] * len(queues)
-    while True:
-        moved = False
-        live = [k for k, q in enumerate(queues) if at[k] < len(q)]
-        for k in live[:width] if width is not None else live:
-            out.append(queues[k][at[k]])
-            at[k] += 1
-            moved = True
-        if not moved:
-            return out
+    return list(_turns(seqs, width))
+
+
+def _turns(seqs, width=None):
+    """`turns`, one at a time (Kyou-C: the mine line reads only its first N, `woven(n=)`)."""
+    # Kyou-C: one pass — each round looks only at the titles taking turns, the rest waiting in order behind them (every
+    # title each round took 0.7 s at 1,000 titles x 20k files, and a drop reads it twice on the GUI thread)
+    live = [q for q in (list(s) for s in seqs) if q]
+    if width is not None and width < 1:
+        return
+    split = len(live) if width is None else width
+    taking, waiting = [[q, 0] for q in live[:split]], iter(live[split:])
+    while taking:
+        done = False
+        for t in taking:
+            q, k = t
+            yield q[k]
+            t[1] = k = k + 1
+            done = done or k == len(q)
+        if done:
+            left = [t for t in taking if t[1] < len(t[0])]
+            while len(left) < len(taking):         # the next title steps into the place of one that ran out
+                q = next(waiting, None)
+                if q is None:
+                    break
+                left.append([q, 0])
+            taking = left
 
 
 def title_key(item_id, work_id):
@@ -200,37 +217,99 @@ def side_titles(rows, keep=False, n=None):
     """Current's first `n` titles (None: every one, Kyou-B) that hold a file to study -> their `title_key`s, in
     Current's order. `rows`: Current in order, `(id, tier, work_id, availability, watched)`; a file to study is
     available and counts (`counts`, `keep`: the library's `keep_watched`). A title of many parts is one title."""
-    out = []
-    for item_id, tier, work_id, availability, watched in rows:
-        if availability != "available" or not counts(tier, watched, keep):
+    out, seen = [], set()
+    for r in rows:                              # (Kyou-C: `side_pair`'s rows carry a sixth, `mined_at`)
+        if r[3] != "available" or not counts(r[1], r[4], keep):
             continue
-        key = title_key(item_id, work_id)
-        if key not in out:
+        key = title_key(r[0], r[2])
+        if key not in seen:                     # Kyou-C: a set, not the list (titles x files at 1,000 titles)
+            seen.add(key)
             out.append(key)
             if len(out) == n:
                 break
     return out
 
 
-def woven(ids, title_of, titles, width=SIDE_TITLES):
+def woven(ids, title_of, titles, width=SIDE_TITLES, aside=(), n=None):
     """`ids` (in order) with the files of `titles` taken in turns (`turns`, in `titles`' order, `width` at a time: the
     next title steps in as one runs out — Kyou-B), the turns standing where the first of them stood; every other id
-    keeps its order. `title_of`: id -> its `title_key`."""
+    keeps its order. `title_of`: id -> its `title_key`. `aside` (Kyou-C): titles stepping aside (`side_pair`): their
+    files right after the turns, in `ids`' order (the turns then stand where the first of either stood). `n` (Kyou-C):
+    only the first `n` (the mine line's), the turns taken no further."""
     rank = {key: k for k, key in enumerate(titles)}
+    away = set(aside)
+    keys = [title_of(item_id) for item_id in ids]   # Kyou-C: each id's title looked up once
     groups = [[] for _t in titles]
-    for item_id in ids:
-        k = rank.get(title_of(item_id))
+    late = []
+    for item_id, key in zip(ids, keys):
+        k = rank.get(key)
         if k is not None:
             groups[k].append(item_id)
-    out, placed = [], False
-    for item_id in ids:
-        if title_of(item_id) in rank:
-            if not placed:
-                out.extend(turns(groups, width))
-                placed = True
-            continue
-        out.append(item_id)
-    return out
+        elif key in away:
+            late.append(item_id)
+
+    def flow():
+        placed = False
+        for item_id, key in zip(ids, keys):
+            if key in rank or key in away:
+                if not placed:
+                    placed = True
+                    yield from _turns(groups, width)
+                    yield from late
+                continue
+            yield item_id
+    return list(flow() if n is None else itertools.islice(flow(), max(int(n), 0)))
+
+
+# --- Kyou-C (2026-11-16): the window, Connect's top N and Junban pick the same titles — by Junban's card count ------ #
+# A tester's Anki wove titles B and C while the window showed A and B: the store chose by files, Junban by still-new
+# cards. Junban now writes its count after each run (`Store.set_side_cards`, from `pins.record_side`), and `side_pair`
+# is the one rule every reader of the turns follows (`Store._side`: the mine line, Generate's order, the Soon line,
+# Junban's groups; `view_rows` on the feed's rows and a drop's): a title Junban counted no still-new card for steps
+# aside, as Anki weaves none of its cards. No count (Anki absent, no run yet): every title by its files, as before.
+SIDE_CARDS = "side_cards"       # meta: Junban's last count, {card_key(title): 1 with a still-new card in scope, else 0}
+
+
+def card_key(title):
+    """A `title_key` as `SIDE_CARDS` names it: "w12" (a work), "i5" (an item with no work)."""
+    return f"{title[0]}{title[1]}"
+
+
+def side_cards(value):
+    """`SIDE_CARDS` as stored (JSON text, or the dict) -> {card_key: 0 / 1}, or None (absent, or unreadable: no count)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {str(k): 1 if v else 0 for k, v in value.items() if isinstance(v, (int, bool))}
+
+
+def side_pair(rows, keep=False, cards=None):
+    """The one rule for who takes turns while side by side is on -> (every title to study, the titles taking turns, the
+    titles stepping aside), each in Current's order — or None with fewer than two titles to study (every reader then
+    as before). `rows`: Current in order, `(id, tier, work_id, availability, watched, mined_at)`; `keep`: the library's
+    `keep_watched`; `cards`: Junban's last count (`side_cards`; None or {}: no count — every title by its files, as
+    before). A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
+    hasn't mined its next file to study yet (that file can still make its cards: a title new to Current, or one whose
+    mined files have been watched); a title the count doesn't name (in Current since) takes its turn. When every title
+    would step aside, none does."""
+    titles = side_titles(rows, keep)
+    if len(titles) < SIDE_TITLES:
+        return None
+    if not cards:
+        return titles, titles, []
+    mined = {}                                  # each title's next file to study: has Connect mined it?
+    for item_id, tier, work_id, availability, watched, mined_at in rows:
+        if availability == "available" and counts(tier, watched, keep):
+            mined.setdefault(title_key(item_id, work_id), mined_at is not None)
+    aside = [t for t in titles if cards.get(card_key(t)) == 0 and mined.get(t)]
+    if len(aside) == len(titles):
+        return titles, titles, []
+    away = set(aside)
+    return titles, [t for t in titles if t not in away], aside
 # --- end Kyou-A
 
 
@@ -2386,10 +2465,10 @@ class Store:
         keep = self._keep_watched() if keep is None else keep
         side = self._side(keep)
         if side is not None:                    # Kyou-A: Current's top two in turns (Kyou-B: the next steps in)
-            rows, titles = side
+            rows, _every, titles, aside = side
             title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
             ok = [r[0] for r in rows if r[3] == "available" and counts(r[1], r[4], keep)]   # only these take turns
-            return woven(ok, title_of, titles)[:max(int(n), 0)]
+            return woven(ok, title_of, titles, aside=aside, n=n)
         rule = counts_sql(keep)
         ids = [r[0] for r in self.conn.execute(
             f"SELECT id FROM items WHERE tier = 'now' AND availability = 'available' AND {rule} ORDER BY ord, id "
@@ -2412,20 +2491,31 @@ class Store:
         return _keep_value(row[0] if row else None)
 
     def _current_rows(self):
-        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched)`."""
+        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched, mined_at)`."""
         return self.conn.execute(
-            "SELECT id, tier, work_id, availability, watched FROM items WHERE tier IN ('now', 'soon') "
+            "SELECT id, tier, work_id, availability, watched, mined_at FROM items WHERE tier IN ('now', 'soon') "
             "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall()
 
+    def _side_cards(self):
+        """Kyou-C: Junban's last count (`SIDE_CARDS`, `side_cards`), or None (none written, or unreadable)."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (SIDE_CARDS,)).fetchone()
+        return side_cards(row[0]) if row else None
+
     def _side(self, keep=None, on=None):
-        """(Current's rows, its titles to study — Kyou-B: every one, `woven` takes two at a time) while side by side is
-        on and Current holds two or more titles to study; else None — and every reader of the rule reads as before.
-        `on`: the option as the caller has it (a command setting it), else the library's."""
+        """(Current's rows, its titles to study — Kyou-B: every one, `woven` takes two at a time —, those taking turns,
+        those stepping aside: Kyou-C, `side_pair` by Junban's count) while side by side is on and Current holds two or
+        more titles to study; else None — and every reader of the rule reads as before. `on`: the option as the caller
+        has it (a command setting it), else the library's."""
         if not (self._side_on() if on is None else on):
             return None
         rows = self._current_rows()
-        titles = side_titles(rows, self._keep_watched() if keep is None else keep)
-        return (rows, titles) if len(titles) >= SIDE_TITLES else None    # Kyou-B: every title, two at a time
+        pair = side_pair(rows, self._keep_watched() if keep is None else keep, self._side_cards())
+        return None if pair is None else (rows,) + pair
+
+    def _side_split(self):
+        """Kyou-C: who takes turns and who steps aside (`_side`'s last two), or None while there is no side by side."""
+        side = self._side()
+        return None if side is None else side[2:]
 
     def side_by_side(self):
         """The titles side by side, for a reader (Junban's groups): `[[item id, …], …]` — Current's titles holding a
@@ -2435,7 +2525,7 @@ class Store:
             side = self._side()
         if side is None:
             return []
-        rows, titles = side
+        rows, titles, _on, _aside = side           # Kyou-C: every title to study, so Junban counts each again
         groups = {key: [] for key in titles}
         for r in rows:
             key = title_key(r[0], r[2])
@@ -2450,11 +2540,11 @@ class Store:
         or fewer than `n` files to study: `n`, as before."""
         if n <= 0:
             return n
-        rows, titles = side
+        rows, _every, titles, aside = side
         keep = self._keep_watched() if keep is None else keep
         title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
         study = [r[0] for r in rows if r[3] != "waiting" and counts(r[1], r[4], keep)]
-        taken = woven(study, title_of, titles)[:n]
+        taken = woven(study, title_of, titles, aside=aside, n=n)
         if len(taken) < n:
             return n
         place = {r[0]: k for k, r in enumerate(rows)}
@@ -2533,9 +2623,9 @@ class Store:
         side = self._side(keep)
         if side is None:
             return None
-        rows, titles = side
+        rows, _every, titles, aside = side
         title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
-        return lambda ids: woven(ids, title_of, titles)
+        return lambda ids: woven(ids, title_of, titles, aside=aside)
 
     def item_keys(self):
         """{rel_key: item_id} of every item, no entry read: a file's `path_key` is its item's `rel_key` (a plan's files
@@ -2607,7 +2697,8 @@ class Store:
                 "pieces": [dict(zip(FEED_PIECE_FIELDS, r)) for r in pieces],
                 "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
                             "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0),
-                            "side_by_side": meta.get(SIDE_BY_SIDE, 0)}}
+                            "side_by_side": meta.get(SIDE_BY_SIDE, 0),
+                            "side_cards": side_cards(meta.get(SIDE_CARDS))}}     # Kyou-C: Junban's last count
 
     def prune_gone(self, now=None):
         """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest
@@ -5497,6 +5588,31 @@ class Store:
             change.options = options
             return change
 
+    def set_side_cards(self, groups, by="connect"):
+        """Kyou-C: Junban's count after its run (`pins.record_side`), the one rule's input (`side_pair`): `groups`
+        [(a title's item ids, its still-new cards in scope), …] — the titles `side_by_side()` handed it. Written as
+        `SIDE_CARDS` (each title: 1 with a card, else 0) only when it changed; when the titles taking turns move with
+        it, Current settles as after any order change (`cmd.touch(CURRENT)`: the mine line's events, Generate's order,
+        the Soon line). Not the user's change: no undo of its own. `by`: the caller, as the command records it.
+        -> True when written."""
+        first = [int(ids[0]) for ids, _n in groups if ids]
+        with self._reading():
+            work = {}
+            for chunk in _chunks(first, 500):
+                work.update(self.conn.execute(f"SELECT id, work_id FROM items WHERE id IN "
+                                              f"({','.join('?' * len(chunk))})", chunk).fetchall())
+            want = {card_key(title_key(int(ids[0]), work[int(ids[0])])): 1 if n else 0
+                    for ids, n in groups if ids and int(ids[0]) in work}
+            if self._side_cards() == want:
+                return False                    # the count as it stands: no write (S19)
+        with self._command("set_side_cards", by) as cmd:
+            before = self._side_split()
+            self._set_meta({SIDE_CARDS: json.dumps(want, sort_keys=True)})
+            cmd.touch()                         # the feed's options carry it: the window reads it again
+            if self._side_split() != before:
+                cmd.touch(CURRENT)              # who takes turns moved: the order did
+            return True
+
     def _undo_roots(self, cmd, change):
         """T6, *Stop reading*'s Undo by the value check (§6.11): each folder read again only where its row still holds
         what the stop wrote (turned back on meanwhile: left as it is, a note)."""
@@ -6538,8 +6654,14 @@ class Store:
 
     def receipt(self, item_id, mined_at):
         """Connect's receipt (2.7, ✅ G1.1-10): one row, `state_version` only — never `changed_in` or
-        `order_version`."""
-        return self._status("receipt", [item_id], "mined_at", mined_at)
+        `order_version`; Kyou-C: unless it moves who takes turns side by side (a title Junban counted no card for, whose
+        next file Connect has now mined, steps aside: `side_pair`) — then the order moved, as `set_side_cards`'."""
+        with self._command("receipt") as cmd:
+            before = self._side_split()
+            change = self._status("receipt", [item_id], "mined_at", mined_at)
+            if change is not None and self._side_split() != before:
+                cmd.touch(CURRENT)
+            return change
 
     def notes_gone(self, note_ids, by="connect"):
         """Notes Anki no longer has (P2.4 row 2.4.14; Sonic, 2026-10-07: a card the learner deletes, theirs or

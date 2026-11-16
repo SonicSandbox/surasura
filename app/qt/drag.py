@@ -303,19 +303,31 @@ def pieces_of(row):
 # --- end L6.3
 
 
-def lines_for(view, rows_):
+def side_read(view, rows_):
+    """Kyou-C: the top of `rows_` by side by side's turns (`view_rows.side_top`) while the view's option is on and it
+    has a top line, else None — read once for a drop (or a Done) and handed to `topped` and `lines_for` both (the
+    same rows: `topped` changes no file's place, tier or state), never twice on the GUI thread."""
+    n = getattr(view, "mine_line", None)
+    if not n or not getattr(view, "side_by_side", False):
+        return None
+    return view_rows.side_top(rows_, n, bool(getattr(view, "keep_watched", False)), getattr(view, "side_cards", None))
+
+
+def lines_for(view, rows_, turned=None):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
     the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule). W-1: a file counts toward the top
     line by the store's one rule too (`view_rows.counts_toward_top`: a watched one only while the view's `keep_watched`
-    is on; never a video waiting for its subtitle).
+    is on; never a video waiting for its subtitle). `turned`: `side_read`'s answer for `rows_`, when the caller has
+    it (Kyou-C); None: read here.
     """
     counts = view_rows.counts_toward_top
     keep = bool(getattr(view, "keep_watched", False))
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
     n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
-    turned = view_rows.side_top(rows_, n, keep) if n and getattr(view, "side_by_side", False) else None
+    if turned is None:
+        turned = side_read(view, rows_)
     if turned is not None:                           # Kyou-B (KA-4): the top in turns, drawn at once by the store's rule
         n = None                                     # (the line never leaves the drop's rows to wait for the store)
         top_ids = turned[0]
@@ -360,14 +372,16 @@ def lines_for(view, rows_):
     return tuple(out)
 
 
-def topped(view, rows_):
+def topped(view, rows_, turned=None):
     """`rows_` (an order of `view`'s rows the window paints: a drop's, its marks) with which files are *in the top*
     read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
-    rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
+    rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again). `turned`:
+    `side_read`'s answer for `rows_`, when the caller has it (Kyou-C); None: read here."""
     feed = getattr(view, "connect", None)
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
                             feed.items if feed is not None and feed.on else None,
-                            side=bool(getattr(view, "side_by_side", False)))     # Kyou-B (KA-4): in turns, at once
+                            side=bool(getattr(view, "side_by_side", False)),     # Kyou-B (KA-4): in turns, at once
+                            turned=turned, cards=getattr(view, "side_cards", None))
 
 
 def mines_itself(lines, place):
@@ -396,7 +410,8 @@ def reordered(view, keys, tiers=None):
         out.append(r._replace(**changes) if changes else r)
     if out and view.rows and out[0].key != view.rows[0].key:
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
-    out, moved = topped(view, out)
+    turned = side_read(view, out)                   # Kyou-C: once for the drop (topped and its lines)
+    out, moved = topped(view, out, turned)
     files = sum(r.n_files for r in out)
     counts = view.counts._replace(current_rows=len(out), current_files=files)
     lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
@@ -405,7 +420,8 @@ def reordered(view, keys, tiers=None):
     if any(i > 0 for i in moved) or [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
             {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
         worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
-    return view._replace(rows=tuple(out), lines=lines_for(view, out), counts=counts, subline=subline, worst=worst)
+    return view._replace(rows=tuple(out), lines=lines_for(view, out, turned), counts=counts, subline=subline,
+                         worst=worst)
 
 
 def without(view, key, where):
@@ -1427,9 +1443,10 @@ class DragController(QObject):
                 changed.append(k)
         if not changed:
             return view
-        rows_, moved = topped(view, rows_)          # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        turned = side_read(view, rows_)             # Kyou-C: once (topped and its lines)
+        rows_, moved = topped(view, rows_, turned)  # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
         worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
-        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_, turned), worst=worst)
 
     def _marks_ahead(self, write, marks, key):
         """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands

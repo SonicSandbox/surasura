@@ -281,3 +281,20 @@ def test_only_cards_out_records_are_held_as_cards_out(lib):
     assert held, "the taken-out cards are held out"
     assert all(record["action"] == pins.OUT_ACTION for record in held), held
     assert sorted(record["id"] for record in held) == sorted(record["id"] for record in cards_out), held
+
+
+def test_side_by_side_on_the_hosts_job_records_junbans_count_of_each_titles_cards(lib):
+    """Kyou-C: with side by side on, the host's job records Junban's count beside its order (`_record_side`, by the
+    host as "replan"): Current's first title, linked to a list word's new card, is counted with one — so the store's
+    top takes turns with the titles Anki was just given."""
+    language, root, store = lib
+    store.set_library_options(side_by_side=True)
+    fake, words, by_word = _deck(language, root)
+    a = store.ids("now")[0]
+    _link(store, a, by_word[words[0]])
+    host = replan_preview.Host(language, say=[].append)
+    with _patched(fake):
+        host._job("catch-up")
+    counted = store._side_cards()
+    assert counted is not None, "the job recorded no count"
+    assert counted[library_store.card_key(library_store.title_key(a, store.item(a)["work_id"]))] == 1

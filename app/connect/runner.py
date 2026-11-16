@@ -708,6 +708,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
                     _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
                 keep |= _add_audio_says(ledger, lang, job["item_id"])     # Kura-AB3 A2 r1 S6: the book's line stays
+                keep |= {n["say"] for n in ledger.needs(lang, listed=False)     # a line the browser didn't record:
+                         if n["kind"] == BROWSER_LINE and n["item_id"] == job["item_id"]}   # stays till a *Mine*
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:

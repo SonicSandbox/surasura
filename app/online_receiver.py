@@ -366,6 +366,15 @@ def _handler(receiver):
             pass
 
         def _send(self, code, payload=None):
+            if code >= 400 and self.command == "POST" and not getattr(self, "_read", False):
+                self._read = True                   # a refusal before the body was read: a small one read and
+                try:                                # dropped first (unread, Windows resets the socket before the
+                    length = int(self.headers.get("Content-Length") or 0)    # answer is read)
+                except ValueError:
+                    length = 0
+                if 0 < length <= DRAIN:
+                    self.rfile.read(length)
+                self.close_connection = True
             body = json.dumps(payload if payload is not None else {"ok": code == 200}).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -397,11 +406,9 @@ def _handler(receiver):
                 self._send(411, {"ok": False, "why": "Content-Length is needed"})
                 return None
             if length > limit:
-                self.close_connection = True        # the body is never kept: a small one read and dropped (an
-                if length <= DRAIN:                 # unread one makes Windows reset the socket before the 413 is read)
-                    self.rfile.read(length)
-                self._send(413, {"ok": False, "why": "the body is too large"})
+                self._send(413, {"ok": False, "why": "the body is too large"})     # (a small one read and dropped)
                 return None
+            self._read = True
             return self.rfile.read(length)
 
         def do_GET(self):

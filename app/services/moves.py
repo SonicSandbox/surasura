@@ -2532,6 +2532,15 @@ class Numbers:
         with self._lock:
             return self._plan_key
 
+    def plan_stamp(self):
+        """The plan file's key as `plan_key` keeps it — (mtime, size), None without one — read from the disk now (one
+        stat, any thread): the first screen's cache is matched with it at the start, before the plan is read."""
+        try:
+            st = os.stat(self._plan_path())
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""
         with self._lock:

@@ -199,3 +199,118 @@ def test_each_turn_takes_the_word_with_the_most_impact_not_the_one_met_first(tmp
     with _patched(fake):
         _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
     assert [row.word for row in stats["order"]] == ["老婆", "冒険", "散歩"]
+
+
+# --- Kyou-C: Junban's count, the rule the store follows -------------------------------------------------------------- #
+FOUR = ([[1], [2], [3], [4]], {}, {1: {pins.source_of(A_SOURCE)}, 2: {pins.source_of(B_SOURCE)},
+                                   3: {pins.source_of(C_SOURCE)}})
+
+
+def test_every_run_counts_each_titles_still_new_cards_for_the_store(tmp_path, monkeypatch):
+    """The store hands four titles to study; the fourth has no card in Anki. The 順 window's preview, its Reorder and
+    the fast re-plan's job each count every title's cards the weave could take — the book 1, the channel 2, the show
+    2, the fourth 0 — beside the order, for the host to record (`pins.record_side`)."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
+    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    fake = _fake_with(tmp_path, *HIS)
+    with _patched(fake):
+        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
+        report = reposition.run(settings(junban_unlisted="journey"))
+    assert window["side_cards"] == want and report["stats"]["side_cards"] == want
+    again = _fake_with(tmp_path / "job", *HIS)
+    with _patched(again):
+        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+    assert report["ok"] and report["stats"]["side_cards"] == want
+
+
+def test_with_no_title_holding_a_card_every_title_is_counted_none(tmp_path, monkeypatch):
+    """No card names a title (nothing woven): every title is counted none — the store then reads by files, as
+    before — and off (no titles from the store) nothing is counted at all."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
+    fake = _fake_with(tmp_path, *(HIS[0], [None] * len(HIS[0])))
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+    assert stats["side_cards"] == [[[1], 0], [[2], 0], [[3], 0], [[4], 0]] and "woven" not in stats
+    monkeypatch.setattr(pins, "read_side", lambda language: ([], {}, {}))
+    with _patched(_fake_with(tmp_path / "off", *HIS)):
+        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+    assert "side_cards" not in stats
+
+
+def test_record_side_hands_the_count_to_the_callers_store():
+    """The host's store records it (`Store.set_side_cards`, who wrote it as `by`); no count, or a store without the
+    option (2.x), writes nothing."""
+    seen = []
+
+    class Store:
+        def set_side_cards(self, groups, by):
+            seen.append((groups, by))
+            return True
+    report = {"stats": {"side_cards": [[[1, 2], 3], [[5], 0]]}}
+    assert pins.record_side(Store(), report, by="replan") is True
+    assert seen == [([([1, 2], 3), ([5], 0)], "replan")]
+    assert pins.record_side(Store(), {"stats": {}}) is False and pins.record_side(Store(), None) is False
+    assert pins.record_side(object(), report) is False and len(seen) == 1
+
+
+D_SOURCE = "春の約束 — 春の約束 - 01 @ 00:01:00"
+STUDIED = ([("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼鏡を買った。", 5000),       # B's
+            ("散歩", "毎朝<b>散歩</b>に出かける。", 3000),                                # the loose file's
+            ("図書館", "図書館で本を読んだ。", 6000),                                      # D's
+            ("須藤", "須藤さんが来た。", 9000)],                                          # no title's
+           [B_SOURCE, B_SOURCE, C_SOURCE, D_SOURCE, None])
+
+
+def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch):
+    """End to end on a real store: A (Current's first title, its next file mined) has no new card left in Anki. Junban
+    weaves B and the loose file first; its count, recorded by the host, makes the store's top (Connect's top N, the
+    window's) take B and the loose file in turns too — the same two titles, A's files after every turn."""
+    from app import library_store as ls
+    from tests.test_side_by_side import _library
+    store, a, b, loose, d = _library("ja")
+    store.set_library_options(mine_line=4, side_by_side=True)
+    store.receipt(a[0], ls._now())
+    titles = store.side_by_side()
+    assert titles == [a, b, [loose], d]
+    side = (titles, {}, {b[0]: {pins.source_of(B_SOURCE)}, loose: {pins.source_of(C_SOURCE)},
+                         d[0]: {pins.source_of(D_SOURCE)}})
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: side)
+    fake = _fake_with(tmp_path, *STUDIED)
+    with _patched(fake):
+        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+    assert report["ok"], report["problems"]
+    woven = [row.weave[0] for row in report["stats"]["order"] if row.weave is not None]
+    assert woven[:2] == [1, 2], "Anki: B, then the loose file"
+    assert pins.record_side(store, report, by="replan") is True
+    top = store._mine_ids(4)
+    assert top[:2] == [b[0], loose] and not set(top) & set(a), "the store: the same two titles, A aside"
+    store.close()
+
+
+def test_a_title_whose_new_cards_are_all_pinned_is_counted_with_them_through_a_run(tmp_path, monkeypatch):
+    """Kyou-C (train 40's keeper, note 1) through Junban itself: the book's one card (冒険) is pinned, so it goes ahead
+    of every turn and the weave takes none of it — the run still counts it for the store (1, not 0), so the store keeps
+    the title the learner pinned first, in the preview, the Reorder and the fast re-plan's job alike."""
+    monkeypatch.setattr(connect, "PINS", True)
+    monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
+    monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
+    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    for where, job in ((tmp_path, None), (tmp_path / "job", spaced.Job(automatic=True))):
+        fake = _fake_with(where, *HIS)
+        book = fake.card_of("冒険")["cardId"]
+        monkeypatch.setattr(pins, "groups", lambda language, cards, notes, pinned=None, card=book: [[card]])
+        with _patched(fake):
+            if job is None:
+                _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+                assert stats["order"][0].word == "冒険" and stats["side_cards"] == want
+                report = reposition.run(settings(junban_unlisted="journey"))
+            else:
+                report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=job)
+        assert report["ok"], report["problems"]
+        assert report["stats"]["side_cards"] == want

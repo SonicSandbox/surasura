@@ -275,7 +275,7 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
     woven = 0
     if weave_of:
         skip = set(lift) | excluded | {card_id for card_id in (out or ()) if _exact_int(card_id)}
-        ordered, woven = _weave(ordered, weave_of, len(weave), set(lift), skip, width)
+        ordered, woven, side_picks = _weave(ordered, weave_of, len(weave), set(lift), skip, width)
     # --- end Kyou-A
     # --- P4.1 L2: *Take its new cards out* — after every other card, the planned order kept among them ---
     gone = {card_id for card_id in (out or ()) if _exact_int(card_id)} - set(lift) - excluded
@@ -358,6 +358,7 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
         stats["out"] = sum(1 for row in order if row.out)     # P4.1 L2: only when something is out
     if weave_of:
         stats["woven"] = woven                                # Kyou-A: only while something is woven
+        stats["side_picks"] = side_picks                      # Kyou-C: each group's cards the weave could take
     return writes, stats
 
 
@@ -369,9 +370,10 @@ def _weave_word(card):
 
 def _weave(ordered, weave_of, groups, lift, skip, width=None):
     """`ordered` (`plan`'s `(rank, tier, sort, card)` entries, the pinned ones first) with the groups' cards woven in
-    turns after the pins and your own cards -> (entries, how many were woven). `weave_of`: {card_id: group}; `skip`:
-    the cards never woven (pinned, clicked off, taken out); `width`: how many groups take turns at once. See `plan`'s
-    `weave`."""
+    turns after the pins and your own cards -> (entries, how many were woven, each group's still-new cards — its picks
+    and its pinned and *yours* cards, which go ahead of the turns: Kyou-C, Junban's count the store's side by side
+    follows). `weave_of`: {card_id: group}; `skip`: the cards never woven (pinned, clicked off, taken out); `width`:
+    how many groups take turns at once. See `plan`'s `weave`."""
     import heapq
     if width is not None and not (_exact_int(width) and width > 0):
         width = None                                # Kyou-B: no real width (0, garbled) is every group at once
@@ -381,8 +383,12 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
     head, body = ordered[:lead], ordered[lead:]
     picks = [entry for entry in body if entry[3]["card_id"] in weave_of and entry[3]["card_id"] not in skip
              and entry[1] not in ("known", "yours")]
+    per = [0] * groups                              # Kyou-C: each group's picks, and its pinned and *yours* cards
+    for entry in picks + [entry for entry in ordered if entry[3]["card_id"] in weave_of     # (train 40's keeper:
+                          and (entry[3]["card_id"] in lift or entry[1] == "yours")]:        # a pinned title stays)
+        per[weave_of[entry[3]["card_id"]]] += 1
     if not picks:
-        return ordered, 0
+        return ordered, 0, per
     taken = {entry[3]["card_id"] for entry in picks}
     rest = [entry for entry in body if entry[3]["card_id"] not in taken]
     inf = float("inf")
@@ -479,7 +485,7 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
                 took += 1
                 break
     woven = ahead + [entry for block in out for entry in block] + twins
-    return head + woven + rest, len(woven)
+    return head + woven + rest, len(woven), per
 # --- end Kyou-A
 
 

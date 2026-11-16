@@ -1051,7 +1051,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     if reading is not None:
         episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
     else:
-        episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named), tags=tags,
+        episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")), tags=tags,
                                   subtitle_offset=subtitle_offset, audio=audio, names=names)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio))

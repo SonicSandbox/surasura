@@ -28,7 +28,10 @@ punctuation; but a card the punctuation rule (`finished`: 。？！… or a clos
 itself (the same text, touching times; another speaker's line at either copy's time may sit between) counts as the
 line it repeats, and the card runs to its last copy, so the clip ends with the speech. Chinese keeps the punctuation
 rule, capped. Lines are counted as Anki Miner counts them: since 3.10.1 it drops a line holding none of the
-language's script (an English sign, a ♪～).
+language's script (an English sign, a ♪～). A copy inside a card, either language, is named in `line_skip` (offsets
+from the word's line; the word's own line, else a line's first showing, is the one kept): Anki Miner 3.13 leaves its
+text out of the Sentence and keeps its time in the clip, so the line reads once (Z-26; `runfile.word_requests` sends
+it only to 3.13 or newer).
 
 A book's or a text's line (Z-9, Michi-BS, Mattias's report 2026-11-12) is its sentence, 。！？ inside 「」 included —
 Anki Miner's own unit is a whole 「…」 speech, and it cuts that unit to the sentence named only when it holds it exactly
@@ -364,6 +367,25 @@ def line_expansion(cues, at, lines=None):
     return [before, after]
 
 
+def line_skip(cues, at, lines=None):
+    """[offsets from line `at`]: the lines of its card (`window`) that show another line of it again (`_copy`), whose
+    text the Sentence leaves out (Anki Miner 3.13's `line_skip`, Z-26) — never `at` itself (0): of a line and its
+    copies the one kept is `at` when it is among them, else the first showing. [] when there is none."""
+    lines = lines if lines is not None else Lines(cues)
+    before, after, _cut, _ms = window(cues, at, lines)
+    n = lines.place.get(at)
+    return [] if n is None else _copies(cues, lines.kept, n, n - before, n + after)
+
+
+def _copies(cues, kept, n, lo, hi):
+    """The offsets from `n` of Anki Miner's lines `kept[lo..hi]` that are a copy of another of them (see `line_skip`)."""
+    first = {}                              # each line -> the first showing of its text in the card
+    for k in range(lo, hi + 1):
+        first[k] = next((first[j] for j in range(lo, k) if _copy(cues, kept, j, k)), k)
+    kept_one = {line: (n if first[n] == line else line) for line in set(first.values())}
+    return [k - n for k in range(lo, hi + 1) if kept_one[first[k]] != k]
+
+
 def _by_lemma(token):
     """A verb or adjective form UniDic reads as another word's (its lemma's reading isn't its own dictionary form's):
     a potential, ra-nuki or classical form — 行ける, 辿り着ける, 来れる, 美しき. Anki Miner folds these to the lemma too
@@ -549,12 +571,13 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
 
     def card(at):
         """A card cut from line `at`: (the cues it holds — the line and its expansion —, [before, after], whether the
-        cap cut it, its length in ms)."""
+        cap cut it, its length in ms, the offsets of its lines that show another of them again: `line_skip`)."""
         if at not in cards:
             before, after, cut, ms = window(cues, at, lines)
             n = lines.place.get(at)
             held = lines.kept[n - before:n + after + 1] if n is not None else [at]
-            cards[at] = (held, [before, after], cut, ms)
+            skip = _copies(cues, lines.kept, n, n - before, n + after) if n is not None else []
+            cards[at] = (held, [before, after], cut, ms, skip)
         return cards[at]
 
     def span(at):
@@ -661,6 +684,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "line_start": seconds(cue.start), "line_end": seconds(cue.end),
             "line_text": line_of(best.cue),
             "line_expansion": list(card(best.cue)[1]),
+            "line_skip": list(card(best.cue)[4]),
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),
             "other_new": others(best),

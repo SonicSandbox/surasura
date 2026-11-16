@@ -297,3 +297,19 @@ def test_without_a_width_every_group_takes_turns_at_once_as_before():
     cards, rank, groups = _his("ja")
     _writes, stats = P.plan(cards, rank, weave=groups)
     assert [row.weave[0] for row in stats["order"][:6]] == [0, 1, 2, 0, 1, 2]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_title_whose_new_cards_are_pinned_or_yours_counts_them_for_the_store(language):
+    """Kyou-C (train 40's intent keeper, note 1): the count the store's side by side follows (`side_picks`) holds a
+    title's pinned and *yours* new cards beside its picks — the book's two cards both pinned (they go ahead of every
+    turn) count 2, so the store never sets aside the title the learner pinned first; the channel's own card (*yours*)
+    counts with its three picks. A card clicked off, taken out or known still counts for none."""
+    cards, rank, groups = _his(language)
+    cards[2]["tier"] = "yours"                            # the channel's first card: one you mined yourself
+    cards[8]["tier"] = "known"                            # the show's third: known already
+    _writes, stats = P.plan(cards, rank, pins=[[1, 2]], exclude=[7], out=[8], weave=groups, width=2)
+    assert stats["side_picks"] == [2, 4, 1]
+    assert [row.word for row in stats["order"][:2]] == [cards[0]["word"], cards[1]["word"]], "the pins stay first"
+    _writes, plain = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
+    assert plain["side_picks"] == [2, 4, 3], "nothing pinned, clicked off or out: every new card counts"

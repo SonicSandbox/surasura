@@ -510,11 +510,31 @@ def reorder_work(settings, language, answers, progress=None, cancel=None, on_wai
             return {"ok": False, "message": f"Could not save your answers, so nothing was reordered: {e}",
                     "problems": [], "warnings": [], "written": [], "failures": [], "unsaved": True}
     try:
-        return reposition.run(settings, progress=progress, wait=None, cancel=cancel, on_wait=on_wait,
-                              job=window_job(settings))
+        report = reposition.run(settings, progress=progress, wait=None, cancel=cancel, on_wait=on_wait,
+                                job=window_job(settings))
     except Exception as e:                          # a window must never lose a write to a traceback
         return {"ok": False, "message": "Junban did not finish.", "problems": [str(e)],
                 "warnings": [], "written": [], "failures": []}
+    record_side(language, report)
+    return report
+
+
+def record_side(language, report):
+    """Kyou-C: a Reorder's count of each side-by-side title's still-new cards into the store (`pins.record_side`), as
+    the re-plan's host and Connect's step record theirs — so the window and Connect's top N pick the titles this
+    Reorder wove. Opened only when the run counted any; never raises (the next run counts again)."""
+    try:
+        if not ((report or {}).get("stats") or {}).get("side_cards"):
+            return
+        from app.connect import library
+        from modules.junban import pins
+        store = library.open_store(language, role="window")
+        if store is None:
+            return
+        with store:
+            pins.record_side(store, report, by="junban")
+    except Exception:
+        pass
 
 
 def put_back_then_reorder_work(settings, language, answers, runs, progress=None, cancel=None, on_wait=None):

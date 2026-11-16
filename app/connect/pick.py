@@ -17,7 +17,9 @@ Anki now, or in the backlog of the last sync when Anki is closed — is never se
 checks for a duplicate.
 
 The line (IS:256–268, ✅ P1.5-12): never a sung line; a line no other word of this batch took, unless there is no
-other; a line with no other new word first; then one whose card the 8 s cap doesn't cut (else the shortest card); a
+other; a line with no other new word first; then one whose audio the subtitle gives no reason to doubt (`Around`:
+nobody else's line and no song on screen while the card plays, a line said at a speaking pace — a preference only,
+a word with no such line is still sent); then one whose card the 8 s cap doesn't cut (else the shortest card); a
 written-out occurrence over a kana-only one; then the earliest. Its start goes as written (seconds, millisecond
 precision), and `line_expansion` always — the lines Anki Miner adds (card lines, Sonic 2026-11-09): the next line is
 taken while this one runs on, the line before only when it runs into this one, at most 2 each side (a line's copies counting as it), with gaps up to
@@ -49,6 +51,7 @@ costs nothing (no media is cut for a word his parse doesn't hold), and a later A
 
 Pure: the caller hands in the cues, their words, what the learner knows and which words have cards. Nothing written.
 """
+import bisect
 import os
 import re
 import unicodedata
@@ -61,6 +64,11 @@ SIDE = 2                # line_expansion: at most this many lines each side
 GAP_MS = 2000           # ...across gaps up to this long
 CAP_MS = 8000           # ...and never past this, first start to last end (Sonic: "8 second cap is wonderful")
 PASS_MS = 4500          # a card the punctuation rule makes this short stays as it is ("a pass between 2 characters")
+OVER_MS = 300           # another line is on screen with a card when their times share this much (`Around`)
+# The characters a second a line is said at (its letters and digits over the time it is shown), outside which its
+# timing or its audio is in doubt (PROVISIONAL, 2026-11-16: wide on purpose, a preference among a word's lines only)
+PACE = {"ja": (1.5, 14.0), "zh": (1.0, 10.0)}
+PACE_CHARS = 4          # ...judged only on a line of this many characters or more (はい shown 2 s is no sign)
 REPEAT_MS = 10          # a line shown again: the same text, starting at most this long after the copy before ends
                         # (Generate's own window, Kotoba-R: 83 ms is the streaming gap between a line said twice)
 
@@ -338,6 +346,53 @@ def _walk(cues, kept, n, runs_on, cap, repeats):
     return at["lo"], at["hi"], cut
 
 
+class Around:
+    """What else the subtitle shows while a card plays, for the signs that its audio is not its sentence alone
+    (audio quality, Tier 0: the subtitle only, before anything is cut). An .ass file's events needn't be in time
+    order: read by time here."""
+
+    def __init__(self, cues):
+        self.cues = cues
+        self.order = sorted(range(len(cues)), key=lambda i: cues[i].start)
+        self.starts = [cues[i].start for i in self.order]
+        self.longest = max((cue.end - cue.start for cue in cues), default=0)
+
+    def shown(self, lo, hi):
+        """The cues on screen for OVER_MS or more of lo..hi (ms)."""
+        out = []
+        for n in range(bisect.bisect_left(self.starts, lo - self.longest), bisect.bisect_left(self.starts, hi)):
+            cue = self.cues[self.order[n]]
+            if min(cue.end, hi) - max(cue.start, lo) >= OVER_MS:
+                out.append(self.order[n])
+        return out
+
+    def doubts(self, at, held, language):
+        """How many signs line `at`'s card (`held`: the cues it holds) gives that its audio is not its sentence
+        alone, 0–3: another speaker's line on screen with it (a line of the language outside the card, or one in
+        the card shown while line `at` itself is — never a copy of one of the card's); a song line on screen with it; the line itself shown far faster or slower than speech (`paced`).
+        A count to rank a word's lines by, never a reason to hold a word back."""
+        texts = {self.cues[c].text for c in held}
+        lo, hi = min(self.cues[c].start for c in held), max(self.cues[c].end for c in held)
+        shown = [c for c in self.shown(lo, hi) if c != at]
+        own = self.cues[at]
+        with_own = {c for c in self.shown(own.start, own.end) if self.cues[c].text != own.text}
+        spoken_over = any(self.cues[c].counted and not self.cues[c].sung
+                          and (c in with_own or (c not in held and self.cues[c].text not in texts)) for c in shown)
+        sung = any(self.cues[c].sung for c in shown)
+        return int(spoken_over) + int(sung) + int(not paced(self.cues[at], language))
+
+
+def paced(cue, language):
+    """Is the line shown for about as long as it takes to say (`PACE`: its letters and digits a second)? True for a
+    line too short to judge, one with no time, and a language with no pace given."""
+    low, high = PACE.get(language, (None, None))
+    chars = sum(1 for ch in cue.text or "" if unicodedata.category(ch)[0] in "LN")
+    ms = cue.end - cue.start
+    if low is None or chars < PACE_CHARS or ms <= 0:
+        return True
+    return low <= chars * 1000.0 / ms <= high
+
+
 def window(cues, at, lines=None):
     """(before, after, cut, ms): the lines Anki Miner adds to line `at` so the card holds the whole sentence (§
     above), counted in Anki Miner's lines (`Lines.kept`); whether the 8 s cap cut that sentence short; the card's
@@ -600,6 +655,16 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
 
     units = bool(getattr(cues, "units", False))
     named, book = {}, None
+    around, doubted = (None if units else Around(cues)), {}
+
+    def doubts(at):
+        """The signs that the audio of a card cut from line `at` is not its sentence alone (`Around.doubts`); a
+        book's sentence has no audio of its own: 0."""
+        if around is None:
+            return 0
+        if at not in doubted:
+            doubted[at] = around.doubts(at, span(at), language)
+        return doubted[at]
 
     def line_of(at):
         """The sentence a book's card names (`book_line`), its lone mark kept where without it the sentence sits in
@@ -668,8 +733,10 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        # a line no other word took; no other new word; a card that fits the cap uncut (else the shortest); written out
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, not fits(o.cue),
+        # a line no other word took; no other new word; audio the subtitle gives no reason to doubt; a card that fits
+        # the cap uncut (else the shortest); written out
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, doubts(o.cue),
+                                          not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), o.cue))
         taken.update(span(best.cue))

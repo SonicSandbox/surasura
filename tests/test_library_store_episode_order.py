@@ -178,6 +178,7 @@ def test_a_shows_row_dragged_inside_current_lands_in_episode_order(language):
     target = now[4]
     assert store.item(target)["work_id"] != store.item(ep8)["work_id"]
     drag = store.move([ep10, ep8, ep9], "now", after_id=target)
+    assert drag.redirected, "the block landed in another order than it stood: the window's numbers follow the store"
     now = store.ids("now")
     at = now.index(target)
     assert now[at + 1:at + 4] == [ep8, ep9, ep10], "the row lands in episode order"

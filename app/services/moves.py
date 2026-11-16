@@ -1068,6 +1068,12 @@ class Writer:
         self._refresh_before(store, cmd, change)
         if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
             cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
+        elif isinstance(cmd.get("numbered"), tuple) and change is not None and note is None and \
+                getattr(change, "redirected", False) and self.numbers is not None:
+            # the numbers followed the drop before the write, but the store put the block elsewhere (a show's episode
+            # order, `Store._into_show` / `_episode_block`): they follow the store's own result too, never left at
+            # the drop's spot until some later resync (review 2026-11-16)
+            cmd["followed"] = self._numbers_follow(cmd, store)
         stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
         if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
             with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the

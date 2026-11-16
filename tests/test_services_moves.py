@@ -713,7 +713,9 @@ class StubStore:
             self.gate.wait(10)                          # a slow write (the test opens the gate)
         self.calls.append(("move", list(ids), tier, before_id, after_id))
         self._maybe_fail("move")
-        return ls.Change("move", 1, len(self.calls))
+        change = ls.Change("move", 1, len(self.calls))
+        change.redirected = getattr(self, "redirect", False)   # (the store put it elsewhere: a show's episode order)
+        return change
 
     def nudge(self, ids, direction):
         self.calls.append(("nudge", list(ids), direction))
@@ -1073,6 +1075,23 @@ def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_
     w.undo()                                             # Finished's undo does
     assert h.until(lambda: len(heard.undone) == 2)
     assert numbers.resyncs == 3
+
+
+def test_the_numbers_follow_the_store_when_it_puts_a_drop_in_its_shows_episode_order(stub_writer, monkeypatch):
+    """Review 2026-11-16 (#482): the numbers follow a drop before its write, at the drop's spot; when the store puts
+    the episode elsewhere to keep its show in episode order (`Store.move`'s `redirected`), they follow the store's own
+    result too — never left where it was dropped until some later resync. A plain move is followed once, as before."""
+    numbers = Recorder()
+    w, heard, store, opener = stub_writer(numbers=numbers)
+    monkeypatch.setattr(M, "_placed", lambda _store, ids: ("now", list(ids), 9))   # where the store put it: after 9
+    w.move([5], "now", before_id=3)
+    assert h.until(lambda: heard.saved)
+    assert numbers.moves == [([5], "now", 3, None)] and numbers.resyncs == 0, "a plain drop: followed once"
+    store.redirect = True
+    w.move([10], "now", before_id=8)                     # episode 10 dropped above 8: the store lands it after 9
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert numbers.moves[1:] == [([10], "now", 8, None), ([10], "now", None, 9)], "the drop, then the store's place"
+    assert numbers.resyncs == 0
 
 
 def test_the_numbers_are_asked_again_when_a_drop_lands_elsewhere(stub_writer):

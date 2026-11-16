@@ -3221,7 +3221,9 @@ class Store:
         with self._command("move", by) as cmd:
             self._recheck(check)
             # an episode coming into Current joins its show there in episode order (`_into_show`)
+            asked = (tier, before_id, after_id)
             tier, before_id, after_id = self._into_show(ids, tier, before_id, after_id)
+            redirected = (tier, before_id, after_id) != asked
             anchor = before_id if before_id is not None else after_id
             # the anchor in the same read, the rows' neighbours too (the no-op check's and the undo record's); no entry:
             # a move never reads it (R6)
@@ -3243,6 +3245,9 @@ class Store:
                                    where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
             change = self._change(cmd, "move")
+            # the block landed elsewhere than asked, or in another order (episode order): a caller that worked the
+            # numbers out from the drop follows the store's own result instead (`services.moves`, review 2026-11-16)
+            change.redirected = redirected or block != [r[0] for r in ordered]
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
                       (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,

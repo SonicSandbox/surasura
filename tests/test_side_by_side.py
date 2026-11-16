@@ -38,8 +38,9 @@ def test_the_first_two_titles_are_those_with_a_file_to_study():
     is a title of its own."""
     rows = [(1, "now", 10, "available", 1), (2, "now", 10, "missing", 0), (3, "now", 11, "waiting", 0),
             (4, "now", 12, "available", 0), (5, "now", None, "available", 0), (6, "soon", 13, "available", 0)]
-    assert ls.side_titles(rows) == [("w", 12), ("i", 5)]
-    assert ls.side_titles(rows, keep=True) == [("w", 10), ("w", 12)]
+    assert ls.side_titles(rows, n=2) == [("w", 12), ("i", 5)]
+    assert ls.side_titles(rows, keep=True, n=2) == [("w", 10), ("w", 12)]
+    assert ls.side_titles(rows) == [("w", 12), ("i", 5), ("w", 13)], "Kyou-B: every title to study, two at a time"
 
 
 # --- a library: a long book's worth of files on top, a short show second -------------------------------------------- #
@@ -94,12 +95,14 @@ def test_off_every_reader_answers_as_today_and_on_the_two_titles_take_turns(lang
     assert change is not None and store.versions()["order_version"] > version, "the order moved: Generate follows"
     assert store.read_feed()["options"]["side_by_side"] == 1
     assert store._mine_ids(4) == [a[0], b[0], a[1], b[1]], "decision 5: the line filled by turns"
-    turned = [a[0], b[0], a[1], b[1], a[2], b[2], a[3], a[4], a[5]]
-    assert store._mine_ids(9) == turned, "B runs out: A takes the rest"
-    assert store._mine_ids(20) == turned + [loose] + d, "then title 3 onward, then Soon, as before"
-    assert _scheduled(store)[:len(turned) + 1] == _paths(store, turned + [loose]), "Generate's order follows"
-    assert [i for i, _t in store.scheduled_ids()] == turned + [loose] + d, "the window's numbers read the same order"
-    assert store.side_by_side() == [a, b]
+    # Kyou-B: B runs out after three, the loose file (title 3) steps into its place, then Soon's D after it — two
+    # titles take turns while two have files (the Soon line keeps the turns' first ten above it: D's first in NOW)
+    turned = [a[0], b[0], a[1], b[1], a[2], b[2], a[3], loose, a[4], d[0], a[5], d[1]]
+    assert store._mine_ids(9) == turned[:9], "B runs out: the next title steps in, never A alone"
+    assert store._mine_ids(20) == turned
+    assert _scheduled(store) == _paths(store, turned), "Generate's order follows"
+    assert [i for i, _t in store.scheduled_ids()] == turned, "the window's numbers read the same order"
+    assert store.side_by_side() == [a, b, [loose], d], "every title to study, in Current's order (two at a time)"
     store.undo(change)
     assert (store._mine_ids(4), store._mine_ids(20), _scheduled(store), store.scheduled_ids(),
             store.ids("now")) == before, "one Undo: every reader as before"
@@ -207,13 +210,74 @@ def test_a_watched_show_above_both_titles_never_pushes_them_under_the_soon_line(
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_top_line_is_drawn_after_the_lowest_row_the_turns_mine_in(language):
-    """KA-11: B (3 episodes) runs out first with the line at 8: the turns mine A1–A5 and all of B, so the line sits
-    after B's row, never inside A's above B's mined episodes."""
+    """KA-11: B (3 episodes) runs out first with the line at 8: the turns mine A1–A4, all of B and (Kyou-B) the loose
+    file stepping into B's place, so the line sits after the loose file's row, never inside A's above them."""
     store, a, b, loose, d = _library(language)
     store.set_library_options(mine_line=8, side_by_side=True)
     feed = store.read_feed()
     view = view_rows.build({r["id"]: r for r in feed["items"]}, {w["id"]: w for w in feed["works"]}, feed["options"],
                            pieces={p["id"]: p for p in feed["pieces"]})
     top = next(ln for ln in view.lines if ln.kind == "top")
-    assert {e.id for e in view.rows[top.after].episodes} == set(b) and top.split is None
+    assert {e.id for e in view.rows[top.after].episodes} == {loose} and top.split is None
     store.close()
+
+
+# --- Kyou-B: a tester on 3.0.12 — a book of many parts and a two-video channel on top ------------------------------ #
+def _his_library(language):
+    """NOW: a book in 12 parts (one folder: one title, however many parts), a channel's two videos, a show of four;
+    the tester's shape (most of the book's parts *Target met* — no new words; the store reads no word counts, so they
+    are parts like any here). Returns (store, the book's ids, the channel's, the show's)."""
+    data_dir, user_files_dir = roots(language)
+    words = names(language)
+    book, channel, show = words[4], words[5], words[6]
+    part = "部" if language == "ja" else "部分"
+    doc = {"schedule": {p: [] for p in ls.PHASES}}
+    now = []
+    for folder, files in ((book, [f"{book}_第{n:02d}{part}.txt" for n in range(1, 13)]),
+                          (channel, [f"{channel} - {words[7 + n]} [pitFobM6z8{n}].srt" for n in range(2)]),
+                          (show, [f"{show}_第{e:02d}話.srt" for e in range(1, 5)])):
+        for name in files:
+            rel = f"HighPriority/{folder}/{name}"
+            touch(data_dir, rel, f"{folder} {name}\n")
+            now.append(entry(rel))
+    doc["schedule"][ls.TIERS["now"][0]] = now
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    ids = store.ids("now")
+    store.set_library_options(mine_line=8, side_by_side=True)
+    return store, ids[:12], ids[12:14], ids[14:]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_book_of_many_parts_is_one_title_and_the_next_title_steps_in_when_the_channel_runs_out(language):
+    """The tester's case: the book (12 parts) is ONE of the two titles, never two; its parts and the channel's two
+    videos take turns, and when the channel runs out the show steps into its place — the line never goes to the book
+    alone (before Kyou-B: b, c, b, c, then six of the book's parts in a row)."""
+    store, book, channel, show = _his_library(language)
+    assert store.side_by_side() == [book, channel, show]
+    assert store._mine_ids(8) == [book[0], channel[0], book[1], channel[1], book[2], show[0], book[3], show[1]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_with_nothing_left_to_study_hands_its_place_on_at_once(language):
+    """Every part of the book done with (watched, keep-watched off): it holds no place — the channel and the show take
+    turns from the first file, and the window draws the same top."""
+    store, book, channel, show = _his_library(language)
+    store.set_watched(book)
+    assert store.side_by_side() == [channel, show]
+    assert store._mine_ids(6) == [channel[0], show[0], channel[1], show[1], show[2], show[3]]
+    feed = store.read_feed()
+    view = view_rows.build({r["id"]: r for r in feed["items"]}, {w["id"]: w for w in feed["works"]}, feed["options"],
+                           pieces={p["id"]: p for p in feed["pieces"]})
+    assert {e.id for row in view.rows for e in row.episodes if e.in_top} == set(channel + show)
+    store.close()
+
+
+def test_turns_two_at_a_time_hand_a_place_on_as_one_runs_out():
+    """`turns(width=2)`: the first two that still hold one; the next steps into the place of the one that ran out."""
+    assert ls.turns([["部1", "部2", "部3", "部4"], ["動画1"], ["話1", "話2"]], width=2) == \
+        ["部1", "動画1", "部2", "話1", "部3", "話2", "部4"]
+    assert ls.turns([[], ["动画1", "动画2"], ["集1"]], width=2) == ["动画1", "集1", "动画2"]
+    assert ls.turns([["a1"], ["b1"], ["c1"]]) == ["a1", "b1", "c1"], "no width: every one at once (Today's set)"

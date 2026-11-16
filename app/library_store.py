@@ -162,28 +162,31 @@ def _scheduled_sql(keep_watched=False):
 
 
 # --- Kyou-A (side by side; the SCOPE's decisions 1–5, Sonic 2026-11-15): *New cards come from* Current's top two ---- #
-# The library's own option `side_by_side` (meta; absent = off, as `keep_watched`). On, Current's first two TITLES (a
+# The library's own option `side_by_side` (meta; absent = off, as `keep_watched`). On, Current's top two TITLES (a
 # work, or an item with no work: its own) that still hold a file to study — available and counting (W-1) — are taken
-# in turns, one file each (one that runs out drops out, the other goes on), the turns standing where the first title's
-# first file stood. One rule (`turns`, `side_titles`, `woven`) read by the mine line (`_mine_ids`: Connect's top N),
+# in turns, one file each, the turns standing where the first title's first file stood. Kyou-B (a tester on 3.0.12: a
+# two-video channel ran out and the book took every turn after): one that runs out hands its place to the next title
+# that still holds a file to study, so two titles take turns while two have files left. One rule (`turns`, `side_titles`, `woven`) read by the mine line (`_mine_ids`: Connect's top N),
 # Generate's order (`schedule` / `scheduled_ids`: each tier's files, so a file keeps its own tier's weight), the Soon
 # line (`_keep_line`: both titles stay above it) and the window's drawn lines (`view_rows`). Off — or fewer than two
 # titles — every one of them reads exactly as before. Junban weaves the two titles' cards on its own (`plan(weave=)`).
 SIDE_BY_SIDE = "side_by_side"
-SIDE_TITLES = 2                 # the setting's two; `turns` / `woven` take any number (Today's set's pieces)
+SIDE_TITLES = 2                 # the setting's two at a time; `turns` / `woven` take any number (Today's set's pieces)
 
 
-def turns(seqs):
-    """`seqs` (lists) taken in turns, one from each in order; one that runs out drops out, the rest go on."""
+def turns(seqs, width=None):
+    """`seqs` (lists) taken in turns, one from each in order; one that runs out drops out, the rest go on. `width`
+    (Kyou-B): only the first `width` that still hold one take turns — one that runs out hands its place to the next
+    (Current's top two stay two while any title has a file left); None: every one at once."""
     queues = [list(s) for s in seqs]
     out, at = [], [0] * len(queues)
     while True:
         moved = False
-        for k, q in enumerate(queues):
-            if at[k] < len(q):
-                out.append(q[at[k]])
-                at[k] += 1
-                moved = True
+        live = [k for k, q in enumerate(queues) if at[k] < len(q)]
+        for k in live[:width] if width is not None else live:
+            out.append(queues[k][at[k]])
+            at[k] += 1
+            moved = True
         if not moved:
             return out
 
@@ -193,10 +196,10 @@ def title_key(item_id, work_id):
     return ("w", work_id) if work_id is not None else ("i", item_id)
 
 
-def side_titles(rows, keep=False, n=SIDE_TITLES):
-    """Current's first `n` titles that hold a file to study -> their `title_key`s, in Current's order. `rows`:
-    Current in order, `(id, tier, work_id, availability, watched)`; a file to study is available and counts (`counts`,
-    `keep`: the library's `keep_watched`)."""
+def side_titles(rows, keep=False, n=None):
+    """Current's first `n` titles (None: every one, Kyou-B) that hold a file to study -> their `title_key`s, in
+    Current's order. `rows`: Current in order, `(id, tier, work_id, availability, watched)`; a file to study is
+    available and counts (`counts`, `keep`: the library's `keep_watched`). A title of many parts is one title."""
     out = []
     for item_id, tier, work_id, availability, watched in rows:
         if availability != "available" or not counts(tier, watched, keep):
@@ -209,9 +212,10 @@ def side_titles(rows, keep=False, n=SIDE_TITLES):
     return out
 
 
-def woven(ids, title_of, titles):
-    """`ids` (in order) with the files of `titles` taken in turns (`turns`, in `titles`' order), the turns standing
-    where the first of them stood; every other id keeps its order. `title_of`: id -> its `title_key`."""
+def woven(ids, title_of, titles, width=SIDE_TITLES):
+    """`ids` (in order) with the files of `titles` taken in turns (`turns`, in `titles`' order, `width` at a time: the
+    next title steps in as one runs out — Kyou-B), the turns standing where the first of them stood; every other id
+    keeps its order. `title_of`: id -> its `title_key`."""
     rank = {key: k for k, key in enumerate(titles)}
     groups = [[] for _t in titles]
     for item_id in ids:
@@ -222,7 +226,7 @@ def woven(ids, title_of, titles):
     for item_id in ids:
         if title_of(item_id) in rank:
             if not placed:
-                out.extend(turns(groups))
+                out.extend(turns(groups, width))
                 placed = True
             continue
         out.append(item_id)
@@ -2377,7 +2381,7 @@ class Store:
         watched one while `keep_watched` is off has nothing left to mine). `keep`: `keep_watched` as the caller read it."""
         keep = self._keep_watched() if keep is None else keep
         side = self._side(keep)
-        if side is not None:                    # Kyou-A: Current's top two in turns, then title 3 onward as before
+        if side is not None:                    # Kyou-A: Current's top two in turns (Kyou-B: the next steps in)
             rows, titles = side
             title_of = {r[0]: title_key(r[0], r[2]) for r in rows}.get
             ok = [r[0] for r in rows if r[3] == "available" and counts(r[1], r[4], keep)]   # only these take turns
@@ -2410,18 +2414,19 @@ class Store:
             "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall()
 
     def _side(self, keep=None, on=None):
-        """(Current's rows, its first two titles) while side by side is on and Current holds two titles to study; else
-        None — and every reader of the rule reads as before. `on`: the option as the caller has it (a command setting
-        it), else the library's."""
+        """(Current's rows, its titles to study — Kyou-B: every one, `woven` takes two at a time) while side by side is
+        on and Current holds two or more titles to study; else None — and every reader of the rule reads as before.
+        `on`: the option as the caller has it (a command setting it), else the library's."""
         if not (self._side_on() if on is None else on):
             return None
         rows = self._current_rows()
         titles = side_titles(rows, self._keep_watched() if keep is None else keep)
-        return (rows, titles) if len(titles) == SIDE_TITLES else None
+        return (rows, titles) if len(titles) >= SIDE_TITLES else None    # Kyou-B: every title, two at a time
 
     def side_by_side(self):
-        """The titles side by side, for a reader (Junban's groups): `[[item id, …], …]` — Current's first two titles'
-        items (every item of the title in Current, in Current's order), or [] while it is off or there aren't two."""
+        """The titles side by side, for a reader (Junban's groups): `[[item id, …], …]` — Current's titles holding a
+        file to study, in Current's order (every item of the title in Current, in Current's order; Kyou-B: every such
+        title — the reader takes them `SIDE_TITLES` at a time), or [] while it is off or there aren't two."""
         with self._reading():
             side = self._side()
         if side is None:

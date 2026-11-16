@@ -60,10 +60,10 @@ Placement = namedtuple("Placement",
                        "position card_id due word rank deck changed note_id tier sort why fallback "
                        "suggestion pinned out",
                        defaults=(None, None, "", None, None, None, None))
-#: `weave` (Kyou-A) is `(group, word, needs, waits, impact)` for a card of a `plan(weave=)` group: the group's index,
-#: the word the weave picks it as, what its sentence still needs (`needs`: the unknown words beside it; `waits`: the
-#: list words a held card waits for and its own impact) and its `impact` — so `replan` weaves a click exactly as the
-#: run; None for every other card, and for every card while nothing is woven.
+#: `weave` (Kyou-A) is `(group, word, needs, waits, impact, width)` for a card of a `plan(weave=)` group: the group's
+#: index, the word the weave picks it as, what its sentence still needs (`needs`: the unknown words beside it; `waits`:
+#: the list words a held card waits for and its own impact), its `impact` and the run's `width` (Kyou-B) — so `replan`
+#: weaves a click exactly as the run; None for every other card, and for every card while nothing is woven.
 Placement = namedtuple("Placement", Placement._fields + ("weave",),
                        defaults=tuple(Placement._field_defaults.values()) + (None,))
 
@@ -91,7 +91,7 @@ def _exact_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=None):
+def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=None, width=None):
     """Work out the new queue positions.
 
     `cards` is `[{"card_id", "due", "type", "queue", "word", "deck"}]` — one dict per card in scope,
@@ -146,13 +146,18 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
     runs out drops out and the rest go on (Anki shows N a day: N/2 from each of two). Each turn takes its group's most
     useful card: Junban's own tiers (list, then i+1, then more unknowns, then the rest), then the word's place on the
     whole list (the SCOPE's decision 3: a card's `impact`, the priority list's own key — Score first — whichever order
-    Junban follows; without one, its `rank_of`) — never the order you'd meet them in. **The picks condition on each
-    other**: each picked word counts as known for every pick after it — a card whose word was already picked (a word in
-    both titles) is no pick of its own and follows that pick, taking no turn; a card whose sentence's other unknown
+    Junban follows; without one, its `rank_of`) — never the order you'd meet them in. Every group's list words go
+    first (Kyou-B: the tiers placed with the list); a group with none left waits while another still has one, then all
+    take turns with the rest. **The picks condition on each other**: each picked word counts as known for every pick
+    after it — a card whose word was already picked is no pick of its own and takes no turn: its own group's goes right
+    after that pick (as the plan clusters a word's cards), another group's (a word in both titles: Kyou-B) after every
+    turn, so the word takes one of the day's slots; a card whose sentence's other unknown
     words (`needs`) have all been picked is i+1 from there; a list card held for a word of its sentence (`waits`, "i+1
     first") takes its list place once that word is picked. A card two groups claim goes with the first; a pinned,
     clicked-off, known or taken-out card is never woven. Then every other card, exactly as planned. None or empty: the
-    plan as before, row for row.
+    plan as before, row for row. `width` (Kyou-B, side by side's 2): only the first `width` groups that can take a turn
+    take one each round — a group with nothing left (or, while another has list words, no list word left) hands its
+    turn to the next, so two titles keep taking turns while two have cards; None: every group at once.
 
     Returns `(writes, stats)`:
 
@@ -270,7 +275,7 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
     woven = 0
     if weave_of:
         skip = set(lift) | excluded | {card_id for card_id in (out or ()) if _exact_int(card_id)}
-        ordered, woven = _weave(ordered, weave_of, len(weave), set(lift), skip)
+        ordered, woven = _weave(ordered, weave_of, len(weave), set(lift), skip, width)
     # --- end Kyou-A
     # --- P4.1 L2: *Take its new cards out* — after every other card, the planned order kept among them ---
     gone = {card_id for card_id in (out or ()) if _exact_int(card_id)} - set(lift) - excluded
@@ -316,7 +321,7 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
                                pinned=group_of.get(card["card_id"]),
                                out=True if card["card_id"] in gone else None,
                                weave=((weave_of[card["card_id"]], _weave_word(card), card.get("needs"),
-                                       card.get("waits"), card.get("impact"))
+                                       card.get("waits"), card.get("impact"), width)
                                       if card["card_id"] in weave_of else None)))
 
     tiers = {name: 0 for name in TIERS if name != "yours"}     # "yours" only when a card is (Connect's preview)
@@ -362,11 +367,14 @@ def _weave_word(card):
     return card.get("weave_word") or card.get("key") or card.get("word") or ""
 
 
-def _weave(ordered, weave_of, groups, lift, skip):
+def _weave(ordered, weave_of, groups, lift, skip, width=None):
     """`ordered` (`plan`'s `(rank, tier, sort, card)` entries, the pinned ones first) with the groups' cards woven in
     turns after the pins and your own cards -> (entries, how many were woven). `weave_of`: {card_id: group}; `skip`:
-    the cards never woven (pinned, clicked off, taken out). See `plan`'s `weave`."""
+    the cards never woven (pinned, clicked off, taken out); `width`: how many groups take turns at once. See `plan`'s
+    `weave`."""
     import heapq
+    if width is not None and not (_exact_int(width) and width > 0):
+        width = None                                # Kyou-B: no real width (0, garbled) is every group at once
     lead = 0
     while lead < len(ordered) and (ordered[lead][3]["card_id"] in lift or ordered[lead][1] == "yours"):
         lead += 1                                   # the pins (lifted to the front), then yours, stay ahead
@@ -410,8 +418,9 @@ def _weave(ordered, weave_of, groups, lift, skip):
                 need.setdefault(word, []).append(n)
     for heap in heaps:
         heapq.heapify(heap)
-    placed, first, out = set(), {}, []
+    placed, first, out = set(), {}, []              # first: word -> (its pick's block, the group that picked it)
     ahead = []                                      # woven cards whose word a pin or your own card already gives
+    twins = []                                      # Kyou-B: another title's card of a word already picked
 
     def learn(word):
         for m in need.pop(word, ()):
@@ -430,32 +439,46 @@ def _weave(ordered, weave_of, groups, lift, skip):
         given |= {_weave_word(entry[3]), entry[3].get("word") or ""} - {""}
     for word in sorted(given):
         learn(word)
-    while True:
-        moved = False
-        for heap in heaps:
-            while heap:
-                k, n = heapq.heappop(heap)
-                if n in placed or k != best[n]:
-                    continue
+
+    def top(heap):                                  # the heap's best card still to place (stale keys dropped), or None
+        while heap and (heap[0][1] in placed or heap[0][0] != best[heap[0][1]]):
+            heapq.heappop(heap)
+        return heap[0][0] if heap else None
+
+    def listed():                                   # Kyou-B: does any group's next card still place with the list?
+        return any(k is not None and k[0] <= 0 for k in map(top, heaps))
+
+    while any(top(heap) is not None for heap in heaps):
+        took = 0                                    # Kyou-B: `width` groups a round — the first that can take a turn
+        for g, heap in enumerate(heaps):
+            if width is not None and took >= width:
+                break
+            while True:
+                k = top(heap)
+                if k is None or (k[0] > 0 and listed()):
+                    break                           # Kyou-B: both titles' list words first, then the rest in turns
+                n = heapq.heappop(heap)[1]
                 placed.add(n)
                 card = picks[n][3]
                 word = _weave_word(card)
-                if word and word in first:          # a word already picked: no pick of its own, right after that pick
-                    out[first[word]].append(picks[n])
+                if word and word in first:          # a word already picked: no pick of its own, no turn
+                    block, by = first[word]
+                    if by == g:                     # its own title's next card of it: right after that pick
+                        out[block].append(picks[n])
+                    else:                           # Kyou-B: another title's twin waits after the turns (one slot)
+                        twins.append(picks[n])
                     continue
                 if word and word in given:          # a pin's or your own card's word: no pick, ahead of the turns
                     ahead.append(picks[n])
                     continue
                 out.append([picks[n]])
                 if word:
-                    first[word] = len(out) - 1
+                    first[word] = (len(out) - 1, g)
                 for known in sorted({word, card.get("word") or ""} - {""}):
                     learn(known)
-                moved = True
+                took += 1
                 break
-        if not moved:
-            break
-    woven = ahead + [entry for block in out for entry in block]
+    woven = ahead + [entry for block in out for entry in block] + twins
     return head + woven + rest, len(woven)
 # --- end Kyou-A
 
@@ -474,7 +497,7 @@ def _groups(pins):
     return group_of
 
 
-def replan(order, exclude=None, number=None, pins=None, out=None, weave=None):
+def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, width=None):
     """Re-decide an order that has already been planned, with `exclude` taken out of the run.
 
     WP-O. The panel needs the new order the instant a row is deselected, and it cannot read Anki
@@ -504,6 +527,9 @@ def replan(order, exclude=None, number=None, pins=None, out=None, weave=None):
             if getattr(row, "weave", None) is not None:
                 woven.setdefault(row.weave[0], []).append(row.card_id)
         weave = [woven.get(index, []) for index in range(max(woven) + 1)] if woven else None
+        if width is None:               # Kyou-B: the run's width, carried on each woven row
+            width = next((row.weave[5] for row in rows if getattr(row, "weave", None) is not None
+                          and len(row.weave) > 5), None)
     # `note` too: the touch-ups are planned per NOTE, and a row that lost its note id counted as no
     # note at all — the confirmation then promised 0 tagged / 0 overwritten after a single click,
     # while the run went on to tag and overwrite them. `tier`, `sort` and `why` too: a card the list
@@ -518,7 +544,7 @@ def replan(order, exclude=None, number=None, pins=None, out=None, weave=None):
     # every row that carries it or in none of them, so this cannot disagree with the real index.
     rank_of = {row.word: row.rank for row in rows
                if row.rank is not None and isinstance(row.word, str) and row.word}
-    return plan(cards, rank_of, exclude=exclude, number=number, pins=pins, out=out, weave=weave)
+    return plan(cards, rank_of, exclude=exclude, number=number, pins=pins, out=out, weave=weave, width=width)
 
 
 def with_answers(order, ticked):

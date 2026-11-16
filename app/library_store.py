@@ -3234,10 +3234,13 @@ class Store:
                     raise ValueError("the anchor is not in that tier")
             ordered = sorted(rows.values(), key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
             block = [r[0] for r in ordered]
+            # a show's episodes moved together into Current land in episode order (`_episode_block`)
+            block = self._episode_block(block, tier)
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
-            if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
-                              where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
+            if block == [r[0] for r in ordered] and \
+                    self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
+                                   where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
             change = self._change(cmd, "move")
             self._before(change, ordered, near=near)
@@ -5596,21 +5599,21 @@ class Store:
         title's items into Current (NOW or Soon) from outside it — New arrivals' *Top* and *Soon*, a tray drop in the
         list, a placing rule — joins the title's items already there in episode order, as `after-show` reads it
         (`_after_show`: after the highest lower episode, before the lowest higher one), unless the learner chose the
-        spot: a drop away from the title's rows, or between two of them, stays where it was dropped. A drop at the
-        edge of the title's row (above or below it: the row draws the title as one, so no order inside it can be
-        chosen there; the tray's drop on a show's row lands by halves) and a move with no anchor (the top of NOW, of
-        Soon) take the episode order. Only when the order can be read (`_show_spot(ordered=True)`: episode numbers, a
-        list's places, a source's run); else, and for anything already in Current, as given. Undone as the move.
-        -> (tier, before_id, after_id)."""
+        spot: a drop away from the title's rows stays where it was dropped (the learner set it apart). A drop beside
+        the title's rows — above, below or between two of them — and a move with no anchor (the top of NOW, of Soon)
+        take the episode order. (Mattias, 2026-11-16: "Episodes should always be in the right order" — a drag of one
+        episode inside Current, beside its show, takes the order too: the show read 10, 8, 9 after a morning's drags.)
+        Only when the order can be read (`_show_spot(ordered=True)`: episode numbers, a list's places, a source's run);
+        else as given. Undone as the move. -> (tier, before_id, after_id)."""
         given = (tier, before_id, after_id)
         if tier not in CURRENT or not ids:
             return given
         works = set()
         for part in _chunks(ids, 500):
-            for t, w in self.conn.execute(f"SELECT tier, work_id FROM items WHERE id IN ({','.join('?' * len(part))})",
+            for (w,) in self.conn.execute(f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(part))})",
                                           part):
-                if t in CURRENT or w is None:
-                    return given                    # (a move inside Current, or an item of no title: as given)
+                if w is None:
+                    return given                    # (an item of no title: as given)
                 works.add(w)
         if len(works) != 1:
             return given
@@ -5622,10 +5625,40 @@ class Store:
         anchor = before_id if before_id is not None else after_id
         if anchor is not None:
             sides = self._current_beside(anchor, before_id is not None, excl)
-            if sides is None or sum(s in mine for s in sides) != 1:
-                return given                        # away from the title, or between two of its rows: the drop's own
+            if sides is None or not any(s in mine for s in sides):
+                return given                        # away from the title's rows: the drop's own
+        elif self._all_current(ids):
+            return given                            # *Top* of an episode already in Current: the learner's own
         spot = self._after_show(ids[0], self._show_record(ids[0]), excl, ordered=True)
         return given if spot is None else spot
+
+    def _all_current(self, ids):
+        for part in _chunks(ids, 500):
+            for (t,) in self.conn.execute(f"SELECT tier FROM items WHERE id IN ({','.join('?' * len(part))})", part):
+                if t not in CURRENT:
+                    return False
+        return True
+
+    def _episode_block(self, block, tier):
+        """A moved block of one title's items landing in Current, in episode order (Mattias, 2026-11-16: a drag of a
+        show's row kept the row's 10, 8, 9): only when every item's record names an episode of one season; else (a
+        mixed pick, a title with no episode numbers) as it stood."""
+        if tier not in CURRENT or len(block) < 2:
+            return block
+        marks = ",".join("?" * len(block))
+        if self.conn.execute(f"SELECT COUNT(DISTINCT work_id), COUNT(work_id) FROM items WHERE id IN ({marks})",
+                             block).fetchone() != (1, len(block)):
+            return block
+        eps = {}
+        for item_id in block:
+            ep = _episode(self._show_record(item_id))
+            if ep is None:
+                return block
+            eps[item_id] = ep
+        if len({e[0] for e in eps.values()}) != 1:
+            return block
+        place = {i: n for n, i in enumerate(block)}
+        return sorted(block, key=lambda i: (eps[i][1], place[i]))
 
     def _current_beside(self, anchor, before, excl):
         """(the item above, the item below) the gap a move into Current lands in — before `anchor` (`before`), else

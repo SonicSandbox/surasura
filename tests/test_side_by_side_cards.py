@@ -302,3 +302,32 @@ def test_a_big_librarys_line_and_generates_order_read_as_before(language):
     assert [i for i, _t in store.scheduled_ids() if _t in by_tier] == \
         _old_woven(by_tier["now"], title_of, titles) + _old_woven(by_tier["soon"], title_of, titles)
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_soon_line_keeps_the_titles_taking_turns_above_it_not_the_one_aside(language):
+    """The Soon line after 3 files: with A aside, the first three turns are B's first, the loose file, B's second —
+    every row down to the loose file stays in NOW (A's rows with it: the line never splits Current's order)."""
+    store, a, b, loose, d = _library(language)
+    store.set_soon_line(3)
+    store.set_library_options(side_by_side=True)
+    store.receipt(a[0], ls._now())
+    _write(store, a, b, loose, d, {"a": 0, "b": 2, "loose": 1, "d": 1})
+    assert store.ids("now") == a + b + [loose]
+    assert store._mine_ids(3) == [b[0], loose, b[1]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_missing_file_waits_in_the_top_when_its_titles_next_file_is_mined(language):
+    """B's first episode is missing: the turns mine B's second, and the missing first waits on the top (Needs you's),
+    in the window's own read as in a drop's."""
+    store, a, b, loose, d = _library(language)
+    store.set_library_options(mine_line=4, side_by_side=True)
+    with store._writing():
+        store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (b[0],))
+    view = _view(store)
+    assert store._mine_ids(4) == [a[0], b[1], a[1], b[2]]
+    assert _in_top(view) == {a[0], a[1], b[0], b[1], b[2]}
+    assert view_rows.side_top(view.rows, 4)[1] == _in_top(view)
+    store.close()

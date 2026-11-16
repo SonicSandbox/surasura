@@ -163,6 +163,8 @@ def _read_run_file(path, plan):
         raise ValueError("deduplicate_sentences is always off for API runs: send false, or leave it out.")
     word_keys = WORD_KEYS | ({"surface", "reading"} if "word-from-line" in features else set())
     word_keys |= {"unit_index"} if "reading" in features else set()
+    # 3.13.0 `cli/api/files.py`: `line_skip` on a word (no feature name; 3.12 refuses it as an unknown key)
+    word_keys |= {"line_skip"} if _version(plan.get("app", "3.5.0")) >= (3, 13, 0) else set()
     for episode in data["episodes"]:
         if "reading" in features and "reading_file" in episode:
             if set(episode) - READING_EPISODE_KEYS or not {"run_id", "reading_file", "words"} <= set(episode):
@@ -192,7 +194,18 @@ def _read_run_file(path, plan):
             unit = word.get("unit_index")
             if "unit_index" in word and (isinstance(unit, bool) or not isinstance(unit, int) or unit < 0):
                 raise ValueError("unit_index must be a whole number of 0 or more")
+            if "line_skip" in word:         # 3.13.0 `parse_skip`: with line_expansion, never 0, inside it
+                skip, (before, after) = word["line_skip"], expansion or (None, None)
+                if expansion is None or not isinstance(skip, list) or not skip or any(
+                        isinstance(k, bool) or not isinstance(k, int) or k == 0 or not -before <= k <= after
+                        for k in skip):
+                    raise ValueError("line_skip needs line_expansion, no 0, and offsets inside it")
     return data
+
+
+def _version(app):
+    parts = [int(p) for p in re.findall(r"\d+", str(app))[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
 
 
 def _units(path, plan):

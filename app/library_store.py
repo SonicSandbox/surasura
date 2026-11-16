@@ -291,6 +291,8 @@ PUT_BACK_KINDS = ("undo", "restore", "unsort")
 # never a walk back through the tier (a big take-in of one-file titles: each would read every earlier row)
 ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = 'arrivals' AND (ord, id) < (?, ?) "
                       "ORDER BY ord DESC, id DESC LIMIT 1")
+# … and `Store._into_show`'s "is any of this title in Current?": on the title's index too, never a walk of Current
+SHOW_IN_CURRENT_SQL = "SELECT 1 FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT 1"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
@@ -1800,6 +1802,8 @@ class Change:
         self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
         self.roots = []       # T6: [(root_id, old kind, new kind)] a *Stop reading* wrote (the value check puts it back)
         self.to = None        # Mado-O: the tier a `place` put its items in (`Store.unsort` reads it)
+        self.show_order = False   # Kura-EO: the move went to its show's episode order, not where it was asked to go
+                                  #   (`Store._into_show`; the window's writer follows the store's place then)
         self.ignored = []     # Mado-O (SO-1): the Ignores an `unsort` brought back [{"ids", "folder", "of"}] — its Undo
                               #   (the window's writer: files move) ignores them again
 
@@ -3210,13 +3214,14 @@ class Store:
 
     # --- commands (§6.6) ------------------------------------------------------------------------- #
 
-    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None):
+    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None, in_order=True):
         """Drag: the block keeps its current relative order and lands contiguous before or after the
         anchor (neither = the top of `tier`). A tier change is Demote / Promote without moving files.
         A no-op — an anchor inside `ids`, or every item already in `tier` in the same sequence —
         commits nothing and returns None. `by`: who placed it, as the placement log records it (a
         program's name from the command line's `place --source`, ✅ G1.3-5); explicit when "user", or as
-        `explicit` says (a placing rule the user turned on is the user's own action, D30)."""
+        `explicit` says (a placing rule the user turned on is the user's own action, D30). `in_order`: an episode
+        coming into Current joins its show there in episode order (`_into_show`; False: exactly where asked)."""
         ids = list(dict.fromkeys(ids))
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
@@ -3225,6 +3230,10 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
+            asked = (tier, before_id, after_id)
+            if in_order:
+                tier, before_id, after_id = self._into_show(ids, tier, before_id, after_id)
+                anchor = before_id if before_id is not None else after_id
             # the anchor in the same read, the rows' neighbours too (the no-op check's and the undo record's); no entry:
             # a move never reads it (R6)
             rows, near = self._rows_near(ids if anchor is None else ids + [anchor])
@@ -3242,6 +3251,7 @@ class Store:
                               where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
             change = self._change(cmd, "move")
+            change.show_order = (tier, before_id, after_id) != asked
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
                       (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,
@@ -5543,7 +5553,7 @@ class Store:
                 return False
             tier, before_id, after_id = spot
             return self.move([item_id], tier, before_id=before_id, after_id=after_id, by=by,
-                             explicit=explicit) is not None
+                             explicit=explicit, in_order=False) is not None
         tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
         if tier is None:
             raise ValueError(f"unknown place {where!r}")
@@ -5551,7 +5561,7 @@ class Store:
         if spot is not None:
             anchor, before = spot
             return self.move([item_id], tier, before_id=anchor if before else None,
-                             after_id=None if before else anchor, by=by, explicit=explicit) is not None
+                             after_id=None if before else anchor, by=by, explicit=explicit, in_order=False) is not None
         return self.move([item_id], tier, by=by, explicit=explicit) is not None
 
     def place(self, item_ids, where, by="user", explicit=None, after_id=None):
@@ -5567,18 +5577,13 @@ class Store:
             return None
         explicit = int(by == "user") if explicit is None else explicit
         with self._command("place", by) as cmd:
-            record = None
             if where == "after-show":
-                row = self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? AND NOT {_VERSION_ROW} "
-                                        f"ORDER BY {_ORIGIN_ROW}, paired_at DESC LIMIT 1",
-                                        (ids[0],)).fetchone()     # B1: hato's first; LM1b: never a version
-                record = json.loads(row[0]) if row else None
-                spot = self._after_show(ids[0], record, excl=set(ids))
+                spot = self._after_show(ids[0], self._show_record(ids[0]), excl=set(ids))
                 if spot is None:
                     return None
                 tier, before_id, after_id = spot
                 return _placed_to(self.move(ids, tier, before_id=before_id, after_id=after_id, by=by,
-                                            explicit=explicit), tier)
+                                            explicit=explicit, in_order=False), tier)
             if where == "finished":
                 return _placed_to(self.finish(ids, by=by, explicit=explicit), "graduated")
             tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
@@ -5591,13 +5596,77 @@ class Store:
                     anchor, into = self._past_group(after_id), row[0]
             return _placed_to(self.move(ids, into, after_id=anchor, by=by, explicit=explicit), tier)
 
-    def _after_show(self, item_id, record, excl=()):
+    def _show_record(self, item_id):
+        """The record `after-show` reads an item's episode from: its newest pairing (B1: hato's first; LM1b: never a
+        version), parsed, or None (none, or one that can't be read: every move into Current reads it now)."""
+        row = self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? AND NOT {_VERSION_ROW} "
+                                f"ORDER BY {_ORIGIN_ROW}, paired_at DESC LIMIT 1", (item_id,)).fetchone()
+        return _json_dict(row[0]) if row else None
+
+    def _into_show(self, ids, tier, before_id, after_id):
+        """(Kura-EO, adapted from Mattias's #482: a show's episodes moved into Current one at a time read 10, 9, 8 — a
+        Netflix season sent one episode at a time, an airing show's weekly episode) A `move` of ONE title's items into
+        Current (NOW or Soon) from outside it — New arrivals' *Top* and *Soon*, a drop in the list, a placing rule, a
+        6+ Months title's *Up next* — joins that title's items already in Current in episode order, as `after-show`
+        reads it (after the highest lower episode, before the lowest higher one; the same season), unless the learner
+        chose the spot:
+        - no anchor (the top of NOW, of Soon), or a drop at the edge of the title's rows (the gap beside exactly one of
+          them: a row draws the title as one, so no order inside it is chosen there; the tray's drop lands by halves)
+          → the order;
+        - a drop away from the title's rows, or between two of them → where it was dropped;
+        - a move to Soon (*Soon*, the Soon well, a drop below the line) whose order's place is in NOW → as given: Soon
+          never lands above the Soon line (a move to NOW may follow its show into Soon: Current is one order).
+        Only when the order can be read (`_show_spot(ordered=True)`: episode numbers, a list's places, a folder's run):
+        else — a channel's single video, a title with nothing in Current — as given; a move of anything already in
+        Current, or of no title's item, too. Inside the move's command: one Undo, the feed and the versions as ever.
+        Reads by the title's index (`SHOW_IN_CURRENT_SQL`, items_work) and the moved rows' keys, never a tier walk.
+        -> (tier, before_id, after_id)."""
+        given = (tier, before_id, after_id)
+        if tier not in CURRENT or not ids:
+            return given
+        work = None
+        for part in _chunks(ids, 500):
+            for t, w in self.conn.execute(f"SELECT tier, work_id FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                          part):
+                if t in CURRENT or w is None or (work is not None and w != work):
+                    return given                    # a move inside Current, no title's item, two titles: as given
+                work = w
+        if work is None or self.conn.execute(SHOW_IN_CURRENT_SQL, (work,)).fetchone() is None:
+            return given                            # (the moved items are all outside Current: none of them counts)
+        anchor = before_id if before_id is not None else after_id
+        if anchor is not None:
+            sides = [s for s in self._current_beside(anchor, before_id is not None) or () if s is not None]
+            if not sides or sum(w == work for (w,) in self.conn.execute(
+                    f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(sides))})", sides)) != 1:
+                return given                        # away from the title, or between two of its rows: the drop's own
+        spot = self._after_show(ids[0], self._show_record(ids[0]), set(ids), ordered=True)
+        if spot is None or (tier == "soon" and spot[0] != "soon"):
+            return given
+        return spot
+
+    def _current_beside(self, anchor, before):
+        """(the item above, the item below) the gap a move lands in — before `anchor` (`before`), else after it — in
+        Current's order (NOW then Soon: the Soon line is no gap); None when the anchor isn't in Current. (The moved
+        items are outside Current, `_into_show`: none to skip.)"""
+        row = self.conn.execute("SELECT id, tier, ord FROM items WHERE id = ?", (anchor,)).fetchone()
+        if row is None or row[1] not in CURRENT:
+            return None
+        step = -1 if before else 1
+        found = self._beyond(row[1], (row[0], row[2]), (), step, 1)
+        if not found and row[1] == ("soon" if before else "now"):
+            found = self._beyond("now" if before else "soon", None, (), step, 1)
+        other = found[0][0] if found else None
+        return (other, anchor) if before else (anchor, other)
+
+    def _after_show(self, item_id, record, excl=(), ordered=False):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
         Its title's other items, by the episode numbers their records name (the same season: an item whose record
         names another season is another show's, as `connect/rules.py` read it before Decision 1); without numbers,
         after the title's last item in Current. LM11 (G4): never inside a group — after it (before it, when the
-        anchor is the row it goes before), in a piece of its own (`_past_group`)."""
-        spot = self._show_spot(item_id, record, excl)
+        anchor is the row it goes before), in a piece of its own (`_past_group`). `ordered` (`_into_show`): only a
+        place read from the order (episode numbers, a list's places, a folder's run) — never the last item's
+        fallback or Q4-9's top: None then."""
+        spot = self._show_spot(item_id, record, excl, ordered)
         if spot is None:
             return None
         tier, before_id, after_id = spot
@@ -5653,20 +5722,26 @@ class Store:
                 out[item_id] = found[1]
         return out
 
-    def _show_spot(self, item_id, record, excl):
-        """`_after_show`'s reading of the title's rows."""
+    def _show_spot(self, item_id, record, excl, ordered=False):
+        """`_after_show`'s reading of the title's rows (`ordered`: see there)."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
         if work is None or work[0] is None:
             return None
         mine = _episode(record)
+        if ordered and mine is None and list_place(record) is None and not (
+                isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER):
+            return None              # (`_into_show`: nothing names its place — a channel's video: no title read)
         others = [r for r in self.conn.execute("SELECT id, tier, ord FROM items WHERE work_id = ? AND id != ?",
                                                (work[0], item_id)) if r[0] not in excl]
         if not any(r[1] in CURRENT or r[1] in ("graduated", "goal") for r in others):
             return None              # it stays whatever their records say (a show still waiting): none read
         episodes, apart = {}, set()
-        for other, text in self.conn.execute(f"SELECT item_id, pairing FROM pairings p WHERE item_id IN "
-                                             f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW}",
-                                             (work[0],)):
+        # `ordered` reads only the records of the title's items in Current (all it compares with: a long title's
+        # Finished and 6+ Months records are never parsed on a move), and none without an episode of its own
+        within = " AND +tier IN ('now', 'soon')" if ordered else ""
+        for other, text in () if ordered and mine is None else self.conn.execute(
+                f"SELECT item_id, pairing FROM pairings p WHERE item_id IN (SELECT id FROM items WHERE work_id = ?"
+                f"{within}) AND {_PREFERRED_ROW}", (work[0],)):
             try:
                 ep = _episode(json.loads(text))
             except ValueError:
@@ -5680,7 +5755,7 @@ class Store:
             return None
         current = [r for r in others if r[1] in CURRENT]
         if not current:
-            if all(r[1] in ("graduated", "goal") for r in others):
+            if not ordered and all(r[1] in ("graduated", "goal") for r in others):
                 return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
             return None
         if isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER:
@@ -5704,6 +5779,8 @@ class Store:
                 return (prev[1], None, prev[0])
             nxt = min(current, key=lambda r: (episodes[r[0]], order(r)))
             return (nxt[1], nxt[0], None)
+        if ordered:
+            return None                                         # (no order to read: `_into_show` leaves it as given)
         last = max(current, key=order)
         return (last[1], None, last[0])
 
@@ -5887,7 +5964,7 @@ class Store:
         if not ids:
             return None
         with self._command("put_back_finished") as cmd:
-            change = self.move(ids, "now")
+            change = self.move(ids, "now", in_order=False)      # (its toast: back at the top of Current)
             marks = ",".join("?" * len(ids))
             status = [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
                 f"SELECT id, in_learning_order FROM items WHERE id IN ({marks})", ids).fetchall() if old != 1]

@@ -83,10 +83,10 @@ def test_the_pill_moves_at_the_drop_where_the_store_will_put_it(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_drop_reads_the_soon_line_as_the_store_does(language):
-    """A (1), B (5), C (5), the Soon line at 3, the top at 4. B dropped first: B and A take turns; when A runs out, C
-    is below the line, so B goes on alone — B1 A1 B2 B3, not C1 (as with no line). The drop's own read of the top
-    (its *in the top*, its line, its pills) is the store's."""
-    store, ids = _library(language, [("A", 1), ("B", 5), ("C", 5)], 3, mine=4)
+    """A (1), B (5), C (5), the Soon line at 6 (A and B above it, C below), the top at 4. B dropped first: B and A
+    take turns; when A runs out, C is below the line, so B goes on alone — B1 A1 B2 B3, not B1 A1 B2 C1 (as with no
+    line). The drop's own read of the top (its *in the top*, its line, its pills) is the store's."""
+    store, ids = _library(language, [("A", 1), ("B", 5), ("C", 5)], 6, mine=4)
     view = _view(store)
     keys = [r.key for r in view.rows]
     b_key = next(r.key for r in view.rows if r.episodes[0].id in ids["B"])

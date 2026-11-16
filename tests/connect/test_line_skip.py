@@ -74,9 +74,21 @@ def test_a_chinese_line_run_on_into_its_copy_is_skipped_too():
     assert _skip(ZH, "zh", "那家臭豆腐的摊位还在吗") == [1]
 
 
+def test_a_reply_pulled_back_over_a_repeated_line_keeps_its_first_showing():
+    # 好啊，几点见？'s card takes the two lines before it (the line and its copy): the copy goes, the first showing stays
+    read, tokens = _read(ZH, "zh")
+    assert pick.line_expansion(read, _line(read, "好啊，几点见？"), pick.Lines(read, tokens, "zh")) == [2, 0]
+    assert _skip(ZH, "zh", "好啊，几点见？") == [-1]
+
+
 def test_a_card_with_no_copy_skips_nothing():
     assert _skip(JA, "ja", "今日は閲覧室がすごく静かだね") == []
     assert _skip(ZH, "zh", "我想顺便买一杯珍珠奶茶。") == []
+    # a Chinese line with no 。 runs on into the next, a different one: two lines, nothing skipped
+    read, tokens = _read(ZH, "zh")
+    at = _line(read, "晚上七点在捷运站门口")
+    assert pick.line_expansion(read, at, pick.Lines(read, tokens, "zh")) == [0, 1]
+    assert _skip(ZH, "zh", "晚上七点在捷运站门口") == []
 
 
 def test_the_pick_carries_the_copies_of_the_words_line():
@@ -89,10 +101,10 @@ def test_the_pick_carries_the_copies_of_the_words_line():
 # --------------------------------------------------------------------------- #
 # Sent only to an Anki Miner that takes it
 # --------------------------------------------------------------------------- #
-WORD = {"word": "鍵", "reading": "カギ", "line_start": 1.0, "line_expansion": [0, 1], "line_skip": [1]}
+WORD = {"word": "鍵", "reading": "カギ", "sent": ["鍵"], "line_start": 1.0, "line_expansion": [0, 1], "line_skip": [1]}
 
 
-@pytest.mark.parametrize("app, sent", [("3.13.0", [1]), ("3.14.2", [1]), ("4.0.0", [1]),
+@pytest.mark.parametrize("app, sent", [("3.13.0", [1]), ("3.13", [1]), ("3.14.2", [1]), ("4.0.0", [1]),
                                        ("3.12.0", None), ("3.9.0", None), (None, None), ("unknown", None)])
 def test_line_skip_goes_only_to_anki_miner_3_13_or_newer(app, sent):
     entry = runfile.word_requests([WORD], app=app)[0]
@@ -129,4 +141,42 @@ def mine(tmp_path, fake_miner):
 def test_the_run_file_names_the_copy_only_for_3_13_and_both_are_mined(mine, app, skip):
     done, sent = mine(app)
     assert [o["outcome"] for o in done["outcomes"]] == ["made"]
-    assert [w.get("line_skip") for w in sent] == [skip] * len(sent)
+    assert sent and [w.get("line_skip") for w in sent] == [skip] * len(sent)
+
+
+@pytest.mark.parametrize("app, skip", [("3.13.0", [1]), ("3.12.0", None)])
+def test_the_pick_verbs_run_file_names_the_copy_only_for_3_13(tmp_path, monkeypatch, app, skip):
+    # surasura-cli's own `pick` writes a run file too (app/cli/verbs.py): the same gate, from its version answer
+    from types import SimpleNamespace
+    from app.cli import verbs
+    video = tmp_path / "episode.mkv"
+    video.write_bytes(b"\x1aE\xdf\xa3")
+    monkeypatch.setattr(verbs, "settings", lambda: {"target_language": "ja"})
+    monkeypatch.setattr(verbs, "require_set_up", lambda lang: None)
+    monkeypatch.setattr(verbs, "_known_test", lambda *a: (lambda key: key[0] != "鍵"))
+    monkeypatch.setattr(pick, "carded", lambda *a, **k: (set(), "anki"))
+    setup = ({"app": app, "features": ["word-from-line"]}, "Surasura", fields.from_export(LAPIS_EXPORT))
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda *a, **k: setup)
+    out = verbs.pick(SimpleNamespace(lang="ja", file=JA, video=str(video), words="unknown", job="ls", wait=0.0,
+                                     made=set(), listed={}, reading=None))
+    with open(out["run_file"], encoding="utf-8") as f:
+        sent = [w for e in json.load(f)["episodes"] for w in e["words"]]
+    assert sent and [w.get("line_skip") for w in sent] == [skip] * len(sent)
+
+
+def test_a_book_word_lined_up_with_its_audiobook_carries_no_skip(monkeypatch):
+    # its sentence is cut at its own cue (`lineup.split`: line_expansion [0, 0]): a skip would name no merged line
+    from app.connect import lineup
+    cue = SimpleCue(start=3.0, end=5.0, audio="a.m4b", subtitle="a.srt")
+    monkeypatch.setattr(lineup, "usable", lambda state: True)
+    monkeypatch.setattr(lineup, "cues", lambda state: [cue])
+    monkeypatch.setattr(lineup, "place", lambda *a: cue)
+    groups, rest = lineup.split([dict(WORD, line_text="図書館の鍵を忘れちゃった")], {})
+    (word,) = groups[("a.m4b", "a.srt")]
+    assert (word["line_expansion"], word["line_skip"], rest) == ([0, 0], [], [])
+    assert "line_skip" not in runfile.word_requests([word], app="3.13.0")[0]
+
+
+class SimpleCue:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)

@@ -796,7 +796,7 @@ def test_a_runs_progress_shows_in_the_bar_at_most_every_two_seconds():
     assert said == [strings.EXT_YT_PROGRESS.format(line=f"{n} of 8 videos read") for n in (1, 3)]
 
 
-# --- the review's findings (2026-11-16) ------------------------------------------------------------------------------ #
+# --- the review's findings (2026-11-16) ----------------------------------------------------------------------------- #
 def test_a_clip_recorded_a_little_late_never_gives_a_negative_line_start(monkeypatch):
     """1: `covers` takes a clip starting up to COVER_SLACK after its line (recorded clips start a few hundred ms late):
     the line's start in clip time is 0 then, never −0.2 (which Anki Miner's run file refuses)."""

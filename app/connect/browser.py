@@ -152,6 +152,50 @@ def hand_off(job_id, web, title, lines, root=None):
     return path
 
 
+def span(line):
+    """A line's place in the video, the key that never changes: (start, end) to the millisecond."""
+    return round(float(line["start"]), 3), round(float(line["end"]), 3)
+
+
+def handed(job_id, root=None):
+    """{span: n} of the lines `lines.json` hands the extension — each line's `n` is its clip's name for the job's whole
+    life (never renumbered: a later pick that wants other lines adds them, `add_lines`)."""
+    job = _read_json(os.path.join(place(job_id, root), LINES)) or {}
+    return {span(ln): ln["n"] for ln in job.get("lines") or () if isinstance(ln.get("n"), int)}
+
+
+def add_lines(job_id, lines, root=None):
+    """Lines the job wants that `lines.json` doesn't hold yet (a pick again after the hand-off) appended, each with a
+    new `n` after the last; `done.json` taken back so the extension records them -> {span: n} of the added."""
+    here = place(job_id, root)
+    path = os.path.join(here, LINES)
+    job = _read_json(path) or {}
+    have = list(job.get("lines") or ())
+    nxt = max([ln["n"] for ln in have if isinstance(ln.get("n"), int)] + [-1]) + 1
+    added = {}
+    for ln in lines:
+        added[span(ln)] = nxt
+        have.append(dict(ln, n=nxt))
+        nxt += 1
+    _write_json(path, dict(job, lines=have))
+    try:
+        os.remove(os.path.join(here, DONE))
+    except OSError:
+        pass
+    return added
+
+
+COVER_SLACK = 0.25          # seconds a clip may start after, or end before, its line and still hold it
+
+
+def covers(times, line):
+    """Does a clip recorded from `times["start"]` to `times["end"]` hold the whole line?"""
+    start, end = times.get("start"), times.get("end")
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return False
+    return start <= float(line["start"]) + COVER_SLACK and end >= float(line["end"]) - COVER_SLACK
+
+
 def state(job_id, root=None):
     """None (nothing handed off), "waiting" (no `done.json` yet), or the done dict {"failed": [...]}."""
     here = place(job_id, root)

@@ -482,3 +482,119 @@ def test_the_window_never_runs_links_past_the_downloaders_switch_or_its_risk_tic
     assert windows.youtube_refused({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": "yes"}) == \
         strings.EXT_YT_TICK
     assert windows.youtube_refused({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True}) is None
+
+
+# --- a pick again after the hand-off (the user's jobs 461–464, 2026-11-15) ------------------------------------------- #
+# 俺のこと、なんか言ってた？ S01E08: five lines out of time order, as a pick ranks them
+EP8 = [(129.708, 131.458, "〈貴様の頬が裂けるまで〉"), (265.75, 268.25, "「リア王」と初日 一緒だなって"),
+       (337.042, 339.917, "もともと こちらの大物俳優役は どなたが？"), (1241.792, 1246.625, "〈稲妻よ 電光石火の硫黄の火〉"),
+       (2044.292, 2046.667, "ワレ コラ！ワシを誰や思っとんねん！"), (2212.917, 2215.375, "王冠をかぶれば 王になれる")]
+
+
+def _ep8_word(word, start):
+    return {"word": word, "reading": word, "line_start": start, "line_expansion": [0, 0]}
+
+
+def _ep8_srt(job):
+    from app.connect import browser
+    here = browser.place(job)
+    os.makedirs(here, exist_ok=True)
+    path = os.path.join(here, browser.SUBTITLE)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(browser.srt_of(EP8))
+    return path
+
+
+def _record_all(receiver, job, pad=0.7):
+    """The extension's round: `GET /v1/jobs`, then a clip for each line still missing one (`pad` around it)."""
+    headers = {rx.TOKEN_HEADER: TOKEN}
+    jobs = _ask(receiver, "GET", "/v1/jobs", headers=headers)[1]["jobs"]
+    for line in next(j for j in jobs if j["job"] == job)["lines"]:
+        clip = dict(headers, **{"Content-Type": "video/webm", "X-Clip-Start": str(line["start"] - pad),
+                                "X-Clip-End": str(line["end"] + pad)})
+        assert _ask(receiver, "POST", f"/v1/jobs/{job}/clips/{line['n']}", b"webm", clip)[0] == 200
+
+
+def test_a_pick_again_after_the_hand_off_never_gives_a_word_another_lines_clip(monkeypatch):
+    """The user's jobs 461–464: lines handed off in a pick's order, clips posted in two rounds, a pick again meanwhile
+    ranking other words first. Each word still gets its own line's clip (matched by the line's place, never its
+    order), the new pick's extra line is asked for, and every run Anki Miner gets has its line inside its clip —
+    never the −970.425 s that stopped the run file."""
+    from app.connect import browser, runner
+    job, ledger = {"id": 464, "item_id": 7}, _Ledger()
+    srt = _ep8_srt(464)
+    first = [_ep8_word("大物", 337.042), _ep8_word("ワシ", 2044.292), _ep8_word("王冠", 2212.917),
+             _ep8_word("初日", 265.75), _ep8_word("稲妻", 1241.792)]
+    picked = dict(_picked(srt), words=first)
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    receiver = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0)
+    assert receiver.start()
+    try:
+        headers = {rx.TOKEN_HEADER: TOKEN}
+        two = [ln for ln in _ask(receiver, "GET", "/v1/jobs", headers=headers)[1]["jobs"][0]["lines"]][:2]
+        for line in two:                                    # round one: two clips, then the tab is busy
+            clip = dict(headers, **{"Content-Type": "video/webm", "X-Clip-Start": str(line["start"] - 0.7),
+                                    "X-Clip-End": str(line["end"] + 0.7)})
+            assert _ask(receiver, "POST", f"/v1/jobs/464/clips/{line['n']}", b"webm", clip)[0] == 200
+        # a pick again meanwhile: other words first, one line more (貴様, 129.708), 王冠 gone
+        again = [_ep8_word("稲妻", 1241.792), _ep8_word("貴様", 129.708), _ep8_word("初日", 265.75),
+                 _ep8_word("大物", 337.042), _ep8_word("ワシ", 2044.292)]
+        picked = dict(picked, words=again)
+        with pytest.raises(runner.Wait):                    # the new line is added, never renumbering the others
+            runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+        assert browser.handed(464)[(129.708, 131.458)] == 5
+        _record_all(receiver, 464)                          # round two: the rest, after asking again
+        assert _ask(receiver, "POST", "/v1/jobs/464/done", {"failed": []},
+                    dict(headers, **{"Content-Type": "application/json"}))[0] == 200
+    finally:
+        receiver.stop()
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert not ledger.needs
+    sent = []
+    monkeypatch.setattr(runner.Steps, "_mine_one", lambda self, lang, j, p, ws, attempt: (
+        sent.append((p["video"], [w["line_start"] for w in ws])),
+        {"outcomes": [dict(w, outcome="made") for w in ws], "app": "3.12.0", "doubt": False})[1])
+    runner.Steps.mine(runner.Steps.__new__(runner.Steps), "ja", job, got, got["words"], 1)
+    assert len(sent) == 5
+    for video, starts in sent:
+        n = int(os.path.basename(video)[len("clip-"):-len(".webm")])
+        length = browser.clip(464, n)[1]["end"] - browser.clip(464, n)[1]["start"]
+        assert all(0 <= s <= length for s in starts), (video, starts)
+    assert {w["word"]: round(w["line_start"] - got["clips"][str(w["clip"])]["shift"], 3) for w in got["words"]} == \
+        {w: 0.7 for w in ("稲妻", "貴様", "初日", "大物", "ワシ")}
+
+
+def test_a_job_saved_with_clips_matched_by_order_is_matched_again_from_its_folder():
+    """A job stuck before this rule (its `clips` saved with a word on another line's clip) is worked out again at its
+    next look while its folder is there: no re-recording, the clips on disk matched by their line's place."""
+    from app.connect import browser, runner
+    job, ledger = {"id": 461, "item_id": 7}, _Ledger()
+    srt = _ep8_srt(461)
+    words = [_ep8_word("王冠", 2212.917), _ep8_word("稲妻", 1241.792)]
+    lines, _index = browser.lines_for(words, EP8)
+    browser.hand_off(461, WEB, "俺のこと、なんか言ってた？ S01E08", lines)
+    for n, (start, end) in ((0, (2212.216667, 2216.448667)), (1, (1241.083667, 1247.662333))):
+        assert browser.keep_clip(461, n, b"webm", start, end)
+    browser.finish(461, [])
+    stuck = dict(_picked(srt), words=[dict(words[0], clip=0), dict(words[1], clip=0)],      # 稲妻 on 王冠's clip
+                 clips={"0": {"video": "x", "subtitle": "y", "shift": 2212.216667}})
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, stuck)
+    assert {w["word"]: w["clip"] for w in got["words"]} == {"王冠": 0, "稲妻": 1}
+    assert got["clips"]["1"]["shift"] == 1241.083667
+
+
+def test_a_clip_that_doesnt_hold_its_line_is_a_lost_line_never_sent():
+    from app.connect import browser, runner
+    job, ledger = {"id": 463, "item_id": 7}, _Ledger()
+    srt = _ep8_srt(463)
+    picked = dict(_picked(srt), words=[_ep8_word("大物", 337.042), _ep8_word("ワシ", 2044.292)])
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert browser.keep_clip(463, 0, b"webm", 336.3, 340.9)
+    assert browser.keep_clip(463, 1, b"webm", 2212.2, 2216.4)          # another line's moment
+    browser.finish(463, [])
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert [w["word"] for w in got["words"]] == ["大物"]
+    (kind, say), = ledger.needs
+    assert "34:04" in say and "its clip doesn't hold the line" in say

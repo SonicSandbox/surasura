@@ -2099,19 +2099,25 @@ def _alone(ledger, jid):
 
 
 def _browser_clips(steps, ledger, lang, job, picked, record=True):
-    """Netflix / Disney+ (contract v2, `connect.browser`): the job's lines handed to the browser extension (once), then
-    a wait (BROWSER_WAIT, looked at again in 2 minutes; resumed at mining by a later run) until it says it is done ->
-    `picked` with `clips` {line n: {"video", "subtitle", "shift"}} and only the words whose line has a clip (each
-    naming its `clip`); a line with none is said once in *Needs you* (BROWSER_LOST: which line, why) — its words stay
-    unmade, so a *Mine* asks for them again. No clip at all: the job ends skipped (BROWSER_NONE). Already done for this
-    job (`clips` saved): `picked` as it is."""
+    """Netflix / Disney+ (contract v2, `connect.browser`): the job's lines handed to the browser extension, then a wait
+    (BROWSER_WAIT, looked at again in 2 minutes; resumed at mining by a later run) until it says it is done ->
+    `picked` with `clips` {line n: {"video", "subtitle", "shift"}} and only the words whose line has a clip that holds
+    it (each naming its `clip`).
+
+    A word is matched to its line by the line's place in the video (`browser.span`), never by its order: the `n` in
+    `lines.json` names that line's clip for the job's whole life. A line the words want that wasn't handed (a pick again
+    after the hand-off) is added with a new `n` and the extension asked again. A line with no clip, or a clip that
+    doesn't hold its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why) — its words
+    stay unmade, so a *Mine* asks for them again; never a clip with the line outside it. No clip at all: the job ends
+    skipped (BROWSER_NONE). Worked out again from the folder at every look while it is there (a job saved before this
+    rule, its clips matched by order, is matched again by place); the folder gone (its cards made): `picked` as it is."""
     from app.connect import browser
     jid = job["id"]
-    if picked.get("clips") is not None:
+    got = browser.state(jid)
+    if got is None and picked.get("clips") is not None:
         return picked
     cues = browser.read_srt(picked.get("video") or "")
     lines, index = browser.lines_for(picked.get("words") or [], cues)
-    got = browser.state(jid)
     if got is None:
         name = (picked.get("names") or ["", ""])[1] or ""
         site_id = path_utils.SITE_ID_RE.search(name)
@@ -2119,25 +2125,35 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
                                "video_id": site_id.group(2) if site_id else ""},
                          path_utils.SITE_ID_RE.sub("", name).strip(), lines)
         log.info("Connect: job %s handed %d line(s) to the browser extension", jid, len(lines))
+        raise Wait(BROWSER_WAIT, resume="mining")
+    numbered = browser.handed(jid)
+    new = [ln for ln in lines if browser.span(ln) not in numbered]
+    if new:
+        numbered.update(browser.add_lines(jid, new))
+        log.info("Connect: job %s asked the browser extension for %d more line(s)", jid, len(new))
+        raise Wait(BROWSER_WAIT, resume="mining")
     if not isinstance(got, dict):
         raise Wait(BROWSER_WAIT, resume="mining")
     failed = {f.get("n"): f.get("why") for f in got.get("failed") or () if isinstance(f, dict)}
-    clips = {}
+    clips, of_line = {}, {}
     title = steps.title(lang, job) or ""
     for line in lines:
-        kept = browser.clip(jid, line["n"])
+        n = numbered[browser.span(line)]
+        kept = browser.clip(jid, n)
+        why = failed.get(n) or "no clip arrived"
+        if kept is not None and not browser.covers(kept[1], line):
+            kept, why = None, "its clip doesn't hold the line"
         if kept is None:
             at = int(line["start"])
-            say = BROWSER_LOST.format(title=title, at=f"{at // 60}:{at % 60:02d}", text=line["text"],
-                                      why=failed.get(line["n"]) or "no clip arrived")
+            say = BROWSER_LOST.format(title=title, at=f"{at // 60}:{at % 60:02d}", text=line["text"], why=why)
             ledger.need(lang, BROWSER_LINE, say, item_id=job["item_id"], job_id=jid)
             continue
         video, times = kept
-        end = times.get("end") if isinstance(times.get("end"), (int, float)) else line["end"] + browser.PAD_AFTER
-        clips[str(line["n"])] = {"video": video, "shift": float(times["start"]),
-                                 "subtitle": browser.clip_subtitle(jid, line["n"], cues, times["start"], end)}
-    words = [dict(w, clip=index[browser.line_key(w)]) for w in picked.get("words") or ()
-             if str(index.get(browser.line_key(w))) in clips]
+        clips[str(n)] = {"video": video, "shift": float(times["start"]),
+                         "subtitle": browser.clip_subtitle(jid, n, cues, times["start"], times["end"])}
+        of_line[line["n"]] = n
+    words = [dict(w, clip=of_line[index[browser.line_key(w)]]) for w in picked.get("words") or ()
+             if index.get(browser.line_key(w)) in of_line]
     picked = dict(picked, words=words, clips=clips)
     if not words:
         browser.drop(jid)

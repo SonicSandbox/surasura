@@ -201,7 +201,7 @@ def test_a_newer_release_is_a_notice_and_catching_up_clears_it_with_no_fetch():
     assert am_release.notice("3.7.0") == approved, "alpha 4 M5: the approved version, never the kept 3.8.0 itself"
     assert am_release.notice(am_release.APPROVED) is None, "Anki Miner updated by hand: the notice goes at once"
     assert am_release.notice(am_release.APPROVED + ".0") is None, "3.11.0.0 is 3.11.0"
-    assert am_release.notice("3.12.0") is None, "a newer one installed by hand: no notice"
+    assert am_release.notice("99.0.0") is None, "a newer one installed by hand: no notice"
     assert am_release.notice(None) is None, "Anki Miner not known to be installed: no notice"
     assert fetch.calls == 1
 
@@ -518,3 +518,18 @@ def test_the_pin_has_the_shape_the_install_route_compares_with():
     assert re.fullmatch(r"\d+\.\d+\.\d+", am_release.APPROVED), am_release.APPROVED
     assert re.fullmatch(r"[0-9a-f]{64}", am_release.APPROVED_SHA256), "GitHub's sha256 digest, 64 lowercase hex"
     assert am_release.approved_page().endswith(f"/tag/v{am_release.APPROVED}")
+
+
+def test_a_learner_on_3_12_is_offered_3_13_by_its_own_installer():
+    """Michi-AM13 (2026-11-16): Anki Miner 3.13.0 passed the DevTest drills (Japanese, Chinese, the Stop step) from its
+    source tag, so it is the approved version: a learner on the last approved one (3.12.0) or older is offered 3.13.0,
+    and Install takes only GitHub's 3.13.0 Windows installer, by the digest GitHub lists for it. One made later and
+    installed by hand is still left alone (never a downgrade)."""
+    fetch = Fetch(release("v3.13.0"))
+    am_release.check(ON, now=NOON, fetch=fetch)
+    offer = {"version": "3.13.0", "url": f"{am_release.RELEASES}/tag/v3.13.0"}
+    assert am_release.notice("3.12.0") == offer, "3.12.0 was the pin before: now it is offered 3.13.0"
+    assert am_release.notice("3.11.0") == offer
+    assert am_release.notice("3.13.0") is None and am_release.notice("3.13.1") is None
+    assert am_release.APPROVED_SHA256 == "bc2b36f1298b3bd60786147456d3980f413e9d33e81e445c07abd688a89d9693", \
+        "AnkiMiner-3.13.0-Windows-x86_64-Setup.exe, as GitHub's release lists its sha256"

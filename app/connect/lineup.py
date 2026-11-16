@@ -438,7 +438,7 @@ def split(words, state):
             rest.append(word)
             continue
         groups.setdefault((cue.audio, cue.subtitle), []).append(
-            dict(word, line_start=cue.start, line_end=cue.end, line_expansion=[0, 0]))
+            dict(word, line_start=cue.start, line_end=cue.end, line_expansion=[0, 0], line_skip=[]))
     return groups, rest
 
 

@@ -1383,7 +1383,8 @@ def pick(args):
                                                   tags=runfile.job_tag(job))
             else:
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
-                                          runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
+                                          runfile.word_requests(chosen["words"], named, app=info.get("app")),
+                                          tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named,
                                                            word_audio=runfile.word_audio_on(loaded, lang)))

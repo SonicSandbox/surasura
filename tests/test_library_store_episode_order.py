@@ -5,10 +5,12 @@ episode as it is watched, an airing show brings one a week — and the learner m
 a drop on the show's row, a 6+ Months episode's *Up next*. *Top* put each at the top of NOW and a drop on the row's
 upper half put it above the row's first episode, so episode 9 went above 8 and 10 above 9: the show read 10, 9, 8.
 `after-show` already read the order (the records' season and episode); now a move of ONE title's items into Current
-takes it too (`Store._into_show`) — unless the learner chose the spot (a drop away from the title's rows, or between two
-of them). What must not change: another title's rows, an item whose order can't be read (a channel's video: still the
-top), a move inside Current, *Soon* staying below the Soon line, *Put back*'s top, seasons apart, and Undo (the move's
-own). Every test runs for Japanese and Chinese under the per-test SURASURA_TEST_ROOT, with real words from
+takes it too (`Store._into_show`) — unless the learner chose the spot (a drop away from the title's rows). Since
+2026-11-16 (Mattias: "episodes should always be in the right order"; the show read 10, 8, 9 after a morning's drags)
+a drag INSIDE Current beside its show — at the edge of its rows or between two of them — and a drag of the show's
+whole row take the order too. What must not change: another title's rows, an item whose order can't be read (a
+channel's video: still the top), *Top* of an episode already in Current, *Soon* staying below the Soon line, *Put
+back*'s top, seasons apart, and Undo (the move's own). Every test runs for Japanese and Chinese under the per-test SURASURA_TEST_ROOT, with real words from
 tests/Test Resources/.
 """
 
@@ -186,8 +188,9 @@ def test_an_unreadable_record_never_fails_the_move_it_goes_where_asked(language)
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_drop_at_a_chosen_spot_stays_where_it_was_dropped(language):
-    """The learner's own spot is kept: a drop away from the show's rows (between two other titles) stays there, and so
-    does a drop between two of the show's own episodes (11 dropped between 8 and 10). Undo puts it back."""
+    """The learner's own spot is kept: a drop away from the show's rows (between two other titles) stays there. A drop
+    between two of the show's own episodes is beside the show: in its order (11 dropped between 8 and 10 goes after
+    10). Undo puts it back."""
     store = migrated(language, shows=2, episodes=3)
     w = names(language)
     show = w[145]
@@ -207,8 +210,8 @@ def test_a_drop_at_a_chosen_spot_stays_where_it_was_dropped(language):
     store.undo(there)
     assert store.item(ep9)["tier"] == "arrivals" and store.ids("now")[:2] == [ep8, ep10]
     ep11 = _episode(store, language, show, 11)
-    store.move([ep11], "now", before_id=ep10)        # between two of the show's own episodes
-    assert store.ids("now")[:3] == [ep8, ep11, ep10]
+    store.move([ep11], "now", before_id=ep10)        # between two of the show's own episodes: still in its order
+    assert store.ids("now")[:3] == [ep8, ep10, ep11]
     assert pieces_ok(store) is None
     store.close()
 
@@ -315,7 +318,7 @@ def test_another_seasons_episode_is_another_shows_and_goes_to_the_top(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_item_whose_order_cant_be_read_still_goes_to_the_top(language):
     """No episode number, no list place (a channel's single video): *Top* is still the top of Current, above its
-    channel's video there — and a move inside Current is never redirected (episode 9 moved above 8 stays there)."""
+    channel's video there — and an episode dragged above its show inside Current still joins it in order (9 after 8)."""
     store = migrated(language, shows=2, episodes=3)
     data_dir, _u = roots(language)
     w = names(language)
@@ -338,8 +341,45 @@ def test_an_item_whose_order_cant_be_read_still_goes_to_the_top(language):
     ep9 = _episode(store, language, show, 9)
     store.place([ep9], "top")
     assert store.ids("now")[:2] == [ep8, ep9]
-    store.move([ep9], "now", before_id=ep8)          # inside Current: the learner's own order
-    assert store.ids("now")[:2] == [ep9, ep8]
+    store.move([ep9], "now", before_id=ep8)          # inside Current, beside its show: still its episode order
+    assert store.ids("now")[:2] == [ep8, ep9]
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_shows_row_dragged_inside_current_lands_in_episode_order(language):
+    """Mattias's report (2026-11-16): the show read 10, 8, 9 in Current after a morning's drags. A drag of the show's
+    row (all its episodes, one move) lands them 8, 9, 10, the change says so (`show_order`: the window's numbers follow
+    the store); a drag of one episode beside its show joins it in order. No other title's row changes order; Undo puts
+    the show back as it stood."""
+    store = migrated(language, shows=2, episodes=3)
+    w = names(language)
+    show = w[150]
+    ep8, ep9, ep10 = (_episode(store, language, show, n) for n in (8, 9, 10))
+    store.place([ep8], "top")
+    store.place([ep9], "top")
+    store.place([ep10], "top")
+    assert store.ids("now")[:3] == [ep8, ep9, ep10]
+    store.move([ep10], "now")                        # *Top* inside Current: the learner's own spot
+    assert store.ids("now")[:3] == [ep10, ep8, ep9], "the setup: the screenshot's 10, 8, 9"
+    others = _others(store, {ep8, ep9, ep10})
+    now = store.ids("now")
+    target = now[4]
+    assert store.item(target)["work_id"] != store.item(ep8)["work_id"]
+    drag = store.move([ep10, ep8, ep9], "now", after_id=target)
+    now = store.ids("now")
+    at = now.index(target)
+    assert now[at + 1:at + 4] == [ep8, ep9, ep10], "the row lands in episode order"
+    assert drag.show_order, "the window's numbers follow the store's order, not the drop's"
+    assert _others(store, {ep8, ep9, ep10}) == others, "another title's rows keep their order"
+    assert pieces_ok(store) is None
+    store.undo(drag)
+    assert store.ids("now")[:3] == [ep10, ep8, ep9], "Undo: the show as it stood"
+
+    store.move([ep10], "now", before_id=ep8)         # one episode dragged above its show: it joins in order
+    assert store.ids("now")[:3] == [ep8, ep9, ep10]
+    assert _others(store, {ep8, ep9, ep10}) == others
     assert pieces_ok(store) is None
     store.close()
 
@@ -351,6 +391,6 @@ def test_is_any_of_the_title_in_current_goes_by_the_titles_index_never_a_walk_th
     NOW is never walked for it."""
     from tests.test_library_store_support import big_store
     store = big_store(language, 200)
-    plan = " ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + ls.SHOW_IN_CURRENT_SQL, (1,)))
+    plan = " ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + ls.SHOW_IN_CURRENT_SQL, (1, 2)))
     assert "items_work" in plan and "items_order" not in plan, plan
     store.close()

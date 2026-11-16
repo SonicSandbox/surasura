@@ -371,7 +371,7 @@ PUT_BACK_KINDS = ("undo", "restore", "unsort")
 ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = 'arrivals' AND (ord, id) < (?, ?) "
                       "ORDER BY ord DESC, id DESC LIMIT 1")
 # … and `Store._into_show`'s "is any of this title in Current?": on the title's index too, never a walk of Current
-SHOW_IN_CURRENT_SQL = "SELECT 1 FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT 1"
+SHOW_IN_CURRENT_SQL = "SELECT id FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT ?"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
@@ -3336,13 +3336,18 @@ class Store:
                     raise ValueError("the anchor is not in that tier")
             ordered = sorted(rows.values(), key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
             block = [r[0] for r in ordered]
+            # one title's episodes moved together into Current land in episode order (a drag of a show's row)
+            sorted_block = self._episode_block(block, tier) if in_order else block
+            resorted = sorted_block != block
+            block = sorted_block
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
-            if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
-                              where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
+            if not resorted and self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
+                                               where[1] if where[0] == "after" else None, end=where[0] == "end",
+                                               near=near):
                 return None
             change = self._change(cmd, "move")
-            change.show_order = (tier, before_id, after_id) != asked
+            change.show_order = (tier, before_id, after_id) != asked or resorted
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
                       (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,
@@ -5726,51 +5731,77 @@ class Store:
         6+ Months title's *Up next* — joins that title's items already in Current in episode order, as `after-show`
         reads it (after the highest lower episode, before the lowest higher one; the same season), unless the learner
         chose the spot:
-        - no anchor (the top of NOW, of Soon), or a drop at the edge of the title's rows (the gap beside exactly one of
-          them: a row draws the title as one, so no order inside it is chosen there; the tray's drop lands by halves)
+        - no anchor (the top of NOW, of Soon), or a drop beside the title's rows — at their edge or between two of
+          them (a row draws the title as one; Mattias, 2026-11-16: "episodes should always be in the right order")
           → the order;
-        - a drop away from the title's rows, or between two of them → where it was dropped;
+        - a drop away from the title's rows → where it was dropped (the learner set it apart);
         - a move to Soon (*Soon*, the Soon well, a drop below the line) whose order's place is in NOW → as given: Soon
           never lands above the Soon line (a move to NOW may follow its show into Soon: Current is one order).
+        A drag INSIDE Current follows the same rules (the show read 10, 8, 9 after a morning's drags, 2026-11-16) —
+        but *Top* of an episode already in Current (no anchor) stays the learner's own.
         Only when the order can be read (`_show_spot(ordered=True)`: episode numbers, a list's places, a folder's run):
-        else — a channel's single video, a title with nothing in Current — as given; a move of anything already in
-        Current, or of no title's item, too. Inside the move's command: one Undo, the feed and the versions as ever.
-        Reads by the title's index (`SHOW_IN_CURRENT_SQL`, items_work) and the moved rows' keys, never a tier walk.
-        -> (tier, before_id, after_id)."""
+        else — a channel's single video, a title with nothing else in Current — as given; a move of no title's item,
+        too. Inside the move's command: one Undo, the feed and the versions as ever. Reads by the title's index
+        (items_work) and the moved rows' keys, never a tier walk. -> (tier, before_id, after_id)."""
         given = (tier, before_id, after_id)
         if tier not in CURRENT or not ids:
             return given
-        work = None
+        work, inside = None, True
         for part in _chunks(ids, 500):
             for t, w in self.conn.execute(f"SELECT tier, work_id FROM items WHERE id IN ({','.join('?' * len(part))})",
                                           part):
-                if t in CURRENT or w is None or (work is not None and w != work):
-                    return given                    # a move inside Current, no title's item, two titles: as given
-                work = w
-        if work is None or self.conn.execute(SHOW_IN_CURRENT_SQL, (work,)).fetchone() is None:
-            return given                            # (the moved items are all outside Current: none of them counts)
+                if w is None or (work is not None and w != work):
+                    return given                    # no title's item, two titles: as given
+                work, inside = w, inside and t in CURRENT
+        if work is None:
+            return given
+        if not any(i not in ids for i, in self.conn.execute(SHOW_IN_CURRENT_SQL, (work, len(ids) + 1))):
+            return given                            # nothing else of the title in Current: no order to join
         anchor = before_id if before_id is not None else after_id
+        if anchor is None and inside:
+            return given                            # *Top* of an episode already in Current: the learner's own
         if anchor is not None:
-            sides = [s for s in self._current_beside(anchor, before_id is not None) or () if s is not None]
-            if not sides or sum(w == work for (w,) in self.conn.execute(
-                    f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(sides))})", sides)) != 1:
-                return given                        # away from the title, or between two of its rows: the drop's own
+            sides = [s for s in self._current_beside(anchor, before_id is not None, set(ids)) or () if s is not None]
+            if not sides or not any(w == work for (w,) in self.conn.execute(
+                    f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(sides))})", sides)):
+                return given                        # away from the title's rows: the drop's own
         spot = self._after_show(ids[0], self._show_record(ids[0]), set(ids), ordered=True)
         if spot is None or (tier == "soon" and spot[0] != "soon"):
             return given
         return spot
 
-    def _current_beside(self, anchor, before):
+    def _episode_block(self, block, tier):
+        """A moved block of ONE title's items landing in Current, in episode order (Mattias, 2026-11-16: a drag of a
+        show's row kept the row's 10, 8, 9): only when every item's record names an episode of one season; else (a
+        mixed pick, a title with no episode numbers) as it stood."""
+        if tier not in CURRENT or len(block) < 2:
+            return block
+        marks = ",".join("?" * len(block))
+        if tuple(self.conn.execute(f"SELECT COUNT(DISTINCT work_id), COUNT(work_id) FROM items WHERE id IN ({marks})",
+                                   block).fetchone()) != (1, len(block)):
+            return block
+        eps = {}
+        for item_id in block:
+            ep = _episode(self._show_record(item_id))
+            if ep is None:
+                return block
+            eps[item_id] = ep
+        if len({e[0] for e in eps.values()}) != 1:
+            return block
+        place = {i: n for n, i in enumerate(block)}
+        return sorted(block, key=lambda i: (eps[i][1], place[i]))
+
+    def _current_beside(self, anchor, before, excl=()):
         """(the item above, the item below) the gap a move lands in — before `anchor` (`before`), else after it — in
-        Current's order (NOW then Soon: the Soon line is no gap); None when the anchor isn't in Current. (The moved
-        items are outside Current, `_into_show`: none to skip.)"""
+        Current's order (NOW then Soon: the Soon line is no gap), skipping `excl` (the moved items, when they are in
+        Current already); None when the anchor isn't in Current."""
         row = self.conn.execute("SELECT id, tier, ord FROM items WHERE id = ?", (anchor,)).fetchone()
         if row is None or row[1] not in CURRENT:
             return None
         step = -1 if before else 1
-        found = self._beyond(row[1], (row[0], row[2]), (), step, 1)
+        found = self._beyond(row[1], (row[0], row[2]), excl, step, 1)
         if not found and row[1] == ("soon" if before else "now"):
-            found = self._beyond("now" if before else "soon", None, (), step, 1)
+            found = self._beyond("now" if before else "soon", None, excl, step, 1)
         other = found[0][0] if found else None
         return (other, anchor) if before else (anchor, other)
 

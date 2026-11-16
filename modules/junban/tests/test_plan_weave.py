@@ -149,16 +149,18 @@ def test_a_word_in_both_titles_takes_one_of_the_days_slots_in_either_language(la
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_both_titles_list_words_come_before_either_titles_cards_off_the_list(language):
     """Rule 2: A has one list word (w0) and two cards off the list (i+1); B has two list words and one card with more
-    unknowns. A's off-list cards wait while B still has a list word; then both take turns with the rest. Without the
-    rule A's 世界 / 电影 took A's second turn ahead of B's 図書館 / 图书馆."""
+    unknowns. A's off-list cards wait while B still has a list word (without the rule A's 世界 / 电影 took A's second
+    turn ahead of B's 図書館 / 图书馆). Kyou-D (choice 2): the off-list cards are never woven — once the list words are
+    taken, the rest is Junban's planned order, never A and B in turns."""
     w = WORDS[language]
     rank = {w[0]: 2, w[1]: 1, w[3]: 7}
     cards = [_card(1, w[0], sort=(1,)), _card(2, w[4], tier="i+1", sort=(1, 100)),
              _card(3, w[6], tier="i+1", sort=(1, 300)),
              _card(4, w[1], sort=(10,)), _card(5, w[3], sort=(11,)), _card(6, w[5], tier="multi", sort=(1, 200))]
+    plain = _words(P.plan([dict(c) for c in cards], rank)[1])
     _writes, stats = P.plan(cards, rank, weave=[[1, 2, 3], [4, 5, 6]])
-    assert _words(stats) == [w[0], w[1], w[3], w[4], w[5], w[6]]
-    assert [row.weave[0] for row in stats["order"]] == [0, 1, 1, 0, 1, 0]
+    assert _words(stats)[:3] == [w[0], w[1], w[3]] and stats["woven"] == 3
+    assert _words(stats)[3:] == [x for x in plain if x not in (w[0], w[1], w[3])]
 
 
 def test_a_card_held_for_a_word_joins_the_list_turns_once_the_other_title_picks_that_word():
@@ -172,16 +174,16 @@ def test_a_card_held_for_a_word_joins_the_list_turns_once_the_other_title_picks_
     assert _words(stats) == ["約束", "老婆", "図書館", "世界"]
 
 
-def test_a_sentence_that_waits_only_for_a_word_already_picked_is_i_plus_1_from_there():
-    """B's 宇宙 card (more unknowns: its sentence needs 約束) is planned behind B's 老婆 card (more unknowns, needs 時計).
-    Once A has picked 約束, 宇宙's sentence is i+1 and goes first for B. Without the conditioning (no `needs`), B's first
-    pick stays 老婆."""
+def test_a_sentence_off_the_list_is_never_woven_even_once_its_other_word_is_picked():
+    """Kyou-D (choice 2; before: Kyou-A's conditioning made B's 宇宙 i+1 once A picked 約束, and wove it ahead of B's
+    老婆): B's two cards are off the list, so B takes no turn — after A's 約束 both keep Junban's planned order, with or
+    without the sentence's `needs`."""
     cards = [_card(1, "約束", sort=(1,)),
              _card(2, "老婆", tier="multi", sort=(1, 7000), needs=("時計",)),
              _card(3, "宇宙", tier="multi", sort=(1, 8000), needs=("約束",))]
     rank = {"約束": 2}
     _writes, stats = P.plan([dict(c) for c in cards], rank, weave=[[1], [2, 3]])
-    assert _words(stats) == ["約束", "宇宙", "老婆"]
+    assert _words(stats) == ["約束", "老婆", "宇宙"] and stats["woven"] == 1
     plain = [{k: v for k, v in c.items() if k != "needs"} for c in cards]
     _writes, stats = P.plan(plain, rank, weave=[[1], [2, 3]])
     assert _words(stats) == ["約束", "老婆", "宇宙"]
@@ -242,13 +244,13 @@ def test_a_click_in_the_preview_weaves_as_the_run_will():
 
 def test_a_pinned_cards_word_counts_as_picked_for_the_weave():
     """KA-9: B's own 図書館 card shares its word with the pinned 図書館 — no pick of its own (it goes ahead of the turns,
-    beside the pin's word); B's 世界 (off the list), whose sentence needs only 図書館, is i+1 from the start and goes
-    ahead of B's 時間, planned before it."""
+    beside the pin's word). Kyou-D (choice 2): B's 世界 and 時間 are off the list, so they are never woven — they keep
+    Junban's planned order (before: 世界, i+1 from the start, went ahead of 時間)."""
     cards = [_card(1, "図書館", sort=(0,)), _card(2, "約束", sort=(1,)), _card(3, "図書館", sort=(10,)),
              _card(4, "時間", tier="multi", sort=(1, 7000), needs=("時計",)),
              _card(5, "世界", tier="multi", sort=(1, 8000), needs=("図書館",))]
     _writes, stats = P.plan(cards, RANK, pins=[[1]], weave=[[2], [3, 4, 5]])
-    assert [row.card_id for row in stats["order"]] == [1, 3, 2, 5, 4]
+    assert [row.card_id for row in stats["order"]] == [1, 3, 2, 4, 5]
 
 
 # --- Kyou-B: a tester on 3.0.12 — a book of many parts (most *Target met*) and a two-video channel on top --------- #
@@ -313,3 +315,72 @@ def test_a_title_whose_new_cards_are_pinned_or_yours_counts_them_for_the_store(l
     assert [row.word for row in stats["order"][:2]] == [cards[0]["word"], cards[1]["word"]], "the pins stay first"
     _writes, plain = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
     assert plain["side_picks"] == [2, 4, 3], "nothing pinned, clicked off or out: every new card counts"
+
+
+# --- Kyou-D: a turn only with a list word (Sonic, choice 2, 2026-11-16; TheForge kyou-d/EDGES.md E17–E24) ------------ #
+# Side by side weaves only list words: a title takes its turn only when its next card is a list word; its cards off the
+# list are never woven — they keep their place in Junban's planned order, ranked with every other new card. The count
+# the store's pair rule follows (`side_picks`) is each title's list words still new.
+
+def _keepers_scene(language):
+    """Title A: list w0, two off the list (i+1); title B: list w1, one off the list (multi); a 6+ Months title's w7 —
+    the list's best word, met last (file 40)."""
+    w = WORDS[language]
+    rank = {w[0]: 2, w[1]: 1, w[3]: 7, w[7]: 0}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[4], tier="i+1", sort=(1, 100)),
+             _card(3, w[6], tier="i+1", sort=(1, 300)), _card(4, w[1], sort=(10,)),
+             _card(5, w[5], tier="multi", sort=(1, 200)), _card(6, w[7], sort=(40,))]
+    return w, rank, cards, [[1, 2, 3], [4, 5]]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_off_list_cards_of_current_never_go_ahead_of_a_list_word_from_six_months(language):
+    """E17, the keeper's case: before, A's and B's off-list cards were woven in turns ahead of everything outside
+    Current, the 6+ Months title's w7 (the best word on the list) after them all. Now the two list words take their
+    turns, and the rest is Junban's planned order exactly: w7 first, then the off-list cards by their own rank."""
+    w, rank, cards, groups = _keepers_scene(language)
+    plain = _words(P.plan([dict(c) for c in cards], rank)[1])
+    _writes, stats = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
+    assert _words(stats)[:2] == [w[0], w[1]] and stats["woven"] == 2
+    assert _words(stats)[2:] == [x for x in plain if x not in (w[0], w[1])]
+    assert _words(stats)[2] == w[7]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_title_with_only_off_list_cards_takes_no_turn(language):
+    """E18: B holds only cards off the list — it takes no turn, A's list words go alone, B's cards keep their planned
+    places; the count says B has no list word left (the store's pair rule then steps it aside: E22)."""
+    w = WORDS[language]
+    rank = {w[0]: 2, w[2]: 5}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[2], sort=(2,)),
+             _card(3, w[4], tier="i+1", sort=(1, 100)), _card(4, w[5], tier="multi", sort=(1, 200))]
+    plain = _words(P.plan([dict(c) for c in cards], rank)[1])
+    _writes, stats = P.plan([dict(c) for c in cards], rank, weave=[[1, 2], [3, 4]], width=2)
+    assert _words(stats) == [w[0], w[2]] + [x for x in plain if x not in (w[0], w[2])]
+    assert stats["side_picks"] == [2, 0]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_two_titles_with_no_list_word_weave_nothing_and_the_order_is_junbans(language):
+    """E19: neither title has a list word — nothing is woven, and the order is the plan without a weave, row for row."""
+    w = WORDS[language]
+    cards = [_card(1, w[4], tier="i+1", sort=(1, 100)), _card(2, w[5], tier="multi", sort=(1, 200)),
+             _card(3, w[6], tier="i+1", sort=(1, 300)), _card(4, w[7], sort=(40,))]
+    rank = {w[7]: 0}
+    plain = P.plan([dict(c) for c in cards], rank)
+    writes, stats = P.plan([dict(c) for c in cards], rank, weave=[[1, 2], [3]], width=2)
+    assert _words(stats) == _words(plain[1]) and writes == plain[0]
+    assert stats["woven"] == 0 and stats["side_picks"] == [0, 0]
+
+
+def test_a_held_card_whose_word_never_comes_is_not_woven():
+    """E20: B's 老婆 is a list card held by *i+1 first* for 時計, which no title picks: it is never a list word here, so
+    it takes no turn and keeps its planned place (before: woven in B's turn after the list rounds). It still counts as
+    a list word still new for B."""
+    cards = [_card(1, "約束", sort=(1,)), _card(2, "図書館", sort=(10,)),
+             _card(3, "老婆", tier="multi", sort=(1, 7000), held=True, waits=(("時計",), 3))]
+    plain = _words(P.plan([dict(c) for c in cards], RANK)[1])
+    _writes, stats = P.plan([dict(c) for c in cards], RANK, weave=[[1], [2, 3]], width=2)
+    assert _words(stats)[:2] == ["約束", "図書館"] and stats["woven"] == 2
+    assert _words(stats)[2:] == [x for x in plain if x not in ("約束", "図書館")]
+    assert stats["side_picks"] == [1, 2]

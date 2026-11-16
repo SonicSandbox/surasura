@@ -243,6 +243,7 @@ ROWS_NO_MEDIA_LINK_BUTTON = "No {word} · Link…"    # Kantan-B2 (AUDIT A3, fin
 ROWS_ONLINE_BUTTON = "Online"
 ROWS_LOOKING_BUTTON = "Looking…"                   # R55-A: Up Next before the video check answered
 ROWS_STUDYING = "Studying its cards first"         # after a painted up arrow (G2.3 R3)
+ROWS_SIDE_PILL = "side by side"                    # Kyou-D (PROVISIONAL): the pill on the two titles side by side has on
 ROWS_STUDYING_TIP = "Its new cards go first in Anki until they're studied"
 ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"

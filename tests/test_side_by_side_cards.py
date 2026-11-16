@@ -44,9 +44,9 @@ def _in_top(view):
 def test_a_title_junban_counted_no_new_card_for_steps_aside_in_every_reader_and_the_next_takes_its_turn(language):
     """The tester's case. A (6 episodes: a book of parts with nothing new, its first already mined) has files left but
     Junban counted no still-new card for it; B, the loose file and Soon's D have cards. A steps aside as it does in
-    Anki: B and the loose file take turns (the loose file runs out, D steps in), then A's files after every turn —
-    Connect's top N (still in turns), the window's top, Generate's order; Junban is still handed every title, A too, so
-    its next count can bring A back."""
+    Anki: B and the loose file take turns (the loose file runs out; Kyou-D: D is below the Soon line, so B goes on
+    alone), then A's files after every turn — Connect's top N (still in turns), the window's top, Generate's order;
+    Junban is still handed every title that can take turns, A too, so its next count can bring A back."""
     store, a, b, loose, d = _library(language)
     store.set_library_options(mine_line=4, side_by_side=True)
     store.receipt(a[0], ls._now())                      # Connect mined A's next file: nothing new came of it
@@ -54,8 +54,8 @@ def test_a_title_junban_counted_no_new_card_for_steps_aside_in_every_reader_and_
     order = store.versions()["order_version"]
     assert _write(store, a, b, loose, d, {"a": 0, "b": 2, "loose": 1, "d": 3}) is True
     assert store.versions()["order_version"] > order, "who takes turns moved: the order did (Generate follows)"
-    turned = [b[0], loose, b[1], d[0], b[2], d[1]] + a
-    assert store._mine_ids(4) == turned[:4], "Connect's top N: B and the loose file in turns, then D steps in"
+    turned = [b[0], loose, b[1], b[2]] + a + d
+    assert store._mine_ids(4) == turned[:4], "Connect's top N: B and the loose file in turns, then B alone"
     assert store._mine_ids(20) == turned
     assert library.mine_line(store) == turned[:4], "Connect reads the store's own line"
     now = [i for i, tier in store.scheduled_ids() if tier == "now"]
@@ -64,7 +64,7 @@ def test_a_title_junban_counted_no_new_card_for_steps_aside_in_every_reader_and_
     view = _view(store)
     assert view.side_cards == ls.side_cards(store.read_feed()["options"]["side_cards"])
     assert _in_top(view) == set(turned[:4]), "the window's top: what Connect mines, A's files dimmed"
-    assert store.side_by_side() == [a, b, [loose], d], "Junban still counts every title to study"
+    assert store.side_by_side() == [a, b, [loose]], "Junban still counts every title that can take turns"
     store.close()
 
 
@@ -80,7 +80,7 @@ def test_a_title_connect_has_not_mined_yet_keeps_its_turn_so_it_can_get_its_card
     order = store.versions()["order_version"]
     store.receipt(a[0], ls._now())
     assert store.versions()["order_version"] > order, "the receipt moved who takes turns: the order moved"
-    assert store._mine_ids(4) == [b[0], loose, b[1], d[0]]
+    assert store._mine_ids(4) == [b[0], loose, b[1], b[2]], "Kyou-D: D, below the Soon line, never steps in"
     store.set_watched([a[0]])                           # its mined file watched: the next is new to Connect
     assert store._mine_ids(4) == [a[1], b[0], a[2], b[1]], "A's next file unmined: A takes its turn again"
     store.close()
@@ -111,8 +111,10 @@ def test_with_no_count_that_names_a_title_with_cards_every_reader_reads_by_files
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_the_count_does_not_name_takes_its_turn_by_its_files(language):
-    """D came into Current after Junban's last run (the count doesn't name it): it takes its turn by its files."""
+    """D came into Current after Junban's last run (the count doesn't name it): it takes its turn by its files (Kyou-D:
+    the Soon line holds all of Current here, D too — a title below it never steps in)."""
     store, a, b, loose, d = _library(language)
+    store.set_soon_line(12)
     store.set_library_options(mine_line=6, side_by_side=True)
     for item_id in (a[0], loose):
         store.receipt(item_id, ls._now())
@@ -306,15 +308,16 @@ def test_a_big_librarys_line_and_generates_order_read_as_before(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_soon_line_keeps_the_titles_taking_turns_above_it_not_the_one_aside(language):
-    """The Soon line after 3 files: with A aside, the first three turns are B's first, the loose file, B's second —
-    every row down to the loose file stays in NOW (A's rows with it: the line never splits Current's order)."""
+    """The Soon line after 3 files: with A aside, the first three turns are B's — the loose file is below the line, so
+    it never steps in (Kyou-D) — every row down to B's third stays in NOW (A's rows with it: the line never splits
+    Current's order; A's three past the count are within the reach's allowance)."""
     store, a, b, loose, d = _library(language)
     store.set_soon_line(3)
     store.set_library_options(side_by_side=True)
     store.receipt(a[0], ls._now())
     _write(store, a, b, loose, d, {"a": 0, "b": 2, "loose": 1, "d": 1})
-    assert store.ids("now") == a + b + [loose]
-    assert store._mine_ids(3) == [b[0], loose, b[1]]
+    assert store.ids("now") == a + b
+    assert store._mine_ids(3) == [b[0], b[1], b[2]]
     store.close()
 
 

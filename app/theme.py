@@ -129,6 +129,8 @@ MIXES = {
     # the top-20 line (W3.1a: a groove, really subtle) and the watched chips (W3.1a: the string's stones)
     "top20-line": ("mock.html :348", ("mix", "accent", 38, "line", None)),
     "watched-chip-fill": ("mock.html :375", ("mix", "accent", 20, "bg", None)),
+    "side-pill-fill": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 14, "transparent", None)),
+    "side-pill-border": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 45, "line", None)),
     "watched-chip-border": ("mock.html :375", ("mix", "accent", 45, "line", None)),
     "needs-row-border": ("mock.html :548", ("mix", "line", 60, "transparent", None)),
 }

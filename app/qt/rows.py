@@ -1490,8 +1490,13 @@ class RowDelegate(QStyledItemDelegate):
         cx = pos.left() + pos.width() // 2
         if opened:                                              # the full title takes the string's room
             main = QRect(main.left(), top, max(tw, end - hw - g - main.left()), h)
+        side = None
+        if getattr(row, "side_with", None):                     # Kyou-D: the pill ends the title's column
+            pw, ph = self.side_pill_size()
+            side = QRect(main.right() + 1 - pw, round(mid - ph / 2), pw, ph)
+            main = QRect(main.left(), top, max(0, main.width() - pw - rl("hover-gap")), h)
         return {"slab": slab, "pos": pos, "art": art_r, "main": main, "gstr": gstr, "stat": stat, "diff": diff,
-                "hover": hover, "hw": hw, "end": end,
+                "hover": hover, "hw": hw, "end": end, "side": side,
                 "up": QRect(cx - mw // 2, top + mp, mw, mh), "down": QRect(cx - mw // 2, top + h - mp - mh, mw, mh)}
 
     @staticmethod
@@ -1532,6 +1537,8 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             g = self._hero_geometry(payload, rect, lines)
             nxt = payload.episodes[payload.next_index]
+            if g.get("side") is not None:                # Kyou-D: the pill's tip names the other title
+                out.append(("side", g["side"], view_rows.STRINGS["side_tip"].format(other=payload.side_with), None))
             link = links_video(payload)             # Kantan-B2 (AUDIT A3, finding 15): *No video · Link…*, a press
             if not link:                            # (listed last: the keyboard's → reaches the row's status first)
                 out.append(("play" if nxt.can_play else "no-play", g["play"], payload.play_tip, nxt))   # row 55
@@ -1577,6 +1584,8 @@ class RowDelegate(QStyledItemDelegate):
             if g["stat"].width():                    # R47: mining's icon is its Stop while the job can be stopped
                 out.append(self._status_part(payload, payload.episodes, g["stat"], payload.media_word))
             out += _audio_part(payload, g["main"], "row-title")                     # a5-2
+            if g["side"] is not None:                # Kyou-D: the pill's tip names the other title
+                out.append(("side", g["side"], view_rows.STRINGS["side_tip"].format(other=payload.side_with), None))
             out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
@@ -1939,6 +1948,11 @@ class RowDelegate(QStyledItemDelegate):
                                                                    head_h),
              "play": play, "done": done, "more": more, "status": status, "text": main}
         g["eyebrow"] = QRect(main.left(), y, main.width(), eyebrow_h)
+        g["side"] = None
+        if getattr(row, "side_with", None):                     # Kyou-D: the pill after *UP NEXT*
+            pw, ph = self.side_pill_size()
+            ew = TEXT.metrics("eyebrow").horizontalAdvance(strings.ROWS_UP_NEXT)
+            g["side"] = QRect(main.left() + 14 + ew + round(8 * f), round(y + eyebrow_h / 2 - ph / 2), pw, ph)
         y += eyebrow_h + 5
         g["title"] = QRect(main.left(), y, main.width(), title_h)
         y += title_h + 5
@@ -2209,6 +2223,8 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, m.left(), top + t_h / 2, heard_title(row), "row-title", m.width(), c("ink"), dpr=dpr)
         if sub:
             TEXT.draw(p, m.left(), top + t_h + 1 + s_h / 2, sub, "row-sub", m.width(), c("ink-dim"), dpr=dpr)
+        if g["side"] is not None:
+            self._paint_side_pill(p, g["side"], dpr)                     # Kyou-D
         if not opened and not alone:
             self._paint_string(p, self._info(row)[0], g["gstr"], mid, sheet, ring=active)
         self._paint_stat(p, row.status, g["stat"], mid, dpr)
@@ -2637,6 +2653,25 @@ class RowDelegate(QStyledItemDelegate):
         fm = TEXT.metrics("row-sub", 600, dpr)
         return round(11 * fz()) + 4 + fm.horizontalAdvance(strings.ROWS_STUDYING)
 
+    @staticmethod
+    def side_pill_size():
+        """Kyou-D: side by side's pill, (w, h): its words in the `chip` type, 7 px either side."""
+        f = fz()
+        return (TEXT.metrics("chip").horizontalAdvance(strings.ROWS_SIDE_PILL) + 2 * round(7 * f), round(17 * f))
+
+    @staticmethod
+    def _paint_side_pill(p, r, dpr):
+        """Kyou-D (PROVISIONAL, Sonic refines it): *side by side* in the accent on a faint accent pill, on the rows of
+        the two titles side by side has on; its tooltip names the other title (`parts`)."""
+        p.save()
+        p.setPen(QPen(c("side-pill-border"), 1))
+        p.setBrush(c("side-pill-fill"))
+        radius = r.height() / 2
+        p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        p.restore()
+        TEXT.draw(p, r.left(), r.center().y() + 0.5, strings.ROWS_SIDE_PILL, "chip", r.width(), c("accent"),
+                  align="centre", dpr=dpr, elide=False)
+
     def _paint_studying(self, p, x, y_mid, dpr):
         """*Studying its cards first* before a Finished row's line: an up arrow and the words in the accent, on the
         row's own ground — no pill under the words (G2.3 R3). -> its width. (A Current row shows it as a hover mark.)"""
@@ -2866,6 +2901,8 @@ class RowDelegate(QStyledItemDelegate):
         icon(p, "dot", QRectF(e.left(), e.center().y() - 3.5, 7, 7), c("accent"))
         TEXT.draw(p, e.left() + 14, e.center().y(), strings.ROWS_UP_NEXT, "eyebrow", e.width() - 14, c("accent"),
                   dpr=dpr)
+        if g.get("side") is not None:
+            self._paint_side_pill(p, g["side"], dpr)                     # Kyou-D
         t = g["title"]
         ep_txt = row.title_ep
         ep_w = TEXT.metrics("hero-title", 500, dpr).horizontalAdvance(ep_txt) + 8 if ep_txt else 0

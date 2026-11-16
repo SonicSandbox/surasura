@@ -521,7 +521,7 @@ def test_the_pin_has_the_shape_the_install_route_compares_with():
 
 
 def test_a_learner_on_3_12_is_offered_3_13_by_its_own_installer():
-    """Michi-AM13 (2026-11-16): Anki Miner 3.13.0 passed the DevTest drills (Japanese, Chinese, the Stop step) from its
+    """Michi-AM13: Anki Miner 3.13.0 passed the DevTest drills (Japanese, Chinese, the Stop step) from its
     source tag, so it is the approved version: a learner on the last approved one (3.12.0) or older is offered 3.13.0,
     and Install takes only GitHub's 3.13.0 Windows installer, by the digest GitHub lists for it. One made later and
     installed by hand is still left alone (never a downgrade)."""

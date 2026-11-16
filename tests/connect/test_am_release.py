@@ -525,11 +525,13 @@ def test_a_learner_on_3_12_is_offered_3_13_by_its_own_installer():
     source tag, so it is the approved version: a learner on the last approved one (3.12.0) or older is offered 3.13.0,
     and Install takes only GitHub's 3.13.0 Windows installer, by the digest GitHub lists for it. One made later and
     installed by hand is still left alone (never a downgrade)."""
-    fetch = Fetch(release("v3.13.0"))
+    fetch = Fetch(release("v3.14.0"))       # GitHub already past the pin: still only the approved one is offered
     am_release.check(ON, now=NOON, fetch=fetch)
+    assert fetch.calls == 1
     offer = {"version": "3.13.0", "url": f"{am_release.RELEASES}/tag/v3.13.0"}
     assert am_release.notice("3.12.0") == offer, "3.12.0 was the pin before: now it is offered 3.13.0"
     assert am_release.notice("3.11.0") == offer
+    assert am_release.notice("3.9.0") == offer, "the first two-digit minor: 3.9 is older than 3.13 (never by text)"
     assert am_release.notice("3.13.0") is None and am_release.notice("3.13.1") is None
     assert am_release.APPROVED_SHA256 == "bc2b36f1298b3bd60786147456d3980f413e9d33e81e445c07abd688a89d9693", \
         "AnkiMiner-3.13.0-Windows-x86_64-Setup.exe, as GitHub's release lists its sha256"

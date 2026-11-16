@@ -482,6 +482,7 @@ def _consume(steps, ledger, lang):
             with ledger.transaction():
                 ledger.reopen_skipped(lang, line, MINER_ABSENT)
         _books_aside(steps, ledger, lang, ledger.jobs(lang, states=OPEN))
+        _close_browser_folders(ledger)
     except Exception:
         log.exception("Connect couldn't read its inbox (%s); it looks again", lang)
         return True
@@ -2100,14 +2101,28 @@ def _alone(ledger, jid):
     return got if isinstance(got, dict) else None
 
 
+def _close_browser_folders(ledger):
+    """Netflix / Disney+: the browser folder of a job that left (dropped from the top lines, failed, skipped) closed,
+    so the extension is never asked to record for it (`browser.close`) — kept while it holds clips a later job of its
+    episode may take over; a folder whose job the ledger doesn't know, or holding no clip, gone."""
+    from app.connect import browser
+    try:
+        for jid in browser.folders():
+            job = ledger.job_by_id(jid)
+            browser.close(jid, keep=None if job is not None and job.get("state") in OPEN else job is not None)
+    except Exception:
+        log.exception("Connect couldn't look at the browser extension's folders")
+
+
 def _earlier_jobs(ledger, lang, job):
-    """The episode's other jobs, the newest first (a job dropped when you reordered the list, or one that failed: its
-    clips are taken over at the hand-off, `browser.take_over`)."""
+    """The episode's earlier jobs no longer open, the newest first (a job dropped when you reordered the list, or one
+    that failed: its clips are taken over, `browser.take_over`) — never a newer job, nor one still waiting."""
     conn = getattr(ledger, "conn", None)
     if conn is None:
         return []
-    return [r[0] for r in conn.execute("SELECT id FROM jobs WHERE language = ? AND item_id = ? AND id != ? "
-                                       "ORDER BY id DESC", (lang, job["item_id"], job["id"]))]
+    marks = ", ".join("?" * len(OPEN))
+    return [r[0] for r in conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND id < ? AND state "
+                                       f"NOT IN ({marks}) ORDER BY id DESC", (lang, job["item_id"], job["id"], *OPEN))]
 
 
 def _browser_clips(steps, ledger, lang, job, picked, record=True):
@@ -3975,7 +3990,9 @@ class Steps:
                 c = clips.get(str(w.get("clip")))
                 if c is not None:
                     groups.setdefault((c["video"], c["subtitle"]), []).append(
-                        dict(w, line_start=round(float(w["line_start"]) - c["shift"], 3)))
+                        dict(w, line_start=max(0.0, round(float(w["line_start"]) - c["shift"], 3))))
+                    # (a clip may start up to `browser.COVER_SLACK` after its line: its .srt's cue is cut to start
+                    # at 0 too — never a negative start, which Anki Miner's run file refuses)
         else:
             from app.connect import lineup
             groups, rest = lineup.split(words, lined)

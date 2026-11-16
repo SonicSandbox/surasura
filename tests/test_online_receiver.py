@@ -545,8 +545,10 @@ def test_a_pick_again_after_the_hand_off_never_gives_a_word_another_lines_clip(m
         with pytest.raises(runner.Wait):                    # the new line is added, never renumbering the others
             runner._browser_clips(_Steps(), ledger, "ja", job, picked)
         assert browser.handed(464)[(129.708, 131.458)] == 5
+        rev = _ask(receiver, "GET", "/v1/jobs", headers=headers)[1]["jobs"][0]["rev"]
+        assert rev == 1, "the lines were added to: a `done` for the first set would be stale"
         _record_all(receiver, 464)                          # round two: the rest, after asking again
-        assert _ask(receiver, "POST", "/v1/jobs/464/done", {"failed": []},
+        assert _ask(receiver, "POST", "/v1/jobs/464/done", {"failed": [], "rev": rev},
                     dict(headers, **{"Content-Type": "application/json"}))[0] == 200
     finally:
         receiver.stop()
@@ -609,8 +611,9 @@ class _JobsLedger(_Ledger):
         import sqlite3
         super().__init__()
         self.conn = sqlite3.connect(":memory:")
-        self.conn.execute("CREATE TABLE jobs (id INTEGER, language TEXT, item_id INTEGER)")
-        self.conn.executemany("INSERT INTO jobs VALUES (?, 'ja', ?)", jobs)
+        self.conn.execute("CREATE TABLE jobs (id INTEGER, language TEXT, item_id INTEGER, state TEXT)")
+        self.conn.executemany("INSERT INTO jobs VALUES (?, 'ja', ?, ?)",
+                              [(j[0], j[1], j[2] if len(j) > 2 else "dropped") for j in jobs])
 
 
 def _recorded(job, words, clips=None, done=True):
@@ -791,3 +794,110 @@ def test_a_runs_progress_shows_in_the_bar_at_most_every_two_seconds():
     now[0] += 2.0
     assert bar("3 of 8 videos read") is True
     assert said == [strings.EXT_YT_PROGRESS.format(line=f"{n} of 8 videos read") for n in (1, 3)]
+
+
+# --- the review's findings (2026-11-16) ------------------------------------------------------------------------------ #
+def test_a_clip_recorded_a_little_late_never_gives_a_negative_line_start(monkeypatch):
+    """1: `covers` takes a clip starting up to COVER_SLACK after its line (recorded clips start a few hundred ms late):
+    the line's start in clip time is 0 then, never −0.2 (which Anki Miner's run file refuses)."""
+    from app.connect import browser, runner
+    assert browser.covers({"start": 10.2, "end": 13.0}, {"start": 10.0, "end": 12.0})
+    sent = []
+    monkeypatch.setattr(runner.Steps, "_mine_one", lambda self, lang, j, p, ws, attempt: (
+        sent.extend(w["line_start"] for w in ws),
+        {"outcomes": [dict(w, outcome="made") for w in ws], "app": "3.12.0", "doubt": False})[1])
+    words = [dict(_ep8_word("大物", 10.0), clip=0)]
+    picked = {"names": ["Processed", "x"], "words": words, "clips": {"0": {"video": "c.webm", "subtitle": "c.srt",
+                                                                           "shift": 10.2}}}
+    runner.Steps.mine(runner.Steps.__new__(runner.Steps), "ja", {"id": 1}, picked, words, 1)
+    assert sent == [0.0]
+
+
+def test_the_folder_of_a_job_that_left_is_closed_or_gone_never_listed_for_recording():
+    """2: dropped job 475 was still listed. A job that left keeps its folder closed while it holds a clip to take over,
+    else the folder goes; one the ledger doesn't know goes; an open job's is untouched. A take-over removes the
+    folder it took from."""
+    from app.connect import browser, runner
+    words = [_ep8_word("大物", 337.042)]
+    _recorded(470, words, done=False)                       # dropped, its clip in
+    _recorded(475, words, clips={0: (None, None)}, done=False)      # dropped, never recorded
+    _recorded(479, words, clips={0: (None, None)}, done=False)      # still waiting
+    _recorded(999, words, done=False)                       # a job the ledger no longer knows
+    states = {470: "dropped", 475: "dropped", 479: "waiting"}
+
+    class Ledger:
+        def job_by_id(self, jid):
+            return {"id": jid, "state": states[jid]} if jid in states else None
+    runner._close_browser_folders(Ledger())
+    assert [j["job"] for j in browser.waiting()] == [479]
+    assert browser.folders() == [470, 479] and browser.state(470) == {"failed": []}
+    lines, _index = browser.lines_for(words, EP8)
+    browser.hand_off(480, WEB, "t", lines)
+    assert browser.take_over(480, [470]) == 1 and 470 not in browser.folders()
+
+
+def test_a_clip_cut_short_is_refused_and_nothing_is_kept(tmp_path):
+    """3: a tab closed mid-upload — the body ends before its Content-Length: a 400, no clip written."""
+    import socket
+    root = str(tmp_path)
+    _handed(root)
+    receiver = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0, clips=root, timeout=5)
+    assert receiver.start()
+    try:
+        with socket.create_connection((rx.HOST, receiver.port), timeout=5) as s:
+            s.sendall((f"POST /v1/jobs/412/clips/0 HTTP/1.1\r\nHost: x\r\n{rx.TOKEN_HEADER}: {TOKEN}\r\n"
+                       "X-Clip-Start: 704.29\r\nX-Clip-End: 709.84\r\nContent-Type: video/webm\r\n"
+                       "Content-Length: 1000\r\n\r\n").encode() + b"\x1aE\xdf\xa3" * 10)
+            s.shutdown(socket.SHUT_WR)
+            answer = s.recv(4096).decode("utf-8", "replace")
+        assert answer.startswith("HTTP/1.0 400") or answer.startswith("HTTP/1.1 400")
+        assert not os.path.exists(os.path.join(root, "b412", "clip-0.webm"))
+    finally:
+        receiver.stop()
+
+
+def test_a_done_for_an_older_set_of_lines_closes_nothing():
+    """4: lines added (a pick again) while the extension recorded the older set: its `done` (rev 0, or none: a v2
+    extension) leaves the job listed with the new lines; a `done` naming the lines' rev closes it."""
+    from app.connect import browser
+    words = [_ep8_word("大物", 337.042)]
+    lines, _index = browser.lines_for(words, EP8)
+    browser.hand_off(490, WEB, "t", lines)
+    assert browser.keep_clip(490, 0, b"webm", 336.3, 340.9)
+    more, _index = browser.lines_for([_ep8_word("ワシ", 2044.292)], EP8)
+    browser.add_lines(490, more)
+    (job,) = browser.waiting()
+    assert job["rev"] == 1 and [ln["n"] for ln in job["lines"]] == [1]
+    assert browser.finish(490, []) is True and browser.state(490) == "waiting", "a v2 done, line 1 unrecorded"
+    assert browser.finish(490, [], rev=0) is True and browser.state(490) == "waiting", "an older rev"
+    assert browser.finish(490, [{"n": 1, "why": "seek failed"}], rev=1) is True
+    assert browser.state(490) == {"failed": [{"n": 1, "why": "seek failed"}]}
+    browser.add_lines(490, browser.lines_for([_ep8_word("王冠", 2212.917)], EP8)[0])
+    assert browser.keep_clip(490, 2, b"webm", 2212.2, 2216.4)
+    assert browser.finish(490, [{"n": 1, "why": "seek failed"}]) is True, "a v2 done naming every line closes it"
+    assert browser.state(490) == {"failed": [{"n": 1, "why": "seek failed"}]}
+
+
+def test_a_connection_gone_silent_never_blocks_the_next(tmp_path):
+    """5: one hung connection (a half-sent request) ends at the request timeout; `hello` is answered after it."""
+    import socket
+    import time
+    receiver = rx.Receiver(lambda: TOKEN, lambda sub: (True, 1), port=0, timeout=0.5)
+    assert receiver.start()
+    try:
+        hung = socket.create_connection((rx.HOST, receiver.port), timeout=5)
+        hung.sendall(b"GET /v1/hel")
+        began = time.monotonic()
+        assert _ask(receiver, "GET", "/v1/hello")[0] == 200
+        assert time.monotonic() - began < 5
+        hung.close()
+    finally:
+        receiver.stop()
+
+
+def test_clips_are_taken_over_only_from_older_jobs_no_longer_open():
+    """6: never from a newer job, nor one still waiting (it would be closed under its own wait)."""
+    from app.connect import runner
+    ledger = _JobsLedger([(465, 2900, "waiting"), (470, 2900, "dropped"), (476, 2900, "waiting"),
+                          (480, 2900, "dropped"), (468, 2901, "failed"), (466, 2900, "failed")])
+    assert runner._earlier_jobs(ledger, "ja", {"id": 476, "item_id": 2900}) == [470, 466]

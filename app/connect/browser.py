@@ -146,7 +146,7 @@ def hand_off(job_id, web, title, lines, root=None):
     os.makedirs(here, exist_ok=True)
     path = os.path.join(here, LINES)
     if not os.path.isfile(path):
-        _write_json(path, {"job": int(job_id), "site": web["site"], "video_id": web.get("video_id") or "",
+        _write_json(path, {"job": int(job_id), "rev": 0, "site": web["site"], "video_id": web.get("video_id") or "",
                            "url": web.get("url") or "", "title": title, "pad_before": PAD_BEFORE,
                            "pad_after": PAD_AFTER, "lines": lines})
     return path
@@ -177,7 +177,7 @@ def add_lines(job_id, lines, root=None):
         added[span(ln)] = nxt
         have.append(dict(ln, n=nxt))
         nxt += 1
-    _write_json(path, dict(job, lines=have))
+    _write_json(path, dict(job, lines=have, rev=int(job.get("rev") or 0) + 1))   # a `done` for the older set is stale
     try:
         os.remove(os.path.join(here, DONE))
     except OSError:
@@ -199,8 +199,8 @@ def covers(times, line):
 def take_over(job_id, earlier, root=None):
     """The clips earlier jobs of the same episode recorded (`earlier`: their job ids, the newest first — a job dropped
     when you reordered the list, or one that failed) copied into this job's folder for the lines it hands off and they
-    hold (`covers`): those lines never need recording again. Each earlier folder still waiting is closed (`done.json`):
-    its job is gone, so the extension is never asked for it again. A line this job has a clip for already is never
+    hold (`covers`): those lines never need recording again. Each earlier folder is then removed: its job is gone
+    (`runner._earlier_jobs`: older, no longer open). A line this job has a clip for already is never
     touched; once every line has one, the job is done -> how many lines were taken over."""
     here = place(job_id, root)
     want = handed(job_id, root)
@@ -220,11 +220,31 @@ def take_over(job_id, earlier, root=None):
             shutil.copyfile(kept[0], os.path.join(here, f"clip-{mine}.webm.part"))
             os.replace(os.path.join(here, f"clip-{mine}.webm.part"), os.path.join(here, f"clip-{mine}.webm"))
             taken.add(mine)
-        if not os.path.exists(os.path.join(there, DONE)) and os.path.isfile(os.path.join(there, LINES)):
-            _write_json(os.path.join(there, DONE), {"failed": []})
+        drop(old, root)                         # its job is gone: what a later job needs is copied
     if taken and len(have | taken) == len(want) and not os.path.exists(os.path.join(here, DONE)):
         _write_json(os.path.join(here, DONE), {"failed": []})      # every line held: nothing to record
     return len(taken)
+
+
+def folders(root=None):
+    """The job ids that have a folder here."""
+    try:
+        return sorted(int(n[1:]) for n in os.listdir(root or folder()) if n.startswith("b") and _N.fullmatch(n[1:]))
+    except OSError:
+        return []
+
+
+def close(job_id, keep, root=None):
+    """A job's folder whose job left: `keep` (its job is known, no longer open) closed (`done.json`: never listed for
+    recording again) while it holds a clip to take over, else gone; `keep` None (its job is open) untouched."""
+    here = place(job_id, root)
+    if keep is None or not os.path.isdir(here):
+        return
+    if keep and any(n.startswith("clip-") and n.endswith(".webm") for n in os.listdir(here)):
+        if not os.path.exists(os.path.join(here, DONE)):
+            _write_json(os.path.join(here, DONE), {"failed": []})
+    else:
+        drop(job_id, root)
 
 
 def state(job_id, root=None):
@@ -279,7 +299,7 @@ def waiting(root=None):
         missing = [{"n": ln["n"], "start": ln["start"], "end": ln["end"]} for ln in job.get("lines") or ()
                    if not os.path.isfile(os.path.join(here, f"clip-{ln['n']}.webm"))]
         out.append({k: job.get(k) for k in ("job", "site", "video_id", "url", "title", "pad_before", "pad_after")}
-                   | {"lines": missing})
+                   | {"rev": int(job.get("rev") or 0), "lines": missing})
     return out
 
 
@@ -305,11 +325,21 @@ def keep_clip(job_id, n, body, start, end, root=None):
     return True
 
 
-def finish(job_id, failed, root=None):
-    """`done`: the extension recorded what it could -> True; False when the job doesn't wait (a 404)."""
+def finish(job_id, failed, root=None, rev=None):
+    """`done`: the extension recorded what it could -> True; False when the job doesn't wait (a 404). `rev`: the lines'
+    version its `GET /v1/jobs` listed. A stale one (lines were added since, `add_lines`) closes nothing: the job stays
+    listed with the lines still missing a clip. None (a v2 extension, which knows no rev): it closes the job only when
+    every line has a clip or is among `failed` — so an older extension still ends a job it was asked for again."""
     here, job = _open_job(job_id, root)
     if job is None:
         return False
+    named = {f.get("n") for f in failed if isinstance(f, dict)}
+    if rev is None:
+        if any(not os.path.isfile(os.path.join(here, f"clip-{ln.get('n')}.webm")) and ln.get("n") not in named
+               for ln in job.get("lines") or ()):
+            return True
+    elif int(rev) != int(job.get("rev") or 0):
+        return True
     known = {ln.get("n") for ln in job.get("lines") or ()}
     kept = [{"n": f["n"], "why": str(f.get("why") or "")[:200]} for f in failed
             if isinstance(f, dict) and f.get("n") in known]

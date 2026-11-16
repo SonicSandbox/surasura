@@ -48,6 +48,7 @@ SITES = {"netflix": "Netflix", "disneyplus": "Disney+"}     # `source_type` -> t
 PRODUCER = "browser"                    # the pairing record's producer (`placing_rules`' `browser`)
 MAX_BODY = 4 * 1024 * 1024              # a two-hour film's cues are about 200 KB
 DRAIN = 1024 * 1024                     # an over-large body this small is read and dropped before the 413
+REQUEST_TIMEOUT = 15.0                  # a 40 MB clip on loopback takes well under a second
 MAX_CLIP = 40 * 1024 * 1024             # one recorded line, a few seconds of video and sound
 _CLIP_PATH = re.compile(r"/v1/jobs/(\d{1,9})/clips/(\d{1,5})")
 _DONE_PATH = re.compile(r"/v1/jobs/(\d{1,9})/done")
@@ -396,7 +397,9 @@ class Receiver:
     503) — the window's (`windows.start_receiver`); `version` for `hello`. `start()` -> True when listening (False: the
     port is taken — another Surasura, or another program); `stop()` at the window's close."""
 
-    def __init__(self, token, deliver, version="", host=HOST, port=PORT, clips=None, youtube=None):
+    def __init__(self, token, deliver, version="", host=HOST, port=PORT, clips=None, youtube=None,
+                 timeout=REQUEST_TIMEOUT):
+        self.timeout = timeout              # seconds a request's socket may stay silent (one hung never blocks it)
         self.token, self.deliver, self.version = token, deliver, version
         self.youtube = youtube              # v3: `youtube(urls)` -> how many queued (raises Refused / Busy), or None
         self.clips = clips                  # Connect's `browser` folder (None: `connect.browser.folder()`)
@@ -437,6 +440,7 @@ def _handler(receiver):
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "Surasura"
         sys_version = ""
+        timeout = receiver.timeout                  # the socket's: a connection gone silent ends, the next is served
 
         def log_message(self, *_args):          # nothing on stderr; never the token
             pass
@@ -485,7 +489,12 @@ def _handler(receiver):
                 self._send(413, {"ok": False, "why": "the body is too large"})     # (a small one read and dropped)
                 return None
             self._read = True
-            return self.rfile.read(length)
+            body = self.rfile.read(length)
+            if len(body) != length:                 # cut short (a tab closed mid-upload): nothing kept
+                self.close_connection = True
+                self._send(400, {"ok": False, "why": "the body ended before its Content-Length"})
+                return None
+            return body
 
         def do_GET(self):
             if self._refused():
@@ -584,13 +593,15 @@ def _handler(receiver):
                 if body is None:
                     return
                 try:
-                    failed = json.loads(body.decode("utf-8") or "{}").get("failed") or []
-                    if not isinstance(failed, list):
+                    got = json.loads(body.decode("utf-8") or "{}")
+                    failed, rev = got.get("failed") or [], got.get("rev")
+                    if not isinstance(failed, list) or (rev is not None and (isinstance(rev, bool)
+                                                                             or not isinstance(rev, int))):
                         raise ValueError
                 except (UnicodeDecodeError, ValueError, AttributeError):
                     self._send(400, {"ok": False, "why": "the body must be {\"failed\": [...]}"})
                     return
-                kept = browser.finish(int(done.group(1)), failed, receiver.clips)
+                kept = browser.finish(int(done.group(1)), failed, receiver.clips, rev=rev)
             if kept:
                 self._send(200, {"ok": True})
             else:

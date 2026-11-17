@@ -31,6 +31,13 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   timed in plain words (`SPEECH_REFUSED`); the speech not measured (another whisper.cpp) → the raw's reason as before.
   A video with a track is asked exactly as before (one quick run, no `--vad`); Chinese, an audio file, hato's own
   record and *Trust my subtitles' timing* (which mines a raw at once) never listen.
+- **A timed video, heard** (audio quality, Tier 1; PROVISIONAL, 2026-11-17): a video hato, its own track or tsubasa
+  found timed is listened to as an audio file's subtitle is (`heard`, the runner's `lineup.spot_check` at the offset
+  found), but only where Anki Miner already has a speech model (never asked, never downloaded, never waited for):
+  timed against a text or picture track says nothing about what the audio says, and a dubbed or wrong audio track
+  passes it. Its lines heard → as before; not heard → not timed (`SPOT_NOT_SAID`; *Mine anyway* stays yours); no
+  answer now → as before. Kept per subtitle, video and offset. A subtitle transcribed from the audio itself, and
+  *Trust my subtitles' timing*, are never listened to.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
@@ -82,6 +89,11 @@ PART_WAY = "Its timing changes part-way through the {media}, so no cards."
 SPEECH_REFUSED = ("Connect listened to its video and couldn't confirm the subtitle's timing, so no cards. Mine anyway "
                   "only if you know it plays in time.")
 LISTENING = "listening"         # the job's saved progress step while tsubasa listens (`status.LISTENING`'s words)
+SPOT_NOT_SAID = ("Connect listened to its video and the speech doesn't say its subtitle's lines (another language, a "
+                 "dub, or another cut), so no cards: a card's audio would hold something else. Mine anyway only if "
+                 "you know its audio says its lines.")
+# the verdicts a timed video is listened to after (`heard`): none of them heard its audio's words
+HEARD_AFTER = frozenset(("hato", "track", "tsubasa"))
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
                  "another line. Mine anyway only if you know it plays in time.")
 
@@ -288,6 +300,18 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def heard(answer, video, spot):
+    """Tier 1: `fit`'s answer for `video`, listened to (the module's *A timed video, heard*). `spot(offset)` ->
+    SPOT_MATCHED / SPOT_NOT_MATCHED / None (no answer now). Anything but a video timed by hato, its track or tsubasa
+    is answered as it was, never listened to."""
+    verdict, who, _why, offset = answer
+    if verdict != TIMED or who not in HEARD_AFTER or spot is None or _media(video) != "video":
+        return answer
+    if spot(offset) == SPOT_NOT_MATCHED:
+        return NOT_TIMED, "spot-check", SPOT_NOT_SAID, 0.0
+    return answer
 
 
 def _confident(answer, video):

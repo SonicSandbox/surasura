@@ -358,6 +358,7 @@ _MOVED_ROW = ("((CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.mo
 _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
                   f"(q.content_key >= 'src:' AND q.content_key < 'src;'))) AND NOT {_VERSION_ROW}")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
+CONNECT_READER = "connect"       # Connect's placement-log reader (`connect.library.READER`): the feed's `mine_unread`
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
@@ -2662,8 +2663,8 @@ class Store:
         (True: every item and work — the first read, a new epoch, or `seen` older than the tombstones kept,
         `feed_floor`), `epoch`, `version` (the window's next `seen`), `items` and `works` (rows of FEED_ITEM_FIELDS /
         FEED_WORK_FIELDS as dicts: every row when full, else those whose `feed_in` > `seen`), `gone` ([(kind, id)] left
-        since) and `options` (the Soon line, the mine line, New arrivals, W-1's `keep_watched`). Applying it by id is
-        idempotent: a window's own commits come back through it too.
+        since) and `options` (the Soon line, the mine line, New arrivals, `keep_watched`, Michi-EO's `mine_unread`).
+        Applying it by id is idempotent: a window's own commits come back through it too.
         LM11: `pieces` (rows of FEED_PIECE_FIELDS: id, title, kind) — every piece when full, else the pieces its
         changed rows sit in (a piece's kind or name written feeds its rows: `_set_piece`). A piece no row names is gone.
         A group's `title` None: the window derives "<first item's work's title> + N more"; a run's title is never shown
@@ -2691,6 +2692,11 @@ class Store:
                 named = sorted({r[at] for r in items if r[at] is not None})
                 pieces = [r for chunk in _chunks(named, 500) for r in self.conn.execute(
                     f"SELECT {piece_cols} FROM pieces WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
+            # Michi-EO: the items an entry into the top N names that Connect hasn't read yet (its jobs to come: the
+            # rows' *Waiting*); no reader -> none (its first read starts at the log's end). Read by the log's ids
+            mark = meta.get(f"reader:{CONNECT_READER}")
+            unread = [] if mark is None else [r[0] for r in self.conn.execute(
+                "SELECT DISTINCT item_id FROM placement_log WHERE id > ? AND kind = 'entered_mine_line'", (mark,))]
         return {"full": full, "epoch": now_epoch, "version": version,
                 "items": [dict(zip(FEED_ITEM_FIELDS, r)) for r in items],
                 "works": [dict(zip(FEED_WORK_FIELDS, r)) for r in works], "gone": gone,
@@ -2698,7 +2704,8 @@ class Store:
                 "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
                             "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0),
                             "side_by_side": meta.get(SIDE_BY_SIDE, 0),
-                            "side_cards": side_cards(meta.get(SIDE_CARDS))}}     # Kyou-C: Junban's last count
+                            "side_cards": side_cards(meta.get(SIDE_CARDS)),      # Kyou-C: Junban's last count
+                            "mine_unread": sorted(unread)}}
 
     def prune_gone(self, now=None):
         """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest

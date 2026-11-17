@@ -65,6 +65,10 @@ BEFORE_MINING = (None, "picking", "fit-check")
 # A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined; P4.1: one an ask made
 # (*Mine this*, *Mine it too*: C3) — the only kind that makes again a word whose card you deleted (N15, IK S1).
 MINE, LEVEL, ASKED = "mine", "level", "asked"
+# Michi-EO (2026-11-17: a show is one unit): an earlier part of a show Connect queued a later part of, never mined and
+# never a job before — queued with that part, by its person and its event (`event_id`), and mined ahead of it
+# (`runner._ordered`); kept below the top 20 while it is in Current (`inbox.keeps`)
+SHOW = "show"
 # P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
 ASKS_FROM = "asks_from:"
 # Laptop round 8 #47 (*Stop*): `stop:<job id>` — you asked the job to stop (the window's press, `ask_stop`); `stopped:<job
@@ -349,16 +353,21 @@ class Ledger:
         return self.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) "
                                  "LIMIT 1", (language, item_id) + OPEN + (DONE,)).fetchone() is not None
 
-    def queue(self, language, item_id, source, event_id, store_id=None):
+    def queue(self, language, item_id, source, event_id, store_id=None, kind=MINE):
         """A `queued` job for the item -> its id, or None when it already has work. `store_id`: the store it was read
-        from (the runner refuses a job of another store)."""
+        from (the runner refuses a job of another store); `kind`: MINE, or SHOW (Michi-EO)."""
         if self.has_work(language, item_id):
             return None
         now = _now()
         cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
-                                "store_id) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
-                                (language, item_id, source, event_id, now, now, store_id))
+                                "store_id, kind) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+                                (language, item_id, source, event_id, now, now, store_id, kind))
         return cur.lastrowid
+
+    def ever_had_job(self, language, item_id):
+        """Michi-EO: has the item had any job, in any state (a show's catch-up queues only a part that never had)?"""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? LIMIT 1",
+                                 (language, item_id)).fetchone() is not None
 
     def last_read(self, language):
         """When Connect last read the language's placement log, or None."""

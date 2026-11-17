@@ -447,9 +447,22 @@ def test_once_paired_the_joined_book_is_lined_up_by_anki_miners_sync_and_its_wor
     assert steps.lineable("ja", book) is True and steps.first_part("ja", book) == split["parts"][0]
 
 
-def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(split, fake_miner):
+def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(split, fake_miner, monkeypatch):
     """AB-Q3's *Stop* on a part's row while its book lines up: the part names no EPUB, so its book is found as the
-    split book it is a part of — that pair's sync is stopped (its cancel file), never left running for hours."""
+    split book it is a part of — that pair's sync is stopped (its cancel file), never left running for hours.
+    Anki Miner deletes the cancel file once it sees it (polled every 0.1 s), so the file is never asserted: the stop is
+    read from the run's end (CANCELLED -> STOPPED, well before its 30 s hold). The slow case, forced: *Stop* returns
+    only once the fake has taken its cancel file (Flake-F4: asserted as a file, it failed ~1 in 10-20 alone)."""
+    from app.connect import anki_miner
+    asked = []
+    real_cancel = anki_miner.cancel
+
+    def cancel_then_seen(run_dir, run_id):
+        real_cancel(run_dir, run_id)
+        asked.append(run_id)
+        _until(lambda: not os.path.exists(os.path.join(run_dir, run_id, "cancel")), 10)
+
+    monkeypatch.setattr(anki_miner, "cancel", cancel_then_seen)
     book, _offered, _change = _pick(split)
     fake_miner.plan(speech={"installed": ["small"], "model": "small"}, sync={
         "files": {}, "report": {"grade": "A", "unheard": []}, "hold": 30.0})
@@ -460,9 +473,10 @@ def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(s
         key = library.audiobook_of_book(store, book)["key"]
     assert lineup.running(key)
     split["steps"].stop_line_up("ja", job)
-    assert lineup.read(key)["status"] == lineup.STOPPED
-    assert os.path.isfile(os.path.join(lineup.folder(key), "run", lineup.RUN_ID, "cancel"))
-    _until(lambda: not lineup.running(key))
+    assert asked == [lineup.RUN_ID] and lineup.read(key)["status"] == lineup.STOPPED
+    _until(lambda: not lineup.running(key), 15)
+    state = lineup.look(key)
+    assert state["status"] == lineup.STOPPED and state["stopped_at"] and not state.get("tries")
 
 
 def test_its_text_only_cards_get_add_the_narrators_voice_unchanged_the_offer_the_rows_entry_and_the_plan(

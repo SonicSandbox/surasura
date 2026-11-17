@@ -124,45 +124,56 @@ def blocked(settings, window=True):
     return None
 
 
-def run_quietly(settings, list_current=None, job=None):
+def run_quietly(settings, list_current=None, job=None, settled=None):
     """The automatic steps, in order — the reorder, then the Backfill — each only when switched on.
     Returns one line for the dashboard's log, or `""` when there is nothing worth saying. Never raises.
 
     `list_current` is the dashboard's answer to "would Generate compute anything new?"
     (`app.main.journey_is_current`) — the reorder waits on False; the Backfill does not read the list.
-    `job`: the caller's `spaced.Job`, or None (`reorder`)."""
+    `job`: the caller's `spaced.Job`, or None (`reorder`).
+    `settled`: a list, or None; each step run appends whether it reached Anki and finished (True: it ran, every card
+    already in place included, or it needs a deck) or said "not now" / failed (False) — the window's focus keeps
+    `moment` only when every step settled (`AutoJunban`), since a "not now" returns "" too."""
     settings = dict(settings or {})
     if not enabled(settings):
         return ""
     lines = []
     if _reorder_on(settings):
-        lines.append(_reorder_quietly(dict(settings), list_current, job))
+        lines.append(_reorder_quietly(dict(settings), list_current, job, settled=settled))
     if _backfill_on(settings):
-        lines.append(_backfill_quietly(dict(settings)))
+        lines.append(_backfill_quietly(dict(settings), settled=settled))
     return " ".join(line for line in lines if line)
 
 
-def _backfill_quietly(settings):
-    """One automatic Backfill: new cards, empty fields (`backfill.run_auto`). Never raises."""
+def _backfill_quietly(settings, settled=None):
+    """One automatic Backfill: new cards, empty fields (`backfill.run_auto`). Never raises. `settled`: `run_quietly`'s."""
+    line, ran = _backfill_report(settings)
+    if settled is not None:
+        settled.append(ran)
+    return line
+
+
+def _backfill_report(settings):
+    """`_backfill_quietly`'s (line, whether it ran: False for a "not now" or a failure)."""
     try:
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
-            return ""
+            return "", False
         if anki_connect.patient("guiReviewActive", url) is True:
-            return ""
+            return "", False
         from modules.junban import backfill
         report = backfill.run_auto(settings)
     except Exception as e:          # a background job must never take the window down
         if anki_connect.is_busy(e):         # Anki busy with a collection operation (its sync, #370): not now
-            return ""
-        return f"Backfill (automatic) skipped: {e}"
+            return "", False
+        return f"Backfill (automatic) skipped: {e}", False
     if report.get("busy") or report.get("anki_busy"):  # another writer holds Anki (E1.4), or Anki is busy: not now,
-        return ""                                       # the next trigger tries again
+        return "", False                                # the next trigger tries again
     if not report.get("ok"):
-        return f"Backfill (automatic) did not run: {(report.get('problems') or ['it could not finish'])[0]}"
+        return f"Backfill (automatic) did not run: {(report.get('problems') or ['it could not finish'])[0]}", False
     if not report.get("written"):
-        return ""
-    return f"Backfill (automatic): {report.get('message', '')}"
+        return "", True
+    return f"Backfill (automatic): {report.get('message', '')}", True
 
 
 def decide_actions(settings, positions_only=False):
@@ -257,11 +268,13 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
     return {"outcome": "ran", "report": report}
 
 
-def _reorder_quietly(settings, list_current=None, job=None):
+def _reorder_quietly(settings, list_current=None, job=None, settled=None):
     """One automatic reorder, or a quiet reason not to. `""` when there is nothing worth saying
-    (Anki closed, the user reviewing, the list out of date, every card already in place)."""
+    (Anki closed, the user reviewing, the list out of date, every card already in place). `settled`: `run_quietly`'s."""
     done = reorder(settings, list_current, job=job)
     outcome, report = done["outcome"], done.get("report") or {}
+    if settled is not None:
+        settled.append(outcome in ("ran", "needs-deck"))      # a deck picked changes `moment` (a junban_ setting)
     if outcome == "needs-deck":
         return NEEDS_DECK
     if outcome == "failed":

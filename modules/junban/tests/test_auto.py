@@ -438,3 +438,33 @@ def test_the_moment_changes_with_the_decks_new_cards_the_order_list_and_the_sett
     assert auto.moment({"junban_order": "content"}) is None, "no deck: nothing to compare"
     cards = None
     assert auto.moment(settings) is None, "Anki closed: unknown"
+
+
+@pytest.mark.parametrize("outcome, settles", [
+    ("ran", True), ("needs-deck", True), ("closed", False), ("reviewing", False), ("behind", False),
+    ("failed", False), ("refused", False)])
+def test_the_reorder_settles_only_when_it_ran_or_needs_a_deck(monkeypatch, outcome, settles):
+    """`run_quietly(settled=)`: a "not now" (Anki closed, the learner reviewing, the list behind) returns "" just as
+    a run with every card in place does; `settled` tells them apart, so the window's focus never takes a step that
+    didn't happen as one that saw everything (`AutoJunban`)."""
+    from modules.junban import auto
+    monkeypatch.setattr(auto, "reorder", lambda settings, list_current=None, job=None: {
+        "outcome": outcome, "report": {}, "error": "AnkiConnect: collection is busy"})
+    settled = []
+    auto._reorder_quietly({"target_language": "ja"}, True, settled=settled)
+    assert settled == [settles]
+
+
+def test_the_backfill_settles_only_when_it_reached_anki(monkeypatch):
+    """The Backfill's "not now" exits (Anki closed, the learner reviewing) say False; a run that wrote nothing says
+    True."""
+    from modules.junban import auto, backfill
+    monkeypatch.setattr(auto.reposition, "_url", lambda settings: "http://127.0.0.1:8765")
+    monkeypatch.setattr(auto.ankiconnect, "probe", lambda url: {"ok": False})
+    settled = []
+    assert auto._backfill_quietly({}, settled=settled) == "" and settled == [False]
+    monkeypatch.setattr(auto.ankiconnect, "probe", lambda url: {"ok": True})
+    monkeypatch.setattr(auto.anki_connect, "patient", lambda action, url: False)
+    monkeypatch.setattr(backfill, "run_auto", lambda settings: {"ok": True, "written": 0})
+    settled = []
+    assert auto._backfill_quietly({}, settled=settled) == "" and settled == [True]

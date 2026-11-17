@@ -526,8 +526,9 @@ class AutoJunban:
         none: the window came back into focus). A focus whose moment (`auto.moment`: the deck's new cards, the order
         list, 順's settings) is the one the last run left starts nothing — "unchanged" — for up to JUNBAN_SAME_AT_MOST
         after that run (each return to the window ran it with nothing changed, holding Anki while Connect's jobs
-        waited). The moment kept is the one read just before the run, and none after a failed run, so a card made
-        during the run, or a run that failed, runs at the next focus; a moment that can't be read (Anki closed) runs as
+        waited). The moment kept is the one read just before the run, and none after a run that failed or whose
+        step said "not now" (`settled`), so a card made during the run, or a run that didn't happen, runs at the next
+        focus; a moment that can't be read (Anki closed) runs as
         before. After a Generate (`force`) it always runs."""
         o = self._owner
         now = o.clock()
@@ -554,7 +555,7 @@ class AutoJunban:
         moment = getattr(auto, "moment", None)
         if not force and moment is not None and self._seen is not None and \
                 now - self._seen[1] < JUNBAN_SAME_AT_MOST:
-            here = moment(settings)
+            here = _moment_of(moment, settings)
             if here is not None and here == self._seen[0]:
                 return "unchanged"
         self._last = now
@@ -562,19 +563,22 @@ class AutoJunban:
 
         def work(job):
             message = ""
-            seen = None
+            seen, settled = None, []
             try:
                 if not auto.window_open():          # a lock look: on this thread, never the window's
                     o.flush()
                     # read BEFORE the run: a card made while it runs (Connect mines meanwhile) differs at the next focus
                     seen = _moment_of(moment, settings)
-                    message = auto.run_quietly(settings, list_current=o.journey_current(settings, language))
+                    message = auto.run_quietly(settings, list_current=o.journey_current(settings, language),
+                                               settled=settled)
+                    if not settled or not all(settled):     # a step said "not now" (it returns "" too): not seen
+                        seen = None
             except Exception as e:
                 seen = None                         # a failed run did nothing: the next focus tries again
                 message = f"順 (automatic) skipped: {e}"
             finally:
+                self._seen = (seen, o.clock()) if seen is not None else None    # before the job ends: a focus then sees it
                 job.finish(ok=True, message=message or None)
-                self._seen = (seen, o.clock()) if seen is not None else None
             if message:
                 o.publish(junban=message)
         o.registry.submit("junban", JUNBAN_LABEL, automatic=True, on_quit="wait",

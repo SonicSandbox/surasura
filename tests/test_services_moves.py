@@ -1069,6 +1069,18 @@ def test_an_exact_move_reaches_the_store_without_the_episode_order_even_after_a_
     assert store.in_order[-2:] == [False, True]
 
 
+def test_an_exact_move_left_in_the_journal_replays_exact_never_the_episode_order():
+    """(Kura-EO 3.0.16, review round 2) A move queued while the store was stuck is journalled; at the next start its
+    replay is rebuilt from the entry (`_entry` → `_from_entry`). An exact move (Current's ⋯ *Up next*, a step across
+    the Soon line) must come back exact — else the replay puts the episode in its show's order, not where it was put."""
+    cmd = {"op": "move", "ids": [5], "tier": "now", "before_id": 3, "after_id": None, "near": [], "label": "x",
+           "exact": True}
+    assert M._from_entry(M._entry(cmd)).get("exact") is True
+    plain = dict(cmd)
+    del plain["exact"]
+    assert "exact" not in M._from_entry(M._entry(plain)), "a plain move replays as a plain move"
+
+
 def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_busy(stub_writer):
     numbers = Recorder()
     w, heard, store, opener = stub_writer(numbers=numbers)

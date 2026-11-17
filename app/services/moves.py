@@ -139,6 +139,7 @@ JOURNALLED += ("audiobook_keep", "audiobook_separate")
 JOURNALLED += ("start_over",)
 KEPT += ("placed",)
 KEPT += ("after",)                              # choice 1: a place after the sort screen's last Current pick
+KEPT += ("exact",)                              # Kura-EO 3.0.16: an exact move replays exact (never the show's order)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole

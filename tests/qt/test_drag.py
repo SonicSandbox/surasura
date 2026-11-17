@@ -1870,6 +1870,7 @@ def test_a_nudge_across_the_now_soon_edge_moves_it_beside_the_neighbour(world):
     win.moves.nudge(rs[first_soon], -1)
     op = calls(writer, "move")[0]
     assert op[2]["tier"] == "now" and op[2]["before_id"] == rs[first_soon - 1].episodes[0].id
+    assert op[2].get("exact") is True, "one exact step (Kura-EO 3.0.16): never the show's episode order"
     win.moves._let_go(now=True)
     win.show_library(win.services.library.view() or win.page_widgets["current"].view_model)
     writer.calls.clear()
@@ -1878,6 +1879,7 @@ def test_a_nudge_across_the_now_soon_edge_moves_it_beside_the_neighbour(world):
     win.moves.nudge(rs[last_now], 1)
     op = calls(writer)[-1]
     assert op[0] == "move" and op[2]["tier"] == "soon" and op[2]["after_id"] == rs[last_now + 1].episodes[-1].id
+    assert op[2].get("exact") is True
 
 
 def _soon_line_through_a_show(world, apply=True):

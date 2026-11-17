@@ -152,17 +152,28 @@ def test_a_receipt_taking_back_a_file_the_count_saw_still_moves_the_order(langua
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_count_from_before_its_time_was_kept_reads_every_mined_file_as_seen(language):
     """A count 3.0.15 wrote (no time): every mined file is one it saw, as then — a receipt still moves the order
-    there until Junban's next count, which carries the time."""
+    there until Junban's next count, which carries the time: the same count again gains it (one write, no order bump),
+    and from then on a receipt moves nothing."""
     store, a, b, loose, d = _library(language)
     store.set_library_options(mine_line=4, side_by_side=True)
     _write(store, a, b, loose, d, COUNT)
     old = {k: v for k, v in store._side_cards().items() if k != ls.SIDE_AT}
-    with store._writing():
-        store._set_meta({ls.SIDE_CARDS: json.dumps(old, sort_keys=True)})
+
+    def as_3_0_15():
+        with store._writing():
+            store._set_meta({ls.SIDE_CARDS: json.dumps(old, sort_keys=True)})
+    as_3_0_15()
     v = store.versions()["order_version"]
     store.receipt(a[0], ls._now())
     assert store.versions()["order_version"] > v and a[0] not in store._mine_ids(4)
     _agree(store)
+    store.receipt(a[0], None)                           # back as it was (A's cards deleted): A takes its turn
+    as_3_0_15()
+    v = store.versions()
+    assert _write(store, a, b, loose, d, COUNT) is True, "the same count, now with its time"
+    assert ls.SIDE_AT in store._side_cards() and store.versions()["order_version"] == v["order_version"]
+    store.receipt(a[0], ls._now())
+    assert store.versions()["order_version"] == v["order_version"] and store._mine_ids(4)[0] == a[0]
     store.close()
 
 

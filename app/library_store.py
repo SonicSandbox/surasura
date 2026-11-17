@@ -5636,10 +5636,11 @@ class Store:
                     for ids, n in groups if ids and int(ids[0]) in work}
             at = str(at) if at else _now()
             had = self._side_cards()
-            if had is not None and {k: v for k, v in had.items() if k != SIDE_AT} == want and (
-                    SIDE_AT in had and _utc_key(at) <= _utc_key(had[SIDE_AT])
+            if had is not None and SIDE_AT in had and {k: v for k, v in had.items() if k != SIDE_AT} == want and (
+                    _utc_key(at) <= _utc_key(had[SIDE_AT])
                     or self._side_split(dict(want, **{SIDE_AT: at})) == self._side_split(had)):
-                return False                    # the count as it stands, or no one's turn moved: no write (S19)
+                return False                    # the count as it stands, or no one's turn moved: no write (S19);
+                #                                 one with no time (3.0.15's) gains it once, so receipts read it
         with self._command("set_side_cards", by) as cmd:
             before = self._side_split()
             self._set_meta({SIDE_CARDS: json.dumps(dict(want, **{SIDE_AT: at}), sort_keys=True)})

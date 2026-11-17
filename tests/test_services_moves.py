@@ -1239,6 +1239,9 @@ def test_the_plan_stamp_on_disk_is_the_key_the_numbers_keep_once_they_read_the_p
     seed, _analysed, path = _small(tmp_path)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)
     assert numbers.plan_key() is None and numbers.plan_stamp() is not None     # not read yet: the disk has it
+    # ... and says so in the words the reader waits on before it lets the cached rows' figures go
+    from app.services import library_reader
+    assert numbers.why() == library_reader.NOT_READ
     numbers.load()
     assert numbers.idle(30) and numbers.why() is None
     assert numbers.plan_key() == numbers.plan_stamp()

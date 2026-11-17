@@ -257,6 +257,11 @@ class _LoadingNumbers(_PlanNumbers):
         self.table, self.read = self._loaded
         self.version, self.said = 1, None
 
+    def changed(self, since):
+        """`moves.Numbers.changed`: the ids whose figures changed after `since` — from version 0's empty table, the
+        loaded table's own. The cached figures were never version 0's, so the reader mustn't ask from there."""
+        return set() if since == self.version else set(self.table)
+
 
 def _figures(view, keys):
     """The figures Current paints for the rows `keys`: each row's % known and *N new*, and each of its episodes'."""
@@ -337,6 +342,36 @@ def test_the_cached_figures_go_once_the_load_answers_and_a_cache_written_meanwhi
         assert all(r.n_new is None and r.pct is None for r in views[-1][1].rows)
     finally:
         again.stop()
+
+
+def test_a_cache_owed_at_the_stop_while_the_cached_figures_last_keeps_them(tmp_path):
+    """H-T2's stop (the window's command still waiting: the store's own view written under the key owed) while the
+    numbers haven't read the plan yet — a quit in the first seconds: the view written is built with the cached figures
+    the screen shows, never the numbers' empty table under that plan's key (the next start's rows without figures)."""
+    seed = window_seed.build(language="ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=5.0,
+                                         cache_file=cache, numbers=_LoadingNumbers(table, (11, 500), (11, 500)))
+    views, _ = _collect(again)
+    again._first_screen()
+    again._look()                                        # the first live look, the numbers not read yet
+    row = views[-1][1].rows[4]
+    again.expect({e.id: "graduated" for e in row.episodes})
+    again._look()                                        # the command's view: never cached, the key owed
+    os.remove(cache)
+    again.start()
+    again.stop()                                         # the quit, the command still waiting
+    with open(cache, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["key"][3] == [11, 500]
+    written = {r[0]: tuple(r[1:]) for r in data["numbers"]}
+    assert written and written.items() <= dict(table).items()
 
 
 def test_a_damaged_cache_is_no_cache(tmp_path):

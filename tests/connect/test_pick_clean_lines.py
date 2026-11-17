@@ -162,6 +162,19 @@ def test_a_copy_shown_on_two_lines_is_still_the_same_line(tmp_path, language, on
     assert around.doubts(0, [0], language) == 0 and around.doubts(1, [1], language) == 0
 
 
+@pytest.mark.parametrize("language, spaced, plain, after, name", [
+    ("ja", "この小説は 面白いよ", "この小説は面白いよ", "ちょっと待ってよ", "episode.ja.srt"),
+    ("zh", "这本小说 真的很好看", "这本小说真的很好看", "你等我一下好吗", "episode.zh.srt"),
+])
+def test_a_card_lines_copy_said_again_later_is_not_another_speaker(tmp_path, language, spaced, plain, after, name):
+    # the card holds its line (with a space) and the next; the line said again 1.5 s later, without the space, over
+    # the next line: a copy of the card's own, spaces aside, not a second voice
+    lines = [(10.0, 12.0, spaced), (12.0, 14.5, after), (13.5, 16.0, plain)]
+    read = cues.read(_srt(tmp_path, lines, name), language)
+    assert read[2].counted
+    assert pick.Around(read).doubts(0, [0, 1], language) == 0
+
+
 def test_a_song_on_screen_for_minutes_is_still_on_screen(tmp_path):
     # a karaoke line held for a whole minute is kept apart in the look-up and still found
     lines = [(0.0, 60.0, "♪ 遠い空の向こうへ"), (30.0, 32.5, "この小説は面白いよ"), (90.0, 92.5, "あの小説を読んだの")]

@@ -135,6 +135,16 @@ def test_another_line_over_all_of_a_short_line_is_another_speaker(tmp_path, lang
     assert pick.Around(read).doubts(0, [0, 1], language) == 1
 
 
+@pytest.mark.parametrize("language, short, over, name", [
+    ("ja", "はい", "ちょっと待ってよ", "episode.ja.srt"),
+    ("zh", "好", "你等我一下好吗", "episode.zh.srt"),
+])
+def test_a_short_line_alone_in_its_card_is_still_seen_under_another(tmp_path, language, short, over, name):
+    # the card holds the reply alone (200 ms): the line over it shares less than OVER_MS with the card, all of the reply
+    read = cues.read(_srt(tmp_path, [(5.0, 5.2, short), (4.9, 5.3, over)], name), language)
+    assert pick.Around(read).doubts(0, [0], language) == 1
+
+
 def test_a_short_line_that_only_touches_another_is_said_alone(tmp_path):
     # はい ends as the next line starts (50 ms shared): one speaker after another, however short the line
     read = cues.read(_srt(tmp_path, [(10.0, 10.25, "はい"), (10.2, 12.5, "ちょっと待ってよ")]), "ja")

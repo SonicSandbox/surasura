@@ -377,10 +377,10 @@ class Around:
         hold a word back."""
         texts = {_bare(self.cues[c].text) for c in held}
         lo, hi = min(self.cues[c].start for c in held), max(self.cues[c].end for c in held)
-        shown = [c for c in self.shown(lo, hi) if c != at]
         own = self.cues[at]
         with_own = {c for c in self.shown(own.start, own.end, max(1, min(OVER_MS, own.end - own.start)))
                     if _bare(self.cues[c].text) != _bare(own.text)}
+        shown = [c for c in set(self.shown(lo, hi)) | with_own if c != at]    # (a short line alone: all of it)
         spoken_over = any(self.cues[c].counted and not self.cues[c].sung
                           and self.cues[c].end - self.cues[c].start <= LONG_MS
                           and (c in with_own or (c not in held and _bare(self.cues[c].text) not in texts))

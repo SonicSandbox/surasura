@@ -93,6 +93,10 @@ LISTENING = "listening"         # the job's saved progress step while tsubasa li
 SPOT_NOT_SAID = ("Connect listened to its video and the speech doesn't say its subtitle's lines (another language, a "
                  "dub, or another cut), so no cards: a card's audio would hold something else. Mine anyway only if "
                  "you know its audio says its lines.")
+# Michi-T1 (PROVISIONAL words): the same, heard at another episode of its release (`runner.Steps._heard`)
+SPOT_RELEASE_NOT_SAID = ("Connect listened to another episode of this release, and its speech doesn't say its "
+                         "subtitle's lines (another language, a dub, or another cut), so no cards: a card's audio would "
+                         "hold something else. Mine anyway only if you know its audio says its lines.")
 # the verdicts a timed video is listened to after (`heard`): none of them heard its audio's words
 HEARD_AFTER = frozenset(("hato", "track", "tsubasa"))
 SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "

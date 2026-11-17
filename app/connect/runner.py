@@ -60,6 +60,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from types import SimpleNamespace
 
@@ -111,6 +112,11 @@ CHECKING_MODEL = "Checking its timing… downloading Anki Miner's speech model f
 # AB-Q2: the speech model's one question (once for the language, a standing *Needs you* line every book waiting on it
 # holds: `actions.speech_model` answers it) — and, its download failed, asked again with Anki Miner's reason
 SPEECH_NEED = "speech-model"
+# Michi-T1 (Sonic 2026-11-17, PROVISIONAL label): every timed episode's audio heard before its mining, as Mattias's #498
+# built it — off, a release is heard once, beside the mining (`Steps._heard`)
+EVERY_EPISODE = "connect_spot_every_episode"
+AHEAD_JOBS = 20                 # the next jobs a release is heard ahead for (`Steps.listen_ahead`: the top 20's size)
+AHEAD_END_S = 8.0               # the longest the run's end waits for the check beside it (it ends within a slice)
 LINEUP_PAIR = "lineup:"         # ledger meta: `lineup:<job id>` -> the pair a part waits on (its *Stop* reads it: B-9)
 # AB-Q4: the one plain line of a book whose audiobook doesn't follow it closely, or skips passages (`lineup.partial_line`)
 PARTIAL_NEED = "audiobook-partial"
@@ -382,6 +388,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     finally:
         if own:
             ledger.close()
+        getattr(steps, "end_listening", lambda: None)()     # Michi-T1: a release heard beside the mining ends
         try:
             steps.settle()                  # a pending sync is sent before Connect exits (P2.3)
         except Exception:
@@ -687,6 +694,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if only_asked and not job.get("asked_at"):     # the asked ones are mined: the rest still wait for the plug
             return _waiting_all(ledger, lang, parked, out, ON_BATTERY, True, tried) or outside
         tried.add(job["id"])
+        # Michi-T1: the releases of the episodes in line heard beside this one's mining, never waited for
+        getattr(steps, "listen_ahead", lambda _l, _j: None)(lang, _ordered(jobs, line)[:AHEAD_JOBS])
         look = True
         _working(ledger, lang, True)        # alpha 3 A2: the ones behind wait their turn, between two episodes too
         try:
@@ -2405,6 +2414,73 @@ def _order(steps, ledger, lang, job):
 # --------------------------------------------------------------------------- #
 # The real steps: the command line's own verbs, in this process
 # --------------------------------------------------------------------------- #
+class _Ahead:
+    """Michi-T1: the checks Connect runs beside its mining, one at a time on a thread of their own (the run's process
+    is below normal, so its programs are: `power.lower_priority`). `want(key, task)` queues a task once while it is
+    queued or running (`first`: ahead of the rest); a task that answered nothing may be queued again later. `close`
+    ends the one running at its program's next slice (`stopping`: every Anki Miner call it makes is a look-up) and
+    drops the rest: nothing of them is kept. A task's failure is logged, never the run's."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._queue = []            # [(key, task)]
+        self._keys = set()          # queued or running
+        self._thread = None
+        self._running = None        # the key whose task runs now
+        self._closing = False
+
+    def want(self, key, task, first=False):
+        """-> True when queued. `first`: ahead of the rest, and in place of the same key's task still waiting (a
+        fit's own: its job, its shift)."""
+        with self._lock:
+            if self._closing or (key in self._keys and not first) or key == self._running:
+                return False
+            if key in self._keys:
+                self._queue = [(k, t) for k, t in self._queue if k != key]
+            self._keys.add(key)
+            self._queue.insert(0, (key, task)) if first else self._queue.append((key, task))
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._work, name="connect-heard-ahead", daemon=True)
+                self._thread.start()
+        return True
+
+    def _work(self):
+        with stopping.watching(lambda: self._closing):
+            while True:
+                with self._lock:
+                    if self._closing or not self._queue:
+                        self._thread = None
+                        return
+                    key, task = self._queue.pop(0)
+                    self._running = key
+                try:
+                    task()
+                except stopping.Stopped:
+                    pass                                # the run ended: nothing of it is kept
+                except Exception:
+                    log.warning("Connect's check beside the mining stopped on an error", exc_info=True)
+                finally:
+                    with self._lock:
+                        self._keys.discard(key)
+                        self._running = None
+
+    def close(self, wait=None):
+        with self._lock:
+            self._closing = True
+            self._queue.clear()
+            thread = self._thread
+        if thread is not None and wait:
+            thread.join(wait)
+
+    def busy(self):
+        with self._lock:
+            return self._thread is not None
+
+    def running(self, key):
+        with self._lock:
+            return key == self._running
+
+
 class Steps:
     """What the loop asks of Anki, Anki Miner, the store and the list. Each method raises Wait / Needs / Skip /
     Repick as the loop reads them; a test hands its own (`tests/connect/test_runner.py`)."""
@@ -2423,6 +2499,9 @@ class Steps:
                                     # mining's): a plan read since that it can't serve defers the re-order (#4)
         self._anki_miner_sets = {}  # {lang: the set}: this run's Anki Miner look-ups, read once (LF-mining row 25)
         self._gone_looked = set()   # the languages whose deleted-cards look ran this run (`notes_gone`: once a run)
+        self._ahead = _Ahead()      # Michi-T1: the releases heard beside the mining, one at a time
+        self._heard_with = {}       # {lang: (Anki Miner, profile)}: the last fit's, for the releases heard ahead
+        self._peeked = set()        # the jobs `_peek` has looked at this run (each once)
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
@@ -3415,7 +3494,117 @@ class Steps:
                                speech=fit_check.speech_setup(lang, settings), listening=self.on_listening)
         if trust or anki_miner.is_audio(video) or not anki_miner.can_now(anki_miner.SPOT_CHECK):
             return answer
-        return fit_check.heard(answer, video, lambda offset: self._spot_video(lang, job, video, subtitle, offset))
+        by = []                 # Michi-T1: the verdict was its release's (another episode heard): said so
+        heard = fit_check.heard(answer, video,
+                                lambda offset: self._heard(lang, job, video, subtitle, offset, settings, by))
+        if by and heard[1] == "spot-check":
+            return heard[0], heard[1], fit_check.SPOT_RELEASE_NOT_SAID, heard[3]
+        return heard
+
+    def _heard(self, lang, job, video, subtitle, offset, settings, by=None):
+        """Michi-T1: `fit_check.heard`'s answer for a timed video, which never waits (Sonic 2026-11-17: mining runs
+        extremely quickly). Its release's kept verdict (`lineup.release_key`), or its own; none yet → None (mined as
+        before) and its release heard beside the mining (`_ahead`), first in line: the episodes after it get the
+        answer. *Check every episode's audio first* (`EVERY_EPISODE`, off by default) listens to each episode before its
+        mining, as #498 did (`_spot_video`)."""
+        from app.connect import lineup
+        if settings.get(EVERY_EPISODE) is True:
+            return self._spot_video(lang, job, video, subtitle, offset)
+        kept = lineup.spot_kept(lineup.spot_key(video, subtitle, offset))
+        if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
+            return kept
+        kept = lineup.release_kept(lineup.release_key(video))
+        if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
+            if by is not None:
+                by.append(kept)
+            return kept
+        self._hear_release(lang, job, video, subtitle, offset, first=True)
+        return None
+
+    def _hear_release(self, lang, job, video, subtitle, offset, first=False):
+        """Hear `video`'s release beside the mining (once a release: queued or running, never again) -> None. Anki
+        Miner and its profile are this fit's (the pick's look-ups, row 25), else the last fit's of `lang`: `_peek` has
+        none of its own; none → nothing heard (the mine step says what Anki Miner needs itself)."""
+        from app.connect import lineup
+        key = lineup.release_key(video)
+        if key is None or self._ahead.running(key):
+            return
+        if lineup.answer() == "no" or lineup.look(lineup.SPEECH).get("status") == lineup.RUNNING:
+            return                                      # *Not now*, or its download running: nothing to hear with
+        found = None
+        if job is not None:
+            try:
+                found = self._miner_profile(lang, job)
+            except (Wait, Needs):
+                found = None
+            if found is not None:
+                self._heard_with[lang] = found
+        else:
+            found = self._heard_with.get(lang)
+        if found is None:
+            return
+        miner, profile = found
+        self._ahead.want(key, lambda: self._spot_release(lang, job, video, subtitle, offset, miner, profile, key),
+                         first=first)
+
+    def _spot_release(self, lang, job, video, subtitle, offset, miner, profile, key):
+        """`_ahead`'s check of one release (its thread): heard as `_spot_video` hears an episode; a verdict is kept
+        for the release too (the episode's own is kept by `lineup.spot_check`)."""
+        from app.connect import lineup
+        got = self._listen(lang, job or {}, video, subtitle, offset, miner, profile)
+        if got in (lineup.MATCHED, lineup.NOT_MATCHED):
+            lineup.keep_release(key, got, video, subtitle, offset)
+            log.info("Connect: %s's release heard beside the mining: %s", os.path.basename(video), got)
+        return got
+
+    def listen_ahead(self, lang, jobs):
+        """Michi-T1: the releases of `jobs` (the next in line, this one first) heard beside the mining, in their
+        order, after the one a fit asked for (`_heard`). Never while you trust your subtitles' timing, every episode
+        is heard first (`EVERY_EPISODE`), or Anki Miner can't cut and hear (`SPOT_CHECK`). Their look-ups are
+        `_peek`'s, on the check's own thread: nothing here waits."""
+        from app.connect import anki_miner
+        settings = self._settings(lang)
+        if settings.get("connect_trust_timing") is True or settings.get(EVERY_EPISODE) is True:
+            return
+        if lang not in self._heard_with or not anki_miner.can_now(anki_miner.SPOT_CHECK):
+            return
+        fresh = [dict(j) for j in jobs if j.get("id") not in self._peeked]
+        if fresh:
+            self._peeked.update(j.get("id") for j in fresh)
+            self._ahead.want(("peek", lang, tuple(j.get("id") for j in fresh)), lambda: self._peek(lang, fresh))
+
+    def _peek(self, lang, jobs):
+        """`listen_ahead`'s look-ups (the check's thread; the store read on its own handle): each job whose subtitle
+        is timed to its video without tsubasa — hato's verdict or the video's own track (no shift to find: 0.0) — and
+        whose video is where its pairing says or beside its subtitle, its release heard (`_hear_release`). Any other
+        (tsubasa's shift, a book, an online title, a video looked for in the index) is heard from its own fit."""
+        from app.connect import lineup
+        if self.on_battery():
+            for job in jobs:                            # on battery only your asks mine: each heard from its fit
+                self._peeked.discard(job.get("id"))
+            return
+        for n, job in enumerate(jobs):
+            try:
+                pairing = self.pairing(lang, job) or {}
+                subtitle = self.subtitle(lang, job)
+            except (Wait, Needs):
+                for rest in jobs[n:]:                   # the store busy: these are looked at again next time
+                    self._peeked.discard(rest.get("id"))
+                return
+            if not subtitle or not (fit_check.hato_timed(pairing, subtitle) or (
+                    fit_check.track_timed(pairing, subtitle) and pairing.get("verdict") != "transcribed")):
+                continue
+            named = pairing.get("video_path")
+            video = named if isinstance(named, str) and named and _on_disk(named) else beside(subtitle)
+            if not video or fit_check._media(video) != "video":
+                continue
+            if lineup.release_kept(lineup.release_key(video)) in (lineup.MATCHED, lineup.NOT_MATCHED):
+                continue
+            self._hear_release(lang, None, video, subtitle, 0.0)
+
+    def end_listening(self):
+        """The run's end: the release heard beside the mining ends (its program within a slice), nothing kept."""
+        self._ahead.close(AHEAD_END_S)
 
     def retimed(self, lang, job, video, subtitle):
         """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
@@ -3855,7 +4044,7 @@ class Steps:
         said to it or its download running (a video never asks for one and never waits for one), on battery (checked
         once plugged in: nothing kept), Anki Miner absent or its setup waiting on something (the mine step says so
         itself: the check never waits or asks), or a call that failed (its folder unwritable too)."""
-        from app.connect import anki_miner, lineup
+        from app.connect import lineup
         kept = lineup.spot_kept(lineup.spot_key(video, subtitle, offset))
         if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
             return kept
@@ -3868,10 +4057,22 @@ class Steps:
         if found is None:
             return None
         miner, profile = found
+        got = self._listen(lang, job, video, subtitle, offset, miner, profile)
+        key = lineup.release_key(video)
+        if got in (lineup.MATCHED, lineup.NOT_MATCHED) and key:     # Michi-T1: its release's too (the latest heard)
+            lineup.keep_release(key, got, video, subtitle, offset)
+        return got
+
+    def _listen(self, lang, job, video, subtitle, offset, miner, profile):
+        """`_spot_video`'s listening (the release's check's too): no model, *Not now*, a download running, battery
+        unasked, a call that failed -> None; else `lineup.spot_check`'s verdict."""
+        from app.connect import anki_miner, lineup
+        if lineup.answer() == "no" or lineup.look(lineup.SPEECH).get("status") == lineup.RUNNING:
+            return None
+        if self.on_battery() and not job.get("asked_at"):
+            return None                     # (before Anki Miner is asked anything: nothing started on battery)
         try:
             if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
-                return None
-            if self.on_battery() and not job.get("asked_at"):
                 return None
             return lineup.spot_check(miner, lang, profile, video, subtitle, offset=offset)
         except anki_miner.AnkiMinerError as e:

@@ -282,6 +282,14 @@ ROWS = {
                              "play in time with the video. With neither on this PC, every episode waits for Mine "
                              "anyway. Turn this on if your subtitles are already synced. hato’s untimed subtitles "
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
+    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
+    "connect_spot_every_episode": ("Check every episode’s audio first",
+                                   "Slower: Connect listens to each episode before its cards, not once a release",
+                                   "Connect listens to a few lines of one episode of each release while it mines, "
+                                   "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
+                                   "another language). On: every episode is listened to before its cards are "
+                                   "made. Only with Anki Miner’s speech model on this PC",
+                                   "audio check every episode dub language listen speech safe"),
     # Q29: one choice — where your own cards go — and the tag that marks them under it
     "junban_order_all": ("Your own cards", "The cards you make yourself, never marked or suspended as not on your list",
                          "First: the cards you made yourself go ahead of the cards made for you, in the order "

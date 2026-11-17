@@ -111,6 +111,42 @@ def test_chinese_lines_are_judged_at_a_chinese_pace(tmp_path):
     assert pick.Around(read).doubts(0, [0], "zh") == 1 and pick.Around(read).doubts(1, [1], "zh") == 0
 
 
+@pytest.mark.parametrize("start, end, zh, ja", [
+    (10.0, 10.85, False, True),     # 10 characters in 0.85 s (~11.8 a second): fast for Chinese, not for Japanese
+    (10.0, 18.0, True, False),      # 10 characters in 8 s (1.25 a second): slow for Japanese, not for Chinese
+])
+def test_the_chinese_pace_is_its_own(tmp_path, start, end, zh, ja):
+    read = cues.read(_srt(tmp_path, [(start, end, "这本小说真的非常好看")], "episode.zh.srt"), "zh")
+    assert pick.paced(read[0], "zh") is zh and pick.paced(read[0], "ja") is ja
+
+
+# --------------------------------------------------------------------------- #
+# What is on screen: short lines, copies, long lines
+def test_another_line_over_all_of_a_short_line_is_another_speaker(tmp_path):
+    # はい shown 250 ms, wholly under another line of the card: shorter than OVER_MS, still said at the same time
+    lines = [(10.0, 10.25, "はい"), (9.5, 11.5, "ちょっと待ってよ")]
+    read = cues.read(_srt(tmp_path, lines), "ja")
+    assert pick.Around(read).doubts(0, [0, 1], "ja") == 1
+
+
+def test_a_copy_shown_on_two_lines_is_still_the_same_line(tmp_path):
+    # the same caption, once on one line and once broken over two: one speaker, spaces aside
+    lines = [(10.0, 12.5, "この小説は 面白いよ"), (10.0, 12.5, "この小説は面白いよ")]
+    read = cues.read(_srt(tmp_path, lines), "ja")
+    around = pick.Around(read)
+    assert around.doubts(0, [0], "ja") == 0 and around.doubts(1, [1], "ja") == 0
+
+
+def test_a_song_on_screen_for_minutes_is_still_on_screen(tmp_path):
+    # a karaoke line held for a whole minute is kept apart in the look-up and still found
+    lines = [(0.0, 60.0, "♪ 遠い空の向こうへ"), (30.0, 32.5, "この小説は面白いよ"), (90.0, 92.5, "あの小説を読んだの")]
+    read = cues.read(_srt(tmp_path, lines), "ja")
+    around = pick.Around(read)
+    assert around.long == [0]
+    assert around.doubts(1, [1], "ja") == 1 and around.doubts(2, [2], "ja") == 0
+    assert _picked(tmp_path, lines, "小説") == 90.0
+
+
 # --------------------------------------------------------------------------- #
 # A preference only
 def test_a_word_whose_only_line_is_talked_over_is_still_sent(tmp_path):

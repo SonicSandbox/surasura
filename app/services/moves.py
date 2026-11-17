@@ -88,6 +88,8 @@ JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
 GUARDED = ("pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "join", "import_finished")
 #   a replay checks these against what they touch as queued (`_as_queued`): their writes move no `changed_in` (a
 #   status, a title's fields) or they hold no ids (a join's pieces, an import's paths)
+FOLLOW_EACH_MOST = 16   # Kura-EO: a block the store sorted is followed item by item up to this many (each one an
+                        # engine move and a publish); a longer one is compared and worked out once after the write
 ANALYSED = ("now", "soon", "goal")                          # the plan engine's tiers, in a Generate's order
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
@@ -303,14 +305,17 @@ class Writer:
         mode, reason = _state_of(self.opener)
         return None if mode == "store" or reason == "busy" else (reason or mode)
 
-    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False, exact=False):
         """`Store.move`. `near`: [(item_id, "before" | "after"), …], the nearest first — where the window would place the
         block if its anchor is gone when the write lands (its neighbours as painted). `end`: the tier's end as it stands
         when the write lands (a drop on the Goal well: read from the store on this thread, again at a replay — never an
-        id from the window's copy, which a queued write can outlive). -> the command's number, or None when refused
-        (read-only)."""
+        id from the window's copy, which a queued write can outlive). `exact` (Kura-EO): exactly there, never the show's
+        episode order (`Store.move(in_order=False)`: ↑ ↓ across the NOW / Soon edge, Current's ⋯ *Up next*). -> the
+        command's number, or None when refused (read-only)."""
         cmd = {"op": "move", "ids": list(ids), "tier": tier, "before_id": before_id, "after_id": after_id,
                "near": [list(n) for n in near or ()], "label": label}
+        if exact:
+            cmd["exact"] = True
         if end:
             cmd.update(before_id=None, after_id=None, end=True)
         return self._put(cmd)
@@ -1022,7 +1027,8 @@ class Writer:
         note = None
         try:
             if op == "move":
-                change = store.move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"], after_id=cmd["after_id"])
+                change = store.move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"], after_id=cmd["after_id"],
+                                    in_order=not cmd.get("exact"))
             elif op == "nudge":
                 change = store.nudge(cmd["ids"], cmd["direction"])
             elif op == "set_tier":
@@ -1068,12 +1074,14 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
-        if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
-            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
-        elif getattr(change, "show_order", False):  # Kura-EO: the store put it in its show's episode order, not where
-            cmd["followed"] = note is None and self._numbers_follow(cmd, store)   # asked: the numbers follow the
-        if getattr(change, "show_order", False):    # store's place (they had the drop's), and the window's own order
-            cmd["elsewhere"] = True                 # goes at once (`on_reread`): the store's view stands
+        shown = getattr(change, "show_order", False)   # Kura-EO: the store put it in its show's episode order (a place
+        each = getattr(change, "show_sorted", False)    # or the block sorted), not as asked: the numbers follow the
+        if cmd.get("numbered") == "after":          # store's place (they had the drop's) — a sorted block item by item
+            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store, each=each)
+        elif shown:                                 # — and the window's own order goes at once (`on_reread`): the
+            cmd["followed"] = note is None and self._numbers_follow(cmd, store, each=each)   # store's view stands
+        if shown:
+            cmd["elsewhere"] = True
         stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
         if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
             with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
@@ -1403,7 +1411,7 @@ class Writer:
         if cmd.get("end"):                          # the end moved since it was read: its end again, no note
             cmd["after_id"] = self._tier_end(store, cmd)
             try:
-                return store.move(cmd["ids"], tier, after_id=cmd["after_id"]), None
+                return store.move(cmd["ids"], tier, after_id=cmd["after_id"], in_order=not cmd.get("exact")), None
             except ValueError:
                 pass
         for anchor, side in cmd.get("near") or ():
@@ -1411,11 +1419,11 @@ class Writer:
                 continue
             try:                                    # one gone or out of the tier too: ValueError, nothing written
                 if side == "before":
-                    return store.move(cmd["ids"], tier, before_id=anchor), "nearest"
-                return store.move(cmd["ids"], tier, after_id=anchor), "nearest"
+                    return store.move(cmd["ids"], tier, before_id=anchor, in_order=not cmd.get("exact")), "nearest"
+                return store.move(cmd["ids"], tier, after_id=anchor, in_order=not cmd.get("exact")), "nearest"
             except ValueError:
                 continue
-        return store.move(cmd["ids"], tier), "top"
+        return store.move(cmd["ids"], tier, in_order=not cmd.get("exact")), "top"
 
     def _tier_end(self, store, cmd):
         """The last item of the command's tier that it doesn't move (`Store.ids`: one indexed read), or None — the top
@@ -1941,18 +1949,24 @@ class Writer:
             print(f"Window writer: the numbers couldn't be told a move is coming: {e!r}")
             return False
 
-    def _numbers_follow(self, cmd, store):
+    def _numbers_follow(self, cmd, store, each=False):
         """(After the write, before it lands.) The numbers follow the block to where the store put it — its tier and
         the item just before it there (none: the tier's top), as a move: the one rule that every command moving the
         order is followed once, never worked out again whole (a nudge was a full re-plan of 20,000 files at each
-        Alt+↑ / ↓). -> True when followed (else the numbers compare after the write, as before)."""
+        Alt+↑ / ↓). `each` (Kura-EO 3.0.16): one item at a time in the store's order, each after the one before — the
+        engine keeps a block's own relative order, and the store may have sorted the block by episode. -> True when
+        followed (else the numbers compare after the write, as before)."""
         try:
             at = _placed(store, cmd["ids"])
             if at is None:
                 return False
             tier, block, prev = at
-            self.numbers.after_move(block, tier, after_id=prev, order=lambda t: store.ids(t),
-                                    aside=lambda ids: _set_aside(store, ids))
+            if each and len(block) > FOLLOW_EACH_MOST:
+                return False                        # a long sorted block: compared once after the write instead
+            for part in ([[i] for i in block] if each and len(block) > 1 else [block]):
+                self.numbers.after_move(part, tier, after_id=prev, order=lambda t: store.ids(t),
+                                        aside=lambda ids: _set_aside(store, ids))
+                prev = part[-1]
             return True
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the store's move: {e!r}")

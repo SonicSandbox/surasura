@@ -127,9 +127,9 @@ class FakeWriter:
         self.saved.append(change)
         threading.Thread(target=self.on_saved, args=(change, label), daemon=True).start()
 
-    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False, exact=False):
         return self._put("move", ids, label, tier=tier, before_id=before_id, after_id=after_id, near=list(near),
-                         end=end)
+                         end=end, **({"exact": True} if exact else {}))
 
     def nudge(self, ids, direction, label=None):
         return self._put("nudge", ids, label, direction=direction)
@@ -458,6 +458,22 @@ def test_a_drop_above_up_next_makes_it_up_next(world):
     assert op[2]["before_id"] == hero.episodes[0].id and op[2]["after_id"] is None
     assert rows_of(win)[0].key == moved.key
     assert win.toasts.card.base == strings.DRAG_UP_NEXT.format(title=moved.title)
+
+
+def test_currents_up_next_is_an_exact_move_and_a_drop_above_up_next_is_not(world):
+    """(Kura-EO 3.0.16) Current's ⋯ *Up next* is *Top* of a row already in Current — the learner's own place, never the
+    show's episode order (`Writer.move(exact=True)`); a drop above Up next is a drop (the store may keep its show in
+    order)."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    win.moves.menu_pick(rs[4], "up-next")
+    op = calls(writer, "move")[-1]
+    assert op[2]["before_id"] == rs[0].episodes[0].id and op[2].get("exact") is True
+    lift(win, 3)
+    target = row_point(win, 0)
+    move_global(win, target)
+    release_global(win, target)
+    assert "exact" not in calls(writer, "move")[-1][2]
 
 
 def test_a_drop_back_on_its_own_place_writes_nothing(world):

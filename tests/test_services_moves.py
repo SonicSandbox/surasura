@@ -700,6 +700,7 @@ class StubStore:
         self.calls, self.fail, self.always = [], {}, set()
         self.changed_in = {}
         self.gate = None
+        self.in_order = []
 
     def _maybe_fail(self, op):
         exc = self.fail.get(op)
@@ -708,7 +709,8 @@ class StubStore:
                 del self.fail[op]
             raise exc
 
-    def move(self, ids, tier, before_id=None, after_id=None):
+    def move(self, ids, tier, before_id=None, after_id=None, in_order=True):
+        self.in_order.append(in_order)                  # (Kura-EO: the window's `exact` → `in_order=False`)
         if self.gate is not None:
             self.gate.wait(10)                          # a slow write (the test opens the gate)
         self.calls.append(("move", list(ids), tier, before_id, after_id))
@@ -1054,6 +1056,17 @@ class Recorder:
 
     def resync(self):
         self.resyncs += 1
+
+
+def test_an_exact_move_reaches_the_store_without_the_episode_order_even_after_a_busy_store(stub_writer):
+    """(Kura-EO 3.0.16) `Writer.move(exact=True)` (↑ ↓ across the NOW / Soon edge, Current's ⋯ *Up next*) is
+    `Store.move(in_order=False)` — also when it first met a busy store and was queued; a plain move keeps the order."""
+    w, heard, store, _opener = stub_writer()
+    store.fail["move"] = ls.StoreBusy("busy")
+    w.move([5], "now", before_id=3, exact=True)
+    w.move([6], "now", before_id=3)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert store.in_order[-2:] == [False, True]
 
 
 def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_busy(stub_writer):
@@ -4172,6 +4185,65 @@ def test_a_move_the_store_puts_in_its_shows_episode_order_is_followed_where_the_
     w.move([lib.ids("goal")[0]], "now", after_id=a, label="moved")
     assert h.until(lambda: len(heard.saved) == 2)
     assert len(numbers.moves) == 3 and heard.rereads == 1
+
+
+def test_a_shows_row_the_store_sorts_by_episode_is_followed_item_by_item(lib, make_writer):
+    """(Kura-EO 3.0.16.) A drag of a show's row reading 10, 8, 9 below another title: the store lands it 8, 9, 10
+    (`Store._into_show`'s block sort). The numbers, which followed the drop as 10, 8, 9 (the engine keeps a block's own
+    order), follow the store's order one item at a time — 8 after the target, 9 after 8, 10 after 9 — never a re-plan;
+    the window lets its drop order go."""
+    from tests.test_library_store_episode_order import _ten_eight_nine
+    ep8, ep9, ep10 = _ten_eight_nine(lib.store, lib.language, names(lib.language)[168])
+    target = lib.ids("now")[4]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move([ep10, ep8, ep9], "now", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    now = lib.ids("now")
+    assert now[now.index(target) + 1:now.index(target) + 4] == [ep8, ep9, ep10]
+    assert numbers.moves[1:] == [([ep8], "now", None, target), ([ep9], "now", None, ep8), ([ep10], "now", None, ep9)]
+    assert h.until(lambda: heard.rereads == 1)
+    assert numbers.resyncs == 0
+
+
+def test_a_long_block_the_store_sorts_is_compared_once_never_followed_item_by_item(lib, make_writer):
+    """Past `FOLLOW_EACH_MOST` items (each engine move copies the window's table and publishes) a sorted block isn't
+    followed one item at a time: the numbers compare once after the write (one resync), the drop's own follow
+    aside."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[174]
+    n = M.FOLLOW_EACH_MOST + 2
+    eps = [_episode(lib.store, lib.language, show, e) for e in range(1, n + 1)]
+    for ep in eps:
+        lib.store.move([ep], "soon", in_order=False)    # each to Soon's top: the show reads n … 1 there
+    soon = lib.ids("soon")
+    at = soon.index(eps[-1])
+    assert soon[at:at + n] == eps[::-1], "the setup"
+    target = soon[at + n + 1]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move(eps[::-1], "soon", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    soon = lib.ids("soon")
+    assert soon[soon.index(target) + 1:soon.index(target) + 1 + n] == eps
+    assert len(numbers.moves) == 1 and h.until(lambda: numbers.resyncs >= 1)
+
+
+def test_a_block_the_stores_rule_places_and_sorts_is_followed_item_by_item_too(lib, make_writer):
+    """*Soon* of a show's episodes standing 10, 8, 9 in 6+ Months: the place is the store's rule (followed after the
+    write, `numbered` "after") and the store sorts the block — the numbers follow it one item at a time: 8 at Soon's
+    top, 9 after 8, 10 after 9."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[171]
+    ep10, ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (10, 8, 9))
+    lib.store.move([ep10, ep8, ep9], "goal")
+    assert [i for i in lib.ids("goal") if i in (ep8, ep9, ep10)] == [ep10, ep8, ep9], "the setup"
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.place([ep10, ep8, ep9], "soon", label="soon")
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("soon")[:3] == [ep8, ep9, ep10]
+    assert numbers.moves == [([ep8], "soon", None, None), ([ep9], "soon", None, ep8), ([ep10], "soon", None, ep9)]
 
 
 def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):

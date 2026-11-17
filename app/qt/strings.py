@@ -921,6 +921,9 @@ GOAL_MENU_ITEMS = {
 }
 GOAL_UP = "{title} {first} moved up from Goal · #{n} · the rest stays in Goal"
 GOAL_UP_ALL = "{title} moved up from Goal · #{n}"
+# Kura-EO (PROVISIONAL): the same, once saved, when the store put it in its show's episode order (never "#1")
+GOAL_UP_SHOW = "{title} {first} moved up from Goal · in Current with its show · the rest stays in Goal"
+GOAL_UP_ALL_SHOW = "{title} moved up from Goal · in Current with its show"
 GOAL_SOON = "{title} {first} → Soon · #{n} · the rest stays in Goal"
 GOAL_SOON_ALL = "{title} → Soon · #{n}"
 GOAL_REMOVE_ASK = "Remove {title}?"
@@ -2019,7 +2022,8 @@ PICKS_MENU = {
     "remove": ("Remove…", "Send all {n} to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
 PICKS_GOAL_FIRST_TIP = "{tip}\n• A title in parts brings up its first part; the rest stays in Goal"
-PICKS_DONE = {
+PICKS_DONE_WITH_SHOW = "{title} are in Current with their show"      # Kura-EO (PROVISIONAL): *Up next*, saved in
+PICKS_DONE = {                                                       # the show's episode order
     "top": "{title} are up next",
     "soon": "{title} → Soon",
     "goal": "{title} moved to Goal",

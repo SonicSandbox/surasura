@@ -215,12 +215,14 @@ def test_generates_press_asks_on_a_worker_and_a_second_press_waits_for_it(dashbo
     started = []
     monkeypatch.setattr(app, "run_command_async", lambda *a, **k: started.append(a[0]))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
-    t0 = time.perf_counter()
-    app.run_analyzer()
-    app.run_analyzer()                                             # a double click
-    took = time.perf_counter() - t0
-    assert not answered.is_set(), "a press waited for the check"   # both back while it still asks
-    go.set()
+    try:
+        t0 = time.perf_counter()
+        app.run_analyzer()
+        app.run_analyzer()                                         # a double click
+        took = time.perf_counter() - t0
+        assert not answered.is_set(), "a press waited for the check"   # both back while it still asks
+    finally:
+        go.set()                                                   # (the check let go, the test red or green)
     print(f"\nthe two presses: {took * 1000:.1f} ms")
     if BENCH:
         assert took < 0.005, took

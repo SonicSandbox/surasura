@@ -2137,7 +2137,7 @@ class Check:
         self.started_at = started_at
 
 
-def _walk_back(seqs, items, okset):
+def _walk_back(seqs, items, okset, one=False):
     """`Store._replace`'s walk: a change's `items` (its recorded previous order) back into `seqs` ({tier: _Seq}, the
     items of `okset` already taken out) — each right after its recorded predecessor if that item is in the tier now
     (untouched, or put back earlier in this walk); else after that predecessor's own recorded predecessor, along the
@@ -2145,9 +2145,10 @@ def _walk_back(seqs, items, okset):
     top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers. Kyou-D:
     Current is one order, NOW then Soon (the Soon line is a count): a recorded neighbour now on the line's other side
     is still the place — the item goes beside it, in its tier, and the line's settling cuts the order again (the line
-    had moved with the drop, so an Undo put a row from NOW's end at NOW's top). `seqs` holds both or neither."""
+    had moved with the drop, so an Undo put a row from NOW's end at NOW's top). `seqs` holds both or neither. `one`:
+    only while the library has a Soon line (the caller's `_one_current`); without one, NOW and Soon are two places."""
     info = {it["id"]: it for it in items}
-    other = {"now": seqs.get("soon"), "soon": seqs.get("now")}
+    other = {"now": seqs.get("soon"), "soon": seqs.get("now")} if one else {}
     inset = set(info)
     restored = set()
     for it in items:
@@ -4847,6 +4848,11 @@ class Store:
         except (TypeError, ValueError):
             return None
 
+    def _one_current(self, tiers):
+        """Kyou-D: does an Undo walk Current back as one order (`_walk_back`) — a tier of Current among `tiers`, and a
+        Soon line (without one, NOW and Soon are two places, as before)."""
+        return bool(set(tiers) & set(CURRENT)) and self._soon_line() is not None
+
     def _keep_line(self, cmd):
         """The tiers follow the line (05 §5.1, G2.2-1): Current is NOW then Soon in one order; its first `soon_line`
         rows, available or missing, are NOW. A row crossing takes the command's version (a tier change, as any)."""
@@ -4890,14 +4896,16 @@ class Store:
         if cmd.walked:
             # Kyou-D: an Undo walks a row back beside its recorded neighbour, on the line's other side when that is
             # where the neighbour stands now (`_walk_back`); the line then cuts the order again. A row it cut back
-            # into the tier the Undo recorded never crossed: its recorded `changed_in`, not this command's version
-            # where the rows stand now, read in chunks (a 20k Undo: one statement per 500, Mado-O)
+            # into the tier the Undo recorded never crossed: its recorded `changed_in`, not this command's version; a
+            # row that ends on the other side (walked there, or cut there) crossed: this command's version, as any
+            # crossing. Where the rows stand now, read in chunks (a 20k Undo: one statement per 500, Mado-O)
             now = {}
             for part in _chunks(sorted(cmd.walked), 500):
                 now.update(self.conn.execute(f"SELECT id, tier FROM items WHERE id IN ({','.join('?' * len(part))})",
                                              part).fetchall())
             self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",
-                                  [(ci, i) for i, (tier, ci) in cmd.walked.items() if now.get(i) == tier])
+                                  [(ci if now.get(i) == tier else cmd.version, i)
+                                   for i, (tier, ci) in cmd.walked.items()])
 
     BIG_SETTLE = 200      # items: from here the settling step reads each touched tier's order once
 
@@ -6096,13 +6104,14 @@ class Store:
         if not okset:
             return set()
         tiers = {it["tier"] for _c, it in items} | {rows[i][1] for i in okset}
-        if tiers & set(CURRENT):
-            tiers |= set(CURRENT)               # Kyou-D: Current walked back as one order (`_walk_back`)
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for i in okset:
             seqs[rows[i][1]].remove(i)
         for c in plain:
-            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version})
+            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version}, one)
         self._write_seqs(seqs, ords, okset, lambda i: cmd.version)
         self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                               [(it.get("graduated_at"), it["id"]) for _c, it in items if it["tier"] != rows[it["id"]][1]])
@@ -7194,13 +7203,14 @@ class Store:
         if not ok:
             return out, skipped
         tiers = {it["tier"] for it in ok} | {cur[it["id"]][1] for it in ok}
-        if tiers & set(CURRENT):
-            tiers |= set(CURRENT)               # Kyou-D: Current walked back as one order (`_walk_back`)
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
-        _walk_back(seqs, items, okset)
+        _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
         for it in ok:

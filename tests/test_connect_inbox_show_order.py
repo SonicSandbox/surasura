@@ -5,7 +5,7 @@ Why these matter: Connect makes a job only of an item that ENTERS the top 20 aft
 G1.1-2): what was already in the line at the switch-on is never logged. Setup places the shows (its sort screen) before
 its page 5 turns Connect on, so a show's first episodes sit in the line unlogged; when the learner then finishes or
 moves something above them, the show's NEXT episodes cross the line and get jobs — and the show is mined from episode 8,
-episodes 1–7 never (a tester's 3.0.15 report). Sonic's ruling (2026-11-17, Q-EO1): a show is one unit — when Connect
+episodes 1–7 never (a tester's 3.0.15 report). Sonic's ruling (Q-EO1): a show is one unit — when Connect
 queues any part of a show, every earlier part of it in Current (an earlier season too) that isn't mined and never had
 a job is queued with it, ahead of it; the learner's own *Mine* still first, the cap and "never re-queue" unchanged.
 Every test runs for Japanese and Chinese under the per-test SURASURA_TEST_ROOT, with real words from

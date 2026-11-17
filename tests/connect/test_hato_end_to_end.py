@@ -213,8 +213,8 @@ def test_hato_finds_surasura_hands_over_a_drop_and_its_back_fill_pairs_sixty_old
         assert {kind for _item, kind, _by in c.events(s, after=seq)} <= {"left_mine_line"}
 
     # Connect's next read: hato's live drop is work (it entered the top 20 after the watermark); the back-fill makes no
-    # job of its own — but the drop is episode 2, so its show's earlier parts in Current come with it (Michi-EO, Sonic
-    # 2026-11-17: a show is one unit), as the show's catch-up (kind `show`), never as the back-fill's
+    # job of its own — but the drop is episode 2, so its show's earlier parts in Current come with it (Michi-EO, Sonic's
+    # ruling: a show is one unit), as the show's catch-up (kind `show`), never as the back-fill's
     with c.store() as s, Ledger() as ledger:
         queued = inbox.consume(s, "ja", ledger)["queued"]
         assert queued[0] == drop

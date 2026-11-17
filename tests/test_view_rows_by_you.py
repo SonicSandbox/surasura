@@ -1,4 +1,4 @@
-"""A top-20 file Connect will never mine by itself shows *Mine*, never the hourglass (Michi-EO, Sonic 2026-11-17, Q-EO2).
+"""A top-20 file Connect will never mine by itself shows *Mine*, never the hourglass (Michi-EO, Sonic's ruling Q-EO2).
 
 Why these matter: the hourglass's tip says *it mines by itself, in turn*. A file that was in the top 20 before Connect
 was switched on is never logged (✅ G1.1-2), so Connect holds no job for it and will make none: a tester's 3.0.15 report

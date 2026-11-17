@@ -3403,15 +3403,19 @@ class Steps:
         for the next episode) mines an episode nothing here can check at its own times. An audio file's subtitle is
         spot-checked by listening (AB-Q5, `_spot`) while Anki Miner can, before anything else is asked. A video with no
         subtitle track inside is heard by tsubasa through Anki Miner's speech files (Tsu-W, `fit_check.speech_setup`:
-        a Japanese library only), `on_listening()` called as it starts."""
+        a Japanese library only), `on_listening()` called as it starts. A video found timed is then listened to where
+        Anki Miner already can (`fit_check.heard`, `_spot_video`)."""
         from app.connect import anki_miner
         settings = self._settings(lang)
         trust = settings.get("connect_trust_timing") is True
         spot = None
         if not trust and anki_miner.is_audio(video) and anki_miner.can_now(anki_miner.SPOT_CHECK):
             spot = lambda: self._spot(lang, job, video, subtitle)      # noqa: E731
-        return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot,
-                             speech=fit_check.speech_setup(lang, settings), listening=self.on_listening)
+        answer = fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot,
+                               speech=fit_check.speech_setup(lang, settings), listening=self.on_listening)
+        if trust or anki_miner.is_audio(video) or not anki_miner.can_now(anki_miner.SPOT_CHECK):
+            return answer
+        return fit_check.heard(answer, video, lambda offset: self._spot_video(lang, job, video, subtitle, offset))
 
     def retimed(self, lang, job, video, subtitle):
         """Michi-NT: the same subtitle re-timed beside the episode's video (`retimed_beside`), or None."""
@@ -3843,6 +3847,40 @@ class Steps:
             if e.kind == "setup":
                 anki_miner._SPEECH.clear()
             log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e.message)
+            return None
+
+    def _spot_video(self, lang, job, video, subtitle, offset):
+        """Tier 1's spot-check of a timed video (`fit_check.heard`) -> lineup.MATCHED / NOT_MATCHED (kept per subtitle,
+        video and offset); None, mined as before, when it isn't checked now: no speech model on this PC, *Not now*
+        said to it or its download running (a video never asks for one and never waits for one), on battery (checked
+        once plugged in: nothing kept), Anki Miner absent or its setup waiting on something (the mine step says so
+        itself: the check never waits or asks), or a call that failed (its folder unwritable too)."""
+        from app.connect import anki_miner, lineup
+        kept = lineup.spot_kept(lineup.spot_key(video, subtitle, offset))
+        if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
+            return kept
+        if lineup.answer() == "no" or lineup.look(lineup.SPEECH).get("status") == lineup.RUNNING:
+            return None
+        try:
+            found = self._miner_profile(lang, job)
+        except (Wait, Needs):
+            return None
+        if found is None:
+            return None
+        miner, profile = found
+        try:
+            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+                return None
+            if self.on_battery() and not job.get("asked_at"):
+                return None
+            return lineup.spot_check(miner, lang, profile, video, subtitle, offset=offset)
+        except anki_miner.AnkiMinerError as e:
+            if e.kind == "setup":
+                anki_miner._SPEECH.clear()
+            log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e.message)
+            return None
+        except OSError as e:
+            log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e)
             return None
 
     def mine(self, lang, job, picked, words, attempt):

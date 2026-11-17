@@ -470,8 +470,10 @@ def samples(lines, n=SAMPLES):
     return [(lines[at][0], 0, lines[at][2]) for at in sorted(picks)]
 
 
-def spot_key(audio, subtitle):
-    """The spot-check's key: the subtitle's bytes and the audio file's size and time (either changed: checked again)."""
+def spot_key(audio, subtitle, offset=0.0):
+    """The spot-check's key: the subtitle's bytes and the audio file's (or video's) size and time (either changed:
+    checked again), and the shift its lines are cut at when there is one (a video's tsubasa offset: another shift is
+    another check)."""
     digest = hashlib.sha256()
     try:
         with open(subtitle, "rb") as f:
@@ -480,7 +482,8 @@ def spot_key(audio, subtitle):
         st = os.stat(audio)
     except OSError:
         return None
-    return f"{SPOT_RULE}-{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}"
+    return f"{SPOT_RULE}-{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}" + (
+        f"-o{float(offset):.3f}" if offset else "")
 
 
 def spot_kept(key):
@@ -494,29 +497,45 @@ def _keep_spot(key, verdict, shares):
     _write_json(path, kept)
 
 
-def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
+def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT, offset=0.0):
     """(`_spot_check`, its run folder removed after: the clips and transcripts are Anki Miner's for the caller to
     delete — review B-22.)"""
     import shutil
     try:
-        return _spot_check(miner, language, profile, audio, subtitle, timeout)
+        return _spot_check(miner, language, profile, audio, subtitle, timeout, offset)
     finally:
-        shutil.rmtree(folder("spot-" + ((spot_key(audio, subtitle) or "x").split("-", 1)[-1])[:24]),
+        shutil.rmtree(folder("spot-" + ((spot_key(audio, subtitle, offset) or "x").split("-", 1)[-1])[:24]),
                       ignore_errors=True)
 
 
-def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
+def heard_lines(subtitle, language, video=False):
+    """The lines a spot-check may listen at -> [(start s, end s, text)]: an audio file's SRT as Anki Miner writes it
+    (`srt_cues`); a video's subtitle in any of its formats, read as the pick reads it (`cues.read`), less what is no
+    speech of its own: a song line (sung over music, no measure of the speech), a line in another script (a sign) and
+    a line shown again."""
+    if not video:
+        return srt_cues(subtitle)
+    from app import cues
+    try:
+        read = cues.read(subtitle, language)
+    except (OSError, ValueError, UnicodeError):
+        return []
+    return [(cues.seconds(c.start), cues.seconds(c.end), c.text) for c in read if c.counted and not c.sung]
+
+
+def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT, offset=0.0):
     """AB-Q5: is `subtitle` timed to `audio`? SAMPLES places of it cut from the audio (`media`, one call) and heard
     (`transcribe`, one call), each compared with its lines (`overlap`): MATCHES of them at MATCH or more → MATCHED,
     else NOT_MATCHED; kept per `spot_key`. -> MATCHED / NOT_MATCHED, or None (it couldn't be checked now: a call
     refused or failed — asked again at the next look). Raises AnkiMinerError `setup` when Anki Miner has no speech
     model (the caller asks for it)."""
     from app.connect import anki_miner
-    key = spot_key(audio, subtitle)
+    key = spot_key(audio, subtitle, offset)
     kept = spot_kept(key)
     if kept in (MATCHED, NOT_MATCHED):
         return kept
-    places = samples(srt_cues(subtitle))
+    video = not anki_miner.is_audio(audio)
+    places = samples(heard_lines(subtitle, language, video))
     if not places:
         return None
     where = folder("spot-" + ((key or "x").split("-", 1)[-1])[:24])
@@ -526,10 +545,13 @@ def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT)
     base = {"schema": 1, "run_dir": run_dir, "language": language}
     if profile:
         base["profile"] = profile
-    media = dict(base, episodes=[{"run_id": "spot", "audio_file": os.path.abspath(audio),
-                                  "subtitle_file": os.path.abspath(subtitle),
-                                  "lines": [{"line_start": start, "line_expansion": [0, after]}
-                                            for start, after, _t in places]}])
+    # a video's lines are cut at the shift its fit-check found (`subtitle_offset`), as its cards would be
+    episode = {"run_id": "spot", ("video_file" if video else "audio_file"): os.path.abspath(audio),
+               "subtitle_file": os.path.abspath(subtitle),
+               "lines": [{"line_start": start, "line_expansion": [0, after]} for start, after, _t in places]}
+    if offset:
+        episode["subtitle_offset"] = float(offset)
+    media = dict(base, episodes=[episode])
     path = os.path.join(where, "media.json")
     _write_json(path, media)
     # a look-up for the job's *Stop* (review B-16): nothing here writes anything but its run folder, so a press ends it

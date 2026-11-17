@@ -199,13 +199,19 @@ def test_the_focus_handler_hands_the_library_to_workers(dashboard, mode, monkeyp
 
 def test_generates_press_asks_on_a_worker_and_a_second_press_waits_for_it(dashboard, monkeypatch):
     """§7 (A10, A12): pressing Generate asks whether the report still holds on a worker (it syncs and stats every
-    file) and goes on from the answer on the window's thread; a press while it asks starts nothing more."""
+    file) and goes on from the answer on the window's thread; a press while it asks starts nothing more. Told by the
+    ask still going when both presses have returned (it waits for the test's word), not by the presses' time on a
+    loaded machine (Flake-F45: 0.158 s against 0.1 in a loaded --all); the timed run still bounds that time."""
     from app import main as main_mod
     _store_library("ja")
     app = dashboard("ja")
-    asked = []
-    monkeypatch.setattr(main_mod.MasterDashboardApp, "_report_reusable",
-                        lambda self, args: asked.append(threading.current_thread()) or time.sleep(0.3))
+    asked, go, answered = [], threading.Event(), threading.Event()
+
+    def ask(self, args):
+        asked.append(threading.current_thread())
+        go.wait(10)                                                # the report's check, as long as the test says
+        answered.set()
+    monkeypatch.setattr(main_mod.MasterDashboardApp, "_report_reusable", ask)
     started = []
     monkeypatch.setattr(app, "run_command_async", lambda *a, **k: started.append(a[0]))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
@@ -213,7 +219,11 @@ def test_generates_press_asks_on_a_worker_and_a_second_press_waits_for_it(dashbo
     app.run_analyzer()
     app.run_analyzer()                                             # a double click
     took = time.perf_counter() - t0
-    assert took < (0.005 if BENCH else 0.1), took
+    assert not answered.is_set(), "a press waited for the check"   # both back while it still asks
+    go.set()
+    print(f"\nthe two presses: {took * 1000:.1f} ms")
+    if BENCH:
+        assert took < 0.005, took
     deadline = time.monotonic() + 5
     while not started and time.monotonic() < deadline:            # the window's queue, as its timer drains it
         try:

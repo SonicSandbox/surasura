@@ -2034,6 +2034,7 @@ class _Command:
         # Schema 2 (L3.1): what the command's settling step reads (`Store._settle`)
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
+        self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
@@ -4886,6 +4887,17 @@ class Store:
             if up:
                 self._put("now", up, ("end",), cmd.version)
                 cmd.touch(CURRENT)
+        if cmd.walked:
+            # Kyou-D: an Undo walks a row back beside its recorded neighbour, on the line's other side when that is
+            # where the neighbour stands now (`_walk_back`); the line then cuts the order again. A row it cut back
+            # into the tier the Undo recorded never crossed: its recorded `changed_in`, not this command's version
+            # where the rows stand now, read in chunks (a 20k Undo: one statement per 500, Mado-O)
+            now = {}
+            for part in _chunks(sorted(cmd.walked), 500):
+                now.update(self.conn.execute(f"SELECT id, tier FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                             part).fetchall())
+            self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",
+                                  [(ci, i) for i, (tier, ci) in cmd.walked.items() if now.get(i) == tier])
 
     BIG_SETTLE = 200      # items: from here the settling step reads each touched tier's order once
 
@@ -7190,6 +7202,7 @@ class Store:
         info = {it["id"]: it for it in items}
         _walk_back(seqs, items, okset)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
+        cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
         for it in ok:
             if it.get("piece") is not None:
                 cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)

@@ -62,6 +62,33 @@ def enabled(settings):
     return settings.get("enable_junban") is True and (_reorder_on(settings) or _backfill_on(settings))
 
 
+def moment(settings):
+    """What the automatic steps act on, as one key — or None when it can't be read (no deck, Anki closed or busy):
+    the nominated deck's new cards (their ids: a card made, studied, suspended or moved changes it), the order list
+    the reorder follows (its file's stamp: a Generate or a re-plan writes it) and 順's own settings. The window's focus
+    asks it (`AutoJunban`): a key the last run already saw means nothing has moved for the steps to act on, so no job
+    starts and Anki is not written. One read of Anki (`findCards`), the same query the reorder gathers with. Never raises."""
+    import hashlib
+    import json
+    decks = [d for d in dict.fromkeys(str(settings.get(k) or "").strip() for k in ("junban_deck",
+                                                                                   "junban_backfill_deck")) if d]
+    if not decks:
+        return None
+    try:
+        url = reposition._url(settings)
+        cards = [sorted(anki_connect.invoke("findCards", url, timeout=5, query=ankiconnect.new_card_query(d)) or ())
+                 for d in decks]
+    except Exception:
+        return None
+    try:
+        st = os.stat(reposition.order_csv_path(settings))
+        stamp = [st.st_mtime_ns, st.st_size]
+    except (OSError, ValueError):
+        stamp = None
+    own = sorted((k, repr(v)) for k, v in settings.items() if str(k).startswith("junban_"))
+    return hashlib.sha256(json.dumps([decks, cards, stamp, own], default=str).encode("utf-8")).hexdigest()
+
+
 def window_open():
     """Is a 順 window open — in this program or another? While open it holds the `junban-window` lock (P0.3 04 §2;
     `gui.JunbanGui`), so this asks the lock, never a widget: a reader's look (`locks.in_use`) that takes no turn and

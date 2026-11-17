@@ -46,6 +46,7 @@ def test_a_file_mined_after_the_counts_time_is_one_the_count_never_saw():
     no time (3.0.15's) saw every mined file."""
     cards = {"w12": 0, ls.SIDE_AT: "2026-11-17T10:00:26.300000Z"}
     assert ls.side_seen(cards, "2026-11-17T10:00:26Z") and ls.side_seen(cards, "2026-11-17T09:59:59Z")
+    assert ls.side_seen(cards, cards[ls.SIDE_AT]), "mined at the count's own instant: seen"
     assert ls.side_seen(cards, "2026-11-16"), "a date alone: before the count"
     assert not ls.side_seen(cards, "2026-11-17T10:00:27Z") and not ls.side_seen(cards, "2026-11-17T10:00:26.400000Z")
     assert not ls.side_seen(cards, None)

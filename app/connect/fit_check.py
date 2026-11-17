@@ -30,7 +30,8 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   segment → mine at its offset; two → part-way, re-timed as a track's (`retime` listens to a raw too); a refusal → not
   timed in plain words (`SPEECH_REFUSED`); the speech not measured (another whisper.cpp) → the raw's reason as before.
   A video with a track is asked exactly as before (one quick run, no `--vad`); Chinese, an audio file, hato's own
-  record and *Trust my subtitles' timing* (which mines a raw at once) never listen.
+  record and *Trust my subtitles' timing* (which mines a raw at once) never listen with `--vad` (a video found timed
+  may still be spot-checked: next bullet).
 - **A timed video, heard** (audio quality, Tier 1; PROVISIONAL, 2026-11-17): a video hato, its own track or tsubasa
   found timed is listened to as an audio file's subtitle is (`heard`, the runner's `lineup.spot_check` at the offset
   found), but only where Anki Miner already has a speech model (never asked, never downloaded, never waited for):

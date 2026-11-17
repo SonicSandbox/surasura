@@ -205,6 +205,27 @@ def test_a_failed_call_is_no_answer_now(tmp_path, steps, monkeypatch):
     assert steps._spot_video("ja", {"id": 1}, video, sub, 0.0) is None
 
 
+@pytest.mark.parametrize("raised", [runner.Wait("Anki Miner is busy"), runner.Needs("anki-miner", "Set it up")])
+def test_anki_miners_setup_waiting_is_no_check_now_never_a_wait_or_a_question(tmp_path, steps, monkeypatch, raised):
+    # the mine step that follows meets the same setup and says so itself; the check never waits or asks
+    video, sub = _episode(tmp_path)
+
+    def setup(lang, job):
+        raise raised
+    monkeypatch.setattr(steps, "_miner_profile", setup)
+    assert steps._spot_video("ja", {"id": 1}, video, sub, 0.0) is None
+    assert steps.heard == []
+
+
+def test_a_spot_folder_it_cannot_write_is_no_answer_now(tmp_path, steps, monkeypatch):
+    video, sub = _episode(tmp_path)
+
+    def unwritable(*a, **k):
+        raise PermissionError(13, "Access is denied")
+    monkeypatch.setattr(lineup, "spot_check", unwritable)
+    assert steps._spot_video("ja", {"id": 1}, video, sub, 0.0) is None
+
+
 def test_the_fit_step_listens_to_a_video_only_after_it_is_timed_and_never_when_you_trust_its_timing(
         tmp_path, steps, monkeypatch):
     video, sub = _episode(tmp_path)

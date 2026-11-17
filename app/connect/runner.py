@@ -3853,14 +3853,18 @@ class Steps:
         """Tier 1's spot-check of a timed video (`fit_check.heard`) -> lineup.MATCHED / NOT_MATCHED (kept per subtitle,
         video and offset); None, mined as before, when it isn't checked now: no speech model on this PC, *Not now*
         said to it or its download running (a video never asks for one and never waits for one), on battery (checked
-        once plugged in: nothing kept), Anki Miner absent, or a call that failed."""
+        once plugged in: nothing kept), Anki Miner absent or its setup waiting on something (the mine step says so
+        itself: the check never waits or asks), or a call that failed (its folder unwritable too)."""
         from app.connect import anki_miner, lineup
         kept = lineup.spot_kept(lineup.spot_key(video, subtitle, offset))
         if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
             return kept
         if lineup.answer() == "no" or lineup.look(lineup.SPEECH).get("status") == lineup.RUNNING:
             return None
-        found = self._miner_profile(lang, job)
+        try:
+            found = self._miner_profile(lang, job)
+        except (Wait, Needs):
+            return None
         if found is None:
             return None
         miner, profile = found
@@ -3874,6 +3878,9 @@ class Steps:
             if e.kind == "setup":
                 anki_miner._SPEECH.clear()
             log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e.message)
+            return None
+        except OSError as e:
+            log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e)
             return None
 
     def mine(self, lang, job, picked, words, attempt):

@@ -138,6 +138,108 @@ def test_the_cache_is_used_only_when_its_key_matches(tmp_path):
         third.stop()
 
 
+class _PlanNumbers:
+    """`moves.Numbers`' shape for the cache key: its version counted from 0 in each process (and still 0 at the start,
+    before the plan is read), the plan file's stamp as last read (`plan_key`) and as on disk now (`plan_stamp`)."""
+
+    def __init__(self, table, version, read, on_disk):
+        self.table, self.version, self.read, self.on_disk = table, version, read, on_disk
+
+    def __call__(self):
+        return self.version, self.table
+
+    def plan_key(self):
+        return self.read
+
+    def plan_stamp(self):
+        return self.on_disk
+
+
+def test_the_cache_survives_a_restart_whose_numbers_are_not_read_yet(tmp_path):
+    """The window reads the plan's numbers only after its first frame, and their version starts at 0 in each process:
+    the cache is keyed on the plan file's stamp instead, so the next start shows it — unless a Generate wrote another
+    plan since."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    # the next start: the numbers not read yet (version 0, no plan read), the same plan on disk
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers({}, 0, None, (11, 500)))
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert views[0][1].cached
+    finally:
+        again.stop()
+    # a Generate since: another plan on disk, so the cache's figures are not shown
+    third = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers({}, 0, None, (12, 640)))
+    views3, _ = _collect(third)
+    third.start()
+    try:
+        assert _wait(lambda: views3)
+        assert not views3[0][1].cached
+    finally:
+        third.stop()
+
+
+def test_a_stand_in_without_a_plan_stamp_keys_the_cache_on_its_own_version(tmp_path):
+    """A numbers provider with no plan file (a stand-in: no `plan_key` / `plan_stamp`) keeps the key it had: its own
+    version — the same one matches, another doesn't."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=lambda: (3, table))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    for version, cached in ((3, True), (4, False)):
+        again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=lambda v=version: (v, table))
+        views, _ = _collect(again)
+        again.start()
+        try:
+            assert _wait(lambda: views)
+            assert views[0][1].cached is cached
+        finally:
+            again.stop()
+
+
+class _ReloadedNumbers(_PlanNumbers):
+    """A Generate's plan read on the numbers' worker just after a look took its figures: the figures it handed out are
+    the old plan's, the plan it says it read is the new one from then on."""
+
+    def __call__(self):
+        out = super().__call__()
+        self.read = self.on_disk = (12, 640)
+        return out
+
+
+def test_the_cache_is_keyed_on_the_plan_its_figures_came_from_not_one_read_during_the_build(tmp_path):
+    """The look's figures are read before its build, the cache's key after it: a new plan read between the two (a
+    Generate ending while the window looks) must not key the old plan's figures as the new one's — the next start would
+    show them as current."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                          cache_file=cache, numbers=_ReloadedNumbers(table, 3, (11, 500), (11, 500)))
+    reader.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+    finally:
+        reader.stop()
+    with open(cache, encoding="utf-8") as f:
+        assert json.load(f)["key"][3] == [11, 500]
+
+
 def test_a_damaged_cache_is_no_cache(tmp_path):
     seed = window_seed.build()
     cache = tmp_path / "window_cache_ja.json"

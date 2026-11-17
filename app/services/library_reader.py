@@ -91,9 +91,12 @@ NUMBERS_GRACE_S = 0.05
 # a4: the window's own command (`urgent`): for this long its numbers and its write build at once, a burst's hold-back aside
 URGENT_S = 1.0
 # --- end a4
-CACHE_VERSION = 5                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
+CACHE_VERSION = 6               # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
 #                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
+#                                  6: the plan's part is the plan file's stamp (`_plan_part`): the numbers' version is
+#                                     counted from 0 in each process and read after the first frame, so no start ever
+#                                     matched the key the last session wrote (the first screen's cache never shown)
 
 
 def cache_path(language):
@@ -629,7 +632,8 @@ class LibraryReader:
         self._mode = (mode, reason)
         if mode == "store" and h is not None and self.watch is not None:
             self._watching(h)                           # W3.2 B: the watch made once, what it reports synced
-        version, numbers = self.numbers()
+        plan = self._plan_part()                        # the cache key's plan: read before the figures, never after
+        version, numbers = self.numbers()               # the build (a plan read between keys them as the old one's)
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
         again = asked > self._answered[0] and not held  # M4.1 B1: the settle's ask, until a view answers it
@@ -720,7 +724,7 @@ class LibraryReader:
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
-            key = [self._store_id, feed["epoch"], feed["version"], version]
+            key = [self._store_id, feed["epoch"], feed["version"], plan]
             if self._expected:                          # LM11b G5: a view of what isn't written yet is never cached —
                 self._cache_owed = key                  # owed (H-T2): written once it settles, or at the stop
                 return
@@ -1306,10 +1310,21 @@ class LibraryReader:
 
     # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------- #
     def _key_now(self, h):
-        """The key the store holds now: (its id, epoch, state version) and the plan's version — what a feed read at
-        this moment would carry (`read_feed`'s epoch and version are the meta's)."""
+        """The key the store holds now: (its id, epoch, state version) and the plan's part as it is on disk now (the
+        start reads this before the numbers have read the plan) — what a feed read at this moment would carry
+        (`read_feed`'s epoch and version are the meta's)."""
         m = h.meta()
-        return [m.get("store_id"), m.get("epoch"), m.get("state_version"), self.numbers()[0]]
+        return [m.get("store_id"), m.get("epoch"), m.get("state_version"), self._plan_part(now=True)]
+
+    def _plan_part(self, now=False):
+        """The cache key's plan: the plan file's stamp — the one the numbers last read (a view's figures), or, `now`,
+        the file's as it is on disk (`plan_stamp`) — when the provider keeps one (`moves.Numbers`); a stand-in without
+        one: its own version. A stamp survives a restart, the numbers' version doesn't (counted from 0 each process)."""
+        stamp = getattr(self.numbers, "plan_stamp" if now else "plan_key", None)
+        if stamp is None:
+            return self.numbers()[0]
+        key = stamp()
+        return list(key) if key is not None else None
 
     def _first_screen(self):
         if not self.cache_file or not os.path.exists(self.cache_file):

@@ -4406,7 +4406,9 @@ SWITCH_INTERVAL_S = 0.001
 # each slot, each delegate paint), and beside the writer's numbers following a move (4–9 ms of Python) ⋯ → Goal's
 # stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
 # asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
-# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`)
+# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`) — or once its stretch outlasts
+# `window_idle.LONG_S` (a page built in slices, the start: the window never rests, and beside the start's ten busy
+# workers the spin left it ~1 % of the lock — Settings 21 s to build instead of 1.3 s)
 AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 

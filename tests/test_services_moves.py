@@ -1232,6 +1232,24 @@ def test_a_damaged_plan_answers_nothing_and_says_why(tmp_path):
     numbers.close()
 
 
+def test_the_plan_stamp_on_disk_is_the_key_the_numbers_keep_once_they_read_the_plan(tmp_path):
+    """The first screen's cache is written under `plan_key` (the plan the numbers read) and matched at the next start
+    against `plan_stamp` (the file on disk, before the numbers have read it): the two must be the same value for the
+    same file, or the cache is never shown again — and differ as soon as a Generate writes another plan."""
+    seed, _analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    assert numbers.plan_key() is None and numbers.plan_stamp() is not None     # not read yet: the disk has it
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    assert numbers.plan_key() == numbers.plan_stamp()
+    read = numbers.plan_key()
+    numbers.close()
+    with open(path, "ab") as f:                                                 # another plan (a Generate since)
+        f.write(b"\0")
+    assert M.Numbers(seed.opener, "ja", plan_file=path).plan_stamp() != read
+    assert M.Numbers(seed.opener, "ja", plan_file=str(tmp_path / "none.json.gz")).plan_stamp() is None
+
+
 def _small(tmp_path, header=None, drop=0, language="ja"):
     tmp_path.mkdir(parents=True, exist_ok=True)
     seed = window_seed.build(root=str(tmp_path), language=language)

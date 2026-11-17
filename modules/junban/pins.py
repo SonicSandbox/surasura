@@ -187,12 +187,14 @@ def record_side(store, report, by="connect"):
     `record`): the run's count of each side-by-side title's still-new cards (`report["stats"]["side_cards"]`:
     [[item ids, cards], …]) into the store (`Store.set_side_cards`) — the one rule the window, Connect's top N and
     Generate's order follow (`library_store.side_pair`), so they pick the titles Anki weaves. Nothing counted (side by
-    side off, no store option): nothing written. -> whether it was written."""
+    side off, no store option): nothing written. Kyou-E: with the count's time (`stats["side_at"]`, when the run began
+    reading Anki), when the run gave one. -> whether it was written."""
     side = ((report or {}).get("stats") or {}).get("side_cards")
     write = getattr(store, "set_side_cards", None)
     if not side or write is None:
         return False
-    return bool(write([(ids, n) for ids, n in side], by=by))
+    at = report["stats"].get("side_at")
+    return bool(write([(ids, n) for ids, n in side], by=by, **({"at": at} if at else {})))
 # --- end Kyou-A
 
 

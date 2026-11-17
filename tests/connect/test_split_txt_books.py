@@ -459,7 +459,7 @@ def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(s
 
     def cancel_then_seen(run_dir, run_id):
         real_cancel(run_dir, run_id)
-        asked.append(run_id)
+        asked.append((run_dir, run_id))
         _until(lambda: not os.path.exists(os.path.join(run_dir, run_id, "cancel")), 10)
 
     monkeypatch.setattr(anki_miner, "cancel", cancel_then_seen)
@@ -473,10 +473,13 @@ def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(s
         key = library.audiobook_of_book(store, book)["key"]
     assert lineup.running(key)
     split["steps"].stop_line_up("ja", job)
-    assert asked == [lineup.RUN_ID] and lineup.read(key)["status"] == lineup.STOPPED
+    # the cancel asked once, in this pair's own run folder (the one the fake polls, then emptied by it)
+    assert asked == [(os.path.join(lineup.folder(key), "run"), lineup.RUN_ID)]
+    assert lineup.read(key)["status"] == lineup.STOPPED
     _until(lambda: not lineup.running(key), 15)
     state = lineup.look(key)
     assert state["status"] == lineup.STOPPED and state["stopped_at"] and not state.get("tries")
+    assert fake_miner.commands().count("sync") == 1, "stopped, never started again"
 
 
 def test_its_text_only_cards_get_add_the_narrators_voice_unchanged_the_offer_the_rows_entry_and_the_plan(

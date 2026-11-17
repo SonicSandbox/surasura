@@ -65,6 +65,7 @@ GAP_MS = 2000           # ...across gaps up to this long
 CAP_MS = 8000           # ...and never past this, first start to last end (Sonic: "8 second cap is wonderful")
 PASS_MS = 4500          # a card the punctuation rule makes this short stays as it is ("a pass between 2 characters")
 OVER_MS = 300           # another line is on screen with a card when their times share this much (`Around`)
+LONG_MS = 30000         # ...and a line shown longer than this is no one speaking (a sign, a title, a song's karaoke)
 # The characters a second a line is said at (its letters and digits over the time it is shown), outside which its
 # timing or its audio is in doubt (PROVISIONAL, 2026-11-16: wide on purpose, a preference among a word's lines only)
 PACE = {"ja": (1.5, 14.0), "zh": (1.0, 10.0)}
@@ -349,37 +350,48 @@ def _walk(cues, kept, n, runs_on, cap, repeats):
 class Around:
     """What else the subtitle shows while a card plays, for the signs that its audio is not its sentence alone
     (the subtitle only, before anything is cut). An .ass file's events needn't be in time
-    order: read by time here."""
+    order: read by time here. A line shown longer than LONG_MS is kept apart and always looked at, so one such line
+    doesn't widen every look-up to most of the file."""
 
     def __init__(self, cues):
         self.cues = cues
-        self.order = sorted(range(len(cues)), key=lambda i: cues[i].start)
+        self.long = [i for i, cue in enumerate(cues) if cue.end - cue.start > LONG_MS]
+        apart = set(self.long)
+        self.order = sorted((i for i in range(len(cues)) if i not in apart), key=lambda i: cues[i].start)
         self.starts = [cues[i].start for i in self.order]
-        self.longest = max((cue.end - cue.start for cue in cues), default=0)
+        self.longest = max((cues[i].end - cues[i].start for i in self.order), default=0)
 
-    def shown(self, lo, hi):
-        """The cues on screen for OVER_MS or more of lo..hi (ms)."""
-        out = []
-        for n in range(bisect.bisect_left(self.starts, lo - self.longest), bisect.bisect_left(self.starts, hi)):
-            cue = self.cues[self.order[n]]
-            if min(cue.end, hi) - max(cue.start, lo) >= OVER_MS:
-                out.append(self.order[n])
-        return out
+    def shown(self, lo, hi, over=OVER_MS):
+        """The cues on screen for `over` ms or more of lo..hi (ms)."""
+        near = range(bisect.bisect_left(self.starts, lo - self.longest), bisect.bisect_left(self.starts, hi))
+        return [i for i in [self.order[n] for n in near] + self.long
+                if min(self.cues[i].end, hi) - max(self.cues[i].start, lo) >= over]
 
     def doubts(self, at, held, language):
         """How many signs line `at`'s card (`held`: the cues it holds) gives that its audio is not its sentence
-        alone, 0–3: another speaker's line on screen with it (a line of the language outside the card, or one in
-        the card shown while line `at` itself is — never a copy of one of the card's); a song line on screen with it; the line itself shown far faster or slower than speech (`paced`).
-        A count to rank a word's lines by, never a reason to hold a word back."""
-        texts = {self.cues[c].text for c in held}
+        alone, 0–3: another speaker's line on screen with it (a line of the language outside the card that isn't a
+        copy of one of the card's, or any line of other text shown while line `at` itself is — for OVER_MS, or all
+        of a line `at` shorter than that; never a line shown longer than LONG_MS, which no one says); a song line
+        on screen with it; the line itself shown far faster or slower than speech (`paced`). Texts are compared
+        spaces aside, as `analyzer.shown_again` compares them. A count to rank a word's lines by, never a reason to
+        hold a word back."""
+        texts = {_bare(self.cues[c].text) for c in held}
         lo, hi = min(self.cues[c].start for c in held), max(self.cues[c].end for c in held)
         shown = [c for c in self.shown(lo, hi) if c != at]
         own = self.cues[at]
-        with_own = {c for c in self.shown(own.start, own.end) if self.cues[c].text != own.text}
+        with_own = {c for c in self.shown(own.start, own.end, max(1, min(OVER_MS, own.end - own.start)))
+                    if _bare(self.cues[c].text) != _bare(own.text)}
         spoken_over = any(self.cues[c].counted and not self.cues[c].sung
-                          and (c in with_own or (c not in held and self.cues[c].text not in texts)) for c in shown)
+                          and self.cues[c].end - self.cues[c].start <= LONG_MS
+                          and (c in with_own or (c not in held and _bare(self.cues[c].text) not in texts))
+                          for c in shown)
         sung = any(self.cues[c].sung for c in shown)
         return int(spoken_over) + int(sung) + int(not paced(self.cues[at], language))
+
+
+def _bare(text):
+    """A line's text, spaces aside (a caption shown on two lines and on one is the same line)."""
+    return "".join((text or "").split())
 
 
 def paced(cue, language):

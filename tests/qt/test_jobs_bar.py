@@ -484,7 +484,7 @@ def test_update_skip_writes_only_skipped_version(qapp, monkeypatch):
         services.shutdown(0.5)
 
 
-def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_it_changes(world):
+def test_update_esc_while_waiting_only_hides_the_sheet_and_the_wait_list_repaints_only_when_it_changes(world):
     programs = (U.Program(41, "Content Manager", True), U.Program("Anki sync", "Anki sync", False))
     _offer(world)
     world.updates.push(state=U.WAITING, programs=programs)
@@ -504,10 +504,43 @@ def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_i
     assert world.updates.called("updates.stop")[0] == ("updates.stop", 41)
     sheet.buttons["stop-all"].click()
     assert wait_until(lambda: ("updates.stop", None) in world.updates.calls)
-    QTest.keyClick(world.win, Qt.Key.Key_Escape)                 # Esc while it waits: the update is cancelled (IK-2)
+    # Kantan-T (Sonic 2026-11-18, replacing IK-2): Esc while it waits only hides the sheet — the update waits on, the
+    # bar's chip still says what it waits for, and the sheet opens again on the chip as it was
+    QTest.keyClick(world.win, Qt.Key.Key_Escape)
+    assert wait_until(lambda: not sheet.isVisible())
+    QTest.qWait(50)
+    assert not world.updates.called("updates.cancel") and not world.automation.called("automation.update_cancelled")
+    assert not world.d.update_mark.isHidden()
+    assert world.d.update_mark.text() == strings.UPDATE_WAITS_FOR_MANY.format(count=2)
+    world.d.update_mark.click()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.buttons["cancel"].isVisibleTo(sheet)
+    sheet.buttons["cancel"].click()                              # *Cancel* cancels
     assert wait_until(lambda: world.updates.called("updates.cancel"))
     assert not sheet.isVisible()
     assert wait_until(lambda: world.automation.called("automation.update_cancelled"))   # a held Generate asks again
+
+
+def test_update_closing_the_sheet_while_downloading_leaves_the_download_going_on_in_the_chip(world):
+    """Kantan-T (Sonic 2026-11-18, replacing IK-2): the sheet's own close (Esc, Back, a click outside) only hides it —
+    the download goes on, the chip shows its progress as it moves, the sheet opens again on the chip at that progress;
+    *Cancel* there cancels. The window's own close still cancels (`updates.quit`, the quit tests above)."""
+    _offer(world)
+    world.updates.push(state=U.DOWNLOADING, done=3, total=20)
+    sheet = world.d.sheet
+    mark = world.d.update_mark
+    assert wait_until(lambda: mark.text() == strings.UPDATE_DOWNLOADING.format(pct=15))
+    world.win.open_update_sheet()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.progress.isVisibleTo(sheet)
+    sheet.close()                                                 # the router's close (Esc / Back / outside)
+    assert wait_until(lambda: not sheet.isVisible())
+    QTest.qWait(50)
+    assert not world.updates.called("updates.cancel")
+    world.updates.push(state=U.DOWNLOADING, done=10, total=20)    # it goes on with the sheet closed
+    assert wait_until(lambda: mark.text() == strings.UPDATE_DOWNLOADING.format(pct=50)) and not mark.isHidden()
+    mark.click()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.progress.value() == 50
+    sheet.buttons["cancel"].click()
+    assert wait_until(lambda: world.updates.called("updates.cancel")) and not sheet.isVisible()
 
 
 def test_update_a_critical_release_opens_the_sheet_once(world):

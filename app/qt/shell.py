@@ -2853,10 +2853,11 @@ class ShellWindow(QMainWindow):
         d.update_cross.clicked.connect(self._update_dismissed)
         d.update_cross.setVisible(False)
         row.insertWidget(row.indexOf(d.update_mark) + 1, d.update_cross)
-        # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
+        # the update sheet (an overlay: Esc and Back close it). Closing it only hides it (Kantan-T, Sonic 2026-11-18,
+        # replacing IK-2): an update downloading or waiting goes on, the chip still shows it; *Cancel* cancels, and the
+        # window's own close still does (`_stop_starting`: `updates.quit`)
         d.sheet = duties_module.UpdateSheet(self.centralWidget())
         d.sheet.action.connect(self._update_action)
-        d.sheet.dismissed.connect(self._sheet_dismissed)
         self.register_overlay(d.sheet)
         # Needs you: the update's cards, above the page's list
         page = self.page_widgets["needs"]
@@ -3671,12 +3672,6 @@ class ShellWindow(QMainWindow):
             return None
         return next((b for b in sender.findChildren(QPushButton) if b.property("action") == name and b.isVisible()
                      and (name != "stop" or b.property("program") == key)), None)
-
-    def _sheet_dismissed(self):
-        """Esc, Back or *Later* closed the sheet: an update downloading or waiting is cancelled (IK-2, as Tk)."""
-        state = self.duties.update_state
-        if state is not None and state.state in ("downloading", "waiting"):
-            self._cancel_update()
 
     def _cancel_update(self):
         """The update cancelled (its sheet has closed: the bar's arc turns until the service answered)."""

@@ -27,6 +27,11 @@ def _report(a, b, loose, d):
             "stats": {"side_cards": [[a, 0], [b, 2], [[loose], 1], [d, 1]]}}
 
 
+def _counted(store):
+    """The store's count without its time (Kyou-E: `SIDE_AT`, when the run began reading Anki)."""
+    return {k: v for k, v in (store._side_cards() or {}).items() if k != ls.SIDE_AT}
+
+
 def _want(store, a, b, loose, d):
     work = {i: store.item(i)["work_id"] for i in (a[0], b[0], loose, d[0])}
     return {ls.card_key(ls.title_key(i, work[i])): n for i, n in ((a[0], 0), (b[0], 1), (loose, 1), (d[0], 1))}
@@ -48,7 +53,7 @@ def test_connects_step_and_junban_auto_record_the_count(monkeypatch, language, p
         verbs._junban_auto(SimpleNamespace(wait=0), language, settings, auto, positions_only=positions_only)
     except verbs.CliError:
         pass
-    assert store._side_cards() == _want(store, a, b, loose, d)
+    assert _counted(store) == _want(store, a, b, loose, d)
     store.close()
 
 
@@ -78,9 +83,9 @@ def test_the_window_re_order_host_records_the_count_as_the_replan(language):
     store, a, b, loose, d = _library(language)
     store.set_library_options(side_by_side=True)
     replan_preview._record_side(store, _report(a, b, loose, d))
-    assert store._side_cards() == _want(store, a, b, loose, d)
+    assert _counted(store) == _want(store, a, b, loose, d)
     replan_preview._record_side(store, {"ok": True})    # nothing counted: nothing written
-    assert store._side_cards() == _want(store, a, b, loose, d)
+    assert _counted(store) == _want(store, a, b, loose, d)
     store.close()
 
 
@@ -92,5 +97,5 @@ def test_the_junban_windows_reorder_records_the_count_and_returns_its_report(mon
     monkeypatch.setattr(reposition, "run", lambda settings, **kw: report)
     monkeypatch.setattr(junban_view, "window_job", lambda settings: None)
     assert junban_view.reorder_work({"target_language": language}, language, {}) is report
-    assert store._side_cards() == _want(store, a, b, loose, d)
+    assert _counted(store) == _want(store, a, b, loose, d)
     store.close()

@@ -66,7 +66,7 @@ from types import SimpleNamespace
 from app import youtube_hold
 from app.connect import fit_check, inbox, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
-from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, STOPPED_REASON,
+from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
                                 Ledger)
 
 log = logging.getLogger("surasura-cli")
@@ -602,14 +602,21 @@ def _woken(steps, ledger, parked):
 def _ordered(jobs, line):
     """The open jobs: those carrying an ask first, the newest ask first (*Mine now*, *Mine this*, *Mine it too*: P4.1
     C3); then the top 20's order (the next day's words first); then the rest oldest first (a level raise's beyond the
-    line — the rest of Current, then Goal — in the order it queued them, C4)."""
+    line — the rest of Current, then Goal — in the order it queued them, C4). A show's earlier parts (Michi-EO, kind
+    `show`) go just ahead of the open part that brought them (its event), the first part first; that part gone, in
+    their own place."""
     from app.connect.ledger import stamp_key
     place = {item_id: n for n, item_id in enumerate(line)}
+    rest = [j for j in jobs if not j.get("asked_at")]
+    brought = {j["event_id"]: j["item_id"] for j in rest if j.get("kind") != SHOW and j.get("event_id") is not None}
+
+    def turn(j):
+        if j.get("kind") == SHOW and j.get("event_id") in brought:
+            return (place.get(brought[j["event_id"]], len(place)), 0, j["id"])
+        return (place.get(j["item_id"], len(place)), 1, j["id"])
     asked = sorted((j for j in jobs if j.get("asked_at")), key=lambda j: (stamp_key(j["asked_at"]), -j["id"]),
                    reverse=True)
-    rest = sorted((j for j in jobs if not j.get("asked_at")), key=lambda j: (place.get(j["item_id"], len(place)),
-                                                                              j["id"]))
-    return asked + rest
+    return asked + sorted(rest, key=turn)
 
 
 def _waiting_all(ledger, lang, parked, out, reason, look, tried=()):
@@ -1002,7 +1009,9 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and item_id not in line and not inbox.keeps(job):     # an ask, a level raise beyond the line (P4.1)
+    current = getattr(steps, "in_current", None) if job.get("kind") == SHOW and not job.get("asked_at") else None
+    if droppable and item_id not in line and not inbox.keeps(job, current=current(lang, item_id) if current else None):
+        # an ask, a level raise beyond the line (P4.1), a show's earlier part while in Current (Michi-EO)
         ledger.set_state(jid, "dropped", reason="left the top 20")
         out["dropped"].append(item_id)
         return
@@ -2597,6 +2606,16 @@ class Steps:
             item = store.item(job["item_id"]) or {}
         from app.connect import level
         return level.watched_out(item)
+
+    def in_current(self, lang, item_id):
+        """Michi-EO: is a show's earlier part still in Current (`inbox.in_current`)? A busy store -> None (kept: the
+        next look asks again)."""
+        try:
+            store = self._open(lang)
+        except (Wait, Needs):
+            return None
+        with store:
+            return inbox.in_current(store, item_id)
 
     def title(self, lang, job):
         try:

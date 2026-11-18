@@ -481,6 +481,9 @@ def test_up_and_down_move_an_episode_one_exact_step_inside_its_show(language):
         store.place([ep], "top")
     up = store.nudge([ep10], "up")
     assert up is not None and store.ids("now")[:3] == [ep8, ep10, ep9] and up.show_order is False
+    store.undo(up)
+    down = store.nudge([ep8], "down")                 # (its order would be where it is: never "nothing")
+    assert down is not None and store.ids("now")[:3] == [ep9, ep8, ep10] and down.show_order is False
     store.close()
 
 
@@ -551,4 +554,115 @@ def test_a_placing_rules_top_of_current_means_the_very_top(language):
     _rel, record10 = _record(language, show, 10)
     assert rules.apply(store, ep10, record10, {"placing_rules": {"browser": "top"}}) == "top"
     assert store.ids("now")[:3] == [ep10, ep9, ep8], "Connect's rule: the very top"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_titles_first_row_dragged_inside_current_still_finds_its_shows_other_rows(language):
+    """(Mutants, 3.0.16) "Is any other of the title in Current?" must look past the moved items themselves: 9, 10, 8 with
+    episode 8 — the title's first row by the title's index — dragged between 9 and 10 joins the order (8, 9, 10). Read
+    one row only and it would see 8 itself, find nothing else, and leave 8 between 9 and 10."""
+    store = migrated(language, shows=2, episodes=3)
+    ep8, ep9, ep10 = (_episode(store, language, names(language)[168], n) for n in (8, 9, 10))
+    for ep in (ep8, ep9, ep10):
+        store.place([ep], "top")
+    store.move([ep8], "now", after_id=ep10, in_order=False)        # (the setup: an exact move) 9, 10, 8
+    assert store.ids("now")[:3] == [ep9, ep10, ep8]
+    drag = store.move([ep8], "now", before_id=ep10)
+    assert store.ids("now")[:3] == [ep8, ep9, ep10] and drag.show_order is True
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_episode_set_apart_dropped_on_its_own_spot_moves_nothing(language):
+    """(Mutants, 3.0.16) The gap a drop lands in is read without the moved item: episode 9, set apart below another
+    title (8, X, 9, Y), dropped on its own spot (before Y, after X) is beside X and Y, not beside its show — nothing
+    moves. Read with 9 still in the gap, 9 would count as "its show's row" and jump up to 8."""
+    store = migrated(language, shows=2, episodes=3)
+    w = names(language)
+    ep8, ep9 = (_episode(store, language, w[169], n) for n in (8, 9))
+    store.place([ep8], "top")
+    x = store.ids("now")[1]
+    store.move([ep9], "now", after_id=x, in_order=False)          # (the setup) 8, X, 9, Y
+    now = store.ids("now")
+    y = now[3]
+    assert now[:3] == [ep8, x, ep9] and store.item(y)["work_id"] != store.item(ep8)["work_id"]
+    assert store.move([ep9], "now", before_id=y) is None, "before Y: its own place"
+    assert store.move([ep9], "now", after_id=x) is None, "after X: its own place"
+    assert store.ids("now")[:4] == [ep8, x, ep9, y]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_block_of_two_seasons_of_one_merged_title_keeps_its_order(language):
+    """(Mutants, 3.0.16) A title can hold two seasons (*Same show as…* merged season 2 into season 1's title): a block of
+    S01E09 and S02E01 dragged together keeps its order — episode numbers of two seasons aren't one order (1 < 9 would
+    put season 2's first episode above season 1's ninth)."""
+    store = migrated(language, shows=2, episodes=3)
+    show = names(language)[170]
+    ep9 = _episode(store, language, show, 9)
+    s2 = _episode(store, language, show, 1, season=2)
+    keep, other = store.item(ep9)["work_id"], store.item(s2)["work_id"]
+    if other != keep:
+        assert store.merge_works(keep, [other]) is not None
+    assert store.item(s2)["work_id"] == store.item(ep9)["work_id"], "the setup: one title, two seasons"
+    store.place([ep9], "top")
+    store.move([s2], "now", after_id=ep9, in_order=False)
+    target = store.ids("now")[4]
+    assert store.item(target)["work_id"] != keep
+    block = store.move([ep9, s2], "now", after_id=target)
+    now = store.ids("now")
+    assert now[now.index(target) + 1:now.index(target) + 3] == [ep9, s2], "as it stood: season 1 above season 2"
+    assert block.show_order is False
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_soons_first_episode_dropped_at_nows_end_away_from_its_show_stays_there(language):
+    """(Mutants, 3.0.16) The gap at the Soon line is read without the moved item too: episode 9, Soon's first row, dropped
+    after NOW's last row (another title's) is in its own gap — between that row and Soon's next, away from its show (8,
+    at the top) — so it stays: still Soon's first (the Soon line is a count of files). Read with 9 still below the
+    line, 9 would count as its show's row and jump up to 8."""
+    store = migrated(language, shows=2, episodes=3)
+    ep8, ep9 = (_episode(store, language, names(language)[171], n) for n in (8, 9))
+    store.place([ep8], "top")
+    store.place([ep9], "soon")
+    assert store.ids("soon")[0] == ep9, "the setup: 9 is Soon's first row"
+    last = store.ids("now")[-1]
+    assert last != ep8 and store.item(last)["work_id"] != store.item(ep8)["work_id"]
+    drop = store.move([ep9], "now", after_id=last)
+    assert store.ids("now")[-1] == last and store.ids("soon")[0] == ep9, "where it was: after NOW's last row"
+    assert drop is None or drop.show_order is False
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_block_whose_order_spot_is_beside_its_own_rows_moves_whole_or_not_at_all(language):
+    """(Mutants, 3.0.16) The order's spot is never beside one of the moved block's own rows: a group (LM11) [X, 8, 9, 10]
+    with 9 and 10 dragged together to just below the group — beside 8, so the order is read: after 8, past the group
+    (its last row, 10: one of the block). Anchored there, the block would move without its anchor (9 alone after 10).
+    It stays as dropped instead: here its own place, nothing moves."""
+    store = migrated(language, shows=2, episodes=3)
+    ep8, ep9, ep10 = (_episode(store, language, names(language)[177], n) for n in (8, 9, 10))
+    for ep in (ep8, ep9, ep10):
+        store.place([ep], "top")
+    now = store.ids("now")
+    assert now[:3] == [ep8, ep9, ep10]
+    x = now[3]
+    assert store.item(x)["work_id"] != store.item(ep8)["work_id"]
+    pieces = list(dict.fromkeys(store.item(i)["piece_id"] for i in (x, ep8, ep9, ep10)))
+    assert store.join(pieces, how="group") is not None
+    now = store.ids("now")
+    at = now.index(ep10)
+    group = store.item(ep10)["piece_id"]
+    assert now[at - 2:at + 1] == [ep8, ep9, ep10] and store.item(x)["piece_id"] == group, \
+        "the setup: the group reads X…, 8, 9, 10"
+    assert store.item(now[at + 1])["piece_id"] != group
+    z = now[at + 1]
+    assert store.move([ep9, ep10], "now", before_id=z) is None
+    assert store.ids("now") == now, "the block whole, where it stood"
+    assert pieces_ok(store) is None
     store.close()

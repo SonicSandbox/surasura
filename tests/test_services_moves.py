@@ -1232,6 +1232,131 @@ def test_a_damaged_plan_answers_nothing_and_says_why(tmp_path):
     numbers.close()
 
 
+def test_the_plan_stamp_on_disk_is_the_key_the_numbers_keep_once_they_read_the_plan(tmp_path):
+    """The first screen's cache is written under `plan_key` (the plan the numbers read) and matched at the next start
+    against `plan_stamp` (the file on disk, before the numbers have read it): the two must be the same value for the
+    same file, or the cache is never shown again — and differ as soon as a Generate writes another plan."""
+    seed, _analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    assert numbers.plan_key() is None and numbers.plan_stamp() is not None     # not read yet: the disk has it
+    # ... and says so in the words the reader waits on before it lets the cached rows' figures go
+    from app.services import library_reader
+    assert numbers.why() == library_reader.NOT_READ
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    assert numbers.plan_key() == numbers.plan_stamp()
+    read = numbers.plan_key()
+    numbers.close()
+    with open(path, "ab") as f:                                                 # another plan (a Generate since)
+        f.write(b"\0")
+    assert M.Numbers(seed.opener, "ja", plan_file=path).plan_stamp() != read
+    assert M.Numbers(seed.opener, "ja", plan_file=str(tmp_path / "none.json.gz")).plan_stamp() is None
+
+
+def test_a_restart_whose_plan_is_out_of_date_keeps_the_cached_figures_faded_never_gone(tmp_path):
+    """After an update, a setting change or an edited file, the start's cache still matches (the same plan file) and
+    shows last session's *N new*; the numbers' first load then finds the plan out of date (a Generate first). The
+    figures stay, faded — as a plan that can't be followed keeps the last ones (`Kept`) — never shown and then gone (the
+    start's blink, reversed: the intent keeper, train 42)."""
+    from app.services import library_reader
+    from tests.test_library_reader import _collect, _wait
+    for language in ("ja", "zh"):
+        seed, _analysed, path = _small(tmp_path / language, language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        numbers = M.Numbers(seed.opener, language, plan_file=path)
+        numbers.load()
+        assert numbers.idle(30) and numbers.why() is None, language
+        first = library_reader.LibraryReader(seed.opener, language=language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=numbers)
+        first.start()
+        assert _wait(lambda: os.path.exists(cache)), language
+        first.stop()
+        numbers.close()
+        held = []
+        stale = M.Numbers(seed.opener, language, plan_file=path, check=lambda plan, store: "another app version",
+                          on_change=lambda: held[0].refresh())
+        again = library_reader.LibraryReader(seed.opener, language=language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=stale)
+        held.append(again)
+        views, _ = _collect(again)
+        again.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views)), language
+            assert views[0][1].cached, language
+            cached = {e.id: e.n_new for r in views[0][1].rows for e in r.episodes if e.n_new is not None}
+            assert cached, language
+            stale.load()                                    # the window's first frame asks for it
+            assert stale.idle(30) and stale.why() == "stale: another app version", language
+
+            def faded():                                    # the load's view (published after the reader takes its
+                last = {e.id: e.new_faded for r in views[-1][1].rows for e in r.episodes if e.id in cached}
+                return bool(last) and all(last.values())    # version): faded, the plan can't be followed
+            assert _wait(faded), language
+            for _tid, view in list(views):                  # every view: the cached figures, never a blank
+                shown = {e.id: e.n_new for r in view.rows for e in r.episodes if e.id in cached}
+                assert shown == {i: cached[i] for i in shown}, (language, view.cached)
+        finally:
+            again.stop()
+            stale.close()
+
+
+class _Away:
+    """The store's opener while the store can't be opened yet (`away`): another mode, then the real one."""
+
+    def __init__(self, opener):
+        self._opener, self.away = opener, True
+
+    @property
+    def mode(self):
+        return "busy" if self.away else self._opener.mode
+
+    def __getattr__(self, name):
+        return getattr(self._opener, name)
+
+
+def test_a_first_load_with_no_store_keeps_the_start_figures_faded_for_the_load_after_it(tmp_path):
+    """The start's cached figures handed over (`seed`), and the first load finds no store to read (asked again at the
+    next resync): they stay, faded — and the load after it, finding the plan out of date, still keeps them; never a
+    blank between the two."""
+    for language in ("ja", "zh"):
+        seed, analysed, path = _small(tmp_path / language, language=language)
+        opener = _Away(seed.opener)
+        numbers = M.Numbers(opener, language, plan_file=path, check=lambda plan, store: "another app version")
+        shown = {r["id"]: (1, 2, 30 + k) for k, r in enumerate(analysed[:5])}
+        numbers.seed(shown)
+        numbers.load()
+        assert numbers.idle(30) and numbers.why().startswith("no store"), language
+        table = numbers()[1]
+        assert isinstance(table, M.Kept) and {i: table[i] for i in shown} == shown, language
+        opener.away = False
+        numbers.resync()
+        assert numbers.idle(30) and numbers.why() == "stale: another app version", language
+        table = numbers()[1]
+        assert isinstance(table, M.Kept) and {i: table[i][2] for i in shown} == {i: v[2] for i, v in shown.items()}
+        numbers.close()
+
+
+def test_figures_handed_over_after_the_first_load_answered_are_never_kept(tmp_path):
+    """`seed` is the start's, for the first load only: once a load answered, the table it published is the last shown —
+    a later plan read out of date keeps that one's *N new*, never the start's figures, nor figures handed over late."""
+    seed, analysed, path = _small(tmp_path)
+    verdict = [None]
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: verdict[0])
+    numbers.seed({r["id"]: (1, 2, 998) for r in analysed})              # the start's: the first load answers them
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = {i: n for i, (_k, _c, n) in numbers()[1].items()}
+    assert 998 not in before.values()
+    numbers.seed({r["id"]: (1, 2, 999) for r in analysed})              # too late: ignored
+    verdict[0] = "known words changed"
+    write_plan(path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed], n_words=300, seed=9)
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() == "stale: known words changed"
+    assert {i: n for i, (_k, _c, n) in numbers()[1].items()} == before and isinstance(numbers()[1], M.Kept)
+    numbers.close()
+
+
 def _small(tmp_path, header=None, drop=0, language="ja"):
     tmp_path.mkdir(parents=True, exist_ok=True)
     seed = window_seed.build(root=str(tmp_path), language=language)

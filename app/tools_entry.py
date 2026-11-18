@@ -180,7 +180,7 @@ def _refresh(settings):
         except Exception as e:
             log.warning("surasura.json not refreshed: settings.json can't be read (%s)", e)
             return False
-    if entry(settings) is None:                      # (the gate first: a process that writes no entry reads nothing)
+    if _advertised() is None:                        # (the gate first: a process that writes no entry reads nothing)
         return False
     folder = tools_dir()
     path = os.path.join(folder, TOOL + ".json")

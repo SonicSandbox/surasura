@@ -1566,11 +1566,17 @@ def test_a_write_still_waiting_at_300_ms_journals_the_queue_then_and_its_items_o
 
 
 def test_a_busy_store_is_asked_again_every_retry_not_in_a_spin(stub_writer):
-    """(M07) The retry's pause holds between two asks."""
+    """(M07) The retry's pause holds between two asks: each ask comes at least `retry` after the one before, told by
+    the asks' own times, not by how many fit in one second (Flake-F45: a loaded run's first ask and its journal write
+    took most of that second, and one ask was counted)."""
     w, heard, store, opener = stub_writer(mode="read-only", reason="busy", retry=0.3, saving_after=5.0)
+    asks = []
+    attempt = w._attempt
+    w._attempt = lambda cmd: asks.append(time.monotonic()) or attempt(cmd)      # (the writer's own clock)
     w.move([1], "goal")
-    time.sleep(1.0)
-    assert 2 <= w.attempts <= 6
+    assert h.until(lambda: len(asks) >= 4)                                      # asked again, again and again
+    gaps = [b - a for a, b in zip(asks, asks[1:4])]
+    assert min(gaps) >= 0.3 - 0.001, gaps                                       # never sooner than its pause
 
 
 def test_a_busy_store_asked_again_doesnt_write_the_same_journal_again(stub_writer, monkeypatch):

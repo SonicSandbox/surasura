@@ -112,8 +112,8 @@ CHECKING_MODEL = "Checking its timing… downloading Anki Miner's speech model f
 # AB-Q2: the speech model's one question (once for the language, a standing *Needs you* line every book waiting on it
 # holds: `actions.speech_model` answers it) — and, its download failed, asked again with Anki Miner's reason
 SPEECH_NEED = "speech-model"
-# Michi-T1 (Sonic 2026-11-17, PROVISIONAL label): every timed episode's audio heard before its mining, as Mattias's #498
-# built it — off, a release is heard once, beside the mining (`Steps._heard`)
+# Michi-T1 (Sonic 2026-11-17, PROVISIONAL label): every timed episode's audio heard before its mining, as #498 built it
+# — off, a release is heard once, beside the mining (`Steps._heard`)
 EVERY_EPISODE = "connect_spot_every_episode"
 AHEAD_JOBS = 20                 # the next jobs a release is heard ahead for (`Steps.listen_ahead`: the top 20's size)
 AHEAD_END_S = 8.0               # the longest the run's end waits for the check beside it (it ends within a slice)

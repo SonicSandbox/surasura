@@ -30,7 +30,7 @@ held by `tests/connect/test_lineup.py`; plan: `tracks/pipeline/work/AB/plan.md`)
 - **The spot-check** (AB-Q5, `spot_check`): an audiobook's own subtitle (Stage A's audio episode) heard in SAMPLES places
   (~SAMPLE_S each, through the file: `media` cuts them, `transcribe` listens) and each compared with the subtitle's
   lines there (`overlap`); MATCHES of them at MATCH or more → timed. Kept per subtitle and audio file (`spot.json`).
-- **A timed video's release** (audio quality Tier 1 made fast, Michi-T1 on Mattias's #498): the episodes of one release
+- **A timed video's release** (audio quality Tier 1 made fast, Michi-T1 on #498): the episodes of one release
   share one audio track, so one episode's verdict is its release's (`release_key`: the video's folder, its name's
   release group, show, season and special, its extension and a dub's mark), kept beside the episodes' own.
 

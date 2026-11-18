@@ -138,6 +138,347 @@ def test_the_cache_is_used_only_when_its_key_matches(tmp_path):
         third.stop()
 
 
+class _PlanNumbers:
+    """`moves.Numbers`' shape for the cache key: its version counted from 0 in each process (and still 0 at the start,
+    before the plan is read), the plan file's stamp as last read (`plan_key`) and as on disk now (`plan_stamp`)."""
+
+    def __init__(self, table, version, read, on_disk):
+        self.table, self.version, self.read, self.on_disk = table, version, read, on_disk
+
+    def __call__(self):
+        return self.version, self.table
+
+    def plan_key(self):
+        return self.read
+
+    def plan_stamp(self):
+        return self.on_disk
+
+
+def test_the_cache_survives_a_restart_whose_numbers_are_not_read_yet(tmp_path):
+    """The window reads the plan's numbers only after its first frame, and their version starts at 0 in each process:
+    the cache is keyed on the plan file's stamp instead, so the next start shows it — unless a Generate wrote another
+    plan since."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    # the next start: the numbers not read yet (version 0, no plan read), the same plan on disk
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers({}, 0, None, (11, 500)))
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert views[0][1].cached
+    finally:
+        again.stop()
+    # a Generate since: another plan on disk, so the cache's figures are not shown
+    third = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers({}, 0, None, (12, 640)))
+    views3, _ = _collect(third)
+    third.start()
+    try:
+        assert _wait(lambda: views3)
+        assert not views3[0][1].cached
+    finally:
+        third.stop()
+
+
+def test_a_stand_in_without_a_plan_stamp_keys_the_cache_on_its_own_version(tmp_path):
+    """A numbers provider with no plan file (a stand-in: no `plan_key` / `plan_stamp`) keeps the key it had: its own
+    version — the same one matches, another doesn't."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=lambda: (3, table))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    for version, cached in ((3, True), (4, False)):
+        again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=lambda v=version: (v, table))
+        views, _ = _collect(again)
+        again.start()
+        try:
+            assert _wait(lambda: views)
+            assert views[0][1].cached is cached
+        finally:
+            again.stop()
+
+
+class _ReloadedNumbers(_PlanNumbers):
+    """A Generate's plan read on the numbers' worker just after a look took its figures: the figures it handed out are
+    the old plan's, the plan it says it read is the new one from then on."""
+
+    def __call__(self):
+        out = super().__call__()
+        self.read = self.on_disk = (12, 640)
+        return out
+
+
+def test_the_cache_is_keyed_on_the_plan_its_figures_came_from_not_one_read_during_the_build(tmp_path):
+    """The look's figures are read before its build, the cache's key after it: a new plan read between the two (a
+    Generate ending while the window looks) must not key the old plan's figures as the new one's — the next start would
+    show them as current."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                          cache_file=cache, numbers=_ReloadedNumbers(table, 3, (11, 500), (11, 500)))
+    reader.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+    finally:
+        reader.stop()
+    with open(cache, encoding="utf-8") as f:
+        assert json.load(f)["key"][3] == [11, 500]
+
+
+class _LoadingNumbers(_PlanNumbers):
+    """`moves.Numbers` at the start: nothing read yet (`why`), version 0 and no table, until `load` — the plan read on
+    its worker, which the window asks for only after its first frame — hands the table over (the reader is told by
+    its `refresh`, as `on_change` does)."""
+
+    def __init__(self, table, read, on_disk):
+        super().__init__({}, 0, None, on_disk)
+        self._loaded = table, read
+        self.said = "not read yet"
+
+    def why(self):
+        return self.said
+
+    def load(self):
+        self.table, self.read = self._loaded
+        self.version, self.said = 1, None
+
+    def changed(self, since):
+        """`moves.Numbers.changed`: the ids whose figures changed after `since` — from version 0's empty table, the
+        loaded table's own. The cached figures were never version 0's, so the reader mustn't ask from there."""
+        return set() if since == self.version else set(self.table)
+
+
+def _figures(view, keys):
+    """The figures Current paints for the rows `keys`: each row's % known and *N new*, and each of its episodes'."""
+    return {r.key: (r.pct, r.n_new, tuple((e.id, e.pct, e.n_new) for e in r.episodes))
+            for r in view.rows if r.key in keys}
+
+
+def test_the_first_screens_figures_never_blank_before_the_numbers_first_load(tmp_path):
+    """The cached first screen shows last session's % known and *N new* at once; the first live look comes before the
+    numbers have read the plan (their load starts after the first frame and takes a while on a big plan). Every view
+    until the load answers keeps the cached rows' figures — never the rows without them and then back (a blink at
+    every start) — and the load's own view shows the same figures."""
+    for language in ("ja", "zh"):
+        seed = window_seed.build(language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        _version, table = seed.numbers()
+        first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+        first.start()
+        assert _wait(lambda: os.path.exists(cache))
+        first.stop()
+        numbers = _LoadingNumbers(table, (11, 500), (11, 500))
+        again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=numbers)
+        views, _ = _collect(again)
+        again.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views)), language     # the first live look, unloaded
+            cached = views[0][1]
+            assert cached.cached, language
+            shown = _figures(cached, {r.key for r in cached.rows})
+            assert any(n is not None for _pct, n, _eps in shown.values()), language   # the cache has figures to keep
+            before = len(views)
+            numbers.load()
+            again.refresh()
+            assert _wait(lambda: len(views) > before and again._numbers_version == 1), language
+            for k, (_tid, view) in enumerate(views):
+                assert _figures(view, shown) == shown, (language, k, view.cached)
+        finally:
+            again.stop()
+
+
+def test_the_cached_figures_go_once_the_load_answers_and_a_cache_written_meanwhile_keeps_them(tmp_path):
+    """The cached rows' figures last only until the numbers' first load answers: its own figures (another plan's
+    stand-aside, faded; or none at all) replace them in the next view. A cache written while they last carries them,
+    their fade and the plan they came from — never the key of a plan not read yet (None), which would match a start
+    with no plan on disk and show figures for a plan that isn't there."""
+    from app.services import moves
+    seed = window_seed.build(language="zh")
+    cache = str(tmp_path / "window_cache_zh.json")
+    _version, table = seed.numbers()
+    kept = moves.Kept(table)                                    # last session: the plan stood aside, figures faded
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(kept, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    os.utime(cache, (0, 0))                                     # (a rewrite is seen by its mtime)
+    numbers = _LoadingNumbers({}, (11, 500), (11, 500))         # the load will answer: no figures
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=numbers)
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: any(not v.cached for _, v in views))
+        live = [v for _, v in views if not v.cached][0]
+        faded = [e.new_faded for r in live.rows for e in r.episodes if e.n_new is not None]
+        assert faded and all(faded)                             # the cached figures, faded as they were shown
+        assert _wait(lambda: os.path.getmtime(cache) > 0)       # written again while they last
+        with open(cache, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["key"][3] == [11, 500] and data["faded"] is True
+        assert {r[0]: tuple(r[1:]) for r in data["numbers"]}.items() <= dict(table).items()
+        before = len(views)
+        numbers.load()                                          # answers with no figures (no plan's numbers)
+        again.refresh()
+        assert _wait(lambda: len(views) > before and again._numbers_version == 1)
+        assert all(r.n_new is None and r.pct is None for r in views[-1][1].rows)
+    finally:
+        again.stop()
+
+
+def test_a_cache_owed_at_the_stop_while_the_cached_figures_last_keeps_them(tmp_path):
+    """H-T2's stop (the window's command still waiting: the store's own view written under the key owed) while the
+    numbers haven't read the plan yet — a quit in the first seconds: the view written is built with the cached figures
+    the screen shows, never the numbers' empty table under that plan's key (the next start's rows without figures)."""
+    seed = window_seed.build(language="ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    _version, table = seed.numbers()
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=5.0,
+                                         cache_file=cache, numbers=_LoadingNumbers(table, (11, 500), (11, 500)))
+    views, _ = _collect(again)
+    again._first_screen()
+    again._look()                                        # the first live look, the numbers not read yet
+    row = views[-1][1].rows[4]
+    again.expect({e.id: "graduated" for e in row.episodes})
+    again._look()                                        # the command's view: never cached, the key owed
+    os.remove(cache)
+    again.start()
+    again.stop()                                         # the quit, the command still waiting
+    with open(cache, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["key"][3] == [11, 500]
+    written = {r[0]: tuple(r[1:]) for r in data["numbers"]}
+    assert written and written.items() <= dict(table).items()
+
+
+def _cached_start(seed, cache, table, numbers):
+    """A session that writes the first screen's cache (its figures `table`, the plan (11, 500)), then the next start's
+    reader over `numbers` (its views collected), not started yet."""
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=numbers)
+    views, _ = _collect(again)
+    return again, views
+
+
+def _shown_faded(view):
+    """Every *N new* the view paints: whether each is faded (rows and episodes)."""
+    return [r.new_faded for r in view.rows if r.n_new is not None] + \
+        [e.new_faded for r in view.rows for e in r.episodes if e.n_new is not None]
+
+
+def test_a_move_before_the_numbers_first_load_fades_the_cached_figures_and_the_next_start_shows_them_faded(tmp_path):
+    """The cached rows' *N new* were worked out for the order as the cache was written. A move before the numbers'
+    first load (a drop in the first seconds) changes *N new* on the moved row and every row after it, and the numbers
+    can't follow it yet: the figures stay, faded — the rule for figures that can't follow the order — never shown as
+    current. A cache written meanwhile keeps the fade (it is keyed on the new order), so the start after that, the
+    load still not answered, shows them faded too (the intent keeper's probe, train 42)."""
+    for language in ("ja", "zh"):
+        seed = window_seed.build(language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        _v, table = seed.numbers()
+        again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+        again.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views)), language
+            live = [v for _, v in views if not v.cached][-1]
+            assert _shown_faded(live) and not any(_shown_faded(live)), language     # nothing moved yet: as cached
+            now_ids = {r["id"] for r in seed.items if r["tier"] == "now"}
+            mover = next(r for r in live.rows[2:]
+                         if r.n_new is not None and all(e.id in now_ids for e in r.episodes))
+            top = min(r["ord"] for r in seed.items if r["tier"] == "now")
+            os.utime(cache, (0, 0))                                             # (a rewrite is seen by its mtime)
+            seed.library.commit(items=[{"id": e.id, "ord": top - 1000 + k} for k, e in enumerate(mover.episodes)],
+                                order=True)                                     # the learner drags it to the top
+            assert _wait(lambda: views[-1][1].rows[0].key == mover.key), language
+            moved = views[-1][1]
+            assert moved.rows[0].n_new == mover.n_new, language                 # kept: never a blank ...
+            assert all(_shown_faded(moved)), language                           # ... and faded, every row
+            assert _wait(lambda: os.path.getmtime(cache) > 0), language         # the cache written again meanwhile
+            with open(cache, encoding="utf-8") as f:
+                assert json.load(f)["faded"] is True, language
+        finally:
+            again.stop()
+        third = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=_LoadingNumbers(table, (11, 500), (11, 500)))
+        views3, _ = _collect(third)
+        third.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views3)), language
+            shown = views3[0][1]
+            assert shown.cached and shown.rows[0].key == mover.key, language
+            for _tid, view in views3:                                           # the cached screen and the looks
+                assert _shown_faded(view) and all(_shown_faded(view)), (language, view.cached)
+        finally:
+            third.stop()
+
+
+def test_a_command_on_its_way_before_the_numbers_first_load_fades_the_cached_figures(tmp_path):
+    """The window's own command (*Move to Finished*, read in its new place before the store has it) moves the order as
+    much as a drop the store holds: the cached figures fade at once, never at their old values in the new order while
+    the write is on its way."""
+    seed = window_seed.build(language="ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    _v, table = seed.numbers()
+    again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+    again._first_screen()
+    again._look()                                        # the first live look: as cached
+    assert not any(_shown_faded(views[-1][1]))
+    row = views[-1][1].rows[1]
+    again.expect({e.id: "graduated" for e in row.episodes})
+    again._look()                                        # the command's view, the store not written yet
+    view = views[-1][1]
+    assert all(r.key != row.key for r in view.rows[:3])
+    assert _shown_faded(view) and all(_shown_faded(view))
+
+
+def test_a_cache_written_by_another_app_version_shows_its_figures_faded(tmp_path, monkeypatch):
+    """An update since the cache was written: the plan is the old version's, and the numbers' load will find it out of
+    date (a Generate first) — the cached figures are never the new engine's, so they show faded from the first screen
+    on, as the load will keep them (`moves.Numbers.seed`), never as current and then gone."""
+    seed = window_seed.build(language="zh")
+    cache = str(tmp_path / "window_cache_zh.json")
+    _v, table = seed.numbers()
+    monkeypatch.setattr(library_reader, "APP_VERSION", "3.0.15", raising=False)
+    again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+    monkeypatch.setattr(library_reader, "APP_VERSION", "3.0.16")                # the update
+    again.start()
+    try:
+        assert _wait(lambda: any(not v.cached for _, v in views))
+        assert views[0][1].cached
+        for _tid, view in views:                         # the first screen itself, and the looks after it
+            assert _shown_faded(view) and all(_shown_faded(view)), view.cached
+    finally:
+        again.stop()
+
+
 def test_a_damaged_cache_is_no_cache(tmp_path):
     seed = window_seed.build()
     cache = tmp_path / "window_cache_ja.json"
@@ -408,9 +749,9 @@ def test_the_first_screens_cache_is_written_at_the_next_quiet_look_not_in_the_lo
     writes = []
     real_write = reader._write_cache
 
-    def spy(view, key):
+    def spy(view, key, numbers=None):
         writes.append(key)
-        real_write(view, key)
+        real_write(view, key, numbers)
     monkeypatch.setattr(reader, "_write_cache", spy)
     views, _ = _collect(reader)
     reader._look()                                       # the look that builds the view

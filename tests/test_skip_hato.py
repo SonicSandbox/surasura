@@ -281,3 +281,24 @@ def test_the_skips_undo_lets_a_refused_hand_over_in_with_its_video(language):
         (item,) = _ids(again)
         assert _pairing_of(again, item)["video_path"] == record["video_path"]
         assert again.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = ?", (ls.DROP_SKIPPED,)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("arrivals", [1, 0])
+def test_reset_never_takes_in_a_refused_hand_overs_file(language, arrivals):
+    """Reset (`reset_order`: untracked files join as new) keeps a refused hand-over's file out as the disk sync does —
+    also with New arrivals off (2.x's library, where Reset adds hato's files to NOW)."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+    path, record = _hato_drop(data_dir, language, video, 3)
+    assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        again.bookkeeping({"arrivals_on": arrivals}, copy_carries=True)
+        again.reset_order()
+        assert _ids(again) == []
+        again.sync_disk()
+        assert _ids(again) == []

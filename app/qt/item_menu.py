@@ -251,8 +251,23 @@ def give_skip(moves, path, ids=(), keys=(), told=None, toast=True, ticket=None):
     Undo). -> the writer's number, or None (refused)."""
     if ticket is None:
         ticket = drag.Ticket(strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path), tuple(keys), list(ids))
-    if told is not None:
-        ticket.told = lambda event: told(ticket, event)
+    tray = getattr(getattr(moves, "win", None), "arrivals_tray", None)
+    leaves = None
+    if tray is not None and hasattr(tray, "skip_leaves") and moves.writer.can_write():
+        try:                                         # Kura-NA: New arrivals' rows of the folder leave at the press
+            leaves = tray.skip_leaves(path, ids)
+        except Exception as e:                       # (the store's view takes them out as it lands)
+            print(f"Item menu: New arrivals' rows weren't taken out at the skip's press: {e!r}")
+    mine, earlier = told, ticket.told
+
+    def tell(event):
+        if leaves is not None:
+            leaves(event)
+        if mine is not None:
+            mine(ticket, event)
+        elif earlier is not None:
+            earlier(event)
+    ticket.told = tell
     return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
 
 

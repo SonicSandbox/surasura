@@ -631,8 +631,9 @@ class FoldersWindow(windows.SecondaryWindow):
 
     def skip_folder(self, path=None):
         """Q7 *Skip a folder…*: the wizard's picker (`pick_dialog`, `SKIP_TITLE`) starting in the first folder being read
-        (`path`: tests), then a press — its arc from the press — while the store's own rule is asked on the looks'
-        worker (`SourceLooks.skip_refused`; behind a look under way, this window's line says it waits): refused,
+        that the last look reached (Kura-NA: never a share that isn't answering — the dialog would wait on it; `path`:
+        tests), then a press — its arc from the press — while the store's own rule is asked on the looks' asks worker
+        (`SourceLooks.skip_refused`: a store read, never in line behind a look, which may hang on a share): refused,
         `FOLDER_REFUSED` in this window's line; else the window's writer skips it (`item_menu.give_skip`, ⋯'s one rule:
         one change, its toast with Undo; a refusal meanwhile is the writer's note). Lean B (2026-10-24, PROVISIONAL):
         the arc turns until the skip is saved, then this window's own line says so with the toast's one Undo
@@ -644,7 +645,8 @@ class FoldersWindow(windows.SecondaryWindow):
         if looks is None or moves is None or why_not(self.shell) is not None or qpress.live(self.shell, key):
             return False
         if path is None:
-            start = next((line.source["path"] for line in self.lines.values()), "") or windows.content_folder()
+            start = next((line.source["path"] for line in self.lines.values()
+                          if line.source.get("reachable") is not False), "") or windows.content_folder()
             path = self.pick_dialog(W.SKIP_TITLE, start)
             if not path:
                 return False
@@ -652,12 +654,10 @@ class FoldersWindow(windows.SecondaryWindow):
         language = self.lines_of
         from app.qt import bridge, item_menu
         relay = bridge.Relay(self.shell)                 # the answer heard even once the window closed
-        busy = looks.busy() if hasattr(looks, "busy") else False
         p = qpress.begin(self.skip, key, win=self.shell)  # its arc, painted before the looks' worker is asked
         if p is None:
             relay.deleteLater()
             return False
-        waiting = S.SOURCES_SKIP_QUEUED.format(name=os.path.basename(path) or path) if busy else None
 
         def ended(failed=False, words=None):
             if p.live():
@@ -667,8 +667,6 @@ class FoldersWindow(windows.SecondaryWindow):
                     windows.say_in_bar(self.shell, words)
             elif words is not None:
                 self.say(words)
-            elif waiting is not None and self.status.text() == waiting:
-                self.say("")
 
         def told(ticket, event):
             win = self if not self.gone else windows.opened(self.shell, WINDOW)   # (Q7A-5: opened again meanwhile)
@@ -703,8 +701,6 @@ class FoldersWindow(windows.SecondaryWindow):
                 if given is None:                         # refused, or broke (H8): never a press left turning
                     ended(failed=True, words=None if self.gone else refused)
         relay.said.connect(checked)
-        if waiting is not None:
-            self.say(waiting)                             # behind a look under way: said, never silent
         asks = getattr(looks, "skip_refused", None)
         if asks is None:                                  # (no pre-check: the writer's own rule answers)
             checked(None)

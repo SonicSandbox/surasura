@@ -1157,6 +1157,11 @@ def _skips_moved(win, change, undone=False):
     Remove's."""
     if getattr(change, "folder", None) is None:
         return
+    try:                                             # Kura-NA: hato reads the skipped folders from surasura.json
+        from app import tools_entry
+        tools_entry.refresh_soon()
+    except Exception as e:
+        print(f"Window drag: surasura.json wasn't refreshed after a skip: {e!r}")
     try:
         from app.qt import settings_sources
         settings_sources.skips_moved(win, undone=change if undone else None)

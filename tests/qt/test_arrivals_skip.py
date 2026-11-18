@@ -60,10 +60,17 @@ class FakeLooks:
 
     def __init__(self, choices):
         self.choices, self.asks, self.listings = choices, [], 0
+        self.under_ids, self.unders = {}, []
 
     def skippable(self, ids, then):
         self.asks.append(list(ids))
         threading.Thread(target=then, args=(list(self.choices),), daemon=True).start()
+        return True
+
+    def under(self, path, then):
+        """Kura-NA: the items a skip of `path` takes, as the store reads them (`under_ids`), on a thread of its own."""
+        self.unders.append(path)
+        threading.Thread(target=then, args=(self.under_ids.get(path),), daemon=True).start()
         return True
 
     def folders(self, ids, then, detail=False):                       # (the rows' folder names: none here)
@@ -221,3 +228,65 @@ def test_a_skip_takes_the_arrivals_rows_out_in_one_change_and_one_undo_brings_th
     assert wait_until(lambda: key in tray.keys() and list(tray.arrival(key).item_ids) == ids, 5)
     assert wait_until(lambda: win.looks.listings > listed, 5)
     assert [c[0] for c in writer.calls] == ["skip_folder", "undo"]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_skips_rows_leave_at_its_press_while_the_store_is_busy_and_come_back_with_its_undo(world, language):
+    # Kura-NA (a Send report: "when i selected the folder to skip i expected to immediately remove it from new arrivals
+    # but its still there"): the store busy (the skip waits to be saved), the row it was asked from leaves at the press,
+    # and every other row the store says lies under the folder leaves once that read answers — before anything is
+    # saved. Undone before it lands, they come back; nothing else moved.
+    _seed, win, writer, row = world(language)
+    tray = tray_of(win)
+    rows = tray_rows(win)
+    other = next(r for r in rows if r.key != row.key)
+    stays = [r.key for r in rows if r.key not in (row.key, other.key)]
+    extras = win.looks.choices[1]
+    win.looks.under_ids[extras] = list(row.arrival.item_ids) + list(other.arrival.item_ids)
+    writer.under[extras] = win.looks.under_ids[extras]
+    writer.stuck = True
+    tray.skip_folder(row.arrival, extras)
+    assert row.key not in tray.keys()                                 # the press itself, nothing saved yet
+    assert wait_until(lambda: other.key not in tray.keys(), 5)        # the store's read: its other row too
+    assert writer.pending() == 1 and all(k in tray.keys() for k in stays)
+    next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
+    assert wait_until(lambda: row.key in tray.keys() and other.key in tray.keys(), 5)
+    assert tray.leaving == frozenset()
+    writer.free()
+
+
+def test_a_row_only_partly_under_the_folder_stays_until_the_store_says(world):
+    # The store's read is the truth: a row of a title whose episodes lie in two folders keeps showing (only the files
+    # under the folder leave, in the store's own view), though the press hid it at first.
+    _seed, win, writer, row = world()
+    tray = tray_of(win)
+    extras = win.looks.choices[1]
+    ids = list(row.arrival.item_ids)
+    win.looks.under_ids[extras] = ids[:-1] if len(ids) > 1 else []
+    writer.stuck = True
+    tray.skip_folder(row.arrival, extras)
+    assert row.key not in tray.keys()
+    assert wait_until(lambda: row.key in tray.keys(), 5)
+    writer.free()
+
+
+def test_a_skip_the_writer_refuses_takes_no_row_away(world):
+    _seed, win, writer, row = world(writable=False)
+    tray = tray_of(win)
+    tray.skip_folder(row.arrival, win.looks.choices[1])
+    settle()
+    assert row.key in tray.keys() and tray.leaving == frozenset() and calls(writer, "skip_folder") == []
+
+
+def test_settings_skip_a_folder_takes_the_trays_rows_of_that_folder_at_its_press(world):
+    # Settings' *Skip a folder…* (no row asked it): every row the store says lies under the folder leaves New arrivals
+    # once that read answers — before the busy store saves the skip.
+    from app.qt import item_menu
+    _seed, win, writer, row = world()
+    tray = tray_of(win)
+    folder = win.looks.choices[2]
+    win.looks.under_ids[folder] = list(row.arrival.item_ids)
+    writer.stuck = True
+    assert item_menu.give_skip(win.moves, folder) is not None
+    assert wait_until(lambda: row.key not in tray.keys(), 5) and writer.pending() == 1
+    writer.free()

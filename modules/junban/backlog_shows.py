@@ -140,6 +140,13 @@ def counted_names(language, bare=True):
     return {name for item in items if item.tier in COUNTED for name in item.names}
 
 
+def _folder(name):
+    """A key's folder part, or None: a text card's `¶/<key>` (Kyou-D) is its key's, never the folder `¶`."""
+    if name.startswith(source_names.READING + "/"):
+        name = name[len(source_names.READING) + 1:]
+    return name.split("/", 1)[0] if "/" in name else None
+
+
 def look(notes, items):
     """The offer for `notes` (`{note id: MiscInfo}`) against `items` (`library`'s) -> `{"cards", "all", "shows":
     [Show…]}` (most cards first), or None when no card names a source. `all`: the deck's new cards, sourced or not.
@@ -165,13 +172,13 @@ def look(notes, items):
         if item.work is not None:
             of_work.setdefault(item.work, []).append(item)
         for name in item.names:
-            if "/" in name:
-                folders.setdefault(name.split("/", 1)[0], set()).add(item.work if item.work is not None else
-                                                                     ("item", item.id))
+            if _folder(name) is not None:
+                folders.setdefault(_folder(name), set()).add(item.work if item.work is not None else
+                                                             ("item", item.id))
     shows = {}
     for k, n in tally.items():
         hits = by_name.get(k) or ()
-        owners = folders.get(k.split("/", 1)[0]) if not hits and "/" in k else None
+        owners = folders.get(_folder(k)) if not hits and _folder(k) is not None else None
         if owners and len(owners) == 1:
             owner = next(iter(owners))
             hits = of_work.get(owner) if not isinstance(owner, tuple) else [by_id[owner[1]]]

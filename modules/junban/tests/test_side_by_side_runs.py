@@ -276,6 +276,7 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     store, a, b, loose, d = _library("ja")
     store.set_library_options(mine_line=4, side_by_side=True)
     store.receipt(a[0], ls._now())
+    store.record_analysed(store.versions()["order_version"])    # (Kyou-D: the list is a Generate's of this order)
     titles = store.side_by_side()
     assert titles == [a, b, [loose]], "Kyou-D: D is below the Soon line, no title Junban weaves"
     side = (titles, {}, {b[0]: {pins.source_of(B_SOURCE)}, loose: {pins.source_of(C_SOURCE)},
@@ -284,6 +285,13 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: side)
     fake = _fake_with(tmp_path, *STUDIED)
+    # Kyou-D (ruling 3): a card is its word's first title on the journey — the list meets B's words in B's files and
+    # the loose file's in its own (numbered as Generate numbers them), so A, whose files hold none, has none
+    from modules.junban import show_tags
+    from modules.junban.tests.test_reposition import _results
+    number = show_tags.file_items("ja").index
+    _results(tmp_path, progressive=[(number(b[0]) + 1, "老婆", "老婆", 30, 3), (number(b[1]) + 1, "眼鏡", "眼鏡", 10, 1),
+                                    (number(loose) + 1, "散歩", "散歩", 20, 2)])
     with _patched(fake):
         report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
@@ -302,7 +310,7 @@ def test_a_title_whose_new_cards_are_all_pinned_is_counted_with_them_through_a_r
     monkeypatch.setattr(connect, "PINS", True)
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
-    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    want = [[[1], 1], [[2], 2], [[3], 1], [[4], 0]]       # (Kyou-D, choice 2: the show's 図書館 is off the list)
     for where, job in ((tmp_path, None), (tmp_path / "job", spaced.Job(automatic=True))):
         fake = _fake_with(where, *HIS)
         book = fake.card_of("冒険")["cardId"]

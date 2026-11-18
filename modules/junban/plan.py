@@ -453,9 +453,27 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
             heapq.heappop(heap)
         return heap[0][0] if heap else None
 
+    # Kyou-D (stable phase, the lead's call on Sonic's ruling 3): the turns start with the title that owns the woven
+    # card Anki has first now (the lowest `due` among the list picks), so a re-plan after an odd number of studied
+    # cards keeps every pair as it was instead of swapping them all. While it is one of a round's takers (the first
+    # `width` groups with a list word), the takers go from it, in turn; otherwise the rounds go in Current's order
+    firsts = [entry for entry in picks if TIERS.get(entry[1], 9) <= 0]
+    anchor = (weave_of[min(firsts, key=lambda entry: (entry[3].get("due", inf), entry[3]["card_id"]))[3]["card_id"]]
+              if firsts else None)
+
+    def visits():
+        able = [g for g, k in enumerate(map(top, heaps)) if k is not None and k[0] <= 0]
+        takers = able if width is None else able[:width]
+        if anchor not in takers:
+            return range(groups)
+        at = takers.index(anchor)
+        front = takers[at:] + takers[:at]
+        return front + [g for g in range(groups) if g not in front]
+
     while any(k is not None and k[0] <= 0 for k in map(top, heaps)):     # Kyou-D: while a group has a list word
         took = 0                                    # Kyou-B: `width` groups a round — the first that can take a turn
-        for g, heap in enumerate(heaps):
+        for g in visits():
+            heap = heaps[g]
             if width is not None and took >= width:
                 break
             while True:

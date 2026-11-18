@@ -384,3 +384,73 @@ def test_a_held_card_whose_word_never_comes_is_not_woven():
     assert _words(stats)[:2] == ["約束", "図書館"] and stats["woven"] == 2
     assert _words(stats)[2:] == [x for x in plain if x not in ("約束", "図書館")]
     assert stats["side_picks"] == [1, 2]
+
+
+# --- Kyou-D: a stable phase (Sonic's ruling 3, 2026-11-17; the lead's call: anchor on Anki's first woven card) ------ #
+# Every plan used to start the turns with the first title: once the learner studied an odd number of woven cards, the
+# next re-plan swapped every pair still to come (A B A B → B A B A, rewritten). The turns now start with the title that
+# owns the woven card Anki holds first, so a re-plan after any number of studied cards writes the same turns.
+
+def _phase_scene(language):
+    """A: w0..w3 (files 1–4), B: w4..w7 (files 10–13), every one a list word, ranked by its row."""
+    w = WORDS[language]
+    rank = {word: n for n, word in enumerate(w)}
+    cards = [_card(n + 1, word, sort=(n + 1 if n < 4 else n + 6,)) for n, word in enumerate(w)]
+    return cards, rank, [[1, 2, 3, 4], [5, 6, 7, 8]]
+
+
+def _studied(stats, cards, n):
+    """The cards still new once the first `n` of the planned order are studied, each at the place the plan gave it."""
+    gone = {row.card_id for row in stats["order"][:n]}
+    place = {row.card_id: row.position for row in stats["order"]}
+    return [dict(c, due=place[c["card_id"]]) for c in cards if c["card_id"] not in gone]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+@pytest.mark.parametrize("studied", [1, 3])
+def test_a_re_plan_after_an_odd_number_of_studied_cards_swaps_no_pair(language, studied):
+    """The tester's 173 of 177 moves: A's first card studied, the re-plan starts with B (whose card Anki holds first)
+    and the turns still to come stay as they were — no card rewritten; the same after three."""
+    cards, rank, groups = _phase_scene(language)
+    _writes, first = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
+    assert [row.weave[0] for row in first["order"]] == [0, 1, 0, 1, 0, 1, 0, 1]
+    left = _studied(first, cards, studied)
+    writes, again = P.plan(left, rank, weave=groups, width=2)
+    assert _words(again) == _words(first)[studied:]
+    assert writes == [], "the turns kept their places: nothing to write"
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_first_weave_starts_with_the_title_whose_card_anki_holds_first(language):
+    """Before any weave, Anki's order is the journey's: A's words first, so A leads as before. When B's card is first
+    in Anki (B was woven first last time), B leads; the turns still alternate one by one."""
+    cards, rank, groups = _phase_scene(language)
+    _writes, plain = P.plan([dict(c) for c in cards], rank, weave=groups, width=2)
+    assert plain["order"][0].weave[0] == 0
+    ahead = [dict(c, due=50) if c["card_id"] == 5 else dict(c) for c in cards]
+    _writes, stats = P.plan(ahead, rank, weave=groups, width=2)
+    assert [row.weave[0] for row in stats["order"]] == [1, 0, 1, 0, 1, 0, 1, 0]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_title_below_the_takers_never_leads_though_anki_holds_its_card_first(language):
+    """Three titles, two at a time: C's card first in Anki does not pull C ahead of A and B — the anchor leads only
+    while it is one of the round's takers; once A and B run out, C goes on."""
+    w = WORDS[language]
+    rank = {word: n for n, word in enumerate(w)}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[1], sort=(2,)), _card(3, w[2], sort=(10,)),
+             _card(4, w[3], sort=(11,)), _card(5, w[4], sort=(20,), due=10)]
+    _writes, stats = P.plan(cards, rank, weave=[[1, 2], [3, 4], [5]], width=2)
+    assert [row.weave[0] for row in stats["order"]] == [0, 1, 0, 1, 2]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_without_a_width_the_rounds_turn_from_the_anchor(language):
+    """Every group at once (no width): B's card first in Anki → each round B, C, A (a turn of the same cycle), never
+    B, A, C."""
+    w = WORDS[language]
+    rank = {word: n for n, word in enumerate(w)}
+    cards = [_card(1, w[0], sort=(1,)), _card(2, w[1], sort=(2,)), _card(3, w[2], sort=(10,), due=10),
+             _card(4, w[3], sort=(11,)), _card(5, w[4], sort=(20,)), _card(6, w[5], sort=(21,))]
+    _writes, stats = P.plan(cards, rank, weave=[[1, 2], [3, 4], [5, 6]])
+    assert [row.weave[0] for row in stats["order"]] == [1, 2, 0, 1, 2, 0]

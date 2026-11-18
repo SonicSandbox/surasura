@@ -11,7 +11,7 @@ Connect made for it) ∪ the scoped deck's cards whose Anki Miner source names t
 rule**, `source_names` (both of Anki Miner's forms: the old bare name and 3.5's `folder — name`; exact keys, never a
 substring; HTML entities read as the characters they stand for), for the item's paired video (its pairing record's
 `video_path`) and its own file. A key two titles of the library share (`Season 01 — 01`) names neither. A `MiscInfo`
-with no time after ` @ ` (a Migaku note's hint) names nothing.
+with no time after ` @ ` (a Migaku note's hint) names nothing; a book's text card (`@ ¶8`) names its part (Kyou-D).
 
 Pure apart from `read`'s one store read (read-only, `role="reader"`); no Tk, no settings file, no writes.
 """
@@ -169,16 +169,36 @@ def read_side(language):
 SIDE_WIDTH = 2                  # Kyou-B: `plan`'s `width` — the store's `SIDE_TITLES`, two titles take turns at a time
 
 
-def side_groups(language, cards, notes_by_id, side=None):
+def side_groups(language, cards, notes_by_id, side=None, files=None):
     """`plan`'s `weave`: `[[card_id, …], …]`, Current's titles' cards in scope (every title holding a file to study, in
     Current's order — the plan takes them `SIDE_WIDTH` at a time, so a title with no card left hands its turn to the
-    next: Kyou-B) by the pins' own matching (`_matched`: the store's notes, or an Anki Miner source naming one of the
-    title's items). `side`: what `read_side` returns (read here when None). None while side by side is off, or no
-    title has a card in scope."""
+    next: Kyou-B). `side`: what `read_side` returns (read here when None). None while side by side is off, or no
+    title has a card in scope.
+
+    **Which title a card is** (Kyou-D, Sonic's ruling 3, 2026-11-17): the title of the file its word is first met in,
+    in study order — the card's `file` (the journey's own number, set by the planner) through `files` (`show_tags.
+    file_items`: [item id or None] by file number), whatever title it was mined from: a book whose words were mined
+    from a show still holds them, and a title moved up in Current takes its words with it. A card placed in a title
+    not taking turns is none's. A card with no such place (off the list, the priority order's list, numbers that
+    can't be read: `files` None) keeps the mined source — the pins' own matching (`_matched`: the store's notes, or an
+    Anki Miner source naming one of the title's items)."""
     titles, store_notes, names = read_side(language) if side is None else side
     if not titles:
         return None
-    out = _matched(titles, cards, notes_by_id, store_notes, names)
+    rest, placed = cards, None
+    if files:
+        title_of = {item_id: g for g, title in enumerate(titles) for item_id in title}
+        placed, rest = [[] for _title in titles], []
+        for card in cards or ():
+            number = card.get("file")
+            item_id = (files[number - 1] if type(number) is int and 1 <= number <= len(files) else None)
+            if item_id is None:
+                rest.append(card)                   # no journey place to go by: the mined source
+            elif item_id in title_of:
+                placed[title_of[item_id]].append(card["card_id"])
+    out = _matched(titles, rest, notes_by_id, store_notes, names)
+    if placed is not None:
+        out = [first + mined for first, mined in zip(placed, out)]
     return out if any(out) else None
 
 

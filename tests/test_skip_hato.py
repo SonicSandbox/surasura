@@ -302,3 +302,54 @@ def test_reset_never_takes_in_a_refused_hand_overs_file(language, arrivals):
         assert _ids(again) == []
         again.sync_disk()
         assert _ids(again) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_out_file_that_cant_be_registered_now_stays_kept_out_and_comes_in_at_the_next_try(language,
+                                                                                                monkeypatch):
+    """*Read again* lets the kept-out file in by its own write, after the folder's: one that fails then (a locked
+    store, a conflict) stays kept out — never an arrival with no record — and comes in at the next call."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+        (folder,) = [f["id"] for f in store.skipped_folders()]
+    path, record = _hato_drop(data_dir, language, video, 3)
+    assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        real = again.register
+
+        def broke(*_a, **_k):
+            raise ls.StoreConflict("busy a moment")
+        monkeypatch.setattr(again, "register", broke)
+        assert again.read_folder_again(folder)
+        again.sync_disk()
+        assert _ids(again) == []                                                  # still kept out
+        monkeypatch.setattr(again, "register", real)
+        assert again.let_drops_back() == 1
+        (item,) = _ids(again)
+        assert _pairing_of(again, item)["video_path"] == record["video_path"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_newer_refused_record_replaces_the_one_kept_and_a_folder_read_again_meanwhile_takes_the_hand_over(language):
+    """hato refused twice for one file: Read again brings it in by the NEWER record. And a hand-over whose folder was
+    read again between Surasura's two looks at it is taken as any (never kept out by a skip that's gone)."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+        (folder,) = [f["id"] for f in store.skipped_folders()]
+    path, record = _hato_drop(data_dir, language, video, 3)
+    newer = dict(record, show=dict(record["show"], title=record["show"]["title"] + " (new)"))
+    for rec in (record, newer):
+        assert ls.register_headless(language, path, rec, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                    looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        assert again.keep_drop_out(path, newer, folder + 999) is False          # (a skip that isn't there)
+        again.read_folder_again(folder)
+        (item,) = _ids(again)
+        assert _pairing_of(again, item)["show"]["title"] == newer["show"]["title"]

@@ -6923,7 +6923,14 @@ class Store:
         """Undo one recorded change, in any order: a later change by anyone else is protected by the
         conflict rule (an item whose `changed_in` isn't the change's version is skipped, with a note);
         each undo restores the `changed_in` it replaced, so several undos in a row work. Returns the
-        undo's own change (its `notes` say what was skipped), or None when nothing could be undone."""
+        undo's own change (its `notes` say what was skipped), or None when nothing could be undone. Kura-NA: a skip's
+        Undo then lets in the hato files the skip kept out (`let_drops_back`, after the undo's own write)."""
+        out = self._undo_one(change, trashed_paths, rel_paths)
+        if getattr(change, "folder", None) is not None and out is not None:
+            self.let_drops_back()
+        return out
+
+    def _undo_one(self, change, trashed_paths=None, rel_paths=None):
         meta = self.meta()
         if change.epoch != meta["epoch"]:
             raise UndoRefused("the library was rebuilt since; that change can't be undone")
@@ -11172,42 +11179,58 @@ def _store_keep_drop_out(self, path, pairing, folder_id):
     record (`note`: {folder, record}) — never an arrival with no record (it could never be mined, and hato never hands
     a skipped one over again). *Read again* / the skip's Undo registers it with that record (`_unskip`). hato's file is
     never deleted or moved. The exclusion alone moves no version (no item, record or event: `register`'s `skipped`
-    says nothing was written to the library). -> the change (a sync row taken out), or None."""
+    says nothing was written to the library). The skip is checked again inside the command (read again meanwhile: not
+    kept out — hato's hand-over is taken as any); a newer refused record replaces the one kept. -> True when kept out."""
     rel = library_rel(self.data_dir, path)
     if rel is None:
         raise NotInLibrary(f"not in the library: {path}")
     key = path_key(_strip(rel))
+    note = _dumps({"folder": folder_id, "rel": rel, "record": pairing})
     with self._command("register", _producer(pairing)) as cmd:
-        change = None
+        if not self.conn.execute("SELECT 1 FROM exclusions WHERE id = ? AND kind = ?",
+                                 (folder_id, FOLDER_SKIP)).fetchone():
+            return False
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
         if row is not None and self._sync_drop(row[0], rel, pairing):
             self._take_out(cmd, row[0])
-            change = self._change(cmd, "register")
-        if not self.conn.execute("SELECT 1 FROM exclusions WHERE kind = ? AND pattern = ?",
-                                 (DROP_SKIPPED, key)).fetchone():
+            self._change(cmd, "register")
+        if not self.conn.execute("UPDATE exclusions SET note = ? WHERE kind = ? AND pattern = ?",
+                                 (note, DROP_SKIPPED, key)).rowcount:       # (bookkeeping: no view, no version)
             self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES (?, ?, ?, ?, ?)",
-                              (self._root_id(), key, DROP_SKIPPED, _now(),
-                               _dumps({"folder": folder_id, "rel": rel, "record": pairing})))   # (bookkeeping: no
-        return change                                                                          # view, no version)
+                              (self._root_id(), key, DROP_SKIPPED, _now(), note))
+        return True
 
 
-def _store_drops_back(self, folder_id):
-    """(Inside a write.) The skipped folder `folder_id` read again (or its skip undone): each hato file its skip kept
-    out (`DROP_SKIPPED`) is let in — registered with the record it was refused with, so it keeps its video — when it is
-    still there; its exclusion goes either way. A drop that can't be registered now waits for hato's next hand-over."""
-    rows = self.conn.execute("SELECT id, note FROM exclusions WHERE kind = ? AND json_valid(note) AND "
-                             "json_extract(note, '$.folder') = ?", (DROP_SKIPPED, folder_id)).fetchall()
-    for ex_id, note in rows:
-        self.conn.execute("DELETE FROM exclusions WHERE id = ?", (ex_id,))
-        note = _json_dict(note) or {}
+def _store_let_drops_back(self):
+    """Each hato file a skip kept out (`DROP_SKIPPED`) whose folder is no longer skipped (read again, the skip undone)
+    is let in — registered with the record it was refused with, so it keeps its video — in its own command, AFTER the
+    write that read the folder again (never nested in it: a failure rolls back that file alone, and register's own
+    clean-up runs). Its exclusion goes only once it is registered, or when the file is gone; one that can't be
+    registered now stays kept out (never an arrival with no record) and is tried at the next call. Called after
+    `read_folder_again`, after a skip's Undo, and before each hato hand-over (`register_headless`). -> files let in."""
+    if self._cmd is not None or getattr(self, "_depth", 0):
+        return 0                                         # (inside another write: the next call lets them in)
+    with self._reading():
+        rows = self.conn.execute(
+            "SELECT x.id, x.note FROM exclusions x WHERE x.kind = ? AND NOT EXISTS (SELECT 1 FROM exclusions f WHERE "
+            "f.kind = ? AND json_valid(x.note) AND f.id = json_extract(x.note, '$.folder')) ORDER BY x.id",
+            (DROP_SKIPPED, FOLDER_SKIP)).fetchall()
+    n = 0
+    for ex_id, raw in rows:
+        note = _json_dict(raw) or {}
         rel, record = note.get("rel"), note.get("record")
         full = os.path.join(self.data_dir, *str(rel or "").split("/")) if rel else None
-        if not (full and isinstance(record, dict) and record.get("content_key") and os.path.isfile(full)):
-            continue
         try:
-            self.register(full, record)
-        except (NotInLibrary, KeyError, ValueError, OSError) as e:      # (left to hato's next hand-over)
-            print(f"Library: a kept-out hato file wasn't let back in ({rel}): {e!r}")
+            if full and os.path.isfile(full) and isinstance(record, dict) and record.get("content_key"):
+                self.register(full, record)
+                n += 1
+            elif full and os.path.isfile(full):
+                continue                                 # (a record it can't be registered by: stays kept out)
+            with self._writing():
+                self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (ex_id, DROP_SKIPPED))
+        except Exception as e:                           # that file alone: kept out, tried again at the next call
+            print(f"Library: a kept-out hato file wasn't let back in yet ({rel}): {e!r}")
+    return n
 
 
 def _store_skip_choices(self, item_ids, own=False):
@@ -11311,7 +11334,6 @@ def _store_unskip(self, folder_id):
         return False
     self.conn.execute("DELETE FROM exclusions WHERE kind = 'removed' AND json_valid(note) AND "
                       "json_extract(note, '$.folder') = ?", (folder_id,))
-    self._drops_back(folder_id)                            # Kura-NA: hato's refused files, with their records
     self._skips_moved()
     return True
 
@@ -11329,7 +11351,10 @@ def _store_read_folder_again(self, folder_id):
     next look takes its files in as new (shows never shown → New arrivals, SRC-2; never twice, SRC-7). Not on Undo.
     -> True when it was skipped."""
     with self._writing():
-        return self._unskip(folder_id)
+        read = self._unskip(folder_id)
+    if read:
+        self.let_drops_back()                            # Kura-NA: hato's refused files, with their records
+    return read
 
 
 def _store_take_in(self, root_id, found, first=False, rules=None):
@@ -13626,7 +13651,7 @@ Store.skip_folder = _store_skip_folder
 Store.skipped_holding = _store_skipped_holding
 Store._skip_holding = _store_skip_holding
 Store.keep_drop_out = _store_keep_drop_out
-Store._drops_back = _store_drops_back
+Store.let_drops_back = _store_let_drops_back
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved
 Store.read_folder_again = _store_read_folder_again
@@ -15978,9 +16003,9 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
     with store:
         # Kura-NA: a video of a folder the learner skipped is skipped for hato too — its file left where hato wrote it,
         # kept out of the disk sync (train 43's keeper: never an arrival with no record) until the folder is read again
+        store.let_drops_back()                           # (a folder read again since: its kept-out files first)
         held = store._skip_holding([pairing.get("video_path"), pairing.get("subtitle_path")])
-        if held is not None:
-            store.keep_drop_out(path, pairing, held["id"])
+        if held is not None and store.keep_drop_out(path, pairing, held["id"]):
             return Registered(EXIT_DONE, None, "skipped", None, None, None, None)
         if reader:
             store.register_reader(reader)

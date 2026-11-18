@@ -107,6 +107,7 @@ def test_at_rest_every_ring_is_dim_and_the_characters_and_logos_are_drawn(strip)
     for c in P.CIRCLES:
         assert _near(_ring(strip, c, img), C()["line-hi"]), c
     assert strings.PHASE_MARKS == {"arrivals": "届", "surasura": "ス", "junban": "順"}
+    strip.clearFocus()                                                  # (Mado-PZ: the host's first Tab stop)
     assert strip.summary() == strings.PHASE_IDLE
 
 
@@ -295,7 +296,7 @@ def test_the_offline_folder_is_said_in_arrivals_hover_never_amber_and_moves_wait
     st = win.phase.states[P.ARRIVALS]
     assert st.needs is None and win.phase.go(P.ARRIVALS) is None and not (st.waiting or st.running or st.failed)
     assert html.escape("D:\\Anime can't be reached") in win.phase.hover_text(P.ARRIVALS)
-    assert strings.PHASE_PRESS in win.phase.hover_text(P.ARRIVALS)
+    assert strings.PHASE_PRESS_PAUSE in win.phase.hover_text(P.ARRIVALS)          # (Mado-PZ: a click pauses)
     win.offline_text = lambda: ""
     win._show_offline()
     assert win.phase.states[P.ARRIVALS].lines == ()
@@ -332,7 +333,7 @@ def test_at_100_and_200_percent_the_circles_paint_inside_the_footers_height(stri
     img = _image(strip, dpr)
     assert img.height() == round(strip.height() * dpr) <= round(theme.size("footer") * dpr)
     assert _near(_ring(strip, P.SURASURA, img, dpr=dpr), C()["accent"])
-    assert strip.width() == 5 * theme.size("phase-circle") + 4 * theme.size("phase-gap")
+    assert strip.width() == 6 * theme.size("phase-circle") + 5 * theme.size("phase-gap")     # (+ Pause all, Mado-PZ)
 
 
 def test_the_credits_name_ankis_trademark_its_link_and_anki_miners_licence():
@@ -484,8 +485,9 @@ def test_a3_the_hover_is_name_and_what_it_does_then_now_then_the_last_run_named_
     assert "<b>Surasura</b>" in parts[0] and strings.PHASE_ABOUT[P.SURASURA] in parts[0]   # one line: name · what
     assert strings.PHASE_IDLE in parts[1]                               # nothing now, said once
     assert strings.PHASE_DONE.format(what="Generating", time=at) in parts[2]               # the last run, named
-    assert strings.PHASE_PRESS in parts[3] and len(parts) == 4
-    assert strings.PHASE_PRESS not in strip.hover_text(P.ANKI)           # not pressable: no promise of a click
+    assert strings.PHASE_PRESS_PAUSE in parts[3]                         # Mado-PZ: what a click does ...
+    assert strings.PHASE_SETTINGS[0] in parts[4] and len(parts) == 5     # ... and its settings, a right-click away
+    assert strings.PHASE_PRESS_PAUSE in strip.hover_text(P.ANKI)         # every circle pauses: no settings needed
     gen = registry.submit("generate", "Generating", lambda j: None)
     gen.progress("Reading your files", 3, 12)
     strip.set_jobs(registry.snapshot())
@@ -536,35 +538,34 @@ def test_a3_a_standing_line_moving_repaints_no_circle_and_its_words_are_never_ma
     assert "<b>error</b>" not in strip.hover_text(P.MINER) and "&lt;b&gt;error" in strip.hover_text(P.MINER)
 
 
-def test_a3_a_press_on_a_circle_that_opens_says_which_and_one_that_doesnt_does_nothing(strip):
+def test_a3_a_press_on_a_circle_says_which_and_only_the_left_button_presses(strip):
     from PyQt6.QtCore import Qt
     got = []
     strip.opened.connect(got.append)
     strip.set_opens({P.ARRIVALS, P.MINER})
     _click(strip, _centre(strip, P.MINER))
     assert got == [P.MINER]
-    _click(strip, _centre(strip, P.ANKI))                               # no settings given it: nothing
+    _click(strip, _centre(strip, P.ANKI))                               # Mado-PZ: no settings, still a press (pause)
     _click(strip, _centre(strip, P.MINER), Qt.MouseButton.RightButton)  # only the left button presses
-    assert got == [P.MINER]
+    assert got == [P.MINER, P.ANKI]
     from PyQt6.QtTest import QTest
     QTest.mousePress(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(strip, P.ARRIVALS))
     QTest.mouseRelease(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(strip, P.MINER))
-    assert got == [P.MINER]                                             # let go on another circle: no press
+    assert got == [P.MINER, P.ANKI]                                     # let go on another circle: no press
 
 
-def test_a3_the_hand_shows_only_over_a_circle_that_opens(strip):
+def test_a3_the_hand_shows_over_every_circle_and_never_between_two(strip):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
-    strip.set_opens({P.SURASURA})
+    strip.set_opens(set())                                              # Mado-PZ: a click pauses, settings or not
     QTest.mouseMove(strip, _centre(strip, P.SURASURA))
     assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.PointingHandCursor)
-    QTest.mouseMove(strip, _centre(strip, P.ANKI))
-    assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.ArrowCursor)
     gap = strip.rect_of(P.SURASURA).right() + 1.5
     QTest.mouseMove(strip, QPoint(round(gap), strip.height() // 2))
-    assert strip.cursor().shape() == Qt.CursorShape.ArrowCursor          # between two circles: nothing to press
-    strip.set_opens(set())
-    assert strip.focusPolicy() == Qt.FocusPolicy.NoFocus                 # nothing to press: no Tab stop either
+    assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.ArrowCursor)   # between two: nothing to press
+    QTest.mouseMove(strip, _centre(strip, P.ANKI))
+    assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.PointingHandCursor)
+    assert strip.focusPolicy() == Qt.FocusPolicy.TabFocus
 
 
 def test_a3_the_keyboard_tabs_in_moves_with_the_arrows_and_opens_with_enter_or_space(strip):
@@ -580,11 +581,14 @@ def test_a3_the_keyboard_tabs_in_moves_with_the_arrows_and_opens_with_enter_or_s
     assert strip._focus == P.ARRIVALS
     QTest.keyClick(strip, Qt.Key.Key_Return)
     QTest.keyClick(strip, Qt.Key.Key_Right)
-    QTest.keyClick(strip, Qt.Key.Key_Right)                             # past 鉱 and 順 (no settings given them)
+    QTest.keyClick(strip, Qt.Key.Key_Right)                             # Mado-PZ: every circle is a stop (it pauses)
+    assert strip._focus == P.MINER
+    for _ in range(3):
+        QTest.keyClick(strip, Qt.Key.Key_Right)                         # the end: stays
     assert strip._focus == P.ANKI
-    QTest.keyClick(strip, Qt.Key.Key_Right)                             # the end: stays
     QTest.keyClick(strip, Qt.Key.Key_Space)
-    QTest.keyClick(strip, Qt.Key.Key_Left)
+    for _ in range(3):
+        QTest.keyClick(strip, Qt.Key.Key_Left)
     QTest.keyClick(strip, Qt.Key.Key_Enter)
     assert got == [P.ARRIVALS, P.ANKI, P.SURASURA]
     assert strings.PHASE_NAMES[P.SURASURA] in strip.accessibleDescription()
@@ -608,6 +612,8 @@ def test_a3_the_keyboards_circle_is_washed_in_the_accent_and_its_hover_shows(str
             pass
     strip.tooltips = Tips()
     strip.set_opens({P.SURASURA})
+    strip.clearFocus()                                                  # (Mado-PZ: the host's first Tab stop)
+    strip._focus = P.SURASURA
     before = _image(strip).pixelColor(_centre(strip, P.SURASURA) + QPoint(-4, -4))
     strip.window().activateWindow()
     strip.setFocus(Qt.FocusReason.TabFocusReason)
@@ -629,7 +635,8 @@ def junban_world(qapp, tmp_path, monkeypatch):
     w.close()
 
 
-def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circle_opens_its_settings(junban_world):
+def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circles_settings_open_from_its_menu(
+        junban_world):
     from PyQt6.QtWidgets import QLabel
     win = junban_world.win
     assert not hasattr(win, "bar_replan") and not hasattr(win, "bar_connect")
@@ -639,7 +646,7 @@ def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circle
     opened = []
     win.open_setting = lambda target: opened.append(target) or True
     for c in P.CIRCLES:
-        _click(win.phase, _centre(win.phase, c))
+        win.phase.asked.emit(c, "settings")                            # Mado-PZ: the right-click's *Settings*
     assert opened == ["library_folders", "level", "connect_enabled", "junban", "known"]
 
 
@@ -651,9 +658,9 @@ def test_a3_each_circles_settings_target_is_a_place_the_settings_page_knows():
     assert settings_catalog.locate(phase_strip.SETTINGS[P.ANKI]) == ("known", None)
 
 
-def test_a3_a_press_really_opens_the_settings_tab_on_that_circles_section(world):
+def test_a3_settings_from_the_menu_really_opens_the_settings_tab_on_that_circles_section(world):
     win = world.win
-    _click(win.phase, _centre(win.phase, P.ANKI))
+    win.phase.asked.emit(P.ANKI, "settings")
     assert win.current_tab() == "settings"
     page = win.settings_page
     assert wait_until(lambda: "known" in page.slabs and page.slabs["known"].isVisible())
@@ -670,7 +677,7 @@ def test_a3_without_junban_its_circle_has_no_settings_to_open(qapp, tmp_path, mo
     try:
         assert wait_until(lambda: answered == [1, 2])                   # the worker asked and its answer landed
         assert P.JUNBAN not in w.win.phase.opens and P.ANKI in w.win.phase.opens
-        assert strings.PHASE_PRESS not in w.win.phase.hover_text(P.JUNBAN)
+        assert "settings" not in [what for _p, what in w.win.phase.menu_entries(P.JUNBAN)]
     finally:
         w.close()
 
@@ -721,7 +728,7 @@ def test_a7_junban_is_amber_only_while_a_decision_waits_in_its_window_and_its_pr
         st = strip.states[P.JUNBAN]
         assert st.needs is None and not st.failed and strip.go(P.JUNBAN) is None, line
         assert strip.hover_text(P.JUNBAN).count(html.escape(str(line))) == 1, line   # said once, as its now-line
-        assert strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
+        assert strings.PHASE_PRESS_PAUSE in strip.hover_text(P.JUNBAN)
     strip.set_status(_snap(replan=rp.InJunban(rp.RESTORE_FIRST)))
     assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST and strip.go(P.JUNBAN) == P.Go("junban", "restore")
     assert html.escape(strings.PHASE_PRESS_RESTORE) in strip.hover_text(P.JUNBAN)
@@ -735,7 +742,8 @@ def test_a7_junban_is_amber_only_while_a_decision_waits_in_its_window_and_its_pr
     strip.set_status(_snap(replan=rp.UP_TO_DATE))                        # cleared: amber and red off, the settings again
     st = strip.states[P.JUNBAN]
     assert st.needs is None and not st.failed and strip.go(P.JUNBAN) is None
-    assert html.escape(rp.UP_TO_DATE) in strip.hover_text(P.JUNBAN) and strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
+    assert html.escape(rp.UP_TO_DATE) in strip.hover_text(P.JUNBAN)
+    assert strings.PHASE_PRESS_PAUSE in strip.hover_text(P.JUNBAN)
 
 
 def test_a3_in_the_window_junbans_press_on_an_unfinished_reorder_opens_junbans_window(junban_world, monkeypatch):
@@ -751,7 +759,8 @@ def test_a3_in_the_window_junbans_press_on_an_unfinished_reorder_opens_junbans_w
     assert launched == ["junban"] and opened == []
     win.show_status(win.services.status.snapshot()._replace(replan=rp.UP_TO_DATE))
     _click(win.phase, _centre(win.phase, P.JUNBAN))
-    assert launched == ["junban"] and opened == ["junban"]               # (Junban's settings section)
+    assert launched == ["junban"] and opened == [] and win.services.paused == {P.JUNBAN}   # Mado-PZ: no decision, a
+    #                                                                                        pause
 
 
 def test_a3_a_circle_lit_by_a_press_with_no_job_yet_says_the_press_not_nothing_running(strip):
@@ -827,7 +836,7 @@ def test_a3_the_window_coming_back_never_pops_the_bubble_by_itself(strip):
     strip.window().activateWindow()
     strip.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
     assert wait_until(lambda: strip.hasFocus())
-    assert tips.asked == [] and strip._focus == P.SURASURA              # washed, but no bubble
+    assert tips.asked == [] and strip._focus == P.ARRIVALS              # washed, but no bubble (the first circle)
     strip.clearFocus()
     strip.setFocus(Qt.FocusReason.TabFocusReason)
     assert wait_until(lambda: tips.asked)
@@ -850,19 +859,16 @@ def test_a3_a_double_click_or_a_held_key_opens_once(strip):
     for repeat in (False, True, True):
         QApplication.sendEvent(strip, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space,
                                                 Qt.KeyboardModifier.NoModifier, " ", repeat))
-    assert got == [P.SURASURA, P.SURASURA]
+    assert got == [P.SURASURA, P.ARRIVALS]                              # (the keyboard starts at the first circle)
 
 
-def test_a3_set_opens_repaints_no_circle_and_turns_the_hand_on_under_a_resting_pointer(strip, monkeypatch):
-    # A3A-8 / IKA3-8: Junban found at start-up changes no circle's look; a pointer already on 順 gets the hand
-    from PyQt6.QtCore import Qt
+def test_a3_set_opens_repaints_no_circle(strip, monkeypatch):
+    # A3A-8 / IKA3-8: Junban found at start-up changes no circle's look (Mado-PZ: the hand is every circle's already)
     asked = []
     monkeypatch.setattr(strip, "update", lambda *a: asked.append(a))
-    monkeypatch.setattr(strip, "_under_mouse", lambda: P.JUNBAN)
     strip.set_opens({P.SURASURA})
     strip.set_opens({P.SURASURA, P.JUNBAN})
     assert asked == []
-    assert strip.cursor().shape() == Qt.CursorShape.PointingHandCursor
 
 
 def test_a3_the_read_out_says_junbans_and_anki_miners_words_with_no_job_too(strip):
@@ -902,7 +908,7 @@ def test_a3_a_press_on_arrivals_brings_the_library_folders_row_into_view(world):
     # A3A-9: a target far down the page (the Anki one is on screen at the top whatever `reveal` does)
     win = world.win
     win.resize(1100, 700)
-    _click(win.phase, _centre(win.phase, P.ARRIVALS))
+    win.phase.asked.emit(P.ARRIVALS, "settings")                       # (Mado-PZ: from its right-click)
     assert win.current_tab() == "settings"
     page = win.settings_page
     assert wait_until(lambda: "library_folders" in page.rows and page.rows["library_folders"].isVisible()

@@ -166,6 +166,11 @@ class Services:
         # W3.5 part 3 (AD-8 / IK2-7): set while the setup wizard is up — no quiet Generate (the automatic one, the
         # journey keeper's) before its last page sets the level; an upgrader's library has no journey yet
         self.setup_open = threading.Event()
+        # Mado-PZ: the circles paused at the bar (settings.json's `paused`: kept across a restart) — their automatic
+        # jobs wait in the registry, *paused*, until a click resumes them (a job you asked for never waits for it)
+        from app import settings_manager
+        self.paused = settings_manager.paused(self.settings.get())
+        self.registry.gate(self._pause_gate, automatic=True)
         if self.has_duties():
             self._provide()
 
@@ -797,6 +802,38 @@ class Services:
     @staticmethod
     def _closing_gate(_kind):
         return strings.QUIT_HELD
+
+    # --- Mado-PZ: a circle paused with one click at the bar's bottom left ------------------------------------------ #
+    def _pause_gate(self, kind):
+        """The registry's gate for automatic jobs: one of a paused circle's kinds waits (a flag read, under its lock)."""
+        return strings.PAUSED_HELD if phase_service.KINDS.get(kind) in self.paused else None
+
+    def set_paused(self, circles):
+        """(The window's thread: its press, one at a time; returns at once.) The circles paused now: kept in settings.json (one queued write) and held at
+        the registry's gate from this call — nothing new of theirs starts by itself; a resumed one's waiting jobs start
+        once `resumed` runs. -> the circles resumed by this call."""
+        circles = frozenset(circles)
+        before, self.paused = self.paused, circles
+        if circles != before:
+            self.settings.set({"paused": sorted(circles)})
+        return before - circles
+
+    def resumed(self, circles):
+        """(A worker.) `circles` resumed: the change written first (Connect reads the file), then what waited at the
+        gate started, Connect kicked when Anki Miner resumed, and the focus's look — the journey, the sync, 順, a waiting
+        Generate, the indexer — asked as a return to the window asks it. Nothing once the quit began."""
+        if not circles or self.closing.is_set():
+            return
+        if not self.settings.flush(5):              # (Connect would read the pause still: its next kick starts it)
+            applog.log("shell", "a resume's settings weren't written in 5 s")
+        self.registry.reschedule()
+        if phase_service.MINER in circles:
+            try:
+                from app.connect import kick
+                kick.kick(settings_service.thaw(self.settings.get()))
+            except Exception as e:
+                applog.log("connect", f"not started after its resume: {e!r}")
+        self.activated()
 
     def replan_settling(self):
         """(Any thread: no lock, no wait.) A move's re-order may still be settling: the close then waits like E20's."""
@@ -2232,9 +2269,16 @@ class ShellWindow(QMainWindow):
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
         self.phase.opened.connect(self._circle_pressed)
         self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
+        self.phase.pause_all.connect(self._pause_all)      # Mado-PZ: the control after the circles
         self.phase.stops = self._circle_stops
         self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
+        paused = getattr(self.services, "paused", frozenset())
+        if paused:                                         # Mado-PZ: kept across a restart, and said at the start
+            self.phase.set_paused(paused)
+            names = " · ".join(strings.PHASE_NAMES[c] for c in phase_service.CIRCLES if c in paused)
+            QTimer.singleShot(0, lambda: None if sip.isdeleted(self) else
+                              self.say(strings.PAUSED_AT_START.format(names=names)))
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
         # help cards (HC-2): one ? after the five circles opens their card — every lit circle with its *Why*
@@ -2491,7 +2535,8 @@ class ShellWindow(QMainWindow):
                              failed=lambda info: applog.log("shell", f"a gone folder's Keep waiting: {info[0]!r}"))
 
     def _circle_pressed(self, circle):
-        """A phase circle pressed (alpha 3): its settings — or, while it is amber, where its decision is, that row
+        """A phase circle pressed: what it runs by itself paused, or resumed (Mado-PZ, a tester's ask; it replaces alpha
+        3's settings, now in its right-click with *Show*) — or, while it is amber, where its decision is, that row
         highlighted (a7, Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that
         is highlighted"; `PhaseStrip.go`): *Needs you* at the first card of its kinds (a gone folder, Anki Miner's
         episodes waiting on you, Anki asking for you), or 順's window at its control (a deck to pick, an unfinished
@@ -2504,10 +2549,35 @@ class ShellWindow(QMainWindow):
         if go is not None and go.place == "junban":
             if self._open_junban(go.at):
                 return
-        if self.phase.showing(circle) and self._show_circle(circle):
-            return                                         # try a9.1: running, where it can be seen
-        if circle in self.phase.opens:
-            self.open_setting(phase_strip.SETTINGS[circle])
+        if go is None:                                     # (a decision's press never pauses, its place or not)
+            self._toggle_pause(circle)
+
+    # --- Mado-PZ: one click pauses what a circle runs by itself ----------------------------------------------------- #
+    def _toggle_pause(self, circle):
+        paused = getattr(self.services, "paused", frozenset())
+        self.set_paused(paused - {circle} if circle in paused else paused | {circle})
+
+    def _pause_all(self):
+        """The control after the circles: every circle paused — or, all of them paused already, every one resumed."""
+        everything = frozenset(phase_service.CIRCLES)
+        self.set_paused(frozenset() if getattr(self.services, "paused", frozenset()) == everything else everything)
+
+    def set_paused(self, circles):
+        """The circles paused now (the map's one model, `Services.set_paused`): painted on the press, before anything
+        else; a circle paused now has what runs by itself stopped at its next safe point (its Stop: *Stopping…* while
+        it ends, a job you asked for left running); a resumed one's waiting work asked again on a worker."""
+        circles = frozenset(circles)
+        before = getattr(self.services, "paused", frozenset())
+        if circles == before:
+            return
+        self.phase.set_paused(circles)
+        resumed = self.services.set_paused(circles)
+        for circle in phase_service.CIRCLES:
+            if circle in circles - before:
+                self._stop_circle(circle, automatic=True)
+        if resumed:
+            bridge.run_in_worker(self.services.resumed, resumed,
+                                 failed=lambda info: applog.log("shell", f"a resume's looks: {info[0]!r}"))
 
     def _open_junban(self, at=None):
         """順's window, opened or brought to the front — at its control `at` (a7), if any. -> whether it opened."""
@@ -2523,6 +2593,9 @@ class ShellWindow(QMainWindow):
     # --- try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing") ------- #
     def _circle_asked(self, circle, what):
         """A circle's right-click menu: *Show* where its work is seen (else its settings), *Stop* it, its *Settings*."""
+        if what == "pause":                                # Mado-PZ: *Pause* / *Resume*, as a click
+            self._toggle_pause(circle)
+            return
         if what == "show" and self._show_circle(circle):
             return
         if what == "stop":
@@ -2574,16 +2647,17 @@ class ShellWindow(QMainWindow):
                 return True
         return bool(phase_service.stoppable(self.services.registry.live(), circle))
 
-    def _stop_circle(self, circle):
+    def _stop_circle(self, circle, automatic=False):
         """*Stop* from a circle's menu: Anki Miner's episode through its row's own Stop (*Stopping…* on the row and in
-        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel."""
+        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel.
+        `automatic` (a pause, Mado-PZ): only what started by itself — Connect's episode is always Connect's own."""
         if circle == phase_service.MINER:
             got = self._mining_now()
             if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
                 from app.qt import rows as qrows
                 self.mine.stop(qrows.Ask(got[0], (got[0],), None, got[1].job))
                 return
-        for job_id in phase_service.stoppable(self.services.registry.live(), circle):
+        for job_id in phase_service.stoppable(self.services.registry.live(), circle, automatic=automatic):
             self.services.registry.cancel(job_id)
 
     def _junban_found(self, here):

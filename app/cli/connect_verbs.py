@@ -37,6 +37,7 @@ _TEXT = ("producer", "producer_version", "video_path", "subtitle_path", "library
          "paired_at")
 PREVIEW_OFF = "connect preview off"
 AUTOMATION_OFF = "automation off"           # D29's switch (`logic.automation`): Connect mines nothing by itself
+PAUSED = "paused"                           # Mado-PZ: Anki Miner's circle paused at the bar
 TIER_OF = {"now": "now", "soon": "soon", "later": "goal"}
 
 
@@ -395,6 +396,8 @@ def connect(args):
     from app import settings_manager
     if not settings_manager.automation(loaded):        # 3.0 (P3.3 C1): D29 off is no automatic mining
         return {"skipped": AUTOMATION_OFF}
+    if settings_manager.paused(loaded, "miner"):          # Mado-PZ: paused until the learner's click resumes it
+        return {"skipped": PAUSED}
     from app import locks
     from app.connect import inbox, kick, library
     from app.path_utils import get_user_files_path

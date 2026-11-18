@@ -144,6 +144,11 @@ DEFAULT_SETTINGS = {
     # The Chinese library's own *Find them with hato* (Zh-H): its waiting videos go to hato once hato finds Chinese
     # subtitles (1.3.0: assrt.net, then OpenSubtitles, on the learner's own keys). Off by default. Never in a signature.
     "subs_with_hato_zh": False,
+    # Mado-PZ (2026-11-18, a tester's ask: the work running by itself taxes the PC): the bar's circles the learner
+    # paused with one click (`PAUSABLE` names, the phase strip's): what runs by itself there starts nothing new until
+    # the learner resumes it — kept across a restart, never resumed by itself. Read through `paused(settings)`. This
+    # PC's state, not a choice: never exported (`settings_io`). Never in a signature.
+    "paused": [],
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
@@ -687,6 +692,21 @@ def automation(settings) -> bool:
     on. Takes a settings dict or a window's frozen copy of one."""
     logic = settings.get("logic") if hasattr(settings, "get") else None
     return not (hasattr(logic, "get") and logic.get("automation") is False)
+
+
+# Mado-PZ: the circles a pause can hold, as the phase strip names them (`app/services/phase.CIRCLES`)
+PAUSABLE = ("arrivals", "surasura", "miner", "junban", "anki")
+
+
+def paused(settings, circle=None):
+    """Mado-PZ: the circles the learner paused (`paused` in settings.json) -> a frozenset of `PAUSABLE` names, or with
+    `circle` whether that one is. One model for what runs by itself: D29's switch (`automation`) is the master — off,
+    nothing does; a pause is the quick, temporary hold on one circle's work, over each automation's own switch, which
+    it never changes. A missing or malformed value reads as nothing paused. Takes a settings dict or a window's frozen
+    copy of one."""
+    held = settings.get("paused") if hasattr(settings, "get") else None
+    names = frozenset(c for c in held if c in PAUSABLE) if isinstance(held, (list, tuple)) else frozenset()
+    return names if circle is None else circle in names
 
 
 def placing_rules(held=None) -> Dict[str, Any]:

@@ -81,8 +81,8 @@ def kick(settings, videos=False):
     switch (`logic.automation`) off starts nothing, as Connect's own switch off doesn't — the one gate,
     `settings_manager.connect_on` (P4.1 row 4.1.1)."""
     from app import settings_manager
-    if not settings_manager.connect_on(settings):
-        return None
+    if not settings_manager.connect_on(settings) or settings_manager.paused(settings, "miner"):
+        return None             # (Mado-PZ: Anki Miner paused at the bar — nothing starts until a click resumes it)
     if os.environ.get("SURASURA_TEST_ROOT") and os.environ.get("SURASURA_CONNECT_KICK") != "1":
         return None
     from app import library_store

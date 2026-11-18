@@ -540,6 +540,7 @@ MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines v
 # left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
 MINE_ASKED_ONE = "1 file: its cards come next"
 MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
+MINE_PAUSED = "Asked · Anki Miner is paused: it makes them once you click its circle to resume"     # Mado-PZ
 MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
 MAKE_CARDS_NONE = "Nothing left to make: each of those episodes has its cards made for you already"
 MAKE_CARDS_GONE = "Surasura has no record of those episodes' cards now: nothing was made"
@@ -695,6 +696,17 @@ PHASE_MENU_TIP = "• Right-click: {items}"
 PHASE_SHOW = ("Show", "Go to where it is happening: the title Anki Miner is making cards for, or 順's window")
 PHASE_STOP = ("Stop", "Stop what it is doing now. Cards already made stay; one being written to Anki is finished first")
 PHASE_SETTINGS = ("Settings", "Open its settings")
+# Mado-PZ (2026-11-18, a tester's ask: what runs by itself taxes the PC; PROVISIONAL words): a click on a circle pauses
+# what it runs by itself — its ring takes the paused colour with two bars on it — and a second click resumes it; kept
+# across a restart, said at the start. Amber still means a decision: an amber circle's click goes to it (a7).
+PHASE_PAUSED = "Paused · click to resume"          # the hover's line while paused (and the strip's read-out)
+PHASE_PRESS_PAUSE = "• Click: pause what it runs by itself"
+PHASE_PAUSE = ("Pause", "Nothing starts here by itself until you resume it. What runs now stops at its next safe point")
+PHASE_RESUME = ("Resume", "What waited starts again, from where it stopped")
+PHASE_PAUSE_ALL = "Pause everything that runs by itself"     # the ⏸ after the circles: its hover and its name
+PHASE_RESUME_ALL = "Resume everything that was paused"
+PAUSED_HELD = "paused"                              # a paused circle's job waiting at the gate: *Generating · paused*
+PAUSED_AT_START = "Paused: {names} · click a circle at the bottom left to resume"
 # A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
 PHASE_JOB_NAMES = {
     "indexer": "Reading your files",

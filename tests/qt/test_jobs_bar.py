@@ -543,6 +543,20 @@ def test_update_closing_the_sheet_while_downloading_leaves_the_download_going_on
     assert wait_until(lambda: world.updates.called("updates.cancel")) and not sheet.isVisible()
 
 
+def test_update_chip_has_no_cross_while_an_update_runs_so_a_hidden_sheet_can_always_come_back(world):
+    """Kantan-T (PROVISIONAL): with the sheet only hidden, the chip is the way back to *Cancel* and *Stop it* — its ✕
+    (*Later* for this run) shows with an offer only, never while the update downloads or waits."""
+    cross = world.d.update_cross
+    _offer(world)
+    assert wait_until(lambda: not world.d.update_mark.isHidden()) and not cross.isHidden()     # an offer: *Later* ✕
+    world.updates.push(state=U.DOWNLOADING, done=1, total=20)
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_DOWNLOADING.format(pct=5))
+    assert cross.isHidden() and not world.d.update_mark.isHidden()
+    world.updates.push(state=U.WAITING, programs=(U.Program(41, "Content Manager", True),))
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_WAITS_FOR.format(name="Content Manager"))
+    assert cross.isHidden() and not world.d.update_mark.isHidden()
+
+
 def test_update_a_critical_release_opens_the_sheet_once(world):
     _offer(world, critical=True, open_now=True)
     sheet = world.d.sheet

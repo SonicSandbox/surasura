@@ -2418,7 +2418,10 @@ class ShellWindow(QMainWindow):
         parts = [(self.bar_failure, failure, self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
                  (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
-            parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
+            # Kantan-T (PROVISIONAL): the chip is the way back to a hidden sheet's *Cancel* / *Stop it* — its ✕ (*Later*
+            # for this run) with an offer only, never while the update downloads or waits
+            runs = d.update_state is not None and d.update_state.state in ("downloading", "waiting")
+            parts += [(d.update_mark, update, d.paints), (d.update_cross, update and not runs, d.paints)]
         for part, shown, paints in parts:
             if part.isHidden() == shown:
                 part.setVisible(shown)

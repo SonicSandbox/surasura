@@ -385,6 +385,18 @@ def test_a_held_card_whose_word_never_comes_is_not_woven():
     assert _words(stats)[2:] == [x for x in plain if x not in ("約束", "図書館")]
     assert stats["side_picks"] == [1, 2]
 
+def test_a_held_card_waiting_for_its_word_takes_no_turn_while_the_other_title_still_has_list_words():
+    """Mutant D17 (2026-11-17): A has two list words, B one and a held 老婆 (waiting for 時計, never picked). In the
+    second round A still has a list word, so the rounds go on — B's turn comes to the held card, which is no list word
+    yet: B takes no turn there (A's second word goes alone), and 老婆 keeps its planned place."""
+    cards = [_card(1, "約束", sort=(1,)), _card(2, "友達", sort=(2,)), _card(3, "図書館", sort=(10,)),
+             _card(4, "老婆", tier="multi", sort=(1, 7000), held=True, waits=(("時計",), 3))]
+    plain = _words(P.plan([dict(c) for c in cards], RANK)[1])
+    _writes, stats = P.plan([dict(c) for c in cards], RANK, weave=[[1, 2], [3, 4]], width=2)
+    assert _words(stats)[:3] == ["約束", "図書館", "友達"] and stats["woven"] == 3
+    assert _words(stats)[3:] == [x for x in plain if x not in ("約束", "図書館", "友達")]
+
+
 
 # --- Kyou-D: a stable phase (Sonic's ruling 3, 2026-11-17; the lead's call: anchor on Anki's first woven card) ------ #
 # Every plan used to start the turns with the first title: once the learner studied an odd number of woven cards, the

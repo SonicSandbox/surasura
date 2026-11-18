@@ -149,3 +149,28 @@ def test_a_done_painted_ahead_moves_the_pill_at_once(language):
     stored = _view(store)
     assert _pills(shown, ids) == _pills(stored, ids) == {"B": _title(view, ids, "C"), "C": _title(view, ids, "B")}
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_pill_takes_two_seasons_of_one_show_as_one_title(language):
+    """Mutant D23 (2026-11-17): Season 1 and Season 2 of one show are one title for the turns, in the window as in the
+    store — the pills sit on the show (its first file to study, Season 1's) and C, never on the show's second season."""
+    store, ids = _library(language, [("A", 3), ("B", 3), ("C", 3)], 20, seasons={"A": "Season 1", "B": "Season 2"})
+    assert set(_pills(_view(store), ids)) == {"A", "C"}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_done_that_leaves_one_title_to_study_takes_the_pills_off_at_once(language):
+    """Mutant D25 (2026-11-17): A (1) and B (3), nothing else in Current — a Done on A's one file leaves B alone, no
+    pair: the Done's own view (painted ahead of the store) shows no pill, as the store's next view, never the old ones."""
+    store, ids = _library(language, [("A", 1), ("B", 3)], 4)
+    view = _view(store)
+    assert set(_pills(view, ids)) == {"A", "B"}
+    a_row = next(r for r in view.rows if r.episodes[0].id in ids["A"])
+    ctl = type("C", (), {"expect_marks": {ids["A"][0]: [True, None, None, a_row.key]}})()
+    ctl._holding = lambda v: drag.DragController._holding(ctl, v)
+    shown = drag.DragController._with_marks(ctl, view)
+    store.set_watched(ids["A"])
+    assert _pills(shown, ids) == _pills(_view(store), ids) == {}
+    store.close()

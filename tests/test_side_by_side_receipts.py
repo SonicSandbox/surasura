@@ -50,7 +50,7 @@ def test_a_file_mined_after_the_counts_time_is_one_the_count_never_saw():
     assert ls.side_seen(cards, "2026-11-16"), "a date alone: before the count"
     assert not ls.side_seen(cards, "2026-11-17T10:00:27Z") and not ls.side_seen(cards, "2026-11-17T10:00:26.400000Z")
     assert not ls.side_seen(cards, None)
-    assert ls.side_seen({"w12": 0}, "2030-01-01T00:00:00Z") and not ls.side_seen({"w12": 0}, None)
+    assert ls.side_seen({"w12": 0}, "2026-11-17T10:00:27Z") and not ls.side_seen({"w12": 0}, None)
 
 
 # --- a receipt after the count ------------------------------------------------------------------------------------- #

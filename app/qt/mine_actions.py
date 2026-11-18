@@ -63,6 +63,7 @@ from app.qt import bridge, drag, item_menu, rows, strings, windows
 from app.qt import press as qpress
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
+MINED = ("in_anki", "deleted")  # Kantan-B2: the statuses of a mined episode (`view_rows`): *Mine again* on its ⋯
 SETTLE_S = 6.0          # an ask saved, then its pill's press ends (A-4: two of Connect's 3 s looks; PROVISIONAL)
 
 
@@ -412,10 +413,37 @@ class MineActions(QObject):
                     item_menu.Entry("ep-change-video", strings.ROWS_CHANGE_VIDEO, strings.ROWS_CHANGE_VIDEO_TIP, True,
                                     payload=lambda: self.change_video(ep.id, ep.label, ep.rel_path, keys=(row.key,)),
                                     writes=True)]
+        if ep.status.kind in MINED and not ep.mining:   # --- Kantan-B2: a mined episode, its cards there or not
+            return self.mined_entries(row, ep)
         if name not in ("mine-now", "try-again"):       # (Mattias #5: *Try again* where its pill is *Try again*)
             return []
         return [item_menu.Entry("ep-" + name, strings.ROWS_ACTION_NAMES[name], tip, True,
                                 payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)]
+
+    # --- Kantan-B2 (a new tester, 2026-11-18: "is there a way to reset the episode to unmined?"; PROVISIONAL words)
+    def mined_entries(self, row, ep):
+        """A mined episode's ⋯: *Mine again* (an ask, as *Mine now* is: the words whose cards you deleted come back,
+        the cards still in Anki stay — an asked job makes only what Anki doesn't hold, `library.made_words_for`) and
+        *Words it won't mine again…* (`unmined_words`, this episode's). -> [Entry]"""
+        tip = strings.MINE_AGAIN_TIP if not self.off else strings.ROWS_ACTION_OFF.format(tip=strings.MINE_AGAIN_TIP,
+                                                                                          why=self.off)
+        return [item_menu.Entry("ep-mine-again", strings.MINE_AGAIN, tip, True,
+                                payload=lambda: self.mine_again(row, ep), writes=True),
+                item_menu.Entry("ep-unmined-words", strings.UNMINED_ENTRY, strings.UNMINED_ENTRY_TIP, True,
+                                payload=lambda: self.unmined_words(ep))]
+
+    def mine_again(self, row, ep):
+        """*Mine again*: the episode asked for once more (`_ask`: one Ticket, its toast's Undo takes the ask back);
+        not a video: the bar says it waits. -> the writer's number, or None."""
+        videos, other = videos_of(row, [ep.id])
+        if not videos:
+            self.win.say(_waits_line(other))
+            return None
+        return self._ask(strings.MINE_AGAIN_ASKED.format(label=ep.label), (row.key,), list(videos))
+
+    def unmined_words(self, ep):
+        from app.qt import unmined_words
+        return unmined_words.open_window(self.win, item_ids=(ep.id,), label=ep.label)
     # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #

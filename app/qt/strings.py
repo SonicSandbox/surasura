@@ -540,6 +540,29 @@ MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines v
 # left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
 MINE_ASKED_ONE = "1 file: its cards come next"
 MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
+# --- Kantan-B2 (a new tester, 2026-11-18; every word PROVISIONAL): an episode's ⋯ *Mine again*, and the words
+# Surasura won't mine again (cards you deleted in Anki) with *Allow again* (app/qt/unmined_words.py)
+MINE_AGAIN = "Mine again"
+MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you deleted in Anki come back, the cards "
+                  "still there stay as they are\n• Undo takes the ask back")
+MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
+UNMINED_ENTRY = "Words it won't mine again…"
+UNMINED_ENTRY_TIP = "The words of this episode whose cards you deleted in Anki: allow one again"
+UNMINED_NAME = "Words Surasura won't mine again"
+UNMINED_LINE = "Cards you deleted in Anki. Surasura never makes these words again, unless you allow one."
+UNMINED_LINE_OF = "Cards of {label} you deleted in Anki. Surasura never makes these words again, unless you allow one."
+UNMINED_LOOKING = "Looking…"
+UNMINED_NONE = "None: every card Surasura made is still in Anki"
+UNMINED_NONE_OF = "None from this episode: its cards are still in Anki"
+UNMINED_UNREADABLE = "The list couldn't be read: your library is busy or can't be opened. Try again in a moment"
+UNMINED_FROM = "from {label}"
+UNMINED_FROM_MORE = "from {label} and {n} more"
+UNMINED_MORE = "{n:,} more not shown"
+UNMINED_ALLOW = "Allow again"
+UNMINED_ALLOW_NAME = "Allow {word} again"
+UNMINED_ALLOW_TIP = ("Let Surasura make a card for {word} again, from the next episode that has it\n"
+                     "• Undo keeps it out again")
+UNMINED_ALLOWED = "{word} may be mined again"
 MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
 MAKE_CARDS_NONE = "Nothing left to make: each of those episodes has its cards made for you already"
 MAKE_CARDS_GONE = "Surasura has no record of those episodes' cards now: nothing was made"

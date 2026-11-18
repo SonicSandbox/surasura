@@ -240,6 +240,8 @@ ROWS = (
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
+    # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
+    _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
     # from being suspended under either choice, so it is never greyed)
     _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",

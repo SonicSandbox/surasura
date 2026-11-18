@@ -1,0 +1,59 @@
+{
+  "version": "3.0.16",
+  "date": "2026-11-18",
+  "items": [
+    {
+      "id": "show-from-first-episode",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "shows"
+      ],
+      "text": "Connect mines a show from its first episode: putting an episode in line brings the earlier ones."
+    },
+    {
+      "id": "mine-button-not-hourglass",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "shows"
+      ],
+      "text": "An episode Connect won't mine by itself shows a ⛏ Mine button instead of the hourglass."
+    },
+    {
+      "id": "junban-still-when-nothing-moved",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "junban"
+      ],
+      "text": "Junban no longer re-runs when you come back to the window and nothing changed."
+    },
+    {
+      "id": "card-line-nobody-talks-over",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Connect cuts a word's card from a line nobody else talks over."
+    },
+    {
+      "id": "side-by-side-no-flicker",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "junban"
+      ],
+      "text": "Side by side: no flicker or order change after Connect mines an episode."
+    },
+    {
+      "id": "updates-never-stuck",
+      "kind": "fix",
+      "for": [
+        "everyone"
+      ],
+      "text": "Updates: a cancelled one never blocks the next, and a dropped download resumes or says Try again."
+    }
+  ]
+}

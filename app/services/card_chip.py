@@ -116,7 +116,7 @@ class Chips:
         self._ids = {}                     # word -> int
         self._files = {}                   # item_id -> array of its words' ints (sorted, each once)
         self._looked = {}                  # item_id -> the ask its file and made words were read for
-        self._inv = {}                     # word int -> {item_id}
+        self._inv = {}                     # word int -> [item_id] (lists: a fifth of sets' memory)
         self._made = {}                    # item_id -> frozenset of the ints of its words with a card it made
         self._rows = {}                    # row key (item ids) -> frozenset of its items' made ints
         self._rows_of = {}                 # item_id -> {row key}
@@ -317,13 +317,7 @@ class Chips:
         for item_id in reread:
             window_idle.pause()                        # (Up next 3: a young window stretch waited out, file by file)
             words = self._file_words(asks[item_id][0])
-            old = self._files.pop(item_id, None)
-            for w in old or ():
-                held = self._inv.get(w)
-                if held is not None:
-                    held.discard(item_id)
-                    if not held:
-                        del self._inv[w]
+            self._unindex(item_id, self._files.pop(item_id, None))
             if words is None:
                 self._out.pop(item_id, None)
                 full_rows |= self._rows_of.get(item_id, set())     # its rows counted again without it
@@ -333,9 +327,9 @@ class Chips:
             for w in words:
                 held = inv.get(w)
                 if held is None:
-                    inv[w] = {item_id}
+                    inv[w] = [item_id]
                 else:
-                    held.add(item_id)
+                    held.append(item_id)                       # (once a file: its words are each once)
             full.add(item_id)
         for item_id in made_owed:
             got = None if made is None else made.get(item_id)
@@ -429,15 +423,23 @@ class Chips:
         """An item no longer asked: its file, its made words and its answer let go -> the rows holding it."""
         self._looked.pop(item_id, None)
         self._out.pop(item_id, None)
-        for w in self._files.pop(item_id, ()) or ():
-            held = self._inv.get(w)
-            if held is not None:
-                held.discard(item_id)
-                if not held:
-                    del self._inv[w]
+        self._unindex(item_id, self._files.pop(item_id, None))
         for w in self._made.pop(item_id, frozenset()):
             ref(w, -1)
         return set(self._rows_of.get(item_id, ()))
+
+    def _unindex(self, item_id, words):
+        """A file's words out of the index (a file let go or read again: rare beside the index's reads)."""
+        inv = self._inv
+        for w in words or ():
+            held = inv.get(w)
+            if held is not None:
+                try:
+                    held.remove(item_id)
+                except ValueError:
+                    continue
+                if not held:
+                    del inv[w]
 
     def _file_words(self, rel):
         """The ints of a file's words (its lemmas, each once), from the token store's counts; None when the store
@@ -462,9 +464,14 @@ class Chips:
         if row is None or not row[0]:
             return None
         self.read_files += 1
-        ids = self._ids
-        return array("i", sorted({ids.setdefault(k.partition("|")[0], len(ids))
-                                  for k in token_index._decode_counts(row[0])}))
+        ids, out = self._ids, []
+        for lemma in {k.partition("|")[0] for k in token_index._decode_counts(row[0])}:   # each lemma once
+            n = ids.get(lemma)
+            if n is None:
+                n = ids[lemma] = len(ids)
+            out.append(n)
+        out.sort()
+        return array("i", out)
 
     def _data(self):
         if self._data_dir is None:

@@ -573,6 +573,22 @@ def specials_home(below):
     return head if head and season_folder(last) == "special" else None
 
 
+def subtitles_home(below, language):
+    """The folder a show's subtitles folder belongs to (Kantan-T, 2026-11-18, PROVISIONAL: a tester's `<show>/Season
+    01/ass/` sorted as a title of its own): `<folder>/<name>` -> `<folder>` when `<name>` is a subtitles folder by the
+    look's one named-folder rule (`sources._subtitle_folder`: `Subs`, `Subtitles`, `ass`, `srt`, our language's folder,
+    a versions folder, a folder named as the one above it), down through nested ones (`<show>/Subs/ja` -> `<show>`);
+    anything else (a season, `Extras`, `Part 2`, `English`, a folder alone) -> None. As written or folded alike. Pure."""
+    from app.sources import _subtitle_folder
+    home, out = below or "", None
+    while "/" in home:
+        head, _sep, last = home.rpartition("/")
+        if not head or not _subtitle_folder(last, head.rpartition("/")[2], language):
+            break
+        home = out = head
+    return out
+
+
 def folder_title(below):
     """A folder work's title from its folder below the tier (`_below_tier`): `episode_names.folder_title`'s one rule
     (a season or specials folder named with the show above it, any other folder as written)."""
@@ -4270,6 +4286,14 @@ class Store:
                 wid = row[0] if row else None
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
+        home = subtitles_home(_below_tier(rel), self.language) if wid is None else None
+        if home is not None:            # Kantan-T: a show's subtitles folder is the folder above's, its title and key
+            top = _strip(rel).split("/")[:-1]
+            up = top[:len(top) - (len(_below_tier(rel).split("/")) - len(home.split("/")))]
+            wid = self._folder_work("/".join(up + [rel.rsplit("/", 1)[-1]]), title, cmd, cache)
+            if cache is not None:
+                cache[fk] = wid
+            return wid
         if wid is None:
             wid = self._specials_work(rel, cache)
         if wid is None:

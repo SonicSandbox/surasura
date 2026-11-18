@@ -287,7 +287,7 @@ STRINGS = {
     "strays_title": "{n:,} cards Surasura made are in {where}, not “{deck}”, the deck Surasura keeps in order.",
     "strays_title_one": "A card Surasura made is in {where}, not “{deck}”, the deck Surasura keeps in order.",
     "strays_where": "“{deck}”", "strays_where_n": "{k} other decks", "strays_move": "Move them to “{deck}”",
-    "strays_say": "Surasura's new cards go to “{deck}”. Moved, a card keeps its reviews: only its deck changes.",
+    "strays_say": "Surasura's new cards go to “{deck}” now.",
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",

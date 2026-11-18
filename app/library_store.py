@@ -268,6 +268,8 @@ def woven(ids, title_of, titles, width=SIDE_TITLES, aside=(), n=None):
 # Junban's groups; `view_rows` on the feed's rows and a drop's): a title Junban counted no still-new card for steps
 # aside, as Anki weaves none of its cards. No count (Anki absent, no run yet): every title by its files, as before.
 SIDE_CARDS = "side_cards"       # meta: Junban's last count, {card_key(title): 1 with a still-new card in scope, else 0}
+SIDE_AT = "at"                  # Kyou-E: the count's time, beside the titles in `SIDE_CARDS` (when Junban began reading
+#                                 Anki): a file Connect mined after it is one the count never saw (`side_seen`)
 
 
 def card_key(title):
@@ -284,7 +286,29 @@ def side_cards(value):
             return None
     if not isinstance(value, dict):
         return None
-    return {str(k): 1 if v else 0 for k, v in value.items() if isinstance(v, (int, bool))}
+    out = {str(k): 1 if v else 0 for k, v in value.items() if isinstance(v, (int, bool)) and k != SIDE_AT}
+    at = value.get(SIDE_AT)
+    if isinstance(at, str) and len(at) >= 10 and at[:4].isdigit() and at[4] == "-":
+        out[SIDE_AT] = at                       # Kyou-E: the count's time (3.0.15 wrote none, and skips it); one
+        #                                         that isn't a date (a hand-edited store): no time, as 3.0.15
+    return out
+
+
+def _utc_key(stamp):
+    """A receipt's or count's UTC time as text that sorts by time: Connect's whole seconds ("…:26Z") and the store's
+    microseconds ("…:26.300000Z") alike — the "Z" dropped, so a time in whole seconds sorts first in its second."""
+    stamp = str(stamp)
+    return stamp[:-1] if stamp.endswith("Z") else stamp
+
+
+def side_seen(cards, mined_at):
+    """Kyou-E (train 40's keeper, note 2): did Junban's count `cards` see the file Connect mined at `mined_at` — mined,
+    and no later than the count's time (`SIDE_AT`; a count with none, 3.0.15's, saw every mined file)? A file mined in
+    the count's own second counts as seen (Connect records its receipt before its Junban step reads Anki)."""
+    if mined_at is None:
+        return False
+    at = (cards or {}).get(SIDE_AT)
+    return at is None or _utc_key(mined_at) <= _utc_key(at)
 
 
 def side_pair(rows, keep=False, cards=None):
@@ -294,17 +318,20 @@ def side_pair(rows, keep=False, cards=None):
     `keep_watched`; `cards`: Junban's last count (`side_cards`; None or {}: no count — every title by its files, as
     before). A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
     hasn't mined its next file to study yet (that file can still make its cards: a title new to Current, or one whose
-    mined files have been watched); a title the count doesn't name (in Current since) takes its turn. When every title
-    would step aside, none does."""
+    mined files have been watched) — Kyou-E: or mined it only after the count's time (`side_seen`: the count never saw
+    its cards, so a receipt never sets a title aside; Junban's next count decides); a title the count doesn't name (in
+    Current since) takes its turn. When every title would step aside, none does."""
     titles = side_titles(rows, keep)
     if len(titles) < SIDE_TITLES:
         return None
     if not cards:
         return titles, titles, []
-    mined = {}                                  # each title's next file to study: has Connect mined it?
+    mined = {}                                  # each title's next file to study: did the count see it mined?
     for item_id, tier, work_id, availability, watched, mined_at in rows:
         if availability == "available" and counts(tier, watched, keep):
-            mined.setdefault(title_key(item_id, work_id), mined_at is not None)
+            key = title_key(item_id, work_id)
+            if key not in mined:                # Kyou-E: by the count's time, once a title (20k files a drop)
+                mined[key] = side_seen(cards, mined_at)
     aside = [t for t in titles if cards.get(card_key(t)) == 0 and mined.get(t)]
     if len(aside) == len(titles):
         return titles, titles, []
@@ -358,6 +385,7 @@ _MOVED_ROW = ("((CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.mo
 _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
                   f"(q.content_key >= 'src:' AND q.content_key < 'src;'))) AND NOT {_VERSION_ROW}")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
+CONNECT_READER = "connect"       # Connect's placement-log reader (`connect.library.READER`): the feed's `mine_unread`
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
@@ -2503,20 +2531,22 @@ class Store:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (SIDE_CARDS,)).fetchone()
         return side_cards(row[0]) if row else None
 
-    def _side(self, keep=None, on=None):
+    def _side(self, keep=None, on=None, cards=None):
         """(Current's rows, its titles to study — Kyou-B: every one, `woven` takes two at a time —, those taking turns,
         those stepping aside: Kyou-C, `side_pair` by Junban's count) while side by side is on and Current holds two or
         more titles to study; else None — and every reader of the rule reads as before. `on`: the option as the caller
-        has it (a command setting it), else the library's."""
+        has it (a command setting it), else the library's; `cards` (Kyou-E): a count to read it by, else the kept one."""
         if not (self._side_on() if on is None else on):
             return None
         rows = self._current_rows()
-        pair = side_pair(rows, self._keep_watched() if keep is None else keep, self._side_cards())
+        pair = side_pair(rows, self._keep_watched() if keep is None else keep,
+                         self._side_cards() if cards is None else cards)
         return None if pair is None else (rows,) + pair
 
-    def _side_split(self):
-        """Kyou-C: who takes turns and who steps aside (`_side`'s last two), or None while there is no side by side."""
-        side = self._side()
+    def _side_split(self, cards=None):
+        """Kyou-C: who takes turns and who steps aside (`_side`'s last two), or None while there is no side by side.
+        `cards` (Kyou-E): by that count, else the kept one."""
+        side = self._side(cards=cards)
         return None if side is None else side[2:]
 
     def side_by_side(self):
@@ -2664,8 +2694,8 @@ class Store:
         (True: every item and work — the first read, a new epoch, or `seen` older than the tombstones kept,
         `feed_floor`), `epoch`, `version` (the window's next `seen`), `items` and `works` (rows of FEED_ITEM_FIELDS /
         FEED_WORK_FIELDS as dicts: every row when full, else those whose `feed_in` > `seen`), `gone` ([(kind, id)] left
-        since) and `options` (the Soon line, the mine line, New arrivals, W-1's `keep_watched`). Applying it by id is
-        idempotent: a window's own commits come back through it too.
+        since) and `options` (the Soon line, the mine line, New arrivals, `keep_watched`, Michi-EO's `mine_unread`).
+        Applying it by id is idempotent: a window's own commits come back through it too.
         LM11: `pieces` (rows of FEED_PIECE_FIELDS: id, title, kind) — every piece when full, else the pieces its
         changed rows sit in (a piece's kind or name written feeds its rows: `_set_piece`). A piece no row names is gone.
         A group's `title` None: the window derives "<first item's work's title> + N more"; a run's title is never shown
@@ -2693,6 +2723,11 @@ class Store:
                 named = sorted({r[at] for r in items if r[at] is not None})
                 pieces = [r for chunk in _chunks(named, 500) for r in self.conn.execute(
                     f"SELECT {piece_cols} FROM pieces WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
+            # Michi-EO: the items an entry into the top N names that Connect hasn't read yet (its jobs to come: the
+            # rows' *Waiting*); no reader -> none (its first read starts at the log's end). Read by the log's ids
+            mark = meta.get(f"reader:{CONNECT_READER}")
+            unread = [] if mark is None else [r[0] for r in self.conn.execute(
+                "SELECT DISTINCT item_id FROM placement_log WHERE id > ? AND kind = 'entered_mine_line'", (mark,))]
         return {"full": full, "epoch": now_epoch, "version": version,
                 "items": [dict(zip(FEED_ITEM_FIELDS, r)) for r in items],
                 "works": [dict(zip(FEED_WORK_FIELDS, r)) for r in works], "gone": gone,
@@ -2700,7 +2735,8 @@ class Store:
                 "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
                             "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0),
                             "side_by_side": meta.get(SIDE_BY_SIDE, 0),
-                            "side_cards": side_cards(meta.get(SIDE_CARDS))}}     # Kyou-C: Junban's last count
+                            "side_cards": side_cards(meta.get(SIDE_CARDS)),      # Kyou-C: Junban's last count
+                            "mine_unread": sorted(unread)}}
 
     def prune_gone(self, now=None):
         """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest
@@ -5596,13 +5632,15 @@ class Store:
             change.options = options
             return change
 
-    def set_side_cards(self, groups, by="connect"):
+    def set_side_cards(self, groups, by="connect", at=None):
         """Kyou-C: Junban's count after its run (`pins.record_side`), the one rule's input (`side_pair`): `groups`
         [(a title's item ids, its still-new cards in scope), …] — the titles `side_by_side()` handed it. Written as
         `SIDE_CARDS` (each title: 1 with a card, else 0) only when it changed; when the titles taking turns move with
         it, Current settles as after any order change (`cmd.touch(CURRENT)`: the mine line's events, Generate's order,
         the Soon line). Not the user's change: no undo of its own. `by`: the caller, as the command records it.
-        -> True when written."""
+        `at` (Kyou-E): the count's time, when Junban began reading Anki (`SIDE_AT`, `side_seen`; None: now) — the same
+        count again is written only when its newer time moves who takes turns (a file Connect mined since the kept
+        time, which this count saw: its title steps aside now), never with an older time. -> True when written."""
         first = [int(ids[0]) for ids, _n in groups if ids]
         with self._reading():
             work = {}
@@ -5611,11 +5649,16 @@ class Store:
                                               f"({','.join('?' * len(chunk))})", chunk).fetchall())
             want = {card_key(title_key(int(ids[0]), work[int(ids[0])])): 1 if n else 0
                     for ids, n in groups if ids and int(ids[0]) in work}
-            if self._side_cards() == want:
-                return False                    # the count as it stands: no write (S19)
+            at = str(at) if at else _now()
+            had = self._side_cards()
+            if had is not None and SIDE_AT in had and {k: v for k, v in had.items() if k != SIDE_AT} == want and (
+                    _utc_key(at) <= _utc_key(had[SIDE_AT])
+                    or self._side_split(dict(want, **{SIDE_AT: at})) == self._side_split(had)):
+                return False                    # the count as it stands, or no one's turn moved: no write (S19);
+                #                                 one with no time (3.0.15's) gains it once, so receipts read it
         with self._command("set_side_cards", by) as cmd:
             before = self._side_split()
-            self._set_meta({SIDE_CARDS: json.dumps(want, sort_keys=True)})
+            self._set_meta({SIDE_CARDS: json.dumps(dict(want, **{SIDE_AT: at}), sort_keys=True)})
             cmd.touch()                         # the feed's options carry it: the window reads it again
             if self._side_split() != before:
                 cmd.touch(CURRENT)              # who takes turns moved: the order did
@@ -6690,12 +6733,19 @@ class Store:
 
     def receipt(self, item_id, mined_at):
         """Connect's receipt (2.7, ✅ G1.1-10): one row, `state_version` only — never `changed_in` or
-        `order_version`; Kyou-C: unless it moves who takes turns side by side (a title Junban counted no card for, whose
-        next file Connect has now mined, steps aside: `side_pair`) — then the order moved, as `set_side_cards`'."""
+        `order_version`. Kyou-E (train 40's keeper, notes 2–3): a file mined after Junban's count is one the count never
+        saw (`side_seen`), so a receipt never sets a title aside side by side — Junban's next count decides — and reads
+        none of Current. Only a receipt that takes back what the count saw (its cards deleted in Anki: None; the file
+        mined again since) can move who takes turns (`side_pair`), and then the order moved, as `set_side_cards`'."""
         with self._command("receipt") as cmd:
-            before = self._side_split()
+            cards = self._side_cards() if self._side_on() else None
+            if cards:
+                row = self.conn.execute("SELECT mined_at FROM items WHERE id = ?", (item_id,)).fetchone()
+                if row is None or side_seen(cards, row[0]) == side_seen(cards, mined_at):
+                    cards = None                # what the count saw is the same: no one's turn can move
+            before = self._side_split() if cards else None
             change = self._status("receipt", [item_id], "mined_at", mined_at)
-            if change is not None and self._side_split() != before:
+            if cards and change is not None and self._side_split() != before:
                 cmd.touch(CURRENT)
             return change
 

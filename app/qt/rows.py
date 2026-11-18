@@ -362,10 +362,15 @@ def icon(p, kind, rect, colour, width=1.6):
         path.lineTo(QPointF(x + w * 0.75, y + h * 0.88))
         path.closeSubpath()
         p.drawPath(path)
-    elif kind == "mine":
-        p.drawRoundedRect(r.adjusted(w * 0.18, h * 0.08, -w * 0.18, -h * 0.08), 1.5, 1.5)
-        p.drawLine(QPointF(x + w * 0.5, y + h * 0.32), QPointF(x + w * 0.5, y + h * 0.68))
-        p.drawLine(QPointF(x + w * 0.32, y + h * 0.5), QPointF(x + w * 0.68, y + h * 0.5))
+    elif kind == "mine":                             # a pickaxe (Sonic 2026-11-17, Michi-CK): the handle up from the
+        p.drawLine(QPointF(x + w * 0.1, y + h * 0.9), QPointF(x + w * 0.64, y + h * 0.36))     # lower left; its head a
+        head = QPainterPath(QPointF(x + w * 0.14, y + h * 0.14))                                # filled crescent, tip
+        head.quadTo(QPointF(x + w * 0.96, y + h * 0.04), QPointF(x + w * 0.86, y + h * 0.86))   # to tip (an arc alone
+        head.quadTo(QPointF(x + w * 0.76, y + h * 0.24), QPointF(x + w * 0.14, y + h * 0.14))   # reads as an arrow at
+        pen.setWidthF(width * 0.5)                                                              # 13 px)
+        p.setPen(pen)
+        p.setBrush(colour)
+        p.drawPath(head)
     elif kind in ("no_media", "no_audio"):           # the mock's i-novid / i-noaud (16-unit box), struck through
         u = w / 16
         if kind == "no_media":
@@ -681,8 +686,10 @@ def paint_stop(p, rect, stopping, turning=None, radius=None, dpr=1.0, ground="su
 def pill_text(status):
     """The words a pill shows. Laptop row 36's sibling, row 38 ("i don't need the words 'waiting' only the icon. It
     should tell you what it means when hover"): every *Waiting* is its icon alone — a k/n count stays, being no word —
-    and says itself in its hover (`status_tip`). *Not timed* keeps its words: it asks for the learner, it doesn't wait."""
-    if status.kind == "asked":                     # R47: the pressed mark, still — its hover names it
+    and says itself in its hover (`status_tip`). *Not timed* keeps its words: it asks for the learner, it doesn't wait.
+    *Mine* is its pickaxe alone (Sonic 2026-11-17, Michi-CK), its hover and accessible name *Mine*; *Mine rest* keeps
+    its count and words."""
+    if status.kind in ("asked", "mine"):           # R47: the pressed mark, still — its hover names it
         return ""
     if status.kind != "waiting" or status.label == view_rows.STRINGS["not_timed"]:
         return status.label
@@ -690,7 +697,8 @@ def pill_text(status):
 
 
 def status_tip(status):
-    """A status's hover: what it is first when its pill doesn't say it (row 38: *Waiting*'s icon alone), then its tip."""
+    """A status's hover: what it is first when its pill doesn't say it (row 38: *Waiting*'s icon alone; *Mine*'s
+    pickaxe), then its tip."""
     if pill_text(status) == status.label:
         return status.tip
     return strings.ROWS_WAITING_TIP.format(label=status.label, tip=status.tip)

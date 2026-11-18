@@ -332,6 +332,66 @@ def show_title(store, item_id):
     return row[0] if row and row[0] else None
 
 
+def part_of(store, item_id, rel_path):
+    """Michi-EO: an item's place in its show, (season, episode), or None (it names none: a channel's single video, a
+    special). Its record's (hato's, the browser's `show`; none named is the first season), else its file's name as
+    the one reading reads it (`episode_names.identity`, its folder giving a season: `Season 01/…`) — a folder's K4
+    number first."""
+    from app import episode_names, library_store
+    record = store._show_record(item_id) or {}
+    found = library_store._episode(record)
+    if found is not None:
+        return found if found[1] == found[1] else None          # (a NaN a record wrote is no place)
+    rel = str(rel_path or "")
+    folder = rel.rsplit("/", 2)[-2] if rel.count("/") >= 1 else None
+    name = episode_names.identity(rel, folder_name=folder)
+    number = record.get("episode") if record.get("producer") == library_store.SOURCE_PRODUCER else None
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        number = name.episode
+    if number is None or name.special or number != number:
+        return None
+    return (name.season if isinstance(name.season, int) else 1, number)
+
+
+def _show_of(title):
+    """Michi-EO: a title's show, as one key — `episode_names.show_key` of the title without a season written at its end
+    (`Show S2`, `Show 2nd Season`: the store keeps a record's other season as another title, `_work_by_record`); ""
+    when no letter or digit is left."""
+    from app import episode_names
+    return episode_names.show_key(episode_names._season(str(title or ""))[0])
+
+
+def parts_before(store, item_id, cache=None):
+    """Michi-EO (Sonic 2026-11-17: a show is one unit): the parts of `item_id`'s show before it — the items in Current
+    (NOW, Soon) of its title and of its show's other seasons' titles (`_show_of`) that count, are there and aren't
+    mined, whose `part_of` comes before its own (an earlier season is an earlier part) -> [item ids], the first part
+    first. [] when the item isn't one of them or names no part (a title with no episode numbers keeps Current's
+    order). `cache` ({"works": {work id: show}, ("show", show): {item id: part}}): every title read once a look,
+    however many parts are queued in it."""
+    from app import library_store
+    cache = {} if cache is None else cache
+    with store._reading():
+        row = store.conn.execute("SELECT i.work_id, w.title FROM items i LEFT JOIN works w ON w.id = i.work_id "
+                                 "WHERE i.id = ?", (item_id,)).fetchone()
+        if row is None or row[0] is None:
+            return []
+        key = _show_of(row[1])
+        show = ("show", key or row[0])                      # (no letter left: its own title alone)
+        if show not in cache:
+            if "works" not in cache:
+                cache["works"] = {w: _show_of(t) for w, t in store.conn.execute("SELECT id, title FROM works")}
+            works = [w for w, s in cache["works"].items() if key and s == key] or [row[0]]
+            rule = library_store.counts_sql(store._keep_watched())
+            cache[show] = {i: part_of(store, i, rel) for i, rel in store.conn.execute(
+                f"SELECT id, rel_path FROM items WHERE work_id IN ({','.join('?' * len(works))}) AND "
+                f"tier IN ('now', 'soon') AND availability = 'available' AND mined_at IS NULL AND {rule}", works)}
+    parts = cache[show]
+    mine = parts.get(item_id)
+    if mine is None:
+        return []
+    return [i for p, i in sorted((p, i) for i, p in parts.items() if p is not None and p < mine)]
+
+
 def made_words_all(store):
     """Every word Connect has made a card for in this language's library, whatever the episode (N15, the store's
     `made_words`, keyed by the lemma; G1.3-4: a word made once is never made again automatically, even when its card

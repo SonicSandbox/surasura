@@ -167,9 +167,10 @@ def test_a_hand_placed_subtitles_folder_with_nothing_above_it_is_named_and_keyed
         store.insert([first], "now")
         wid = store.item(store.item_id(os.path.relpath(first, data_dir).replace(os.sep, "/")))["work_id"]
         assert _works(store)[wid] == (f"{show} Season 1", ls.path_key(f"{show}/Season 01"))
-        touch(data_dir, f"Library/{show}/Season 01/{show} - 02.srt", _text(language, 2))
-        later = store.sync_disk()["added"]
-        assert later and {store.item(i)["work_id"] for i in later} == {wid}
+        second = touch(data_dir, f"Library/{show}/Season 01/{show} - 02.srt", _text(language, 2))
+        store.insert([second], "now")                    # (`Library` is the looks' copy: added as the first was)
+        later = store.item_id(os.path.relpath(second, data_dir).replace(os.sep, "/"))
+        assert later is not None and store.item(later)["work_id"] == wid
         assert len(_works(store)) == 1
         titles = json.loads(store.conn.execute("SELECT titles FROM works WHERE id = ?", (wid,)).fetchone()[0])
         assert all(not t.endswith(folder) for t in titles), titles

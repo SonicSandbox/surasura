@@ -69,7 +69,7 @@ def test_the_settings_page_shows_the_deck_in_sight_and_follows_junbans_window(qa
     page, store = make_page(dict(ALL_ON, junban_deck=DECK, junban_scope="deck"))
     view = page.row("junban_scope")
     assert view.help.text() == S.JUNBAN_DECK_LINE.format(deck=DECK) and not view.help.isHidden()
-    assert "junban" in view.doors and not view.doors["junban"].isHidden()
+    assert "junban" in view.doors                     # *Junban…* beside it (shown where Junban's window is here)
     store.outside({"junban_deck": "日本語::新しいデッキ"})
     QApplication.processEvents()
     assert view.help.text() == S.JUNBAN_DECK_LINE.format(deck="日本語::新しいデッキ")

@@ -308,6 +308,7 @@ def test_the_move_snapshots_first_moves_under_the_lock_and_reads_back(anki):
 
 def test_undo_puts_each_card_back_where_it_came_from_but_never_one_moved_again_since(anki):
     anki.cards[1005] = [102, "日本語::旧"]           # a second card of a note, in another deck of the learner's
+    anki.decks.add("日本語::旧")
     got = decks.move(_ja(), "ja")
     assert got["moved"] == 3
     anki.cards[1002][1] = "日本語::後で"              # the learner moved one on since: theirs now
@@ -348,9 +349,10 @@ def test_a_move_anki_stops_answering_in_still_offers_its_undo(anki):
 def test_a_move_of_many_cards_goes_in_chunks_and_an_undo_stopped_part_way_says_what_went_back(anki, monkeypatch):
     monkeypatch.setattr(decks, "CHUNK", 1)
     anki.cards[1006] = [104, "日本語::旧"]
+    anki.decks.add("日本語::旧")
     got = decks.move(_ja(), "ja")
     assert got["moved"] == 3 and [len(c) for _d, c, _h in anki.moves()] == [1, 1, 1]
-    anki.fail_on = ("changeDeck", 1)                # the first home deck goes back, then Anki stops
+    anki.fail_on = ("changeDeck", 1)                # one card goes back, then Anki stops
     back = decks.move_back(_ja(), got["id"])
     assert not back["ok"] and back["back"] == 1 and back["say"].startswith("Put 1 cards back, then Anki stopped")
 
@@ -380,10 +382,17 @@ def test_a_deck_name_holding_anki_wildcards_is_read_as_written(anki):
 
 
 def test_a_strange_answer_from_anki_is_no_crash(anki, monkeypatch):
-    monkeypatch.setattr(anki_connect, "invoke", lambda *a, **k: ["not", "a", "dict"])
+    real = anki_connect.invoke
+    monkeypatch.setattr(anki_connect, "invoke", lambda action, *a, **k: ["not", "a", "dict"] if action == "getDecks"
+                        else real(action, *a, **k))
+    assert decks.strays(_ja(), "ja") is None
+    assert "say" in decks.move(_ja(), "ja")
+    monkeypatch.setattr(anki_connect, "invoke", lambda action, *a, **k: 1 / 0 if action == "findCards"
+                        else real(action, *a, **k))
+    decks.forget()
     assert decks.strays(_ja(), "ja") is None
     got = decks.move(_ja(), "ja")
-    assert got["ok"] is False and "say" in got
+    assert got["ok"] is False and got["say"].startswith(decks.NOT_MOVED) and anki.moves() == []
 
 
 def test_nothing_left_to_move_and_an_undo_whose_record_is_gone(anki):

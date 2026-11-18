@@ -197,11 +197,13 @@ def move_back(settings, snapshot, wait=0.0, cancel=None, on_wait=None):
             have = set(anki_connect.deck_names(url))
             for home, ids in came.items():
                 still = [c for c in ids if c in here]
-                if still and home not in have:
+                if home not in have:
                     gone += len(still)
-                elif still:
-                    _change(url, still, home)
-                    back += len(still)
+                    continue
+                for start in range(0, len(still), CHUNK):     # counted a chunk at a time (PART_UNDONE)
+                    part = still[start:start + CHUNK]
+                    _change(url, part, home)
+                    back += len(part)
     except Exception as e:
         return {"ok": False, "say": PART_UNDONE.format(n=back, why=e) if back else f"{NOT_UNDONE} {e}", "back": back}
     finally:

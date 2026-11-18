@@ -30,6 +30,9 @@ held by `tests/connect/test_lineup.py`; plan: `tracks/pipeline/work/AB/plan.md`)
 - **The spot-check** (AB-Q5, `spot_check`): an audiobook's own subtitle (Stage A's audio episode) heard in SAMPLES places
   (~SAMPLE_S each, through the file: `media` cuts them, `transcribe` listens) and each compared with the subtitle's
   lines there (`overlap`); MATCHES of them at MATCH or more → timed. Kept per subtitle and audio file (`spot.json`).
+- **A timed video's release** (audio quality Tier 1 made fast, Michi-T1 on #498): the episodes of one release
+  share one audio track, so one episode's verdict is its release's (`release_key`: the video's folder, its name's
+  release group, show, season and special, its extension and a dub's mark), kept beside the episodes' own.
 
 Light: the standard library; Anki Miner is called through `anki_miner`.
 """
@@ -38,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 from collections import namedtuple
@@ -470,8 +474,10 @@ def samples(lines, n=SAMPLES):
     return [(lines[at][0], 0, lines[at][2]) for at in sorted(picks)]
 
 
-def spot_key(audio, subtitle):
-    """The spot-check's key: the subtitle's bytes and the audio file's size and time (either changed: checked again)."""
+def spot_key(audio, subtitle, offset=0.0):
+    """The spot-check's key: the subtitle's bytes and the audio file's (or video's) size and time (either changed:
+    checked again), and the shift its lines are cut at when there is one (a video's tsubasa offset: another shift is
+    another check)."""
     digest = hashlib.sha256()
     try:
         with open(subtitle, "rb") as f:
@@ -480,43 +486,129 @@ def spot_key(audio, subtitle):
         st = os.stat(audio)
     except OSError:
         return None
-    return f"{SPOT_RULE}-{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}"
+    return f"{SPOT_RULE}-{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}" + (
+        f"-o{float(offset):.3f}" if offset else "")
+
+
+def release_key(video):
+    """Michi-T1: the release a video's audio track comes from -> its verdicts' key, or None. The episodes of one release
+    share their audio track (a dub or another language's track is the release's, never one episode's), so one of them
+    heard answers for all: the same folder, the same release group in the name (`episode_names.identity`'s `group`: its
+    leading `[tag]`, the name before the episode marker, the folder), show, season and special, the same extension (an
+    `.mkv` and an `.mp4` of one episode in a folder are two releases) and a dub's mark or none (`dubbed`). Another
+    folder, group or layout of names is checked again."""
+    from app import episode_names
+    if not video:
+        return None
+    path = os.path.abspath(str(video))
+    where, name = os.path.split(path)
+    if not name:
+        return None
+    n = episode_names.identity(name, os.path.basename(where))
+    parts = [os.path.normcase(where), list(n.group), n.key[0], n.key[1], str(n.key[4]),
+             os.path.splitext(name)[1].casefold(), episode_names.dubbed(name)]
+    # ASCII escapes: any name NTFS holds (a lone surrogate too) hashes, never raises
+    digest = hashlib.sha256(json.dumps(parts).encode("ascii")).hexdigest()
+    return f"{SPOT_RULE}-release-{digest[:24]}"
+
+
+# Michi-T1: a release heard beside the mining reads and writes `spot.json` on its own thread — every read and write
+# here holds this (Windows refuses `os.replace` onto a file another thread has open)
+_SPOT_WRITE = threading.Lock()
+
+
+def _spot_entry(key):
+    """`spot.json`'s record for `key` ({} none, or not a record)."""
+    if not key:
+        return {}
+    with _SPOT_WRITE:
+        kept = (_read_json(os.path.join(root(), SPOT)) or {}).get(key)
+    return kept if isinstance(kept, dict) else {}
 
 
 def spot_kept(key):
-    return ((_read_json(os.path.join(root(), SPOT)) or {}).get(key) or {}).get("verdict") if key else None
+    return _spot_entry(key).get("verdict")
 
 
-def _keep_spot(key, verdict, shares):
+def _keep_spot(key, verdict, shares, more=None):
     path = os.path.join(root(), SPOT)
-    kept = _read_json(path) or {}
-    kept[key] = {"verdict": verdict, "shares": [round(s, 3) for s in shares], "at": time.time()}
-    _write_json(path, kept)
+    with _SPOT_WRITE:
+        kept = _read_json(path) or {}
+        kept[key] = dict({"verdict": verdict, "shares": [round(s, 3) for s in shares], "at": time.time()},
+                         **(more or {}))
+        _write_json(path, kept)
 
 
-def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
+def _stamp(path):
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return [st.st_size, st.st_mtime_ns]
+
+
+def keep_release(key, verdict, video, subtitle, offset=0.0):
+    """Keep a release's verdict, heard from `video` (its episode's own verdict, kept by `spot_check`, gives the
+    shares): which video, and its size and time, kept with it (`release_kept`)."""
+    own = spot_key(video, subtitle, offset)
+    shares = _spot_entry(own).get("shares")
+    try:
+        _keep_spot(key, verdict, shares if isinstance(shares, list) else (),
+                   {"of": own, "video": os.path.abspath(video), "stamp": _stamp(video)})
+    except (OSError, ValueError, TypeError) as e:     # unwritable, or a name JSON can't hold: heard again later
+        import logging
+        logging.getLogger("surasura-cli").info("Connect couldn't keep a release's verdict (%s)", e)
+
+
+def release_kept(key):
+    """A release's kept verdict, while the video it was heard from is as it was then (its size and time): a release
+    replaced under the same names, or the episode heard gone, is heard again -> MATCHED / NOT_MATCHED / None."""
+    kept = _spot_entry(key)
+    video = kept.get("video")
+    if not isinstance(video, str) or kept.get("stamp") is None or _stamp(video) != kept["stamp"]:
+        return None
+    return kept.get("verdict")
+
+
+def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT, offset=0.0):
     """(`_spot_check`, its run folder removed after: the clips and transcripts are Anki Miner's for the caller to
     delete — review B-22.)"""
     import shutil
     try:
-        return _spot_check(miner, language, profile, audio, subtitle, timeout)
+        return _spot_check(miner, language, profile, audio, subtitle, timeout, offset)
     finally:
-        shutil.rmtree(folder("spot-" + ((spot_key(audio, subtitle) or "x").split("-", 1)[-1])[:24]),
+        shutil.rmtree(folder("spot-" + ((spot_key(audio, subtitle, offset) or "x").split("-", 1)[-1])[:24]),
                       ignore_errors=True)
 
 
-def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
+def heard_lines(subtitle, language, video=False):
+    """The lines a spot-check may listen at -> [(start s, end s, text)]: an audio file's SRT as Anki Miner writes it
+    (`srt_cues`); a video's subtitle in any of its formats, read as the pick reads it (`cues.read`), less what is no
+    speech of its own: a song line (sung over music, no measure of the speech), a line in another script (a sign) and
+    a line shown again."""
+    if not video:
+        return srt_cues(subtitle)
+    from app import cues
+    try:
+        read = cues.read(subtitle, language)
+    except (OSError, ValueError, UnicodeError):
+        return []
+    return [(cues.seconds(c.start), cues.seconds(c.end), c.text) for c in read if c.counted and not c.sung]
+
+
+def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT, offset=0.0):
     """AB-Q5: is `subtitle` timed to `audio`? SAMPLES places of it cut from the audio (`media`, one call) and heard
     (`transcribe`, one call), each compared with its lines (`overlap`): MATCHES of them at MATCH or more → MATCHED,
     else NOT_MATCHED; kept per `spot_key`. -> MATCHED / NOT_MATCHED, or None (it couldn't be checked now: a call
     refused or failed — asked again at the next look). Raises AnkiMinerError `setup` when Anki Miner has no speech
     model (the caller asks for it)."""
     from app.connect import anki_miner
-    key = spot_key(audio, subtitle)
+    key = spot_key(audio, subtitle, offset)
     kept = spot_kept(key)
     if kept in (MATCHED, NOT_MATCHED):
         return kept
-    places = samples(srt_cues(subtitle))
+    video = not anki_miner.is_audio(audio)
+    places = samples(heard_lines(subtitle, language, video))
     if not places:
         return None
     where = folder("spot-" + ((key or "x").split("-", 1)[-1])[:24])
@@ -526,10 +618,13 @@ def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT)
     base = {"schema": 1, "run_dir": run_dir, "language": language}
     if profile:
         base["profile"] = profile
-    media = dict(base, episodes=[{"run_id": "spot", "audio_file": os.path.abspath(audio),
-                                  "subtitle_file": os.path.abspath(subtitle),
-                                  "lines": [{"line_start": start, "line_expansion": [0, after]}
-                                            for start, after, _t in places]}])
+    # a video's lines are cut at the shift its fit-check found (`subtitle_offset`), as its cards would be
+    episode = {"run_id": "spot", ("video_file" if video else "audio_file"): os.path.abspath(audio),
+               "subtitle_file": os.path.abspath(subtitle),
+               "lines": [{"line_start": start, "line_expansion": [0, after]} for start, after, _t in places]}
+    if offset:
+        episode["subtitle_offset"] = float(offset)
+    media = dict(base, episodes=[episode])
     path = os.path.join(where, "media.json")
     _write_json(path, media)
     # a look-up for the job's *Stop* (review B-16): nothing here writes anything but its run folder, so a press ends it

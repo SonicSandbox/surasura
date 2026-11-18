@@ -724,6 +724,55 @@ def test_a_failed_download_is_a_failed_state_and_a_report_never_a_dialog(world):
     assert svc.cancel() is False
 
 
+def test_a_download_the_connection_let_down_stays_on_offer_said_plainly_and_try_again_works(world):
+    """A Send report (2026-11-18): GitHub's connection timed out (WinError 10060) on every try, and the bar said
+    "Couldn't download the update: <urlopen error [WinError 10060] …>". Now: the release stays on offer (`retry`), the
+    words say what happened and what to do — never the raw error, which goes to the report — a Needs you entry, the
+    lock and the held jobs let go; *Try again* is *Update now*, and it goes through."""
+    timeout = TimeoutError(10060, "A connection attempt failed because the connected party did not properly respond")
+    world.stage = Stage(error=updater.DownloadError(timeout))
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.AVAILABLE and svc.state().retry, seconds=10)
+    s = svc.state()
+    assert s.message.startswith(U.OFFLINE) and "WinError" not in s.message and "urlopen" not in s.message
+    assert "Try again" in s.message and "releases page" in s.message
+    report = open(s.report, encoding="utf-8").read()
+    assert "Stage: download" in report and "10060" in report, "the raw error is the report's"
+    assert [(f.version, f.seen) for f in s.needs_you] == [(NEWER, False)] and svc.failure().startswith(U.OFFLINE)
+    assert _lock_is_free() and not updater.children_held() and world.quits == []
+    assert registry.snapshot()[-1].state == J.FAILED and s.version == NEWER and s.cls == "APP"
+    world.stage = Stage()                                 # the connection is back
+    assert svc.start() is True                            # *Try again*
+    assert h.until(lambda: world.quits, seconds=10)
+    assert ("arm", NEWER, None) in world.log
+    assert not any(st.retry for st in [svc.state()]), "the retry mark goes with the new try"
+
+
+def test_a_failure_that_isnt_the_connections_is_still_a_failed_state(world):
+    """A checksum, a 404, the disk: no *Try again* offered in its place (the same press would fail the same way)."""
+    world.stage = Stage(error=updater.UpdateError("GitHub answered 404 for the update's file"))
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.FAILED, seconds=10)
+    assert svc.state().retry is False and svc.state().message.startswith("Couldn't download the update: GitHub answered")
+
+
+def test_reconcile_clears_what_earlier_updates_left_even_when_the_result_cant_be_read(world, monkeypatch):
+    """A Send report (2026-11-18): a cancelled update's stage the running program held stayed; the next start clears it
+    (`updater.clean_leftovers`: never an armed update's, never one under way)."""
+    cleared = []
+    monkeypatch.setattr(updater, "clean_leftovers", lambda: cleared.append(1))
+
+    def broken():
+        raise OSError("the update folder is read-only")
+    monkeypatch.setattr(updater, "consume_result", broken)
+    assert world.service().reconcile() == "none" and cleared == [1]
+    monkeypatch.setattr(updater, "consume_result", lambda: {"status": "success", "from": "2.3.1", "to": __version__})
+    assert world.service().reconcile() == "ok" and cleared == [1, 1]
+
+
 def test_the_updater_failing_to_start_is_reported_and_releases_everything(world):
     """_apply_and_restart(arm_and_launch raises): the library locks released, the update ended, the report
     (`write_report("start updater")`), `failed` — the app stays open."""

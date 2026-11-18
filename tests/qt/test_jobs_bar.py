@@ -25,7 +25,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QAbstractButton, QApplication, QPushButton
+from PyQt6.QtWidgets import QAbstractButton, QApplication, QLabel, QPushButton
 
 from app.qt import shell, strings
 from app.services import automation as A
@@ -378,7 +378,54 @@ def test_update_mark_says_ready_and_a_click_opens_the_sheet(world):
     assert "99.0" in sheet.title.text() and sheet.body.text() == "A quick in-app update."
     assert sheet.buttons["start"].isVisibleTo(sheet) and not sheet.buttons["download"].isVisibleTo(sheet)
     world.updates.push(state=U.WAITING, programs=(U.Program(1, "Content Manager", True),))
-    assert wait_until(lambda: mark.text() == strings.UPDATE_RESTART)
+    assert wait_until(lambda: mark.text() == strings.UPDATE_WAITS_FOR.format(name="Content Manager"))
+
+
+def test_update_waiting_on_ankis_reorder_says_what_it_waits_for_never_restart(world):
+    """A Send report (2026-11-18): the download was in, the update waited for Anki's re-order (wait-only, no Stop), and
+    the bar's chip read *Restart to update* — a press opened the sheet and restarted nothing, so it looked dead. The
+    chip says what it waits for; a press shows the sheet saying Surasura restarts by itself once that finishes; with
+    nothing left to wait for it reads *Restarting to update…*."""
+    from app import updater
+    mark, sheet = world.d.update_mark, world.d.sheet
+    _offer(world)
+    world.updates.push(state=U.WAITING, programs=(U.Program(7, updater.REPLAN_ROW, False),))
+    assert wait_until(lambda: mark.text() == strings.UPDATE_WAITS_FOR.format(name="Re-ordering Anki's new cards"))
+    assert "Restart" not in mark.text() and "99.0" in mark.toolTip()
+    mark.click()
+    assert wait_until(lambda: sheet.isVisible())
+    assert sheet.body.text() == strings.UPDATE_WAITING_LINE and "restarts by itself" in sheet.body.text()
+    names = [label.text() for row in sheet.program_rows for label in row.findChildren(QLabel)]
+    assert names == [updater.REPLAN_ROW]
+    assert not sheet.buttons["stop-all"].isVisibleTo(sheet), "a write to Anki is waited for, never stopped"
+    assert sheet.buttons["cancel"].isVisibleTo(sheet)
+    world.updates.push(state=U.WAITING, programs=())
+    assert wait_until(lambda: mark.text() == strings.UPDATE_HANDING)
+    world.updates.push(state=U.READY, programs=())
+    assert wait_until(lambda: mark.text() == strings.UPDATE_HANDING)
+
+
+def test_a_download_the_connection_let_down_offers_try_again_and_the_releases_page(world):
+    """A Send report (2026-11-18): after WinError 10060 the sheet said nothing but the raw error. The release stays on
+    offer: the sheet says what happened in words, its main button reads *Try again* (the same *Update now*), *Download*
+    opens the releases page beside it; a new offer reads *Update now* again."""
+    sheet = world.d.sheet
+    _offer(world, message=U.OFFLINE, retry=True)
+    world.win.open_update_sheet()
+    assert wait_until(lambda: sheet.isVisible())
+    start = sheet.buttons["start"]
+    assert start.text() == strings.UPDATE_TRY_AGAIN and start.accessibleName() == strings.UPDATE_TRY_AGAIN
+    assert start.isVisibleTo(sheet) and sheet.buttons["download"].isVisibleTo(sheet)
+    assert sheet.message.text() == U.OFFLINE and sheet.message.isVisibleTo(sheet)
+    card_start = [b for b in world.d.cards.findChildren(QPushButton) if b.property("action") == "start"]
+    assert [b.text() for b in card_start] == [strings.UPDATE_TRY_AGAIN], "Needs you's offer card says the same"
+    start.click()
+    assert wait_until(lambda: world.updates.called("updates.start"))
+    sheet.buttons["download"].click()
+    assert wait_until(lambda: world.updates.called("updates.open_download"))
+    _offer(world, message=None, retry=False)
+    assert wait_until(lambda: start.text() == strings.UPDATE_NOW)
+    assert not sheet.buttons["download"].isVisibleTo(sheet)
 
 
 def test_update_sheet_buttons_call_the_service(world):
@@ -441,7 +488,7 @@ def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_i
     _offer(world)
     world.updates.push(state=U.WAITING, programs=programs)
     sheet = world.d.sheet
-    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_RESTART)
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_WAITS_FOR_MANY.format(count=2))
     world.win.open_update_sheet()
     assert wait_until(lambda: sheet.isVisible())
     stops = [b for b in sheet.findChildren(QPushButton) if b.text() == strings.UPDATE_STOP and b.isVisibleTo(sheet)]

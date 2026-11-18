@@ -73,12 +73,15 @@ def test_a_stage_holding_a_running_programs_file_never_blocks_the_next_update(tm
     kit.write_tree(updater.update_dir(), {f"previous/{kit.OLD}/Surasura.exe": b"MZ old",
                                           f"previous/{kit.OLD}.files.json": b"{}"})
     updater.discard_staged()                                       # the cancel
-    assert os.path.isdir(first), "Windows keeps a link of a loaded program file: the cancel leaves the stage"
+    # Windows 10 1809 (the learners' LTSC laptops) keeps a link of a loaded program file, so the cancel leaves the
+    # stage; a newer Windows (GitHub's runners) lets it go. Either way the next update goes through.
+    kept = os.path.isdir(first)
 
     marker = updater.prepare_update(_info())                       # *Update now* again: was WinError 183
 
     stage = marker["staged"]
-    assert stage == updater.stage_dir(kit.NEW) + "-1" and os.path.dirname(stage) == updater.update_dir()
+    assert stage == updater.stage_dir(kit.NEW) + ("-1" if kept else "")
+    assert os.path.dirname(stage) == updater.update_dir()
     assert kit.tree(stage) == kit.digests(kit.program(kit.NEW)), "the complete program, nothing of the leftover"
     assert marker["swapper"] == os.path.join(stage, "updater.exe")
     assert not os.path.exists(updater.marker_path()), "nothing armed"

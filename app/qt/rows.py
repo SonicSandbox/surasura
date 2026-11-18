@@ -716,8 +716,18 @@ def pill_size(status, dpr=1.0):
 
 
 def heard_title(row):
-    """a5-2 (Hon): a title as painted — 🎧 before it when the row holds an audiobook (`Row.audio`, its hover)."""
+    """a5-2 (Hon): a title as painted — 🎧 before it when the row holds an audiobook (`Row.audio`, its hover). Every
+    place a title is shown paints it through here (Kantan-T: Current, New arrivals, Finished, Goal's tiles, search, the
+    sort screen): anything with `title` and `audio` (a Row, an Arrival, a GoalWork, a search Hit)."""
     return f"{HEADPHONES}{row.title}" if getattr(row, "audio", "") else row.title
+
+
+def heard_tip(row, text=None):
+    """The hover of a title painted by `heard_title`: `text` (else the title), then the 🎧's words on a line of their
+    own when it holds an audiobook — the tray's row hover's one rule (a5-2), shared by every place a title shows."""
+    text = row.title if text is None else text
+    audio = getattr(row, "audio", "")
+    return f"{text}\n{audio}" if audio else text
 
 
 def _audio_part(row, rect, role):

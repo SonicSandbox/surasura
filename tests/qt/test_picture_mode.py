@@ -308,6 +308,7 @@ DRAWN = {
     ("rows.py", "cover", "text"): "cover_label of the title, scrubbed at the top of cover()",
     ("rows.py", "cover", "ch"): "a character of that scrubbed title",
     ("search.py", "HitRow.paintEvent", "text"): "the parts of the title, scrubbed (`whole`) before it is cut",
+    ("search.py", "HitRow.paintEvent", "rows.HEADPHONES"): "a constant mark (the 🎧 before an audiobook's title)",
     ("settings_controls.py", "paint_tick", "TICK"): "a constant mark",
     ("settings_controls.py", "Tablets.paintEvent", "CROSS"): "a constant mark",
     ("settings_controls.py", "LevelSlider.paintEvent", "name"): "a band's name",

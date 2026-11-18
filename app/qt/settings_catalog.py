@@ -541,6 +541,14 @@ def help_line(row, settings, language):
             return line
     if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
         return S.NEEDS_MINER
+    if row.id == "junban_scope" and value(row, settings, language) == "all":
+        return S.JUNBAN_ALL_DECKS                # Kantan-T: in sight either way, so a choice never moves the page
+    if row.id == "junban_scope":
+        # Kantan-T (PROVISIONAL): the deck setup picked, named in sight — *Junban…* beside it changes it; this
+        # language's deck only (`setup_wizard.junban_deck`: one recorded for the other language is none here)
+        from app.services.setup_wizard import junban_deck
+        deck = junban_deck(settings, language)
+        return S.JUNBAN_DECK_LINE.format(deck=deck) if deck else S.JUNBAN_NO_DECK
     return row.help
 
 
@@ -641,6 +649,17 @@ def pending(registered):
 def reachable():
     """Every setting a row shows: the keys its control writes and the ones its door's window holds."""
     return {key for row in ROWS for key in row.keys + row.reaches}
+
+
+# Kantan-T: a row whose line reads more than its own keys and reaches — *Which cards*' deck follows 順's recorded pair
+# (`setup_wizard.junban_deck`: a deck recorded for the other language is no deck here)
+LINE_READS = {"junban_scope": ("junban_replan_deck", "junban_replan_language")}
+
+
+def lines_for(keys):
+    """The ids of the rows whose line (`help_line`) reads any of `keys` beyond their own (`LINE_READS`)."""
+    keys = set(keys)
+    return [row_id for row_id, reads in LINE_READS.items() if keys & set(reads)]
 
 
 def rows_for(keys):

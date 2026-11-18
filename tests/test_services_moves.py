@@ -3744,7 +3744,7 @@ def test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write(lib,
     threading.Timer(0.5, looking.close).start()
     assert w2.replay()
     assert h.until(lambda: not w2.pending() and lib.ids("now")[0] == a)
-    time.sleep(0.6)                                     # (the look is closed by now: nothing else to wait for)
+    assert h.until(lambda: looking.closed)              # (the look let go: the writer had no write left to make)
     assert journal(lib.language) is None, "the replay's last write (the file removed) was refused"
 
 

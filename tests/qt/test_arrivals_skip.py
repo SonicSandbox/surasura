@@ -260,11 +260,13 @@ def test_a_skips_rows_leave_at_its_press_while_the_store_is_busy_and_come_back_w
 def test_a_row_only_partly_under_the_folder_stays_until_the_store_says(world):
     # The store's read is the truth: a row of a title whose episodes lie in two folders keeps showing (only the files
     # under the folder leave, in the store's own view), though the press hid it at first.
-    _seed, win, writer, row = world()
+    _seed, win, writer, _row = world()
     tray = tray_of(win)
+    row = max(tray_rows(win), key=lambda r: len(r.arrival.item_ids))     # a title of several episodes
     extras = win.looks.choices[1]
     ids = list(row.arrival.item_ids)
-    win.looks.under_ids[extras] = ids[:-1] if len(ids) > 1 else []
+    assert len(ids) > 1, "why: a row of one file can't be partly under the folder"
+    win.looks.under_ids[extras] = ids[:-1]
     writer.stuck = True
     tray.skip_folder(row.arrival, extras)
     assert row.key not in tray.keys()

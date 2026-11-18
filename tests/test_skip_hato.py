@@ -110,6 +110,29 @@ def test_an_item_hato_ties_to_a_video_elsewhere_stays(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_found_episode_whose_hato_record_names_a_video_elsewhere_stays(language):
+    """The look found the episode under the folder (its origin there), and hato handed over the same bytes naming a
+    video in ANOTHER folder (its record goes on that item, SRC-7): part of it lies elsewhere, so the skip keeps it."""
+    import shutil
+    store, data_dir = _empty(language)
+    src = _drive("Downloads")
+    inside = os.path.join(src, "Downloading")
+    sub = _write(os.path.join(inside, "%s - 05.srt" % _SHOWS[language][1]), _text(language, 5))
+    outside = _video(os.path.join(_drive("Elsewhere"), "%s - 05.mkv" % _SHOWS[language][1]),
+                     body=b"\x1a\x45\xdf\xa3 fake matroska 5 ")
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        (item,) = _ids(store)
+        path, record = _hato_drop(data_dir, language, outside, 5)
+        shutil.copyfile(sub, path)                                                # the same bytes as the found copy
+        assert store.register(path, record).pairing_item == item and _ids(store) == [item]
+        assert store.items_under(inside) == []
+        store.skip_folder(inside)
+        assert store.item(item) is not None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_hatos_hand_over_of_a_skipped_folders_video_is_refused_and_taken_once_read_again(language):
     """Skipped first: hato's hand-over answers `skipped` — no item, no record, hato's file left where it is. Read again
     (Settings), the same hand-over is taken."""

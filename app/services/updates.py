@@ -57,7 +57,11 @@ _MB = 1 << 20
 Program = namedtuple("Program", "key name can_stop")
 Failure = namedtuple("Failure", "text at seen version report")
 State = namedtuple("State", "state version cls body notes_url critical open_now done total programs message report "
-                            "needs_you updated seq")
+                            "needs_you updated seq retry", defaults=(False,))
+# A download the connection let down (`updater.DownloadError`): the offer stays, said plainly, its press *Try again*
+# (a Send report, 2026-11-18; PROVISIONAL, Sonic sees it).
+OFFLINE = ("Couldn't reach GitHub to download the update. Check your connection, then Try again — or download it from "
+           "the releases page.")
 
 
 def body(cls, info, failed_version=""):
@@ -192,6 +196,7 @@ class UpdateService:
             res = updater.consume_result()
         except Exception:
             res = None
+        updater.clean_leftovers()                     # a cancelled update's stage, once nothing holds it
         if not res:
             return "none"
         if res.get("status") == "success":
@@ -415,6 +420,10 @@ class UpdateService:
         if error is not None:
             if not self._end(update, start_held=True):
                 return                                # cancelled at the same moment: the cancel said so
+            if isinstance(error, updater.DownloadError):
+                report = updater.write_report("download", error.detail, to_version=getattr(update.info, "version", ""))
+                self._fail(update, OFFLINE + report_note(report), report, retry=True)
+                return
             report = updater.write_report("download", error, to_version=getattr(update.info, "version", ""))
             self._fail(update, f"Couldn't download the update: {error}. You can try again later, or update manually "
                                "from the releases page." + report_note(report), report)
@@ -657,20 +666,24 @@ class UpdateService:
         self._close_job(update)
         self._send(snap)
 
-    def _fail(self, update, message, report, version=None):
-        """A failure: the bar's `failed` state and a *Needs you* entry — never a dialog."""
+    def _fail(self, update, message, report, version=None, retry=False):
+        """A failure: the bar's `failed` state and a *Needs you* entry — never a dialog. `retry` (the connection let the
+        download down): the release stays on offer instead, the failure its message and *Update now* its *Try again*."""
         with self._lock:
             version = version if version is not None else getattr(getattr(update, "info", None), "version", "")
             self._needs.insert(0, Failure(message, time.time(), False, version, report))
             del self._needs[NEEDS_YOU_KEPT:]
-            snap = self._assign(FAILED, message=message, report=report, version=version)
+            if retry and self._info is not None:
+                snap = self._assign(AVAILABLE, message=message, report=report, retry=True)
+            else:
+                snap = self._assign(FAILED, message=message, report=report, version=version)
         if update is not None:
             self._close_job(update, ok=False, message=message)
         self._send(snap)
 
     # --- states ------------------------------------------------------------------------------------------------- #
     def _assign(self, state, done=None, total=None, programs=(), message=None, report=None, open_now=False,
-                version=None, keep=False):
+                version=None, keep=False, retry=False):
         """The new state (inside `self._lock`), numbered. `keep`: the same state with the failures / outcome renewed."""
         now = self._state
         if keep:
@@ -683,7 +696,7 @@ class UpdateService:
             state, version if version is not None else getattr(info, "version", ""), cls,
             body(cls, info, self._failed_version) if info is not None else "", getattr(info, "notes_url", "") or "",
             bool(getattr(info, "critical", False)), open_now, done, total, tuple(programs), message, report,
-            tuple(self._needs), self._updated, now.seq + 1)
+            tuple(self._needs), self._updated, now.seq + 1, retry)
         return self._state
 
     def _send(self, snap):

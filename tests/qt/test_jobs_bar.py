@@ -411,6 +411,7 @@ def test_a_download_the_connection_let_down_offers_try_again_and_the_releases_pa
     opens the releases page beside it; a new offer reads *Update now* again."""
     sheet = world.d.sheet
     _offer(world, message=U.OFFLINE, retry=True)
+    assert wait_until(lambda: not world.d.update_mark.isHidden())
     world.win.open_update_sheet()
     assert wait_until(lambda: sheet.isVisible())
     start = sheet.buttons["start"]

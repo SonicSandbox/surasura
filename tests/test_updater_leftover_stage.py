@@ -200,3 +200,22 @@ def test_a_clear_that_fails_never_raises(tmp_path, monkeypatch):
     held = updater.take_update_lock(looks=1)
     assert held is not None, "the lock is let go even when the clear fails"
     updater.drop_update_lock(held)
+
+
+def test_the_lock_is_free_while_the_start_clears(tmp_path, monkeypatch):
+    # The clear may take seconds (a stage of hundreds of MB): the lock — another process's "an update is staged" — is
+    # only looked at, and let go before the folders go, so nothing else reads an update that isn't there meanwhile.
+    kit.install(tmp_path, monkeypatch)
+    kit.write_tree(updater.update_dir(), {f"stage-{kit.NEW}/Surasura.exe": b"MZ"})
+    real, seen = updater.discard_staged, []
+
+    def clearing():
+        held = updater.take_update_lock(looks=1)
+        seen.append(held is not None)
+        if held is not None:
+            updater.drop_update_lock(held)
+        real()
+    monkeypatch.setattr(updater, "discard_staged", clearing)
+    assert updater.clean_leftovers() is True
+    assert seen == [True], "the lock was free while the folders went"
+    assert _stage_names() == []

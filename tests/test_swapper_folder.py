@@ -197,7 +197,7 @@ def test_a_swap_installs_exactly_the_release_and_keeps_every_foreign_file(staged
 def test_a_stage_beside_a_leftover_swaps_in_like_any_other(tmp_path, monkeypatch):
     """A Send report (2026-11-18): a cancelled update's stage-3.0.1 that Windows wouldn't let go (a link of a loaded DLL)
     makes the next update stage as stage-3.0.1-1. The swapper takes that path as it takes any (inside the update
-    folder), the release lands, the outcome reads as a success at the next start, and the start clears the leftover."""
+    folder), the release lands, and the next start reads it as a success and clears the leftover."""
     kit.isolate_registry(monkeypatch)
     root = kit.install(tmp_path, monkeypatch)
     kit.build_release(tmp_path, monkeypatch)
@@ -217,7 +217,9 @@ def test_a_stage_beside_a_leftover_swaps_in_like_any_other(tmp_path, monkeypatch
     monkeypatch.setattr(updater.shutil, "rmtree", real)                 # the next start: nothing holds it now
     monkeypatch.setattr(updater, "__version__", kit.NEW)
     assert updater.consume_result()["status"] == "success"
-    assert updater.clean_leftovers() is True and not os.path.exists(leftover)
+    # The next start reads the outcome, and that clears the update folder's leftovers (nothing holds them now); the
+    # start's own clear then finds nothing to do.
+    assert not os.path.exists(leftover) and updater.clean_leftovers() is False
     assert os.path.isdir(os.path.join(updater.previous_root(), kit.OLD)), "Go back's kept version stays"
 
 

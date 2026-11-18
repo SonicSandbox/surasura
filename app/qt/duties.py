@@ -138,7 +138,16 @@ def update_mark_look(state):
         text = strings.UPDATE_DOWNLOADING.format(pct=pct) if pct is not None else strings.UPDATE_DOWNLOADING_NO_PCT
         return text, strings.UPDATE_MARK_DOWNLOADING_TIP.format(version=version)
     if state.state == upd.WAITING:
-        return strings.UPDATE_RESTART, strings.UPDATE_MARK_WAIT_TIP.format(version=version)
+        # What it waits for (a row's name up to its " — " note), never a "Restart" a click doesn't do: the click opens
+        # the sheet; with nothing listed the hand-over comes next (the library's upkeep: the sheet's line says so).
+        programs = state.programs or ()
+        if len(programs) == 1:
+            text = strings.UPDATE_WAITS_FOR.format(name=(programs[0].name or "").split(" — ")[0])
+        elif programs:
+            text = strings.UPDATE_WAITS_FOR_MANY.format(count=len(programs))
+        else:
+            text = strings.UPDATE_HANDING
+        return text, strings.UPDATE_MARK_WAIT_TIP.format(version=version)
     if state.state == upd.READY:
         return strings.UPDATE_HANDING, strings.UPDATE_MARK_HANDING_TIP
     return None
@@ -237,9 +246,10 @@ class UpdateSheet(motion.Overlay):
         """Paint `state` (the update service's). -> True when anything changed."""
         old, self.state = self.state, state
         if old is not None and (old.state, old.version, old.cls, old.body, old.critical, old.done, old.total,
-                                old.programs, old.message) == (state.state, state.version, state.cls, state.body,
-                                                               state.critical, state.done, state.total,
-                                                               state.programs, state.message):
+                                old.programs, old.message, old.retry) == (state.state, state.version, state.cls,
+                                                                          state.body, state.critical, state.done,
+                                                                          state.total, state.programs, state.message,
+                                                                          state.retry):
             return False
         self.paints += 1
         s = state.state
@@ -272,8 +282,19 @@ class UpdateSheet(motion.Overlay):
             self.progress.setValue(pct)
         self._show_programs(state.programs if s in (upd.DOWNLOADING, upd.WAITING) else ())
         stoppable = any(p.can_stop for p in state.programs) if s == upd.WAITING else False
+        # The connection let the download down (`retry`): *Update now* is *Try again*, and *Download* stands beside it
+        # (the message names the releases page).
+        retry = offered and not manual and bool(state.retry)
+        start = self.buttons["start"]
+        label, tip = (strings.UPDATE_TRY_AGAIN, strings.UPDATE_TRY_AGAIN_TIP) if retry else (strings.UPDATE_NOW,
+                                                                                          strings.UPDATE_NOW_TIP)
+        if start.text() != label:
+            start.setText(label)
+            start.setAccessibleName(label)
+            if not self._held:
+                start.setToolTip(tip)
         visible = {"notes": offered and bool(state.notes_url), "start": offered and not manual,
-                   "download": offered and manual, "skip": offered, "later": offered,
+                   "download": offered and (manual or retry), "skip": offered, "later": offered,
                    "stop-all": stoppable, "cancel": s in (upd.DOWNLOADING, upd.WAITING)}
         for name, b in self.buttons.items():
             b.setVisible(visible[name])
@@ -391,8 +412,8 @@ class UpdateCards(QWidget):
 
     def show_state(self, state, logs=False):
         """-> True when the cards changed (rebuilt only then: S19)."""
-        offer = (state.version, state.cls, state.state == upd.AVAILABLE and state.cls in ("APP", "INSTALLER")) \
-            if state.state == upd.AVAILABLE else None
+        offer = (state.version, state.cls, state.state == upd.AVAILABLE and state.cls in ("APP", "INSTALLER"),
+                 bool(state.retry)) if state.state == upd.AVAILABLE else None
         failures = tuple((f.text, f.version, f.seen, f.report) for f in state.needs_you)
         key = (offer, failures, bool(logs))
         if key == self._key:
@@ -404,10 +425,12 @@ class UpdateCards(QWidget):
             card.deleteLater()
         self.cards = []
         if offer is not None:
-            version, _cls, in_app = offer
+            version, _cls, in_app, retry = offer
+            now = (strings.UPDATE_TRY_AGAIN, strings.UPDATE_TRY_AGAIN_TIP) if retry else (strings.UPDATE_NOW,
+                                                                                         strings.UPDATE_NOW_TIP)
             self._card(strings.NEEDS_UPDATE_TITLE, strings.NEEDS_UPDATE_LINE.format(version=version or ""),
-                       [("start" if in_app else "download", strings.UPDATE_NOW if in_app else strings.UPDATE_DOWNLOAD,
-                         strings.UPDATE_NOW_TIP if in_app else strings.UPDATE_DOWNLOAD_TIP, None),
+                       [("start" if in_app else "download", now[0] if in_app else strings.UPDATE_DOWNLOAD,
+                         now[1] if in_app else strings.UPDATE_DOWNLOAD_TIP, None),
                         ("skip", strings.UPDATE_SKIP, strings.UPDATE_SKIP_TIP, version)])
         for text, version, _seen, report in failures:
             actions = []

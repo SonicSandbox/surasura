@@ -398,6 +398,28 @@ def test_an_anchor_gone_meanwhile_places_beside_the_nearest_neighbour_the_window
     assert w.can_undo()
 
 
+@pytest.mark.parametrize("fallback", ["nearest", "top"])
+def test_an_exact_move_whose_anchor_went_meanwhile_is_exact_where_it_falls_back_too(lib, make_writer, fallback):
+    """(Kura-EO 3.0.16, mutants) An exact move (Current's ⋯ *Up next*, a step across the Soon line: `exact`) whose
+    anchor left Current while it was queued lands at the window's next neighbour — or, none left, the top — exactly
+    there too, never in its show's episode order: episode 9 before its show's 8, where it was put."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[178]
+    ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (8, 9))
+    lib.store.place([ep8], "top")
+    now = lib.ids("now")
+    anchor = now[3]
+    near = [(anchor, "before")] + ([(ep8, "before")] if fallback == "nearest" else [])
+    w, heard = make_writer()
+    w.hold()
+    w.move([ep9], "now", before_id=anchor, near=near, exact=True)
+    lib.store.move([anchor], "goal")                    # meanwhile the anchor leaves Current
+    w.release()
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[:2] == [ep9, ep8], "exactly before 8 (the neighbour) / at the top: never after its show"
+    assert heard.notes == [WORDS[fallback]]
+
+
 def test_an_anchor_gone_with_no_neighbour_left_goes_to_the_top_of_the_tier(lib, make_writer):
     w, heard = make_writer()
     goal = lib.ids("goal")
@@ -4301,10 +4323,15 @@ def test_a_block_the_stores_rule_places_and_sorts_is_followed_item_by_item_too(l
     ep10, ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (10, 8, 9))
     lib.store.move([ep10, ep8, ep9], "goal")
     assert [i for i in lib.ids("goal") if i in (ep8, ep9, ep10)] == [ep10, ep8, ep9], "the setup"
-    numbers = Recorder()
+
+    class Expecting(Recorder):                          # told before the write, as the window's `Numbers.expect`
+        def expect(self, cmd):
+            self.expected = cmd["op"]
+    numbers = Expecting()
     w, heard = make_writer(numbers=numbers)
     w.place([ep10, ep8, ep9], "soon", label="soon")
     assert h.until(lambda: heard.saved)
+    assert numbers.expected == "place", "the setup: the store's rule, followed after the write"
     assert lib.ids("soon")[:3] == [ep8, ep9, ep10]
     assert numbers.moves == [([ep8], "soon", None, None), ([ep9], "soon", None, ep8), ([ep10], "soon", None, ep9)]
 

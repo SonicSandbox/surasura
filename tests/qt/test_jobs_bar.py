@@ -508,8 +508,8 @@ def test_update_esc_while_waiting_only_hides_the_sheet_and_the_wait_list_repaint
     # bar's chip still says what it waits for, and the sheet opens again on the chip as it was
     QTest.keyClick(world.win, Qt.Key.Key_Escape)
     assert wait_until(lambda: not sheet.isVisible())
-    QTest.qWait(50)
-    assert not world.updates.called("updates.cancel") and not world.automation.called("automation.update_cancelled")
+    assert not wait_until(lambda: world.updates.called("updates.cancel"), 0.1)          # (a cancel would come by now)
+    assert not world.automation.called("automation.update_cancelled")
     assert not world.d.update_mark.isHidden()
     assert world.d.update_mark.text() == strings.UPDATE_WAITS_FOR_MANY.format(count=2)
     world.d.update_mark.click()
@@ -533,8 +533,7 @@ def test_update_closing_the_sheet_while_downloading_leaves_the_download_going_on
     assert wait_until(lambda: sheet.isVisible()) and sheet.progress.isVisibleTo(sheet)
     sheet.close()                                                 # the router's close (Esc / Back / outside)
     assert wait_until(lambda: not sheet.isVisible())
-    QTest.qWait(50)
-    assert not world.updates.called("updates.cancel")
+    assert not wait_until(lambda: world.updates.called("updates.cancel"), 0.1)          # (a cancel would come by now)
     world.updates.push(state=U.DOWNLOADING, done=10, total=20)    # it goes on with the sheet closed
     assert wait_until(lambda: mark.text() == strings.UPDATE_DOWNLOADING.format(pct=50)) and not mark.isHidden()
     mark.click()

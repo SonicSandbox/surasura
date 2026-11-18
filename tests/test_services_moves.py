@@ -1287,12 +1287,14 @@ def test_a_restart_whose_plan_is_out_of_date_keeps_the_cached_figures_faded_neve
             assert cached, language
             stale.load()                                    # the window's first frame asks for it
             assert stale.idle(30) and stale.why() == "stale: another app version", language
-            assert _wait(lambda: again._numbers_version == stale.version), language
-            for _tid, view in views:                        # every view: the cached figures, never a blank
-                shown = {e.id: (e.n_new, e.new_faded) for r in view.rows for e in r.episodes if e.id in cached}
-                assert {i: n for i, (n, _f) in shown.items()} == {i: cached[i] for i in shown}, (language, view.cached)
-            last = {e.id: e.new_faded for r in views[-1][1].rows for e in r.episodes if e.id in cached}
-            assert last and all(last.values()), language   # faded: the plan can't be followed
+
+            def faded():                                    # the load's view (published after the reader takes its
+                last = {e.id: e.new_faded for r in views[-1][1].rows for e in r.episodes if e.id in cached}
+                return bool(last) and all(last.values())    # version): faded, the plan can't be followed
+            assert _wait(faded), language
+            for _tid, view in list(views):                  # every view: the cached figures, never a blank
+                shown = {e.id: e.n_new for r in view.rows for e in r.episodes if e.id in cached}
+                assert shown == {i: cached[i] for i in shown}, (language, view.cached)
         finally:
             again.stop()
             stale.close()

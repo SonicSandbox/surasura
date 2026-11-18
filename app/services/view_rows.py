@@ -288,6 +288,10 @@ STRINGS = {
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
     "tip_mine_rest": "{k}/{n} mined · the rest isn't in your top {line} yet",
     "tip_mine": "Not in your top {line}: it isn't mined yet",
+    # Michi-EO (Sonic 2026-11-17, Q-EO2; PROVISIONAL words): in the top, but Connect holds no job for it and will make
+    # none by itself (it was there before Connect was on, or its cards were undone) — the Mine button, never *Waiting*
+    "tip_mine_own": "In your top {line}: it isn't mined by itself",
+    "tip_mine_rest_own": "{k}/{n} mined · the rest isn't mined by itself",
     # row 13 (laptop fixes): Connect off — no top line, so no "top" in the words either
     "tip_mine_rest_off": "{k}/{n} mined", "tip_mine_off": "It isn't mined yet",
     "tip_no_media": "No {word} on disk{top}\n• Link one for its pictures and audio",
@@ -836,12 +840,36 @@ def spoken(status):
     return status.label if status is not None else ""
 
 
+# Michi-EO (Q-EO2): the rows' own mark on a top-N file Connect holds no job for and has no entry to read for (the
+# store's `mine_unread`): nothing will mine it by itself, so its status is *Mine*, never *Waiting* (`status_of`'s
+# `own`). Never in Connect's record: `build` adds it to the feed's items its rows read, one shared object
+BY_YOU = connect_feed.Item(kind="by_you", words="", tip="", job=None, made=0, total=0)
+
+
+def _by_you(feed_items, top_ids, items, unread, memo):
+    """`feed_items` with BY_YOU on each of `top_ids` not mined that has no Connect item and no unread entry (Michi-EO)
+    -> the same dict while nothing is so; the dict made last time while the same feed and the same files are (`memo`,
+    the row cache's: its rows are the same objects then, S19)."""
+    own = frozenset(i for i in top_ids if i not in feed_items and i not in unread
+                    and not (items.get(i) or {}).get("mined_at"))
+    if not own:
+        return feed_items
+    if memo is not None and memo.get("of") is feed_items and memo.get("own") == own:
+        return memo["items"]
+    out = dict(feed_items)
+    out.update((i, BY_YOU) for i in own)
+    if memo is not None:
+        memo.update({"of": feed_items, "own": own, "items": out})
+    return out
+
+
 def status_of(eps, word, line_n):
     """One status for a set of episodes (a row's, or one episode's), in the mock's order (`stHTML`): every item mined →
     *N in Anki*; any being mined → *Mining*; an unmined one that can be mined in the top → *Waiting*; some mined, the
     rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
     on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
-    nothing mines by itself) and no "top" in the tips."""
+    nothing mines by itself) and no "top" in the tips. An episode in the top that Connect won't mine by itself (`own`,
+    Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -882,15 +910,17 @@ def status_of(eps, word, line_n):
             from app.connect import anki_miner
             tip = STRINGS["tip_heard_wait"] if anki_miner.mines("audio") else _wait_tip({"audio"}, line_n is not None)
         st = Status("books", STRINGS["books_wait"], tip, "faint")
-    elif any(e.in_top for e in ready):
+    elif any(e.in_top and not getattr(e, "own", False) for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
     elif ready and k:
+        own = "_own" if any(e.in_top for e in ready) else ""             # Michi-EO: in the top, never by itself
         st = Status("mine_rest", STRINGS["mine_rest"].format(k=k, n=n),
-                    STRINGS["tip_mine_rest" if line_n is not None else "tip_mine_rest_off"].format(k=k, n=n,
-                                                                                                    line=line_n), "ok")
+                    STRINGS["tip_mine_rest" + own if line_n is not None else "tip_mine_rest_off"].format(
+                        k=k, n=n, line=line_n), "ok")
     elif ready:
-        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine" if line_n is not None else "tip_mine_off"].format(
+        own = "_own" if any(e.in_top for e in ready) else ""
+        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine" + own if line_n is not None else "tip_mine_off"].format(
             line=line_n), "ink")
     elif no_subs and len(no_subs) == len(unmined) and all(getattr(e, "tracks", None) == "pictures" for e in no_subs):
         label = STRINGS["pictures"] if len(no_subs) == 1 else STRINGS["pictures_n"].format(n=len(no_subs))
@@ -930,7 +960,7 @@ def status_of(eps, word, line_n):
 def _ep_status(ep, word, line_n, connect, said):
     """An episode's (status, mark): `status_of` over it alone, then what Connect's feed says of it (`said`, its item)
     while there is a feed (`connect`) — `_episode`'s, and `topped`'s for a file that moved in or out of the top."""
-    st, mark = status_of([_Shim(ep, bool(ep.cards))], word, line_n)
+    st, mark = status_of([_Shim(ep, bool(ep.cards), said is BY_YOU)], word, line_n)
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
         st = _connected(st, said, word, online=getattr(ep, "online", None))
     return st, mark
@@ -939,7 +969,8 @@ def _ep_status(ep, word, line_n, connect, said):
 def _row_status(eps, word, line_n, connect):
     """A row's (status, mark) from its episodes: `status_of` over them all, then Connect's word (`_row_connected`) —
     `_row`'s, and `topped`'s."""
-    st, mark = status_of([_Shim(e, bool(e.cards)) for e in eps], word, line_n)
+    st, mark = status_of([_Shim(e, bool(e.cards), connect is not None and connect.get(e.id) is BY_YOU) for e in eps],
+                         word, line_n)
     if connect is not None:                          # --- P4.1 L2
         st = _row_connected(st, eps, connect, word)
     return st, mark
@@ -1234,6 +1265,8 @@ def _connected(st, item, word, online=None):
     with the job's own reason as its tip (C7). R47: a *Mining* job that can be stopped carries its job (`stop`: the
     pill's *Stop*), one stopping says *Stopping…*. `online` (Michi-YT): an online title's episode is never *No video*
     — Connect downloads it; a *No video* a Connect from before left is a wait for its next start."""
+    if item is BY_YOU:                      # Michi-EO: no job, none coming — `status_of` said so (*Mine*)
+        return st
     if item is not None and item.kind == connect_feed.FAILED:
         # Mattias #5: Anki Miner stopped on it twice — over its ✓ (the words it never made aren't on cards) and over
         # *No cards in Anki* (none made: nothing was deleted): *Try again*, whatever it made
@@ -1359,9 +1392,9 @@ def _row_connected(st, eps, connect, word):
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
     __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting", "text",
-                 "rel_path", "tracks", "subs")
+                 "rel_path", "tracks", "subs", "own")
 
-    def __init__(self, ep, mined):
+    def __init__(self, ep, mined, own=False):
         self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
         self.waiting = getattr(ep, "waiting", False)
@@ -1369,6 +1402,7 @@ class _Shim:
         self.rel_path = getattr(ep, "rel_path", None)   # Hon: an audiobook's own item (`_heard`)
         self.tracks = getattr(ep, "tracks", None)       # Michi-ST
         self.subs = getattr(ep, "subs", None)           # Michi-NS
+        self.own = own                                  # Michi-EO: in the top, never mined by itself (BY_YOU)
 
 
 def _media(work, files, guessed):
@@ -1597,6 +1631,7 @@ class RowCache:
         self.guess_pending = None
         self.sections = {}                            # "goal" / "finished": what `build` made of them last (`_kept`)
         self.worst = None                             # the last build's `worst_needs` (kept while equal: one object)
+        self.by_you = {}                              # Michi-EO: `_by_you`'s last feed items (kept while equal)
 
     def note_changed(self, changed):
         """The item ids the feed changed or let go since the last build (None: unknown — every item looked at)."""
@@ -2341,6 +2376,10 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             in_top.add(r["id"])
             if r["id"] == last:
                 break
+    if feed_items is not None and line_n and "mine_unread" in options:   # Michi-EO (Q-EO2): the top files nothing
+        # will mine by itself — read only from a store that says what Connect hasn't read (else as before)
+        feed_items = _by_you(feed_items, top_ids, items, frozenset(options.get("mine_unread") or ()),
+                             getattr(cache, "by_you", None) if cache is not None else None)
     if cache is not None:
         cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items,
                     getattr(connect, "miner", None))

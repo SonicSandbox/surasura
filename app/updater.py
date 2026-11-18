@@ -39,7 +39,9 @@ import shutil
 import platform
 import threading
 import subprocess
+import urllib.error
 import urllib.request
+import http.client
 
 from app import __version__
 from app import path_utils
@@ -59,7 +61,9 @@ UPDATER_EXE_NAME = "updater.exe"
 UPDATE_DIRNAME = path_utils.UPDATE_DIRNAME  # <Houseki local root>\update (S3.1 D9)
 STAGE_PREFIX, DOWNLOAD_PREFIX, INSTALLER_PREFIX = "stage-", "download-", "installer-"
 PREVIOUS_DIRNAME, SWAPPER_DIRNAME = "previous", "swapper"
-FOLDER_FORMAT = 3                           # the 3.x swapper's marker (updater_helper.run_folder)
+STAGE_RETRIES = (0.1, 0.3, 0.6)             # pauses between tries at a leftover stage (an antivirus scan lets go)
+STAGE_NAMES = 100                           # stage-<ver>, then stage-<ver>-1 … beside leftovers that won't go
+FOLDER_FORMAT = 3                          # the 3.x swapper's marker (updater_helper.run_folder)
 WAIT_TIMEOUT = 60                           # what the swapper gives every process of the program to end
 
 
@@ -698,26 +702,103 @@ def sha256_file(path, _bufsize=1 << 20):
     return h.hexdigest()
 
 
-def download(url, dest, progress_cb=None, timeout=60):
-    """Stream ``url`` to ``dest`` (creating parent dirs). Calls progress_cb(done,total)."""
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+class DownloadError(UpdateError):
+    """The download didn't get through: no connection, a connection that dropped or stalled on every try, a server
+    error. The words say so plainly; the caller offers *Try again*. `detail`: the last error, for the report."""
+
+    def __init__(self, detail):
+        super().__init__("the connection to GitHub failed")
+        self.detail = detail
+
+
+DOWNLOAD_PAUSES = (2, 5, 10)            # seconds between the tries of one download (4 tries), each pause longer
+STALL_TIMEOUT = 30                      # a try that receives no byte for this long ends (never a hang): the next try
+TRICKLE_BYTES = 1024                    # … nor this many in any STALL_TIMEOUT: a trickle ends its try too
+
+
+class _DiskError(Exception):
+    """`download`'s own: writing the file failed (`__cause__`) — the disk's, never tried again as the network's."""
+
+
+def _retryable(error):
+    """A dropped, refused, stalled or timed-out connection, or the server's own trouble (5xx, 408, 429): worth another
+    try. A 4xx is the release's answer: not."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500 or error.code in (408, 429)
+    # Everything the connection raises: URLError (a refusal, a name not found), a reset, WinError 10060's timeout, a
+    # network gone mid-read (WinError 10050/10051: a plain OSError). The disk's errors never get here (`_DiskError`).
+    return isinstance(error, (urllib.error.URLError, OSError, http.client.HTTPException))
+
+
+def download(url, dest, progress_cb=None, timeout=STALL_TIMEOUT, pauses=None):
+    """Stream ``url`` to ``dest`` (creating parent dirs). Calls progress_cb(done,total).
+
+    A flaky connection is tried again (`DOWNLOAD_PAUSES`: a pause, growing, before each next try), and a try that got
+    part of the file asks only for the rest (HTTP Range) — from the start again when the server sends the whole file.
+    A try that receives nothing for `timeout` seconds ends (the socket's own timeout on every read), and so does one
+    that gets less than `TRICKLE_BYTES` in any `timeout` seconds: never a hang. The bytes are
+    checked by the caller (size and sha256) — a resumed file is no exception. Every try failing: `DownloadError`; a
+    4xx: `UpdateError`."""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with open(dest, "wb") as out:
-            while True:
-                chunk = resp.read(1 << 16)
-                if not chunk:
-                    break
-                out.write(chunk)
-                done += len(chunk)
-                if progress_cb:
-                    try:
-                        progress_cb(done, total)
-                    except Exception:
-                        pass
-    return dest
+    pauses = DOWNLOAD_PAUSES if pauses is None else pauses
+    done, last = 0, None
+    for attempt in range(len(pauses) + 1):
+        if attempt:
+            time.sleep(pauses[attempt - 1])
+        headers = {"User-Agent": _USER_AGENT}
+        if done:
+            headers["Range"] = f"bytes={done}-"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                if done and status != 206:
+                    done = 0                                 # the whole file again: written over from its start
+                length = int(resp.headers.get("Content-Length") or 0)
+                total = done + length if length else 0
+                try:
+                    out = open(dest, "ab" if done else "wb")
+                except OSError as e:
+                    raise _DiskError() from e
+                # read1: what one receive brings (a plain read waits for all 64 KB, a trickle inside it never ends)
+                read = getattr(resp, "read1", None) or resp.read
+                with out:
+                    window, got = time.monotonic(), 0
+                    while True:
+                        chunk = read(1 << 16)
+                        if not chunk:
+                            break
+                        try:
+                            out.write(chunk)
+                        except OSError as e:
+                            raise _DiskError() from e
+                        done += len(chunk)
+                        got += len(chunk)
+                        if time.monotonic() - window >= timeout:
+                            if got < TRICKLE_BYTES:
+                                raise TimeoutError("the connection only trickles")
+                            window, got = time.monotonic(), 0
+                        if progress_cb:
+                            try:
+                                progress_cb(done, total)
+                            except Exception:
+                                pass
+            if total and done < total:
+                raise http.client.IncompleteRead(b"", total - done)    # the connection closed early: the rest next
+            return dest
+        except urllib.error.HTTPError as e:
+            if e.code == 416 and done:                       # the range it holds is no use: from the start again
+                done, last = 0, e
+                continue
+            if not _retryable(e):
+                raise UpdateError(f"GitHub answered {e.code} for the update's file") from e
+            last = e
+        except _DiskError as e:
+            raise e.__cause__
+        except Exception as e:
+            if not _retryable(e):
+                raise
+            last = e
+    raise DownloadError(last) from last
 
 
 def extract_and_validate(zip_path, payload_dir, files=None):
@@ -1107,6 +1188,29 @@ def _verify_stage(stage, files, progress):
         progress.add(f["size"])
 
 
+def _fresh_stage(version):
+    """An empty folder made for this update's program -> its path: update\\stage-<version>, else beside it. A stage
+    a cancelled update left (`discard_staged` couldn't remove it) is tried again a few times — an antivirus scan lets
+    go — but Windows never deletes a hard link of a program that runs: the stage's unchanged files are links of the
+    installed ones (below), so while Surasura runs that leftover stays. It never stops this update: it stages beside
+    it as stage-<version>-<n>, and the leftovers go once nothing runs them (`clean_leftovers` at a start)."""
+    stage = stage_dir(version)
+    for pause in STAGE_RETRIES:
+        if not os.path.lexists(stage):
+            break
+        time.sleep(pause)
+        shutil.rmtree(stage, ignore_errors=True)
+    for n in range(STAGE_NAMES):
+        path = stage if n == 0 else f"{stage}-{n}"
+        try:
+            os.makedirs(path)
+            return path
+        except FileExistsError:
+            continue
+    raise UpdateError("Surasura's update folder is full of earlier updates' files: close Surasura and open it "
+                      "again to clear them")
+
+
 def _prepare_package(info, progress_cb=None, window=True):
     """A 3.x release, assembled (S3.1 D4): hash the installed program, download only the parts holding a changed or
     missing file (each its sha256 and size checked), put together the complete new program in update\\stage-<ver>
@@ -1121,7 +1225,7 @@ def _prepare_package(info, progress_cb=None, window=True):
     _version_name(__version__)
     _same_volume(install)
     discard_staged()                                         # earlier stages and downloads go first
-    stage = stage_dir(version)
+    stage = None
     downloads = os.path.join(update_dir(), DOWNLOAD_PREFIX + version)
     zips = {}
     try:
@@ -1150,7 +1254,7 @@ def _prepare_package(info, progress_cb=None, window=True):
         missing = needed - set(zips)
         if missing:
             raise UpdateError(f"the release has no {sorted(missing)[0]} part")
-        os.makedirs(stage)
+        stage = _fresh_stage(version)
         for f in files:
             dest = os.path.join(stage, *f["parts"])
             os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -1164,9 +1268,12 @@ def _prepare_package(info, progress_cb=None, window=True):
                 _extract(zips[f["part"]], f, dest)
         _verify_stage(stage, files, progress)
     except Exception as e:
-        shutil.rmtree(stage, ignore_errors=True)
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
         if isinstance(e, UpdateError):
             raise
+        if isinstance(e, OSError):                           # the disk's answer, in words (never a bare WinError)
+            raise UpdateError(f"its files couldn't be prepared on this PC ({e.strerror or e})") from e
         raise UpdateError(str(e)) from e
     finally:
         for z in zips.values():
@@ -1471,6 +1578,29 @@ def discard_staged():
     for name in names:
         if name.startswith((STAGE_PREFIX, DOWNLOAD_PREFIX, INSTALLER_PREFIX)):
             shutil.rmtree(os.path.join(update_dir(), name), ignore_errors=True)
+
+
+def clean_leftovers():
+    """At a start (on a worker): what earlier updates left — a stage a cancel couldn't remove while the program ran
+    (`_fresh_stage`), a download — goes, as far as nothing holds it now. Never while an update is armed (a cut-off
+    swap's stage is its recovery: `consume_result` leaves its marker) or under way (its lock held by another window
+    or a command line). Never the previous version kept for Go back. -> True when it cleared. Never raises.
+
+    The update lock is every process's "an update is staged" signal (the re-order, a library write look at it once):
+    it is taken only as a look — let go at once, never held while the folders go — and only with something to clear."""
+    try:
+        if os.path.exists(marker_path()) or not any(
+                name.startswith((STAGE_PREFIX, DOWNLOAD_PREFIX, INSTALLER_PREFIX)) for name in os.listdir(update_dir())):
+            return False
+        held = take_update_lock(looks=1)
+        if held is None:
+            return False
+        drop_update_lock(held)
+        discard_staged()
+        return True
+    except Exception as e:
+        print(f"Update: the earlier update's files couldn't be cleared ({e})")
+        return False
 
 
 # "An update is happening": one OS lock, held from "Update now" until the app exits for the helper (the OS

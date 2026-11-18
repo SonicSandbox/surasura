@@ -1736,6 +1736,12 @@ def _per_day(url, decks):
     return out
 
 
+def _utc_now():
+    """Kyou-E: now, as the library store writes its times (UTC, microseconds: `library_store._now`'s shape)."""
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%06dZ" % int((t % 1) * 10 ** 6)
+
+
 def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, out_read=None):
     """Gather the scope and decide the new order. The shared body of `dry_run` and `run`.
 
@@ -1766,6 +1772,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         _PARKED_READ.pop((_language(settings), tuple(sorted(decks))), None)     # the suspend setting off: look again
     if parked_key is not None and _PARKED_READ.get(parked_key[0]) == parked_key[1]:
         parked_tag = None
+    counted_at = _utc_now()                             # Kyou-E: the side-by-side count's time — before Anki is read
     warming = _warm(_language(settings), settings)     # F1: the tables build while Anki answers
     try:
         cards, detail = _gather(url, decks, _word_fields(settings), _language(settings), parked_tag,
@@ -1992,6 +1999,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`)
         picks = stats.get("side_picks") or [0] * len(side[0])
         stats["side_cards"] = [[list(ids), int(n)] for ids, n in zip(side[0], picks)]
+        stats["side_at"] = counted_at   # Kyou-E: a file Connect mines after it is one this count never saw
     if number is not None:
         stats["number"] = number        # the panel re-plans a click with the run's own numbering (I5)
     if parked_tag and not preview:      # M-W1: the 3.0 host's job brings back what it parked with Connect off too

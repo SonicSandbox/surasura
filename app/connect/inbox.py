@@ -30,24 +30,48 @@
   (from Connect's last read to now), named once: the 2.x start-up notice, 3.0's *Needs you* (*Make their cards* ·
   *Leave them*). The reader then moves to the log's end as it was read, in the same read as the events, so nothing
   logged meanwhile is passed unread.
+- **A show is one unit** (Michi-EO, Sonic 2026-11-17): when a part of a show gets a job (it entered the top 20, or
+  you asked for it), every earlier part of that show in Current (`library.parts_before`: by season and episode — an
+  earlier season is an earlier part) that isn't mined and never had a job is queued with it, kind `show`, by the same
+  person and event, and mined ahead of it (`runner._ordered`; an ask still first): a show split by the switch-on —
+  its first episodes in the top 20 before Connect was on, never logged — is mined from its first episode. A title
+  with no episode numbers keeps Current's order; a part that had a job once (dropped, done) is never queued by it
+  again; the cap holds them as any. Kept below the top 20 while in Current; one placed out of it is dropped.
 """
 from app.connect import library
-from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, Ledger, stamp_key
+from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, SHOW, Ledger, stamp_key
 
 ENTERS = ("entered_mine_line",)
 LEAVES = ("left_mine_line", "removed", "finished")
 
 
-def keeps(job, event=None):
+def keeps(job, event=None, current=None):
     """Does a job not started stay though its item is out of the top 20 (`event`: the item's latest leaving event, or
     None — the runner's look at the line)? A job carrying an ask — unless its item was removed — and, on the 3.0 line,
-    a level job beyond the line — unless its item was finished or removed (C3, C4)."""
+    a level job beyond the line — unless its item was finished or removed (C3, C4); a show's earlier part (Michi-EO)
+    unless its item was finished or removed or left Current (`current`: False once it is elsewhere; None: not read)."""
     if job.get("asked_at") or job.get("kind") == ASKED:
         return event != "removed"
     if job.get("kind") == LEVEL:
         from app.connect import level
         return level.BEYOND_LINE and event not in ("removed", "finished")
+    if job.get("kind") == SHOW:
+        return event not in ("removed", "finished") and current is not False
     return False
+
+
+def in_current(store, item_id):
+    """Michi-EO: is the item in Current (NOW or Soon) now? False when gone or anywhere else."""
+    return (store.item(item_id) or {}).get("tier") in ("now", "soon")
+
+
+def _catch_up(store, ledger, language, item_id, by, event_id, queued, cache):
+    """Michi-EO: the earlier parts of `item_id`'s show (`library.parts_before`) that never had a job, queued — kind
+    `show`, by `by`, with its event — the first part first (into `queued`)."""
+    for part in library.parts_before(store, item_id, cache):
+        if not ledger.ever_had_job(language, part) and ledger.queue(
+                language, part, by, event_id, store_id=library.store_id(store), kind=SHOW) is not None:
+            queued.append(part)
 
 
 def _waits_for_books(store, item_id):
@@ -69,13 +93,17 @@ def _gone(store, ledger, language):
             item = store.item(job["item_id"])
             if item is None or not library.counts(store, item):
                 out[job["item_id"]] = "removed" if item is None else "finished"
+            elif job.get("kind") == SHOW and item.get("tier") not in ("now", "soon"):
+                out[job["item_id"]] = "finished"        # Michi-EO: a show's part is kept only while in Current
     return out
 
 
-def _drop(ledger, language, item_id, event=None):
-    """The item's job dropped as *left the top 20*, unless `keeps` says it stays -> dropped or not."""
+def _drop(ledger, language, item_id, event=None, store=None):
+    """The item's job dropped as *left the top 20*, unless `keeps` says it stays -> dropped or not. `store`: a show's
+    part's item is read for whether it is still in Current (Michi-EO)."""
     job = ledger.job(language, item_id)
-    if job is not None and job["state"] in NOT_STARTED and keeps(job, event):
+    current = in_current(store, item_id) if store is not None and job is not None and job.get("kind") == SHOW else None
+    if job is not None and job["state"] in NOT_STARTED and keeps(job, event, current):
         return False
     return ledger.drop(language, item_id, "left the top 20")
 
@@ -95,6 +123,7 @@ def consume(store, language, ledger=None):
         in_line = set(line)
         queued, dropped, asked = [], [], []
         missed = []
+        shows = {}                              # Michi-EO: each title's parts, read once a look (`parts_before`)
         with ledger.transaction():
             if gap:
                 for job in ledger.jobs(language, states=("queued", "waiting")):     # `drop` keeps one mining
@@ -108,18 +137,30 @@ def consume(store, language, ledger=None):
                     ledger.add_gap(language, missed)
             else:
                 latest = {}         # item -> (event id, kind, by), its last event in this read
+                named = set()       # Michi-EO: every item an event names (a show's part placed out of Current)
                 for event_id, item_id, kind, by, _explicit, _version, _at in rows:
+                    named.add(item_id)
                     if kind in ENTERS or kind in LEAVES:
                         latest[item_id] = (event_id, kind, by)
+                entered = []
                 for item_id, (event_id, kind, by) in latest.items():
                     if item_id in in_line:
                         if kind in ENTERS and library.mined_at(store, item_id) is None \
                                 and ledger.queue(language, item_id, by, event_id,
                                                  store_id=library.store_id(store)) is not None:
                             queued.append(item_id)
-                    elif _drop(ledger, language, item_id, kind):
+                            entered.append((item_id, by, event_id))
+                    elif _drop(ledger, language, item_id, kind, store):
                         dropped.append(item_id)
-            _asks(store, language, ledger, found, queued, dropped, asked)
+                for item_id, by, event_id in entered:   # Michi-EO: then their shows' earlier parts no event queued
+                    _catch_up(store, ledger, language, item_id, by, event_id, queued, shows)
+                for job in ledger.jobs(language, states=NOT_STARTED) if named else ():
+                    # Michi-EO: a show's part placed with no line crossed (below it: out of Current) goes as one left
+                    item_id = job["item_id"]
+                    if job.get("kind") == SHOW and item_id in named and item_id not in latest \
+                            and item_id not in in_line and _drop(ledger, language, item_id, None, store):
+                        dropped.append(item_id)
+            _asks(store, language, ledger, found, queued, dropped, asked, shows)
             if rows or gap or ledger.last_read(language) is None:   # an idle look writes nothing (charter S19)
                 ledger.mark_read(language)
         last = max([r[0] for r in rows] + ([end] if gap else []), default=None)
@@ -132,9 +173,10 @@ def consume(store, language, ledger=None):
             ledger.close()
 
 
-def _asks(store, language, ledger, found, queued, dropped, asked):
+def _asks(store, language, ledger, found, queued, dropped, asked, shows=None):
     """The store's asks into the ledger (inside the caller's transaction): a new ask → a job (`queued`, and `asked`)
-    or the open job moved first (`asked`); an ask undone before mining → its job dropped (`dropped`) or put back.
+    or the open job moved first (`asked`); an ask undone before mining → its job dropped (`dropped`) or put back. A
+    new ask's job brings its show's earlier parts (Michi-EO, `_catch_up`: mined after it — the ask goes first).
     `found` None (the asks couldn't be read): nothing changes this look (AD-6)."""
     if found is None:
         return
@@ -147,6 +189,7 @@ def _asks(store, language, ledger, found, queued, dropped, asked):
             asked.append(item_id)
             if got[0] == "queued":
                 queued.append(item_id)
+                _catch_up(store, ledger, language, item_id, "user", None, queued, {} if shows is None else shows)
     for job in ledger.jobs(language, states=NOT_STARTED):
         if not job.get("asked_at") or not ledger._not_started(job["id"]):
             continue                        # no ask, or past its start: it finishes (02 §2)

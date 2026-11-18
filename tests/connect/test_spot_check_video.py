@@ -296,6 +296,8 @@ def test_one_release_is_one_key_and_another_group_season_dub_or_layout_is_anothe
     for name in other:
         assert lineup.release_key(str(tmp_path / "show" / name)) != key, name
     assert lineup.release_key(str(tmp_path / "batch" / names[0])) != key, "another folder is checked again"
+    assert lineup.release_key(str(tmp_path / "elsewhere" / "show" / names[0])) != key, \
+        "a folder of the same name elsewhere (another drive, another copy) is another release"
 
 
 @pytest.fixture

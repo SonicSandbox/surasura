@@ -284,8 +284,8 @@ ROWS = {
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
     "connect_spot_every_episode": ("Check every episode’s audio first",
-                                   "Slower: Connect listens to each episode before its cards, not once a release",
-                                   "Connect listens to a few lines of one episode of each release while it mines, "
+                                   "Slower: Surasura listens to each episode before its cards, not once a release",
+                                   "Surasura listens to a few lines of one episode of each release while it mines, "
                                    "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
                                    "another language). On: every episode is listened to before its cards are "
                                    "made. Only with Anki Miner’s speech model on this PC",

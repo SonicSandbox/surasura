@@ -262,3 +262,22 @@ def test_ignore_never_offers_a_folder_whose_skip_would_take_another_titles_hato_
         assert ls.folder_path(inside) not in [ls.folder_path(f) for f in store.skip_choices([item_a], own=True)]
         assert ls.folder_path(inside) in [ls.folder_path(f) for f in store.skip_choices([item_a, item_b], own=True)]
 
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_skips_undo_lets_a_refused_hand_over_in_with_its_video(language):
+    """The skip undone (its toast's Undo or Ctrl+Z) reads the folder again: hato's file refused meanwhile comes in with
+    the record it was refused with, inside the undo's own command."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        change = store.skip_folder(inside)
+    path, record = _hato_drop(data_dir, language, video, 3)
+    assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        again.undo(change)
+        (item,) = _ids(again)
+        assert _pairing_of(again, item)["video_path"] == record["video_path"]
+        assert again.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = ?", (ls.DROP_SKIPPED,)).fetchone()[0] == 0

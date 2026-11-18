@@ -539,7 +539,9 @@ def help_line(row, settings, language):
             return line
     if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
         return S.NEEDS_MINER
-    if row.id == "junban_scope" and value(row, settings, language) == "deck":
+    if row.id == "junban_scope" and value(row, settings, language) == "all":
+        return S.JUNBAN_ALL_DECKS                # Kantan-T: in sight either way, so a choice never moves the page
+    if row.id == "junban_scope":
         # Kantan-T (PROVISIONAL): the deck setup picked, named in sight — *Junban…* beside it changes it; this
         # language's deck only (`setup_wizard.junban_deck`: one recorded for the other language is none here)
         from app.services.setup_wizard import junban_deck

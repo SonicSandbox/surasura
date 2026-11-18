@@ -728,6 +728,7 @@ SETUP_DECK = "“{deck}”"                 # Kantan-T (PROVISIONAL): *Cards in 
 # Kantan-T (PROVISIONAL): *Which cards* names Junban's deck in sight (the deck setup picked; *Junban…* beside it changes it)
 JUNBAN_DECK_LINE = "Deck: “{deck}”"
 JUNBAN_NO_DECK = "No deck chosen yet"
+JUNBAN_ALL_DECKS = "Every deck with new cards"     # *All decks*: still a line in sight (a choice never moves the page)
 # The level readout under the slider, when the time between meetings is under an hour, or unknown
 READOUT_HOURS = "≈{words} words · {coverage}% of your content · about every {hours} hours"   # S4
 READOUT_MINUTES = "≈{words} words · {coverage}% of your content · about every {minutes} minutes"

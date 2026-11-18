@@ -43,8 +43,8 @@ def test_which_cards_names_this_languages_deck_and_says_when_none_is_chosen():
     zh = _base(junban_deck=CHINESE, junban_replan_deck=CHINESE, junban_replan_language="zh")
     assert catalog.help_line(row, zh, "ja") == S.JUNBAN_NO_DECK
     assert catalog.help_line(row, zh, "zh") == S.JUNBAN_DECK_LINE.format(deck=CHINESE)
-    # *All decks*: no one deck to name — the row's own description, behind its ?
-    assert catalog.help_line(row, _base(junban_deck=DECK, junban_scope="all"), "ja") == row.help
+    # *All decks*: no one deck to name — a line in sight all the same (a choice never moves the page)
+    assert catalog.help_line(row, _base(junban_deck=DECK, junban_scope="all"), "ja") == S.JUNBAN_ALL_DECKS
 
 
 def test_cards_in_anki_leads_with_the_deck():

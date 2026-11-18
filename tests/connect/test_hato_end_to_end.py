@@ -39,7 +39,7 @@ import pytest
 from app import __version__, library_store, settings_manager, tools_entry
 from app.cli.contract import CONTRACT
 from app.connect import hato, inbox, library
-from app.connect.ledger import Ledger
+from app.connect.ledger import SHOW, Ledger
 from tests import cli_helpers as h
 from tests import connect_helpers as c
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
@@ -213,10 +213,19 @@ def test_hato_finds_surasura_hands_over_a_drop_and_its_back_fill_pairs_sixty_old
         # for Connect): only the items the added copy pushes below the top 20 are logged as having left it.
         assert {kind for _item, kind, _by in c.events(s, after=seq)} <= {"left_mine_line"}
 
-    # Connect's next read: hato's live drop is work (it entered the top 20 after the watermark), none of the back-fill.
+    # Connect's next read: hato's live drop is work (it entered the top 20 after the watermark); the back-fill makes no
+    # job of its own — but the drop is episode 2, so its show's earlier parts in Current come with it (Michi-EO, Sonic's
+    # ruling: a show is one unit), as the show's catch-up (kind `show`), never as the back-fill's
     with c.store() as s, Ledger() as ledger:
-        assert inbox.consume(s, "ja", ledger)["queued"] == [drop]
-        assert [job["item_id"] for job in ledger.jobs("ja")] == [drop], "one job: the live drop's, none back-filled"
+        queued = inbox.consume(s, "ja", ledger)["queued"]
+        assert queued[0] == drop
+        jobs = {job["item_id"]: job for job in ledger.jobs("ja")}
+        assert jobs[drop]["kind"] == "mine" and jobs[drop]["source"] == "hato"
+        assert set(jobs) - {drop} == set(library.parts_before(s, drop)) == set(queued[1:]), "its earlier parts only"
+        assert all(j["kind"] == SHOW for i, j in jobs.items() if i != drop)
+        unsynced_id = next(i for (i, p) in s.conn.execute("SELECT item_id, pairing FROM pairings")
+                           if json.loads(p)["library_path"] == unsynced)
+        assert unsynced_id in jobs, "the preview-off copy is episode 1: the show starts there"
     assert sorted(os.listdir(tools)) == ["hato.json", "surasura.json"], "each tool's own entry, no tmp left"
 
 

@@ -299,12 +299,12 @@ def test_a_waiting_pill_is_its_icon_alone_and_says_itself_on_hover(qapp, monkeyp
     """Laptop row 38: "i don't need the words 'waiting' only the icon. It should tell you what it means when hover".
     Every *Waiting* — its turn, a wait on Anki or the battery — draws its icon alone (a k/n count stays: no word), in a
     pill no wider than tall when alone; its hover names it first, then what it means. *Not timed* keeps its words (it
-    asks for the learner), as every other pill does."""
+    asks for the learner), as *Mine rest* does (*Mine* is its pickaxe alone since Michi-CK: tests/qt/test_mine_pickaxe.py)."""
     st = view_rows.Status("waiting", label, "In your top 20: it mines by itself, in turn", "dim")
     assert rows.pill_text(st) == shown
     assert rows.status_tip(st) == f"{label}\nIn your top 20: it mines by itself, in turn"
     for keeps in (view_rows.Status("waiting", view_rows.STRINGS["not_timed"], "Not timed to its video", "warn"),
-                  view_rows.Status("mine", "Mine", "Mine it", "ink")):
+                  view_rows.Status("mine_rest", "2/5 · Mine rest", "Mine it", "ok")):
         assert rows.pill_text(keeps) == keeps.label and rows.status_tip(keeps) == keeps.tip
     drawn = []
     real = rows.TEXT.draw
@@ -321,7 +321,8 @@ def test_a_waiting_pill_is_its_icon_alone_and_says_itself_on_hover(qapp, monkeyp
     assert not any("Waiting" in t for t in drawn), drawn
     assert drawn == ([shown] if shown else [])
     if not shown:
-        assert size.width() <= size.height() + 1 < rows.pill_size(view_rows.Status("mine", "Mine", "", "ink")).width()
+        assert size.width() <= size.height() + 1 < rows.pill_size(
+            view_rows.Status("mine_rest", "2/5 · Mine rest", "", "ok")).width()
 
 
 # --- one rule for a Done ------------------------------------------------------------------------------------------------

@@ -181,6 +181,7 @@ class FakeAnki:
         self.filtered, self.reviewing, self.closed = set(filtered), reviewing, closed
         self.requests = []
         self.fail_on = None
+        self.stuck = set()              # cards changeDeck leaves where they are (as Anki did with a card it refused)
 
     def __call__(self, request, timeout=None):
         payload = json.loads(request.data.decode("utf-8"))
@@ -209,7 +210,8 @@ class FakeAnki:
         elif action == "changeDeck":
             self.decks.add(params["deck"])          # (AnkiConnect makes a deck it lacks)
             for c in params["cards"]:
-                self.cards[int(c)][1] = params["deck"]
+                if int(c) not in self.stuck:
+                    self.cards[int(c)][1] = params["deck"]
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps(
             {"result": result, "error": None}, ensure_ascii=False).encode("utf-8")
@@ -333,6 +335,13 @@ def test_no_move_while_reviewing_or_while_another_writer_holds_anki(anki):
         t.join(10)
     assert out and not out[0]["ok"] and anki.moves() == [], "refused, never waited into a write"
     assert not os.path.isdir(decks._folder()) or not os.listdir(decks._folder()), "no snapshot for a refused move"
+
+
+def test_the_move_says_what_its_read_back_found_not_what_it_asked(anki):
+    anki.stuck.add(1002)
+    got = decks.move(_ja(), "ja")
+    assert got["ok"] and got["moved"] == 1 and got["id"]
+    assert got["say"] == decks.SOME_MOVED.format(n=1, k=2, deck=JA_DECK)
 
 
 def test_a_move_anki_stops_answering_in_still_offers_its_undo(anki):

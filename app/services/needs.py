@@ -61,6 +61,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   on — books and texts, audiobooks and podcasts) — *Update Anki Miner to 3.11.0 to make cards from your books and
   texts* · *Update* (Surasura's own install route: the approved release, checked by its sha256; it asks first). No
   *Dismiss*: it goes by itself once Anki Miner is updated, by that button or by hand (`setup.follow_install`).
+- **Connect's cards outside Surasura's deck** (Michi-DK, PROVISIONAL): ONE card while cards Connect made for this
+  language are in another deck than the one Surasura shows for new cards and 順 keeps in order (`deck_strays`:
+  `connect/decks.strays`, read-only) — made before a run named that deck, in Anki Miner's own — *12 cards Surasura made
+  are in "Japanese::Anki Miner", not "Japanese::Mining Deck", the deck Surasura keeps in order.* · *Move them to …*
+  (`connect/decks.move`: a snapshot, its toast's Undo) · *Leave them* (answered: these decks; another deck asks again).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -125,6 +130,7 @@ BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's 
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
 # Michi-U (alpha 9.1 try): titles wait only because the Anki Miner installed is older than the approved one
 MINER_UPDATE = "miner-update"
+DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another deck than the one Surasura shows
 # Michi-NS (3.0.1, SPEC no-subs §3; NS-2): videos with no subtitles, ONE card: *Find them with hato* (once hato takes a
 # list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
 NO_SUBS = "no-subs"
@@ -132,7 +138,7 @@ FOLDER_MIN = 10                 # gone files (of two shows or more) before a fol
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -277,6 +283,11 @@ STRINGS = {
     "behind_add_all": "Add them to your list?", "behind_add_it": "Add it to your list?",
     "behind_waiting": "Waiting in New arrivals: {names}.", "behind_away": "Not on this PC: {names}.",
     "behind_name": "{title} ({n:,})", "behind_more": "and {k} more",
+    # Michi-DK (PROVISIONAL): Connect's cards outside the deck Surasura shows
+    "strays_title": "{n:,} cards Surasura made are in {where}, not “{deck}”, the deck Surasura keeps in order.",
+    "strays_title_one": "A card Surasura made is in {where}, not “{deck}”, the deck Surasura keeps in order.",
+    "strays_where": "“{deck}”", "strays_where_n": "{k} other decks", "strays_move": "Move them to “{deck}”",
+    "strays_say": "Surasura's new cards go to “{deck}”. Moved, a card keeps its reviews: only its deck changes.",
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -300,7 +311,8 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
            GAP: "reason_gap"}
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
-NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE))   # (Michi-U: the rows' tip points here)
+NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE,   # (Michi-U: the rows' tip points here)
+                      DECK_STRAYS))
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -364,7 +376,7 @@ def item_key(item_id):
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
             hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
-            generate_log=None):
+            generate_log=None, strays=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -382,7 +394,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again); `miner_update`
     (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
     (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here;
-    `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line)."""
+    `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line); `strays`
+    (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -440,6 +453,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     behind = _backlog_entry(backlog, view, seen, answered) if backlog else None
     if behind is not None:
         out.append(behind)
+    stray = _strays_entry(strays, seen, answered) if strays else None
+    if stray is not None:
+        out.append(stray)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1148,6 +1164,45 @@ def _backlog_entry(record, view, seen, answered=frozenset()):
     key = f"{BACKLOG_SHOWS}:{_digest(left)}"                        # seen: these shows; another one counts again
     return Entry(key=key, kind=BACKLOG_SHOWS, title=f"{head} {ask}", lines=(), actions=("add_shows", "leave_shows"),
                  unseen=key not in seen, say=say, data={"ids": ids, "shows": len(waiting), "left": left})
+
+
+def deck_strays(language, settings=None):
+    """Michi-DK: the cards Connect made for `language` outside the deck Surasura shows (`connect/decks.strays`, read on
+    the window's worker; Anki asked at most every few minutes), or None. Never raises."""
+    try:
+        from app.connect import decks
+        return decks.strays(settings or {}, language)
+    except Exception:
+        return None
+
+
+def strays_key(record):
+    """*Leave them*'s key: Surasura's deck, the decks the cards are in, and how many — cards in another deck, or more
+    of them, ask again; fewer (some moved or deleted by hand) never do."""
+    held = {d: int(n or 0) for d, n in (record.get("from") or {}).items() if int(n or 0) > 0}
+    return f"{DECK_STRAYS}:{_digest([record.get('deck') or ''] + sorted(held))}:{sum(held.values())}"
+
+
+def _left(key, answered):
+    """Was *Leave them* answered for these decks with as many cards or more?"""
+    head, _sep, n = key.rpartition(":")
+    return any(k.rpartition(":")[0] == head and k.rpartition(":")[2].isdigit() and int(k.rpartition(":")[2]) >= int(n)
+               for k in answered if k.startswith(DECK_STRAYS + ":"))
+
+
+def _strays_entry(record, seen, answered=frozenset()):
+    held = {d: int(n) for d, n in (record.get("from") or {}).items() if int(n or 0) > 0}
+    deck, n = str(record.get("deck") or ""), sum(held.values())
+    key = strays_key(record)
+    if not deck or not n or _left(key, answered):
+        return None
+    where = (STRINGS["strays_where"].format(deck=next(iter(held))) if len(held) == 1
+             else STRINGS["strays_where_n"].format(k=len(held)))
+    title = (STRINGS["strays_title_one"] if n == 1 else STRINGS["strays_title"]).format(n=n, where=where, deck=deck)
+    return Entry(key=key, kind=DECK_STRAYS, title=title, lines=(), actions=("move_cards", "leave_cards"),
+                 unseen=key not in seen, say=STRINGS["strays_say"].format(deck=deck),
+                 data={"deck": deck, "cards": n, "from": held,
+                       "labels": {"move_cards": STRINGS["strays_move"].format(deck=deck)}})
 
 
 def badge(entries_):

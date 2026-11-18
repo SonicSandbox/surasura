@@ -209,6 +209,9 @@ class SourceLooks:
         self._tracking = False                        # a fill queued or running
         self._tracks_again = False                    # asked meanwhile: one more after it
         self._hato = Worker(f"window-hato-{language}")       # Minato-SM: hato's runs (`_ask_hato`), never the tracks'
+        # Kura-NA: the asks that read the store alone (`skippable`, `skip_refused`, `folders`) — never in line behind a
+        # look, which may hang on a share that doesn't answer (its own store handle: one per thread)
+        self._asks = Worker(f"window-sources-asks-{language}")
         self._finding = False                         # a hato run queued or running
         self._find_again = False                      # asked meanwhile: one more after it
         self._lock = threading.Lock()
@@ -362,7 +365,7 @@ class SourceLooks:
         `{item_id: {"root": the source folder, "folder": the folder its original is in, "rel": that folder under the
         source, '/'-joined ('' at its top)} or None}` — the window tells two arrivals of one title apart by `rel`."""
         ids = list(item_ids)
-        return self._worker.put(self._folders, ids, then, detail) if ids and not self._closing.is_set() else False
+        return self._asks.put(self._folders, ids, then, detail) if ids and not self._closing.is_set() else False
 
     def removed(self, then, language=None):
         """K2, the window's Removed list: `then([{"trash_ids", "title", "removed_at", "days_left", "count",
@@ -385,7 +388,15 @@ class SourceLooks:
         [] for items that came from no folder being read). `own`: only folders holding no other item's original (the
         sort screen's *Ignore*, `Store.skip_choices`)."""
         ids = list(item_ids)
-        return self._worker.put(self._skippable, ids, then, own) if ids and not self._closing.is_set() else False
+        return self._asks.put(self._skippable, ids, then, own) if ids and not self._closing.is_set() else False
+
+    def under(self, path, then):
+        """Kura-NA: `then([item id])` on the asks worker — the items a skip of the folder `path` takes
+        (`Store.items_under`: its files' and hato's from there), or `then(None)` when the store can't be read: New
+        arrivals' rows leave at the skip's press. -> False once closed."""
+        if self._closing.is_set():
+            return False
+        return self._asks.put(self._under, path, then)
 
     def skip_refused(self, path, then, language=None):
         """Settings' *Skip a folder…* (Q7): `then(why or None)` on the worker — the store's own rule
@@ -393,7 +404,7 @@ class SourceLooks:
         before the writer is (which asks it again). `language`: as `read_again`'s. -> False once closed."""
         if self._closing.is_set() or (language is not None and language != self.language):
             return False
-        return self._worker.put(self._skip_refused, path, then)
+        return self._asks.put(self._skip_refused, path, then)
 
     def read_again(self, folder_id, then=None, language=None):
         """Settings' *Read again* (K6): `then({"folder", "read", "language"})` on the worker, then a look of the source
@@ -417,11 +428,14 @@ class SourceLooks:
         self._tracks.close()
         self._hato.put(self._let_go)
         self._hato.close()
+        self._asks.put(self._let_go)
+        self._asks.close()
 
     def idle(self, timeout=None):
         """(Tests.) Everything queued has run (a look's track fill too: queued by the look, so waited for after it; and
         hato's run, queued by the fill)."""
-        return self._worker.idle(timeout) and self._tracks.idle(timeout) and self._hato.idle(timeout)
+        return (self._worker.idle(timeout) and self._tracks.idle(timeout) and self._hato.idle(timeout)
+                and self._asks.idle(timeout))
 
     # --- the worker -------------------------------------------------------------------------------------------- #
     def _queue(self, full, roots):
@@ -923,6 +937,16 @@ class SourceLooks:
             print(f"Sources: the folders to skip couldn't be read: {e!r}")
         then(out)
 
+    def _under(self, path, then):
+        out = None
+        try:
+            store = self._store()
+            if store is not None:
+                out = store.items_under(path)
+        except Exception as e:
+            print(f"Sources: the items under a folder to skip couldn't be read: {e!r}")
+        then(out)
+
     def _skip_refused(self, path, then):
         why = None
         try:
@@ -944,6 +968,12 @@ class SourceLooks:
         except Exception as e:
             answer["refused"] = str(e) or repr(e)
         then(answer)
+        if answer["read"]:                            # Kura-NA: hato reads the skipped folders from surasura.json
+            try:
+                from app import tools_entry
+                tools_entry.refresh()
+            except Exception as e:
+                print(f"Sources: surasura.json wasn't refreshed after a read again: {e!r}")
         if store is not None:
             self._publish(store, {})
         if answer["read"] and root is not None:

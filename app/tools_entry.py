@@ -77,6 +77,45 @@ def _drop_folders():
     return folders
 
 
+def _skipped_folders(old=None):
+    """Kura-NA: {lang: [folder]} — the folders the learner skipped (*Never read this folder*: `Store.skipped_folders`,
+    the one list, Surasura's), for each language with a library store, so hato never fetches for a video in one (the
+    entry's `skipped_folders`; `register` refuses such a video too). Read straight from each store file, read-only, one
+    short query (never a build, a write or a lock: this runs at every surasura-cli call). A store that can't be read now
+    (busy, being built) keeps the list `old` (the entry as written) had for it; a language with no store yet has none."""
+    import sqlite3
+    from app import library_store, path_utils
+    old = old if isinstance(old, dict) else {}
+    out = {}
+    for lang in LANGUAGES:
+        if not os.path.isdir(path_utils.get_user_files_path(lang)):
+            continue
+        db = library_store.library_db_path(lang, path_utils.get_data_path(lang))
+        if not os.path.isfile(db):
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2)
+            try:
+                rows = conn.execute("SELECT note, pattern FROM exclusions WHERE kind = ? ORDER BY id",
+                                    (library_store.FOLDER_SKIP,)).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            log.info("surasura.json: the %s library's skipped folders weren't read now (%s)", lang, e)
+            if isinstance(old.get(lang), list):
+                out[lang] = old[lang]
+            continue
+        folders = []
+        for note, pattern in rows:
+            try:
+                path = (json.loads(note) if note else {}).get("path")
+            except (ValueError, AttributeError):
+                path = None
+            folders.append(os.path.normpath(path if isinstance(path, str) and path else pattern))
+        out[lang] = folders
+    return out
+
+
 def registers(settings, language=None):
     """Does Surasura take hato's pairings (`surasura-cli register`)? While Connect's preview is on, or (Michi-NS, Q3:
     finding subtitles is about the library, not cards) once the learner said yes to hato finding them
@@ -87,10 +126,11 @@ def registers(settings, language=None):
     return bool(settings.get("connect_enabled") or any(settings.get(k) for k in yes))
 
 
-def entry(settings):
+def entry(settings, old=None):
     """Surasura's entry as a dict, or None when this process writes none (a portable or test build, or a source
     checkout, without SURASURA_TOOLS_CLI). `register` is offered to other tools only while Connect's preview is on —
-    or (Michi-NS, Q3 ✅ Sonic 2026-10-31) while hato finds the waiting videos' subtitles (`registers`)."""
+    or (Michi-NS, Q3 ✅ Sonic 2026-10-31) while hato finds the waiting videos' subtitles (`registers`). Kura-NA:
+    `skipped_folders` (`_skipped_folders`; `old`: the entry as written, whose lists a busy store keeps)."""
     advertised = _advertised()
     if advertised is None:
         return None
@@ -108,6 +148,7 @@ def entry(settings):
         "contract": CONTRACT,
         "verbs": verbs,
         "drop_folders": _drop_folders(),
+        "skipped_folders": _skipped_folders((old or {}).get("skipped_folders") if isinstance(old, dict) else None),
         "updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -139,8 +180,7 @@ def _refresh(settings):
         except Exception as e:
             log.warning("surasura.json not refreshed: settings.json can't be read (%s)", e)
             return False
-    new = entry(settings)
-    if new is None:
+    if _advertised() is None:                        # (the gate first: a process that writes no entry reads nothing)
         return False
     folder = tools_dir()
     path = os.path.join(folder, TOOL + ".json")
@@ -149,9 +189,18 @@ def _refresh(settings):
             old = json.loads(f.read().decode("utf-8"))
     except (OSError, ValueError):
         old = None
-    if _same(old, new):
+    new = entry(settings, old)
+    if new is None:
         return False
     data = (json.dumps(new, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if len(data) > MAX_BYTES and new.get("skipped_folders"):
+        # Kura-NA: too many skipped folders for the small file — left out (hato then fetches as before, and `register`
+        # still refuses a skipped folder's video): the rest of the entry is never held back for them
+        log.warning("surasura.json: the skipped folders left out (%d bytes with them)", len(data))
+        new.pop("skipped_folders")
+        data = (json.dumps(new, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if _same(old, new):
+        return False
     if len(data) > MAX_BYTES:
         log.warning("surasura.json not written: %d bytes, over the %d-byte limit", len(data), MAX_BYTES)
         return False
@@ -180,6 +229,17 @@ def _refresh(settings):
                 os.remove(tmp)
             except OSError:
                 pass
+
+
+def refresh_soon():
+    """Kura-NA: `refresh` on a thread of its own (a skip saved, undone or read again: hato's next pass reads the list
+    from the entry) — never on the window's thread, never failing anything (a failure is logged)."""
+    def run():
+        try:
+            refresh()
+        except Exception:
+            log.exception("surasura.json (the shared tools file) wasn't refreshed")
+    threading.Thread(target=run, name="tools-entry", daemon=True).start()
 
 
 def read(tool):

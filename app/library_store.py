@@ -1994,6 +1994,7 @@ class _Command:
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
         self.reworked = set() # items whose work changed: their pieces are re-checked too
+        self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
         self.fed_inline = set()  # … already written with their placement
@@ -4272,11 +4273,12 @@ class Store:
             return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
             wid = self._specials_work(rel, cache)
+        full = cmd.show_names.get(path_key(rel)) if fk is not None else None    # Kura-NA: a long name's folder is cut
         if wid is None:
-            wid = self._same_show_folder(fk, rel, cmd)
+            wid = self._same_show_folder(fk, rel, cmd, show=full)
         if wid is None:
             below = _below_tier(rel)
-            wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
+            wid = self._new_work(full or folder_title(below), fk, cmd, titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -4315,7 +4317,7 @@ class Store:
             "AND instr(substr(rel_key, ?), '/') = 0 LIMIT 2", (base, base[:-1] + "0", len(base) + 1)).fetchall()
         return found[0][0] if len(found) == 1 else None         # (two: the user's split — none of them)
 
-    def _same_show_folder(self, fk, rel, cmd):
+    def _same_show_folder(self, fk, rel, cmd, show=None):
         """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
         item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
         `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
@@ -4324,17 +4326,20 @@ class Store:
         `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
         one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
         here: two titles already made stay *Same title?*'s to ask. The titles of a key come from `_show_titles` (kept on
-        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. -> the work, or None."""
+        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. Kura-NA: `show`, the
+        show as its files name it when the folder's name is its cut (`sources.full_show`), is the key asked; a title of
+        the cut name alone (one made before) counts too. -> the work, or None."""
         if "/" in fk:
             return None
         from app.episode_names import show_key
-        want = show_key(search_fold(fk, self.language))   # (folded as the titles' names are: a Chinese library's 臺 is 台)
-        if not want:
+        # (folded as the titles' names are: a Chinese library's 臺 is 台)
+        wants = [k for k in dict.fromkeys(show_key(search_fold(n, self.language)) for n in (show, fk) if n) if k]
+        if not wants:
             return None
-        found = []
-        for w in sorted(self._show_titles(cmd)["key"].get(want, ())):
+        found, index = [], self._show_titles(cmd)["key"]
+        for w in sorted(set().union(*(index.get(k, ()) for k in wants))):
             row = self.conn.execute("SELECT search_key FROM works WHERE id = ?", (w,)).fetchone()
-            if row is not None and want in _show_keys(row[0]):
+            if row is not None and any(k in _show_keys(row[0]) for k in wants):
                 found.append(w)
         if len(found) != 1:
             return None
@@ -11104,22 +11109,49 @@ def _store_skip_refused(self, path):
 
 def _store_items_under(self, path):
     """K6: the live items whose every origin lies inside the folder `path`, in id order — an item with an origin
-    elsewhere, or a record of another producer (hato's), stays. A range read on the origins' keys."""
-    lo = SOURCE_KEY + path_key(folder_path(path)).rstrip("/") + "/"
+    elsewhere stays. Kura-NA: a record of another producer (hato's) is inside when the video it names lies there (hato
+    found it in that folder: its own item, or a source item it took over, leaves with the folder's others); one naming
+    no video, or one elsewhere, keeps the item. A range read on the origins' keys, and one read of the records' videos."""
+    folder = path_key(folder_path(path)).rstrip("/")
+    lo = SOURCE_KEY + folder + "/"
     hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
     with self._reading():
-        inside = sorted({r[0] for r in self.conn.execute(
+        inside = {r[0] for r in self.conn.execute(
             f"SELECT item_id FROM pairings p WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL AND "
-            f"NOT {_VERSION_ROW}", (lo, hi))})               # LM1b: a version's place is never the item's
+            f"NOT {_VERSION_ROW}", (lo, hi))}               # LM1b: a version's place is never the item's
+        held = {}                                        # {item_id: records of others not inside} (Kura-NA)
+        for item_id, video in self.conn.execute(
+                f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END "
+                f"FROM pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IS NOT NULL"):
+            there = isinstance(video, str) and bool(video) and _under(path_key(folder_path(video)), folder)
+            held[item_id] = held.get(item_id, 0) + (not there)
+            if there:
+                inside.add(item_id)
         out = []
-        for chunk in _chunks(inside, 500):
+        for chunk in _chunks(sorted(inside), 500):
             for item_id, every, there in self.conn.execute(
                     f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings p WHERE item_id "
-                    f"IN ({','.join('?' * len(chunk))}) AND NOT {_VERSION_ROW} GROUP BY item_id ORDER BY item_id",
-                    [lo, hi] + chunk):
-                if every == there:
+                    f"IN ({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW} AND NOT {_VERSION_ROW} GROUP BY item_id "
+                    f"ORDER BY item_id", [lo, hi] + chunk):
+                if every == there and not held.get(item_id):
                     out.append(item_id)
-    return out
+            have = {r[0] for r in self.conn.execute(f"SELECT DISTINCT item_id FROM pairings p WHERE item_id IN "
+                                                    f"({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW}", chunk)}
+            out += [i for i in chunk if i not in have and i in held and not held[i]]   # hato's alone: no origin
+    return sorted(out)
+
+
+def _store_skipped_holding(self, paths):
+    """Kura-NA: the skipped folder (its one spelling, `folder_path`) holding any of `paths` — hato's record's video and
+    the subtitle it wrote beside it — or None: hato's hand-over of a skipped folder's video is refused (`register_headless`
+    answers `skipped`). One short read of the skipped folders."""
+    keys = [path_key(folder_path(p)) for p in paths if isinstance(p, str) and p.strip()]
+    if not keys:
+        return None
+    for f in self.skipped_folders():
+        if any(_under(k, f["key"]) for k in keys):
+            return folder_path(f["path"])
+    return None
 
 
 def _store_skip_choices(self, item_ids, own=False):
@@ -11136,11 +11168,20 @@ def _store_skip_choices(self, item_ids, own=False):
             f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
             f"({','.join('?' * len(ids))}) "
             f"ORDER BY p.content_key", ids).fetchall()
+        # Kura-NA: an item hato brought (no origin of its own) — the folder of the video its record names
+        theirs = self.conn.execute(
+            f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END FROM "
+            f"pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) ORDER BY p.content_key",
+            ids).fetchall()
     starts, came = [], set()
     for item_id, t in rows:
         origin = (_json_dict(t) or {}).get("origin")
         if isinstance(origin, str) and origin:
             starts.append(folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin))))
+            came.add(item_id)
+    for item_id, video in theirs:
+        if item_id not in came and isinstance(video, str) and video.strip() and os.path.isabs(video):
+            starts.append(folder_path(os.path.dirname(video)))
             came.add(item_id)
     if own:
         if not starts or came != set(ids):
@@ -11332,6 +11373,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
+            if rel is not None and f.get("show_name"):   # Kura-NA: its title goes by the show uncut (`_folder_work`)
+                cmd.show_names[path_key(rel)] = str(f["show_name"])
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
                 self._let_audiobook_back(key, f.get("let_back_from"), out)
@@ -13523,6 +13566,7 @@ Store.items_under = _store_items_under
 Store.skip_choices = _store_skip_choices
 Store._holds_others = _store_holds_others
 Store.skip_folder = _store_skip_folder
+Store.skipped_holding = _store_skipped_holding
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved
 Store.read_folder_again = _store_read_folder_again
@@ -15872,6 +15916,9 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if store is None:
             return _registered(EXIT_NEEDS_YOU)
     with store:
+        # Kura-NA: a video of a folder the learner skipped is skipped for hato too — nothing written, its file left
+        if store.skipped_holding([pairing.get("video_path"), pairing.get("subtitle_path")]) is not None:
+            return Registered(EXIT_DONE, None, "skipped", None, None, None, None)
         if reader:
             store.register_reader(reader)
         try:

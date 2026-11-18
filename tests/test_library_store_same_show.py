@@ -54,7 +54,7 @@ def _take(store, language, data_dir, root, src, folders, before_a8=True):
             out.setdefault(folder, []).append(f["rel"])
     joins = ls.Store._same_show_folder
     if before_a8:
-        ls.Store._same_show_folder = lambda self, fk, rel, cache=None: None
+        ls.Store._same_show_folder = lambda self, fk, rel, cache=None, **_kw: None
     try:
         store.take_in(root, found, first=True)
     finally:

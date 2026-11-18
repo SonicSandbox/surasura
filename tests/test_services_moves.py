@@ -16,6 +16,7 @@ from another epoch) run on a stand-in store recording each call. The numbers run
 a plan file shaped like a Generate's.
 """
 import gzip
+import io
 import json
 import os
 import random
@@ -181,10 +182,33 @@ def journal(language):
     return read_journal(M.journal_path(language))
 
 
+def open_journal(path):
+    """How a test opens the journal to read it: on Windows with FILE_SHARE_DELETE, so the writer may replace or remove
+    the file while a test reads it — a test's look is never the reason the writer's write is refused (the writer gives
+    a refused write up after ~0.1 s: `test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write`)."""
+    if os.name != "nt":
+        return open(path, encoding="utf-8")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    # GENERIC_READ; share read | write | delete; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    handle = create(os.fspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        code = ctypes.get_last_error()
+        if code in (2, 3):                              # not found (the file, its folder)
+            raise FileNotFoundError(2, "the journal is not there", path)
+        raise PermissionError(13, f"the journal can't be opened (Windows error {code})", path)   # (delete pending)
+    return io.open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8")
+
+
 def read_journal(path):
     for _ in range(50):
         try:
-            with open(path, encoding="utf-8") as f:
+            with open_journal(path) as f:
                 return json.load(f)
         except FileNotFoundError:                       # (none, or removed between a look and the read)
             return None
@@ -3695,6 +3719,27 @@ def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, 
     assert lib.ids("now")[0] == a and lib.store.item(now[1])["pinned"] is not None
     assert _learning(lib, fin)[0] == 0 and lib.store._work_row(work)["cover_path"] == "cache:poster.jpg"
     assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
+
+
+def test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write(lib, make_writer, short_lock_wait):
+    # why (Kura-EO, a --stress-changed red, 2026-11-18): the waits above read the journal again and again while the
+    # writer rewrites and at last removes it; the writer tries a refused write for ~0.1 s, then gives up for good when
+    # nothing is left queued — so a test's look held a moment too long under load (here: 0.5 s) left the journal in
+    # place and the wait for it to go failed. A test's look must never be the reason the writer's write is refused.
+    w, heard = make_writer()
+    a = _arrival(lib, lib.ids("goal")[5])
+    holder = LockHolder(lib.db)
+    w.place([a], "top")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["place"])
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    looking = open_journal(M.journal_path(lib.language))     # a test's look, held across the replay's writes
+    threading.Timer(0.5, looking.close).start()
+    assert w2.replay()
+    assert h.until(lambda: not w2.pending() and lib.ids("now")[0] == a)
+    time.sleep(0.6)                                     # (the look is closed by now: nothing else to wait for)
+    assert journal(lib.language) is None, "the replay's last write (the file removed) was refused"
 
 
 def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_let_go_quietly(lib, make_writer,

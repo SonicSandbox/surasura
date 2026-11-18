@@ -258,13 +258,17 @@ ZH_LINES = ["今天早上开始一直在下雨", "我在车站前的书店买了
 
 
 def _season(tmp_path, folder, names, lines=None):
-    """Episodes of one release: each its video (any bytes) and its .srt, in `folder`."""
+    """Episodes of one release: each its video and its .srt, in `folder`. Each video its own size: an episode's own
+    key is its subtitle's digest and its video's size and time, and files made within one tick of the clock
+    (GitHub's runners) would otherwise share it — one episode's kept verdict read as the next one's."""
     where = tmp_path / folder
     where.mkdir(parents=True, exist_ok=True)
     out = []
     for name in names:
         video, sub = _episode(where, lines)
         stem = os.path.splitext(name)[0]
+        with open(video, "ab") as f:
+            f.write(b"x" * (len(out) + 1))
         os.replace(video, str(where / name))
         os.replace(sub, str(where / f"{stem}.srt"))
         out.append((str(where / name), str(where / f"{stem}.srt")))

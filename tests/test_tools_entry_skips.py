@@ -121,3 +121,18 @@ def test_too_many_skipped_folders_for_the_small_file_leave_the_list_out_never_th
     got = _entry(tools)
     assert "skipped_folders" not in got and got["verbs"] == ["status"]
     assert len((tools / "surasura.json").read_bytes()) <= tools_entry.MAX_BYTES
+
+
+@pytest.mark.parametrize("odd", ["データ#根", "c%41d 根"])
+def test_a_store_path_with_a_hash_or_a_percent_is_read(tools, frozen, tmp_path, monkeypatch, odd):
+    """The store file is opened read-only by a URI: a `#` or `%` in its path (a learner's folder name) must neither
+    drop `mode=ro` (and make an empty stray file) nor fail the open — the list is read."""
+    r = tmp_path / odd
+    r.mkdir()
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(r))
+    src, (inside,) = _source(tmp_path, "Downloading")
+    with _store("ja") as s:
+        s.add_source(src)
+        s.skip_folder(inside)
+    assert tools_entry.entry({})["skipped_folders"] == {"ja": [os.path.normpath(inside)]}
+

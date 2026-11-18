@@ -361,3 +361,22 @@ def test_ctrl_z_of_a_saved_skip_before_the_next_view_shows_its_rows_again(world)
     assert row.key not in tray.keys()
     drag._skips_moved(win, SimpleNamespace(folder=1), undone=True)            # Ctrl+Z's undo of it landed
     assert row.key in tray.keys() and tray.leaving == frozenset()
+
+
+def test_a_row_the_saved_skip_kept_is_shown_again_once_the_stores_views_hold_it(world):
+    # Train 43's keeper (finding 4): the store's answer of what the skip takes is read before the skip is saved, so it
+    # may name an item the save then kept (the writer checks again under its lock). Saved, the store's views are the
+    # truth: a row they still hold shows again after a view or two — never hidden until a restart.
+    from tests.qt.test_arrivals import tray_arrivals
+    _seed, win, _writer, row = world()
+    tray = tray_of(win)
+    win.looks.under_ids = {}
+    told = tray.skip_leaves(win.looks.choices[1], list(row.arrival.item_ids))
+    told("saved")
+    assert row.key not in tray.keys()
+    groups = tray._given
+    for _n in range(2):                                                       # two new views, the row still in them
+        groups = tuple(g._replace(rows=tuple(g.rows)) for g in groups)
+        tray.set_groups(groups)
+    assert row.key in tray.keys() and tray.leaving == frozenset()
+    assert row.arrival.key in [a.key for a in tray_arrivals(win)]

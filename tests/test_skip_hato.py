@@ -135,7 +135,8 @@ def test_a_found_episode_whose_hato_record_names_a_video_elsewhere_stays(languag
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_hatos_hand_over_of_a_skipped_folders_video_is_refused_and_taken_once_read_again(language):
     """Skipped first: hato's hand-over answers `skipped` — no item, no record, hato's file left where it is. Read again
-    (Settings), the same hand-over is taken."""
+    (Settings) lets it in with the record it was refused with (train 43's keeper), so hato's same hand-over later is
+    `already` that item."""
     store, data_dir = _empty(language)
     src, inside, video = _downloads(language)
     with store:
@@ -152,7 +153,8 @@ def test_hatos_hand_over_of_a_skipped_folders_video_is_refused_and_taken_once_re
         again.read_folder_again(folder)
     done = ls.register_headless(language, path, record, data_dir=data_dir,
                                 user_files_dir=store.user_files_dir, looks=0)
-    assert done.code == ls.EXIT_DONE and done.landed == "arrivals" and done.file_id is not None
+    assert done.code == ls.EXIT_DONE and done.landed == "already" and done.file_id is not None
+    assert done.pairing == "same"                                                 # (Read again wrote that record)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -183,3 +185,80 @@ def test_a_hato_arrival_offers_the_folder_of_its_video_to_skip(language):
         outside, rec2 = _hato_drop(data_dir, language, _video(os.path.join(_drive("Elsewhere"), "x - 05.mkv")), 5)
         other = store.register(outside, rec2).added[0]
         assert store.skip_choices([other]) == []                                 # a video in no folder being read
+
+
+# --- train 43's intent keeper (Kura-NA round 2) ------------------------------------------------------------------- #
+
+def _pairing_of(store, item):
+    row = store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ? AND content_key NOT LIKE 'src:%'",
+                             (item,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_refused_hand_over_never_comes_in_by_the_disk_sync_and_read_again_brings_it_with_its_video(language):
+    """The refusal leaves hato's file where hato wrote it (never Surasura's to delete) — and the next disk sync never
+    takes it in as an arrival with no record (it could never be mined, and hato never hands a skipped one over again).
+    *Read again* brings it in WITH hato's record: its video link kept."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+        (folder,) = [f["id"] for f in store.skipped_folders()]
+    path, record = _hato_drop(data_dir, language, video, 3)
+    done = ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0)
+    assert done.landed == "skipped" and os.path.isfile(path)
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        again.sync_disk()
+        assert _ids(again) == []                                                  # kept out, as a Remove keeps out
+        assert again.read_folder_again(folder)
+        (item,) = _ids(again)
+        assert again.item(item)["rel_path"] == ls.library_rel(data_dir, path)
+        assert _pairing_of(again, item)["video_path"] == record["video_path"]   # hato's record: the video link
+        again.sync_disk()
+        assert _ids(again) == [item]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_the_sync_took_in_before_its_refused_hand_over_leaves_new_arrivals(language):
+    """The disk sync may meet hato's file a moment before its hand-over (R1): refused, that row goes too — no arrival
+    with no record is left behind."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+        path, record = _hato_drop(data_dir, language, video, 3)
+        store.sync_disk()
+        assert len(_ids(store)) == 1                                              # (the sync met it first)
+    done = ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0)
+    assert done.landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        assert _ids(again) == []
+        again.sync_disk()
+        assert _ids(again) == []
+        assert os.path.isfile(path)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_ignore_never_offers_a_folder_whose_skip_would_take_another_titles_hato_episode(language):
+    """The sort screen's *Ignore* (`skip_choices(own=True)`) offers only a folder holding nothing but the title's own:
+    a folder that also holds the video of another title's hato episode is never offered (its skip would take it)."""
+    store, data_dir = _empty(language)
+    src = _drive("Downloads")
+    inside = os.path.join(src, "Seasonal")
+    _write(os.path.join(inside, "%s - 01.srt" % _SHOWS[language][0]), _text(language, 1))
+    video_b = _video(os.path.join(inside, "%s - 03.mkv" % _SHOWS[language][1]), body=b"fake matroska b3")
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        (item_a,) = _ids(store)
+        path, record = _hato_drop(data_dir, language, video_b, 3)
+        item_b = store.register(path, record).added[0]
+        assert sorted(store.items_under(inside)) == sorted([item_a, item_b])
+        assert ls.folder_path(inside) not in [ls.folder_path(f) for f in store.skip_choices([item_a], own=True)]
+        assert ls.folder_path(inside) in [ls.folder_path(f) for f in store.skip_choices([item_a, item_b], own=True)]
+

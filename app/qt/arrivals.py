@@ -674,6 +674,7 @@ class ArrivalsInset(QToolButton):
 # the window's thread at 20,000 rows).
 HEAD = "head:"
 _KEY = operator.attrgetter("key")
+SETTLE_VIEWS = 2           # Kura-NA: the reader's views after a skip is saved before its pressed rows are the store's
 PARTS = ("more", "icon", "number")          # a row's controls, hit-tested in this order (anything else: the row)
 
 
@@ -1545,7 +1546,7 @@ class ArrivalsTray(motion.Overlay):
             return False
         self._given = groups
         if any(s[1] for s in self._skips.values()):
-            self._settled(groups)                        # (a saved skip's ids the store's view no longer holds)
+            self._settled(groups, view=True)             # (a saved skip's ids the store's view no longer holds)
         self.groups = self._without_leaving(groups)
         if self.open_now():
             self._apply()
@@ -1587,15 +1588,18 @@ class ArrivalsTray(motion.Overlay):
             self._skips = {t: s for t, s in self._skips.items() if not s[1]}
             self._leaving()
 
-    def _settled(self, groups):
+    def _settled(self, groups, view=False):
         """A saved skip's ids leave `leaving` once the store's view (`groups`) no longer holds them: from then on the
         store's own view keeps them out, and the same items back later (*Put back* from the Removed list, under their
-        old ids) show again."""
+        old ids) show again. Train 43's keeper (finding 4): the store's answer was read before the skip was saved, so it
+        may name an item the save kept — `view`: a new view of the reader's; SETTLE_VIEWS of them after the save, the
+        skip lets go of all it still holds (those rows are the store's to show)."""
         held = {i for g in groups for a in g.rows for i in a.item_ids}
         for token, s in list(self._skips.items()):
             if s[1]:
                 s[0] = frozenset(i for i in s[0] if i in held)
-                if not s[0]:
+                s[2] += bool(view)
+                if not s[0] or s[2] >= SETTLE_VIEWS:
                     del self._skips[token]
         self.leaving = frozenset().union(*(s[0] for s in self._skips.values()))
 
@@ -2374,7 +2378,7 @@ class ArrivalsTray(motion.Overlay):
         saved, the store's own view follows (the rows are gone from it). -> `told(event)` for the skip's ticket."""
         from app.qt import bridge
         token = object()
-        self._skips[token] = [frozenset(ids), False]
+        self._skips[token] = [frozenset(ids), False, 0]          # [its ids, saved, the store's views since]
         self._leaving()
         looks = getattr(self.win, "looks", None)
         if looks is not None and hasattr(looks, "under"):

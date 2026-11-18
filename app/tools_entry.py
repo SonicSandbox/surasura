@@ -83,6 +83,7 @@ def _skipped_folders(old=None):
     entry's `skipped_folders`; `register` refuses such a video too). Read straight from each store file, read-only, one
     short query (never a build, a write or a lock: this runs at every surasura-cli call). A store that can't be read now
     (busy, being built) keeps the list `old` (the entry as written) had for it; a language with no store yet has none."""
+    import pathlib
     import sqlite3
     from app import library_store, path_utils
     old = old if isinstance(old, dict) else {}
@@ -94,7 +95,7 @@ def _skipped_folders(old=None):
         if not os.path.isfile(db):
             continue
         try:
-            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2)
+            conn = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True, timeout=0.2)   # (# or % in it)
             try:
                 rows = conn.execute("SELECT note, pattern FROM exclusions WHERE kind = ? ORDER BY id",
                                     (library_store.FOLDER_SKIP,)).fetchall()

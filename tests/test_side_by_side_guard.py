@@ -289,3 +289,17 @@ def test_off_the_guard_never_runs(language):
     assert _now(store, ids) == "AA" + "B" * 18
     assert _letters(store, ids, store._mine_ids(20)) == "AA" + "B" * 18
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_count_handed_from_the_second_season_is_the_shows(language):
+    """Mutant D11 (2026-11-17): Junban's group for a two-season show may start with S2's item; the count is still kept
+    under the show (its seasons' one key, the smallest work), so the store reads it for the title taking turns."""
+    store, ids = _library(language, [("A", 3), ("B", 3), ("C", 3)], 20, seasons={"A": "Season 1", "B": "Season 2"})
+    work = {letter: store.conn.execute("SELECT work_id FROM items WHERE id = ?", (ids[letter][0],)).fetchone()[0]
+            for letter in "ABC"}
+    show = min(work["A"], work["B"])
+    assert store.set_side_cards([(ids["B"] + ids["A"], 1), (ids["C"], 0)])
+    assert sorted(store._side_cards().items()) == sorted({ls.card_key(("w", show)): 1,
+                                                          ls.card_key(("w", work["C"])): 0}.items())
+    store.close()

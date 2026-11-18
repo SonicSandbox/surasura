@@ -71,15 +71,17 @@ def test_a_title_junban_counted_no_new_card_for_steps_aside_in_every_reader_and_
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_connect_has_not_mined_yet_keeps_its_turn_so_it_can_get_its_cards(language):
     """A counted none because Connect never mined it (new to Current, or its mined files all watched): it keeps its
-    turn, so its files enter the top and Connect mines them — Junban weaves its cards from the next count. Mining its
-    next file then sets it aside (a receipt moves the order then, as the count does)."""
+    turn, so its files enter the top and Connect mines them — Junban weaves its cards from the next count. Kyou-E: the
+    receipt moves nothing (the count never saw that file); Junban's next count, still none, sets A aside."""
     store, a, b, loose, d = _library(language)
     store.set_library_options(mine_line=4, side_by_side=True)
     _write(store, a, b, loose, d, {"a": 0, "b": 2, "loose": 1, "d": 3})
     assert store._mine_ids(4) == [a[0], b[0], a[1], b[1]], "nothing of A mined yet: by its files"
     order = store.versions()["order_version"]
     store.receipt(a[0], ls._now())
-    assert store.versions()["order_version"] > order, "the receipt moved who takes turns: the order moved"
+    assert store.versions()["order_version"] == order, "Kyou-E: a receipt never moves the order (G1.1-10)"
+    assert _write(store, a, b, loose, d, {"a": 0, "b": 2, "loose": 1, "d": 3}) is True
+    assert store.versions()["order_version"] > order, "the next count saw A's file: who takes turns moved"
     assert store._mine_ids(4) == [b[0], loose, b[1], d[0]]
     store.set_watched([a[0]])                           # its mined file watched: the next is new to Connect
     assert store._mine_ids(4) == [a[1], b[0], a[2], b[1]], "A's next file unmined: A takes its turn again"

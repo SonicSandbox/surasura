@@ -72,6 +72,7 @@ import threading
 import time
 import weakref
 
+from app import __version__ as APP_VERSION
 from app.services import airing as airing_module
 from app.services import view_rows
 from app.services import window_idle
@@ -97,7 +98,8 @@ CACHE_VERSION = 6               # 2: keyed (store id, epoch, state version, plan
 #                                  6: the plan's part is the plan file's stamp (`_plan_part`): the numbers' version is
 #                                     counted from 0 in each process and read after the first frame, so no start ever
 #                                     matched the key the last session wrote (the first screen's cache never shown);
-#                                     `numbers`: the cached rows' figures, shown until the numbers' first load answers
+#                                     `numbers`: the cached rows' figures, shown until the numbers' first load answers;
+#                                     `app`: the version that wrote it (another: the figures faded, `_seed_figures`)
 # `moves.Numbers.why()` until its first load has answered (the window asks for that load only after its first frame)
 NOT_READ = "not read yet"
 
@@ -105,6 +107,12 @@ NOT_READ = "not read yet"
 class _Kept(dict):
     """The cached rows' figures as the last session showed them faded (`moves.Kept`'s mark: the plan stood aside)."""
     kept = True
+
+
+def _faded(view):
+    """`view` with every *N new* it paints faded, as `view_rows` paints a kept table's (`new_faded`)."""
+    return view._replace(rows=tuple(r._replace(new_faded=r.n_new is not None, episodes=tuple(
+        e._replace(new_faded=e.n_new is not None) for e in r.episodes)) for r in view.rows))
 
 
 def _cached_figures(view, numbers, rows):
@@ -219,8 +227,9 @@ class LibraryReader:
         self._cache_due = None             # (view, key, figures) to write as the first screen's cache, at the next
         #                                    quiet look
         self._cache_due_at = 0.0           # when a write first fell due (a store busy for long still gets one)
-        self._seed = None                  # (figures, plan part): the first screen's cached rows' own, built with until
-        #                                    the numbers' first load answers (`_figures_now`)
+        self._seed = None                  # (figures, plan part, state version): the first screen's cached rows' own,
+        #                                    built with until the numbers' first load answers (`_figures_now`), faded
+        #                                    once the store moved past the cache's state (`_seed_moved`)
         self._cards_all_at = 0.0
         self._cards_stale = False
         self._cards_asked = {}             # item -> its cards when last asked, for every item asked (`cards_rose`)
@@ -657,6 +666,7 @@ class LibraryReader:
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
         again = asked > self._answered[0] and not held  # M4.1 B1: the settle's ask, until a view answers it
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
+            numbers = self._seed_moved(None, numbers)   # (the window's command on its way: no feed to say more)
             owed, self._view_owed = self._view_owed, False  # fix round (A4A-2): a view owed is this build (or the drop's)
             # (alpha 9.1: a look that read nothing answers no ask — its rows are the copy's, maybe from before a write)
             if changed_mode or self._view is None or version != self._numbers_version or released or owed:
@@ -689,6 +699,7 @@ class LibraryReader:
             return
         feed = h.read_feed(self._seen, self._epoch)
         self.reads += 1
+        numbers = self._seed_moved(feed["version"], numbers)
         options_before = dict(self._options)
         before = set(self._items) if held and feed["full"] else None
         arrived = self._arrived(feed)                   # Hon a7: read against the copy before the merge
@@ -1360,18 +1371,39 @@ class LibraryReader:
         version, numbers = self.numbers()
         return plan, version, numbers
 
+    def _seed_moved(self, version, numbers):
+        """The look's figures once its feed is read (`version`: the feed's state version; None: no feed read). The cached
+        rows' were the order's as the cache was written (its key's state version); a write since (a drop, another
+        program's move) or the window's command on its way may move *N new* on every row after it, and the numbers
+        can't follow before their load — so they stay, faded (`_Kept`: figures that can't follow the order), never
+        shown or cached as current. Any write fades them: the feed can't say which moved the order."""
+        seed = self._seed
+        if seed is None or isinstance(seed[0], _Kept) or (version in (None, seed[2]) and not self._expected):
+            return numbers
+        self._seed = (_Kept(seed[0]), seed[1], seed[2])
+        return self._seed[0]
+
     def _seed_figures(self, data):
         """The cached rows' figures kept for the looks until the numbers' first load answers — only from a provider that
-        says it hasn't (`why`), and only when the cache holds them (a cache from before: none, as before)."""
+        says it hasn't (`why`), and only when the cache holds them (a cache from before: none, as before) — and handed
+        to the numbers as the last ones shown (`moves.Numbers.seed`): a load that finds the plan out of date keeps them,
+        faded. Another version of the app wrote them (an update: its plan is out of date): faded from the start.
+        -> whether the figures kept are faded."""
         why = getattr(self.numbers, "why", None)
         if why is None or why() != NOT_READ:
-            return
+            return False
         try:
             table = {r[0]: (r[1], r[2], r[3]) for r in data.get("numbers") or ()}
         except (TypeError, IndexError, KeyError):
-            return
-        if table:
-            self._seed = (_Kept(table) if data.get("faded") else table, data["key"][3])
+            return False
+        if not table:
+            return False
+        faded = bool(data.get("faded")) or data.get("app") != APP_VERSION
+        self._seed = (_Kept(table) if faded else table, data["key"][3], data["key"][2])
+        hand = getattr(self.numbers, "seed", None)
+        if hand is not None:
+            hand(table)
+        return faded
 
     def _first_screen(self):
         if not self.cache_file or not os.path.exists(self.cache_file):
@@ -1389,7 +1421,8 @@ class LibraryReader:
         if view is not None and self.play is not None:  # row 55: last session's answers, until the looks answer
             self._seed_play(view)
         if view is not None and self._view is None:
-            self._seed_figures(data)
+            if self._seed_figures(data) and not data.get("faded"):
+                view = _faded(view)                     # written by another version: faded from the first frame
             self._publish(view)
 
     def _flush_cache(self):
@@ -1402,7 +1435,7 @@ class LibraryReader:
             data = {"version": CACHE_VERSION, "key": key, "written_at": time.time(),
                     "view": view_rows.to_cache(view, self.cache_rows),
                     "numbers": _cached_figures(view, numbers, self.cache_rows),
-                    "faded": bool(getattr(numbers, "kept", False))}
+                    "faded": bool(getattr(numbers, "kept", False)), "app": APP_VERSION}
             tmp = self.cache_file + ".tmp"
             os.makedirs(os.path.dirname(self.cache_file) or ".", exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:

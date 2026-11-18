@@ -374,6 +374,111 @@ def test_a_cache_owed_at_the_stop_while_the_cached_figures_last_keeps_them(tmp_p
     assert written and written.items() <= dict(table).items()
 
 
+def _cached_start(seed, cache, table, numbers):
+    """A session that writes the first screen's cache (its figures `table`, the plan (11, 500)), then the next start's
+    reader over `numbers` (its views collected), not started yet."""
+    first = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=_PlanNumbers(table, 3, (11, 500), (11, 500)))
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    again = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                         cache_file=cache, numbers=numbers)
+    views, _ = _collect(again)
+    return again, views
+
+
+def _shown_faded(view):
+    """Every *N new* the view paints: whether each is faded (rows and episodes)."""
+    return [r.new_faded for r in view.rows if r.n_new is not None] + \
+        [e.new_faded for r in view.rows for e in r.episodes if e.n_new is not None]
+
+
+def test_a_move_before_the_numbers_first_load_fades_the_cached_figures_and_the_next_start_shows_them_faded(tmp_path):
+    """The cached rows' *N new* were worked out for the order as the cache was written. A move before the numbers'
+    first load (a drop in the first seconds) changes *N new* on the moved row and every row after it, and the numbers
+    can't follow it yet: the figures stay, faded — the rule for figures that can't follow the order — never shown as
+    current. A cache written meanwhile keeps the fade (it is keyed on the new order), so the start after that, the
+    load still not answered, shows them faded too (the intent keeper's probe, train 42)."""
+    for language in ("ja", "zh"):
+        seed = window_seed.build(language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        _v, table = seed.numbers()
+        again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+        again.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views)), language
+            live = [v for _, v in views if not v.cached][-1]
+            assert _shown_faded(live) and not any(_shown_faded(live)), language     # nothing moved yet: as cached
+            now_ids = {r["id"] for r in seed.items if r["tier"] == "now"}
+            mover = next(r for r in live.rows[2:]
+                         if r.n_new is not None and all(e.id in now_ids for e in r.episodes))
+            top = min(r["ord"] for r in seed.items if r["tier"] == "now")
+            os.utime(cache, (0, 0))                                             # (a rewrite is seen by its mtime)
+            seed.library.commit(items=[{"id": e.id, "ord": top - 1000 + k} for k, e in enumerate(mover.episodes)],
+                                order=True)                                     # the learner drags it to the top
+            assert _wait(lambda: views[-1][1].rows[0].key == mover.key), language
+            moved = views[-1][1]
+            assert moved.rows[0].n_new == mover.n_new, language                 # kept: never a blank ...
+            assert all(_shown_faded(moved)), language                           # ... and faded, every row
+            assert _wait(lambda: os.path.getmtime(cache) > 0), language         # the cache written again meanwhile
+            with open(cache, encoding="utf-8") as f:
+                assert json.load(f)["faded"] is True, language
+        finally:
+            again.stop()
+        third = library_reader.LibraryReader(seed.opener, language=seed.language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=_LoadingNumbers(table, (11, 500), (11, 500)))
+        views3, _ = _collect(third)
+        third.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views3)), language
+            shown = views3[0][1]
+            assert shown.cached and shown.rows[0].key == mover.key, language
+            for _tid, view in views3:                                           # the cached screen and the looks
+                assert _shown_faded(view) and all(_shown_faded(view)), (language, view.cached)
+        finally:
+            third.stop()
+
+
+def test_a_command_on_its_way_before_the_numbers_first_load_fades_the_cached_figures(tmp_path):
+    """The window's own command (*Move to Finished*, read in its new place before the store has it) moves the order as
+    much as a drop the store holds: the cached figures fade at once, never at their old values in the new order while
+    the write is on its way."""
+    seed = window_seed.build(language="ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    _v, table = seed.numbers()
+    again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+    again._first_screen()
+    again._look()                                        # the first live look: as cached
+    assert not any(_shown_faded(views[-1][1]))
+    row = views[-1][1].rows[1]
+    again.expect({e.id: "graduated" for e in row.episodes})
+    again._look()                                        # the command's view, the store not written yet
+    view = views[-1][1]
+    assert all(r.key != row.key for r in view.rows[:3])
+    assert _shown_faded(view) and all(_shown_faded(view))
+
+
+def test_a_cache_written_by_another_app_version_shows_its_figures_faded(tmp_path, monkeypatch):
+    """An update since the cache was written: the plan is the old version's, and the numbers' load will find it out of
+    date (a Generate first) — the cached figures are never the new engine's, so they show faded from the first screen
+    on, as the load will keep them (`moves.Numbers.seed`), never as current and then gone."""
+    seed = window_seed.build(language="zh")
+    cache = str(tmp_path / "window_cache_zh.json")
+    _v, table = seed.numbers()
+    monkeypatch.setattr(library_reader, "APP_VERSION", "3.0.15", raising=False)
+    again, views = _cached_start(seed, cache, table, _LoadingNumbers(table, (11, 500), (11, 500)))
+    monkeypatch.setattr(library_reader, "APP_VERSION", "3.0.16")                # the update
+    again.start()
+    try:
+        assert _wait(lambda: any(not v.cached for _, v in views))
+        assert views[0][1].cached
+        for _tid, view in views:                         # the first screen itself, and the looks after it
+            assert _shown_faded(view) and all(_shown_faded(view)), view.cached
+    finally:
+        again.stop()
+
+
 def test_a_damaged_cache_is_no_cache(tmp_path):
     seed = window_seed.build()
     cache = tmp_path / "window_cache_ja.json"

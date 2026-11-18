@@ -194,6 +194,9 @@ Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._f
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
 # --- end W3.2 L3
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("group",), defaults=(None, False))     # LM11b G1: a group's tile
+# Kantan-T (Sonic 2026-11-18, PROVISIONAL: the 🎧 in Goal too): `audio`, its 🎧's hover as a row's (`audio_tip` over its
+# files; '' for a group's tile, as its row, and for a title with no audiobook) — the tile paints it as every title does
+GoalWork = namedtuple("GoalWork", GoalWork._fields + ("audio",), defaults=(None, False, ""))
 # --- P-LF-16: `soon_from`, the index of the first Soon file of a show the Soon line runs through (the store's line is a
 # count of files, so it can fall inside a show): the window never splits a show at the line (Sonic, 2026-10-21: "it
 # should show after the series in the UI and a soon show should be added after that series") — the show is one row
@@ -2226,7 +2229,8 @@ def _goal_work(key, ps, works, guessed):
                     folder=(first.get("rel_path") or "").rpartition("/")[0],
                     tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=pieces_[0].line),
                     accessible=STRINGS["acc_goal_tile"].format(title=title, line=line),
-                    cover=cover_of(work))           # --- W3.2 L3
+                    cover=cover_of(work),           # --- W3.2 L3
+                    audio=audio_tip(files))         # Kantan-T: the 🎧, as its row in Current
 
 
 def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):

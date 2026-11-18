@@ -321,7 +321,8 @@ ROWS = {
                       "Shows 順, which reorders the new cards already in your Anki into Surasura's learn order",
                       "junban reorder order backlog enable"),
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
-                     "scope deck all decks choose the deck preview order restore undo the last reorder"),
+                     "scope deck all decks choose the deck change the deck which deck mining deck new cards deck "
+                     "preview order restore undo the last reorder"),
     "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
                      "order leverage meet content priority"),
     "junban_unlisted": ("Cards too rare for your list go",
@@ -723,6 +724,10 @@ SETUP_FILLED = "{fills} filled {how}"
 SETUP_FILLED_AUTO = "automatically"
 SETUP_FILLED_HAND = "by hand"
 SETUP_NOTHING_FILLED = "nothing filled"
+SETUP_DECK = "“{deck}”"                 # Kantan-T (PROVISIONAL): *Cards in Anki* leads with Junban's deck
+# Kantan-T (PROVISIONAL): *Which cards* names Junban's deck in sight (the deck setup picked; *Junban…* beside it changes it)
+JUNBAN_DECK_LINE = "Deck: “{deck}”"
+JUNBAN_NO_DECK = "No deck chosen yet"
 # The level readout under the slider, when the time between meetings is under an hour, or unknown
 READOUT_HOURS = "≈{words} words · {coverage}% of your content · about every {hours} hours"   # S4
 READOUT_MINUTES = "≈{words} words · {coverage}% of your content · about every {minutes} minutes"

@@ -11211,13 +11211,14 @@ def _store_let_drops_back(self):
     if self._cmd is not None or getattr(self, "_depth", 0):
         return 0                                         # (inside another write: the next call lets them in)
     with self._reading():
-        rows = self.conn.execute(
-            "SELECT x.id, x.note FROM exclusions x WHERE x.kind = ? AND NOT EXISTS (SELECT 1 FROM exclusions f WHERE "
-            "f.kind = ? AND json_valid(x.note) AND f.id = json_extract(x.note, '$.folder')) ORDER BY x.id",
-            (DROP_SKIPPED, FOLDER_SKIP)).fetchall()
+        rows = self.conn.execute("SELECT id, note FROM exclusions WHERE kind = ? ORDER BY id", (DROP_SKIPPED,)).fetchall()
+        live = {r[0] for r in self.conn.execute("SELECT id FROM exclusions WHERE kind = ?", (FOLDER_SKIP,))} \
+            if rows else set()
     n = 0
     for ex_id, raw in rows:
         note = _json_dict(raw) or {}
+        if note.get("folder") in live:
+            continue                                     # (its folder still skipped: kept out)
         rel, record = note.get("rel"), note.get("record")
         full = os.path.join(self.data_dir, *str(rel or "").split("/")) if rel else None
         try:

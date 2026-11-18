@@ -353,3 +353,30 @@ def test_a_newer_refused_record_replaces_the_one_kept_and_a_folder_read_again_me
         again.read_folder_again(folder)
         (item,) = _ids(again)
         assert _pairing_of(again, item)["show"]["title"] == newer["show"]["title"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_window_writers_undo_of_a_skip_lets_a_refused_hand_over_in_with_its_video(language):
+    """The window's Undo goes through its writer, whose own write holds `Store.undo` (nested: the store's call waits):
+    the writer lets the kept-out file in after it — the episode comes in with hato's record, no hato call needed."""
+    import time
+    from tests import services_helpers as h
+    from tests.test_sources_skip import _writer
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    store.add_source(src)
+    w, heard = _writer(language)
+    try:
+        w.skip_folder(inside, label="skipped")
+        assert h.until(lambda: heard.saved)
+        path, record = _hato_drop(data_dir, language, video, 3)
+        assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                    looks=0).landed == "skipped"
+        w.undo()
+        assert h.until(lambda: heard.undone)
+        assert h.until(lambda: len(_ids(store)) == 1)
+        (item,) = _ids(store)
+        assert _pairing_of(store, item)["video_path"] == record["video_path"]
+    finally:
+        w.finish(time.monotonic() + 5)
+        store.close()

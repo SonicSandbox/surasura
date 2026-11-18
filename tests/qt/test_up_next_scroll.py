@@ -15,11 +15,12 @@ light novel put first). Every signal a click sends from the list is caught here,
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtTest import QTest
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
 from app.qt import rows, style
 from tests.fixtures import window_seed
+from tests.qt.conftest import wait_until
 from tests.qt.test_current import _settings
 from tests.qt.test_drag import FakeWriter, open_window, press, release, settle
 from tests.qt.test_item_menu import hover
@@ -85,15 +86,19 @@ def _caught(lst):
 
 
 def _click_held(lst, at):
-    """A click at `at` (the viewport's), then a double-click's time and more — Qt's delayed auto-scroll would run
-    there. -> (the scroll bar's value before, after the click at once, after the wait)."""
+    """A click at `at` (the viewport's), then Qt's delayed auto-scroll given its turn. -> (the scroll bar's value
+    before, after the click at once, after Qt's turn). Qt's press arms that timer for a double-click's time + 100 ms;
+    a single shot armed after it and due later runs after it (timers run in the order they fall due), so waiting on
+    the single shot waits on Qt's timer itself — never on a fixed time."""
     bar = lst.verticalScrollBar()
     before = bar.value()
     press(lst, at)
     release(lst, at)
     QApplication.processEvents()
     now = bar.value()
-    QTest.qWait(QApplication.doubleClickInterval() + 300)
+    turned = []
+    QTimer.singleShot(QApplication.doubleClickInterval() + 250, lambda: turned.append(True))
+    assert wait_until(lambda: turned, 10), "Qt's delayed auto-scroll had its turn"
     QApplication.processEvents()
     assert lst.hasAutoScroll(), "the press gives Qt's auto-scroll back: the keyboard still brings a row into view"
     return before, now, bar.value()

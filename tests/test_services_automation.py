@@ -686,8 +686,9 @@ def _junban(monkeypatch, enabled=True, window=False, blocked=None):
     fake.enabled = lambda settings: enabled
     fake.blocked = lambda settings, window=True: blocked
     fake.window_open = lambda: window
-    fake.run_quietly = lambda settings, list_current=None, job=None: (
-        calls.append((settings["target_language"], list_current)) or "順 (automatic): 12 cards moved")
+    fake.run_quietly = lambda settings, list_current=None, job=None, settled=None: (
+        calls.append((settings["target_language"], list_current)) or (settled is not None and settled.append(True))
+        or "順 (automatic): 12 cards moved")
     monkeypatch.setitem(sys.modules, "modules.junban.auto", fake)
     return calls
 
@@ -757,6 +758,133 @@ def test_junban_with_its_window_open_starts_no_job_and_runs_once_it_closes(live,
     _settle(auto, registry)
     assert calls == [("ja", True)]
     assert [v.kind for v in registry.snapshot()].count("junban") == 1
+    auto.close()
+
+
+def test_junban_on_focus_starts_nothing_while_nothing_moved_and_runs_once_something_did(live, monkeypatch):
+    """順 ran at every return to the window with nothing changed, and held Anki meanwhile (Connect's jobs
+    waited). A focus whose moment (`auto.moment`: the deck's new cards, the order list, 順's settings)
+    is the one the last run left starts no job; a changed moment runs; one that can't be read (Anki closed: None)
+    runs as before; and after JUNBAN_SAME_AT_MOST even an unchanged one runs again. A Generate still forces it."""
+    calls = _junban(monkeypatch)
+    fake = sys.modules["modules.junban.auto"]
+    state = {"moment": "a"}
+    fake.moment = lambda settings: state["moment"]
+    clock = _Clock(0.0)
+    auto, registry, controller, launches = _make(_settings(anki_sync_auto=False), clock=clock,
+                                                 journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 1
+    clock.now = A.JUNBAN_EVERY + 1                  # past the 5 minutes: nothing moved, so nothing starts
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 1 and [v.kind for v in registry.snapshot()].count("junban") == 1
+    state["moment"] = "b"                           # a card made, the list written again: it runs
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 2
+    clock.now += A.JUNBAN_EVERY + 1
+    state["moment"] = None                          # Anki closed: as before, the step itself says "not now"
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 3
+    state["moment"] = "c"
+    clock.now += A.JUNBAN_EVERY + 1                 # (the run left None: the next focus runs)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 4
+    clock.now += A.JUNBAN_SAME_AT_MOST + 1          # an hour on, unchanged: once again all the same
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 5
+    run = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches, settle=0)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    run.ended(0)
+    assert h.until(lambda: len(calls) == 6, seconds=5), "a Generate forces it, moment or not"
+    _settle(auto, registry)
+    auto.close()
+
+
+def test_junban_a_card_made_while_it_runs_is_not_taken_as_seen(live, monkeypatch):
+    """Connect makes cards in Anki while 順 runs: the moment kept is the one read before the run, so a card made during
+    it differs at the next focus and that focus runs (read after the run, the new card would count as seen and wait up
+    to JUNBAN_SAME_AT_MOST unordered)."""
+    calls = _junban(monkeypatch)
+    fake = sys.modules["modules.junban.auto"]
+    state = {"moment": "before"}
+    fake.moment = lambda settings: state["moment"]
+    ran = fake.run_quietly
+
+    def run_while_a_card_is_made(settings, list_current=None, job=None, settled=None):
+        state["moment"] = "a card made meanwhile"
+        return ran(settings, list_current=list_current, job=job, settled=settled)
+    fake.run_quietly = run_while_a_card_is_made
+    clock = _Clock(0.0)
+    auto, registry, controller, launches = _make(_settings(anki_sync_auto=False), clock=clock,
+                                                 journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 1
+    fake.run_quietly = ran
+    clock.now = A.JUNBAN_EVERY + 1
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 2, "the card made during the run is something moved"
+    auto.close()
+
+
+def test_junban_a_failed_run_is_not_taken_as_seen(live, monkeypatch):
+    """A run that raised (Anki busy mid-run) did nothing: the next focus past the 5 minutes runs it again, moment
+    unchanged or not, instead of waiting JUNBAN_SAME_AT_MOST."""
+    calls = _junban(monkeypatch)
+    fake = sys.modules["modules.junban.auto"]
+    fake.moment = lambda settings: "same"
+    ran = fake.run_quietly
+
+    def fails(settings, list_current=None, job=None, settled=None):
+        calls.append("failed")
+        raise RuntimeError("AnkiConnect: collection is busy")
+    fake.run_quietly = fails
+    clock = _Clock(0.0)
+    auto, registry, controller, launches = _make(_settings(anki_sync_auto=False), clock=clock,
+                                                 journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == ["failed"]
+    fake.run_quietly = ran
+    clock.now = A.JUNBAN_EVERY + 1
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 2, "a failed run is retried at the next focus"
+    auto.close()
+
+
+def test_junban_a_run_that_said_not_now_is_not_taken_as_seen(live, monkeypatch):
+    """A run whose step said "not now" quietly (Anki busy, the learner reviewing, the list behind: `run_quietly`'s ""
+    with nothing `settled`) did nothing: the next focus past the 5 minutes runs it again, moment unchanged or not."""
+    calls = _junban(monkeypatch)
+    fake = sys.modules["modules.junban.auto"]
+    fake.moment = lambda settings: "same"
+    ran = fake.run_quietly
+
+    def not_now(settings, list_current=None, job=None, settled=None):
+        calls.append("not now")
+        if settled is not None:
+            settled.append(False)
+        return ""
+    fake.run_quietly = not_now
+    clock = _Clock(0.0)
+    auto, registry, controller, launches = _make(_settings(anki_sync_auto=False), clock=clock,
+                                                 journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == ["not now"]
+    fake.run_quietly = ran
+    clock.now = A.JUNBAN_EVERY + 1
+    auto.activated()
+    _settle(auto, registry)
+    assert len(calls) == 2, "a step that said not now is tried again at the next focus"
     auto.close()
 
 
@@ -1148,7 +1276,7 @@ def _junban_settings_seen(monkeypatch):
         settings.get("junban_auto_reorder") is True or settings.get("junban_auto_backfill") is True)
     fake.blocked = lambda settings, window=True: None
     fake.window_open = lambda: False
-    fake.run_quietly = lambda settings, list_current=None, job=None: seen.append(dict(settings)) or ""
+    fake.run_quietly = lambda settings, list_current=None, job=None, settled=None: seen.append(dict(settings)) or ""
     monkeypatch.setitem(sys.modules, "modules.junban.auto", fake)
     from app import replan_preview
     # Junban installed, whatever this checkout holds (GitHub's has no `modules/`): the host's gate asks for it

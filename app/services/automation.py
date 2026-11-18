@@ -45,6 +45,7 @@ from app.services import jobs as jobs_module
 SYNC_EVERY = 300.0          # _maybe_anki_sync: FocusIn fires for every widget, so 5 minutes, not a debounce
 GENERATE_EVERY = 600.0      # _maybe_auto_generate: at most every 10 minutes
 JUNBAN_EVERY = 300.0        # _maybe_junban_auto: like the sync
+JUNBAN_SAME_AT_MOST = 3600.0    # s: a focus that finds nothing moved for 順 (`AutoJunban`) starts nothing, this long
 START_DELAY = 2.0           # the Tk `root.after(2000, lambda: self._maybe_anki_sync(force=True))`
 CHECK_SETTLE = 0.6          # _schedule_journey_state: one journey check for a burst of triggers
 # The child processes the automatic Generate waits for: the Tk window's, and the 3.0 importers' (a known-words import,
@@ -503,6 +504,14 @@ def reorders(settings, language):
         return False
 
 
+def _moment_of(moment, settings):
+    """`auto.moment(settings)`, or None when the module has none or it raised: an unread moment is never "seen"."""
+    try:
+        return moment(settings) if moment is not None else None
+    except Exception:
+        return None
+
+
 class AutoJunban:
     """順's automatic reorder (`_maybe_junban_auto`; a test option, `junban_auto_reorder` in settings.json) and its
     Backfill step. The reorder only where `reorders` says (W3.5 row 7); the Backfill always as switched on."""
@@ -510,10 +519,17 @@ class AutoJunban:
     def __init__(self, owner):
         self._owner = owner
         self._last = float("-inf")
+        self._seen = None               # (`auto.moment` after the last run, when it ended) — the focus's "nothing moved"
 
     def maybe(self, force=False, cause=None):
         """(The worker.) None when the reorder was asked for, else why not. `cause`: its trigger (`causes.Cause`;
-        none: the window came back into focus)."""
+        none: the window came back into focus). A focus whose moment (`auto.moment`: the deck's new cards, the order
+        list, 順's settings) is the one the last run left starts nothing — "unchanged" — for up to JUNBAN_SAME_AT_MOST
+        after that run (each return to the window ran it with nothing changed, holding Anki while Connect's jobs
+        waited). The moment kept is the one read just before the run, and none after a run that failed or whose
+        step said "not now" (`settled`), so a card made during the run, or a run that didn't happen, runs at the next
+        focus; a moment that can't be read (Anki closed) runs as
+        before. After a Generate (`force`) it always runs."""
         o = self._owner
         now = o.clock()
         if not force and now - self._last < JUNBAN_EVERY:
@@ -536,18 +552,32 @@ class AutoJunban:
             # 順's window is open (a lock look, on this worker): the step would do nothing, and a `junban` job ending
             # tells that window Anki moved — its preview thrown away for a re-order that never ran (Mattias, alpha 3)
             return "window"
+        moment = getattr(auto, "moment", None)
+        if not force and moment is not None and self._seen is not None and \
+                now - self._seen[1] < JUNBAN_SAME_AT_MOST:
+            here = _moment_of(moment, settings)
+            if here is not None and here == self._seen[0]:
+                return "unchanged"
         self._last = now
         language = o.language
 
         def work(job):
             message = ""
+            seen, settled = None, []
             try:
                 if not auto.window_open():          # a lock look: on this thread, never the window's
                     o.flush()
-                    message = auto.run_quietly(settings, list_current=o.journey_current(settings, language))
+                    # read BEFORE the run: a card made while it runs (Connect mines meanwhile) differs at the next focus
+                    seen = _moment_of(moment, settings)
+                    message = auto.run_quietly(settings, list_current=o.journey_current(settings, language),
+                                               settled=settled)
+                    if not settled or not all(settled):     # a step said "not now" (it returns "" too): not seen
+                        seen = None
             except Exception as e:
+                seen = None                         # a failed run did nothing: the next focus tries again
                 message = f"順 (automatic) skipped: {e}"
             finally:
+                self._seen = (seen, o.clock()) if seen is not None else None    # before the job ends: a focus then sees it
                 job.finish(ok=True, message=message or None)
             if message:
                 o.publish(junban=message)

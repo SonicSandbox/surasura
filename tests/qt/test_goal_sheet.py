@@ -341,6 +341,24 @@ def test_up_next_saved_in_its_shows_episode_order_says_so_never_number_one(world
     assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
 
 
+def test_up_next_saved_in_its_shows_order_keeps_the_new_words_on_its_ticket(world, monkeypatch):
+    """(Kura-EO 3.0.16, mutants) The words that follow the save stay with the press itself (its ticket), not only on
+    the toast showing now: the toast shown again and the Undo's own ticket read them there."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = True                     # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    sheet = open_sheet(win)
+    show = two_part(win)
+    sheet.pick(show, "top")
+    want = strings.GOAL_UP_SHOW.format(title=show.title, first="Ep 1–12")
+    assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
+    assert win.moves.toasted.text == want
+
+
 def test_a_one_part_title_moves_whole_and_its_toast_says_so(world):
     seed, win, writer = world()
     sheet = open_sheet(win)

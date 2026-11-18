@@ -1162,6 +1162,9 @@ def _skips_moved(win, change, undone=False):
         tools_entry.refresh_soon()
     except Exception as e:
         print(f"Window drag: surasura.json wasn't refreshed after a skip: {e!r}")
+    tray = getattr(win, "arrivals_tray", None)
+    if undone and tray is not None and hasattr(tray, "skips_undone"):
+        tray.skips_undone()                          # Kura-NA: a Ctrl+Z tells no skip's own ticket: the rows it hid
     try:
         from app.qt import settings_sources
         settings_sources.skips_moved(win, undone=change if undone else None)

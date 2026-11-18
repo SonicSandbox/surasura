@@ -48,6 +48,8 @@ class SkipWriter(ArrivalsWriter):
         self.library.commit(gone=[("item", r["id"]) for r in rows], order=True)
 
     def undo(self, change=None, label=None):
+        if change is None and self.saved:                # Ctrl+Z: the newest saved change, as the real writer's
+            change = next((c for c in reversed(self.saved) if c not in self.undone), None)
         rows = self.taken.pop(getattr(change, "folder", None), None)
         if rows:
             self.library.commit(items=rows, order=True)
@@ -290,3 +292,70 @@ def test_settings_skip_a_folder_takes_the_trays_rows_of_that_folder_at_its_press
     assert item_menu.give_skip(win.moves, folder) is not None
     assert wait_until(lambda: row.key not in tray.keys(), 5) and writer.pending() == 1
     writer.free()
+
+
+def test_two_skips_at_once_one_undone_keeps_the_others_rows_out(world):
+    # Two skips under way (the store busy), their rows overlapping: undoing one brings back only what the other doesn't
+    # take.
+    _seed, win, writer, row = world()
+    tray = tray_of(win)
+    other = next(r for r in tray_rows(win) if r.key != row.key)
+    a, b = win.looks.choices[0], win.looks.choices[1]
+    win.looks.under_ids[a] = list(row.arrival.item_ids)
+    win.looks.under_ids[b] = list(row.arrival.item_ids) + list(other.arrival.item_ids)
+    writer.stuck = True
+    tray.skip_folder(row.arrival, a)
+    tray.skip_folder(other.arrival, b)
+    assert wait_until(lambda: row.key not in tray.keys() and other.key not in tray.keys(), 5)
+    first = next(t for t in win.moves.tickets if t.text == strings.ITEM_SKIPPED.format(name=os.path.basename(a)))
+    win.moves.undo(first)
+    settle(200)
+    assert row.key not in tray.keys() and other.key not in tray.keys()      # skip b still takes both
+    writer.free()
+
+
+def test_a_saved_skips_items_put_back_later_show_again(world):
+    # Saved, the store's view keeps them out; brought back later under their old ids (the Removed list's *Put back*),
+    # they show — the press's hiding never outlives the store's own view.
+    _seed, win, writer, row = world()
+    tray = tray_of(win)
+    extras = win.looks.choices[1]
+    win.looks.under_ids[extras] = writer.under[extras] = list(row.arrival.item_ids)
+    tray.skip_folder(row.arrival, extras)
+    assert wait_until(lambda: not win.moves.tickets and row.key not in tray.keys(), 5)
+    settle(200)
+    assert tray.leaving == frozenset()
+    rows = writer.taken.pop(1)
+    writer.library.commit(items=rows, order=True)                             # Put back, outside the skip's Undo
+    assert wait_until(lambda: row.key in tray.keys(), 5)
+
+
+def test_a_skip_whose_hand_over_breaks_brings_its_rows_back(world, monkeypatch):
+    # The writer raising as the skip is handed over (H8): nothing was skipped, so nothing stays hidden.
+    _seed, win, writer, row = world()
+    tray = tray_of(win)
+
+    def broke(path, label=None):
+        raise OSError("the writer's journal can't be written")
+    monkeypatch.setattr(writer, "skip_folder", broke)
+    with pytest.raises(OSError):
+        tray.skip_folder(row.arrival, win.looks.choices[1])
+    settle(200)
+    assert row.key in tray.keys() and tray.leaving == frozenset()
+
+
+def test_ctrl_z_of_a_saved_skip_before_the_next_view_shows_its_rows_again(world):
+    # Saved, then undone by Ctrl+Z before the store's next view landed: Ctrl+Z labels its undo with a ticket of its own,
+    # so the skip's ticket hears no "undone" and the view still holds the rows — the drag controller's skip hook
+    # (`_skips_moved(undone=True)`) tells the tray, and the rows are the store's to show again.
+    from types import SimpleNamespace
+    from app.qt import drag
+    _seed, win, _writer, row = world()
+    tray = tray_of(win)
+    win.looks.under_ids = {}
+    told = tray.skip_leaves(win.looks.choices[1], list(row.arrival.item_ids))
+    assert row.key not in tray.keys()
+    told("saved")                                                             # (no new view yet: the rows are in it)
+    assert row.key not in tray.keys()
+    drag._skips_moved(win, SimpleNamespace(folder=1), undone=True)            # Ctrl+Z's undo of it landed
+    assert row.key in tray.keys() and tray.leaving == frozenset()

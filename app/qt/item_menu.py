@@ -268,7 +268,12 @@ def give_skip(moves, path, ids=(), keys=(), told=None, toast=True, ticket=None):
         elif earlier is not None:
             earlier(event)
     ticket.told = tell
-    return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
+    try:
+        return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
+    except BaseException:
+        if leaves is not None:                       # (H8: the hand-over broke — the rows it hid come back)
+            leaves("ended")
+        raise
 
 
 # --- A4: the picks' ⋯, one rule for Current, Soon, Finished and Goal's sheet ------------------------------------------- #

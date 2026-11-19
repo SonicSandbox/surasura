@@ -206,11 +206,135 @@ def subtitle(body):
             raise Bad("a cue ends before it starts")
         if text:
             tidy.append([start, end, text])
+    tidy = tidy_cues(tidy, language)
     if not tidy:
         raise Bad("every cue is empty")
     return {"site": site, "video_id": video, "url": url.split("#", 1)[0], "language": language,
             "title": title or show["title"], "show": show, "cues": tidy,
             "cover": got["cover"] if isinstance(got.get("cover"), str) else None}
+
+
+_KANJI = re.compile(r"[㐀-䶿一-鿿豈-﫿々〆ヶ]+")
+_HIRAGANA = re.compile(r"[ぁ-ゖー]+")
+
+
+def tidy_cues(cues, language):
+    """A streaming site's cues made what a subtitle file's are, before anything reads them (the item's text, its
+    sidecar, the pick, the clips the extension records, Anki Miner's sentences):
+
+    - **one line, one cue**: a player splits a line that is on screen while another starts (Netflix: the same text
+      in two or three cues, back to back, the other speaker's line between them). Copies are joined into the first,
+      by Generate's own rule (`analyzer.shown_again`: the same text spaces aside, touching or overlapping), its time
+      the copies' together; the other line stays, overlapping it, so the pick sees two people talking at once;
+    - **no reading written in** (Japanese): a reading the player shows as ruby, flattened into the text after its
+      kanji (黒沼くろぬま → 黒沼; `unruby`).
+
+    [[start s, end s, text]] in time order -> the same, tidied."""
+    from app import analyzer
+    if language == "ja":
+        cues = [[s, e, unruby(t)] for s, e, t in cues]
+    cues = sorted(cues, key=lambda c: (c[0], c[1]))
+    again = analyzer.shown_again([(int(round(s * 1000)), int(round(e * 1000)), t) for s, e, t in cues])
+    out, kept = [], {}
+    for n, (cue, first) in enumerate(zip(cues, again)):
+        if first is None or first not in kept:
+            kept[n] = len(out)
+            out.append(list(cue))
+            continue
+        joined = out[kept[first]]
+        joined[0], joined[1] = min(joined[0], cue[0]), max(joined[1], cue[1])
+    return out
+
+
+def unruby(text):
+    """Japanese text with the readings a player flattened into it taken out: a run of kanji followed at once by its
+    own reading in hiragana (黒沼くろぬま, 善ぜんは → 黒沼, 善は). Taken out only where the tagger, reading the whole
+    text, has no word that runs across the kanji's end into the kana (日にち stays as written), only the reading the
+    tagger gives those kanji read alone, whole, and never kana the tagger reads as particles and endings alone
+    (何なんだ: the sentence's own)."""
+    if not _KANJI.search(text or ""):
+        return text
+    tagger = _tagger()
+    if tagger is None:
+        return text
+    ends, grammar = set(), set()          # where the tagger's words end; the places a particle or ending covers
+    at = 0
+    for word in tagger(text):
+        at = text.find(word.surface, at)
+        if at < 0:
+            return text
+        if word.feature.pos1 in _GRAMMAR:
+            grammar.update(range(at, at + len(word.surface)))
+        at += len(word.surface)
+        ends.add(at)
+    out, last = [], 0
+    for run in _KANJI.finditer(text):
+        kanji, kana = run.group(), _HIRAGANA.match(text, run.end())
+        if not kana or run.end() not in ends:
+            continue
+        if any(len(next(iter(tagger(piece)), kanji).surface) > len(kanji)       # 日にち, 嫌いや: the kanji and the
+               for piece in (text[run.start():], kanji + kana.group()[0])):     # kana after it are one word
+            continue
+        reading = _reading(tagger(kanji))
+        cut = _ruby_length(tagger, kanji, kana.group(), reading)
+        short = len(kanji) == 1 and cut <= 2            # 何なんだ: one kanji and the sentence's own grammar after it
+        if cut and run.end() + cut in ends and not (short and grammar.issuperset(range(run.end(), run.end() + cut))):
+            out.append(text[last:run.end()])
+            last = run.end() + cut
+    return "".join(out) + text[last:] if out else text
+
+
+def _reading(words):
+    return _hiragana("".join(w.feature.kana for w in words if w.feature.kana not in (None, "*")))
+
+
+def _ruby_length(tagger, kanji, kana, reading):
+    """How much of `kana`, the hiragana right after `kanji`, is its reading -> its length, or 0: the whole reading
+    the kanji have alone (黒沼くろぬま, 巻まきの, 読売よみうり), checked by reading the kanji again with it taken out;
+    shorter only where the reading's last kana are a verb's or an adjective's own ending, written after it again
+    (捧ささげられた: ささ — 捧げ, a verb read ささげ)."""
+    if not reading or not kana.startswith(reading):
+        return 0
+
+    def held(cut):
+        """The words that hold the kanji once `cut` kana are taken out, if they read as just those kana and the kana
+        they bind (their ending)."""
+        words, covered = [], ""
+        for word in tagger(kanji + kana[cut:]):
+            if len(covered) >= len(kanji):
+                break
+            words.append(word)
+            covered += word.surface
+        ok = covered.startswith(kanji) and _reading(words) == kana[:cut] + _hiragana(covered[len(kanji):])
+        return words if ok else None
+    for cut in range(len(reading) - 1, 0, -1):
+        words = held(cut)
+        if words and len("".join(w.surface for w in words)) > len(kanji) \
+                and words[-1].feature.pos1 in ("動詞", "形容詞"):
+            return cut
+    return len(reading) if held(len(reading)) else 0
+
+
+_GRAMMAR = ("助詞", "助動詞")       # a particle, an auxiliary: kana after kanji that is the sentence, not its reading
+
+
+def _hiragana(katakana):
+    return "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in katakana)
+
+
+_TAGGER = []
+
+
+def _tagger():
+    """fugashi's tagger, loaded once (None when it can't be: the text is kept as sent)."""
+    if not _TAGGER:
+        try:
+            from fugashi import Tagger
+            _TAGGER.append(Tagger())
+        except Exception:               # no dictionary: never a reason to refuse a subtitle
+            log.warning("Online subtitle: no Japanese tagger, readings written into lines are kept")
+            _TAGGER.append(None)
+    return _TAGGER[0]
 
 
 def content_key(sub):

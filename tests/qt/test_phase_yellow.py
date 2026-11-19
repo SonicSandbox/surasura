@@ -301,15 +301,13 @@ def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, w
     st = win.phase.states[P.MINER]
     assert st.needs is None and st.waiting and win.phase.go(P.MINER) is None
     win._circle_pressed(P.MINER)
-    assert opened == [] and washed == [] and win.services.paused == {P.MINER}
-    win._circle_pressed(P.MINER)                                          # resumed
-    assert win.services.paused == frozenset()
+    assert opened == [] and washed == [] and win.services.paused == {P.MINER}     # (Mado-PZ: no decision, a pause)
     entry = _connect_entry("ja")
     _entries(ny, entry)                                                   # the gather lands its card: amber
     assert win.phase.states[P.MINER].needs and win.phase.go(P.MINER) is not None
-    win._circle_pressed(P.MINER)
+    win._circle_pressed(P.MINER)                                          # amber: the decision, never the resume
     _settle()
-    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)] and win.services.paused == {P.MINER}
     ny._hidden_now[entry.key] = None                                      # *Not now* (its press's first frame)
     ny._paint()
     assert win.phase.states[P.MINER].needs is None and win.phase.go(P.MINER) is None

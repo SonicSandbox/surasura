@@ -427,6 +427,7 @@ NOT_SHOWN = {
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
     "open_count": "state: a launch counter",
+    "paused": "state: the circles paused with a click at the bar's bottom left (Mado-PZ), resumed the same way",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",

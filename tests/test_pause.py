@@ -24,6 +24,8 @@ from app.services.jobs import JobRegistry
     (("surasura",), {"surasura"}),                       # a window's frozen copy holds a tuple
     (["miner", "not-a-circle", 3], {"miner"}),           # a hand-edited value: only the circles it names
     ("miner", set()),                                    # not a list: nothing paused (never a letter-by-letter read)
+    ({"miner": True}, set()),                            # nor a mapping's keys
+    (3, set()),                                          # nor a number (never a raise: every gate reads it)
     (None, set()),
 ])
 def test_paused_reads_only_the_circles_a_list_names(held, paused):

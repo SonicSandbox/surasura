@@ -281,6 +281,16 @@ def _set(label, text):
         label.setText(text)
 
 
+def _heard(label, arrival):
+    """Kantan-T (PROVISIONAL): a title's label as every title is shown — 🎧 before it when it holds an audiobook, the
+    🎧's words in its hover (`rows.heard_title` / `heard_tip`, the tray's one rule)."""
+    from app.qt import rows
+    _set(label, rows.heard_title(arrival))
+    tip = rows.heard_tip(arrival) if getattr(arrival, "audio", "") else ""
+    if label.toolTip() != tip:
+        label.setToolTip(tip)
+
+
 # --- the mark ------------------------------------------------------------------------------------------------------- #
 # The mark's wings, from app_icon.png's own drawing (512 px; each feather is a shard of its own, apart from the body
 # by a clear gap): each feather's outline, 3 px out into its gap, and the point its wing turns about. The upper wing's
@@ -849,7 +859,7 @@ class SortScreen(QWidget):
     def _paint(self):
         rows, n = self.visible_rows(NEXT_SHOWN + 1), self.left()
         key = tuple((kind, a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None),
-                     getattr(a, "line", None), getattr(a, "media_word", None))
+                     getattr(a, "line", None), getattr(a, "media_word", None), getattr(a, "audio", ""))
                     for kind, a in rows) + (n, bool(self.history), self.heard, self._can_start_over(),
                                             self._over_flight is not None, self._fits)
         if key == self._shown:
@@ -865,7 +875,7 @@ class SortScreen(QWidget):
         if rows:
             kind, a = rows[0]
             _set(self.top_group, S.SORT_GROUPS.get(kind, ""))
-            _set(self.top_name, a.title)
+            _heard(self.top_name, a)
             _set(self.top_sub, _sub_line(a))
             self.top_cover.set_arrival(a)
         fits = min(self._fits, max(0, len(rows) - 1))
@@ -873,7 +883,7 @@ class SortScreen(QWidget):
             r = rows[i + 1] if i < fits else None
             w.setVisible(r is not None)
             if r is not None:
-                _set(name, r[1].title)
+                _heard(name, r[1])
                 cov.set_arrival(r[1])
         more = n - 1 - fits
         _set(self.more, S.SORT_MORE.format(n=more) if more > 0 else "")

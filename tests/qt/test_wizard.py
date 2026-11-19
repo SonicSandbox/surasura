@@ -2685,10 +2685,11 @@ def test_fresh_u_turned_on_after_start_fresh_it_names_the_deck_and_how_many_new_
     assert wait_until(lambda: page._moves_n == 334, 2.0) and page.moves_line.isHidden()   # (counted, off: unsaid)
     QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
     assert page.keep.switch.isChecked() and page.moves_line.isVisible()
-    assert page.moves_line.text() == "It moves the 334 new cards in 日本語::Mining."
+    assert page.moves_line.text() == "It moves the 334 new cards in 日本語::Mining. Another deck? Pick it below."
     page.deck_box.setCurrentIndex(page.deck_box.findText("Core 2k"))
     page.deck_box.activated.emit(page.deck_box.currentIndex())
-    assert wait_until(lambda: page.moves_line.text() == "It moves the 1 new card in Core 2k.", 2.0)
+    assert wait_until(lambda: page.moves_line.text() == "It moves the 1 new card in Core 2k. Another deck? Pick it below.",
+                      2.0)
     page.entered()                                                # shown again: the learner's own choice stays
     assert page.keep.switch.isChecked()
     QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
@@ -2704,7 +2705,7 @@ def test_fresh_u_from_anki_keeps_the_recommended_on_and_back_to_from_anki_turns_
     page = wiz.page
     assert wait_until(lambda: page.moves_line.isVisible(), 2.0)
     assert page.keep.switch.isChecked() and not page.keep.rec.isHidden()
-    assert page.moves_line.text() == "It moves the 2,140 new cards in 日本語::Mining."
+    assert page.moves_line.text() == "It moves the 2,140 new cards in 日本語::Mining. Another deck? Pick it below."
     while wiz.page.id != "known":
         wiz.back()
     QTest.mouseClick(wiz.page.channel.choice("fresh"), Qt.MouseButton.LeftButton)

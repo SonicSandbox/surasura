@@ -483,7 +483,7 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 # Mattias's field report (3.0.0, #5; PROVISIONAL words): a file Anki Miner stopped on twice — asked again (C2's one ask)
 ROWS_ACTION_NAMES["try-again"] = "Try again"
 ROWS_TRY_AGAIN_TIP = {True: "{tip}\n• Click to try again: its cards made so far are kept",
-                      False: "{tip}\n• Click to retry its {n} files; cards made so far stay."}
+                      False: "{tip}\n• Click to retry its {n} files; cards made so far are kept"}
 # Michi-NT (Mattias #XP44T6; PROVISIONAL words): a *Not timed* pill checks its timing again — its subtitle, or the same
 # subtitle re-timed beside its video (where tsubasa writes one it fixed)
 ROWS_ACTION_NAMES["check-again"] = "Check again"
@@ -499,7 +499,7 @@ ROWS_ASKED_TIP = "Asked · starting…"
 ROWS_ACTION_NAMES["stop"] = "Stop"
 ROWS_STOP = "Stop"
 ROWS_STOPPING = "Stopping…"
-ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode; cards made so far stay."
+ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode; cards made so far are kept"
 MINE_STOP_ENTRY = "Stop mining"
 MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or they are done"
 MINE_STOP_FAILED = "Stop didn't reach Surasura's card-maker: {why}"
@@ -733,7 +733,7 @@ DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
 DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
-DRAG_TAKE_OUT_TIP = "Suspended and tagged, never deleted. Undo brings them back."         # P4.1 L2 (TF fix 10, IK #6)
+DRAG_TAKE_OUT_TIP = "Suspended in Anki and tagged, never deleted. Undo brings them back."         # P4.1 L2 (TF fix 10, IK #6)
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
 ANKI_WAIT_GENERATE_STOPPED = "Generate was stopped, so Anki wasn't changed"     # ... a Generate stopped from the bar
@@ -810,8 +810,8 @@ ROWS_SAVING = "saving…"
 ARRIVALS = "New arrivals"
 ARRIVALS_NAME = "New arrivals · {n} files"
 ARRIVALS_NAME_ONE = "New arrivals · 1 file"
-ARRIVALS_TIP = "{n} new arrivals waiting.\n• Open the tray to place them."
-ARRIVALS_TIP_ONE = "1 new arrival waiting.\n• Open the tray to place it."
+ARRIVALS_TIP = "New arrivals: {n} files waiting.\n• Open the tray to place them."
+ARRIVALS_TIP_ONE = "New arrivals: 1 file waiting.\n• Open the tray to place it."
 # alpha 4 (Mattias #8, A4K-6): the tray's foot — new files a look left out because they match files he removed
 ARRIVALS_KEPT_OUT = "{n:,} files you removed earlier were left out"
 ARRIVALS_KEPT_OUT_ONE = "A file you removed earlier was left out"
@@ -899,7 +899,7 @@ GOAL_SHEET_CLOSE_NAME = "Close Goal"
 GOAL_SHEET_CLOSE_TIP = "Close Goal (Esc, or click anywhere outside it)"
 GOAL_TILE_MORE = "⋯"
 GOAL_TILE_MORE_NAME = "What you can do with {title}"
-GOAL_TILE_MORE_TIP = "More for {title}: move, open its folder or remove (Enter)."
+GOAL_TILE_MORE_TIP = "What you can do with {title}: move, open its folder, remove (Enter)."
 GOAL_MENU_ITEMS = {
     "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal"),
     "top-all": ("Move to the top", "Bring it up to the top of Current"),
@@ -972,7 +972,7 @@ DICT_NAME = "Sentence dictionary"
 DICT_TIP = ("A Yomitan dictionary of up to 8 of the best sentences for every word in your library — hover a word in "
             "your browser to see them")
 DICT_SOURCE = "Show where each sentence came from"
-DICT_SOURCE_TIP = "Adds the file name under each sentence. Off: hover still shows it."
+DICT_SOURCE_TIP = "Adds each sentence's file name. Off: hovering a sentence still shows it."
 DICT_EXPORT = "Export…"
 DICT_EXPORT_TIP = "Choose where to save the dictionary, then build it"
 DICT_EXPORT_BUSY_TIP = "The dictionary is being built: its progress is in the bar"
@@ -1158,7 +1158,7 @@ EXTRACT_PUT_BACK = "Put back"
 EXTRACT_PUT_BACK_TIP = "Put 「{title}」 back with its progress.\n• Undo returns it to Removed."
 EXTRACT_ADD_NEW = "Add as new"
 EXTRACT_ADD_NEW_TIP = "Add as a new title\n• The removed one stays in Removed."
-EXTRACT_ADD_NEW_FREE_TIP = "Add as a new title “{name}”.\n• The removed one is renamed."
+EXTRACT_ADD_NEW_FREE_TIP = "Add as a new title “{name}”.\n• The removed one stays in Removed as “{proposal}”"
 EXTRACT_PUT_BACK_DONE = "「{title}」 is back in your library"
 EXTRACT_PUT_BACK_FAILED = "「{title}」 wasn't put back: open 🗑 Removed… in Settings › Content › Library folders"
 EXTRACT_FREED = " · the removed one is “{freed}” in Removed"
@@ -1180,8 +1180,8 @@ ANKI_NAME = "Anki known words"
 ANKI_DOOR = "Anki known words"
 ANKI_DOOR_TIP = "Read known words from studied Anki cards: decks, fields, Sync, Replace."
 ANKI_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
-ANKI_HEADING_TIP = ("Sync adds known words from studied cards; nothing is removed.\n• Replace rebuilds them (backup "
-                    "first).")
+ANKI_HEADING_TIP = ("Sync adds the words from {language} cards you've studied; never removes.\n• Replace rebuilds "
+                    "them (backed up first).")
 ANKI_STATE_UNCHECKED = "● not checked yet"
 ANKI_STATE_CHECKING = "● checking…"
 ANKI_STATE_CONNECTED = "● connected"
@@ -1270,7 +1270,7 @@ ANKI_REPLACE_IGNORED = {1: "• " + IGNORED_BACK[0], 0: "• " + IGNORED_BACK[1]
 ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
                      "list is backed up first; Restore previous puts it back.")
 ANKI_REPLACE_YES = "Replace"
-ANKI_REPLACE_YES_TIP = "Go ahead. A dated backup of your list is kept first."
+ANKI_REPLACE_YES_TIP = "Go ahead. Your list is backed up first: KnownWord.<date>.json in .trash."
 ANKI_WAITING_FOR = "Waiting its turn: {what} runs first"
 ANKI_WAITING = "Waiting to start: {reason}"
 ANKI_REPLACE_MOVED_JOB = "Nothing replaced: Anki changed"

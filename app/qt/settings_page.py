@@ -51,7 +51,7 @@ from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.qt import applog, bridge, logos, motion, style, windows
 from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
@@ -523,7 +523,8 @@ class Elided(QLabel):
             return
         p = QPainter(self)
         rect = self.contentsRect()
-        words = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        # (scrubbed before it is cut: a folder or profile name in a picture never shows half)
+        words = self.fontMetrics().elidedText(scrub.shown(self.text()), Qt.TextElideMode.ElideRight, rect.width())
         self.style().drawItemText(p, rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                                   self.palette(), self.isEnabled(), words, QPalette.ColorRole.WindowText)
         p.end()

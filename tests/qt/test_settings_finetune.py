@@ -102,16 +102,17 @@ def test_slash_focuses_the_search_from_deep_in_the_page_without_moving_it(qapp):
     assert store.calls == []
 
 
-@pytest.mark.parametrize("language, query, row_id", [("ja", "names", "names_katakana"),
-                                                     ("zh", "script", "zh_script")])
-def test_a_search_typed_deep_in_the_page_shows_its_matches_from_the_top(qapp, language, query, row_id):
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_search_typed_deep_in_the_page_shows_its_matches_from_the_top(qapp, language):
+    # "anki" matches more rows than the view holds: the page stays long, so only the jump to the top shows the first
     page, store = make_page(ALL_ON, language, size=(1100, 600))
     bar = page.scroll.verticalScrollBar()
     bar.setValue(bar.maximum())
-    QTest.keyClicks(page.search.edit, query)
+    QTest.keyClicks(page.search.edit, "anki")
     QApplication.processEvents()
+    assert bar.maximum() > page.scroll.viewport().height()          # (still longer than its view)
     assert bar.value() == 0
-    assert page._in_view(page.rows[row_id])
+    assert page._in_view(page.rows["anki_sync_auto"])               # Known words' match, the page's first
     assert store.calls == []
 
 

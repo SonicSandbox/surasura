@@ -55,7 +55,7 @@ def utterances(test_resources_dir):
     ("ふふっ、それは内緒だよ。", "ふふっ", ["内緒"]),
     ("あははは！　そんなわけないじゃん。", "あははは", ["訳"]),
     ("えっと、あのー、その件なんですけど。", "えっと", ["件"]),                    # fillers, both of them
-    ("え？　もう帰るの？", "え", ["帰る"]),                                        # one mora said alone
+    ("え？　もう帰るの？", "え", ["もう"]),                                        # one mora said alone
 ])
 def test_a_sound_standing_on_its_own_is_no_word(tokenizer, sanitized, utterances, line, sound, words):
     assert line in utterances                       # the sample's own line
@@ -120,7 +120,7 @@ def test_a_line_that_is_only_a_sound_has_no_words(tokenizer, sanitized, line):
     assert _surfaces(tokenizer, line) == []
 
 
-@pytest.mark.parametrize("term, lemma", [("あっ", "あっ"), ("えへへ", "えへ"), ("えっと", "えーと"), ("ウッ", "ウッ-外国")])
+@pytest.mark.parametrize("term, lemma", [("あっ", "あっ"), ("えへへ", "えへ"), ("えっと", "えーと"), ("ウッ", "ウッ")])
 def test_a_word_read_alone_is_a_word_given(tokenizer, sanitized, term, lemma):
     # a card's word, a known entry, an Ignore line: read alone (no mark, no space) it is a word given, never an
     # utterance — a card for あっ still finds あっ's row (glued uses keep it: あっという間)

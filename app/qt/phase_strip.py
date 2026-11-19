@@ -43,9 +43,12 @@
   it replaces alpha 3's press-opens-settings, which moved into the right-click with *Show*): `opened(circle)`, the shell
   pauses it (`set_paused`, painted on the press: its ring in `PAUSED_TOKEN` with two bars on it, never amber — amber
   is a decision's) and a second click resumes it; an amber circle's click still goes to its decision (a7). The hover's
-  line *Paused · click to resume*; the right-click's first item *Pause* / *Resume*. **One more control after the
-  circles** (`PauseAll`): one click pauses all five (`pause_all`), and once all are paused, resumes them. What a pause
-  holds is the shell's (`Services.set_paused`, the map's one model).
+  line *Paused · click to resume*; the right-click's first item *Pause* / *Resume*. **All five at once** (Mado-PZ2,
+  Sonic 2026-11-19: no extra bubble beside the ?): *Pause all* / *Resume all* right under it in every circle's
+  right-click, and a Shift-click (or Shift+Enter / Space) on any circle — each does to all five what the click does to
+  that one (`pause_all(circle)`: a paused circle's resumes them all, else it pauses them all; an amber circle's
+  pauses too, never opening its decision). Each hover says what its pause holds (`strings.PHASE_HOLDS`) and the
+  Shift-click. What a pause holds is the shell's (`Services.set_paused`, the map's one model).
 - **S19:** the strip repaints only the circle whose look changed (`paints` counts them); the arc's clock (`motion.Turn`)
   runs only while one turns and stops the moment none does; one single-shot timer wakes it for the next automatic
   job to show (Q6's 1 s) or a tick's end — never a frame's pace.
@@ -58,9 +61,9 @@ import html
 import time
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPolygonF
-from PyQt6.QtWidgets import QAbstractButton, QWidget
+from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import QWidget
 
 from app import theme
 from app.qt import logos, motion, strings, style
@@ -109,9 +112,9 @@ def _mix(a, b, t):
 
 class PhaseStrip(QWidget):
     opened = pyqtSignal(str)                   # a circle pressed (or Enter / Space on it): its settings, please
-    asked = pyqtSignal(str, str)               # its right-click menu's item: (circle, "pause" · "show" · "stop" ·
-    #                                            "settings")
-    pause_all = pyqtSignal()                   # Mado-PZ: the control after the circles pressed
+    asked = pyqtSignal(str, str)               # its right-click menu's item: (circle, "pause" · "pause_all" · "show" ·
+    #                                            "stop" · "settings")
+    pause_all = pyqtSignal(str)                # Mado-PZ2: a Shift-click (or Shift+Enter) on this circle: all five
 
     def __init__(self, parent=None, now=None):
         super().__init__(parent)
@@ -158,8 +161,6 @@ class PhaseStrip(QWidget):
         self._turn = motion.Turn(self, self._turned)
         self._looks = {c: self.look(c) for c in phase.CIRCLES}
         self.help = None                       # the ? after the circles (help cards, HC-2): the strip's own last mark
-        self.pause_all_button = PauseAll(self)   # Mado-PZ: one click pauses (or resumes) every circle
-        self.pause_all_button.clicked.connect(self.pause_all.emit)
         self._size()
 
     def _size(self):
@@ -168,9 +169,6 @@ class PhaseStrip(QWidget):
         side, gap = theme.size("phase-circle"), theme.size("phase-gap")
         width = len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * gap
         height = side
-        if getattr(self, "pause_all_button", None) is not None:     # (Mado-PZ: one circle's room, after a gap)
-            self.pause_all_button.setGeometry(round(width + gap), 0, round(side), round(side))
-            width += gap + side
         if self.help is not None:
             hint = self.help.sizeHint()
             self.help.setGeometry(round(width + gap), max(0, round((side - hint.height()) / 2)), hint.width(),
@@ -214,7 +212,6 @@ class PhaseStrip(QWidget):
             if c in changed:
                 self._looks[c] = self.look(c)
                 self.repaint(self.rect_of(c).toAlignedRect().adjusted(-1, -1, 1, 1))
-        self.pause_all_button.set_all(self.paused == frozenset(phase.CIRCLES))
         self.setAccessibleDescription(self.summary())
         self._retext()
 
@@ -271,9 +268,12 @@ class PhaseStrip(QWidget):
                 and (self.can_show is None or bool(self.can_show(circle))))
 
     def menu_entries(self, circle):
-        """`circle`'s right-click menu: [((words, tip), what)] — *Pause* or *Resume* (Mado-PZ), *Show* while `showing`,
-        *Stop* while the shell says its work can be stopped, *Settings* when it has some."""
-        out = [(strings.PHASE_RESUME if circle in self.paused else strings.PHASE_PAUSE, "pause")]
+        """`circle`'s right-click menu: [((words, tip), what)] — *Pause* or *Resume* (Mado-PZ) and right under it *Pause
+        all* or *Resume all* (Mado-PZ2: the Shift-click), *Show* while `showing`, *Stop* while the shell says its work
+        can be stopped, *Settings* when it has some."""
+        paused = circle in self.paused
+        out = [(strings.PHASE_RESUME if paused else strings.PHASE_PAUSE, "pause"),
+               (strings.PHASE_RESUME_ALL if paused else strings.PHASE_PAUSE_ALL, "pause_all")]
         if self.showing(circle):
             out.append((strings.PHASE_SHOW, "show"))
         if self.stops is not None and self.stops(circle):
@@ -567,8 +567,12 @@ class PhaseStrip(QWidget):
         press = self.press_words(circle)
         if press:
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
+        holds = strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[circle])   # Mado-PZ2: what its pause holds
+        every = strings.PHASE_SHIFT_RESUME_ALL if circle in self.paused else strings.PHASE_SHIFT_PAUSE_ALL
+        out += [f'<span style="color:{dim}">{esc(holds)}</span>', f'<span style="color:{dim}">{esc(every)}</span>']
         press_does = "pause" if self.go(circle) is None else None       # (Mado-PZ: a click pauses or resumes)
-        more = [words for (words, _tip), what in self.menu_entries(circle) if what != press_does]
+        more = [words for (words, _tip), what in self.menu_entries(circle)
+                if what != press_does and what != "pause_all"]          # (the Shift-click's line says it)
         if more:                                        # (the press's own item is said once, above)
             items = " · ".join(more)
             out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
@@ -641,7 +645,10 @@ class PhaseStrip(QWidget):
         if (e.button() == Qt.MouseButton.LeftButton and pressed is not None
                 and self.circle_at(e.position().toPoint()) == pressed):
             e.accept()
-            self._open(pressed)
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._all(pressed)             # Mado-PZ2: Shift = all five
+            else:
+                self._open(pressed)
             return
         super().mouseReleaseEvent(e)
 
@@ -655,6 +662,12 @@ class PhaseStrip(QWidget):
         if self.tooltips is not None:
             self.tooltips.hide()
         self.opened.emit(circle)
+
+    def _all(self, circle):
+        """Mado-PZ2: a Shift-click on `circle` (or Shift+Enter / Space): all five paused, or — `circle` paused — resumed."""
+        if self.tooltips is not None:
+            self.tooltips.hide()
+        self.pause_all.emit(circle)
 
     def contextMenuEvent(self, e):
         """The right-click (or the menu key, on the circle in focus): `circle`'s menu (`menu_entries`), each item asked
@@ -682,7 +695,11 @@ class PhaseStrip(QWidget):
             super().keyPressEvent(e)
             return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            if not e.isAutoRepeat():           # a held key opens once (A3A-5)
+            if e.isAutoRepeat():               # a held key opens once (A3A-5)
+                pass
+            elif e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._all(self._focus)         # Mado-PZ2: Shift = all five
+            else:
                 self._open(self._focus)
             e.accept()
             return
@@ -782,78 +799,3 @@ def _pause_badge(p, r, c):
         p.drawRect(QRectF(centre.x() + dx - bar_w / 2.0, centre.y() - bar_h / 2.0, bar_w, bar_h))
     p.restore()
 
-
-class PauseAll(QAbstractButton):
-    """Mado-PZ: the control after the five circles — one click pauses everything that runs by itself (two bars), and
-    once every circle is paused, resumes them (a ▶, its ring in `PAUSED_TOKEN`). The hover and the name say which.
-    One Tab stop; Enter or Space presses it. Repainted only when it flips (`set_all`) or the hand comes and goes."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("pauseall")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.all_paused = False
-        self.paints = 0
-        self._words()
-
-    def set_all(self, paused):
-        paused = bool(paused)
-        if paused == self.all_paused:
-            return
-        self.all_paused = paused
-        self._words()
-        self.repaint()                              # (the press reacts at once)
-
-    def _words(self):
-        words = strings.PHASE_RESUME_ALL if self.all_paused else strings.PHASE_PAUSE_ALL
-        self.setToolTip(words)
-        self.setAccessibleName(words)
-
-    def sizeHint(self):
-        side = round(theme.size("phase-circle"))
-        return QSize(side, side)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.isAutoRepeat():
-            self.click()
-            return
-        super().keyPressEvent(event)
-
-    def enterEvent(self, event):
-        super().enterEvent(event)
-        self.update()
-
-    def leaveEvent(self, event):
-        super().leaveEvent(event)
-        self.update()
-
-    def paintEvent(self, _event):
-        self.paints += 1
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        c = style.colours()
-        side = float(min(self.width(), self.height()))
-        r = QRectF((self.width() - side) / 2.0, (self.height() - side) / 2.0, side, side)
-        ring = r.adjusted(ARC_W, ARC_W, -ARC_W, -ARC_W)
-        p.setPen(QPen(style.qcolor(c[PAUSED_TOKEN] if self.all_paused else c["line-hi"]), RING_W))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(ring)
-        if self.hasFocus() or self.underMouse():    # the circles' wash
-            wash = style.qcolor(c["accent"])
-            wash.setAlphaF(FOCUS_WASH)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(wash)
-            p.drawEllipse(ring.adjusted(RING_W, RING_W, -RING_W, -RING_W))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(style.qcolor(c["ink"] if self.underMouse() or self.hasFocus() else c["ink-dim"]))
-        m = theme.size("phase-mark") * 0.75
-        x, y = r.center().x(), r.center().y()
-        if self.all_paused:                         # ▶: resume them all
-            p.drawPolygon(QPolygonF([QPointF(x - m * 0.36, y - m * 0.5), QPointF(x - m * 0.36, y + m * 0.5),
-                                     QPointF(x + m * 0.5, y)]))
-        else:                                       # ⏸: pause them all
-            bar_w = max(1.5, m * 0.26)
-            for dx in (-m * 0.24, m * 0.24):
-                p.drawRect(QRectF(x + dx - bar_w / 2.0, y - m * 0.5, bar_w, m))
-        p.end()

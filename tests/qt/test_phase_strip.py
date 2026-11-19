@@ -333,7 +333,7 @@ def test_at_100_and_200_percent_the_circles_paint_inside_the_footers_height(stri
     img = _image(strip, dpr)
     assert img.height() == round(strip.height() * dpr) <= round(theme.size("footer") * dpr)
     assert _near(_ring(strip, P.SURASURA, img, dpr=dpr), C()["accent"])
-    assert strip.width() == 6 * theme.size("phase-circle") + 5 * theme.size("phase-gap")     # (+ Pause all, Mado-PZ)
+    assert strip.width() == 5 * theme.size("phase-circle") + 4 * theme.size("phase-gap")     # (Mado-PZ2: no Pause all bubble)
 
 
 def test_the_credits_name_ankis_trademark_its_link_and_anki_miners_licence():

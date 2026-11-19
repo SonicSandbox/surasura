@@ -2269,7 +2269,7 @@ class ShellWindow(QMainWindow):
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
         self.phase.opened.connect(self._circle_pressed)
         self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
-        self.phase.pause_all.connect(self._pause_all)      # Mado-PZ: the control after the circles
+        self.phase.pause_all.connect(self._pause_all)      # Mado-PZ2: a Shift-click on a circle (no extra bubble)
         self.phase.stops = self._circle_stops
         self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
@@ -2560,10 +2560,11 @@ class ShellWindow(QMainWindow):
         paused = getattr(self.services, "paused", frozenset())
         self.set_paused(paused - {circle} if circle in paused else paused | {circle})
 
-    def _pause_all(self):
-        """The control after the circles: every circle paused — or, all of them paused already, every one resumed."""
-        everything = frozenset(phase_service.CIRCLES)
-        self.set_paused(frozenset() if getattr(self.services, "paused", frozenset()) == everything else everything)
+    def _pause_all(self, circle):
+        """Mado-PZ2 (Sonic 2026-11-19): a Shift-click on `circle`, or its right-click's *Pause all* / *Resume all* — what
+        the click does to that circle, done to all five: `circle` paused, every circle resumed; else every one paused."""
+        paused = getattr(self.services, "paused", frozenset())
+        self.set_paused(frozenset() if circle in paused else frozenset(phase_service.CIRCLES))
 
     def set_paused(self, circles):
         """The circles paused now (the map's one model, `Services.set_paused`): painted on the press, before anything
@@ -2598,6 +2599,9 @@ class ShellWindow(QMainWindow):
         """A circle's right-click menu: *Show* where its work is seen (else its settings), *Stop* it, its *Settings*."""
         if what == "pause":                                # Mado-PZ: *Pause* / *Resume*, as a click
             self._toggle_pause(circle)
+            return
+        if what == "pause_all":                            # Mado-PZ2: *Pause all* / *Resume all*, as a Shift-click
+            self._pause_all(circle)
             return
         if what == "show" and self._show_circle(circle):
             return

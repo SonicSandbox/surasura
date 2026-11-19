@@ -674,11 +674,12 @@ def test_rows_waiting_for_their_owner_and_the_anki_label_without_decks_stay_hidd
 
 # --- W3.2 L3: the covers' switch in Connections -------------------------------------------------------------------- #
 def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove_is_an_action_under_it():
-    """The window's spec 01 §1.3 C1: Settings → Connections holds *Download covers* (its own key, nothing else) with
-    *Remove downloaded covers* under it — shown in both languages, the switch off or on (old covers can be removed)."""
+    """The window's spec 01 §1.3 C1: *Download covers* (its own key, nothing else) with *Remove downloaded covers*
+    under it — shown in both languages, the switch off or on (old covers can be removed). In Content since Fine-tune
+    (Mado-EZA, EZ-4 §2.4: the covers read with the library)."""
     row, remove = catalog.ROW["covers_download"], catalog.ROW["remove_downloaded_covers"]
-    assert (row.section, row.kind, row.keys) == ("connect", "toggle", ("covers_download",))
-    assert (remove.section, remove.kind, remove.keys, remove.sub) == ("connect", "action", (), True)
+    assert (row.section, row.kind, row.keys) == ("content", "toggle", ("covers_download",))
+    assert (remove.section, remove.kind, remove.keys, remove.sub) == ("content", "action", (), True)
     ids = [r.id for r in catalog.ROWS]
     assert ids.index("remove_downloaded_covers") == ids.index("covers_download") + 1
     for language in ("ja", "zh"):
@@ -687,9 +688,8 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
     assert catalog.change(row, {"covers_download": False}, "ja", True) == ({"covers_download": True}, None)
     assert catalog.FILLED_BY["remove_downloaded_covers"] == "app.qt.settings_live"
     assert "covers_download" not in catalog.NOT_SHOWN and "covers_download" not in catalog.FILLED_BY
-    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a "
-                        "show's last episode, also asks AniList whether it is still airing, so it isn't finished "
-                        "early. Nothing else.")                                         # what is sent (3.0.1: airing)
+    # what is sent (3.0.1; EZ-12's shorter line: the airing check asks AniList by the same name) — and nothing else
+    assert row.help == "Sends AniList a show's name or id, YouTube a video's id. Nothing else."
 
 
 def test_anki_miner_card_credits_zero_in_sonics_words_on_two_lines():
@@ -971,7 +971,7 @@ def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
     assert "known_from_anki" in on and "anki_sync_include_suspended" not in on
     assert "anki_sync_include_suspended" in off and "known_from_anki" not in off
     assert "every state you pick" in row.help                                   # the "and", in the line itself
-    assert "struggled" in suspended.tip and "whenever you suspended them" in suspended.tip
+    assert "Studied, then suspended" in suspended.tip                          # (EZ-12: the why went for 12 words)
     # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
     assert "New cards you suspend never count" in suspended.tip and "New cards count too" in row.tip
     # neither names the other any more: they never stand together
@@ -1028,7 +1028,7 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
     assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
     assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
-    assert "i+1 lines where it can" in row.help and "Only i+1" in row.help
+    assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
     assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
 
@@ -1038,7 +1038,7 @@ def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library
     for videos kept elsewhere — under Anki & mining's *More options*, with Connect on."""
     row = catalog.ROW["connect_video_folders"]
     assert (row.section, row.adv, row.kind, row.label) == ("anki", True, "list", "More video folders")
-    assert "always searched" in row.help and "somewhere else" in row.help
+    assert "searched already" in row.help and "Add others only if needed" in row.help    # (EZ-12's shorter line)
     assert "connect_video_folders" in _shown(CONNECT_ON, "ja") and "connect_video_folders" not in _shown({}, "ja")
 
 

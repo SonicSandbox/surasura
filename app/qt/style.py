@@ -390,6 +390,8 @@ QLabel#settingsvalue {{ color: {t['value']}; {font('body')} font-weight: 400; }}
 QLabel#settingsgroup {{ color: {t['group']}; {font('group-label')}
   padding: {px(sp['settings-group'][0])} {px(sp['settings-group'][1])} {px(sp['settings-group'][2])} {px(sp['settings-group'][1])}; }}
 QLabel#settingshint {{ color: {t['hint']}; {font('body')} font-weight: 400; }}
+QLabel#settingsnavhead {{ color: {t['nav-head']}; {font('group-label')}
+  padding: {px(sp['settings-group'][0])} {px(9)} {px(sp['settings-group'][2])} {px(9)}; }}
 QPushButton#settingsmore {{ background: transparent; color: {t['more']}; border: 0; border-radius: 4px; min-height: 0;
   padding: 0; text-align: left; {font('settings-more')} }}
 QPushButton#settingsmore:hover {{ border: 0; }}

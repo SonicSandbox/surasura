@@ -52,10 +52,19 @@ LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
 SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
 
-SECTIONS = tuple(Section(id_, icon, S.SECTIONS[id_]) for id_, icon in (
-    ("setup", "star"), ("known", "words"), ("anki", "anki"), ("junban", "order"), ("backfill", "fill"),
-    ("level", "level"), ("parsing", "text"), ("content", "content"), ("arrivals", "inbox"), ("connect", "link"),
-    ("reading", "reading"), ("sentences", "sentence"), ("export", "export"), ("app", "app")))
+# Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
+# page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
+HEADS = (
+    ("cards", ("known", "anki", "junban", "backfill", "sentences", "level")),
+    ("library", ("content", "arrivals", "parsing", "reading", "export")),
+    ("app", ("connect", "app")),
+)
+HEAD_OF = {section: head for head, sections in HEADS for section in sections}
+_ICONS = {"setup": "star", "known": "words", "anki": "anki", "junban": "order", "backfill": "fill", "level": "level",
+          "parsing": "text", "content": "content", "arrivals": "inbox", "connect": "link", "reading": "reading",
+          "sentences": "sentence", "export": "export", "app": "app"}
+SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
+                 for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))
 
 # Doors no `OPENERS` entry held when this was written, and who brings each (the intent keeper's S8: none pending at
 # release — `pending(registered)` lists the ones still missing; an entry that has landed is harmless until tidied).
@@ -356,8 +365,8 @@ ROWS = (
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built
     # --- W3.2 L3: the covers' switch (01 §1.3 C1: off until the user says yes) and *Remove downloaded covers*
-    _row("covers_download", "connect", "toggle", ("covers_download",)),
-    _row("remove_downloaded_covers", "connect", "action", sub=True),
+    _row("covers_download", "content", "toggle", ("covers_download",)),      # (EZ-4 §2.4: read with Content)
+    _row("remove_downloaded_covers", "content", "action", sub=True),
     # --- end W3.2 L3
     _row("more_from_houseki", "connect", "status", when=_never),   # row 13: hidden until a tool is listed there
 
@@ -840,3 +849,90 @@ def _wanted(row, settings, language, new):
     if choices and new not in choices:
         raise ValueError(f"not a choice of {row.id}: {new!r}")
     return {key: new}
+
+
+# --- Fine-tune (Mado-EZA: EZ-4, EZ2-9; PROVISIONAL): a row's value now and by default, in words, and a reset ------- #
+VALUE_KINDS = ("toggle", "choice", "cards", "select", "tablets", "list", "slider", "number", "range", "text")
+# What *Reset section* never touches (EZ-4): usage counts, the update check, *Update automatically*, *Run things by
+# themselves* and 順's own switch (each sends data or runs by itself: a reset never turns one back on), the language and
+# every per-language value (the video folders, the cap). Each keeps its own dot and *back to it*.
+RESET_KEEPS = frozenset({"telemetry_enabled", "update_check_enabled", "auto_update_enabled", "logic.automation",
+                         "enable_junban", "target_language"}) | frozenset(PER_LANGUAGE)
+
+
+def holds_value(row):
+    """Whether `row` is a value the page draws itself (a switch, a choice, a number…): one a dot, *back to it* and a
+    reset read and write. A summary, status, custom, door or link row holds none; the road is the page's state."""
+    return row.kind in VALUE_KINDS and bool(row.keys) and row.id != "known_road"
+
+
+def control_value(row, settings, language):
+    """`row`'s value as its control shows it and `change()` takes it: several switches as the keys on, a range as its
+    (low, high)."""
+    found = value(row, settings, language)
+    if row.kind == "tablets" and len(row.keys) > 1:
+        return [key for key in row.keys if found.get(key)]
+    if row.kind == "range":
+        return tuple(found[key] or 0 for key in row.keys)
+    return found
+
+
+def default_value(row, language):
+    return control_value(row, defaults(), language)
+
+
+def is_default(row, settings, language):
+    """Whether `row` shows its default (a row holding no value never reads changed; nor one whose hand-edited value
+    can't be read: its control shows the default then, `SettingsPage._make_controls`)."""
+    if not holds_value(row):
+        return True
+    try:
+        return control_value(row, settings, language) == default_value(row, language)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return True
+
+
+def resets(row):
+    """Whether *Reset section* puts `row` back: a value row holding none of `RESET_KEEPS`."""
+    return holds_value(row) and not set(row.keys) & RESET_KEEPS
+
+
+def reset_changes(rows_, settings, language):
+    """{key: default} putting back each of `rows_` that `resets` and isn't at its default — one row after another on
+    what the ones before wrote, so two switches of one list make one list."""
+    from app.services.settings import put, thaw
+    work, out = thaw(settings), {}
+    for row in rows_:
+        if not resets(row) or is_default(row, work, language):
+            continue
+        try:
+            changes, _update = change(row, work, language, default_value(row, language))
+        except (ValueError, TypeError):             # a value no default can replace in place: left as it is
+            continue
+        for key, v in changes.items():
+            put(work, key, v)
+            out[key] = plain(v)
+    return out
+
+
+def words_of(row, settings, language):
+    """`row`'s value in a few words (a closed fold's line, a dot's default): On / Off, a choice's label, the picks, a
+    number, a range, a list's count."""
+    found = control_value(row, settings, language)
+    labels = {v: label for v, label, _line in options(row, settings, language)}
+    if row.kind == "toggle":
+        return S.TOGGLE_STATE[bool(found)]
+    if row.kind == "slider":
+        words = labels.get(found[row.keys[0]], str(found[row.keys[0]]))
+        return f"{words} · {S.LEVEL_AUTOMATIC}" if found[row.keys[1]] else words
+    if row.kind == "range":
+        return "–".join(str(n) for n in found)
+    if row.kind == "list":
+        return S.VALUE_COUNT.format(n=len(found)) if found else S.VALUE_NONE
+    if row.kind == "tablets":
+        return ", ".join(str(labels.get(v, v)) for v in found) if found else S.PICKED_NONE
+    if row.kind == "text":
+        return found or S.VALUE_NONE
+    if row.kind == "number":
+        return str(found)
+    return str(labels.get(found, found))

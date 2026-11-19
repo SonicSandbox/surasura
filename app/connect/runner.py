@@ -1118,9 +1118,10 @@ def _stopped(steps, ledger, lang, job, step, record):
     (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
     are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
     stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask.
-    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours) it is never marked stopped — its cards so far
-    kept, it waits `PAUSED` for this run alone and the next start (the resume's kick) goes on from `step`."""
-    if not ledger.stop_asked(job["id"]) and _paused_now(steps):
+    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours: only a press or a pause cuts a job) it is never
+    marked stopped — whether or not the pause still holds now (a resume a moment after the cut is no Stop either) —
+    its cards so far kept, it waits `PAUSED` for this run alone and the resume's kick goes on from `step`."""
+    if not ledger.stop_asked(job["id"]):
         made = _keep_made(steps, ledger, lang, job, record)
         log.info("Connect: job %s paused before %s (%d words made so far)", job["id"], step or "its pick", len(made))
         raise Wait(PAUSED, look=False, resume=step)

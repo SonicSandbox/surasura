@@ -42,6 +42,14 @@ def open_window(shell, item_ids=None, label=None):
                         lambda s: UnminedWindow(s, item_ids=ids, label=label))
 
 
+def words_heard(shell):
+    """An *Allow again* saved or undone has landed (the drag controller's `_saved` / `_undone`): every open list of
+    words reads again."""
+    for name, win in list(shell.__dict__.get("_secondary_windows", {}).items()):
+        if (name == WINDOW or name.startswith(WINDOW + ":")) and not win.gone:
+            win.read()
+
+
 def read(store, item_ids=None, shown=SHOWN):
     """(A pool thread's.) The words, each with `from`: the file name of the episode that made it last (its first
     `shown` only) -> the store's list."""
@@ -252,8 +260,8 @@ class UnminedWindow(windows.SecondaryWindow):
                 return
             if event in ("refused", "ended"):
                 self._show(self.answer)
-            if event in ("saved", "refused", "ended", "undone"):
-                self.read()
+            if event in ("refused", "ended"):
+                self.read()                               # (saved, undone: read as it lands, `words_heard`)
         if allow(self.shell, word, told=told) is None:
             self._allowing.discard(word)
             if not self.gone:

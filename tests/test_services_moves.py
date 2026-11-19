@@ -5654,3 +5654,32 @@ def test_JR_a_command_queued_during_a_drag_whose_journal_write_was_refused_is_jo
     assert w2.replay()
     assert h.until(lambda: journal(lib.language) is None and not w2.pending())
     assert lib.ids("goal")[0] == goal[5] and lib.store.item(now[1])["pinned"] is not None
+
+
+@held_refuses
+def test_JR_a_crashed_writer_writes_no_journal_after_its_crash_even_from_a_saving_timer_still_running(
+        stub_writer, tmp_path, scanners):
+    # why (a --stress-changed red, 2026-11-19): while the journal is held, each busy attempt's journal write takes its
+    # ~0.1 s of tries, so the attempt's *saving…* timer fires on a thread of its own; the test's crash (`_abandon`)
+    # stopped the writer's thread but not those, and one rewrote the journal after the next start had removed it.
+    # A crash stops every journal write of the crashed writer — nothing written after `_abandon` returns.
+    w, heard, store, opener = stub_writer(saving_after=0.01)
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] ==
+                   ["set_tier", "move"])
+    scanner = Scanner(str(path))
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    opener.mode, opener.reason = "store", None          # the set_tier lands; the move's attempts stay busy, and
+    assert h.until(lambda: any(c[0] == "set_tier" for c in store.calls))    # each one's journal write is refused
+    time.sleep(0.5)                                     # (~0.1 s each: its timer fires on a thread of its own)
+    w._abandon()                                        # the crash
+    scanner.close()
+    with open(path, "rb") as f:
+        left = f.read()
+    time.sleep(0.5)                                     # a window in which nothing may happen
+    with open(path, "rb") as f:
+        assert f.read() == left, "a timer of the crashed writer rewrote its journal"

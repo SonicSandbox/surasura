@@ -901,12 +901,16 @@ class Writer:
             self._thread.start()
 
     def _abandon(self):
-        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are."""
+        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are — and
+        nothing writes the journal after this returns: a *saving…* timer still running (`_stuck`, on its own thread)
+        finds the writer crashed (Kura-JR: a crash is every thread of it gone, as a real one)."""
         with self._cond:
             self._abandoned = True
             self._cond.notify_all()
         if self._thread is not None:
             self._thread.join(10)
+        with self._jlock:                           # a journal write under way ends first
+            pass
 
     # --- the thread ----------------------------------------------------------------------------------------------- #
     def _run(self):
@@ -1798,6 +1802,8 @@ class Writer:
         if not self.journal_file or self._replay_due:
             return                                  # a crash's journal is read before anything is written over it
         with self._jlock:
+            if self._abandoned:
+                return                              # (tests: a crashed writer writes nothing more, `_abandon`)
             with self._cond:
                 owed, self._owed = self._owed, None     # Kura-JR: this write is the refused one's too
                 if not again:

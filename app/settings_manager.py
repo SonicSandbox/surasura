@@ -175,6 +175,11 @@ DEFAULT_SETTINGS = {
     # text-to-speech — the word goes to Google — only while this is on; off, every Chinese run file leaves its
     # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.
     "connect_zh_word_audio": False,
+    # How hard Anki Miner works while Connect mines (Michi-LP, 2026-11-18; `connect/power.py`): the clips it cuts at
+    # once — "auto" (this PC's number, `power.clip_cuts`) or 1–6, sent per run, never written into Anki Miner; per PC
+    # (an import never brings another PC's) — and, Beta, its calls at idle priority. Never in a signature.
+    "connect_clip_cuts": "auto",
+    "connect_low_priority": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
     # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
     # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's

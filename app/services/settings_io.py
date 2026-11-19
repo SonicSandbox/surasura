@@ -17,7 +17,8 @@ and a key named like one (`SECRET`) is left out of the file and of an import.
 - a key this version doesn't know (`known`: placed, its module installed) is left out, counted; a key the file lacks
   takes its default (the file replaces settings.json whole, and every reader fills the defaults);
 - Anki Miner's place (`connect_anki_miner_path`) not on this PC goes back to its default (Surasura finds Anki Miner
-  itself), and so does ▶'s program (`open_video_program` / `open_book_program`, with its choice); a video folder
+  itself), and so does ▶'s program (`open_video_program` / `open_book_program`, with its choice), and *Clips cut at
+  once* (`PER_PC`, Michi-LP: always this PC's own — the file's left out, this PC's kept by `apply`); a video folder
   (`connect_video_folders`) not on this PC is kept and named — *Needs you* asks for it (`missing_folders`, a card
   each: *Find it…* · *Stop looking there*, `folder_change`).
 `apply(plan)` replaces settings.json **whole, never merged**: the settings service's changes still queued land first,
@@ -42,6 +43,7 @@ NAME = "Surasura settings {date}.json"
 UNDO_NAME = "Surasura settings before import {stamp}.json"     # beside the dated copy: Import takes it (the way back)
 FOLDERS = "connect_video_folders"
 MINER_PATH = "connect_anki_miner_path"
+PER_PC = ("connect_clip_cuts",)   # Michi-LP: this PC's own (a desktop's 6 is a laptop's load): never imported, kept
 PROGRAMS = {"open_video": "open_video_program", "open_book": "open_book_program"}   # *Videos / Books open in*
 # A key named like a secret never leaves or comes in (none is in settings.json: Speech's key is in its keystore)
 SECRET = re.compile(r"(^|_)(api_?key|key|token|secret|password|passwd|credentials?)s?$", re.IGNORECASE)
@@ -247,6 +249,8 @@ def read(path, isdir=os.path.isdir, isfile=os.path.isfile):
         if key in settings and (not isinstance(program, str) or program.strip() and not isfile(program.strip())):
             settings.pop(key)
             settings.pop(choice, None)
+    for key in PER_PC:                            # never the file's: this PC's own is kept by `apply`
+        settings.pop(key, None)
     missing = tuple(f for f in _folders(settings.get(FOLDERS)) if not isdir(f))
     language = settings.get("target_language") or data.get("language") or "ja"
     return Plan(None, settings, str(version), str(language), str(data.get("exported") or ""), dropped, missing,
@@ -305,7 +309,9 @@ def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
         except OSError as e:
             return Outcome(False, STRINGS["backup_failed"].format(why=e.strerror or e))
         undo = _undo(backup)
-        if not settings_manager.save_settings(dict(plan.settings)):
+        here = settings_manager._read_file_as_is() if os.path.exists(path) else {}   # (none: its fallback's defaults)
+        kept = {key: here[key] for key in PER_PC if key in here}     # this PC's own, as the file holds it now
+        if not settings_manager.save_settings(dict(plan.settings, **kept)):
             return Outcome(False, STRINGS["write_failed"], backup)
     finally:
         if held is not None:

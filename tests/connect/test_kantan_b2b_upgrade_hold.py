@@ -91,6 +91,18 @@ def test_not_now_sets_the_queued_ones_aside_and_leaves_the_part_way_one_where_it
     assert actions.first_run_aside("ja", path) == 0, "a second press sets nothing more aside"
 
 
+def test_not_now_leaves_an_episode_the_learner_stopped_stopped(tmp_path, upgraded):
+    # why: the review (KB2B-6) — a job the learner pressed *Stop* on must keep its stop and its reason, never come
+    # back after the yes as a plain queued job that waits for no reason it says
+    from app.connect.ledger import STOPPED_REASON
+    path, ledger = upgraded
+    job = ledger.job("ja", 2)
+    assert ledger.ask_stop(job["id"])
+    assert actions.first_run_aside("ja", path) == 1, "only job 3"
+    assert (ledger.job_by_id(job["id"])["state"], ledger.job_by_id(job["id"])["reason"]) == ("waiting", STOPPED_REASON)
+    assert actions.first_run_back("ja", path) == 1
+
+
 def test_the_yes_mines_them_all_in_their_order(tmp_path, upgraded):
     # why: the learner's yes covers what was waiting: the part-way episode finishes first, then the queued ones
     _path, ledger = upgraded

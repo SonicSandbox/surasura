@@ -386,13 +386,15 @@ class Ledger:
     def set_aside_first_run(self, language):
         """Kantan-B2b (*Not now* on the first run's line): every job the placement log queued that hasn't started (no
         ask on it, never reached Anki Miner) set aside — `skipped` for FIRST_RUN_ASIDE, its row the learner's *Mine*
-        again — inside the caller's transaction or its own -> how many. A job part-way stays where it stopped."""
+        again — inside the caller's transaction or its own -> how many. A job part-way stays where it stopped, and one
+        you stopped (*Stop*: its `stopped:` record) stays stopped, its reason kept (the review's refuter, KB2B-6)."""
         marks = ",".join("?" * (len(BEFORE_MINING) - 1))
         sql = (f"UPDATE jobs SET state = 'skipped', reason = ?, resume = NULL, updated_at = ? WHERE language = ? AND "
                f"event_id IS NOT NULL AND asked_at IS NULL AND (state = 'queued' OR (state = 'waiting' AND "
                f"(resume IS NULL OR resume IN ({marks})))) AND NOT EXISTS (SELECT 1 FROM batches b WHERE "
-               f"b.job_id = jobs.id AND b.state != 'refused')")
-        params = (FIRST_RUN_ASIDE, _now(), language) + BEFORE_MINING[1:]
+               f"b.job_id = jobs.id AND b.state != 'refused') AND NOT EXISTS (SELECT 1 FROM meta m WHERE "
+               f"m.key = ? || jobs.id)")
+        params = (FIRST_RUN_ASIDE, _now(), language) + BEFORE_MINING[1:] + (STOPPED,)
         if self.conn.in_transaction:
             return self.conn.execute(sql, params).rowcount
         with self.transaction():
@@ -403,11 +405,16 @@ class Ledger:
         first, where the item has no other open job and none done (your *Mine now* mined it meanwhile) -> how many.
         One whose item left the top 20 meanwhile is dropped at its turn, as any (`runner._job`)."""
         marks = ",".join("?" * (len(OPEN) + 1))
-        sql = (f"UPDATE jobs SET state = 'queued', reason = NULL, updated_at = ? WHERE language = ? AND "
-               f"state = 'skipped' AND reason = ? AND NOT EXISTS (SELECT 1 FROM jobs o WHERE o.language = jobs.language "
-               f"AND o.item_id = jobs.item_id AND o.state IN ({marks}))")
-        with self.transaction():
-            return self.conn.execute(sql, (_now(), language, FIRST_RUN_ASIDE) + OPEN + (DONE,)).rowcount
+        n = 0
+        with self.transaction():            # one row at a time: never two open jobs of one item (one_open_job)
+            for job_id, item_id in self.conn.execute("SELECT id, item_id FROM jobs WHERE language = ? AND state = "
+                                                     "'skipped' AND reason = ? ORDER BY id",
+                                                     (language, FIRST_RUN_ASIDE)).fetchall():
+                n += self.conn.execute(
+                    f"UPDATE jobs SET state = 'queued', reason = NULL, updated_at = ? WHERE id = ? AND NOT EXISTS "
+                    f"(SELECT 1 FROM jobs o WHERE o.language = ? AND o.item_id = ? AND o.state IN ({marks}))",
+                    (_now(), job_id, language, item_id) + OPEN + (DONE,)).rowcount
+        return n
 
     def last_read(self, language):
         """When Connect last read the language's placement log, or None."""

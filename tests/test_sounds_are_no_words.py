@@ -43,7 +43,7 @@ def _srt_lines(path):
                 if line.strip() and not line.strip().isdigit() and "-->" not in line]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def utterances(test_resources_dir):
     return _srt_lines(os.path.join(test_resources_dir, "ja", "utterances_sample.srt"))
 
@@ -113,10 +113,18 @@ def test_a_novels_sounds_and_its_phrase(tokenizer, sanitized, ja_resources_dir):
     assert "こら" in surfaces and "あっ" in surfaces
 
 
-@pytest.mark.parametrize("line", ["", "、、、", "えへへ", "「えへへ」", "……あっ", "ほっ　"])
+@pytest.mark.parametrize("line", ["", "、、、", "えへへ。", "「えへへ」", "……あっ", "ほっ　"])
 def test_a_line_that_is_only_a_sound_has_no_words(tokenizer, sanitized, line):
-    # edge cases: nothing, marks only, a sound alone, in brackets, after marks, before a space
+    # edge cases: nothing, marks only, a cue said alone (a subtitle cue gets its 。: analyzer.close_cue), in brackets,
+    # after marks, before a space
     assert _surfaces(tokenizer, line) == []
+
+
+@pytest.mark.parametrize("term, lemma", [("あっ", "あっ"), ("えへへ", "えへ"), ("えっと", "えーと"), ("ウッ", "ウッ-外国")])
+def test_a_word_read_alone_is_a_word_given(tokenizer, sanitized, term, lemma):
+    # a card's word, a known entry, an Ignore line: read alone (no mark, no space) it is a word given, never an
+    # utterance — a card for あっ still finds あっ's row (glued uses keep it: あっという間)
+    assert [l for _s, tokens in _sentences(tokenizer, term) for l, _surface in tokens] == [lemma]
 
 
 def test_a_sound_is_no_word_to_every_caller_of_word_lemma(sanitized):
@@ -145,7 +153,7 @@ def zh_tokenizer():
     return analyzer.ChineseTokenizer()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def zh_utterances(test_resources_dir):
     return _srt_lines(os.path.join(test_resources_dir, "zh", "utterances_sample.srt"))
 
@@ -190,14 +198,15 @@ def test_a_real_chinese_lines_particle_stays(zh_tokenizer, test_resources_dir):
 
 
 @pytest.mark.parametrize("pieces, sounds", [
-    ([], []), (["啊"], [0]), (["啊", "，", "好"], [0]), (["好", "啊"], []), (["嗯", "嗯"], [0, 1]),
+    ([], []), (["啊"], []), (["啊", "，", "好"], [0]), (["好", "啊"], []), (["嗯", "嗯", "。"], [0, 1]),
+    (["嗯", "嗯"], []),
     (["好", "啊", "啊"], []), (["啊啊啊", "！"], [0]), (["哈哈哈", "！"], [0]), (["\n", "嗯", " "], [1]),
     (["喂", "，"], []),
 ])
 def test_which_chinese_pieces_are_sounds(pieces, sounds):
-    # edge cases: nothing, alone, before a mark, glued, two sounds in a row (standing together), the same after a
-    # word, one interjection's character said over, a laugh's run, between a line break and a space, a word that is
-    # said (喂 'hello')
+    # edge cases: nothing, a word read alone (a card: 啊), before a mark, glued, two sounds in a row (standing
+    # together), the same read alone, the same after a word, one interjection's character said over, a laugh's run,
+    # between a line break and a space, a word that is said (喂 'hello')
     assert analyzer.chinese_sounds(pieces) == sounds
 
 
@@ -216,7 +225,7 @@ def test_chinese_sounds_in_a_row_stand_together(zh_tokenizer, line):
 
 
 @pytest.mark.parametrize("line, gone", [
-    ("あっあっ", ["あっ"]),                       # two gasps, glued to each other only
+    ("あっあっ！", ["あっ"]),                     # two gasps, glued to each other only
     ("うえ～ん、痛いよ。", ["うー", "えー", "んー"]),   # crying, three fillers in a row
 ])
 def test_japanese_sounds_in_a_row_stand_together(tokenizer, sanitized, line, gone):

@@ -1323,9 +1323,11 @@ def _sounds(words, fillers):
 # short (あ, え, ん, は？, あっ, ほっ, なっ, ちぇっ — the sokuon is no mora here, a stretch is one: ねー stays ねえ), or a
 # laugh: a mora with a consonant said twice or more, after at most one other mora (ふふ, ははは, くくっ, えへへ, あはは,
 # はっはっは). A katakana gasp the tagger reads as a foreign name (ウッ, ナッ: one mora cut short) is one too.
-# Only where it stands on its own, between marks, spaces or its line's edges: glued to a word, the tagger may have
-# cut a word or a set phrase there (あっ + という + 間, 目 + ん + 玉, 様 + あー + 見る), and it stays as it is read —
-# but for a と that ends the utterance: えっ + と, read in a longer line, is the filler えっと the tagger cut.
+# Only where it stands on its own, between marks, spaces or its line's edges, a mark or a space on one side at least:
+# glued to a word, the tagger may have cut a word or a set phrase there (あっ + という + 間, 目 + ん + 玉, 様 + あー +
+# 見る), and it stays as it is read — but for a と that ends the utterance: えっ + と, read in a longer line, is the
+# filler えっと the tagger cut. A word read alone (a card's word, a known entry, an Ignore line: あっ, えっと) is a word
+# given, never an utterance, and stays one; a subtitle cue alone has its 。 (close_cue), so えへへ said alone goes.
 # Every other interjection is a word — ありがとう, こんにちは, はい, うん, ええ, ああ, おい, ねえ, くそ, よし, おっと —
 # and nothing else changes: ほっと and はっと are adverbs, なっ in なっちゃった is 成る. Its text stays in the sentence;
 # word_lemma counts it as no word (SoundNode), as it does a mark.
@@ -1396,8 +1398,10 @@ def _sound_shape(surface, kind):
 
 
 def _sound_ends(words, j):
-    """Does an utterance end before words[j] — the line's end, a space, a mark?"""
-    return j >= len(words) or getattr(words[j], "white_space", "") or words[j].feature.pos1 in _SOUND_EDGES
+    """How an utterance ends before words[j]: 2 at a space or a mark, 1 at the line's end, 0 not at all."""
+    if j >= len(words):
+        return 1
+    return 2 if getattr(words[j], "white_space", "") or words[j].feature.pos1 in _SOUND_EDGES else 0
 
 
 def _sound_kind(w):
@@ -1429,9 +1433,10 @@ def _mark_sounds(words, fillers):
             k += 1
             b = sounds[k]
         k += 1
-        if not (a == 0 or getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES):
-            continue
-        if not (_sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))):
+        left = 1 if a == 0 else (2 if getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES
+                                 else 0)
+        right = _sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))
+        if not left or not right or left + right < 3:      # glued to a word, or a word read alone
             continue
         if out is None:
             out = list(words)
@@ -2687,8 +2692,8 @@ def chinese_sounds(pieces):
     """The indices of `pieces` (chinese_cut's, in Simplified) that are sounds standing on their own — no word, as in
     Japanese (§ Sounds are no words): an interjection, a laugh or a modal particle said alone (啊, 嗯, 哦, 呃, 哈哈 and
     its runs, 啊啊啊: app/cedict_data.py's INTERJECTIONS) between marks, spaces or its line's edges — 啊，好痛！, 嗯嗯。
-    (sounds in a row stand together) — never one glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word). Empty with
-    the table unreadable."""
+    (sounds in a row stand together) — never one glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word), nor a text
+    that is only the sound (a card's word, a known entry: 啊). Empty with the table unreadable."""
     table = _cedict_table("interjections")
     if not table:
         return ()
@@ -2704,7 +2709,7 @@ def chinese_sounds(pieces):
         if run and _zh_edge(pieces, run[0] - 1) and _zh_edge(pieces, i):
             out.extend(run)
         run = []
-    if run and _zh_edge(pieces, run[0] - 1):
+    if run and _zh_edge(pieces, run[0] - 1) and run[0] > 0:     # the whole text a sound: a word read alone (a card)
         out.extend(run)
     return out
 
@@ -3188,15 +3193,6 @@ def load_known_words(json_path, tokenizer):
                     for lemma, reading in pieces or ():
                         known_tuples.add((lemma, reading))
                         known_lemmas.add(lemma)
-                    # A known sound — a card for えっと or あっ, no word alone (§ Sounds are no words) — still makes
-                    # its word known where a line glues it to one (えっとですね, あっという間).
-                    if pieces is not None and not tokens:
-                        for node in join_affixes(tokenizer.tagger(term), library=False):
-                            if node.__class__ is SoundNode:
-                                lemma = node.feature.lemma or node.surface
-                                lemma = _sanitize_term(lemma) if SANITIZE_JA else lemma
-                                known_tuples.add((lemma, node.feature.lForm or node.feature.kana or ""))
-                                known_lemmas.add(lemma)
 
                     # 2. Heuristic: If multiple tokens, add the combined form too.
                     # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 

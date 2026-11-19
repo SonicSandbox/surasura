@@ -291,9 +291,9 @@ STRINGS = {
     "tip_in_anki_chip": "{own} from this episode · {other} from other episodes and shows",
     "tip_in_anki_chip_k": "{own} from its {k} episodes · {other} from other episodes and shows",
     # ... lean A (PROVISIONAL words): its own cards split when some are i+1 words below the list
-    "tip_in_anki_chip_lv": "{own} from this episode ({at} at your level + {below} below it) · {other} from other "
+    "tip_in_anki_chip_lv": "{own} from this episode, {at} at your level and {below} below it · {other} from other "
                            "episodes and shows",
-    "tip_in_anki_chip_k_lv": "{own} from its {k} episodes ({at} at your level + {below} below it) · {other} from "
+    "tip_in_anki_chip_k_lv": "{own} from its {k} episodes, {at} at your level and {below} below it · {other} from "
                              "other episodes and shows",
     # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
     # new try for the words its cards don't hold yet (`rows`' *Try again*)

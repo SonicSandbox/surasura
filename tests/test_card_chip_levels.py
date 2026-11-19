@@ -2,7 +2,7 @@
 on the learner's list and from i+1 words below it, while the row's *N new* counts only the list's — a tester saw *16
 new* and 34 cards. The pick now marks each word (`pick.pick`'s `listed`), the ledger hands those marks back read-only
 (`ledger.listed_of`), the counter splits an episode's own cards (`card_chip`'s ("level", key) answers) and the hover
-says *34 from this episode (16 at your level + 18 below it) · …* (PROVISIONAL words). Real Japanese and Chinese
+says *34 from this episode, 16 at your level and 18 below it · …* (PROVISIONAL words). Real Japanese and Chinese
 subtitles; a real ledger in a temp folder.
 """
 import json
@@ -116,8 +116,8 @@ def _works():
 
 @pytest.mark.parametrize("wid,language", [(1, "ja"), (2, "zh")])
 def test_the_hover_says_at_your_level_and_below_it_only_when_some_are_below(_works, wid, language):
-    """34 cards made from Ep 11, 16 on the list and 18 below it: *34 from this episode (16 at your level + 18 below
-    it) · 22 from other episodes and shows*; the show's row says its own. All on the list, or a split that isn't its
+    """34 cards made from Ep 11, 16 on the list and 18 below it: *34 from this episode, 16 at your level and 18 below
+    it · 22 from other episodes and shows*; the show's row says its own. All on the list, or a split that isn't its
     count: the plain hover."""
     items = items_of([("now", wid, 1, eps(WORKS[wid]["title"], 11, 13), {})])
     cards = {1: 34, 2: 12, 3: 5}
@@ -126,16 +126,16 @@ def test_the_hover_says_at_your_level_and_below_it_only_when_some_are_below(_wor
     row = vr.build(items, WORKS, {}, cards=cards, elsewhere=answers, language=language).rows[0]
     e11, e12, e13 = row.episodes
     assert e11.status.label == "56"
-    assert e11.status.tip == "34 from this episode (16 at your level + 18 below it) · 22 from other episodes and shows"
+    assert e11.status.tip == "34 from this episode, 16 at your level and 18 below it · 22 from other episodes and shows"
     assert e12.status.tip == "12 from this episode · 3 from other episodes and shows", "none below: as before"
     assert e13.status.tip == "5 from this episode · 1 from other episodes and shows", "2 + 2 isn't its 5: not split"
-    assert row.status.tip == ("51 from its 3 episodes (30 at your level + 21 below it) · 25 from other episodes and "
+    assert row.status.tip == ("51 from its 3 episodes, 30 at your level and 21 below it · 25 from other episodes and "
                               "shows")
     cache = vr.RowCache()
     one = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, elsewhere=answers, cache=cache, language=language)
     two = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, language=language,
                    elsewhere={**answers, ("level", 1): (17, 17)})
-    assert two.rows[0] is not one.rows[0] and "17 at your level + 17 below it" in two.rows[0].episodes[0].status.tip
+    assert two.rows[0] is not one.rows[0] and "17 at your level and 17 below it" in two.rows[0].episodes[0].status.tip
 
 
 def test_a_ledger_from_a_newer_surasura_or_one_without_picks_gives_no_marks(tmp_path):

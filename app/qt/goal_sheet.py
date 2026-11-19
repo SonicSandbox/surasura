@@ -700,7 +700,12 @@ class GoalSheet(motion.Overlay):
             def command(t):
                 return writer.move(ids, "soon", after_id=after_id, label=t)
         self.close()
-        seq = moves._give(Ticket(text, ids=ids), command)
+        ticket = Ticket(text, ids=ids)
+        if where == "top":                           # Kura-EO: saved in its show's episode order, its toast says so
+            shown = (strings.GOAL_UP_SHOW if rest else strings.GOAL_UP_ALL_SHOW).format(title=work.title,
+                                                                                        first=piece.line)
+            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        seq = moves._give(ticket, command)
         if seq is not None:
             self.seeking = (ids[0], time.monotonic() + SHEET["seek-s"])
         return seq

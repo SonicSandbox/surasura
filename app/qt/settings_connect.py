@@ -124,10 +124,20 @@ def _saved_off(answer):
 
 
 def _miner_look(settings, language):
-    """(A worker.) -> (`setup.checks`, the star answered, the whitelist file's path, the update notice or None)."""
+    """(A worker.) -> (`setup.checks`, the star answered, the whitelist file's path, the update notice or None, the
+    two decks' line or "")."""
     from app.connect import anki_miner, setup, status
     path = anki_miner.whitelist_path(language)
-    return setup.checks(settings, language), settings_values.star_answered(), path, status.anki_miner_update()
+    return (setup.checks(settings, language), settings_values.star_answered(), path, status.anki_miner_update(),
+            _decks_line(settings, language))
+
+
+def _decks_line(settings, language):
+    """Michi-DK: both decks while Anki Miner's own (as Connect's last run read it, `setup.miner_deck`) isn't the one
+    Surasura shows (`fields.surasura_deck`, where Connect's runs put their cards), else ""."""
+    from app.connect import fields, setup
+    ours, own = fields.surasura_deck(settings, language), setup.miner_deck(language)
+    return S.MINER_DECKS.format(ours=ours, own=own) if ours and own and ours != own else ""
 
 
 def _read_new_cards(settings):
@@ -437,6 +447,9 @@ class MinerCard(QWidget):
         box.setSpacing(round(6 * _f()))
         self.words = _label(S.MINER_CHECKING, "settingsvalue", self)
         box.addWidget(self.words)
+        self.decks = _label("", "settingshelp", self)           # Michi-DK: the two decks, while they differ
+        self.decks.hide()
+        box.addWidget(self.decks)
         self.update_note = qpress.room(_button("", S.MINER_UPDATE_TIP, self._open_update, self, kind="settingsmore"),
                                        end=True)
         self.update_note.hide()
@@ -533,7 +546,7 @@ class MinerCard(QWidget):
         self.check_again.setEnabled(True)
         if self.again:
             return self.check()
-        result, answered, path, update = answer
+        result, answered, path, update, decks = answer
         state = settings_values.card_state(result)
         self.state, self.path = state, path or ""
         tip = _open_tip(result)                         # choice 87: the profile this check found Connect mines with
@@ -541,6 +554,8 @@ class MinerCard(QWidget):
             self.open_miner.setToolTip(tip)
         with self.rows.holding():
             self.words.setText(state["say"])
+            self.decks.setText(decks)
+            self.decks.setVisible(bool(decks) and state["state"] not in (None, "missing"))
             self._missing(state["missing"])
             self.path_field.setText(self.path)
             self.steps.setVisible(bool(state["steps"]))
@@ -566,6 +581,7 @@ class MinerCard(QWidget):
             self.open_miner.setToolTip(S.OPEN_MINER_TIP_PLAIN)
         with self.rows.holding():
             self.words.setText(S.MINER_NOT_CHECKED.format(info[0]))
+            self.decks.hide()
             self._missing([])
             self.steps.hide()
             self.update_note.hide()

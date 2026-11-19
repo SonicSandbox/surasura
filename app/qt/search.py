@@ -714,7 +714,10 @@ class SearchCut(QWidget):
             moves._give(drag.Ticket(text, (), ids), lambda t: writer.put_back(ids, label=t))
         else:
             ids = list(hit.top_ids or hit.item_ids)
-            moves._give(drag.Ticket(text, (), ids), lambda t: writer.move(ids, "now", label=t))
+            ticket = drag.Ticket(text, (), ids)
+            shown = strings.TRAY_PLACED_WITH_SHOW.format(title=hit.title)   # Kura-EO: saved in its show's order
+            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+            moves._give(ticket, lambda t: writer.move(ids, "now", label=t))
         self.timer.start()                               # the where-lines asked again (the view follows)
 
     # --- painting ---------------------------------------------------------------------------------------------- #

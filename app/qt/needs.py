@@ -246,7 +246,8 @@ def _label(text, name, parent, wrap=True):
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "check_again", "skip_words", "dismiss",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
+           "move_cards", "leave_cards")                                                  # Michi-DK
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -1051,6 +1052,7 @@ class NeedsYou(QObject):
                                   backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
                                   miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
                                   no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
+                                  strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
                                   generate_log=generate_log)                  # Kantan-B1: its path, in the hover
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
@@ -2370,6 +2372,37 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_SHOWS_LEFT)
             self.refresh()
         self._press("leave_shows", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Michi-DK: Connect's cards outside the deck Surasura shows — moved on the press (`connect/decks.move`: under the
+    # one Anki writer, a snapshot first), then a toast with its Undo (`decks.move_back`, on a worker too)
+    def _do_move_cards(self, entry, _line):
+        from app.connect import decks
+        lang, read_settings = self.language, self.read_settings
+
+        def undone(back):
+            self._say((back or {}).get("say") or "")
+            self.refresh()
+
+        def done(got):
+            got = got or {}
+            if not got.get("ok"):
+                self._stays("move_cards", entry)
+            self.refresh()
+            snapshot = got.get("id")            # whenever anything may have moved (Anki stopping mid-way too)
+            if not snapshot:
+                self._say(got.get("say") or "")
+                return
+            if self._alive():
+                self.win.toasts.show(got["say"], undo=lambda: bridge.run_in_worker(
+                    lambda: decks.move_back(read_settings() or {}, snapshot), then=undone, failed=self._failed))
+        deck = (entry.data or {}).get("deck")       # the deck its button names: never another one chosen since
+        self._press("move_cards", entry, lambda: decks.move(read_settings() or {}, lang, deck), then=done)
+
+    def _do_leave_cards(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_CARDS_LEFT)
+            self.refresh()
+        self._press("leave_cards", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

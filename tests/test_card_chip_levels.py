@@ -136,3 +136,58 @@ def test_the_hover_says_at_your_level_and_below_it_only_when_some_are_below(_wor
     two = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, language=language,
                    elsewhere={**answers, ("level", 1): (17, 17)})
     assert two.rows[0] is not one.rows[0] and "17 at your level + 17 below it" in two.rows[0].episodes[0].status.tip
+
+
+def test_a_ledger_from_a_newer_surasura_or_one_without_picks_gives_no_marks(tmp_path):
+    """Never read: a newer Surasura's ledger (as the ledger's own open refuses it); an old one from before the job's
+    pick was kept, or a file that was never set up, gives no marks rather than an error each round (review L-C1/C3)."""
+    import sqlite3
+    db = str(tmp_path / "ledger.sqlite")
+    with L.Ledger(db) as led:
+        led.conn.execute("INSERT INTO jobs (language, item_id, state, created_at, updated_at, picked) VALUES "
+                         "('ja', 1, 'done', 't', 't', ?)", (json.dumps({"words": [{"word": "延長", "listed": True}]}),))
+        assert L.listed_of("ja", [1], db) == {1: {"延長": True}}
+        led.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (str(L.SCHEMA + 1),))
+    assert L.listed_of("ja", [1], db) == {1: {}}
+    old = str(tmp_path / "old.sqlite")
+    with sqlite3.connect(old) as c:
+        c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        c.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, language TEXT, item_id INTEGER, state TEXT)")
+    assert L.listed_of("ja", [1], old) == {1: {}}
+    bare = str(tmp_path / "bare.sqlite")
+    sqlite3.connect(bare).close()
+    assert L.listed_of("ja", [1], bare) == {1: {}}
+
+
+def test_the_ledger_busy_as_an_episodes_cards_move_drops_its_split_and_reads_it_again_by_itself(tmp_path, monkeypatch):
+    """Ep 1's cards moved (one made word swapped for another, the same count) while the ledger is busy: its old split
+    is never shown for the new words — dropped — and the round is tried again a moment later, the new split read
+    (review L-S1)."""
+    import time
+    monkeypatch.setattr(card_chip, "RETRY_S", 0.05)
+    lib = _Lib(tmp_path)
+    lib.made = {1: {"延長", "小説"}}
+    lib.flags = {1: {"延長": True, "小説": False}}
+    busy = []
+
+    def read_listed(_l, ids):
+        if busy:
+            busy.pop()
+            return None
+        return {i: dict(lib.flags.get(i, {})) for i in ids}
+    chips = lib.chips()
+    chips._read_listed = read_listed
+    try:
+        chips.want({1: ("a.srt", 1, 2)})
+        assert chips.idle(10) and chips.answers()[("level", 1)] == (1, 1)
+        lib.made = {1: {"延長", "雨宿り"}}
+        lib.flags = {1: {"延長": True, "雨宿り": True}}
+        busy.append(1)
+        chips.want({1: ("a.srt", 1, (2, "swapped"))})
+        assert chips.idle(10) and ("level", 1) not in chips.answers()
+        deadline = time.monotonic() + 5
+        while chips.answers().get(("level", 1)) is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert chips.idle(10) and chips.answers()[("level", 1)] == (2, 0)
+    finally:
+        chips.close()

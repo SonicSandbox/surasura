@@ -173,7 +173,7 @@ class Chips:
             try:
                 ids = tuple(int(x) for x in k.split(","))
                 out[("level", ids[0] if len(ids) == 1 else ids)] = (int(n[0]), int(n[1]))
-            except (TypeError, ValueError, IndexError):
+            except (TypeError, ValueError, IndexError, KeyError):
                 continue
         with self._lock:
             if not self._handed:
@@ -336,6 +336,8 @@ class Chips:
                 made_owed.append(item_id)
         made = self._read_made(self.language, made_owed) if made_owed else {}
         listed = self._read_listed(self.language, made_owed) if made_owed and made is not None else None
+        if made_owed and made is not None and listed is None:
+            self._failed = True                        # (review L-S1) the ledger busy: its split read again later
         for item_id in reread:
             window_idle.pause()                        # (Up next 3: a young window stretch waited out, file by file)
             words = self._file_words(asks[item_id][0])
@@ -357,7 +359,9 @@ class Chips:
             got = None if made is None else made.get(item_id)
             if got is None and made is None:
                 continue                                       # the store can't be read now: asked again next time
-            if listed is not None:                             # lean A: each made word on the list or below it
+            if listed is None:
+                self._level.pop(item_id, None)                 # (L-S1) never a split from before its words moved
+            else:                                              # lean A: each made word on the list or below it
                 flags = listed.get(item_id) or {}
                 at = sum(1 for w in got or () if flags.get(w) is True)
                 below = sum(1 for w in got or () if flags.get(w) is False)
@@ -375,8 +379,8 @@ class Chips:
         for item_id in set(reread) | set(made_owed):
             if item_id not in self._files:
                 continue                                       # no count of it yet: looked at again at its next ask
-            # its made words owed while the store can't be read (None: read again at the next round)
-            cards = None if made is None and item_id in made_owed else asks[item_id][2]
+            # its made words owed while the store (or the ledger's marks) can't be read: read again next round
+            cards = None if (made is None or listed is None) and item_id in made_owed else asks[item_id][2]
             self._looked[item_id] = tuple(asks[item_id][:2]) + (cards,)
         # rows: the ones gone, the ones new
         for key in [k for k in self._rows if k not in rows]:

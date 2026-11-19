@@ -51,6 +51,7 @@ MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modul
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
 SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
+CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
 
 # Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
 # page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
@@ -439,6 +440,7 @@ NOT_SHOWN = {
     "onboarding_completed": "state: the first start's",
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
+    "known_from_anki_chosen": "state: written beside *Count as known in Anki*'s pick (Kantan-B3)",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
@@ -783,7 +785,10 @@ def change(row, settings, language, new):
     if rides:                                   # a9.1: the sync's switch rides along (`_wanted`), never shown here
         current[SYNC_SUSPENDED] = bool(_one(settings, SYNC_SUSPENDED, language))
     keys = set(row.keys) | ({SYNC_SUSPENDED} if rides else set())
-    return {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}, None
+    out = {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}
+    if row.id == "known_from_anki" and row.keys[0] in out and _one(settings, CHOSEN, language) is not True:
+        out[CHOSEN] = True                      # Kantan-B3: a pick, never read as an old default again
+    return out, None
 
 
 def _member(row):

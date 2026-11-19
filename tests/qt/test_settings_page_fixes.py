@@ -526,7 +526,8 @@ def test_picking_a_second_state_names_both_under_count_as_known_and_taking_it_of
     page._settle()
     view = page.rows["known_from_anki"]
     assert view.help.text() == catalog.ROW["known_from_anki"].help
-    assert _written(store, view.controls[0], ["suspended", "marked"]) == [{"known_from_anki": ["suspended", "marked"]}]
+    assert _written(store, view.controls[0], ["suspended", "marked"]) == \
+        [{"known_from_anki": ["suspended", "marked"], "known_from_anki_chosen": True}]    # + Kantan-B3's marker: a pick
     store.land()
     assert view.help.text() == S.KNOWN_ALL_OF.format(states="Suspended + Marked")
     assert _written(store, view.controls[0], ["marked"]) == [{"known_from_anki": ["marked"]}]

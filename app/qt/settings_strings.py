@@ -220,12 +220,14 @@ ROWS = {
     "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
                                     "Studied, then suspended: counts as known. New cards you suspend never count.",
                                     "suspended known count as known in anki"),
+    # Kantan-B3 (Sonic 2026-11-18): the default is Suspended + Marked — a plain suspend often means "a bad sentence,
+    # I still want the word" (the ? line, ≤ 12 words: PROVISIONAL)
     "known_from_anki": ("Count as known in Anki",
-                        "A card must match every state you pick.",
-                        "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
-                        "next sync, and you can undo it. A card counts only when it is in every state you pick — "
-                        "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
-                        "asked about once. New cards count too. None picked: off",
+                        "Default: Suspended + Marked. A plain suspend (a bad sentence) never counts",
+                        "Suspend and mark a card in Anki to say “I know this”: its word turns known at the next "
+                        "sync, and you can undo it. A card counts only when it is in every state you pick, so a "
+                        "card you only suspend (a bad sentence) never counts by default. Cards already suspended and "
+                        "marked are asked about once. New cards count too. None picked: off",
                         "known from anki suspended marked flag count suspended cards as known"),
 
     # Anki & mining

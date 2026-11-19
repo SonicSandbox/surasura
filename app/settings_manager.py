@@ -186,10 +186,17 @@ DEFAULT_SETTINGS = {
     "connect_clip_cuts": "auto",
     "connect_low_priority": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
-    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
-    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
-    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
-    "known_from_anki": ["suspended"],
+    # ("and"): "suspended", "marked", "flag:1" … "flag:7"; [] is off. The default is Suspended AND Marked (Kantan-B3,
+    # Sonic 2026-11-18: a plain suspend often means "a bad sentence, I still want the word", so it never counts by
+    # itself); a file that names the key keeps its own terms, except the old default saved without a pick (below,
+    # `known_from_anki_chosen`). Surasura's own suspensions (the shelf, Junban's "later") and Anki's leeches never
+    # count. Read by the known-words sync only while Connect's preview is on (2.x). Never in a signature: what it adds
+    # is in KnownWord.json.
+    "known_from_anki": ["suspended", "marked"],
+    # True once the learner picked *Count as known in Anki*'s states (Kantan-B3): a first save with no settings.json
+    # yet writes every default (`_read_file_as_is`), so a saved ["suspended"] without it is the old default, never a
+    # choice (`load_settings` reads today's). Written beside every pick (the Settings row, the 2.x panel).
+    "known_from_anki_chosen": False,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
@@ -366,6 +373,10 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                 if key != "logic":
                     settings[key] = value
             settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
+            # Kantan-B3: the old default of *Count as known in Anki*, saved without a pick (a first save wrote every
+            # default), reads as today's default; a learner's own pick carries `known_from_anki_chosen`
+            if user_settings.get("known_from_anki") == ["suspended"] and not user_settings.get("known_from_anki_chosen"):
+                settings["known_from_anki"] = copy.deepcopy(DEFAULT_SETTINGS["known_from_anki"])
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e

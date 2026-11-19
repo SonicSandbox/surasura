@@ -5108,6 +5108,7 @@ def settings_signature(settings, language):
         "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
+        "known_from_anki_chosen",       # Kantan-B3: whether those states are the learner's pick, never a run
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run
         "connect_spot_every_episode",   # Michi-T1: when Connect hears a timed video's audio, never a run

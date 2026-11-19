@@ -43,6 +43,7 @@ UNDO_NAME = "Surasura settings before import {stamp}.json"     # beside the date
 FOLDERS = "connect_video_folders"
 MINER_PATH = "connect_anki_miner_path"
 PROGRAMS = {"open_video": "open_video_program", "open_book": "open_book_program"}   # *Videos / Books open in*
+PAUSED = "paused"                # Mado-PZ: this PC's paused circles — never exported; an import keeps this PC's
 # A key named like a secret never leaves or comes in (none is in settings.json: Speech's key is in its keystore)
 SECRET = re.compile(r"(^|_)(api_?key|key|token|secret|password|passwd|credentials?)s?$", re.IGNORECASE)
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
@@ -169,7 +170,7 @@ def build(settings=None, now=None):
     """The export's dict: settings.json as the file holds it (or `settings`), secrets left out at any depth, stamped."""
     from app.services.settings import file_as_is
     held = file_as_is() if settings is None else settings
-    held = {k: v for k, v in _no_secrets(held).items() if isinstance(k, str)}
+    held = {k: v for k, v in _no_secrets(held).items() if isinstance(k, str) and k != PAUSED}
     loaded = settings_manager.load_settings() if settings is None else held
     return {MARK: FORMAT, "version": app_version(), "language": loaded.get("target_language") or "ja",
             "exported": (now or _now()).isoformat(timespec="seconds"), "settings": held}
@@ -305,7 +306,11 @@ def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
         except OSError as e:
             return Outcome(False, STRINGS["backup_failed"].format(why=e.strerror or e))
         undo = _undo(backup)
-        if not settings_manager.save_settings(dict(plan.settings)):
+        new = {k: v for k, v in plan.settings.items() if k != PAUSED}
+        here = settings_manager.paused(settings_manager.load_settings())    # (a pause is resumed only by a click)
+        if here:
+            new[PAUSED] = sorted(here)
+        if not settings_manager.save_settings(new):
             return Outcome(False, STRINGS["write_failed"], backup)
     finally:
         if held is not None:

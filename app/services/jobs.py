@@ -281,12 +281,13 @@ class JobRegistry:
             self._subscribers.append(callback)
 
     # --- holding ------------------------------------------------------------------------------------------------ #
-    def gate(self, check):
+    def gate(self, check, automatic=False):
         """Hold gated jobs back while `check(kind)` names a reason (plain words; None lets it start) — the update's
-        "no new work while it waits" (W3.5 row 1). Asked under the registry's lock: a flag read, nothing slower. A job
-        already running is not stopped. After a gate opens, its owner calls `reschedule()`."""
+        "no new work while it waits" (W3.5 row 1). `automatic`: asked of automatic jobs only (Mado-PZ: a paused
+        circle's — a job you asked for is never held by it). Asked under the registry's lock: a flag read, nothing
+        slower. A job already running is not stopped. After a gate opens, its owner calls `reschedule()`."""
         with self._lock:
-            self._gates.append(check)
+            self._gates.append((check, automatic))
         self._schedule()
 
     def reschedule(self):
@@ -338,10 +339,12 @@ class JobRegistry:
                     return other                  # the order asked for — but a user's job never waits on an automatic one
         return None
 
-    def _held(self, kind):
-        for check in self._gates:
+    def _held(self, job):
+        for check, automatic in self._gates:
+            if automatic and not job.automatic:
+                continue
             try:
-                reason = check(kind)
+                reason = check(job.kind)
             except Exception:
                 reason = None
             if reason:
@@ -353,7 +356,7 @@ class JobRegistry:
         with self._lock:
             earlier = []
             for job in [j for j in self._jobs if j.gated and j.state in (QUEUED, WAITING)]:
-                held = self._held(job.kind)
+                held = self._held(job)
                 blocker = None if held else self._blocker(job, earlier)
                 if held:
                     job.state, job.reason = WAITING, held

@@ -257,6 +257,8 @@ class MineActions(QObject):
         """Round 8 row 45: the ask saved — Connect's feed looked at now, not at its next tick, and its presses end
         `SETTLE_S` later if Connect hasn't moved them by then (A-4); refused — failed; undone — done."""
         if event == "saved":
+            if "miner" in getattr(self.win.services, "paused", ()):     # Mado-PZ: the ask waits for the resume
+                self.win.say(strings.MINE_PAUSED)
             refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")

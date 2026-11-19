@@ -492,12 +492,14 @@ class AutoGenerate:
 
 def reorders(settings, language):
     """Whether 順's automatic step may re-order Anki here (W3.5 row 7): never with automation off (D29: every
-    automatic Anki write), never while the re-order host runs for this language (`replan_preview.automation_on`: one
+    automatic Anki write) or 順 paused (Mado-PZ: the host's catch-up re-orders once it resumes, never this step too),
+    never while the re-order host runs for this language (`replan_preview.automation_on`: one
     re-order per Generate, the host's — as the Tk `_maybe_junban_auto`), and only to the deck recorded for this language
     (`recorded_deck`, Haya G3). An answer that can't be had is no. A worker's call."""
     try:
         from app import replan_preview, settings_manager
-        return (settings_manager.automation(settings) and not replan_preview.automation_on(settings, language)
+        return (settings_manager.automation(settings) and not settings_manager.paused(settings, "junban")
+                and not replan_preview.automation_on(settings, language)
                 and replan_preview.recorded_deck(settings, language) is not None)
     except Exception as e:
         print(f"順 (automatic): its re-order's switch couldn't be read: {e}")

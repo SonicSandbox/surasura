@@ -218,6 +218,7 @@ STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Cards made for you was switched off."
+PAUSED = "Anki Miner was paused at the bar."       # Mado-PZ: what's left waits in the ledger for the click that resumes
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
 REPLACED = "Surasura was updated: the new version makes the cards from here."
 MINER_ABSENT = "Anki Miner isn't installed"
@@ -427,6 +428,9 @@ def _stop(steps):
         return STOPPED_FOR_UPDATE
     if not steps.enabled():
         return SWITCHED_OFF
+    paused = getattr(steps, "paused", None)
+    if paused is not None and paused():
+        return PAUSED
     if _replaced(steps):
         return REPLACED
     return None
@@ -2573,6 +2577,16 @@ class Steps:
         from app.cli import verbs
         try:
             return settings_manager.connect_on(verbs.settings())
+        except Exception:
+            return False
+
+    def paused(self):
+        """Mado-PZ: Anki Miner's circle paused at the bar (settings.json now, read at each step boundary): the run stops
+        there, its jobs kept in the ledger for the next start. A file that can't be read is no pause (`enabled` says)."""
+        from app import settings_manager
+        from app.cli import verbs
+        try:
+            return settings_manager.paused(verbs.settings(), "miner")
         except Exception:
             return False
 

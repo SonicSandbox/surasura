@@ -1176,6 +1176,18 @@ def _trash_moved(win, change):
         print(f"Window drag: the Removed list wasn't read again: {e!r}")
 
 
+def _words_heard(win, change):
+    """Kantan-B2: an *Allow again* saved or undone, as it lands — the open *Words Surasura won't mine again* lists read
+    again (`unmined_words.words_heard`; a ticket's "undone" is told at the Undo's press, before it lands)."""
+    if getattr(change, "kind", None) != "allow_again":
+        return
+    try:
+        from app.qt import unmined_words
+        unmined_words.words_heard(win)
+    except Exception as e:                           # (the list stays as it was until it is read again)
+        print(f"Window drag: the words list wasn't read again: {e!r}")
+
+
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
 
 
@@ -2574,11 +2586,13 @@ class DragController(QObject):
         _skips_moved(self.win, change)
         _sources_stopped(self.win, change, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
+        _words_heard(self.win, change)
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
         _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
+        _words_heard(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if change is not None:
             self._marks_of.pop(change, None)

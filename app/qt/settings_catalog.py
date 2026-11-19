@@ -240,6 +240,8 @@ ROWS = (
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
+    # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
+    _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them

@@ -164,6 +164,8 @@ DOORS = {
     "koe": ("Speech settings…", "Set the API key, voice and delivery for spoken sentences"),
     "sentence-dictionary": ("Export", "Exports Surasura Corpus for Yomitan"),
     "frequency-lists": ("Add…", "Add or remove a frequency list"),
+    "unmined-words": ("Words…", "Opens the words whose cards you deleted in Anki: Surasura never mines them again, "
+                                "unless you allow one"),
     "library-folders": ("Manage folders…", "Opens your folders: stop reading one, read a skipped one again, or look "
                                            "in them all again"),
 }
@@ -282,6 +284,11 @@ ROWS = {
                              "play in time with the video. With neither on this PC, every episode waits for Mine "
                              "anyway. Turn this on if your subtitles are already synced. hato’s untimed subtitles "
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
+    # Kantan-B2 (PROVISIONAL words)
+    "unmined_words": ("Words it won't mine again", "Cards you deleted in Anki",
+                      "A card you delete in Anki is never made again by itself. These are its words: allow one again "
+                      "and the next episode that has it makes its card", "deleted cards words mine again allow "
+                      "never made again record reset"),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
     "connect_spot_every_episode": ("Check every episode’s audio first",
                                    "Slower: Surasura listens to each episode before its cards, not once a release",

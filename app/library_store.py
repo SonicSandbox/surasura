@@ -6829,6 +6829,71 @@ class Store:
         return self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                                  (name,)).fetchone() is not None
 
+    # --- Kantan-B2: the words Surasura won't mine again (a new tester, 2026-11-18: "where does it keep that?") ---- #
+    def unmined_words(self, item_ids=None):
+        """The words Connect made a card for whose every card is gone from Anki — each `made_words` row of the word
+        emptied by `notes_gone` (G1.3-4: never made again unless you ask) -> [{"word", "items": [item ids, the newest
+        made first], "made_at": its last}], the newest first. `item_ids`: only the words one of those items made.
+        A read (no write); [] while the table isn't there."""
+        if not self._has_table("made_words"):
+            return []
+        with self._reading():
+            rows = self.conn.execute(
+                "SELECT word, item_id, made_at FROM made_words WHERE word IN (SELECT word FROM made_words GROUP BY "
+                "word HAVING SUM(note_ids NOT IN ('[]', '')) = 0) ORDER BY made_at DESC, item_id DESC").fetchall()
+        out, by_word = [], {}
+        for word, item_id, made_at in rows:
+            entry = by_word.get(word)
+            if entry is None:
+                entry = by_word[word] = {"word": word, "items": [], "made_at": made_at}
+                out.append(entry)
+            entry["items"].append(item_id)
+        if item_ids is not None:
+            wanted = set(item_ids)
+            out = [e for e in out if wanted & set(e["items"])]
+        return out
+
+    def allow_again(self, words):
+        """*Allow again* (Kantan-B2): each word whose every card is gone from Anki is freed — its `made_words` rows
+        deleted, so a later job may make its card again; a word with a card still in Anki (or not recorded) is left
+        as it is. One command; Undo puts the rows back (`_undo_allow`). -> the Change (`made_rows`: the rows taken), or
+        None (nothing to free)."""
+        words = sorted({str(w) for w in words or () if w})
+        if not words or not self._has_table("made_words"):
+            return None
+        with self._command("allow_again") as cmd:
+            rows = []
+            for chunk in _chunks(words, 500):
+                rows += self.conn.execute(
+                    f"SELECT item_id, word, note_ids, made_at, batch FROM made_words WHERE word IN "
+                    f"({','.join('?' * len(chunk))})", chunk).fetchall()
+            held = {r[1] for r in rows if _json_list(r[2])}
+            take = [tuple(r) for r in rows if r[1] not in held]
+            if not take:
+                return None
+            self.conn.executemany("DELETE FROM made_words WHERE item_id = ? AND word = ?", [(r[0], r[1]) for r in take])
+            cmd.touch()
+            change = self._change(cmd, "allow_again")
+            change.made_rows = take
+            return change
+
+    def _undo_allow(self, cmd, change):
+        """*Allow again* undone: each row back — unless the word was made again meanwhile (a row there now: the new
+        card's record stands, the value check)."""
+        out = self._change(cmd, "undo")
+        back, skipped = [], []
+        for row in change.made_rows:
+            if self.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? AND word = ?", row[:2]).fetchone():
+                skipped.append(row[0])
+                continue
+            self.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                              "(?, ?, ?, ?, ?)", row)
+            back.append(row)
+        if back:
+            cmd.touch()
+        out.made_rows = back
+        return out, skipped
+
     def _notes_held(self, gone):
         """(the gone notes the store holds, [(item_id, word)] for each made word that names one, [trash ids] for each
         removed item whose kept links name one). A list entry that isn't a note id is kept as it is, never a reason
@@ -7050,6 +7115,8 @@ class Store:
                 out, skipped = self._undo_options(cmd, change)
             elif kind == "stop_source":
                 out, skipped = self._undo_roots(cmd, change)
+            elif kind == "allow_again":                              # Kantan-B2: the freed words' rows back
+                out, skipped = self._undo_allow(cmd, change)
             elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "move" and change.status:      # P4.1 L2 (TF fix 8): out of Finished, back in the order

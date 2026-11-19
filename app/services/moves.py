@@ -556,6 +556,11 @@ class Writer:
         """`Store.ask_mining`: the finishing toast's *Mine it too*."""
         return self._put({"op": "ask_mining", "ids": list(ids), "on": bool(asked), "label": label})
 
+    def allow_again(self, words, label=None):
+        """`Store.allow_again` (Kantan-B2): words whose cards you deleted in Anki, free to be made again — one change,
+        one Undo. Never journalled (a crash before it lands: the list still shows them)."""
+        return self._put({"op": "allow_again", "ids": [], "words": list(words), "label": label})
+
     def split(self, piece_id, at_item_id, label=None):
         """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
         return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
@@ -1169,6 +1174,8 @@ class Writer:
             return store.set_learning_order(ids, cmd["on"])
         if op == "ask_mining":
             return store.ask_mining(ids, cmd["on"])
+        if op == "allow_again":                     # Kantan-B2
+            return store.allow_again(cmd["words"])
         if op == "split":
             return store.split(cmd["piece_id"], ids[0])
         if op == "join":
@@ -1992,7 +1999,7 @@ PLACED_TOP = {"top": "now", "goal": "goal"}
 #   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
 #   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
+             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source", "allow_again")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)
@@ -2073,6 +2080,8 @@ def _refused(change, out):
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "stop_source":
         return not getattr(out, "roots", None)      # T6 (A4): read again meanwhile — the value check wrote nothing
+    if change.kind == "allow_again":
+        return not getattr(out, "made_rows", None)  # Kantan-B2: every word made again meanwhile
     if change.kind == "import_finished":
         return _skips(out) >= len(change.items) + len(change.added)
     if change.kind in ("split", "join", "ungroup"):

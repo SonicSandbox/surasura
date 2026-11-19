@@ -224,7 +224,7 @@ class StandinWriter:
             if landing.get("numbers_ahead"):
                 self.numbers.landed()
 
-    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False, exact=False):
         return self._run(ids, label, lambda: self._move_now(ids, tier, before_id, after_id))
 
     def nudge(self, ids, direction, label=None):

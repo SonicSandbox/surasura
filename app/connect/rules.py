@@ -53,5 +53,6 @@ def apply(store, item_id, record, settings):
         return target
     if target == "after-show":          # the store's own rule, as `register` and a folder's take-in place (Decision 1)
         return target if store.place([item_id], "after-show", by=source, explicit=1) is not None else None
-    library.place(store, item_id, {"top": "now"}.get(target, target), source=source, explicit=1)
+    library.place(store, item_id, {"top": "now"}.get(target, target), source=source, explicit=1,
+                  exact=True)               # (a rule's target is exactly that: its Top the very top, Kura-EO D-1)
     return target

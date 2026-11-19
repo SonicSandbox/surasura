@@ -433,6 +433,11 @@ def test_a_kept_out_row_written_or_dropped_marks_the_copy_to_be_written(language
         refused = int(again.meta().get("copy_dirty") or 0)
         assert refused > before
         os.remove(path)                                                           # (hato's file gone meanwhile)
+        again.let_drops_back = lambda: 0                                          # (the folder read again alone ...)
         again.read_folder_again(folder)
-        assert again.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = ?", (ls.DROP_SKIPPED,)).fetchone()[0] == 0
-        assert int(again.meta().get("copy_dirty") or 0) > refused
+        del again.let_drops_back
+        read = int(again.meta().get("copy_dirty") or 0)
+        assert again.let_drops_back() == 0                                        # (... then the let-back: its row
+        assert again.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = ?",   # dropped, the file gone)
+                                  (ls.DROP_SKIPPED,)).fetchone()[0] == 0
+        assert int(again.meta().get("copy_dirty") or 0) > read

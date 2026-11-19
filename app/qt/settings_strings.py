@@ -117,6 +117,22 @@ SECTIONS = {
     "content": "Content", "arrivals": "New arrivals", "connect": "Connections", "reading": "Journey",
     "sentences": "Sentences", "export": "Export", "app": "App",
 }
+# Fine-tune (Mado-EZA: EZ-4, EZ2-9; every word PROVISIONAL): the nav's three heads over the sections, a changed row's
+# dot and its *back to it*, *↺ Reset section* (never usage counts, updates, automation, the language or folders), the
+# toast a save shows with its Undo, and a closed *More options* fold's values on one line
+HEADS = {"cards": "Cards", "library": "Library", "app": "App"}
+CHANGED_NAME = "You changed this"
+CHANGED_TIP = "You changed this · default: {default}\n• Click: back to it"
+RESET_SECTION = "↺ Reset section"
+RESET_SECTION_TIP = ("This section's settings back to their defaults\n"
+                     "• Never usage counts, updates, automation, language or folders")
+RESET_NOTHING_TIP = "Nothing here differs from its default"
+RESET_DONE = "↺ {section}: back to defaults"
+SAVED = "✓ Saved"
+FOLDED_VALUE = "{label}: {value}"
+FOLDED_SEP = " · "
+VALUE_NONE = "none"
+VALUE_COUNT = "{n} added"
 # S1 · Settings say why (Kantan-S1; Kantan-X's EXPERIENCE.md §5, mock 03; every word PROVISIONAL): the sections that
 # hide value say their plain name first, the module's name small beside it, and one line on what you get under it; a
 # needs line only while something is missing, with *Show me* where that is (the page's `reveal`)

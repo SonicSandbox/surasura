@@ -580,7 +580,7 @@ def test_slash_focuses_the_search_and_esc_in_it_clears_it_first(qapp):
     page.setFocus()
     QTest.keyClick(page, Qt.Key.Key_Slash)
     assert page.search.edit.hasFocus()
-    assert page.scroll.verticalScrollBar().value() == 0   # the search stands first: brought into view
+    assert page.scroll.verticalScrollBar().value() == 600  # pinned above the scroll: the page stays (EZ-4)
     QTest.keyClicks(page.search.edit, "names")
     QTest.keyClick(page.search.edit, Qt.Key.Key_Escape)
     assert page.search.edit.text() == ""

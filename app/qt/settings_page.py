@@ -48,8 +48,8 @@ from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                             QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                             QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from app import theme
 from app.qt import applog, bridge, logos, motion, style, windows
@@ -286,6 +286,15 @@ class Slab(QWidget):
         head.addWidget(self.tag)
         head.addWidget(self.why, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
+        # Fine-tune (EZ-4): *↺ Reset section*, on a section with a row it can put back; greyed while none differs. Its
+        # room is kept, so a section's head is one height whatever it holds (a choice never moves the page)
+        self.reset = sc.Door(S.RESET_SECTION, tooltip=S.RESET_NOTHING_TIP, parent=self.head)
+        self.reset.setEnabled(False)
+        policy = self.reset.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.reset.setSizePolicy(policy)
+        self.reset.setVisible(any(catalog.resets(row) for row in catalog.rows(section.id)))
+        head.addWidget(self.reset, 0, Qt.AlignmentFlag.AlignVCenter)
         box.addWidget(self.head)
         self.about = QWidget(self)                     # S1: what it needs while that's missing (shown only then)
         about = QVBoxLayout(self.about)
@@ -314,7 +323,9 @@ class Slab(QWidget):
         self.more.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.more.setCursor(Qt.CursorShape.PointingHandCursor)
         more.addWidget(self.more)
-        more.addStretch(1)
+        self.folded = Elided(self.more_row)            # EZ2-9: the closed fold's values, on one line beside it
+        self.folded.setObjectName("settingshelp")
+        more.addWidget(self.folded, 1)
         box.addWidget(self.more_row)
         self.more_row.setVisible(False)
         self.adv = QWidget(self)
@@ -387,7 +398,21 @@ class Slab(QWidget):
         self.more_row.layout().setContentsMargins(round(side * f), round(top * f), round(side * f), round(bottom * f))
         icon = round(theme.size("settings-more-icon", style.current()[1]))
         self.more.setIconSize(QSize(icon, icon))
+        self.more_row.layout().setSpacing(round(12 * f))
+        self.folded.restyle()
         self.setMaximumWidth(round(theme.size("settings-card-max", style.current()[1])))
+
+    def set_reset(self, any_differs):
+        """*↺ Reset section* lit while a row it puts back differs from its default; greyed (and saying so) else."""
+        if self.reset.isEnabled() != any_differs:
+            self.reset.setEnabled(any_differs)
+            self.reset.setToolTip(S.RESET_SECTION_TIP if any_differs else S.RESET_NOTHING_TIP)
+
+    def set_folded(self, words):
+        """The closed fold's line (EZ2-9): its rows' values, or "" while the fold is open (only when it moved: S19)."""
+        if self.folded.text() != words:
+            self.folded.setText(words)
+            self.folded.setToolTip(words.replace(S.FOLDED_SEP, "\n"))
 
 
 # a9.1 (Sonic: "the subtitles unless it's absolutely needed, to be hidden with a ? hover icon instead. To keep settings
@@ -483,6 +508,61 @@ class Words(QLabel):
         super().changeEvent(event)
 
 
+class Elided(QLabel):
+    """One line of words cut with … at its width (a closed fold's values): one line high whatever it says, never wider
+    than the room it is given — new words never move the page."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+
+    def restyle(self):
+        self.ensurePolished()
+        self.setFixedHeight(math.ceil(QFontMetricsF(self.font()).height()))
+
+    def paintEvent(self, event):
+        if not self.text():
+            return
+        p = QPainter(self)
+        rect = self.contentsRect()
+        words = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        self.style().drawItemText(p, rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                                  self.palette(), self.isEnabled(), words, QPalette.ColorRole.WindowText)
+        p.end()
+
+
+class ChangedDot(QAbstractButton):
+    """EZ-4 / EZ2-9: the dot at a changed row's left, in its margin (it never moves the row's words): its hover says
+    the default, a click (or Enter / Space) puts the row back to it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("settingsdot")
+        self.setAccessibleName(S.CHANGED_NAME)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide()
+
+    def sizeHint(self):
+        side = round(theme.size("settings-dot-hit", style.current()[1]))
+        return QSize(side, side)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        side = theme.size("settings-dot", style.current()[1])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(style.colours()["accent"]))
+        p.drawEllipse(QRectF((self.width() - side) / 2, (self.height() - side) / 2, side, side))
+        if self.hasFocus():
+            ring = style.qcolor(style.colours()["accent"])
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(ring)
+            p.drawEllipse(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1))
+        p.end()
+
+
 class RowView(QWidget):
     """One setting row (the mock's `.srow`): its label (its ? beside it: `HelpMark`) and help on the left, its control
     (and doors) on the right, in `slot`; when the row is too narrow for both side by side (text size L in a narrow
@@ -552,6 +632,7 @@ class RowView(QWidget):
             # a list grows downward from the row's top (a folder added never moves the control the click was on)
             line.addWidget(self.slot, 0, self._slot_align(False))
         line.setSizeConstraint(QBoxLayout.SizeConstraint.SetNoConstraint)
+        self.dot = ChangedDot(self)                 # EZ-4: in the left margin, out of the layout (`_place_dot`)
         self.set_words(row.label, row.help)
         self.restyle()
 
@@ -635,6 +716,24 @@ class RowView(QWidget):
         super().resizeEvent(event)
         self.arrange(event.size().width())
 
+    def _place_dot(self):
+        """The dot centred in the row's left margin, on its label's first line (the words stand at the row's top)."""
+        side = round(theme.size("settings-dot-hit", style.current()[1]))
+        self.dot.resize(side, side)
+        m = self.layout().contentsMargins()
+        line = QFontMetricsF(self.label.font()).height()
+        self.dot.move(max(0, (m.left() - side) // 2), round(m.top() + (line - side) / 2))
+
+    def set_dot(self, default_words):
+        """The dot shown with its default's words (`default_words`), or hidden (None) — only when that moved."""
+        shows = default_words is not None
+        if shows:
+            tip = S.CHANGED_TIP.format(default=default_words)
+            if self.dot.toolTip() != tip:
+                self.dot.setToolTip(tip)
+        if self.dot.isHidden() == shows:
+            self.dot.setVisible(shows)
+
     def set_words(self, label, help_):
         """The label, and the line under it: a live line, or a description on a `HELP_SHOWN` row (the level's readout
         too), in sight; any other description behind the ? (its text kept in `help`, hidden: one rule, every row)."""
@@ -660,6 +759,8 @@ class RowView(QWidget):
         self.slot.layout().setSpacing(round(8 * f))
         self.title.setSpacing(round(6 * f))
         self._fit_title()                         # a new text size: the label's words measured again
+        self.label.ensurePolished()
+        self._place_dot()
         if self.aside is not None:
             self.aside.setSpacing(round(8 * f))
         else:
@@ -744,6 +845,7 @@ class SettingsPage(QWidget):
         self._slice_end = None
         self.built_order = []                 # the sections in the order their first row was built
         self.built = False
+        self.last_toast = None                # (message, undo) of the last *Saved* / reset toast (EZ2-9)
         self._build_frame()
         self._queue = list(enumerate(catalog.ROWS))
         self.takes = {}                       # row id -> fn(value) -> True when it handled the change itself (P4)
@@ -765,7 +867,15 @@ class SettingsPage(QWidget):
         self.nav_panel.setAccessibleName(S.NAV_NAME)
         nav = QVBoxLayout(self.nav_panel)
         nav.setSpacing(round(2 * _f()))
+        self.nav_heads = {}                   # Fine-tune (EZ-4): head id -> its name above its sections
         for section in catalog.SECTIONS:
+            head = catalog.HEAD_OF.get(section.id)
+            if head is not None and head not in self.nav_heads:
+                label = QLabel(S.HEADS[head].upper(), self.nav_panel)
+                label.setObjectName("settingsnavhead")
+                label.setAccessibleName(S.HEADS[head])
+                self.nav_heads[head] = label
+                nav.addWidget(label)
             words = S.SECTION_NAMED.format(name=section.name, tag=S.NAV_TAGS[section.id]) \
                 if section.id in S.NAV_TAGS else section.name                 # S1: 順 beside Card order (mock 03)
             named = S.SECTION_NAMED.format(name=section.name, tag=S.SECTION_TAGS[section.id]) \
@@ -783,6 +893,18 @@ class SettingsPage(QWidget):
         nav.addStretch(1)
         line.addWidget(self.nav_panel)
         line.addWidget(style.separator(self, vertical=True))
+        # the search above the scroll, so it is in view wherever the page is (Sonic 2026-11-18, SPEC-r2 §0.5: "the
+        # search bar still there"); the scroll under it
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
+        self.top = QWidget(self)
+        top = QHBoxLayout(self.top)
+        self.search = Search(self.top)
+        self.search.edit.textChanged.connect(self._searched)
+        top.addWidget(self.search)
+        top.addStretch(1)
+        right.addWidget(self.top)
         self.scroll = _Scroll(self)
         self.scroll.setObjectName("settingsscroll")
         self.scroll.setWidgetResizable(True)
@@ -796,16 +918,14 @@ class SettingsPage(QWidget):
         outer.addStretch(0)
         self.column_box = QVBoxLayout(self.column)
         self.column_box.setContentsMargins(0, 0, 0, 0)
-        self.search = Search(self.column)
-        self.search.edit.textChanged.connect(self._searched)
-        self.column_box.addWidget(self.search, 0, Qt.AlignmentFlag.AlignLeft)
         self.nothing = QLabel(self.column)
         self.nothing.setObjectName("settingshint")
         self.nothing.setVisible(False)
         self.column_box.addWidget(self.nothing)
         self.column_box.addStretch(1)
         self.scroll.setWidget(self.body)
-        line.addWidget(self.scroll, 1)
+        right.addWidget(self.scroll, 1)
+        line.addLayout(right, 1)
         self.scroll.verticalScrollBar().valueChanged.connect(self._light_nav)
         self.scroll.verticalScrollBar().actionTriggered.connect(self._let_go)     # a wheel, a drag, a key: the user's
         self.scroll.verticalScrollBar().valueChanged.connect(self._scrolled)    # Tab's focus scroll, anyone's setValue
@@ -814,6 +934,15 @@ class SettingsPage(QWidget):
         settings, ctx = self._settings(), self._ctx()
         for section in catalog.SECTIONS:
             self.nav[section.id].setVisible(self._section_shows(section.id, settings, ctx))
+        self._show_heads()
+
+    def _show_heads(self):
+        """A head shown while any of its sections is (EZ-4); only when that moved."""
+        for head, sections in catalog.HEADS:
+            label = self.nav_heads[head]
+            shows = any(not self.nav[s].isHidden() for s in sections)
+            if label.isHidden() == shows:
+                label.setVisible(shows)
 
     def _apply_sizes(self):
         f = _f()
@@ -832,7 +961,10 @@ class SettingsPage(QWidget):
             b.setIcon(ic)
             b.setIconSize(QSize(icon, icon))
         top, side, bottom = theme.SPACING["settings-main"]
-        self.body.layout().setContentsMargins(round(side * f), round(top * f), round(side * f), round(bottom * f))
+        gap = round(theme.SPACING["settings-card-gap"] * f)
+        # the page's top margin above the pinned search; the scrolled body starts a slab's gap under it
+        self.top.layout().setContentsMargins(round(side * f), round(top * f), round(side * f), gap)
+        self.body.layout().setContentsMargins(round(side * f), 0, round(side * f), round(bottom * f))
         self.column.setMaximumWidth(round(theme.size("settings-card-max", size)))
         self.column_box.setSpacing(round(theme.SPACING["settings-card-gap"] * f))
         self.search.restyle()
@@ -1033,8 +1165,9 @@ class SettingsPage(QWidget):
             slab = Slab(catalog.SECTIONS[index], tint=False, parent=self.column)
             slab.more.clicked.connect(lambda _c=False, s=section_id: self.fold(s))
             slab.show_me.clicked.connect(lambda _c=False, s=slab: s.needs_now and self.reveal(s.needs_now[1]))
+            slab.reset.clicked.connect(lambda _c=False, s=section_id: self.reset_section(s))
             before = sum(1 for s in self.slabs if order.index(s) < index)
-            self.column_box.insertWidget(1 + before, slab)         # after the search, among the slabs in order
+            self.column_box.insertWidget(before, slab)             # among the slabs in order
             self.slabs[section_id] = slab
             self.built_order.append(section_id)
             slab.setVisible(False)
@@ -1089,6 +1222,9 @@ class SettingsPage(QWidget):
             view.group = None
         slab.place(view, index, row.adv)
         self.rows[row.id] = view
+        if catalog.holds_value(row):
+            view.dot.clicked.connect(lambda _c=False, r=row: self.back_to_default(r))
+            self._show_dot(view, settings)
         view.ensurePolished()                 # the style's work done in this slice, not when its slab first shows
         self.row_built.emit(row.id)
 
@@ -1187,12 +1323,7 @@ class SettingsPage(QWidget):
         keys on."""
         if row.id == "known_road":
             return catalog.known_road(settings, self.language, self._ctx())
-        value = catalog.value(row, settings, self.language)
-        if row.kind == "tablets" and len(row.keys) > 1:
-            return [key for key in row.keys if value.get(key)]
-        if row.kind == "range":
-            return tuple(value[key] or 0 for key in row.keys)
-        return value
+        return catalog.control_value(row, settings, self.language)
 
     def _show_value(self, view, settings):
         """Put the settings' value in `view`'s controls (no signal) -> True when one moved."""
@@ -1306,7 +1437,8 @@ class SettingsPage(QWidget):
 
     # --- saving ---------------------------------------------------------------------------------------------------- #
     def _changed(self, row, value, control):
-        """A control's change → the catalog's keys → the settings service (only what there is to write)."""
+        """A control's change → the catalog's keys → the settings service (only what there is to write); EZ2-9: the row
+        flashes and *✓ Saved* offers its Undo."""
         self._last = control
         self._let_go()
         take = self.takes.get(row.id)
@@ -1316,30 +1448,144 @@ class SettingsPage(QWidget):
             self._road = f"road:{value}"
             self._refresh_visibility(anchor=control)
             return
-        settings = self._settings()
+        before = self._settings()
+        written = self._write_row(row, value, before)
+        if written is None:
+            return
+        self._refresh_visibility(anchor=control)
+        self._saved(row, before, written)
+
+    def _write_row(self, row, value, settings):
+        """`value` for `row` through the catalog to the service, as its control's change writes it -> what was written
+        ({key: value}; a per-language row's whole new value), or None when there was nothing to write."""
         try:
             changes, update = catalog.change(row, settings, self.language, value)
         except (ValueError, TypeError) as e:
             applog.log("settings", f"{row.id}: {e}")
-            return
+            return None
         if row.keys[0] in catalog.PER_LANGUAGE:
             if update is None:
-                return
+                return None
             key = row.keys[0]
             self._overlay[key] = [changes[key], self._landings]          # shown until the merge lands (S1)
             self.store.set({}, update=update)
             from app.qt import settings_store
             settings_store.kick_on_release(settings, changes, self.store, win=self.shell)   # the cap changed:
             #                                                                     Connect looks again
-        elif changes:
-            self.store.set(changes)
-            from app.qt import settings_store
-            settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
-            settings_store.kick_on_release(settings, changes, self.store, win=self.shell)  # trust turned on: the
-            #                                                                    waiting ones mine
+            return changes
+        if not changes:
+            return None
+        self._write(settings, changes)
+        return changes
+
+    def _write(self, settings, changes):
+        """`changes` to the service, and what such a write sets going."""
+        self.store.set(changes)
+        from app.qt import settings_store
+        settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
+        settings_store.kick_on_release(settings, changes, self.store, win=self.shell)  # trust turned on: the
+        #                                                                    waiting ones mine
+
+    # --- Fine-tune: saved with Undo, a changed row's dot, *↺ Reset section* (EZ-4, EZ2-9; PROVISIONAL) ---------- #
+    def _saved(self, row, before, written):
+        """A row saved (EZ2-9): it flashes, and *✓ Saved*'s Undo puts it back as `before` held it — a per-language row
+        through its own merge (this language's entry only), any other its written keys as they were."""
+        view = self.rows.get(row.id)
+        if view is not None and view.isVisible():
+            self._wash(view)
+        if row.keys[0] in catalog.PER_LANGUAGE:
+            old_value = catalog.control_value(row, before, self.language)
+
+            def undo():
+                self._write_row(row, old_value, self._settings())
         else:
+            old = {key: catalog.plain(catalog.value_of(before, key)) for key in written}
+
+            def undo():
+                self._write(self._settings(), old)
+        self._toast(S.SAVED, lambda: self._undo(undo))
+
+    def _undo(self, write):
+        """A toast's Undo: its write, the rows shown again (the control last changed keeps its place)."""
+        if not _alive(self):
             return
-        self._refresh_visibility(anchor=control)
+        self._let_go()
+        write()
+        self._refresh_visibility(anchor=self._last)
+
+    def _toast(self, message, undo):
+        """The window's toast with its Undo (a page alone has none: it keeps the last in `last_toast`, as a test reads
+        it)."""
+        self.last_toast = (message, undo)
+        toasts = getattr(self.shell, "toasts", None)
+        if toasts is not None:
+            toasts.show(message, undo=undo)
+
+    def _show_dot(self, view, settings):
+        """A value row's dot (EZ-4): shown while it differs from its default, its hover naming the default."""
+        row = view.row
+        try:
+            changed = bool(view.controls) and not catalog.is_default(row, settings, self.language)
+            view.set_dot(catalog.words_of(row, catalog.defaults(), self.language) if changed else None)
+        except (ValueError, TypeError, KeyError, AttributeError) as e:     # a hand-edited value: no dot, the page goes on
+            applog.log("settings", f"{row.id}: its dot: {e}")
+            view.set_dot(None)
+
+    def back_to_default(self, row):
+        """A dot's click: `row` back to its default, as its control's change writes it — its owner's first (`takes`) —
+        with *✓ Saved* and its Undo."""
+        view = self.rows.get(row.id)
+        self._last = view
+        self._let_go()
+        default = catalog.default_value(row, self.language)
+        take = self.takes.get(row.id)
+        if take is not None and take(default):
+            return
+        before = self._settings()
+        written = self._write_row(row, default, before)
+        if written is None:
+            return
+        self._refresh_visibility(anchor=view)
+        self._saved(row, before, written)
+
+    def reset_section(self, section_id):
+        """*↺ Reset section*: every row shown here that it puts back (`catalog.resets`: never usage counts, updates,
+        automation, the language or a per-language value) at its default, in one write; a row its owner writes (the
+        text size, Motion: `takes`) through its owner. The toast's Undo puts each one back as it was."""
+        self._let_go()
+        settings, ctx = self._settings(), self._ctx()
+        rows = [row for row in catalog.rows(section_id) if row.id in self.rows and self._visible(row, settings, ctx)]
+        changes = catalog.reset_changes([row for row in rows if row.id not in self.takes], settings, self.language)
+        owned = []
+        for row in rows:
+            if row.id not in self.takes or not catalog.resets(row) or catalog.is_default(row, settings, self.language):
+                continue
+            default = catalog.default_value(row, self.language)
+            if self.takes[row.id](default):
+                owned.append((row, catalog.control_value(row, settings, self.language)))
+            else:
+                changes.update(catalog.change(row, settings, self.language, default)[0])
+        if not changes and not owned:
+            return
+        if changes:
+            self._write(settings, changes)
+        slab = self.slabs.get(section_id)
+        self._last = slab.reset if slab is not None else None
+        self._refresh_visibility(anchor=self._last)
+        old = {key: catalog.plain(catalog.value_of(settings, key)) for key in changes}
+
+        def undo():
+            for row, was in owned:
+                self.takes[row.id](was)
+            if old:
+                self._write(self._settings(), old)
+        self._toast(S.RESET_DONE.format(section=S.SECTIONS[section_id]), lambda: self._undo(undo))
+
+    def _words(self, row, settings):
+        try:
+            return catalog.words_of(row, settings, self.language)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return ""
 
     def _written(self, keys):
         """A write landed (anyone's): the rows showing its keys read again, every row's `when` asked again."""
@@ -1365,6 +1611,8 @@ class SettingsPage(QWidget):
                 continue
             if self._show_value(view, settings):
                 self.paints[row_id] += 1
+            if catalog.holds_value(view.row):
+                self._show_dot(view, settings)
         self._refresh_visibility(anchor=self._last, doors=windows._moves_doors(keys))
 
     def set_language(self, language):
@@ -1376,6 +1624,8 @@ class SettingsPage(QWidget):
         for view in self.rows.values():
             if self._show_value(view, settings):
                 self.paints[view.row.id] += 1
+            if catalog.holds_value(view.row):
+                self._show_dot(view, settings)
         self._refresh_visibility(anchor=self._last, doors=True)
         self.language_set.emit(language)
 
@@ -1468,6 +1718,7 @@ class SettingsPage(QWidget):
         nav_shows = any(visible.values())
         if nav.isHidden() == nav_shows:
             nav.setVisible(nav_shows)
+            self._show_heads()
         slab = self.slabs.get(section_id)
         if slab is None:
             return
@@ -1502,6 +1753,12 @@ class SettingsPage(QWidget):
             _unsized(slab.more_row, adv_count > 0)
             slab.more_row.setVisible(adv_count > 0)
         slab.set_open(opened, adv_count)
+        # Fine-tune (EZ-4, EZ2-9): the reset lit while a row it puts back differs; a closed fold's values on one line
+        slab.set_reset(any(catalog.resets(row) and visible[row.id] and row.id in self.rows
+                           and not catalog.is_default(row, settings, self.language) for row in catalog.rows(section_id)))
+        slab.set_folded("" if opened else S.FOLDED_SEP.join(
+            S.FOLDED_VALUE.format(label=row.label, value=self._words(row, settings)) for row in catalog.rows(section_id)
+            if row.adv and shown.get(row.id) and catalog.holds_value(row) and "{" not in row.label))
         slab_shows = bool(any_main or adv_count)
         if slab.isHidden() == slab_shows:
             slab.setVisible(slab_shows)
@@ -1544,16 +1801,17 @@ class SettingsPage(QWidget):
 
     # --- search ---------------------------------------------------------------------------------------------------- #
     def _searched(self, text):
-        """A keystroke: rows hidden and shown, nothing rebuilt. With the search in view nothing above it can move, so
-        nothing is settled or corrected on the keystroke (S3); the rows are laid out once as the pass ends (`_paused`)."""
+        """A keystroke: rows hidden and shown, nothing rebuilt, nothing settled or corrected on it (S3); the rows are
+        laid out once as the pass ends (`_paused`). The search stands above the scroll (always in view): its matches
+        are shown from the page's top, wherever the page was."""
         self._query = text
-        self._refresh_visibility(anchor=None if self._in_view(self.search) else self.search,
-                                 fallback=not self._in_view(self.search))
+        self._let_go()
+        self._refresh_visibility(anchor=None, fallback=False)
+        self.scroll.verticalScrollBar().setValue(0)
 
     def focus_search(self):
-        """`/`: the search, brought into view (it stands first) and focused."""
+        """`/`: the search focused (it stands above the scroll: always in view, the page stays where it is)."""
         self._let_go()
-        self.scroll.ensureWidgetVisible(self.search)
         self.search.edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.edit.selectAll()
 

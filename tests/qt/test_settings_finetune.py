@@ -60,10 +60,11 @@ def test_the_nav_lights_each_section_as_the_page_is_scrolled_to_it(qapp):
     bar = page.scroll.verticalScrollBar()
     shown = [s.id for s in catalog.SECTIONS if page.slabs[s.id].isVisibleTo(page)]
     assert len(shown) >= 10
+    third = page.scroll.viewport().height() // 3     # the spy's line (`_light_nav`, kept as it is: SPEC-r2 §0.5)
     for section_id in shown:
-        top = page._y_in_body(page.slabs[section_id])
+        top = max(0, page._y_in_body(page.slabs[section_id]) - third)
         if top > bar.maximum():
-            continue                                  # the page's last screen: it can't stand at the top
+            continue                                  # the page's last screen: it can't reach the line
         bar.setValue(top)
         QApplication.processEvents()
         assert [s for s, b in page.nav.items() if b.isChecked()] == [section_id]
@@ -71,7 +72,7 @@ def test_the_nav_lights_each_section_as_the_page_is_scrolled_to_it(qapp):
     QApplication.processEvents()
     lit = [s for s, b in page.nav.items() if b.isChecked()]
     assert len(lit) == 1 and shown.index(lit[0]) >= shown.index(max(
-        (s for s in shown if page._y_in_body(page.slabs[s]) <= bar.maximum()), key=shown.index))
+        (s for s in shown if page._y_in_body(page.slabs[s]) - third <= bar.maximum()), key=shown.index))
 
 
 # --- the search, pinned above the scroll ------------------------------------------------------------------------- #

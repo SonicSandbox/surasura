@@ -406,15 +406,14 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
-    # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
-    # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
-    # Content's *Sort again or start over…* offers it)
-    _row("surasura", "app", "links", options=("github", "discord", "website")),
-    # The Beta list, last on the page (Michi-LP, PROVISIONAL: after the links, so its name never stands over them alone
-    # — it did without the AI voice's module): one list, each item a switch and one ? line, off as shipped
+    # The Beta list (Michi-LP, PROVISIONAL): one list under one name, each item a switch and one ? line, off as shipped
     # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
     _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
     _row("connect_low_priority", "app", "toggle", ("connect_low_priority",), when=_CONNECT),     # Michi-LP
+    # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
+    # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
+    # Content's *Sort again or start over…* offers it). Never a row of the group above it (`settings_page`)
+    _row("surasura", "app", "links", options=("github", "discord", "website")),
 )
 ROW = {row.id: row for row in ROWS}
 # A row that stands stacked always (Sonic 2026-11-05: "One for the term and then a row or 2 for the buttons")

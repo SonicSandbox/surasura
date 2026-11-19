@@ -86,7 +86,9 @@ def test_the_machine_is_read_when_nothing_is_handed_in(monkeypatch):
 
 def test_the_profiles_own_value_is_read_from_anki_miners_settings_export():
     assert power.profile_cuts({"settings": {"max_parallel_workers": 3}}) == 3
-    for export in (None, {}, {"settings": None}, {"settings": {}}, {"settings": {"max_parallel_workers": "x"}}):
+    for export in (None, {}, {"settings": None}, {"settings": {}}, {"settings": {"max_parallel_workers": "x"}},
+                   {"settings": {"max_parallel_workers": 21}}, {"settings": {"max_parallel_workers": 0}},
+                   {"settings": {"max_parallel_workers": True}}):      # outside Anki Miner's 1–20, or a bool
         assert power.profile_cuts(export) is None
 
 

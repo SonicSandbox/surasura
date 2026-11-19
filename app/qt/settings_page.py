@@ -1490,9 +1490,13 @@ class SettingsPage(QWidget):
                 any_main += shows
             if view.group is not None:
                 groups[row.adv].append([view.group, False])
+            elif row.kind == "links":                        # a block of its own: never under the name above it
+                groups[row.adv].append([None, False])        # (Michi-LP: Beta stood over the links alone)
             if shows and groups[row.adv]:
                 groups[row.adv][-1][1] = True
         for group, shows in groups[False] + groups[True]:
+            if group is None:
+                continue
             shows = shows and matches is None                # group names hidden while searching
             _show(group, shows)
         opened = adv_count > 0 and (section_id in self._open or matches is not None)

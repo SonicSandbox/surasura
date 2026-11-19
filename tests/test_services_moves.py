@@ -1127,6 +1127,18 @@ def test_an_exact_move_left_in_the_journal_replays_exact_never_the_episode_order
     assert "exact" not in M._from_entry(M._entry(plain)), "a plain move replays as a plain move"
 
 
+def test_a_look_for_a_cover_again_left_in_the_journal_replays_as_the_lock_let_go():
+    """(Mado-CV 3.0.17) *Look for a cover again* (`set_cover(..., unlock=True)`) queued while the store was stuck is
+    journalled; its replay must still let the lock go — else the store refuses it (a locked cover takes no unlocked
+    write) and the learner's press is lost after a restart."""
+    cmd = {"op": "set_cover", "ids": [], "work_id": 7, "source": "generated", "ref": None, "path": None,
+           "locked": False, "label": "x", "unlock": True}
+    assert M._from_entry(M._entry(cmd)).get("unlock") is True
+    plain = dict(cmd)
+    del plain["unlock"]
+    assert not M._from_entry(M._entry(plain)).get("unlock"), "an ordinary cover write replays as one"
+
+
 def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_busy(stub_writer):
     numbers = Recorder()
     w, heard, store, opener = stub_writer(numbers=numbers)

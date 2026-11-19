@@ -484,6 +484,31 @@ def test_the_window_scans_after_its_first_frame_and_shows_the_poster_it_found(re
     assert wait_until(lambda: (settle() or True) and qcovers.held_bytes() > 0, 10)        # and its picture decoded
 
 
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_looked_for_again_a_generated_lock_finds_the_poster_beside_its_files_again(real, language):
+    """Mado-CV: *Look for a cover again* through the window's own writer and toast — once the lock is let go, the
+    title's files are looked at again and the poster beside them comes back (never before: the look waits for the
+    write to land)."""
+    def art(store):
+        rel = store.item(store.ids("now")[0])["rel_path"].rsplit("/", 1)[0] + "/poster.png"
+        poster(language, rel)
+    store, win, writer, frames = real(language, art)
+    item = store.ids("now")[0]
+    work = store.item(item)["work_id"]
+    assert wait_until(lambda: store._work_row(work)["cover_source"] == "file", 10)
+
+    def row():
+        w = store._work_row(work)
+        return SimpleNamespace(key=f"i{item}", work_id=work, title=w["title"], cover_title=w["title"],
+                               cover=view_rows.cover_of(dict(w)))
+    assert qcovers.use_generated(row())
+    assert wait_until(lambda: (settle() or True) and (store._work_row(work)["cover_source"],
+                                                      store._work_row(work)["cover_locked"]) == ("generated", 1), 10)
+    assert qcovers.look_again(row())
+    assert wait_until(lambda: (settle() or True) and store._work_row(work)["cover_source"] == "file", 10)
+    assert not store._work_row(work)["cover_locked"]
+
+
 # --- Change cover… on a real store ---------------------------------------------------------------------------------- #
 class Library:
     def __init__(self, language):
@@ -522,7 +547,7 @@ def test_change_cover_offers_choose_an_image_and_a_generated_cover_with_their_ti
     row = lib.row(lib.store.ids("now")[0])
     entries = qcovers.cover_menu_entries(row)
     assert [e[0] for e in entries] == ["cover-choose", "cover-generated"]
-    assert [e[1] for e in entries] == ["Choose an image…", "Use a generated cover"]
+    assert [e[1] for e in entries] == [strings.COVER_MENU["choose"][0], strings.COVER_MENU["generated"][0]]
     assert all(e[2] and callable(e[3]) for e in entries)       # a tooltip on each
     assert qcovers.cover_menu_entries(SimpleNamespace(work_id=None, cover=None)) == []
 
@@ -574,9 +599,52 @@ def test_use_a_generated_cover_locks_it_and_undo_takes_it_back(lib):
     assert qcovers.use_generated(row)
     assert wait_until(lambda: lib.record(row.work_id) == ("generated", None, True), 5)
     locked = lib.row(lib.store.ids("soon")[0])
-    assert [e[0] for e in qcovers.cover_menu_entries(locked)] == ["cover-choose"]     # already the generated, kept
+    assert [e[0] for e in qcovers.cover_menu_entries(locked)] == ["cover-choose", "cover-again"]   # kept: its way back
     lib.writer.undo()
     assert wait_until(lambda: lib.record(row.work_id) == before, 5)
+
+
+def test_a_generated_lock_offers_look_for_a_cover_again_which_lets_it_go_with_undo(lib):
+    """Mado-CV (a tester on 3.0.16: a generated cover pressed by mistake had no way back but its toast's Undo): a
+    locked generated cover offers *Look for a cover again* in its place, which lets the lock go (its own Undo) and
+    lets the title be asked online again at its next paint."""
+    item = lib.store.ids("soon")[0]
+    row = lib.row(item)
+    assert qcovers.use_generated(row)
+    assert wait_until(lambda: lib.record(row.work_id) == ("generated", None, True), 5)
+    locked = lib.row(item)
+    entries = qcovers.cover_menu_entries(locked)
+    assert [e[0] for e in entries] == ["cover-choose", "cover-again"]
+    assert tuple(entries[1][1:3]) == strings.COVER_MENU["again"] and all(strings.COVER_MENU["again"])
+    qcovers._online["asked"].add(row.work_id)                  # asked once this session, before the lock
+    assert qcovers.look_again(locked)
+    assert wait_until(lambda: lib.record(row.work_id) == ("generated", None, False), 5)
+    assert row.work_id not in qcovers._online["asked"], "asked online again at its next paint"
+    assert [e[0] for e in qcovers.cover_menu_entries(lib.row(item))] == ["cover-choose", "cover-generated"]
+    lib.writer.undo()
+    assert wait_until(lambda: lib.record(row.work_id) == ("generated", None, True), 5)
+
+
+def test_an_image_chosen_over_a_generated_lock_replaces_it(lib, tmp_path):
+    """Mado-CV: the learner's newer choice wins — *Choose an image…* over a locked generated cover is kept."""
+    item = lib.store.ids("now")[0]
+    row = lib.row(item)
+    assert qcovers.use_generated(row)
+    assert wait_until(lambda: lib.record(row.work_id) == ("generated", None, True), 5)
+    assert qcovers.choose_image(lib.row(item), path=write(str(tmp_path / "表紙.png"), png(30, 45, ROSE)))
+    assert wait_until(lambda: (settle() or True) and lib.record(row.work_id)[0] == "user", 5)
+    assert lib.record(row.work_id)[2] is True
+
+
+def test_the_cover_words_name_only_what_works_and_say_what_a_generated_cover_is():
+    """Mado-CV (PROVISIONAL words for Sonic): *Paste a link* names only the links 3.0 fetches (TMDB isn't in 3.0 —
+    a TMDB link pasted is still answered at once, `no_key`), and the generated cover's entry says it is a plain painted
+    card that no picture replaces."""
+    for text in (strings.COVER_PASTE[1], strings.COVER_PASTE_NOT_A_LINK):
+        assert "TMDB" not in text and "AniList" in text and "YouTube" in text
+    assert "TMDB" in strings.COVER_PASTE_WHY["no_key"]
+    label, tip = strings.COVER_MENU["generated"]
+    assert "generated" not in label.lower() and "online" in tip
 
 
 def test_a_read_only_library_changes_no_cover_and_says_so(lib, tmp_path):

@@ -67,6 +67,7 @@ BIG = 10 ** 6                   # a number field's ceiling where the catalog nam
 # What a store line reveals until P6 draws it (the RUNBOOK: until then, the switch's row / the Content section)
 FALLBACK = {"mine_line": "connect_enabled", "soon_line": "content", "connect_enabled": "connect_needs_miner"}
 PLACEHOLDER_KINDS = ("summary", "status", "custom", "action")
+LINE_ROWS = ("known_from_anki", "connect_needs_miner", "junban_scope")   # rows whose line `catalog.help_line` writes
 SETTLE_MORE = 4                 # `hold`: layout passes after the first settle while the held row still moves
 # `_settle`'s passes: one per level a size change climbs, from the deepest widget under the body (a field's edit, 8
 # down) to the body the scroll area resizes. Fewer and a line re-flowed deep in a row (Your setup's, 5 down) reached
@@ -1056,8 +1057,8 @@ class SettingsPage(QWidget):
         view = RowView(row, slab.adv if row.adv else slab.main)
         if "{" in row.label or "{" in row.help:                # a live word (the version, the deck): its owner's
             view.set_words(_live(row.label), _live(row.help))
-        elif row.id in ("known_from_anki", "connect_needs_miner"):   # a line of its own: the states picked (a7,
-            view.set_words(row.label, catalog.help_line(row, settings, self.language))   # DIAGNOSIS 3); a need (S2)
+        elif row.id in LINE_ROWS:                  # a line of its own: the states picked (a7, DIAGNOSIS 3); a need
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))   # (S2); Junban's deck
         if row.kind in PLACEHOLDER_KINDS:
             view.slot.layout().addWidget(self.slots[row.id])
         else:
@@ -1202,8 +1203,8 @@ class SettingsPage(QWidget):
                 self._show_decks(view, settings)
             return False
         value = self._shown(row, settings)
-        if row.id == "known_from_anki":                  # its line names the states picked (a7, DIAGNOSIS 3)
-            view.set_words(row.label, catalog.help_line(row, settings, self.language))
+        if row.id in LINE_ROWS and row.id != "connect_needs_miner":    # its line names the states picked (a7,
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))   # DIAGNOSIS 3), Junban's deck
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
         if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
@@ -1359,7 +1360,7 @@ class SettingsPage(QWidget):
             self.set_language(language)
             return
         settings = self._settings()
-        for row_id in catalog.rows_for(keys):
+        for row_id in dict.fromkeys(catalog.rows_for(keys) + catalog.lines_for(keys)):
             view = self.rows.get(row_id)
             if view is None or (view.row.keys and view.row.keys[0] in self._overlay):
                 continue

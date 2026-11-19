@@ -172,6 +172,10 @@ DEFAULT_SETTINGS = {
     # Never in a signature.
     "connect_video_folders": [],
     "connect_trust_timing": False,      # P-LF-9: mine an unpaired episode nothing here can check, at its own times
+    # Check every episode's audio first (Michi-T1, Sonic 2026-11-17): a timed video's audio heard before each
+    # episode's mining, as #498 built it; off, once a release, beside the mining (`runner.Steps._heard`). Never in a
+    # signature.
+    "connect_spot_every_episode": False,
     # Chinese cards' word audio (Zh-C, 2026-11-12, CLAUDE.md §1): Anki Miner reads a Chinese word aloud with Google's
     # text-to-speech — the word goes to Google — only while this is on; off, every Chinese run file leaves its
     # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.

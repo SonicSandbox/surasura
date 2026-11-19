@@ -157,6 +157,41 @@ def test_while_the_window_is_awake_pythons_lock_comes_back_to_it_at_once_and_at_
         sys.setswitchinterval(was)
 
 
+def test_a_stretch_that_goes_on_hands_the_lock_over_as_at_rest_till_the_window_rests(monkeypatch):
+    """The fine hand-over is a press's (a few ms): a stretch older than `LONG_S` — Settings built in ~135 turns of the
+    loop with no rest between, the start's first seconds — hands over as at rest from its next turn (the start's ten
+    busy workers spun at 0.25 ms: Settings 21 s instead of 1.3 s). Its rest ends it; the next wake is fine again. A
+    save under way keeps its own finer one. The clock is the test's (a stretch is old by the test's word)."""
+    import sys
+    clock = _Clock()
+    monkeypatch.setattr(window_idle, "time", clock)
+    was = sys.getswitchinterval()
+    try:
+        window_idle.set_switch(0.00025, 0.001)
+        sys.setswitchinterval(0.001)
+        window_idle.busy()                                         # (woke at 100.000)
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+        clock.t = 100.0 + window_idle.LONG_S - 0.001
+        window_idle.busy()                                         # (a turn of the loop, still young)
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+        clock.t = 100.0 + window_idle.LONG_S + 0.001
+        window_idle.busy()                                         # (the next turn: the stretch goes on)
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.hold(window_idle.SAVE_SWITCH_S)                # (a save in it: its own, finer, while it holds)
+        assert sys.getswitchinterval() == window_idle.SAVE_SWITCH_S
+        window_idle.let_go(window_idle.SAVE_SWITCH_S)
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.rest()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        clock.t = 200.0
+        window_idle.busy()                                         # (woke anew: a press's fine hand-over again)
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+    finally:
+        window_idle.set_switch(None, None)
+        window_idle.rest()
+        sys.setswitchinterval(was)
+
+
 def test_a_save_gets_pythons_lock_at_once_till_the_last_one_ends_then_the_hand_over_before_comes_back():
     """F13's leftover: while a store save holds the write lock (`hold` … `let_go`, `Store._writing`), the lock comes
     back to it at once; saves on two threads overlap, so only the last one's end puts back what was set before — the

@@ -5717,8 +5717,8 @@ def test_JR_a_journal_the_writer_removed_while_another_program_still_holds_it_re
         json.dump({"version": M.JOURNAL_VERSION, "pending": []}, f)
     looking = open_journal(path)                        # the scanner's look (it shares delete, as scanners do)
     try:
-        os.remove(path)                                 # the writer's remove: done, the name still listed
-        assert os.path.basename(path) in os.listdir(tmp_path)
+        os.remove(path)                                 # the writer's remove: done — the name still listed here
+        #   (delete pending, as on Windows 10 1809), or gone at once (a newer Windows' POSIX delete): gone either way
         assert read_journal(path) is None and journal_gone(path)
         assert left_beside(path) == []
     finally:

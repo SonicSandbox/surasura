@@ -323,3 +323,37 @@ def test_a_card_of_a_book_not_in_the_library_is_away_never_the_one_books(languag
     got = bs.look({1: f"{title}_25 @ ¶8", 2: f"{WORDS[language][2]}{WORDS[language][3]}_03 @ ¶2"}, items)
     states = sorted((s.cards, s.state) for s in got["shows"])
     assert states == [(1, "away"), (1, "in")]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_two_items_both_end_with_names_no_item(language, monkeypatch):
+    """Mutant D41 (2026-11-18): a study-order file whose path ends with two items' paths (a copy beside its original,
+    one folder deeper) can't be told: no item — so its cards keep their mined source — while a file one item names is
+    that item's. Its show is still named when both items are of one title (`file_shows`, as before)."""
+    import contextlib
+    from app import analyzer
+    w = WORDS[language]
+    rows = [(f"Sources/{w[0]}/{w[0]}_01.srt", w[0], 1), (f"Sources/old/Sources/{w[0]}/{w[0]}_01.srt", w[0], 2),
+            (f"Sources/{w[1]}/{w[1]}_01.srt", w[1], 3)]
+
+    class Store:
+        conn = type("C", (), {"execute": lambda self, *a: type("R", (), {"fetchall": lambda s: rows})()})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def _reading(self):
+            return contextlib.nullcontext()
+
+        def _versions(self):
+            return {"order_version": 1, "analysed_order_version": 1, "test": language}
+    monkeypatch.setattr(pins, "_open_store", lambda lang: Store())
+    found = [(f"D:/data/Sources/old/Sources/{w[0]}/{w[0]}_01.srt",), (f"D:/data/Sources/{w[1]}/{w[1]}_01.srt",)]
+    monkeypatch.setattr(analyzer, "resolve_found_files", lambda *a, **k: found)
+    show_tags._MEMO.clear()
+    assert show_tags.file_items(language) == [None, 3]
+    assert show_tags.file_shows(language) == [w[0], w[1]]
+    show_tags._MEMO.clear()

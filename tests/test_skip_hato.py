@@ -349,6 +349,9 @@ def test_a_newer_refused_record_replaces_the_one_kept_and_a_folder_read_again_me
         assert ls.register_headless(language, path, rec, data_dir=data_dir, user_files_dir=store.user_files_dir,
                                     looks=0).landed == "skipped"
     with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        assert _ids(again) == []                                                  # still skipped: nothing came in
+        assert again.let_drops_back() == 0
+        assert _ids(again) == []
         assert again.keep_drop_out(path, newer, folder + 999) is False          # (a skip that isn't there)
         again.read_folder_again(folder)
         (item,) = _ids(again)

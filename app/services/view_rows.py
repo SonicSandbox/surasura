@@ -172,6 +172,11 @@ View = namedtuple("View", View._fields + ("side_by_side",), defaults=tuple(View.
 # --- Kyou-C: `side_cards`, Junban's last count as the feed's options gave it (`library_store.side_cards`: who takes
 # turns, `side_pair`) — what a drop's own read of the top follows (`drag.side_read`); None: no count, and in the cache
 View = namedtuple("View", View._fields + ("side_cards",), defaults=tuple(View._field_defaults.values()) + (None,))
+# --- Kyou-D: `side_line`, the Soon line's count (only titles above it step in: `library_store.side_pair`), and
+# `side_seasons`, a show's seasons read as one title (`library_store.season_works`) — what a drop's own read follows;
+# `side_on`, the ids of the first file to study of each title side by side has on (the pill's rows: `side_on_rows`)
+View = namedtuple("View", View._fields + ("side_line", "side_seasons", "side_on"),
+                  defaults=tuple(View._field_defaults.values()) + (None, None, ()))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -227,6 +232,11 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("new_faded"
 # window's (review ITEM12 #2: a source offline, 20,000 files gone, fewer than 20 counting). None: not known (an older
 # first screen's cache) — `topped` counts that row's files. Before `string`
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("n_top", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
+# --- Kyou-D (PROVISIONAL, Sonic refines it): `side_with`, the other title's name while this row holds one of the two
+# titles side by side has on (`side_on`: the shared rule) — the row's small pill and its tooltip; None on every other
+# row (side by side off: every row). Set on the built rows and again on a drop's (`with_side`). Before `string`
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("side_with", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
 Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple(Episode._field_defaults.values()) + (False,))
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
@@ -426,6 +436,7 @@ STRINGS = {
     "fold_tip_open": "Watched (marked in your library): click to fold them into one line again",       # a8: the window's
     "channel_n": "{n} videos · {title}",
     "top_tip": "Everything above this line mines itself: your top {n} files",
+    "side_tip": "Side by side with {other}: new cards come from the two in turns",   # Kyou-D (PROVISIONAL)
     "top_tip_split": "Everything above this line mines itself: your top {n} files — of {title}, its first {k} of {m}",
     "soon_tip": "Soon: what's below this line comes after your first {n} files. It still counts toward your list",
     "soon_tip_nocount": "Soon: what's below this line comes after what's above it. It still counts toward your list",
@@ -992,7 +1003,7 @@ def counts_toward_top(e, tier, keep=False):
     return not e.missing and not getattr(e, "waiting", False) and counts(tier, e.watched, keep)
 
 
-def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, cards=None):
+def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, cards=None, line=None, seasons=None):
     """Current's `rows` in an order the window paints ahead of the store (a drop's, a Done's marks: `app/qt/drag`) with
     which files are *in the top* read again by the store's rule (`build`: every file down to the `line_n`-th that
     counts, `counts_toward_top`; with fewer, down to the last) — and what a row reads from that read again by `_row`'s
@@ -1004,11 +1015,12 @@ def topped(rows, line_n, keep=False, connect=None, side=False, turned=None, card
     again). A row beyond the top is looked at by its first file only (the top holds a row's first files). `side`
     (Kyou-B): the library's side by side is on — the top read by its turns (`side_top`) while two titles hold files;
     `turned` (Kyou-C): `side_top`'s answer for these rows when the caller read it already (a drop reads it once);
-    `cards`: Junban's last count (the view's `side_cards`)."""
+    `cards`: Junban's last count (the view's `side_cards`); `line`, `seasons` (Kyou-D): the view's `side_line`,
+    `side_seasons` (`side_top`'s)."""
     if not line_n or not rows:
         return rows, []
     if turned is None:
-        turned = side_top(rows, line_n, keep, cards) if side else None
+        turned = side_top(rows, line_n, keep, cards, line, seasons) if side else None
     if turned is not None:                           # Kyou-B: the files the turns mine, whatever row they sit in
         ids = turned[1]
         out, changed = list(rows), []
@@ -1881,20 +1893,72 @@ def side_by_side(options):
         return False
 
 
-def side_rows(current):
+def side_rows(current, seasons=None):
     """Kyou-C: the feed's rows of Current as the store's one rule reads them (`library_store.side_pair`):
-    `(id, tier, work_id, availability, watched, mined_at)`."""
-    return [(r["id"], r.get("tier"), r.get("work_id"), r.get("availability"), r.get("watched"), r.get("mined_at"))
-            for r in current]
+    `(id, tier, work_id, availability, watched, mined_at)` — Kyou-D: a show's seasons one title (`seasons`)."""
+    from app.library_store import as_seasons
+    return as_seasons([(r["id"], r.get("tier"), r.get("work_id"), r.get("availability"), r.get("watched"),
+                        r.get("mined_at")) for r in current], seasons)
 
 
-def side_order(rows, keep=False, cards=None, n=None):
+def soon_count(options):
+    """Kyou-D: the Soon line's count in the feed's `options` (`soon_line`), or None (no line, or unreadable)."""
+    try:
+        k = (options or {}).get("soon_line")
+        return None if k is None else int(k)
+    except (TypeError, ValueError):
+        return None
+
+
+def side_on(rows, keep=False, cards=None, line=None):
+    """Kyou-D: the titles side by side has on — the first two taking turns (`library_store.side_pair`, the one rule)
+    -> the id of each one's first file to study (where its turn stands, the pill's row), or () when there aren't two."""
+    from app.library_store import SIDE_TITLES, counts, side_pair, title_key
+    pair = side_pair(rows, keep, cards, line)
+    if pair is None:
+        return ()
+    want, out = set(pair[1][:SIDE_TITLES]), []
+    for r in rows:
+        key = title_key(r[0], r[2])
+        if key in want and r[3] == "available" and counts(r[1], r[4], keep):
+            want.discard(key)
+            out.append(r[0])
+            if not want:
+                break
+    return tuple(out)
+
+
+def with_side(rows, on_ids):
+    """Kyou-D: `rows` (a view's, in order) with `side_with` set on the rows holding the titles side by side has on —
+    `on_ids` (`side_on`: each title's first file to study) — each naming the other title (in a group's row, its show;
+    else its row's title); every other row's cleared. Only a row whose pill changed is a new Row (the rest keep their
+    pictures). The same on the built rows and a drop's, so the pill never changes its words at a drop."""
+    at = {}
+    if on_ids:
+        for k, row in enumerate(rows):
+            for e in row.episodes:
+                if e.id in on_ids:
+                    at[e.id] = (k, getattr(e, "show", None) or row.title)
+    names = [at[i] for i in on_ids if i in at]
+    want = {}
+    if len(names) == 2:
+        (k0, n0), (k1, n1) = names
+        want = {k0: n1} if k0 == k1 else {k0: n1, k1: n0}
+    out = list(rows)
+    for k, row in enumerate(rows):
+        other = want.get(k)
+        if getattr(row, "side_with", None) != other:
+            out[k] = row._replace(side_with=other)
+    return out
+
+
+def side_order(rows, keep=False, cards=None, n=None, line=None):
     """Kyou-A: the ids of Current's files that can be mined (available, counting) in the store's side-by-side order
     (`library_store.woven`: the titles taking turns two at a time, those stepping aside after them — Kyou-C,
     `side_pair` by Junban's count `cards`), or None when it holds fewer than two titles to study — the store's
     `_mine_ids` read on `side_rows`' rows. `n`: only the first `n` (the top line's)."""
     from app.library_store import counts, side_pair, title_key, woven
-    pair = side_pair(rows, keep, cards)
+    pair = side_pair(rows, keep, cards, line)
     if pair is None:
         return None
     _every, titles, aside = pair
@@ -1923,19 +1987,22 @@ def _side_in_top(rows, top_ids):
     return in_top
 
 
-def side_top(rows, line_n, keep=False, cards=None):
+def side_top(rows, line_n, keep=False, cards=None, line=None, seasons=None):
     """Kyou-B (KA-4): the top of Current's `rows` in an order the window paints ahead of the store (a drop's, its marks)
     read by the store's side-by-side rule, as `build` reads it on the feed's rows (`side_order`, `_mine_ids`,
     `_side_in_top`) -> (the ids the turns mine, in their order; what is *in the top*), or None when the rows hold fewer
     than two titles to study (the store's rule is then today's, by prefix). `cards`: Junban's last count (the view's
-    `side_cards`, Kyou-C). One pass over the rows' files (Kyou-C: a drop at 1,000 titles / 20k files)."""
-    current = [(e.id, r.tier, e.work_id,
-                "missing" if e.missing else "waiting" if getattr(e, "waiting", False) else "available",
-                e.watched, getattr(e, "mined_at", None)) for r in rows for e in r.episodes]
-    top_ids = side_order(current, keep, cards, n=line_n)     # every id the turns hold can be mined (`_mine_ids`')
+    `side_cards`, Kyou-C). One pass over the rows' files (Kyou-C: a drop at 1,000 titles / 20k files). Kyou-D: `line`,
+    the Soon line's count, and `seasons` (the view's `side_line`, `side_seasons`): only titles above the line step
+    in, on the painted order — and the third of the answer, the ids of the titles on (`side_on`: the pills)."""
+    from app.library_store import as_seasons
+    current = as_seasons([(e.id, r.tier, e.work_id,
+                           "missing" if e.missing else "waiting" if getattr(e, "waiting", False) else "available",
+                           e.watched, getattr(e, "mined_at", None)) for r in rows for e in r.episodes], seasons)
+    top_ids = side_order(current, keep, cards, n=line_n, line=line)   # every id the turns hold can be mined
     if top_ids is None:
         return None
-    return top_ids, _side_in_top(current, top_ids)
+    return top_ids, _side_in_top(current, top_ids), side_on(current, keep, cards, line)
 
 
 def mark_moves_list(tier, ep, keep):
@@ -2362,8 +2429,14 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     side = side_by_side(options)                                  # Kyou-A
     from app.library_store import side_cards as read_cards
     counted = read_cards(options.get("side_cards"))               # Kyou-C: Junban's last count (who takes turns)
-    turning = side_rows(current) if side and not off else None
-    turned = side_order(turning, keep, counted, n=line_n) if turning is not None else None
+    soon_n = soon_count(options)                                  # Kyou-D: only titles above it step in
+    seasons = None
+    if side:
+        from app.library_store import season_works
+        seasons = season_works((w, (works.get(w) or {}).get("folder_key")) for w in works)   # Kyou-D
+    turning = side_rows(current, seasons) if side and not off else None
+    turned = side_order(turning, keep, counted, n=line_n, line=soon_n) if turning is not None else None
+    on_ids = side_on(turning if turning is not None else side_rows(current, seasons), keep, counted, soon_n)         if side else ()                                           # Kyou-D: the pills, Connect on or off
     # row 13: Connect off → nothing in the top
     top_ids = [] if off else turned if turned is not None else _mine_ids(current, line_n, keep)
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
@@ -2431,6 +2504,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             lines.append(Line("top", at, tip, k))
         else:
             lines.append(Line("top", at, STRINGS["top_tip"].format(n=line_n), None))
+    if side or any(getattr(r, "side_with", None) for r in rows):     # Kyou-D: the pills (none while off)
+        rows = with_side(rows, on_ids if side else ())
     soon_at = soon_line_after(rows)
     if soon_at is not None:
         k = options.get("soon_line")
@@ -2572,7 +2647,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 keep_watched=keep,                  # --- W-1
                 mine_line=None if off else line_n,  # --- 3.0.1 item 12
                 side_by_side=side,                  # --- Kyou-A
-                side_cards=counted)                 # --- Kyou-C
+                side_cards=counted,                 # --- Kyou-C
+                side_line=soon_n, side_seasons=seasons, side_on=on_ids)   # --- Kyou-D
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #

@@ -25,7 +25,8 @@ show has one too), or, with no episode, when the file is its folder's own title 
 on Mattias's #447; `Creditless Opening` in a show's folder, `Trailer`, `猫の動画` stay anyone's). A card names a file
 when its key is one of the file's — **exact, never a substring** (`show1` is
 not `show10`). A key two titles of the library share names neither (`shared_names`). A `MiscInfo` with no time after
-` @ ` (a Migaku note's hint) names nothing. Anki Miner's fixed series (`Audio` for an audiobook, `YouTube` for a
+` @ ` (a Migaku note's hint) names nothing — a text card's paragraph (`@ ¶8`, a book's) is a place too
+(Kyou-D): its key `¶/<key>` names only a text file (`_text_keys`). Anki Miner's fixed series (`Audio` for an audiobook, `YouTube` for a
 fetched video) name no show of their own (`FIXED_SERIES`) — but they name an item, from its record (`names_of_record`):
 an audiobook's own files as `Audio — <the file's name>` (only a name carrying its book's title: `01`, `Track 01` are
 every audiobook's), a fetched video's title as `YouTube — <title>` and bare (by the title rule above). Like a bare
@@ -49,8 +50,13 @@ _RELEASE_TAGS = re.compile(r"\s*(?:\[[^\]]*\]\s*)+(?:-\S+)?\s*$")
 _ARR_TAGS = re.compile(r"\s*(?:(?:\[[^\]]*\]|\((?=[^()]*(?<!\d)\d{3,4}(?:[pP]|[xX×]\d{3,4}))[^()]*\))\s*)+(?:-\S+)?\s*$")
 # 3.10's `_LEADING_GROUP_RE`: one leading group tag without a space (`[SubsPlease] Title`).
 _LEADING_GROUP = re.compile(r"^\s*\[[^\]\s]*\]\s*")
-# "<source> @ h:mm:ss" (or mm:ss, or a fraction of a second): the time is required.
-_SOURCE = re.compile(r"^(?P<source>.*\S)\s+@\s+\d{1,3}:\d{2}(?::\d{2})?(?:\.\d+)?\s*$", re.S)
+# "<source> @ h:mm:ss" (or mm:ss, or a fraction of a second): a place is required — a time, or (Kyou-D) a text card's
+# paragraph, "<source> @ ¶8" (Anki Miner's book and text cards).
+_SOURCE = re.compile(r"^(?P<source>.*\S)\s+@\s+(?:\d{1,3}:\d{2}(?::\d{2})?(?:\.\d+)?|(?P<para>¶)\s*\d+)\s*$", re.S)
+READING = "¶"                   # Kyou-D: a text card's keys, `¶/<key>` — apart from every video's, they name a text only
+TEXT_EXTENSIONS = (".txt",)     # ... the files Anki Miner reads as text (a book's parts in the library are `.txt`)
+# A book's part named after its EPUB's ` epub` (`<title> epub_25`): Anki Miner's text card names it without (`<title>_25`)
+_EPUB_WORD = re.compile(r"\s+epub(?=_\d+$|$)", re.I)
 # A subtitle's language tag before its extension (`Show - 05.ja.ass`): taken off to reach the video's own name.
 _LANGUAGE_TAG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|chi|zho|chs|cht|sc|tc|cn|tw|zh-hans|zh-hant)$", re.I)
 DASH = " — "                    # Anki Miner's separator between the folder and the name
@@ -89,19 +95,25 @@ def clean(part):
     return cleaned or part.strip()
 
 
+def _source_match(misc_info):
+    return _SOURCE.match(html.unescape(str(misc_info or "")).replace("\xa0", " ").strip())
+
+
 def source_text(misc_info):
-    """A card's Anki Miner source as written (HTML entities read, the time cut off), or None when `MiscInfo` isn't in
+    """A card's Anki Miner source as written (HTML entities read, the place cut off), or None when `MiscInfo` isn't in
     its shape."""
-    found = _SOURCE.match(html.unescape(str(misc_info or "")).replace("\xa0", " ").strip())
+    found = _source_match(misc_info)
     return found.group("source").strip() if found else None
 
 
 def card_key(misc_info):
-    """A card's source as a key (`key` of the source, trailing release tags off), or None."""
-    source = source_text(misc_info)
-    if source is None:
+    """A card's source as a key (`key` of the source, trailing release tags off), or None. A text card's (its place a
+    paragraph, `@ ¶8`) is `¶/<key>` (Kyou-D): it names only a text file (`names_of`), never a video of the same name."""
+    found = _source_match(misc_info)
+    if found is None:
         return None
-    return key(_RELEASE_TAGS.sub("", source).strip())
+    k = key(_RELEASE_TAGS.sub("", found.group("source").strip()).strip())
+    return READING + "/" + k if k and found.group("para") else k
 
 
 def is_folder_form(misc_info):
@@ -163,7 +175,23 @@ def names_of(path, video_path=None, bare=True):
             forms.add(stem)                                         # before 3.5: the video's own name
             forms.add(_ARR_TAGS.sub("", stem).strip() or stem)
             forms.add(clean(stem))
-    return _keys(forms)
+    return _keys(forms) | _text_keys(path)
+
+
+def _text_keys(path):
+    """Kyou-D: a text file's keys for Anki Miner's text cards (`@ ¶8`), `¶/<key>` — its name alone (a text card's
+    source carries no folder: the item's own name, `<title>_25`; a book's part named after its EPUB's ` epub`, without
+    it) when it says a title (`BARE_TITLE_MIN` letters and digits: `01`, `第1章` are anyone's), and its folder form.
+    Apart from every video key, so exact as a folder form: a pin's, side by side's too."""
+    if not path or not str(path).lower().endswith(TEXT_EXTENSIONS):
+        return set()
+    one = str(path).replace("\\", "/")
+    folder, stem = os.path.basename(os.path.dirname(one)), os.path.splitext(os.path.basename(one))[0]
+    names = {s for s in (stem, _EPUB_WORD.sub("", stem)) if s.strip()}
+    forms = {s for s in names if len(plain(s)) >= BARE_TITLE_MIN}
+    if folder:
+        forms |= {folder + DASH + s for s in names}
+    return {READING + "/" + k for k in _keys(forms)}
 
 
 def names_of_record(record, bare=True):

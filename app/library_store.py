@@ -311,12 +311,78 @@ def side_seen(cards, mined_at):
     return at is None or _utc_key(mined_at) <= _utc_key(at)
 
 
-def side_pair(rows, keep=False, cards=None):
-    """The one rule for who takes turns while side by side is on -> (every title to study, the titles taking turns, the
-    titles stepping aside), each in Current's order — or None with fewer than two titles to study (every reader then
-    as before). `rows`: Current in order, `(id, tier, work_id, availability, watched, mined_at)`; `keep`: the library's
-    `keep_watched`; `cards`: Junban's last count (`side_cards`; None or {}: no count — every title by its files, as
-    before). A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
+def above_line(rows, line):
+    """Kyou-D: the `title_key`s with a row above the Soon line's own count `line` — Current's first `line` rows with
+    text, and the waiting rows right after them, as `Store._keep_line` cuts it (the count, never the line's reach, so
+    a title stepping in never moves it for itself); 0: none."""
+    out, seen = set(), 0
+    if line > 0:
+        for r in rows:
+            if seen == line and r[3] != "waiting":
+                break
+            out.add(title_key(r[0], r[2]))
+            seen += r[3] != "waiting"
+    return out
+
+
+def season_works(works):
+    """Kyou-D: the seasons of one show folder as one title side by side — `works`: (work id, folder key) pairs ->
+    {work id: the show's title}, the show's smallest work id, for every work whose folder is a season of a show folder
+    (`<show>/Season 2`, `episode_names.season_folder`) that another season shares; nothing else. The store keeps each
+    season its own title (its cover, its AniList entry); only the turns read them as one, so a show's second season
+    never takes turns with its first. Pure; the store and the window read it on the same works."""
+    from app.episode_names import season_folder
+    shows = {}
+    for work_id, folder in works:
+        head, _sep, last = (folder or "").rpartition("/")
+        if head and isinstance(season_folder(last), int):
+            shows.setdefault(head, []).append(work_id)
+    return {w: min(ids) for ids in shows.values() if len(ids) > 1 for w in ids}
+
+
+def as_seasons(rows, seasons):
+    """`rows` (`side_pair`'s) with each season's work read as its show's (`season_works`): unchanged when none."""
+    if not seasons:
+        return rows
+    return [r if r[2] not in seasons else (r[0], r[1], seasons[r[2]]) + tuple(r[3:]) for r in rows]
+
+
+def side_reach(rows, n, taken, keep=False):
+    """The Soon line's count side by side (`Store._side_line`): down to the last of the turns' first `n` files `taken`
+    (answer 5: both titles stay above it), counting rows with text — Kyou-D: but never pulling more than `n` files to
+    study the turns don't take below the line's own count (a long first title was pulled in whole to reach the
+    second: the line then stops at the last of `taken` it reached, else at `n`). A row that doesn't count (watched,
+    `keep` off) is free, as before (KA-7)."""
+    take, left = set(taken), len(set(taken))
+    seen, cut, free = 0, n, n
+    for r in rows:
+        if r[3] == "waiting":
+            continue
+        seen += 1
+        if r[0] in take:
+            left -= 1
+            if seen > n:
+                cut = seen
+            if not left:
+                break
+        elif seen > n and counts(r[1], r[4], keep):
+            free -= 1
+            if free < 0:
+                break
+    return cut
+
+
+def side_pair(rows, keep=False, cards=None, line=None):
+    """The one rule for who takes turns while side by side is on -> (every title that can take turns, the titles taking
+    turns, the titles stepping aside), each in Current's order — or None with fewer than two titles to study (every
+    reader then as before). `rows`: Current in order, `(id, tier, work_id, availability, watched, mined_at)` (a show's
+    seasons already one title: `as_seasons`); `keep`: the library's `keep_watched`; `cards`: Junban's last count
+    (`side_cards`; None or {}: no count — every title by its files, as before); `line`: the Soon line's count (None: a
+    library with no line — nothing to reach for, every title as before). Kyou-D
+    (the lead's lean, Sonic 2026-11-16: a 100-part book was pulled into NOW whole): only titles above the line step in —
+    Current's first two titles to study take turns wherever they stand (answer 5), any other only with a row above
+    the line's own count (`above_line`); a title below it waits until it is above the line or one of the first two.
+    A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
     hasn't mined its next file to study yet (that file can still make its cards: a title new to Current, or one whose
     mined files have been watched) — Kyou-E: or mined it only after the count's time (`side_seen`: the count never saw
     its cards, so a receipt never sets a title aside; Junban's next count decides); a title the count doesn't name (in
@@ -324,6 +390,9 @@ def side_pair(rows, keep=False, cards=None):
     titles = side_titles(rows, keep)
     if len(titles) < SIDE_TITLES:
         return None
+    if line is not None and len(titles) > SIDE_TITLES:
+        above = above_line(rows, line)
+        titles = titles[:SIDE_TITLES] + [t for t in titles[SIDE_TITLES:] if t in above]
     if not cards:
         return titles, titles, []
     mined = {}                                  # each title's next file to study: did the count see it mined?
@@ -2011,6 +2080,7 @@ class _Command:
         # Schema 2 (L3.1): what the command's settling step reads (`Store._settle`)
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
+        self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
         self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
         self.hints = {}       # item_id -> the piece an undo puts it back in
@@ -2114,30 +2184,41 @@ class Check:
         self.started_at = started_at
 
 
-def _walk_back(seqs, items, okset):
+def _walk_back(seqs, items, okset, one=False):
     """`Store._replace`'s walk: a change's `items` (its recorded previous order) back into `seqs` ({tier: _Seq}, the
     items of `okset` already taken out) — each right after its recorded predecessor if that item is in the tier now
     (untouched, or put back earlier in this walk); else after that predecessor's own recorded predecessor, along the
     list; else before the nearest recorded successor outside the change's set that is in the tier; else at the tier's
-    top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers."""
+    top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers. Kyou-D:
+    Current is one order, NOW then Soon (the Soon line is a count): a recorded neighbour now on the line's other side
+    is still the place — the item goes beside it, in its tier, and the line's settling cuts the order again (the line
+    had moved with the drop, so an Undo put a row from NOW's end at NOW's top). `seqs` holds both or neither. `one`:
+    only while the library has a Soon line (the caller's `_one_current`); without one, NOW and Soon are two places."""
     info = {it["id"]: it for it in items}
+    other = {"now": seqs.get("soon"), "soon": seqs.get("now")} if one else {}
     inset = set(info)
     restored = set()
     for it in items:
         if it["id"] not in okset:
             continue
-        seq = seqs[it["tier"]]
+        seq = home = seqs[it["tier"]]
+        beside = other.get(it["tier"])          # Kyou-D: the line's other side of Current, when this is Current
+
+        def side_of(x):
+            return home if x in home else beside if beside is not None and x in beside else None
         where = None
         p, seen = it["prev"], set()
         while p is not None and p not in seen:
             seen.add(p)
             if p in inset:
                 if p in restored:
+                    seq = side_of(p) or home
                     where = ("after", p)
                     break
                 p = info[p]["prev"]
                 continue
-            if p in seq:
+            if side_of(p) is not None:
+                seq = side_of(p)
                 where = ("after", p)
             break
         if where is None:
@@ -2147,7 +2228,8 @@ def _walk_back(seqs, items, okset):
                 if n in inset:
                     n = info[n]["next"]
                     continue
-                if n in seq:
+                if side_of(n) is not None:
+                    seq = side_of(n)
                     where = ("before", n)
                 break
         if where is None:
@@ -2493,12 +2575,32 @@ class Store:
                 out[item_id] = (prev_id, next_id)
         return out
 
+    def _current_edges(self, rows, near):
+        """Kyou-D: `near` with Current read as one order — Soon's first row follows NOW's last (and NOW's last is
+        followed by Soon's first), as the Undo's walk-back reads both sides (`_walk_back`): the Soon line moves with
+        a drop while side by side reaches, so a tier's edge is no place to go back to. Only the Undo's record."""
+        edge = {r[0]: r[1] for r in rows if r[1] in CURRENT}
+        if not edge:
+            return near
+        last = self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id DESC LIMIT 1"
+                                 ).fetchone()
+        first = self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT 1").fetchone()
+        out = dict(near)
+        for item_id, tier in edge.items():
+            prev_id, next_id = out.get(item_id, (None, None))
+            if tier == "soon" and prev_id is None and last is not None:
+                out[item_id] = (last[0], next_id)
+            elif tier == "now" and next_id is None and first is not None:
+                out[item_id] = (prev_id, first[0])
+        return out
+
     def _before(self, change, rows, explicit=1, near=None):
         """Record each row's place just before the change, in the previous order (§6.11). `near`: the rows'
         `_neighbours`, when the caller has read them."""
         rows = sorted(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
         if near is None:
             near = self._neighbours(rows)
+        near = self._current_edges(rows, near)
         for r in rows:
             prev_id, next_id = near.get(r[0], (None, None))
             change.items.append({"id": r[0], "tier": r[1], "prev": prev_id, "next": next_id,
@@ -2538,10 +2640,15 @@ class Store:
         return _keep_value(row[0] if row else None)
 
     def _current_rows(self):
-        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched, mined_at)`."""
-        return self.conn.execute(
+        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched, mined_at)`
+        — Kyou-D: a show's seasons read as one title (`as_seasons`)."""
+        return as_seasons(self.conn.execute(
             "SELECT id, tier, work_id, availability, watched, mined_at FROM items WHERE tier IN ('now', 'soon') "
-            "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall()
+            "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall(), self._seasons())
+
+    def _seasons(self):
+        """Kyou-D: `season_works` over the library's works (a season folder's key holds a `/`)."""
+        return season_works(self.conn.execute("SELECT id, folder_key FROM works WHERE folder_key LIKE '%/%'"))
 
     def _side_cards(self):
         """Kyou-C: Junban's last count (`SIDE_CARDS`, `side_cards`), or None (none written, or unreadable)."""
@@ -2557,7 +2664,7 @@ class Store:
             return None
         rows = self._current_rows()
         pair = side_pair(rows, self._keep_watched() if keep is None else keep,
-                         self._side_cards() if cards is None else cards)
+                         self._side_cards() if cards is None else cards, self._soon_line())
         return None if pair is None else (rows,) + pair
 
     def _side_split(self, cards=None):
@@ -2574,7 +2681,8 @@ class Store:
             side = self._side()
         if side is None:
             return []
-        rows, titles, _on, _aside = side           # Kyou-C: every title to study, so Junban counts each again
+        rows, titles, _on, _aside = side           # Kyou-C: every title that can take turns, so Junban counts each
+        #                                            again (Kyou-D: not a title below the Soon line: it never steps in)
         groups = {key: [] for key in titles}
         for r in rows:
             key = title_key(r[0], r[2])
@@ -2596,9 +2704,7 @@ class Store:
         taken = woven(study, title_of, titles, aside=aside, n=n)
         if len(taken) < n:
             return n
-        place = {r[0]: k for k, r in enumerate(rows)}
-        last = max(place[i] for i in taken)
-        return max(n, sum(1 for r in rows[:last + 1] if r[3] != "waiting"))
+        return side_reach(rows, n, taken, keep)
     # --- end Kyou-A
 
     def _root_id(self):
@@ -4815,6 +4921,11 @@ class Store:
         except (TypeError, ValueError):
             return None
 
+    def _one_current(self, tiers):
+        """Kyou-D: does an Undo walk Current back as one order (`_walk_back`) — a tier of Current among `tiers`, and a
+        Soon line (without one, NOW and Soon are two places, as before)."""
+        return bool(set(tiers) & set(CURRENT)) and self._soon_line() is not None
+
     def _keep_line(self, cmd):
         """The tiers follow the line (05 §5.1, G2.2-1): Current is NOW then Soon in one order; its first `soon_line`
         rows, available or missing, are NOW. A row crossing takes the command's version (a tier change, as any)."""
@@ -4855,6 +4966,19 @@ class Store:
             if up:
                 self._put("now", up, ("end",), cmd.version)
                 cmd.touch(CURRENT)
+        if cmd.walked:
+            # Kyou-D: an Undo walks a row back beside its recorded neighbour, on the line's other side when that is
+            # where the neighbour stands now (`_walk_back`); the line then cuts the order again. A row it cut back
+            # into the tier the Undo recorded never crossed: its recorded `changed_in`, not this command's version; a
+            # row that ends on the other side (walked there, or cut there) crossed: this command's version, as any
+            # crossing. Where the rows stand now, read in chunks (a 20k Undo: one statement per 500, Mado-O)
+            now = {}
+            for part in _chunks(sorted(cmd.walked), 500):
+                now.update(self.conn.execute(f"SELECT id, tier FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                             part).fetchall())
+            self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",
+                                  [(ci if now.get(i) == tier else cmd.version, i)
+                                   for i, (tier, ci) in cmd.walked.items()])
 
     BIG_SETTLE = 200      # items: from here the settling step reads each touched tier's order once
 
@@ -5676,7 +5800,8 @@ class Store:
             for chunk in _chunks(first, 500):
                 work.update(self.conn.execute(f"SELECT id, work_id FROM items WHERE id IN "
                                               f"({','.join('?' * len(chunk))})", chunk).fetchall())
-            want = {card_key(title_key(int(ids[0]), work[int(ids[0])])): 1 if n else 0
+            seasons = self._seasons()           # Kyou-D: a show's seasons are one title, as `_side` reads them
+            want = {card_key(title_key(int(ids[0]), seasons.get(work[int(ids[0])], work[int(ids[0])]))): 1 if n else 0
                     for ids, n in groups if ids and int(ids[0]) in work}
             at = str(at) if at else _now()
             had = self._side_cards()
@@ -6087,11 +6212,14 @@ class Store:
         if not okset:
             return set()
         tiers = {it["tier"] for _c, it in items} | {rows[i][1] for i in okset}
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for i in okset:
             seqs[rows[i][1]].remove(i)
         for c in plain:
-            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version})
+            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version}, one)
         self._write_seqs(seqs, ords, okset, lambda i: cmd.version)
         self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                               [(it.get("graduated_at"), it["id"]) for _c, it in items if it["tier"] != rows[it["id"]][1]])
@@ -7264,12 +7392,16 @@ class Store:
         if not ok:
             return out, skipped
         tiers = {it["tier"] for it in ok} | {cur[it["id"]][1] for it in ok}
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
-        _walk_back(seqs, items, okset)
+        _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
+        cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
         for it in ok:
             if it.get("piece") is not None:
                 cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)

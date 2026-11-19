@@ -127,7 +127,9 @@ from operator import itemgetter
 #    v20–v22.
 # v24 an unknown word of two kanji or more is one word with the one-kanji pieces the tagger cut beside it (犍陀 + 多 =
 #    犍陀多, ENGINE_REVISION 42): a v23 blob holds the pieces — users rebuild once.
-SCHEMA_VERSION = 24
+# v25 a sound standing on its own (a filler, ほっ, えへへ: analyzer § Sounds are no words, ENGINE_REVISION 43) is no
+#    word: a v24 blob counts it — users rebuild once.
+SCHEMA_VERSION = 25
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

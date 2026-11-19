@@ -176,10 +176,12 @@ DEFAULT_SETTINGS = {
     # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.
     "connect_zh_word_audio": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
-    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
-    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
-    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
-    "known_from_anki": ["suspended"],
+    # ("and"): "suspended", "marked", "flag:1" … "flag:7"; [] is off. The default is Suspended AND Marked (Kantan-B3,
+    # Sonic 2026-11-18: a plain suspend often means "a bad sentence, I still want the word", so it never counts by
+    # itself); a file that names the key keeps its own terms, and no save writes the default into a file. Surasura's
+    # own suspensions (the shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only
+    # while Connect's preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
+    "known_from_anki": ["suspended", "marked"],
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The

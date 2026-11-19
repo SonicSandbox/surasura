@@ -87,6 +87,8 @@ DECKS_NAME = "Decks to read"
 DECK_CARDS = "{n:,} cards"
 DECK_TIP = "{deck}: {n:,} cards you've studied.\n• Click to read this deck, or to leave it out"
 NO_DECKS = "Anki has no decks with studied cards yet."
+# Kantan-B3 (Sonic 2026-11-18; PROVISIONAL): what says "I know this" in Anki, from the first page that reads it
+KNOWN_FROM_ANKI_SIGNAL = "Know a card's word? Suspend and mark it in Anki."
 IMPORT_MIGAKU = "Migaku…"
 IMPORT_MIGAKU_TIP = "Open the Migaku import: the words you know, from Migaku's export."
 IMPORT_JITEN = "Jiten…"

@@ -309,7 +309,9 @@ def setup_lines(settings, language, facts):
         from app.services import setup_wizard
         order = (S.SETUP_ORDER.get(value("junban_order"), "") if setup_wizard.kept_in_order(settings, language)
                  else S.SETUP_ORDER_OFF)
-        lines["setup_cards"] = S.SEP.join((order, filled)).strip(" ·")
+        deck = setup_wizard.junban_deck(settings, language)      # Kantan-T (PROVISIONAL): the deck, first
+        lines["setup_cards"] = S.SEP.join(([S.SETUP_DECK.format(deck=deck)] if deck else []) + [order, filled]
+                                          ).strip(" ·")
     return lines
 
 

@@ -164,8 +164,8 @@ class UpdateSheet(motion.Overlay):
     """The update, over the window's bottom edge (an overlay: Esc, Back and the router close it). Offered: the version,
     what it is, *What's new ↗*, *Update now* (or *Download* for a manual release) · *Skip this version* · *Later*.
     Downloading: its progress and *Cancel*. Waiting: each program still running with *Stop it* where it can be stopped,
-    *Stop all and update now*, *Cancel*. `action(name, key)`: a click; `dismissed`: closed by Esc / Back / *Later*
-    (the window cancels an update under way: IK-2)."""
+    *Stop all and update now*, *Cancel*. `action(name, key)`: a click; `dismissed`: closed by Esc / Back / *Later* —
+    only hidden: an update under way goes on, shown by the chip (Kantan-T, Sonic 2026-11-18, replacing IK-2)."""
     how = "up"
     shadow_name = "sheet"
     action = pyqtSignal(str, object)

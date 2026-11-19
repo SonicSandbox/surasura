@@ -220,9 +220,11 @@ KEEP_ORDER_LINE = "After each new list and each move; never while you review"
 KEEP_ORDER_TIP = ("Puts your new cards in the order you'll meet the words, and tags the cards it moves Surasura.\n"
                   "• Undo: 順 → Restore")
 # Fresh-U row 2: with the switch on, what it moves (the chosen deck's new cards, counted on a worker)
-KEEP_ORDER_MOVES = ("It moves the 1 new card in {deck}.", "It moves the {n:,} new cards in {deck}.")
+KEEP_ORDER_MOVES = ("It moves the 1 new card in {deck}. Another deck? Pick it below.",
+                    "It moves the {n:,} new cards in {deck}. Another deck? Pick it below.")    # Kantan-T (PROVISIONAL)
 DECK = "New cards are in"
-DECK_PICK_TIP = "The deck your new cards are in: the one Surasura keeps in order."
+DECK_PICK_TIP = ("The deck your new cards are in: the one Surasura keeps in order.\n"
+                 "• Change it later: Settings › Card order › Junban…")
 LATER = "Cards for words not on your list"
 LATER_NAME = "Cards for words not on your list"
 LATER_CHOICES = {"leave": "Leave them", "mark": "Mark them", "aside": "Set them aside"}

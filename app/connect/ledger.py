@@ -369,6 +369,12 @@ class Ledger:
         return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? LIMIT 1",
                                  (language, item_id)).fetchone() is not None
 
+    def queued_from_log(self, language):
+        """Kantan-B2: has Connect ever queued a job from the placement log in this language (a job with its event)?
+        An ask's, a gap's or a level job's carries none."""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND event_id IS NOT NULL LIMIT 1",
+                                 (language,)).fetchone() is not None
+
     def last_read(self, language):
         """When Connect last read the language's placement log, or None."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"last_read:{language}",)).fetchone()

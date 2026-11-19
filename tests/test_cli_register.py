@@ -280,3 +280,29 @@ def test_registers_answer_is_the_envelope_and_its_fields_with_no_verb():
     code, line = _register(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
     assert code == 0 and "verb" not in line, line
     assert set(line) == {"type", "contract", "ok", "file_id", "landed", "tier", "position", "pairing", "content_key"}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_video_in_a_skipped_folder_answers_skipped_and_writes_nothing(lang, tmp_path):
+    """Kura-NA: the learner skipped the folder hato found the video in (*Never read this folder*). hato's hand-over of
+    its subtitle answers `skipped` (`folder skipped`: hato records it and never retries it), nothing is written — no
+    item, no pairing, no event — and hato's file stays where hato wrote it. Read again, the same record is taken."""
+    c.library(lang)
+    downloads = tmp_path / "Downloads"
+    inside = downloads / "Downloading"
+    inside.mkdir(parents=True)
+    with c.store(lang) as s:
+        s.add_source(str(downloads))
+        s.skip_folder(str(inside))
+        (folder,) = [f["id"] for f in s.skipped_folders()]
+        before = (s.meta()["state_version"], _pairings(lang), c.events(s))
+    path = c.drop(f"Example Show - 05.{lang}.srt", lang)
+    rec = c.record(path, "video-05", lang, video_path=str(inside / "Example Show - 05.mkv"))
+    code, line = _register(rec)
+    assert code == 0 and (line["landed"], line["skipped"], line["file_id"]) == ("skipped", "folder skipped", None)
+    with c.store(lang) as s:
+        assert (s.meta()["state_version"], _pairings(lang), c.events(s)) == before
+        s.read_folder_again(folder)
+    assert os.path.isfile(path)
+    code, line = _register(rec)
+    assert code == 0 and line["landed"] != "skipped" and line["file_id"] is not None

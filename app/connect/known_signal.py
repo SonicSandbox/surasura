@@ -2,10 +2,11 @@
 option to select with dropdown (an 'and' logic so they could pick marked + and or something)"; "you can suspend with
 one tap on Ankidroid"; 2026-10-08 P2.4-6 ✅: undo un-suspends).
 
-A card you suspend in Anki says "I know this": at Surasura's next known-words sync its word becomes known.
+A card you suspend and mark in Anki says "I know this": at Surasura's next known-words sync its word becomes known.
 
-- **The signal is a setting** (`known_from_anki`, a list; every term must hold — "and"): `suspended` (the default) ·
-  `marked` · `flag:1` … `flag:7`; `[]` is off. Read in the decks the known-words sync already reads. A setting with a
+- **The signal is a setting** (`known_from_anki`, a list; every term must hold — "and"): `suspended` · `marked` ·
+  `flag:1` … `flag:7`; `[]` is off. The default is `suspended` + `marked` (Kantan-B3, Sonic 2026-11-18: a plain suspend
+  often says "a bad sentence, I still want the word", so it never counts by itself); a learner's own terms are kept. Read in the decks the known-words sync already reads. A setting with a
   term this doesn't know is off (said once a read), never a wider signal (review B #21).
 - **Never counted:** Surasura's own suspensions — Junban's "later" (`Surasura::later`, and `<junban_tag>::later` when
   you named Junban's tag otherwise: adversary B #4), *Take its new cards out*'s (`Surasura::out`, and
@@ -59,7 +60,7 @@ def signal(settings):
     from app import settings_manager
     if not settings_manager.connect_on(settings):
         return []
-    value = (settings or {}).get("known_from_anki", ["suspended"])
+    value = (settings or {}).get("known_from_anki", settings_manager.DEFAULT_SETTINGS["known_from_anki"])
     if isinstance(value, str):
         value = [value]
     if isinstance(value, tuple):        # the 3.0 window's settings are frozen: its lists are tuples (review r2 #1)
@@ -233,6 +234,11 @@ def read(language, url, decks, fields, settings):
                 state["offer"] = {"state": "pending", "query": q,
                                   "cards": kept + [{"word": w, "card": c, "note": n} for w, c, n in found
                                                    if c not in have]}
+            elif (state.get("offer") or {}).get("state") == "pending":
+                # nothing new, an offer still asked: its cards are checked again under the signal now when you
+                # answer (`accept_offer`), never the one it was made under (Kantan-B3: the old default's plain
+                # suspends never marked known by an old question)
+                state["offer"] = dict(state["offer"], query=q)
             out["offered"] = len(found)
         elif found:
             out["marked"] = _mark(language, found, state, now, "signal", terms)

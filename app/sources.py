@@ -620,12 +620,24 @@ def _show_of(root, parts, name, folders=()):
         if en.season_folder(parts[0]) is not None:
             parts = [root_name] + list(parts)
         return "/".join(parts)
-    show = clean_name(ls.show_of_name(name) or "")
-    key = en.show_key(show) if folders and en.identity(name).key[2] is not None else ""
+    full = ls.show_of_name(name) or ""
+    show = clean_name(full)
+    # Kura-NA: the "same show?" key from the name as written, never the folder name's cut (`extract.NAME_LIMIT`): a show
+    # named longer than that is still its own folder's show
+    key = en.show_key(full) if folders and en.identity(name).key[2] is not None else ""
     same = [f for f, k in folders if k == key] if key else []
     if len(same) == 1:
         return same[0]
     return show or root_name
+
+
+def full_show(show, origin):
+    """Kura-NA: the show a loose file's name reads, as written, when its `Library/<show>` folder name `show` is that
+    name cut (`extract.clean_name` at NAME_LIMIT) — the name its title goes by (`Store.take_in`'s `show_name`: the
+    "same show?" key and the new title's names, so hato's record naming it uncut finds it); else None."""
+    from app.extract import clean_name
+    full = ls.show_of_name(os.path.basename(str(origin or ""))) or ""
+    return full if show and full != show and clean_name(full) == show else None
 
 
 def _show_folders(subs):
@@ -2678,6 +2690,11 @@ class _Look:
         if not found:
             return None
         made = [f["rel"] for f in found if f.get("rel") in self.made]
+        for f in found:                                      # Kura-NA: a cut show's title goes by its uncut name
+            if f.get("rel") and not f.get("show_name"):
+                name = full_show(f.get("show"), f.get("origin"))
+                if name:
+                    f["show_name"] = name
         follow = {f["origin"]: self.follow.pop(f["origin"]) for f in found if f["origin"] in self.follow}
         try:
             change = self.store.take_in(self.root_id, found, first=self.first, rules=self.rules)

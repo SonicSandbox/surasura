@@ -181,8 +181,8 @@ def test_a_gone_folder_is_a_needs_you_card_and_never_the_offline_line_an_away_dr
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_todoke_is_amber_while_a_gone_card_stands_and_its_press_opens_needs_you_else_sources(world, language,
-                                                                                         monkeypatch):
+def test_todoke_is_amber_while_a_gone_card_stands_and_its_press_opens_needs_you_else_pauses(world, language,
+                                                                                        monkeypatch):
     seed, win, writer, ny = world(language, looks=Looks())
     opened = []
     monkeypatch.setattr(win, "open_setting", lambda target, *a, **k: opened.append(target))
@@ -194,10 +194,12 @@ def test_todoke_is_amber_while_a_gone_card_stands_and_its_press_opens_needs_you_
     win._circle_pressed(ARRIVALS)
     assert win.current_tab() == "needs" and opened == []
     assert ny.revealed == next(e.key for e in ny.entries if e.kind == "folder-gone")   # a7: at its card, washed
-    _told(win, language, _away_row())                                     # only away now: words, no amber, Sources
+    _told(win, language, _away_row())                                     # only away now: words, no amber
     assert win.phase.go(ARRIVALS) is None and not win.phase.states[ARRIVALS].needs
     win.show_tab("current")
-    win._circle_pressed(ARRIVALS)
+    win._circle_pressed(ARRIVALS)                                         # Mado-PZ: no decision, the click pauses
+    assert opened == [] and win.services.paused == {ARRIVALS}
+    win._circle_asked(ARRIVALS, "settings")                               # Sources, from its right-click
     assert opened == ["library_folders"]
 
 

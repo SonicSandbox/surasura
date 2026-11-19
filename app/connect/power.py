@@ -11,14 +11,33 @@ below-normal priority, so a laptop on battery or in use never pays for it.
   turn inherits it (the indexer's and a look's pools). *Use every core* still means how many cores, never priority:
   a below-normal run takes every idle cycle, and the window — at normal priority — comes first when it needs them.
 
+- **How hard Anki Miner works** (Michi-LP, 2026-11-18; words PROVISIONAL): Anki Miner cuts up to 6 clips at once by
+  default (3.13.0 `config/config.py` `max_parallel_workers`) and Connect never asked for fewer. `clip_cuts` picks a
+  number from this PC for every Connect run file (`runfile.config`: applied on top of the profile for that run alone,
+  nothing saved, so Anki Miner's own setting for manual mining never changes): one cut per CORES_PER_CUT logical CPUs,
+  at most what half the free memory holds (CUT_MB each), halved on battery, 1 to CLIP_CUTS_MAX and never more than the
+  profile's own value (`profile_cuts`) — or the learner's own pick (`connect_clip_cuts` 1–6, Settings › Anki & mining,
+  per PC: an import never brings another PC's, `settings_io.read`). Beta (`connect_low_priority`, off): Connect's
+  Anki Miner calls start at idle priority instead (`popen_idle`, `anki_miner.LOW_PRIORITY`), and the ffmpeg it starts
+  inherits it. Where this sits beside *Run things by themselves* and the bar's pause (Mado-PZ): those say whether
+  Surasura works by itself; these, how hard it works while it does.
+
 A machine asleep runs nothing, so there is nothing to check. Never raises: a call that fails leaves things as they were.
 """
 import os
 import sys
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+IDLE_PRIORITY_CLASS = 0x00000040
 AC_OFFLINE = 0
 NICE = 5
+NICE_IDLE = 19                  # off Windows: the lowest a process can be
+
+AUTO = "auto"
+CLIP_CUTS_MAX = 6               # Anki Miner's own default (3.13.0 `config/config.py`): automatic never asks for more
+CORES_PER_CUT = 4               # one clip at once per 4 logical CPUs: this desktop's 24 -> 6, a laptop's 8 -> 2
+CUT_MB = 200                    # one cut's ffmpeg, with headroom (measured: the register, Michi-LP)
+OWN_RANGE = (1, 20)             # what Anki Miner's settings take (`config.py`: an integer from 1 to 20)
 
 
 def _status():
@@ -56,8 +75,13 @@ def lower_priority(platform=None, set_class=None, nice=None):
     try:
         if (platform or sys.platform) == "win32":
             if set_class is None:
+                # Its own WinDLL, the handle typed (Michi-LP, measured: ctypes' default int cut the 64-bit
+                # pseudo-handle, Windows refused it, and nothing — Connect, Anki Miner, ffmpeg — was ever lowered)
                 import ctypes
-                kernel32 = ctypes.windll.kernel32
+                from ctypes import wintypes
+                kernel32 = ctypes.WinDLL("kernel32")
+                kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+                kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
                 return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS))
             return bool(set_class(BELOW_NORMAL_PRIORITY_CLASS))
         (nice or os.nice)(NICE)
@@ -71,15 +95,64 @@ def popen_below_normal(args, popen=None, platform=None, **kwargs):
     gain `BELOW_NORMAL_PRIORITY_CLASS` (set before it runs a line: its own children inherit it); off Windows the
     child's niceness is raised by `NICE` once it runs. A priority that can't be set leaves the child at normal, never
     unstarted. -> the Popen."""
+    return _popen_at(BELOW_NORMAL_PRIORITY_CLASS, lambda now: now + NICE, args, popen, platform, kwargs)
+
+
+def popen_idle(args, popen=None, platform=None, **kwargs):
+    """`popen_below_normal` at idle instead (Beta *Run Anki Miner at low priority*): Windows' `IDLE_PRIORITY_CLASS`,
+    which its own children inherit (Anki Miner's ffmpeg, its speech model); off Windows niceness `NICE_IDLE`. -> the
+    Popen, started whatever the priority's answer."""
+    return _popen_at(IDLE_PRIORITY_CLASS, lambda now: max(now, NICE_IDLE), args, popen, platform, kwargs)
+
+
+def _popen_at(priority_class, nice, args, popen, platform, kwargs):
     if (platform or sys.platform) == "win32":
-        kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | BELOW_NORMAL_PRIORITY_CLASS
+        kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | priority_class
     if popen is None:
         import subprocess
         popen = subprocess.Popen
     proc = popen(args, **kwargs)
     if (platform or sys.platform) != "win32":
         try:
-            os.setpriority(os.PRIO_PROCESS, proc.pid, os.getpriority(os.PRIO_PROCESS, proc.pid) + NICE)
+            os.setpriority(os.PRIO_PROCESS, proc.pid, nice(os.getpriority(os.PRIO_PROCESS, proc.pid)))
         except Exception:
             pass
     return proc
+
+
+def _free_mb():
+    """Physical memory free now, in MB, or None (the indexer's reading: `token_index._free_memory_mb`)."""
+    try:
+        from app.token_index import _free_memory_mb
+        return _free_memory_mb()
+    except Exception:
+        return None
+
+
+def _own(value):
+    """An Anki Miner `max_parallel_workers` as its settings take it (an int, never a bool, 1–20), else None."""
+    low, high = OWN_RANGE
+    return value if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high else None
+
+
+def profile_cuts(export):
+    """The profile's own clips-at-once (`max_parallel_workers`) in an Anki Miner settings export, or None."""
+    settings = export.get("settings") if isinstance(export, dict) else None
+    return _own(settings.get("max_parallel_workers")) if isinstance(settings, dict) else None
+
+
+def clip_cuts(setting=AUTO, own=None, cpus=None, free_mb=None, battery=None):
+    """How many clips Anki Miner cuts at once in a Connect run (the run file's `max_parallel_workers`). `setting`:
+    `connect_clip_cuts` — a number 1–CLIP_CUTS_MAX is sent as it is; anything else (AUTO, a hand-edited 0, 9, "3",
+    true) is automatic: cpus // CORES_PER_CUT, at most half the free memory // CUT_MB, halved on battery, 1 to
+    CLIP_CUTS_MAX and never above `own` (`profile_cuts`, when it reads). `cpus` / `free_mb` / `battery`: stand-ins for
+    this machine's (tests; None: read here, a memory that can't be read leaves the CPUs to decide)."""
+    if isinstance(setting, int) and not isinstance(setting, bool) and 1 <= setting <= CLIP_CUTS_MAX:
+        return setting
+    cuts = (cpus if cpus is not None else (os.cpu_count() or 1)) // CORES_PER_CUT
+    free_mb = free_mb if free_mb is not None else _free_mb()
+    if free_mb is not None:
+        cuts = min(cuts, int(free_mb * 0.5) // CUT_MB)
+    if battery if battery is not None else on_battery():
+        cuts //= 2
+    return max(1, min(cuts, CLIP_CUTS_MAX, _own(own) or CLIP_CUTS_MAX))

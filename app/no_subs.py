@@ -787,8 +787,12 @@ def find(store, language, settings=None, stop=None, now=None, away=(), popen=Non
     {"asked", "found", "not_found", "failed", "roots": {root id: its folder}} — the folders whose next look takes what
     hato wrote beside their videos (K5); {"off": True} when hato isn't asked (no yes for this library, a hato that
     takes no list, or one that finds no subtitles in this language: `hato_languages`);
-    {"busy": True} when one runs already. `popen`: the process starter (a test's)."""
+    {"busy": True} when one runs already; {"paused": True} while 届 is paused at the bar (Mado-PZ: the next fill after
+    the click that resumes it asks again). `popen`: the process starter (a test's)."""
     settings = settings if settings is not None else _settings()
+    from app import settings_manager
+    if settings_manager.paused(settings, "arrivals"):
+        return {"paused": True}
     cli = hato_finds(language=language) if settings.get(setting(language)) else None
     if not cli:
         return {"off": True}

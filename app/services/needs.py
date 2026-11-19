@@ -1321,6 +1321,39 @@ def answer(language, keys):
     return _add(language, "answered", keys)
 
 
+def unanswer(language, keys):
+    """Kantan-B2: an answer taken back (D1's *Make cards* recorded before its log, which then failed: the line asks
+    again) -> how many went. Nothing there → nothing written (S19)."""
+    keys = set(k for k in keys or () if isinstance(k, str))
+    with _lock:
+        data = _load(language, strict=True)
+        kept = [k for k in data["answered"] if k not in keys]
+        if len(kept) == len(data["answered"]):
+            return 0
+        gone, data["answered"] = len(data["answered"]) - len(kept), kept
+        _write(language, data)
+    return gone
+
+
+def first_cards_waiting(language, tries=4, wait=0.05):
+    """Kantan-B2 (Connect's first-run hold, `inbox.first_run_waits`; often another process): D1's line offered and
+    not answered. Read strictly — a file being replaced by the window's write (Windows refuses the open a moment) is
+    read again, `tries` times; still unreadable, the OSError goes up (Connect looks again later, never reading it as
+    no line). No file: no line. Not JSON or another version: as before the hold (no line) -> bool."""
+    for n in range(tries):
+        try:
+            with _lock:
+                data = _load(language, strict=True)
+            break
+        except OSError:
+            if n == tries - 1:
+                raise
+            time.sleep(wait)
+        except ValueError:
+            return False
+    return FIRST_CARDS in data["offered"] and FIRST_CARDS not in data["answered"]
+
+
 def read_offers(language):
     """The lines a step offered (`offer`) -> frozenset of their keys."""
     return frozenset(_read(language)["offered"])

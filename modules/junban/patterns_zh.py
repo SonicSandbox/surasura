@@ -38,7 +38,8 @@ BUILDER_VERSION = 3
 # (conversion is length-preserving — the alias table's spelling), `tag` the dictionary's tag or None, `word`
 # whether it is a Chinese token (CJK and no kana — what the rules read: a number between a verb and its
 # measure word is one), `key` the word the analyzer counts it as (analyzer.chinese_word: "" for a number,
-# which the list never counts; analyzer.chinese_base: 开心 for 开开心心).
+# which the list never counts, and for a sound standing on its own, analyzer.chinese_sounds: 啊，; analyzer.chinese_base:
+# 开心 for 开开心心).
 ZTok = namedtuple("ZTok", "text orig tag word key", defaults=("",))
 
 # The ChineseTokenizer's own ranges (app/unicode_ranges.py): 〇 and Extension A / B are words there too, and
@@ -151,20 +152,22 @@ def iter_tokens(text, boundaries):
     by `analyzer.chinese_cut`, and split at any token holding a character of the zh boundary set
     (character-wise, as the analyzer does: a terminator can arrive glued to a symbol)."""
     from app import zh_script
-    from app.analyzer import chinese_base, chinese_cut, chinese_word, tagger_text
+    from app.analyzer import chinese_base, chinese_cut, chinese_sounds, chinese_word, tagger_text
     tags = tag_table()
     intern = sys.intern
     for line in text.split("\n"):
         line = tagger_text(line)[0]         # read as the analyzer reads it: ⽅法 is 方法 (its `word`)
         simp = zh_script.to_simplified(line)
         sentence, pos = [], 0
-        for w in chinese_cut(simp):
+        pieces = chinese_cut(simp)
+        sounds = set(chinese_sounds(pieces))    # a sound standing on its own counts as no word, as the list counts it
+        for k, w in enumerate(pieces):
             orig = line[pos:pos + len(w)]
             pos += len(w)
             if _CONTENT.search(w):
                 key = (chinese_base(w) or w) if len(w) > 2 else w
                 sentence.append(ZTok(intern(w), intern(orig), tags.get(w), bool(_CJK.search(w)) and not _KANA.search(w),
-                                     intern(key) if chinese_word(key) else ""))
+                                     intern(key) if chinese_word(key) and k not in sounds else ""))
             else:
                 sentence.append(ZTok(w, orig, None, False))          # a barrier: punctuation, space
             if not boundaries.isdisjoint(w):

@@ -29,10 +29,13 @@ PLACED = {
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_spot_every_episode": "neither",     # Michi-T1: when Connect hears a video's audio, never a run
     "connect_zh_word_audio": "neither",      # Word audio from Google (Zh-C): a Chinese card's word audio, never a run
+    "connect_clip_cuts": "neither",          # Clips cut at once (Michi-LP): how hard Anki Miner works, never a run
+    "connect_low_priority": "neither",       # Beta, Run Anki Miner at low priority (Michi-LP): never a run
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "subs_with_hato": "neither",             # Michi-NS: hato finds the waiting videos' subtitles, never a run
     "subs_with_hato_zh": "neither",          # Zh-H: the same for the Chinese library's videos, never a run
+    "paused": "neither",                     # Mado-PZ: the circles paused at the bar, never a run
     "open_video": "neither", "open_video_program": "neither",   # what ▶ opens a video with (Content): never a run
     "open_book": "neither", "open_book_program": "neither",     # what ▶ opens an EPUB with (Content): never a run
     "finish_cards": "neither",               # When you finish something (Content): its cards' choice, never a run
@@ -42,6 +45,7 @@ PLACED = {
     "setup_passed": "neither",               # the setup pages saved before setup finished (IK2-2): never a run
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
+    "known_from_anki_chosen": "neither",     # Kantan-B3: whether its states are the learner's pick, never a run
     "connect_video_folders": "neither",      # P2.5: where Connect looks for a moved video, never a run
     "anki_sync_delay_min": "neither",       # the sync rule's minute (E1.1 04 §3): when Anki syncs, never a run
     "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",

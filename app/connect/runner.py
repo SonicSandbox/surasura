@@ -218,6 +218,8 @@ STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Cards made for you was switched off."
+PAUSED = "Paused: click Anki Miner's circle at the bottom left to go on"    # Mado-PZ: the run's stop and a cut job's
+#   wait (never a Stop of yours: it goes on from its step at the next start, `_stopped`)
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
 REPLACED = "Surasura was updated: the new version makes the cards from here."
 MINER_ABSENT = "Anki Miner isn't installed"
@@ -427,6 +429,9 @@ def _stop(steps):
         return STOPPED_FOR_UPDATE
     if not steps.enabled():
         return SWITCHED_OFF
+    paused = getattr(steps, "paused", None)
+    if paused is not None and paused():
+        return PAUSED
     if _replaced(steps):
         return REPLACED
     return None
@@ -599,6 +604,9 @@ def _woken(steps, ledger, parked):
     # again this run — never a job still waiting as it was parked
     for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("state") == "queued"]:
         del parked[job_id]
+    if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
+        for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
+            del parked[job_id]
     if woke != kick.VIDEOS:
         return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
@@ -1047,7 +1055,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     try:
         # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
         # look-up still under way at a press is ended, and the job stops before the step it was in
-        with stopping.watching(lambda: _stop_pressed(ledger, jid)):
+        with stopping.watching(lambda: _stop_pressed(ledger, jid, steps)):
             repicks = 0             # a profile or pairing that changed since the pick: picked again (at most twice)
             while repicks < 3:
                 try:
@@ -1100,8 +1108,12 @@ def _job(steps, ledger, lang, job, store_now, line, out):
 def _stop_here(steps, ledger, lang, job, step, record):
     """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
-    if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
+    if step in ("filling", "ordering"):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    if not ledger.stop_asked(job["id"]):
+        if not _paused_now(steps):
+            return
+        _cut_by_pause(steps, job["id"])
     _stopped(steps, ledger, lang, job, step, record)
 
 
@@ -1109,7 +1121,15 @@ def _stopped(steps, ledger, lang, job, step, record):
     """The job stops before `step` at your press. Every stop comes here: `_stop_here`'s, a program ended mid-step
     (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
     are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
-    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
+    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask.
+    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours; `_cut_by_pause` marked it, so a resume a moment
+    after the cut is no Stop either) it is never marked stopped — its cards so far kept, it waits `PAUSED` for this run
+    alone and the resume's kick goes on from `step`."""
+    if not ledger.stop_asked(job["id"]) and (getattr(steps, "paused_cut", None) == job["id"] or _paused_now(steps)):
+        _cut_by_pause(steps, None)
+        made = _keep_made(steps, ledger, lang, job, record)
+        log.info("Connect: job %s paused before %s (%d words made so far)", job["id"], step or "its pick", len(made))
+        raise Wait(PAUSED, look=False, resume=step)
     made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
     if lining_up(now.get("reason")):        # Stage B (AB-Q3): *Stop* while its audiobook is lined up stops that too
@@ -2141,14 +2161,41 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
     return out
 
 
-def _stop_pressed(ledger, jid):
+def _stop_pressed(ledger, jid, steps=None):
     """(The job's check, `stopping.watching`: asked by every program the runner waits on, every second — Anki Miner's
-    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job? A read that fails is no press (logged): the job
-    goes on."""
+    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job — or Anki Miner's circle paused at the bar
+    (Mado-PZ: the job is cut at the same point, resumably, `_stopped`)? A read that fails is no press (logged): the
+    job goes on."""
     try:
-        return ledger.stop_asked(jid)
+        if ledger.stop_asked(jid):
+            return True
+        if _paused_now(steps):
+            _cut_by_pause(steps, jid)
+            return True
+        return False
     except Exception:
         log.warning("Connect couldn't look for a Stop on job %s", jid, exc_info=True)
+        return False
+
+
+def _cut_by_pause(steps, jid):
+    """Mado-PZ: the job `jid` is being cut by a pause (not your Stop) — remembered on the run's steps, so `_stopped`
+    still knows it was a pause when the resume came a moment after the cut."""
+    try:
+        steps.paused_cut = jid
+    except AttributeError:
+        pass
+
+
+def _paused_now(steps):
+    """Mado-PZ: is Anki Miner's circle paused (`Steps.paused`)? A stand-in without the look, or a look that fails: no."""
+    paused = getattr(steps, "paused", None)
+    if paused is None:
+        return False
+    try:
+        return bool(paused())
+    except Exception:
+        log.warning("Connect couldn't look for a pause; it goes on", exc_info=True)
         return False
 
 
@@ -2514,8 +2561,9 @@ class Steps:
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
-        from app.connect import power
+        from app.connect import anki_miner, power
         power.lower_priority()
+        anki_miner.LOW_PRIORITY = self.loaded.get("connect_low_priority") is True     # Michi-LP: Beta, off
 
     def update_staged(self):
         from app import library_store
@@ -2575,6 +2623,28 @@ class Steps:
             return settings_manager.connect_on(verbs.settings())
         except Exception:
             return False
+
+    def paused(self):
+        """Mado-PZ: Anki Miner's circle paused at the bar (settings.json now: asked at each step boundary and, during a
+        job, every second by its watch): the run stops there and a job under way is cut resumably (`_stopped`), its
+        jobs kept in the ledger for the next start. The file is read again only when it changed (its size and time);
+        one that can't be read is no pause (`enabled` says)."""
+        from app import path_utils, settings_manager
+        from app.cli import verbs
+        try:
+            st = os.stat(path_utils.get_settings_path())
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        held = getattr(self, "_paused_seen", None)
+        if stamp is not None and held is not None and held[0] == stamp:
+            return held[1]
+        try:
+            now = settings_manager.paused(verbs.settings(), "miner")
+        except Exception:
+            now = False
+        self._paused_seen = (stamp, now)
+        return now
 
     def settle(self):
         from app.cli.verbs import _session
@@ -4158,6 +4228,13 @@ class Steps:
             raise Skip("Anki Miner isn't installed")
         mapping = self._mapping = setup[2]
         self._mapping_job = job.get("id")
+        # Michi-LP: how hard Anki Miner works on this batch, as settings.json says now — the clips it cuts at once
+        # (this PC's number, or yours) and, Beta, idle priority
+        from app.connect import power
+        now = self._settings(lang)
+        anki_miner.LOW_PRIORITY = now.get("connect_low_priority") is True
+        export = (held.get("set") or (None,) * 4)[3]
+        workers = power.clip_cuts(now.get("connect_clip_cuts", power.AUTO), own=power.profile_cuts(export))
         try:
             done = anki_miner.mine_batch(miner, lang, _tag(job), picked["video"], picked["subtitle"], words,
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
@@ -4168,7 +4245,7 @@ class Steps:
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
-                                         word_audio=runfile.word_audio_on(self._settings(lang), lang))
+                                         word_audio=runfile.word_audio_on(now, lang), workers=workers)
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

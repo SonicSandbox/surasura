@@ -14,21 +14,19 @@ JUNBAN_LEAD = "Put your new cards in the order you'll meet them?"        # Fresh
 JUNBAN_BACKFILL = "Backfill…"
 JUNBAN_BACKFILL_TIP = "Fill fields on your cards from Surasura."
 JUNBAN_RECHECK_NAME = "Check Anki again"
-JUNBAN_RECHECK_TIP = ("Check Anki again: whether Anki is running with AnkiConnect, and refresh the list of decks.")
+JUNBAN_RECHECK_TIP = "Recheck Anki: running with AnkiConnect? Reload decks."
 JUNBAN_CONN_UNCHECKED = "● not checked yet"
 JUNBAN_CONN_CHECKING = "● checking…"
 JUNBAN_CONN_OK = "● connected (AnkiConnect {version})"
 JUNBAN_CONN_OK_PLAIN = "● connected"
 JUNBAN_CONN_DOWN = "● not connected"
-JUNBAN_CONN_DOWN_TIP = ("Junban reads and writes through AnkiConnect, so Anki must be running with a profile open. "
-                        "Start it and press ⟳.")
+JUNBAN_CONN_DOWN_TIP = "Anki must be running with a profile open. Start it, press ⟳."
 JUNBAN_CONN_NAME = "Anki's connection"
 JUNBAN_SCOPE = "Scope:"
 JUNBAN_THIS_DECK = "This deck:"
-JUNBAN_THIS_DECK_TIP = ("Reorder only the deck chosen here. Its subdecks are included, the same way Anki's own deck "
-                        "search works.")
+JUNBAN_THIS_DECK_TIP = "Reorder only this deck, subdecks included."
 JUNBAN_DECK_NAME = "The deck to reorder"
-JUNBAN_DECK_TIP = "Only decks that actually hold unsuspended new cards are listed — reordering any other deck would do nothing."
+JUNBAN_DECK_TIP = "Only decks with unsuspended new cards are listed."
 JUNBAN_ALL_DECKS = "All decks"
 JUNBAN_ALL_DECKS_TIP = "Reorder every deck that has unsuspended new cards, as one queue."
 JUNBAN_ORDER = "Order:"
@@ -37,18 +35,13 @@ JUNBAN_AS_MET_TIP = ("Follow the order your own library will actually show you t
                      "the study order in your library, then the best words inside each file. The front of the queue is "
                      "whatever you are about to watch or read.")
 JUNBAN_LEVERAGE = "By leverage"
-JUNBAN_LEVERAGE_TIP = ("Follow Surasura's priority list instead: the words that unlock the most of your library first, "
-                       "wherever they happen to appear. Higher payoff per word, but the very first word may not turn up "
-                       "for months.")
+JUNBAN_LEVERAGE_TIP = "Unlock most of your library first; word one may be months off."
 JUNBAN_LIST_FIRST = "List first"
 JUNBAN_LIST_FIRST_TIP = ("Every word on your list comes first, with the phrases you meet as often as its words. The ones "
                          "it cut off as too rare go after them. Untick to place each where your journey meets it, among "
                          "the list's words.")
 JUNBAN_PHRASES = "Phrases"
-JUNBAN_PHRASES_TIP = ("Phrase and compound cards (気がつく, ことが出来る) that are no row of your list, but that you meet as "
-                      "often as its words, are placed as if they were on it, with the episode you first meet them in. A "
-                      "phrase your list has a row for (Settings' \"Idioms and set phrases on your list\") goes on that "
-                      "row either way. Untick to put the others with the rest.")
+JUNBAN_PHRASES_TIP = "Common phrase cards (気がつく) are ordered as if on your list."
 JUNBAN_READY_FIRST = "i+1 first"
 JUNBAN_READY_FIRST_TIP = ("A card on your list whose own sentence still has a word from your list that you'd learn after "
                           "it: that word's card is brought right before it — when that card is i+1 there — so you learn "
@@ -57,52 +50,37 @@ JUNBAN_READY_FIRST_TIP = ("A card on your list whose own sentence still has a wo
                           "chain: a card brought forward brings nothing else.")
 JUNBAN_ONLY = "Only:"
 JUNBAN_MARKER_TIPS = {
-    "star": ("Only ☆ high leverage: reorder only the words your journey stars — enough occurrences, and spread across "
-             "the content you are working towards. Leave every box unticked to reorder everything."),
-    "lopsided": ("Only ⚖︎ lopsided: reorder only the words that come almost entirely from one part of your library. "
-                 "Useful for clearing out a single show's vocabulary; there are very few of them."),
-    "reading": ("Only 文 reading: reorder only the words you will read but essentially never hear, so they can be "
-                "learned reading-first."),
+    "star": "Only ☆ high leverage: words your journey stars. None ticked: all.",
+    "lopsided": "Only ⚖︎ lopsided: words from almost one part of your library.",
+    "reading": "Only 文 reading: words you read but almost never hear.",
 }
 JUNBAN_MARKER_TAIL = " Words that do not carry it keep their current order, at the back."
 JUNBAN_MARKER_NAMES = {"star": "Only ☆ high leverage", "lopsided": "Only ⚖︎ lopsided", "reading": "Only 文 reading"}
 JUNBAN_OWN_TAG = "My own cards have this tag:"
 JUNBAN_OWN_TAG_NAME = "Your own cards' tag"
-JUNBAN_OWN_TAG_TIP = ("Cards you mine yourself go ahead of the cards made for you, in the order you mined them, "
-                      "and are never suspended. Without a tag, that's every card without their tag mined since "
-                      "the first card made for you. Type a tag (immersion) and every card carrying it is yours too, whenever you "
-                      "mined it.")
+JUNBAN_OWN_TAG_TIP = "Your own cards go first, never suspended. A tag marks them."
 JUNBAN_ORDER_ALL = "Order all cards by the list"
-JUNBAN_ORDER_ALL_TIP = ("Put your own cards in your list's order too, among the cards made for you, instead of ahead of them. They "
-                        "are still never suspended.")
+JUNBAN_ORDER_ALL_TIP = "Order your own cards by your list too, among the made-for-you cards."
 JUNBAN_TOUCH = "Also update the cards"
 JUNBAN_TOUCH_OPEN = "▾  " + JUNBAN_TOUCH
 JUNBAN_TOUCH_SHUT = "▸  " + JUNBAN_TOUCH
 JUNBAN_TOUCH_ON = "{caption}  ({parts})"
-JUNBAN_TOUCH_TIP = ("Optional extras that change the NOTES of the cards Junban moves — a tag, the frequency number. "
-                    "Everything that writes into your own fields is off until you switch it on, and Restore puts it "
-                    "all back.")
+JUNBAN_TOUCH_TIP = "Optional note changes (a tag, frequency number). Off until switched on."
 JUNBAN_TOUCH_AUTO_TIP = "The automatic re-order applies them too, while it is set to (Settings)."
 JUNBAN_TAG_ON = "Tag the notes I move:"
-JUNBAN_TAG_ON_TIP = ("Adds a tag to every note whose card actually moved, so you can find them in Anki's browser "
-                     "afterwards. It adds nothing else and removes nothing.")
+JUNBAN_TAG_ON_TIP = "Tags every note whose card moved, to find them in Anki."
 JUNBAN_TAG_NAME = "The tag to add"
-JUNBAN_TAG_NAME_TIP = ("The tag to add. Undo the last reorder takes this exact tag back off again, and only from the "
-                       "notes Junban put it on.")
+JUNBAN_TAG_NAME_TIP = "The tag to add. Undo removes exactly this tag."
 JUNBAN_MARKERS_ON = "…and ☆ ⚖︎ 文"
-JUNBAN_MARKERS_ON_TIP = ("Also adds the word's markers as sub-tags of the tag above — {tags} — so you can browse or build "
-                         "a filtered deck on just one of them inside Anki. A word with no marker gets no extra tag.")
+JUNBAN_MARKERS_ON_TIP = "Adds marker sub-tags ({tags}) for building a filtered deck."
 JUNBAN_FREQ_ON = "Add the word's frequency number to:"
 JUNBAN_FREQ_ON_TIP = ("Writes the word's place in your list into the note, as one more entry in the frequency list — "
                       "beside JPDB's, not instead of it. Nothing already there is removed, and running again replaces "
                       "Surasura's own entry rather than adding a second.")
 JUNBAN_FREQ_FIELD = "The frequency field"
-JUNBAN_FREQ_FIELD_TIP = ("Which field holds it. The list is the fields your own notes actually have, filled in after a "
-                         "preview. A field a note does not have is skipped, never created.")
+JUNBAN_FREQ_FIELD_TIP = "Which field holds it. Notes without that field are skipped."
 JUNBAN_FREQSORT = "…and overwrite the '{field}' sort number"
-JUNBAN_FREQSORT_TIP = ("Replaces the single number Anki's browser sorts by. Unlike the frequency list this REPLACES "
-                       "what is in '{field}', so your existing browser ordering changes. Restore puts it back. Off "
-                       "unless you want exactly this.")
+JUNBAN_FREQSORT_TIP = "Overwrites Anki's sort number in '{field}'. Restore reverts. Off by default."
 JUNBAN_LATER = "Cards not on your list:"
 JUNBAN_LATER_NONE = "No action"
 JUNBAN_LATER_BOXES = {
@@ -128,8 +106,7 @@ JUNBAN_CHECKS_TIP = ("Your card's word may be the word on your list, spelled ano
 JUNBAN_CHECKS_NAME = "Words that may be the same as one on your list"
 JUNBAN_EARLIER_SHOW = "earlier answers ({n})"
 JUNBAN_EARLIER_HIDE = "hide earlier answers"
-JUNBAN_EARLIER_TIP = ("Show the words you answered before, to change an answer the same way: tick or untick it, then "
-                      "Reorder.")
+JUNBAN_EARLIER_TIP = "Show earlier answers to change them: tick or untick, then Reorder."
 JUNBAN_EARLIER_LINK = "see or change them"
 JUNBAN_COLUMNS = ("#", "new pos", "word", "{marks}", "why", "deck")
 JUNBAN_TABLE_NAME = "The new order, as Reorder will write it"
@@ -148,34 +125,28 @@ JUNBAN_PREVIEW_TIP = ("Work out the new order and show it here. Nothing is writt
                       "list up to date first (the report is not opened), then shows the new order.")
 JUNBAN_REORDER = "Reorder"
 JUNBAN_REORDER_N = "Reorder {n} card{s}"
-JUNBAN_REORDER_TIP = ("Write the previewed order into Anki. Available once you have previewed the deck you are about to "
-                      "change.")
+JUNBAN_REORDER_TIP = "Write the previewed order into Anki. Needs a preview first."
 JUNBAN_RESTORE = "Undo the last reorder"
-JUNBAN_RESTORE_TIP = ("Put the cards back where they were before the last reorder, using the saved snapshot. Anki's own "
-                      "Undo cannot do this.")
+JUNBAN_RESTORE_TIP = "Put the cards back as before the last reorder."
 JUNBAN_PUT_BACK_NAME = "Put Anki back"
 # Junban-X2 (Sonic 2026-11-13): a Reorder refused only for other decks' stopped runs — one press (PROVISIONAL)
 JUNBAN_PUT_BACK_FIRST = "Put that one back, then reorder"
-JUNBAN_PUT_BACK_FIRST_TIP = "Undo the reorder that stopped part way on the other deck, then reorder this one."
+JUNBAN_PUT_BACK_FIRST_TIP = "Undo the half-done reorder on the other deck first."
 JUNBAN_PUT_BACK_FIRST_HELP = "Only {decks} goes back; this deck is reordered as previewed."
 JUNBAN_PUT_BACK_FIRST_ELSEWHERE = "the other deck"
 # Backlog onboarding (Sonic 2026-10-29): undo said plainly, the backlog's picture before the first reorder, Try it
 JUNBAN_UNDO_NOTE = "Every card can go back exactly as it was"
-JUNBAN_UNDO_NOTE_TIP = ("Before any card moves, Surasura saves where every card it moves was. Undo the last reorder puts "
-                        "them back exactly. Anki's own Undo can't: Anki keeps no undo of a reorder.")
+JUNBAN_UNDO_NOTE_TIP = "Card positions are saved first. Undo the last reorder restores them."
 JUNBAN_PICTURE_NAME = "Your backlog, before your first reorder"
-JUNBAN_PICTURE_TIP = "What Reorder would do with your new cards, from the preview below. Shown until your first reorder."
+JUNBAN_PICTURE_TIP = "What Reorder would do to your new cards, until your first reorder."
 JUNBAN_PICTURE_LINE = "· {line}"
 JUNBAN_PICTURE_JOIN = "\n"
 JUNBAN_PICTURE_UNDO = "Every card can go back exactly as it was: Undo the last reorder."
 JUNBAN_SHOW_KNOWN = "Show them in Anki"
-JUNBAN_SHOW_KNOWN_TIP = ("Opens Anki's browser on these cards, so you can suspend the ones you don't need. Surasura "
-                         "changes nothing.")
+JUNBAN_SHOW_KNOWN_TIP = "Opens Anki's browser on these cards to suspend any. Nothing is changed."
 JUNBAN_SHOW_FAILED = "Anki's browser couldn't be opened: {why}"
 JUNBAN_TRY = "Try it on my next {n} card{s}"
-JUNBAN_TRY_TIP = ("A real reorder of these cards alone: they go to the front of your deck's new cards, in this order, "
-                  "and Anki's browser opens on them. Undo the last reorder puts them back exactly. Reorder does the "
-                  "rest.")
+JUNBAN_TRY_TIP = "Reorders just these cards; Anki's browser opens. Undo puts them back."
 JUNBAN_TRYING = "Moving your next cards to the front…"
 JUNBAN_LABEL_TRY = "順: trying the new order on your next cards"
 JUNBAN_REORDERING = "Reordering…"
@@ -201,7 +172,7 @@ JUNBAN_RESTORE_Q = "Put your cards back where they were before the last reorder?
 JUNBAN_RESTORE_BOTH_Q = ("Put your cards back where they were before the last reorder — and the automatic one "  # Disc-T1,
                          "it finished?")                                                                       # PROVISIONAL
 JUNBAN_RESTORE_YES = "Restore"
-JUNBAN_RESTORE_YES_TIP = "Put the cards back as the line above says. Anki writes no undo of its own."
+JUNBAN_RESTORE_YES_TIP = "Put the cards back as the line above says."
 JUNBAN_CONFIRM_NO_TIP = "Stop here. Nothing in Anki is changed (Esc does the same)."
 JUNBAN_CANCELLED = "Cancelled before it started: nothing was changed."
 JUNBAN_PUT_BACK_REFUSED = "順 is working on your cards: try again once it has finished."
@@ -252,8 +223,7 @@ BF_NOT_OFFERED_TIP = "Not for this language yet."
 BF_HELP_MARK = "?"
 BF_HELP_NAME = "What {fill} fills"
 BF_COPY_STYLE = "Copy card style"
-BF_COPY_STYLE_TIP = ("Style these lines on another note type.\n"
-                     "• In Anki: Tools › Manage Note Types › Cards › Styling — paste at the end.")
+BF_COPY_STYLE_TIP = "Style these lines on another note type.\n• Anki: Manage Note Types › Cards."
 BF_COPIED = "Copied. In Anki: Tools › Manage Note Types › Cards › Styling — paste at the end."
 # Translations (Piyo-TR, PROVISIONAL): Backfill only counts them and says the next step — it never calls an AI itself
 BF_TR_COUNT = ("{n} cards have no translation. Your own AI can translate them through Piyo (Settings › Connections); "
@@ -317,7 +287,7 @@ BF_ASK_FILL_YES_TIP = "Write the previewed fields to Anki now"
 BF_ASK_RUN = "An automatic fill didn't finish. Put back what it wrote?"
 BF_ASK_RESTORE = "Put back what was there before Backfill wrote?"
 BF_ASK_RESTORE_YES = "Restore"
-BF_ASK_RESTORE_YES_TIP = "Put those fields back in Anki (Enter and Esc leave them as they are)"
+BF_ASK_RESTORE_YES_TIP = "Put those fields back (Enter and Esc leave them)."
 BF_NOTHING_FILLED = "Nothing has been filled yet."
 BF_NOTHING_WRITTEN = "Nothing was written to Anki."
 BF_LOOK_AGAIN = "The language changed meanwhile: nothing was written. Look again first."
@@ -342,8 +312,7 @@ BF_FIELDS_HEADING = "Where {fill} goes"
 BF_FIELDS_MODEL = "{name}  ({count:,})"
 BF_FIELDS_SKIP = "— skip —"
 BF_FIELDS_FIELD_TIP = "The field it goes in, on {name} cards."
-BF_FIELDS_LANGUAGE_TIP = ("The language of {name} cards. Not set, cards with kana are Japanese, and others are never "
-                          "filled.")
+BF_FIELDS_LANGUAGE_TIP = "The language of {name} cards. Not set: kana is Japanese, others skipped."
 BF_LANGUAGE_JA = "Japanese"
 BF_LANGUAGE_ZH = "Chinese"
 BF_LANGUAGE_UNSET = "Language?"

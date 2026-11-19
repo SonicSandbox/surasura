@@ -433,8 +433,8 @@ def test_r3_a_folders_cross_removes_that_folder_alone_and_repaints_only_inside_i
 
 # --- R1: the slash key lays the page out at most once ------------------------------------------------------------- #
 def test_r1_a_slash_focusing_the_search_lays_the_page_out_at_most_once(page):
-    """`/` on a page scrolled down: the search takes focus and is brought into view, and the page is laid out at most
-    one pass (no more hints than one forced pass of the body asks), no widget moved more than a pass's worth (MOVES_PER_PASS)."""
+    """`/` on a page scrolled down: the search takes focus (it stands above the scroll since Fine-tune: in view, the
+    page stays where it is), and the page is laid out at most one pass (no more hints than one forced pass of the body asks), no widget moved more than a pass's worth (MOVES_PER_PASS)."""
     bar = page.scroll.verticalScrollBar()
     unit = wc.one_pass(page.body, page)
     bar.setValue(min(600, bar.maximum()))
@@ -447,7 +447,7 @@ def test_r1_a_slash_focusing_the_search_lays_the_page_out_at_most_once(page):
         assert scrolled > 0, w.report()                                   # (it really stood scrolled down)
         # the page's own focus widget (hasFocus() also needs the window active, which the file's earlier tests change)
         assert page.window().focusWidget() is page.search.edit, w.report()
-        assert bar.value() == 0, w.report()                               # brought into view
+        assert bar.value() == scrolled, w.report()                        # (pinned above the scroll: EZ-4)
         assert w.hints <= unit, (unit, w.report())                        # (one pass at most: the scroll asks no more)
         assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
     finally:

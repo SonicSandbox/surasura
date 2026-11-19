@@ -490,6 +490,19 @@ def test_skip_a_folder_starts_in_a_folder_being_read_and_a_refusal_says_why_in_t
     assert len(looks.skip_asks) == 1
 
 
+def test_skip_a_folder_never_opens_its_picker_in_a_share_that_isnt_answering(window):
+    # Kura-NA (a Send report: the skip picker "nearly froze" with the NAS down): Windows' folder dialog waits on the
+    # folder it opens in, so a folder the last look couldn't reach is never its start — the first one reached is; none
+    # reached, the content folder.
+    looks = ActingLooks([_src(1, ANIME, 412, reachable=False), _src(2, DRAMA, 30)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: len(folders.lines) == 2, 10)
+    _skipping(win, looks)
+    asked = _picks(folders, "")
+    folders.skip.click()
+    assert asked == [(W.SKIP_TITLE, DRAMA)]
+
+
 def test_skip_a_folder_paints_its_arc_before_the_looks_are_asked(window):
     from tests.qt.press_handover import Paints, arc_turning
     looks = ActingLooks([_src(1, ANIME, 412)])
@@ -612,9 +625,10 @@ def test_a_skip_that_lands_as_nothing_stops_turning_and_shows_no_line(window):
     assert wait_until(lambda: len(calls(writer, "skip_folder")) == 2, 5)
 
 
-def test_a_skip_behind_a_look_under_way_says_it_waits_in_the_windows_line(window):
-    # H1: the pre-check waits for the look on the looks' one worker. The window says so (never silent) until it is
-    # answered; the waiting words go once the skip is saved.
+def test_a_skip_with_a_look_under_way_is_checked_without_waiting_for_it(window):
+    # H1, Kura-NA: the pre-check reads the store on the looks' asks worker, never in line behind a look (which may hang
+    # on a share that doesn't answer) — so no "after the look under way" words; the arc turns until it is answered
+    # and the skip saved.
     looks = ActingLooks([_src(1, ANIME, 412)])
     win, page, row, folders = _open(window, looks)
     assert wait_until(lambda: 1 in folders.lines, 10)
@@ -623,8 +637,7 @@ def test_a_skip_behind_a_look_under_way_says_it_waits_in_the_windows_line(window
     waiting = _held_check(looks)
     _picks(folders, OLD)
     folders.skip.click()
-    words = S.SOURCES_SKIP_QUEUED.format(name=os.path.basename(OLD))
-    assert folders.status.text() == words and folders.status.isVisible()
+    assert folders.status.text() == ""
     assert win.presses.any_live() and calls(writer, "skip_folder") == []
     waiting[0](None)
     assert wait_until(lambda: not win.presses.any_live() and folders.skip_said.isVisible(), 5)

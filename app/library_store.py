@@ -2012,6 +2012,7 @@ class _Command:
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
         self.reworked = set() # items whose work changed: their pieces are re-checked too
+        self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
         self.fed_inline = set()  # … already written with their placement
@@ -4304,11 +4305,12 @@ class Store:
             return wid
         if wid is None:
             wid = self._specials_work(rel, cache)
+        full = cmd.show_names.get(path_key(rel)) if fk is not None else None    # Kura-NA: a long name's folder is cut
         if wid is None:
-            wid = self._same_show_folder(fk, rel, cmd)
+            wid = self._same_show_folder(fk, rel, cmd, show=full)
         if wid is None:
             below = _below_tier(rel)
-            wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
+            wid = self._new_work(full or folder_title(below), fk, cmd, titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -4347,7 +4349,7 @@ class Store:
             "AND instr(substr(rel_key, ?), '/') = 0 LIMIT 2", (base, base[:-1] + "0", len(base) + 1)).fetchall()
         return found[0][0] if len(found) == 1 else None         # (two: the user's split — none of them)
 
-    def _same_show_folder(self, fk, rel, cmd):
+    def _same_show_folder(self, fk, rel, cmd, show=None):
         """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
         item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
         `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
@@ -4356,17 +4358,20 @@ class Store:
         `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
         one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
         here: two titles already made stay *Same title?*'s to ask. The titles of a key come from `_show_titles` (kept on
-        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. -> the work, or None."""
+        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. Kura-NA: `show`, the
+        show as its files name it when the folder's name is its cut (`sources.full_show`), is the key asked; a title of
+        the cut name alone (one made before) counts too. -> the work, or None."""
         if "/" in fk:
             return None
         from app.episode_names import show_key
-        want = show_key(search_fold(fk, self.language))   # (folded as the titles' names are: a Chinese library's 臺 is 台)
-        if not want:
+        # (folded as the titles' names are: a Chinese library's 臺 is 台)
+        wants = [k for k in dict.fromkeys(show_key(search_fold(n, self.language)) for n in (show, fk) if n) if k]
+        if not wants:
             return None
-        found = []
-        for w in sorted(self._show_titles(cmd)["key"].get(want, ())):
+        found, index = [], self._show_titles(cmd)["key"]
+        for w in sorted(set().union(*(index.get(k, ()) for k in wants))):
             row = self.conn.execute("SELECT search_key FROM works WHERE id = ?", (w,)).fetchone()
-            if row is not None and want in _show_keys(row[0]):
+            if row is not None and any(k in _show_keys(row[0]) for k in wants):
                 found.append(w)
         if len(found) != 1:
             return None
@@ -6833,6 +6838,71 @@ class Store:
         return self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                                  (name,)).fetchone() is not None
 
+    # --- Kantan-B2: the words Surasura won't mine again (a new tester, 2026-11-18: "where does it keep that?") ---- #
+    def unmined_words(self, item_ids=None):
+        """The words Connect made a card for whose every card is gone from Anki — each `made_words` row of the word
+        emptied by `notes_gone` (G1.3-4: never made again unless you ask) -> [{"word", "items": [item ids, the newest
+        made first], "made_at": its last}], the newest first. `item_ids`: only the words one of those items made.
+        A read (no write); [] while the table isn't there."""
+        if not self._has_table("made_words"):
+            return []
+        with self._reading():
+            rows = self.conn.execute(
+                "SELECT word, item_id, made_at FROM made_words WHERE word IN (SELECT word FROM made_words GROUP BY "
+                "word HAVING SUM(note_ids NOT IN ('[]', '')) = 0) ORDER BY made_at DESC, item_id DESC").fetchall()
+        out, by_word = [], {}
+        for word, item_id, made_at in rows:
+            entry = by_word.get(word)
+            if entry is None:
+                entry = by_word[word] = {"word": word, "items": [], "made_at": made_at}
+                out.append(entry)
+            entry["items"].append(item_id)
+        if item_ids is not None:
+            wanted = set(item_ids)
+            out = [e for e in out if wanted & set(e["items"])]
+        return out
+
+    def allow_again(self, words):
+        """*Allow again* (Kantan-B2): each word whose every card is gone from Anki is freed — its `made_words` rows
+        deleted, so a later job may make its card again; a word with a card still in Anki (or not recorded) is left
+        as it is. One command; Undo puts the rows back (`_undo_allow`). -> the Change (`made_rows`: the rows taken), or
+        None (nothing to free)."""
+        words = sorted({str(w) for w in words or () if w})
+        if not words or not self._has_table("made_words"):
+            return None
+        with self._command("allow_again") as cmd:
+            rows = []
+            for chunk in _chunks(words, 500):
+                rows += self.conn.execute(
+                    f"SELECT item_id, word, note_ids, made_at, batch FROM made_words WHERE word IN "
+                    f"({','.join('?' * len(chunk))})", chunk).fetchall()
+            held = {r[1] for r in rows if _json_list(r[2])}
+            take = [tuple(r) for r in rows if r[1] not in held]
+            if not take:
+                return None
+            self.conn.executemany("DELETE FROM made_words WHERE item_id = ? AND word = ?", [(r[0], r[1]) for r in take])
+            cmd.touch()
+            change = self._change(cmd, "allow_again")
+            change.made_rows = take
+            return change
+
+    def _undo_allow(self, cmd, change):
+        """*Allow again* undone: each row back — unless the word was made again meanwhile (a row there now: the new
+        card's record stands, the value check)."""
+        out = self._change(cmd, "undo")
+        back, skipped = [], []
+        for row in change.made_rows:
+            if self.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? AND word = ?", row[:2]).fetchone():
+                skipped.append(row[0])
+                continue
+            self.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                              "(?, ?, ?, ?, ?)", row)
+            back.append(row)
+        if back:
+            cmd.touch()
+        out.made_rows = back
+        return out, skipped
+
     def _notes_held(self, gone):
         """(the gone notes the store holds, [(item_id, word)] for each made word that names one, [trash ids] for each
         removed item whose kept links name one). A list entry that isn't a note id is kept as it is, never a reason
@@ -6982,7 +7052,14 @@ class Store:
         """Undo one recorded change, in any order: a later change by anyone else is protected by the
         conflict rule (an item whose `changed_in` isn't the change's version is skipped, with a note);
         each undo restores the `changed_in` it replaced, so several undos in a row work. Returns the
-        undo's own change (its `notes` say what was skipped), or None when nothing could be undone."""
+        undo's own change (its `notes` say what was skipped), or None when nothing could be undone. Kura-NA: a skip's
+        Undo then lets in the hato files the skip kept out (`let_drops_back`, after the undo's own write)."""
+        out = self._undo_one(change, trashed_paths, rel_paths)
+        if getattr(change, "folder", None) is not None and out is not None:
+            self.let_drops_back()
+        return out
+
+    def _undo_one(self, change, trashed_paths=None, rel_paths=None):
         meta = self.meta()
         if change.epoch != meta["epoch"]:
             raise UndoRefused("the library was rebuilt since; that change can't be undone")
@@ -7054,6 +7131,8 @@ class Store:
                 out, skipped = self._undo_options(cmd, change)
             elif kind == "stop_source":
                 out, skipped = self._undo_roots(cmd, change)
+            elif kind == "allow_again":                              # Kantan-B2: the freed words' rows back
+                out, skipped = self._undo_allow(cmd, change)
             elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "move" and change.status:      # P4.1 L2 (TF fix 8): out of Finished, back in the order
@@ -9171,7 +9250,8 @@ def _sync_delta(store, walk, known, scope=None, as_new=()):
     data_dir = store.data_dir
     walked_tops = _scope_tops(scope) if scope is not None else [path_key(f) + "/" for f in WALK_FOLDERS]
     content = path_key(CONTENT_FOLDER) + "/"
-    kept_out = {r[0] for r in store.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}
+    kept_out = {r[0] for r in store.conn.execute("SELECT pattern FROM exclusions WHERE kind IN ('duplicate', ?)",
+                                                 (DROP_SKIPPED,))}           # Kura-NA: a refused hand-over's file
     seen, fresh, respell, refresh = set(), [], [], []
     for rel, size, mtime_ns in walk["files"]:
         key = path_key(rel)
@@ -9458,7 +9538,8 @@ def _store_reset_order(self, walk=None):
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
-        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}  # K3
+        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind IN ('duplicate', ?)",
+                                                  (DROP_SKIPPED,))}  # K3; Kura-NA: a refused hand-over's file
         arrivals = cmd.meta.get("arrivals_on")
         content = path_key(CONTENT_FOLDER) + "/"           # the content folder's copies come in by `take_in` only (B2)
         untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))
@@ -11114,6 +11195,9 @@ def _store_removed_for(self, keys):
 # same command — Undo puts them back and drops the row; *Read again* drops the row and its marked 'removed' rows, so
 # the next look takes its files in as new (SRC-2), never twice (SRC-7). `sources._Look` never lists a skipped folder.
 FOLDER_SKIP = "folder"
+# Kura-NA (train 43's keeper): hato's file of a hand-over refused for a skipped folder — kept out of the disk sync and
+# Reset (`pattern` its rel key) until the folder is read again, when it is registered with the record its note holds
+DROP_SKIPPED = "skipped-drop"
 SKIP_NOT_FOLDER = "That isn't a folder."
 SKIP_IS_SOURCE = "That's a folder Surasura reads: to leave all of it out, stop reading it."
 SKIP_OUTSIDE = "That folder isn't inside a folder Surasura reads."
@@ -11168,22 +11252,128 @@ def _store_skip_refused(self, path):
 
 def _store_items_under(self, path):
     """K6: the live items whose every origin lies inside the folder `path`, in id order — an item with an origin
-    elsewhere, or a record of another producer (hato's), stays. A range read on the origins' keys."""
-    lo = SOURCE_KEY + path_key(folder_path(path)).rstrip("/") + "/"
+    elsewhere stays. Kura-NA: a record of another producer (hato's) is inside when the video it names lies there (hato
+    found it in that folder: its own item, or a source item it took over, leaves with the folder's others); one naming
+    no video, or one elsewhere, keeps the item. A range read on the origins' keys, and one read of the records' videos."""
+    folder = path_key(folder_path(path)).rstrip("/")
+    lo = SOURCE_KEY + folder + "/"
     hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
     with self._reading():
-        inside = sorted({r[0] for r in self.conn.execute(
+        inside = {r[0] for r in self.conn.execute(
             f"SELECT item_id FROM pairings p WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL AND "
-            f"NOT {_VERSION_ROW}", (lo, hi))})               # LM1b: a version's place is never the item's
+            f"NOT {_VERSION_ROW}", (lo, hi))}               # LM1b: a version's place is never the item's
+        held = {}                                        # {item_id: records of others not inside} (Kura-NA)
+        for item_id, video in self.conn.execute(
+                f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END "
+                f"FROM pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IS NOT NULL"):
+            there = isinstance(video, str) and bool(video) and _under(path_key(folder_path(video)), folder)
+            held[item_id] = held.get(item_id, 0) + (not there)
+            if there:
+                inside.add(item_id)
         out = []
-        for chunk in _chunks(inside, 500):
+        for chunk in _chunks(sorted(inside), 500):
             for item_id, every, there in self.conn.execute(
                     f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings p WHERE item_id "
-                    f"IN ({','.join('?' * len(chunk))}) AND NOT {_VERSION_ROW} GROUP BY item_id ORDER BY item_id",
-                    [lo, hi] + chunk):
-                if every == there:
+                    f"IN ({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW} AND NOT {_VERSION_ROW} GROUP BY item_id "
+                    f"ORDER BY item_id", [lo, hi] + chunk):
+                if every == there and not held.get(item_id):
                     out.append(item_id)
-    return out
+            have = {r[0] for r in self.conn.execute(f"SELECT DISTINCT item_id FROM pairings p WHERE item_id IN "
+                                                    f"({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW}", chunk)}
+            out += [i for i in chunk if i not in have and i in held and not held[i]]   # hato's alone: no origin
+    return sorted(out)
+
+
+def _store_skipped_holding(self, paths):
+    """Kura-NA: the skipped folder (its one spelling, `folder_path`) holding any of `paths` — hato's record's video and
+    the subtitle it wrote beside it — or None: hato's hand-over of a skipped folder's video is refused (`register_headless`
+    answers `skipped`). One short read of the skipped folders."""
+    f = self._skip_holding(paths)
+    return folder_path(f["path"]) if f is not None else None
+
+
+def _store_skip_holding(self, paths):
+    """`skipped_holding`'s skipped folder row ({id, root, key, path}), or None."""
+    keys = [path_key(folder_path(p)) for p in paths if isinstance(p, str) and p.strip()]
+    if not keys:
+        return None
+    for f in self.skipped_folders():
+        if any(_under(k, f["key"]) for k in keys):
+            return f
+    return None
+
+
+def _store_keep_drop_out(self, path, pairing, folder_id):
+    """Kura-NA (train 43's keeper, finding 1): hato's hand-over of `path` refused for the skipped folder `folder_id` —
+    ONE command: a row the disk sync made for hato's file a moment before (R1's `_sync_drop`: nothing of anyone's on it)
+    is taken out, and the file is kept out of every later sync and Reset by a `DROP_SKIPPED` exclusion holding hato's
+    record (`note`: {folder, record}) — never an arrival with no record (it could never be mined, and hato never hands
+    a skipped one over again). *Read again* / the skip's Undo registers it with that record (`_unskip`). hato's file is
+    never deleted or moved. The exclusion alone moves no version (no item, record or event: `register`'s `skipped`
+    says nothing was written to the library). The skip is checked again inside the command (read again meanwhile: not
+    kept out — hato's hand-over is taken as any); a newer refused record replaces the one kept. -> True when kept out."""
+    rel = library_rel(self.data_dir, path)
+    if rel is None:
+        raise NotInLibrary(f"not in the library: {path}")
+    key = path_key(_strip(rel))
+    note = _dumps({"folder": folder_id, "rel": rel, "record": pairing})
+    with self._command("register", _producer(pairing)) as cmd:
+        if not self.conn.execute("SELECT 1 FROM exclusions WHERE id = ? AND kind = ?",
+                                 (folder_id, FOLDER_SKIP)).fetchone():
+            return False
+        row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
+        if row is not None and self._sync_drop(row[0], rel, pairing):
+            self._take_out(cmd, row[0])
+            self._change(cmd, "register")
+        if not self.conn.execute("UPDATE exclusions SET note = ? WHERE kind = ? AND pattern = ?",
+                                 (note, DROP_SKIPPED, key)).rowcount:       # (bookkeeping: no view, no version)
+            self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES (?, ?, ?, ?, ?)",
+                              (self._root_id(), key, DROP_SKIPPED, _now(), note))
+        self._copy_dirty()                               # train 44's keeper: the JSON copy carries the exclusions
+        return True
+
+
+def _store_copy_dirty(self):
+    """(Inside a write.) The JSON copy carries what this write changed (`copy_dirty`: the helper writes it), for a
+    change that moves no version (a kept-out row: train 44's keeper)."""
+    self._set_meta({"copy_dirty": int(self._meta().get("copy_dirty") or 0) + 1})
+
+
+def _store_let_drops_back(self):
+    """Each hato file a skip kept out (`DROP_SKIPPED`) whose folder is no longer skipped (read again, the skip undone)
+    is let in — registered with the record it was refused with, so it keeps its video — in its own command, AFTER the
+    write that read the folder again (never nested in it: a failure rolls back that file alone, and register's own
+    clean-up runs). Its exclusion goes only once it is registered, or when the file is gone; one that can't be
+    registered now stays kept out (never an arrival with no record) and is tried at the next call. Called after
+    `read_folder_again`, after a skip's Undo, and before each hato hand-over (`register_headless`). -> files let in."""
+    if self._cmd is not None or getattr(self, "_depth", 0):
+        return 0                                         # (inside another write: the next call lets them in)
+    with self._reading():
+        rows = self.conn.execute("SELECT id, note FROM exclusions WHERE kind = ? ORDER BY id", (DROP_SKIPPED,)).fetchall()
+        live = {r[0] for r in self.conn.execute("SELECT id FROM exclusions WHERE kind = ?", (FOLDER_SKIP,))} \
+            if rows else set()
+    n = 0
+    for ex_id, raw in rows:
+        note = _json_dict(raw) or {}
+        if note.get("folder") in live:
+            continue                                     # (its folder still skipped: kept out)
+        rel, record = note.get("rel"), note.get("record")
+        if isinstance(record, dict) and \
+                self._skip_holding([record.get("video_path"), record.get("subtitle_path")]) is not None:
+            continue                                     # train 44's keeper: another skip (a parent's) still holds it
+        full = os.path.join(self.data_dir, *str(rel or "").split("/")) if rel else None
+        try:
+            if full and os.path.isfile(full) and isinstance(record, dict) and record.get("content_key"):
+                self.register(full, record)
+                n += 1
+            elif full and os.path.isfile(full):
+                continue                                 # (a record it can't be registered by: stays kept out)
+            with self._writing():
+                if self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (ex_id, DROP_SKIPPED)).rowcount:
+                    self._copy_dirty()                   # (the copy carries the exclusions)
+        except Exception as e:                           # that file alone: kept out, tried again at the next call
+            print(f"Library: a kept-out hato file wasn't let back in yet ({rel}): {e!r}")
+    return n
 
 
 def _store_skip_choices(self, item_ids, own=False):
@@ -11200,11 +11390,20 @@ def _store_skip_choices(self, item_ids, own=False):
             f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
             f"({','.join('?' * len(ids))}) "
             f"ORDER BY p.content_key", ids).fetchall()
+        # Kura-NA: an item hato brought (no origin of its own) — the folder of the video its record names
+        theirs = self.conn.execute(
+            f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END FROM "
+            f"pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) ORDER BY p.content_key",
+            ids).fetchall()
     starts, came = [], set()
     for item_id, t in rows:
         origin = (_json_dict(t) or {}).get("origin")
         if isinstance(origin, str) and origin:
             starts.append(folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin))))
+            came.add(item_id)
+    for item_id, video in theirs:
+        if item_id not in came and isinstance(video, str) and video.strip() and os.path.isabs(video):
+            starts.append(folder_path(os.path.dirname(video)))
             came.add(item_id)
     if own:
         if not starts or came != set(ids):
@@ -11223,7 +11422,7 @@ def _store_skip_choices(self, item_ids, own=False):
             continue
         top, out = max(held, key=len), []
         while _under(path_key(folder).rstrip("/"), top):
-            if own and self._holds_others(folder, ids):
+            if own and (self._holds_others(folder, ids) or not set(self.items_under(folder)) <= set(ids)):
                 break                                   # (a folder above it holds those others too)
             if skip_refusal(folder, sources, skipped)[0] is None:
                 out.append(folder)
@@ -11295,7 +11494,10 @@ def _store_read_folder_again(self, folder_id):
     next look takes its files in as new (shows never shown → New arrivals, SRC-2; never twice, SRC-7). Not on Undo.
     -> True when it was skipped."""
     with self._writing():
-        return self._unskip(folder_id)
+        read = self._unskip(folder_id)
+    if read:
+        self.let_drops_back()                            # Kura-NA: hato's refused files, with their records
+    return read
 
 
 def _store_take_in(self, root_id, found, first=False, rules=None):
@@ -11396,6 +11598,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
+            if rel is not None and f.get("show_name"):   # Kura-NA: its title goes by the show uncut (`_folder_work`)
+                cmd.show_names[path_key(rel)] = str(f["show_name"])
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
                 self._let_audiobook_back(key, f.get("let_back_from"), out)
@@ -13587,6 +13791,11 @@ Store.items_under = _store_items_under
 Store.skip_choices = _store_skip_choices
 Store._holds_others = _store_holds_others
 Store.skip_folder = _store_skip_folder
+Store.skipped_holding = _store_skipped_holding
+Store._skip_holding = _store_skip_holding
+Store.keep_drop_out = _store_keep_drop_out
+Store._copy_dirty = _store_copy_dirty
+Store.let_drops_back = _store_let_drops_back
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved
 Store.read_folder_again = _store_read_folder_again
@@ -15936,6 +16145,12 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if store is None:
             return _registered(EXIT_NEEDS_YOU)
     with store:
+        # Kura-NA: a video of a folder the learner skipped is skipped for hato too — its file left where hato wrote it,
+        # kept out of the disk sync (train 43's keeper: never an arrival with no record) until the folder is read again
+        store.let_drops_back()                           # (a folder read again since: its kept-out files first)
+        held = store._skip_holding([pairing.get("video_path"), pairing.get("subtitle_path")])
+        if held is not None and store.keep_drop_out(path, pairing, held["id"]):
+            return Registered(EXIT_DONE, None, "skipped", None, None, None, None)
         if reader:
             store.register_reader(reader)
         try:

@@ -237,6 +237,37 @@ def path():
     return os.path.join(folder(), "ledger.sqlite")
 
 
+def listed_of(language, item_ids, db_path=None):
+    """{item_id: {word: True / False}} — whether each word a job of the item picked was on the list then (`pick`'s
+    `listed`; a later job's pick over an earlier one's), read-only, without the ledger's own open (no schema written,
+    no write lock): the ✓ chip's *at your level* / *below it* (Michi-CK2). Words picked before the pick said so are
+    left out; {} with no ledger. Raises sqlite3.Error when it can't be read just now."""
+    db_path = db_path or path()
+    out = {i: {} for i in item_ids}
+    if not out or not os.path.exists(db_path):
+        return out
+    from pathlib import Path
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        ids = list(out)
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            for item_id, raw in conn.execute(
+                    f"SELECT item_id, picked FROM jobs WHERE language = ? AND picked IS NOT NULL AND item_id IN "
+                    f"({','.join('?' * len(chunk))}) ORDER BY id", [language] + chunk):
+                try:
+                    words = (json.loads(raw) or {}).get("words") or ()
+                except (ValueError, AttributeError):
+                    continue
+                for w in words:
+                    if isinstance(w, dict) and w.get("word") and isinstance(w.get("listed"), bool):
+                        out[item_id][w["word"]] = w["listed"]
+    finally:
+        conn.close()
+    return out
+
+
 class Ledger:
     """One connection to the ledger; `with Ledger() as ledger:` closes it."""
 

@@ -102,6 +102,29 @@ def test_a_batch_that_moves_one_count_rebuilds_only_that_row(language):
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
+def test_finisheds_section_is_kept_while_its_own_counts_read_the_same_and_built_again_when_one_moves(language):
+    """Built as the reader builds (nothing in the feed changed: `changed` empty), Finished's section is kept whole
+    while its own answers read the same — a Current answer moving doesn't build it — and built again when one of its
+    own moves, its row then showing the new count (mutant M17)."""
+    items = _three_shows(language, finished=True)
+    cards = {**CARDS, 7: 2, 8: 2}
+    cache = vr.RowCache()
+    tiers = vr._by_tier(items)                                  # the reader's tiers: the same lists while unmoved
+    base = {1: 22, 2: 5, 3: 0, (1, 2, 3): 25, 4: 1, 5: 2, (4, 5): 3, 6: 7, 7: 4, 8: 1, (7, 8): 5}
+
+    def build(elsewhere):
+        return vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, elsewhere=elsewhere, cache=cache,
+                        tiers=tiers, changed=set(), changed_works=set(), language=language)
+    build(base)                                                 # the first build keys nothing yet
+    one = build(dict(base))
+    two = build({**base, 6: 8})                                 # a Current answer moved
+    assert two.finished is one.finished, "Finished kept whole"
+    three = build({**base, 6: 8, 7: 9, (7, 8): 10})             # one of Finished's own moved
+    assert three.finished is not two.finished
+    assert three.finished[0].rows[0].status.label == str(4 + 10)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_count_survives_the_first_screens_cache_and_a_drop_reading_the_top_again(language):
     """The first frame shows last session's count; a drop that reads the top again (`topped`) keeps it on the rows it
     reads again — never back to its own cards."""

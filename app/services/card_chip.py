@@ -20,7 +20,10 @@ its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows s
   reader's first build after the first screen reads the last answers until this one answers. Written only when the
   studied words changed, else at most every `SAVE_S` while answers move, and at the close.
 - **Answers:** {item_id: other} for an episode and {(item ids…): other} for a row of several — *other* is how many of
-  its words have a card not made from it (its own cards are the row's count already). Handed on (`on_change`) only
+  its words have a card not made from it (its own cards are the row's count already). Beside them, {("level", key):
+  (at, below)}: of the cards Connect made from it, how many words were on the list (*at your level*) and how many
+  were i+1 words below it (Sonic's lean A, 2026-11-18: *Only i+1* makes both; the hover says so honestly) — from the
+  job's pick (`ledger.listed_of`), only where every made word says which. Handed on (`on_change`) only
   when one moved, as one new dict; the reader rebuilds only the rows whose answer moved (S19).
 
 Everything runs on this counter's own worker — never the window's thread, nor the reader's — and, in the window's
@@ -63,6 +66,16 @@ def _backlog_stamp(language):
     return st.st_size, st.st_mtime_ns
 
 
+def _listed_words(language, ids):
+    """{item_id: {word: on the list then}} from Connect's ledger (read-only), or None when it can't be read now."""
+    try:
+        from app.connect import ledger
+        return ledger.listed_of(language, ids)
+    except Exception as e:
+        print(f"Card chip: the picks' list marks couldn't be read ({e!r})")
+        return None
+
+
 def _made_words(language, ids):
     """{item_id: {word}} Connect made a card for that still has a note in Anki, for `ids` — through one store open;
     None when the store can't be read just now (busy, read-only, not built: the last words stand)."""
@@ -92,7 +105,7 @@ class Chips:
     - `seeded()`: the last answers on disk (the reader's, before its first build); `answers()`; `close()`."""
 
     def __init__(self, language, on_change=None, worker=None, open_tokens=None, data_dir=None, read_made=None,
-                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None):
+                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None):
         from app.services.automation import Worker
         self.language = language
         self.on_change = on_change
@@ -100,6 +113,7 @@ class Chips:
         self._open_tokens = open_tokens
         self._data_dir = data_dir
         self._read_made = read_made or _made_words
+        self._read_listed = read_listed or _listed_words
         self._read_backlog = read_backlog or _backlog_words
         self._backlog_stamp = backlog_stamp or _backlog_stamp
         self._cache_file = cache_file
@@ -126,6 +140,7 @@ class Chips:
         self._backlog = set()              # ints
         self._backlog_at = None
         self._out = {}                     # item_id / row key -> other
+        self._level = {}                   # item_id -> (at your level, below it) of the cards it made (lean A)
         self._tokens = None
         self._dirty_at = None              # when the answers on disk fell behind
         self._handed = {}
@@ -153,6 +168,12 @@ class Chips:
             try:
                 out[tuple(int(x) for x in k.split(","))] = int(n)
             except (TypeError, ValueError):
+                continue
+        for k, n in (got.get("levels") or {}).items():
+            try:
+                ids = tuple(int(x) for x in k.split(","))
+                out[("level", ids[0] if len(ids) == 1 else ids)] = (int(n[0]), int(n[1]))
+            except (TypeError, ValueError, IndexError):
                 continue
         with self._lock:
             if not self._handed:
@@ -242,7 +263,7 @@ class Chips:
         """(The worker.) What was counted let go — the next round reads every asked file again and counts it whole;
         the studied words Anki last said are kept (handed in again), the answers handed on stay until then."""
         self._looked, self._files, self._inv, self._made = {}, {}, {}, {}
-        self._rows, self._rows_of, self._ref, self._out = {}, {}, {}, {}
+        self._rows, self._rows_of, self._ref, self._out, self._level = {}, {}, {}, {}, {}
         self._studied, self._backlog, self._backlog_at = set(), set(), None
         if self._studied_words is not None:
             with self._lock:
@@ -314,6 +335,7 @@ class Chips:
             if looked is None or looked[2] != ask[2]:
                 made_owed.append(item_id)
         made = self._read_made(self.language, made_owed) if made_owed else {}
+        listed = self._read_listed(self.language, made_owed) if made_owed and made is not None else None
         for item_id in reread:
             window_idle.pause()                        # (Up next 3: a young window stretch waited out, file by file)
             words = self._file_words(asks[item_id][0])
@@ -335,6 +357,14 @@ class Chips:
             got = None if made is None else made.get(item_id)
             if got is None and made is None:
                 continue                                       # the store can't be read now: asked again next time
+            if listed is not None:                             # lean A: each made word on the list or below it
+                flags = listed.get(item_id) or {}
+                at = sum(1 for w in got or () if flags.get(w) is True)
+                below = sum(1 for w in got or () if flags.get(w) is False)
+                if got and at + below == len(got):
+                    self._level[item_id] = (at, below)
+                else:
+                    self._level.pop(item_id, None)             # a word picked before the pick said so: not split
             new = frozenset(self._int(w) for w in got or ())
             old = self._made.get(item_id, frozenset())
             if new != old:
@@ -423,6 +453,7 @@ class Chips:
         """An item no longer asked: its file, its made words and its answer let go -> the rows holding it."""
         self._looked.pop(item_id, None)
         self._out.pop(item_id, None)
+        self._level.pop(item_id, None)
         self._unindex(item_id, self._files.pop(item_id, None))
         for w in self._made.pop(item_id, frozenset()):
             ref(w, -1)
@@ -493,12 +524,26 @@ class Chips:
                 self._tokens = None
         return self._tokens
 
+    def _answers(self):
+        """The answers handed on: each count, and each split (lean A) — a row's the sum of its files', only while every
+        file of it says one."""
+        out = dict(self._out)
+        level = self._level
+        for i, v in level.items():
+            out[("level", i)] = v
+        for key in self._rows:
+            parts = [level.get(i) for i in key]
+            if all(p is not None for p in parts):
+                out[("level", key)] = (sum(p[0] for p in parts), sum(p[1] for p in parts))
+        return out
+
     def _hand(self):
+        answers = self._answers()
         with self._lock:
-            if self._out == self._handed:
+            if answers == self._handed:
                 return
-            self._handed = dict(self._out)
-            out = dict(self._handed)
+            self._handed = answers
+            out = dict(answers)
         self._save()
         if self.on_change is not None and not self._closed:
             try:
@@ -541,7 +586,10 @@ class Chips:
         record = {"v": CACHE_VERSION,
                   "studied": sorted(self._studied_words or ()),
                   "items": {str(k): n for k, n in handed.items() if not isinstance(k, tuple)},
-                  "rows": {",".join(map(str, k)): n for k, n in handed.items() if isinstance(k, tuple)}}
+                  "rows": {",".join(map(str, k)): n for k, n in handed.items()
+                           if isinstance(k, tuple) and k[:1] != ("level",)},
+                  "levels": {(str(k[1]) if not isinstance(k[1], tuple) else ",".join(map(str, k[1]))): list(n)
+                             for k, n in handed.items() if isinstance(k, tuple) and k[:1] == ("level",)}}
         tmp = f"{path}.tmp"
         try:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

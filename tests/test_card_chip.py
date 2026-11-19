@@ -399,3 +399,23 @@ def test_card_chip_a_token_store_busy_for_a_moment_is_read_again_by_itself(lib, 
         assert chips.answers().get(1) == 5 and len(opened) == 2
     finally:
         chips.close()
+
+
+def test_card_chip_a_rows_file_no_longer_counted_leaves_the_rows_count(lib):
+    """A show's row of two episodes; one episode's file changes and the token store holds no count of it yet: the row
+    is counted again from the other episode alone — never left with the old file's words (mutant M12)."""
+    studied = set(_pick(lib.words[1] | lib.words[2], 10, 18))
+    chips = lib.chips()
+    try:
+        chips.studied(studied)
+        chips.want(lib.ask([1, 2]), [(1, 2)])
+        _settle(chips)
+        assert chips.answers()[(1, 2)] == lib.expected((1, 2), studied)
+        lib.rel[2] = "HighPriority/星の工房/編集中.srt"            # its file changed: not counted yet
+        chips.want({2: (lib.rel[2], 2, 1)})
+        _settle(chips)
+        answers = chips.answers()
+        assert 2 not in answers
+        assert answers[(1, 2)] == lib.expected(1, studied), "the row from episode 1's words alone"
+    finally:
+        chips.close()

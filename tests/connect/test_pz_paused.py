@@ -83,3 +83,141 @@ def test_the_connect_verb_answers_skipped_while_anki_miner_is_paused():
     h.write_settings(connect_enabled=True, paused=["miner"], logic={"automation": False})
     code, line = h.call("connect")
     assert line["skipped"] == "automation off", "the master switch is said first"
+
+
+# --- train 45's intent keeper #1: a pause mid-episode is never your Stop ---------------------------------------- #
+# What a wrong answer would cost: the episode Anki Miner was making cards for when the learner paused it never made
+# again after the resume (it waited for a new *Mine now*, as a Stop does) — its remaining words never get their cards.
+from app.connect.ledger import Ledger                                    # noqa: E402
+from tests.connect.fake_steps import FakeSteps                           # noqa: E402
+
+EPISODE_WORDS = {
+    "ja": [("上層部", "ジョウソウブ"), ("一生懸命", "イッショウケンメイ"), ("走り出す", "ハシリダス")],
+    "zh": [("认真", "ren4 zhen1"), ("约定", "yue1 ding4"), ("勇气", "yong3 qi4")],
+}
+
+
+@pytest.fixture
+def ledger(tmp_path):
+    with Ledger(str(tmp_path / "ledger.sqlite")) as led:
+        yield led
+
+
+def _queue(ledger, lang, item_id):
+    with ledger.transaction():
+        return ledger.queue(lang, item_id, "user", None, store_id="store-1")
+
+
+def _steps(tmp_path, lang, plan_extra=None):
+    plan = {"line": {lang: [1]}, "words": {"1": EPISODE_WORDS[lang]}}
+    plan.update(plan_extra or {})
+    return FakeSteps(str(tmp_path), plan)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_pause_mid_batch_keeps_the_cards_made_and_the_resume_finishes_the_episode(tmp_path, ledger, lang):
+    job_id = _queue(ledger, lang, 1)
+    paused = []
+
+    def pause(n, _job):
+        if n == 1:
+            paused.append(True)                 # the click on 鉱, after the batch's first card
+    steps = _steps(tmp_path, lang, {"on_word": pause})
+    steps.paused = lambda: bool(paused)
+    summary = runner.run({}, [lang], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    job = ledger.job_by_id(job_id)
+    first = EPISODE_WORDS[lang][0][0]
+    assert (job["state"], job["reason"], job["resume"]) == ("waiting", runner.PAUSED, "mining")
+    assert not ledger.is_stopped(job_id) and not ledger.held_by_stop(job), "a pause is no Stop: no stopped mark"
+    assert steps.anki.words() == [first], "the cards made before the pause are kept"
+    assert summary.get("stopped") == runner.PAUSED
+    # the click again: resumed — the next start (the resume's kick) finishes the episode, no new ask
+    after = _steps(tmp_path, lang)
+    after.paused = lambda: False
+    runner.run({}, [lang], steps=after, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert ledger.job_by_id(job_id)["state"] == "done"
+    assert [e[3] for e in after.log if e[0] == "mine"] == [[w for w, _r in EPISODE_WORDS[lang][1:]]], \
+        "only the words still unmade, each once"
+    assert sorted(after.anki.words()) == sorted(w for w, _r in EPISODE_WORDS[lang])
+    assert not ledger.is_stopped(job_id) and not ledger.stop_asked(job_id)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_pause_before_the_episodes_first_step_holds_it_and_the_resume_mines_it_whole(tmp_path, ledger, lang):
+    job_id = _queue(ledger, lang, 1)
+    steps = _steps(tmp_path, lang, {"switch_off_after": None})
+    seen = []
+
+    def paused_once_picking():
+        seen.append(True)
+        return len(seen) > 1                    # the run's own look passes, the step's watch sees the pause
+    steps.paused = paused_once_picking
+    runner.run({}, [lang], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    job = ledger.job_by_id(job_id)
+    assert job["state"] == "waiting" and job["reason"] == runner.PAUSED and not ledger.is_stopped(job_id)
+    assert not any(e[0] == "mine" for e in steps.log), "nothing mined while paused"
+    after = _steps(tmp_path, lang)
+    after.paused = lambda: False
+    runner.run({}, [lang], steps=after, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert ledger.job_by_id(job_id)["state"] == "done"
+    assert sorted(after.anki.words()) == sorted(w for w, _r in EPISODE_WORDS[lang])
+
+
+def test_your_stop_while_paused_is_still_your_stop(tmp_path, ledger):
+    """A Stop you pressed (the row's) wins over a pause: it waits for your next ask, as before."""
+    job_id = _queue(ledger, "ja", 1)
+
+    def press(n, _job):
+        if n == 1:
+            ledger.ask_stop(job_id)
+    steps = _steps(tmp_path, "ja", {"on_word": press})
+    steps.paused = lambda: True if ledger.stop_asked(job_id) else False
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    job = ledger.job_by_id(job_id)
+    assert job["reason"] == runner.STOPPED_BY_YOU and ledger.held_by_stop(job)
+
+
+def test_steps_reads_the_pause_again_only_when_settings_json_changed(monkeypatch):
+    """S19 (train 45's keeper #5): the job's watch asks every second; the file is read again only once it changed."""
+    from app.cli import verbs
+    h.write_settings(connect_enabled=True, paused=["miner"])
+    reads = []
+    real = verbs.settings
+    monkeypatch.setattr(verbs, "settings", lambda: reads.append(1) or real())
+    steps = runner.Steps({"connect_enabled": True})
+    assert steps.paused() and steps.paused() and steps.paused()
+    assert len(reads) == 1
+    import os
+    import time
+    time.sleep(0.02)
+    h.write_settings(connect_enabled=True, paused=[])
+    os.utime(os.path.join(h.root(), "settings.json"))
+    assert steps.paused() is False and len(reads) == 2
+
+
+def test_a_resume_while_connect_still_runs_lets_the_cut_job_go_on_in_that_run(tmp_path, ledger):
+    """Haiku's review of round 2: the cut job is parked for its run; a resume (its kick) before that run ends lets it go
+    on there, never only at a later start that might not come."""
+    job_id = _queue(ledger, "ja", 1)
+    state = {"paused": False, "cut": False, "kicked": False}
+
+    def pause(n, _job):
+        if n == 1 and not state["cut"]:
+            state["paused"] = True
+
+    def paused():
+        if state["paused"]:
+            state.update(paused=False, cut=True, kicked=True)       # the cut, then the click again at once
+            return True
+        return False
+
+    def kicked():
+        was, state["kicked"] = state["kicked"], False
+        return was
+    steps = _steps(tmp_path, "ja", {"on_word": pause})
+    steps.paused, steps.kicked = paused, kicked
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert state["cut"]
+    assert ledger.job_by_id(job_id)["state"] == "done", "resumed in the same run: the episode finished"
+    assert sorted(steps.anki.words()) == sorted(w for w, _r in EPISODE_WORDS["ja"])
+

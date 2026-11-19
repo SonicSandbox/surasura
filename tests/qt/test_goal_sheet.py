@@ -321,6 +321,44 @@ def test_B2_1_move_to_soon_lands_after_a_show_the_soon_line_runs_through(world):
     assert rs[place - 1].key == show.key and rs[place - 1].soon_from is not None     # the show still one row
 
 
+@pytest.mark.parametrize("joined", [True, False])
+def test_up_next_saved_in_its_shows_episode_order_says_so_never_number_one(world, joined, monkeypatch):
+    """(Kura-EO 3.0.16; train 40's intent keeper) *Up next* of a title whose show is in Current: the store may put it in
+    the show's episode order (`Change.show_order`), not first — once saved its toast says it is in Current with its
+    show, never "#1". Saved where asked, "#1" as before."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = joined                   # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    sheet = open_sheet(win)
+    show = two_part(win)
+    sheet.pick(show, "top")
+    want = strings.GOAL_UP_SHOW.format(title=show.title, first="Ep 1–12") if joined else \
+        strings.GOAL_UP.format(title=show.title, first="Ep 1–12", n=1)
+    assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
+
+
+def test_up_next_saved_in_its_shows_order_keeps_the_new_words_on_its_ticket(world, monkeypatch):
+    """(Kura-EO 3.0.16, mutants) The words that follow the save stay with the press itself (its ticket), not only on
+    the toast showing now: the toast shown again and the Undo's own ticket read them there."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = True                     # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    sheet = open_sheet(win)
+    show = two_part(win)
+    sheet.pick(show, "top")
+    want = strings.GOAL_UP_SHOW.format(title=show.title, first="Ep 1–12")
+    assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
+    assert win.moves.toasted.text == want
+
+
 def test_a_one_part_title_moves_whole_and_its_toast_says_so(world):
     seed, win, writer = world()
     sheet = open_sheet(win)

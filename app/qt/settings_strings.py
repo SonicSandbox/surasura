@@ -811,6 +811,9 @@ OFF_ANYWAY_NO_TIP = "Cards made for you stays on (Esc does the same)"
 STAYS_ON = "Cards made for you stays on: put the shelved cards back from its window, or turn it off again."
 # The Anki Miner card (U5, U6; AM★: the star line beside Install). The Tk panel's words.
 MINER_CHECKING = "Checking…"
+# Michi-DK (PROVISIONAL): Anki Miner's own deck isn't the one Surasura shows — both named (Surasura's cards go to its
+# own; Anki Miner never lets another program change the deck its window mines into)
+MINER_DECKS = "Surasura's cards go to “{ours}” · cards you mine in Anki Miner go to “{own}”"
 MINER_NOT_CHECKED = "Couldn't check Anki Miner: {}"
 MINER_STEP_1 = "1. In Anki Miner: Manage profiles… → New, and name it Surasura."
 MINER_STEP_2 = "2. In that profile's Settings: Whitelist → choose file, and pick this file:"

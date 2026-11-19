@@ -1,11 +1,14 @@
 """The deck, note type and fields Anki Miner fills, from its own settings (P1.3 row 1.3.6; IS:205, IS:276).
 
 A run never writes Anki Miner's settings and never guesses them: `--api settings-export` hands over the profile's
-settings for the language, and the run's `config` names the same deck, note type and fields back (`runfile.config`),
-so a run can't land anywhere the user didn't set up. What's missing is set by *Finish its setup* (`FINISH`: A4M1-2b,
-`services.anki_miner_setup`), never in Anki Miner's window. What Junban and Backfill read of a mined card comes from the
-same mapping: the word field, the sentence field, and the field Anki Miner writes the episode's source into (K40: it
-moved there from MiscInfo), each `None` when unmapped.
+settings for the language, and the run's `config` names the same note type and fields back (`runfile.config`), so a
+run can't land anywhere the user didn't set up. **The deck** is Surasura's own while it shows one (Michi-DK: `for_run`,
+`surasura_deck`): the deck Settings names for new cards and 順 keeps in order, sent for that run alone — Anki Miner
+applies a run file's `config` "for this run only, never saved" (its `resolve_run_config`), so the deck its own window
+mines into is never changed (its `settings-import` refuses the window's profile anyway). What's missing is set by
+*Finish its setup* (`FINISH`: A4M1-2b, `services.anki_miner_setup`), never in Anki Miner's window. What Junban and
+Backfill read of a mined card comes from the same mapping: the word field, the sentence field, and the field Anki Miner
+writes the episode's source into (K40: it moved there from MiscInfo), each `None` when unmapped.
 
 Anki Miner's own rule (its `check`): the word field must be the note type's first field (IS:205) — Anki checks a new
 note's first field for a duplicate. A mapping that breaks it, a note type missing from Anki, or a mapped field the
@@ -14,8 +17,10 @@ note type lacks would fail the whole run (`MINING_FAILED`): each is a *Needs you
 from collections import namedtuple
 
 # One profile's mapping: `fields` is Anki Miner's own role -> field (unmapped roles left out); `word`, `sentence`,
-# `source` and `frequency_sort` are the fields those roles map to, or None.
-Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort")
+# `source` and `frequency_sort` are the fields those roles map to, or None. `own_deck` (Michi-DK): Anki Miner's own
+# deck when a run mines into Surasura's instead (`for_run`), else None.
+Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort own_deck",
+                     defaults=(None,))
 
 
 # Where each of these is set right: Surasura's own *Finish its setup* (A4M1-2b), never Anki Miner's window — offered
@@ -66,6 +71,30 @@ def from_export(export, language="ja", do=FINISH):
         raise NeedsYou("Anki Miner doesn't say which field holds the word. " + do)
     return Mapping(deck, note_type, fields, fields["word"], fields.get("sentence"), fields.get("source"),
                    fields.get("frequency_sort"))
+
+
+def surasura_deck(settings, language):
+    """Michi-DK: the deck Surasura shows for `language`'s new cards and 順 keeps in order — Settings' *New cards a
+    day* deck (`anki_deck_options.deck_for`: 順's deck while its scope is one deck), only while it is this language's
+    (`setup_wizard.junban_deck`: one recorded for the other language is none here) — or None (Anki Miner's own)."""
+    from app import anki_deck_options
+    from app.services import setup_wizard
+    settings = settings or {}
+    if not anki_deck_options.deck_for(settings):
+        return None
+    return setup_wizard.junban_deck(settings, language)
+
+
+def for_run(mapping, settings, language, decks=None):
+    """The mapping a Connect run mines with: `mapping` (Anki Miner's own, from its settings export) with Surasura's
+    deck (`surasura_deck`) in place of its own, kept as `own_deck` (the words carded there still count). `decks`:
+    Anki's decks (None: not read) — a deck Anki answers without is none to mine into (Anki Miner refuses the whole
+    run): Anki Miner's own then, as before. Deck names compare as Anki does, ignoring case."""
+    deck = surasura_deck(settings, language)
+    if not deck or deck.casefold() == str(mapping.deck).casefold() or (
+            decks is not None and deck.casefold() not in {str(d).casefold() for d in decks}):
+        return mapping
+    return mapping._replace(deck=deck, own_deck=mapping.deck)
 
 
 def check_note_type(mapping, model_fields, do=FINISH):

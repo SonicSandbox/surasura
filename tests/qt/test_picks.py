@@ -293,6 +293,26 @@ def test_A4_a_right_click_on_a_picked_row_opens_the_picks_menu_and_on_another_ro
 
 
 @pytest.mark.parametrize("language", ("ja", "zh"))
+def test_up_next_of_picks_saved_in_their_shows_order_says_so(world, language, monkeypatch):
+    """(Kura-EO 3.0.16) The picks' *Up next* that the store saved in their show's episode order (`Change.show_order`)
+    says they are in Current with their show, not "up next"."""
+    _seed, win, writer = world(language)
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = True                     # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    lst = lst_of(win)
+    now = current_rows(win, "now")[:2]
+    for i in now:
+        lst.pick_row(lst.model().entries[i][1])
+    pick_entry(picks_menu_of(win, lst, now[0]), "top")
+    want = strings.PICKS_DONE_WITH_SHOW.format(title=strings.PICKS_TITLES.format(n=2))
+    assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
 @pytest.mark.parametrize("name", ("top", "soon", "goal", "finished"))
 def test_A4_each_entry_on_currents_picks_is_one_command_one_toast_naming_the_count(world, language, name):
     """*Up next* `place(…, "top")`; *Soon* a `move` after the Soon line; *Goal* a `move` to Goal's end; *Finished*

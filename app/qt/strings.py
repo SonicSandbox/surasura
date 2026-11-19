@@ -1758,9 +1758,8 @@ COVER_MENU = {
     "Use a picture from this computer as its cover. It's copied into your User Files and "
                                   "kept, even when another picture is found"),
     # Mado-CV (PROVISIONAL words for Sonic): what it is, said plainly — and its way back once kept
-    "generated": ("Use a plain cover", "A plain card with its name on it, kept from now on: Surasura stops looking "
-                                       "for a picture, beside its files or online"),
-    "again": ("Look for a cover again", "Let Surasura look for its picture again, as it does for any new title"),
+    "generated": ("Use a plain cover", "A plain card with its name. Surasura stops looking for a picture"),
+    "again": ("Look for a cover again", "Surasura looks for its picture again, as for a new title"),
 }
 COVER_PICK_TITLE = "Choose a cover image"
 COVER_PICK_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp)"

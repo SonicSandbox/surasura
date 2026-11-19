@@ -639,12 +639,12 @@ def test_an_image_chosen_over_a_generated_lock_replaces_it(lib, tmp_path):
 def test_the_cover_words_name_only_what_works_and_say_what_a_generated_cover_is():
     """Mado-CV (PROVISIONAL words for Sonic): *Paste a link* names only the links 3.0 fetches (TMDB isn't in 3.0 —
     a TMDB link pasted is still answered at once, `no_key`), and the generated cover's entry says it is a plain painted
-    card that no picture replaces."""
+    card no picture is looked for."""
     for text in (strings.COVER_PASTE[1], strings.COVER_PASTE_NOT_A_LINK):
         assert "TMDB" not in text and "AniList" in text and "YouTube" in text
     assert "TMDB" in strings.COVER_PASTE_WHY["no_key"]
     label, tip = strings.COVER_MENU["generated"]
-    assert "generated" not in label.lower() and "online" in tip
+    assert "generated" not in label.lower() and "stops looking" in tip
 
 
 def test_a_read_only_library_changes_no_cover_and_says_so(lib, tmp_path):

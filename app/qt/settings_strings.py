@@ -126,7 +126,7 @@ CHANGED_TIP = "You changed this · default: {default}\n• Click: back to it"
 RESET_SECTION = "↺ Reset section"
 RESET_SECTION_TIP = ("This section's settings back to their defaults\n"
                      "• Never usage counts, updates, automation, language or folders")
-RESET_NOTHING_TIP = "Nothing here differs from its default"
+RESET_NOTHING = "Nothing here differs from its default"
 RESET_DONE = "↺ {section}: back to defaults"
 SAVED = "✓ Saved"
 FOLDED_VALUE = "{label}: {value}"
@@ -216,7 +216,7 @@ ROWS = {
     # off (the sync's own answer), *Count as known in Anki* while it is on (A7S-1: the sync reads studied cards only —
     # `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
     "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
-                                    "Studied-then-suspended cards count as known. Off by default.",
+                                    "Studied, then suspended: counts as known. New cards you suspend never count.",
                                     "suspended known count as known in anki"),
     "known_from_anki": ("Count as known in Anki",
                         "A card must match every state you pick.",
@@ -230,7 +230,7 @@ ROWS = {
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
                         "ankiconnect status connection"),
     "new_cards_a_day": ("New cards a day",
-                        "Anki's own setting; changed only when you say so.",
+                        "Anki's own setting for {deck}; changed only when you say so.",
                         "Anki's new cards a day; sets the pace of the target line.",
                         "new cards a day anki per day limit deck pace words per day"),
     "connect_enabled": ("Cards made for you",
@@ -283,13 +283,13 @@ ROWS = {
                              "Mine only once subtitles are checked in sync. On: trust them.",
                              "trust timing synced subtitles not timed tsubasa"),
     # Q29: one choice — where your own cards go — and the tag that marks them under it
-    "junban_order_all": ("Your own cards", "Your own cards: never marked or suspended as off-list.",
+    "junban_order_all": ("Your own cards", "Your own cards: never marked or suspended as not on your list.",
                          "First: the cards you made yourself go ahead of the cards made for you, in the order "
                          "you made them. In your list's order: they go among the cards made for you, by your list. Either way they "
                          "are never marked or suspended as not on your list", "own cards first order all list manual "
                          "yomitan"),
     "junban_own_tag": ("Their tag", "Every card carrying it is yours too, whenever you made it",
-                       "Tag marking your own cards. Empty: those after the first auto card.",
+                       "Your own cards' tag: never suspended. Empty: after the first auto card.",
                        "own cards tag immersion manual yomitan"),
     "anki_sync_delay_min": ("Sync Anki after tomorrow's cards change",
                             "Syncs before the first write, then this long after a change.",
@@ -434,7 +434,7 @@ ROWS = {
                       "On: 俺様, お前さん count as one word. Off: as parts.",
                       "pronouns suffix"),
     "phrase_rows": ("Idioms as rows",
-                    "Common set phrases get their own rows (気がする); their words keep theirs.",
+                    "Set phrases you meet often get their own rows: 気がする, 腑に落ちる.",
                     "Adds common dictionary phrases as rows of their own.", "idioms set phrases rows"),
     "exclude_single": ("List one-kanji words only when they’re dictionary words",
                        "One-kanji words are listed only when they stand alone (手). Off: all.",
@@ -500,11 +500,11 @@ ROWS = {
     "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
     "practice_ai": ("Practise with your AI",
-                    "Your AI quizzes you; what it's told goes to its company.",
+                    "Your AI quizzes you. What it's told goes to that AI's company.",
                     "Copy the setup, paste it to your AI. Try a short story.",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",
-                             "Rounds stay on this PC to redo. Off: none kept.",
+                             "Rounds stay on this PC to redo. Off: nothing is kept.",
                              "Keep each practice round in User Files, to redo and build on.",
                              "practice rounds keep save again history context ai"),
     "jimaku": ("jimaku", "Subtitles for anime. Its key will come from hato", "jimaku's key, through hato",
@@ -612,7 +612,7 @@ ROWS = {
                       "settings export import save backup move new computer pc file"),
     # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
     # 3.0.1 item 5 (AA-1, PROVISIONAL): the same switch asks AniList whether a show near its end is still airing
-    "covers_download": ("Download covers", "Sends AniList a show's name, YouTube a video's id. Nothing else.",
+    "covers_download": ("Download covers", "Sends AniList a show's name or id, YouTube a video's id. Nothing else.",
     "Fetch covers from AniList or YouTube; checks if a "
                                                                "show still airs.",
                         "covers download pictures anilist thumbnails posters"),
@@ -831,7 +831,7 @@ OPEN_MINER = "Open Anki Miner"
 # (Sonic, 2026-11-09: "say so in hover"): the profile Connect mines with, as the card's check found it
 # (`setup.checks`' `anki_miner.profile_name`; `choose_profile`: the setting's, else your usual one), named once checked
 OPEN_MINER_TIP_PLAIN = "Open Anki Miner's own window.\n• Surasura never needs it open."
-OPEN_MINER_TIP = "Open Anki Miner's own window.\n• Cards use its “{profile}” profile."
+OPEN_MINER_TIP = "Open Anki Miner's own window.\n• Cards use its “{profile}” profile: another profile's don't apply"
 OPEN_MINER_TIP_CURRENT = "Open Anki Miner's own window.\n• Cards use the settings it shows."
 FINISH_MINER_SETUP = "Finish its setup…"
 FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and press Finish its setup again."
@@ -877,7 +877,7 @@ SET_UP_AGAIN_OPEN = "Start ›"
 
 # --- a6: *Your settings* — export and import (settings_io.py; SI-1…SI-5, PROVISIONAL) ------------------------------- #
 SETTINGS_EXPORT = "Export settings…"
-SETTINGS_EXPORT_TIP = "Save every setting to one file. No known words, lists or keys."
+SETTINGS_EXPORT_TIP = "Save every setting to one file. No library, known words, lists or keys."
 SETTINGS_EXPORT_TITLE = "Save your settings"
 SETTINGS_IMPORT = "Import settings…"
 SETTINGS_IMPORT_TIP = "Replace all settings with an exported file. Yours are backed up first."

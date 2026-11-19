@@ -18,11 +18,13 @@ NEXT = "Next"
 NEXT_TIP = "Keep these choices and go on.\n• Enter"
 # Fresh library 3.0.1: *Change folders…* (the folders page alone, from Settings' *Sort again or start over…*)
 RESORT_NEXT = "Sort again"
-RESORT_NEXT_TIP = "Back up the order, re-read these folders, sort each title.\n• Enter"
+RESORT_NEXT_TIP = ("Back up the order, re-read these folders, sort each title.\n• Your known words and settings "
+                   "stay\n• Enter")
 RESORT_BACK = "Back"
 PUT_BACK_LINK_NAME = "Put back what you had"
 PUT_BACK_LINK = "Put back what you had (from {date})"                       # page 1, after a Start over (Q2)
-PUT_BACK_LINK_TIP = "Bring back your library, settings and known words.\n• Surasura closes and opens again"
+PUT_BACK_LINK_TIP = ("Bring back your library, settings and known words.\n• Surasura restarts; what you set up since "
+                     "is backed up")
 RESORT_BACK_TIP = "Back to Sort again or start over. Nothing is changed."
 GENERATE = "Generate"
 GENERATE_TIP = "Make your list from your shows now, then open it.\n• Enter"
@@ -168,7 +170,8 @@ FOLDER_REMOVE_TIP = "Leave it out: nothing is read from it."
 FOLDER_REFUSED = "{folder}: {why}"
 # K6: a folder inside the ones picked that is never read (a backup, a game's files), skipped before the first look
 SKIP_FOLDER = "Skip a folder…"
-SKIP_FOLDER_TIP = "Choose a folder inside one you picked to never read."
+SKIP_FOLDER_TIP = ("Choose a folder inside one you picked to never read.\n• Nothing in it changes; Settings › Content "
+                   "reads it again")
 SKIP_TITLE = "A folder Surasura never reads"
 SKIPPED_ROW = "Skipped: {folder}"
 SKIP_REMOVE = "Read it after all"
@@ -289,7 +292,8 @@ CANCEL_DOWNLOAD_TIP = "Stop the download. Nothing is left behind."
 MINER_CHECK_TIP = "Look for Anki Miner again, once it's installed or set up."
 # A4M1-2 (lean taken, PROVISIONAL): Surasura runs Anki Miner's own setup — never "open Anki Miner"
 FINISH_SETUP = "Finish its setup"
-FINISH_SETUP_TIP = "Anki Miner sets up its dictionaries, deck and note type by itself."
+FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries; Surasura sets its deck and note type.\n• Nothing to open: "
+                    "it runs in the background")
 # A4M1-2b: what Surasura can't tell from your settings is chosen here, never in Anki Miner's window
 MINER_DECK = "New cards go in"
 MINER_DECK_TIP = "The Anki deck for new cards. Set in Anki Miner for you."

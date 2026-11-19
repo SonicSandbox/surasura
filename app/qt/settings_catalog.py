@@ -858,10 +858,14 @@ def default_value(row, language):
 
 
 def is_default(row, settings, language):
-    """Whether `row` shows its default (a row holding no value never reads changed)."""
+    """Whether `row` shows its default (a row holding no value never reads changed; nor one whose hand-edited value
+    can't be read: its control shows the default then, `SettingsPage._make_controls`)."""
     if not holds_value(row):
         return True
-    return control_value(row, settings, language) == default_value(row, language)
+    try:
+        return control_value(row, settings, language) == default_value(row, language)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return True
 
 
 def resets(row):
@@ -877,7 +881,10 @@ def reset_changes(rows_, settings, language):
     for row in rows_:
         if not resets(row) or is_default(row, work, language):
             continue
-        changes, _update = change(row, work, language, default_value(row, language))
+        try:
+            changes, _update = change(row, work, language, default_value(row, language))
+        except (ValueError, TypeError):             # a value no default can replace in place: left as it is
+            continue
         for key, v in changes.items():
             put(work, key, v)
             out[key] = plain(v)

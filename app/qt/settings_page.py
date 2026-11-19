@@ -238,6 +238,8 @@ class Search(QWidget):
         self.setFixedHeight(round(theme.size("settings-search-h", size)))
         self.setMaximumWidth(round(theme.size("settings-search-max", size)))
         self.icon.setPixmap(icon_pixmap("search", theme.SETTINGS_TEXT["placeholder"], "settings-search-icon"))
+        self.edit.ensurePolished()         # (above the scroll it is polished as it shows: the stylesheet's colour
+        #                                    would then cover the placeholder's set here)
         pal = self.edit.palette()          # the app's placeholder is the faint ink: here the proven role (S5)
         pal.setColor(QPalette.ColorRole.PlaceholderText, style.qcolor(style.colours()[theme.SETTINGS_TEXT["placeholder"]]))
         self.edit.setPalette(pal)
@@ -286,10 +288,10 @@ class Slab(QWidget):
         head.addWidget(self.tag)
         head.addWidget(self.why, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
-        # Fine-tune (EZ-4): *↺ Reset section*, on a section with a row it can put back; greyed while none differs. Its
-        # room is kept, so a section's head is one height whatever it holds (a choice never moves the page)
-        self.reset = sc.Door(S.RESET_SECTION, tooltip=S.RESET_NOTHING_TIP, parent=self.head)
-        self.reset.setEnabled(False)
+        # Fine-tune (EZ-4): *↺ Reset section*, on a section with a row it can put back — always lit, so a row's change
+        # never repaints the head (S19); with nothing to put back it says so. Its room is kept, so a section's head is
+        # one height whatever it holds (a choice never moves the page)
+        self.reset = sc.Door(S.RESET_SECTION, tooltip=S.RESET_SECTION_TIP, parent=self.head)
         policy = self.reset.sizePolicy()
         policy.setRetainSizeWhenHidden(True)
         self.reset.setSizePolicy(policy)
@@ -401,12 +403,6 @@ class Slab(QWidget):
         self.more_row.layout().setSpacing(round(12 * f))
         self.folded.restyle()
         self.setMaximumWidth(round(theme.size("settings-card-max", style.current()[1])))
-
-    def set_reset(self, any_differs):
-        """*↺ Reset section* lit while a row it puts back differs from its default; greyed (and saying so) else."""
-        if self.reset.isEnabled() != any_differs:
-            self.reset.setEnabled(any_differs)
-            self.reset.setToolTip(S.RESET_SECTION_TIP if any_differs else S.RESET_NOTHING_TIP)
 
     def set_folded(self, words):
         """The closed fold's line (EZ2-9): its rows' values, or "" while the fold is open (only when it moved: S19)."""
@@ -540,6 +536,7 @@ class ChangedDot(QAbstractButton):
         super().__init__(parent)
         self.setObjectName("settingsdot")
         self.setAccessibleName(S.CHANGED_NAME)
+        self.setToolTip(S.CHANGED_NAME)             # (its default's words once the row differs: `RowView.set_dot`)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hide()
@@ -632,7 +629,7 @@ class RowView(QWidget):
             # a list grows downward from the row's top (a folder added never moves the control the click was on)
             line.addWidget(self.slot, 0, self._slot_align(False))
         line.setSizeConstraint(QBoxLayout.SizeConstraint.SetNoConstraint)
-        self.dot = ChangedDot(self)                 # EZ-4: in the left margin, out of the layout (`_place_dot`)
+        self.dot = ChangedDot(self) if catalog.holds_value(row) else None   # EZ-4: in the left margin (`_place_dot`)
         self.set_words(row.label, row.help)
         self.restyle()
 
@@ -718,6 +715,8 @@ class RowView(QWidget):
 
     def _place_dot(self):
         """The dot centred in the row's left margin, on its label's first line (the words stand at the row's top)."""
+        if self.dot is None:
+            return
         side = round(theme.size("settings-dot-hit", style.current()[1]))
         self.dot.resize(side, side)
         m = self.layout().contentsMargins()
@@ -847,7 +846,8 @@ class SettingsPage(QWidget):
         self.built = False
         self.last_toast = None                # (message, undo) of the last *Saved* / reset toast (EZ2-9)
         self._build_frame()
-        self._queue = list(enumerate(catalog.ROWS))
+        order = {section.id: i for i, section in enumerate(catalog.SECTIONS)}      # built in the page's order (the
+        self._queue = sorted(enumerate(catalog.ROWS), key=lambda item: order[item[1].section])   # heads': EZ-4)
         self.takes = {}                       # row id -> fn(value) -> True when it handled the change itself (P4)
         self.bridge.settings_written.connect(self._written)
         self.live = settings_live.Live(self)  # P4: the live rows (after `_written`: its repaint comes second)
@@ -1494,10 +1494,11 @@ class SettingsPage(QWidget):
         if view is not None and view.isVisible():
             self._wash(view)
         if row.keys[0] in catalog.PER_LANGUAGE:
-            old_value = catalog.control_value(row, before, self.language)
+            old_value, language = catalog.control_value(row, before, self.language), self.language
 
             def undo():
-                self._write_row(row, old_value, self._settings())
+                if self.language == language:          # (another language shown since: its entry isn't this one)
+                    self._write_row(row, old_value, self._settings())
         else:
             old = {key: catalog.plain(catalog.value_of(before, key)) for key in written}
 
@@ -1554,7 +1555,9 @@ class SettingsPage(QWidget):
         text size, Motion: `takes`) through its owner. The toast's Undo puts each one back as it was."""
         self._let_go()
         settings, ctx = self._settings(), self._ctx()
-        rows = [row for row in catalog.rows(section_id) if row.id in self.rows and self._visible(row, settings, ctx)]
+        matches = self._matches(settings, ctx)             # (a search showing some of its rows: only those)
+        rows = [row for row in catalog.rows(section_id) if row.id in self.rows and self._visible(row, settings, ctx)
+                and (matches is None or row.id in matches)]
         changes = catalog.reset_changes([row for row in rows if row.id not in self.takes], settings, self.language)
         owned = []
         for row in rows:
@@ -1564,8 +1567,12 @@ class SettingsPage(QWidget):
             if self.takes[row.id](default):
                 owned.append((row, catalog.control_value(row, settings, self.language)))
             else:
-                changes.update(catalog.change(row, settings, self.language, default)[0])
+                try:
+                    changes.update(catalog.change(row, settings, self.language, default)[0])
+                except (ValueError, TypeError) as e:
+                    applog.log("settings", f"{row.id}: not reset: {e}")
         if not changes and not owned:
+            self._toast(S.RESET_NOTHING, None)                       # nothing differs here: nothing written
             return
         if changes:
             self._write(settings, changes)
@@ -1753,9 +1760,7 @@ class SettingsPage(QWidget):
             _unsized(slab.more_row, adv_count > 0)
             slab.more_row.setVisible(adv_count > 0)
         slab.set_open(opened, adv_count)
-        # Fine-tune (EZ-4, EZ2-9): the reset lit while a row it puts back differs; a closed fold's values on one line
-        slab.set_reset(any(catalog.resets(row) and visible[row.id] and row.id in self.rows
-                           and not catalog.is_default(row, settings, self.language) for row in catalog.rows(section_id)))
+        # Fine-tune (EZ2-9): a closed fold's values on one line
         slab.set_folded("" if opened else S.FOLDED_SEP.join(
             S.FOLDED_VALUE.format(label=row.label, value=self._words(row, settings)) for row in catalog.rows(section_id)
             if row.adv and shown.get(row.id) and catalog.holds_value(row) and "{" not in row.label))

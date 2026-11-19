@@ -217,7 +217,7 @@ def test_reset_section_writes_once_keeps_the_exceptions_and_its_undo_puts_every_
                 zen_limit=80, enable_koe=False)
     page, store = make_page(data, "ja")
     slab = page.slabs["reading"]
-    assert slab.reset.isVisibleTo(page) and slab.reset.isEnabled()
+    assert slab.reset.isVisibleTo(page)
     slab.reset.click()
     (changes, update), = store.calls
     assert update is None
@@ -225,27 +225,33 @@ def test_reset_section_writes_once_keeps_the_exceptions_and_its_undo_puts_every_
     message, undo = page.last_toast
     assert message == S.RESET_DONE.format(section=S.SECTIONS["reading"])
     store.land()
-    assert not slab.reset.isEnabled()                           # nothing left that differs
     store.calls.clear()
     undo()
     assert store.calls == [({"line_player": False, "source_display": "icon", "zen_limit": 80}, None)]
     # the App section: usage counts and both update switches are left as the learner set them
     store.land()
     store.calls.clear()
-    app = page.slabs["app"]
-    if app.reset.isEnabled():
-        app.reset.click()
-        for changes, _update in store.calls:
-            assert not set(changes) & {"telemetry_enabled", "update_check_enabled", "auto_update_enabled"}
+    page.slabs["app"].reset.click()
+    for changes, _update in store.calls:
+        assert not set(changes) & {"telemetry_enabled", "update_check_enabled", "auto_update_enabled"}
 
 
-def test_reset_is_greyed_while_nothing_in_its_section_differs_and_writes_nothing(qapp):
+def test_reset_with_nothing_to_put_back_writes_nothing_and_says_so(qapp):
+    # always lit, so a row's click never repaints the section's head (S19); pressed in vain it says so
     page, store = make_page({}, "ja")
     slab = page.slabs["sentences"]
-    assert slab.reset.isVisibleTo(page) and not slab.reset.isEnabled()
-    assert slab.reset.toolTip() == S.RESET_NOTHING_TIP
+    assert slab.reset.isVisibleTo(page) and slab.reset.isEnabled() and slab.reset.toolTip() == S.RESET_SECTION_TIP
     slab.reset.click()
-    assert store.calls == []
+    assert store.calls == [] and page.last_toast == (S.RESET_NOTHING, None)
+
+
+def test_reset_while_searching_puts_back_only_the_rows_the_search_shows(qapp):
+    page, store = make_page(dict(ALL_ON, line_player=False, zen_limit=80, enable_koe=False), "ja")
+    page.search.edit.setText("audio")                     # Journey shows its two audio rows, not *Zen mode*'s
+    QApplication.processEvents()
+    assert page.rows["line_player"].isVisibleTo(page) and not page.rows["zen_limit"].isVisibleTo(page)
+    page.slabs["reading"].reset.click()
+    assert store.calls == [({"line_player": True}, None)]
 
 
 # --- a closed fold's values on one line -------------------------------------------------------------------------- #

@@ -365,7 +365,8 @@ def test_tab_reaches_connects_switch_and_the_anki_miner_card_where_they_stand(wo
     assert at[rows.new_cards.field.edit] < at[switch] < at[first_focusable(page.rows["connect_mine_words"])]
     miner = first_focusable(page.rows["anki_miner"])
     assert at[first_focusable(page.rows["enable_youtube_transcripts"])] < at[miner]
-    assert at[miner] < at[first_focusable(page.rows["theme"])] < at[first_focusable(page.rows["text_size"])]
+    # (Fine-tune's order, EZ-4: Connections under App, after Journey and just before App's own rows)
+    assert at[first_focusable(page.rows["theme"])] < at[miner] < at[first_focusable(page.rows["text_size"])]
 
 
 def test_a_painting_that_breaks_after_a_confirmed_write_still_saves_the_pace(world, monkeypatch, qt_errors):

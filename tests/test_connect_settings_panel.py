@@ -93,7 +93,7 @@ def test_a_cap_per_language_keeps_the_other_languages_own(root):
 
 
 def test_known_from_anki_is_an_and_of_the_picked_terms_and_none_is_off(root):
-    panel, _tips, _pump, before = _panel(root, {"known_from_anki": ["suspended"]})
+    panel, _tips, _pump, before = _panel(root, {"known_from_anki": ["suspended"], "known_from_anki_chosen": True})
     assert panel.menu_known.cget("text") == "Suspended"
     labels = [panel.known_menu.entrycget(i, "label") for i in range(panel.known_menu.index("end") + 1)]
     assert labels[:2] == ["Suspended", "Marked"] and labels[2] == "Flag 1 (Red)" and len(labels) == 9
@@ -110,6 +110,15 @@ def test_known_from_anki_is_an_and_of_the_picked_terms_and_none_is_off(root):
     panel.known_menu.invoke(labels.index("Flag 3 (Green)"))
     panel.known_menu.invoke(labels.index("Suspended"))
     assert read_settings()["known_from_anki"] == ["suspended", "flag:3"], "in the setting's order"
+
+
+def test_known_from_anki_unwritten_shows_the_default_suspended_and_marked_and_writes_nothing(root):
+    # Kantan-B3 (2026-11-18): a file without the key is the default, Suspended + Marked (a plain suspend is often a bad
+    # sentence); showing it never writes the key, so a later default still reaches a learner who never chose
+    panel, _tips, _pump, before = _panel(root)
+    assert "known_from_anki" not in before
+    assert panel.menu_known.cget("text") == "Suspended + Marked"
+    assert _written(before) == ({}, set())
 
 
 def test_video_folders_change_only_this_languages_and_keep_chinese(root, tmp_path):
@@ -184,8 +193,8 @@ def test_a_save_that_fails_puts_each_control_back_and_says_why(root, monkeypatch
     panel._save_cap()
     assert panel.var_cap.get() == "200"
     labels = [panel.known_menu.entrycget(i, "label") for i in range(panel.known_menu.index("end") + 1)]
-    panel.known_menu.invoke(labels.index("Marked"))
-    assert panel.known_vars["marked"].get() is False and panel.menu_known.cget("text") == "Suspended"
+    panel.known_menu.invoke(labels.index("Marked"))         # the default, Suspended + Marked (Kantan-B3): back to it
+    assert panel.known_vars["marked"].get() is True and panel.menu_known.cget("text") == "Suspended + Marked"
     assert panel.save_note.cget("text").startswith("Not saved: your settings file couldn't be written")
     assert panel.save_note.winfo_manager() == "pack"
     assert read_settings() == before
@@ -295,8 +304,8 @@ def test_each_value_lives_on_the_panels_own_window_when_another_tk_root_is_the_d
         panel.chk_grammar.invoke()
         assert _written(before) == ({"connect_send_grammar": False}, set())
         before = read_settings()
-        panel.known_menu.invoke(1)                      # Marked
-        assert _written(before) == ({"known_from_anki": ["suspended", "marked"]}, set())
+        panel.known_menu.invoke(1)                      # Marked, off: from the default (Kantan-B3), with the marker
+        assert _written(before) == ({"known_from_anki": ["suspended"], "known_from_anki_chosen": True}, set())
         assert panel.var_cap.get() == "300", "the cap shown is the panel's own"
     finally:
         other.destroy()

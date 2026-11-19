@@ -25,6 +25,19 @@ from tests.test_replan_preview import (ACTIONS, DECK, MarkingCollection, _genera
 # Connect on: an unattended run brings a returning word's card back only then (`connect.unsuspends`)
 ACTING = dict(junban_auto_actions=True, junban_later_tag=True, junban_later_suspend=True, connect_enabled=True)
 WRITES = ("position", "addTags", "suspend", "unsuspend", "flag", "re-check")
+# The cards these tests make: RP-2's list rows that were its first 40 on 2026-11-18 — pinned to the words, never to
+# "the first 40": a parsing change moves ranks (Kotoba-J: あっ, row 3, left the list as a sound, and "the first 40"
+# then reached とうとう, a card Junban places after the stone episode's own listed cards — that placement, the same on
+# 3.0-dev 76cd7f9f with 41 cards, is its own finding for a Junban lane). A word that left the list since is skipped.
+WINDOW = ("まで", "早川", "あっ", "ムギタロー", "モカブレンド", "いつも", "友達", "遠慮", "上手", "それに", "日本語", "家庭教師",
+          "ありがとうございます", "ちょうどいい", "お店", "雨が降る", "そういう", "という", "でも", "ごちそうさま", "カフェラテ",
+          "いつの間にか", "どういう", "おすすめ", "話をする", "ありがとうございました", "ことになる", "門", "お寺", "図書館", "犍陀多",
+          "極楽", "御釈迦様", "血の池", "蜘蛛の糸", "蓮池", "暗", "何とも", "針の山", "歩き")
+
+
+def _window(root):
+    """The list's words among WINDOW, in the list's order now (the rows the stone tests' cards cover)."""
+    return [word for word in _list_words(root) if word in WINDOW]
 
 
 class ParkingCollection(MarkingCollection):
@@ -72,7 +85,7 @@ def _acting(root, store, monkeypatch):
     monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
     _settings_file(root, **ACTING)
     episode, own = _episode_with_its_own_words(store)
-    words = list(dict.fromkeys(_list_words(root, 40) + own))
+    words = list(dict.fromkeys(_window(root) + own))
     cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
     fake = ParkingCollection(cards, notes, actions=ACTIONS)
     return episode, _word_cards(fake, own), fake

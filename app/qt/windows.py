@@ -548,6 +548,9 @@ OPENERS += [Opener("word-lists", _wls.WORD_LISTS_NAME, _wls.WORD_LISTS_TIP, alwa
 from app.qt import settings_strings as _ss  # noqa: E402
 OPENERS += [Opener("library-folders", _ss.FOLDERS_NAME, _ss.DOORS["library-folders"][1], always,
                    lambda shell: importlib.import_module("app.qt.settings_sources").open_window(shell))]
+# Kantan-B2: Settings › Anki & mining's *Words it won't mine again* (cards you deleted in Anki, each with Allow again)
+OPENERS += [Opener("unmined-words", strings.UNMINED_NAME, _ss.DOORS["unmined-words"][1], always,
+                   lambda shell: importlib.import_module("app.qt.unmined_words").open_window(shell))]
 # row 2: the known-word importers and Extract (app/qt/importers.py, imported when a door opens)
 def _importers(opener_name):
     def open_it(shell):

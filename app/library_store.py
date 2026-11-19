@@ -6614,6 +6614,22 @@ class Store:
         return {w: json.loads(n) for w, n in self.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?",
                                                                (item_id,))}
 
+    def made_words_of(self, item_ids):
+        """{item_id: {word}} Connect made a card for that still has a note in Anki (`notes_gone` empties a deleted
+        card's notes, its word kept) — the ✓ chip's cards made since the last sync (`services/card_chip.py`)."""
+        ids = list(dict.fromkeys(item_ids))
+        out = {i: set() for i in ids}
+        with self._reading():
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_words'").fetchone():
+                return out
+            for chunk in _chunks(ids, 500):
+                for item_id, word, notes in self.conn.execute(
+                        f"SELECT item_id, word, note_ids FROM made_words WHERE item_id IN ({','.join('?' * len(chunk))})",
+                        chunk):
+                    if word and any(_note_id(n) is not None for n in _json_list(notes)):
+                        out[item_id].add(word)
+        return out
+
     def record_anki_changes(self, changes, by="connect"):     # P4.1 L2 (TF fix 10): `by`, the caller
         """The re-plan's record of the cards it changed for an item (05 §5.7, D14): [(item_id, action, [note ids],
         before, after)], one short write; *Put back* restores exactly these, never more. Returns the record ids.

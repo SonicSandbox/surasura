@@ -252,6 +252,19 @@ Episode = namedtuple("Episode", Episode._fields + ("subs",), defaults=tuple(Epis
 # title's next file (`library_store.side_pair`) when a drop reads the top again; None in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("mined_at",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
+# --- Michi-CK2: `elsewhere`, how many of its words have a card not made from it (`card_chip.Chips`' answer: other
+# episodes', other shows', hand-made) — its ✓ counts its own cards and these (`status_of`); None while not counted
+# (no answer yet, not in Anki): the ✓ its own cards alone, as before. A Row's the same over its files' words, each once
+Episode = namedtuple("Episode", Episode._fields + ("elsewhere",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("elsewhere", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
+# --- Michi-CK2 (Sonic's lean A, 2026-11-18): `level`, (at your level, below it) — of the cards Connect made from it, the
+# words on the list and the i+1 words below it (`card_chip`'s ("level", key) answer); None: not split (a word picked
+# before the pick said so, or nothing made). Its hover says both while some are below
+Episode = namedtuple("Episode", Episode._fields + ("level",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("level", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -284,6 +297,14 @@ STRINGS = {
     "nothing": "Nothing new to mine", "nothing_n": "Nothing new to mine · {n}",
     "tip_nothing": "It was mined, but every word in it already has a card or is one you know, so no card was made",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
+    # Michi-CK2 (Sonic's ruling 2, 2026-11-17; PROVISIONAL words): the ✓ counts every word of it with a card
+    "tip_in_anki_chip": "{own} from this episode · {other} from other episodes and shows",
+    "tip_in_anki_chip_k": "{own} from its {k} episodes · {other} from other episodes and shows",
+    # ... lean A (PROVISIONAL words): its own cards split when some are i+1 words below the list
+    "tip_in_anki_chip_lv": "{own} from this episode, {at} at your level and {below} below it · {other} from other "
+                           "episodes and shows",
+    "tip_in_anki_chip_k_lv": "{own} from its {k} episodes, {at} at your level and {below} below it · {other} from "
+                             "other episodes and shows",
     # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
     # new try for the words its cards don't hold yet (`rows`' *Try again*)
     "retry": "Try again", "tip_retry": "{tip}: {k} of its {n} cards made",
@@ -874,13 +895,16 @@ def _by_you(feed_items, top_ids, items, unread, memo):
     return out
 
 
-def status_of(eps, word, line_n):
+def status_of(eps, word, line_n, elsewhere=None, level=None):
     """One status for a set of episodes (a row's, or one episode's), in the mock's order (`stHTML`): every item mined →
     *N in Anki*; any being mined → *Mining*; an unmined one that can be mined in the top → *Waiting*; some mined, the
     rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
     on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
     nothing mines by itself) and no "top" in the tips. An episode in the top that Connect won't mine by itself (`own`,
-    Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*."""
+    Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*. `elsewhere` (Michi-CK2): how many of their words
+    have a card not made from them — *N in Anki* then counts every word of theirs with a card (its own and these),
+    its hover says which; None: its own cards alone. `level` (lean A): (at your level, below it) of its own cards —
+    said in the hover while some are below and the two make its own count."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -908,6 +932,14 @@ def status_of(eps, word, line_n):
     elif not unmined:                                              # every item mined (or its cards deleted)
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
+        if elsewhere is not None:                       # Michi-CK2: every word of it with a card, wherever made
+            label = STRINGS["in_anki"].format(n=cards + elsewhere)
+            split = level is not None and level[1] > 0 and level[0] + level[1] == cards
+            lv = "_lv" if split else ""
+            at, below = level if split else (0, 0)
+            tip = STRINGS["tip_in_anki_chip" + lv].format(own=cards, other=elsewhere, at=at, below=below) \
+                if n == 1 else STRINGS["tip_in_anki_chip_k" + lv].format(own=cards, other=elsewhere, k=k, at=at,
+                                                                           below=below)
         st = Status("in_anki", label, tip, "ok")
     elif (ready or heard) and all(e in heard or (getattr(e, "text", False) and not _mines(e.text))
                                   for e in ready + heard):
@@ -971,17 +1003,18 @@ def status_of(eps, word, line_n):
 def _ep_status(ep, word, line_n, connect, said):
     """An episode's (status, mark): `status_of` over it alone, then what Connect's feed says of it (`said`, its item)
     while there is a feed (`connect`) — `_episode`'s, and `topped`'s for a file that moved in or out of the top."""
-    st, mark = status_of([_Shim(ep, bool(ep.cards), said is BY_YOU)], word, line_n)
+    st, mark = status_of([_Shim(ep, bool(ep.cards), said is BY_YOU)], word, line_n, getattr(ep, "elsewhere", None),
+                         getattr(ep, "level", None))
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
         st = _connected(st, said, word, online=getattr(ep, "online", None))
     return st, mark
 
 
-def _row_status(eps, word, line_n, connect):
+def _row_status(eps, word, line_n, connect, elsewhere=None, level=None):
     """A row's (status, mark) from its episodes: `status_of` over them all, then Connect's word (`_row_connected`) —
-    `_row`'s, and `topped`'s."""
+    `_row`'s, and `topped`'s. `elsewhere`: the row's (Michi-CK2, its words each once)."""
     st, mark = status_of([_Shim(e, bool(e.cards), connect is not None and connect.get(e.id) is BY_YOU) for e in eps],
-                         word, line_n)
+                         word, line_n, elsewhere, level)
     if connect is not None:                          # --- P4.1 L2
         st = _row_connected(st, eps, connect, word)
     return st, mark
@@ -1083,7 +1116,7 @@ def _retopped(row, n, line_n, connect, hero=False, ids=None):
         eps.append(e)
     eps = tuple(eps)
     st, mark = _row_status(eps, _status_word(eps) if getattr(row, "group", False) else row.media_word, line_n,
-                           connect)
+                           connect, getattr(row, "elsewhere", None), getattr(row, "level", None))
     string = row.string if row.string is None else _string(eps, row.next_index, row.media, row.key,
                                                            row.source == "hato")
     out = row._replace(episodes=eps, status=st, mark=mark, string=string,
@@ -1170,7 +1203,7 @@ def _mines(kind):
 
 # --- building ------------------------------------------------------------------------------------------------------ #
 def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None,
-             playable=None):
+             playable=None, elsewhere=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     audio = item.get("source_type") == "audio"               # Hon (H-6, H-7): an audiobook's one item
     chapter = None if audio or media == "youtube" or media in EPISODIC or media == "podcast" else chapter_part(name)
@@ -1225,7 +1258,9 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
                  disk=item.get("mtime_ns"), media=media, tracks=tracks_said, subs=subs,
-                 online=item.get("source_type") if online else None, mined_at=item.get("mined_at"))
+                 online=item.get("source_type") if online else None, mined_at=item.get("mined_at"),
+                 elsewhere=elsewhere.get(item["id"]) if elsewhere and mined else None,       # Michi-CK2
+                 level=elsewhere.get(("level", item["id"])) if elsewhere and mined else None)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -1546,7 +1581,7 @@ def marked(row, marks, hero=False, keep=False):
 
 
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
-         connect=None, meta=None, playable=None, keep=False):
+         connect=None, meta=None, playable=None, keep=False, elsewhere=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     group = _is_group(meta, piece)                       # LM11b G1: `meta`, the feed's piece (a group's)
@@ -1554,15 +1589,18 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
         eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
-                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it), playable)
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it), playable,
+                        elsewhere)
                for it in piece]
     else:
         media = _media(work, piece, guessed)
         eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect,
-                        playable=playable) for it in piece]
+                        playable=playable, elsewhere=elsewhere) for it in piece]
     word = MEDIA_WORD.get(media, "video")
     said = _status_word(eps) if group else word      # LM11b G1: never "No video" for a group's EPUB
-    st, mark = _row_status(eps, said, line_n, connect)
+    away = row_elsewhere(elsewhere, eps)             # Michi-CK2
+    level = row_elsewhere(elsewhere, eps, "level")
+    st, mark = _row_status(eps, said, line_n, connect, away, level)
     n = len(eps)
     finish = to_finish(eps)                              # a5-2 with L6.3: a book's own files (never its audiobook's
     n_watched = sum(1 for e in finish if e.watched)      # waiting item) are what is watched and what is next
@@ -1618,7 +1656,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                works=tuple(dict.fromkeys(it["work_id"] for it in piece if it.get("work_id") is not None)),
                cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece),     # --- W3.2 Q4
                audio=audio,                                                            # a5-2
-               n_top=0 if finished else sum(1 for e in eps if counts_toward_top(e, tier, keep)))   # 3.0.1 item 12
+               n_top=0 if finished else sum(1 for e in eps if counts_toward_top(e, tier, keep)),   # 3.0.1 item 12
+               elsewhere=away, level=level)                                            # Michi-CK2
 
 
 class RowCache:
@@ -1697,10 +1736,11 @@ def _group_of(metas, piece):
     return meta if _is_group(meta, piece) else None
 
 
-_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect play keep")
+_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect play keep elsewhere")
 #   a cached row's signature (`_cached_row`), read by name: read by place, the fast path once took Connect's part
 #   (the last, added in P4.1 L2) for the type guess and kept a row whose guess had moved. `play` (row 55): its items'
-#   ▶ answers — checked on the fast path too, so new answers rebuild only the rows whose answer moved
+#   ▶ answers — checked on the fast path too, so new answers rebuild only the rows whose answer moved. `elsewhere`
+#   (Michi-CK2): its files' and its own ✓ answers (`card_chip`), so a count that moved rebuilds only its rows
 
 
 def _same(a, b):
@@ -1712,12 +1752,45 @@ def _guess(guessed, work):
     return guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
 
 
+def row_elsewhere(elsewhere, eps, kind=None):
+    """A row's ✓ answer (Michi-CK2): its one file's, or its files' words each once (the answer keyed by their ids); None
+    while not counted. `kind` "level": its split instead (lean A)."""
+    if not elsewhere or not eps:
+        return None
+    key = eps[0].id if len(eps) == 1 else tuple(e.id for e in eps)
+    return elsewhere.get(key if kind is None else (kind, key))
+
+
+def _elsewhere_sig(elsewhere, piece):
+    """What a cached row reads of the ✓ answers: each file's and the row's own — None while none of them has one,
+    however many other rows do (the first answers for one row never build every other row again)."""
+    if not elsewhere:
+        return None
+    ids = tuple(it["id"] for it in piece)
+    sig = tuple(elsewhere.get(i) for i in ids) + ((elsewhere.get(ids),) if len(ids) > 1 else ()) + \
+        tuple(elsewhere.get(("level", i)) for i in ids) + ((elsewhere.get(("level", ids)),) if len(ids) > 1 else ())
+    return sig if any(v is not None for v in sig) else None
+
+
+def _finished_elsewhere(elsewhere, fin_items):
+    """Finished's ✓ answers (Michi-CK2): its files' and its rows' — the section is kept whole while they read the same
+    (another tier's answer moving never builds it again)."""
+    if not elsewhere:
+        return None
+    ids = {r["id"] for r in fin_items}
+    files = tuple((elsewhere.get(r["id"]), elsewhere.get(("level", r["id"]))) for r in fin_items)
+    rows = tuple(sorted(((k, v) for k, v in elsewhere.items() if type(k) is tuple and
+                         (k[0] in ids or (k[0] == "level" and type(k[1]) is tuple and k[1][0] in ids))), key=repr))
+    return (files, rows) if rows or any(v != (None, None) for v in files) else None
+
+
 def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
-                connect=None, soon_from=None, soon_piece=None, meta=None, playable=None, keep=False):
-    """`meta`: a group's piece from the feed (LM11b G1), else None. `playable`: ▶'s answers (row 55), else None."""
+                connect=None, soon_from=None, soon_piece=None, meta=None, playable=None, keep=False, elsewhere=None):
+    """`meta`: a group's piece from the feed (LM11b G1), else None. `playable`: ▶'s answers (row 55), else None.
+    `elsewhere`: the ✓ chip's answers (Michi-CK2), else None."""
     if cache is None:
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
-                   playable, keep)
+                   playable, keep, elsewhere)
         row = _as_hero(row) if hero else row
         return row._replace(soon_from=soon_from, soon_piece=soon_piece) if soon_from is not None else row  # P-LF-16
     first = piece[0]
@@ -1737,14 +1810,15 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         all(map(operator.is_, hit[2], piece))       # (a4: C's walk, not a generator's)
     # row 55: as shown — found, not found, and not answered yet (R55-A: Up Next's *Looking…*, its tip) each its own
     play = None if playable is None else tuple(playable.get(it["id"]) for it in piece)
+    sig_away = _elsewhere_sig(elsewhere, piece)
     if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play \
-            and hit[0].keep == keep:
+            and hit[0].keep == keep and hit[0].elsewhere == sig_away:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
         sig = _Sig(len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
                    tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
                    None if connect is None else tuple(connect.get(it["id"]) for it in piece),     # --- P4.1 L2
-                   play, keep)
+                   play, keep, sig_away)
     if same_items and hit[0] == sig and (hit[3].soon_from, hit[3].soon_piece) == (soon_from, soon_piece):  # same cut
         row = hit[3]
         if row.index != index:
@@ -1752,7 +1826,7 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         cache.hits += 1
     else:
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
-                   playable, keep)
+                   playable, keep, elsewhere)
         if hero:
             row = _as_hero(row)
         if soon_from is not None:                    # P-LF-16
@@ -2389,7 +2463,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
           loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
-          estimates=None, connect=None, pieces=None, playable=None, folders=None):
+          estimates=None, connect=None, pieces=None, playable=None, folders=None, elsewhere=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
@@ -2403,7 +2477,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     {piece_id: {id, title, kind}} (LM11b G1) — a Current piece of kind 'group' is a group's row (`_row`); `playable`:
     ▶'s answers ({item_id: found}, `play.Looks`, row 55) — Current's ▶ only where found; None: no looker, as before;
     `folders`: (version, {item_id: where its original sits}) for New arrivals' first files, the looks' answers (A4B-8:
-    each row names its folder, built here)."""
+    each row names its folder, built here); `elsewhere`: the ✓ chip's answers (`card_chip.Chips`, Michi-CK2:
+    {item_id or a row's item ids: how many of its words have a card not made from it}), None: each ✓ its own cards, as
+    before."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -2484,7 +2560,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
                                     None if off else line_n, False, guessed, hero=not rows, connect=feed_items,
                                     soon_from=cut, soon_piece=soon_piece if cut is not None else None,
-                                    meta=_group_of(pieces, piece), playable=playable, keep=keep))
+                                    meta=_group_of(pieces, piece), playable=playable, keep=keep, elsewhere=elsewhere))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -2553,8 +2629,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     hit = cache.sections.get("finished") if cache is not None else None
     guesses = tuple((w, guessed.of(works[w])) for w in hit[4][2]) if hit is not None and guessed is not None and \
         all(w in works for w in hit[4][2]) else None
+    fin_away = _finished_elsewhere(elsewhere, fin_items)            # Michi-CK2: its ✓ answers, as they read
     kept = _kept(cache, "finished", fin_items, changed, changed_works,
-                 (cache.version, guesses) if cache is not None and cache.same_global else (object(),))
+                 (cache.version, guesses, fin_away) if cache is not None and cache.same_global else (object(),))
     if kept is not None:
         finished, n_fin, _untyped, rows_kept = kept
         cache._next.update(rows_kept)                # its rows stay in the row cache for the next time it's built
@@ -2565,7 +2642,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         for p in fin_pieces:
             pause()                                 # (Up next 3: as Current's rows)
             fin_rows.append(_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True,
-                                        guessed, False, feed_items))
+                                        guessed, False, feed_items, elsewhere=elsewhere))
         stamp_of = {}
         for p in fin_pieces:
             key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"
@@ -2587,8 +2664,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             fin_works = {r.get("work_id") for r in fin_items}
             untyped = tuple(w for w in fin_works if w in works and works[w].get("media_type") is None)
             rows_kept = {k: v for k, v in cache._next.items() if k not in before}
-            more = (cache.version, tuple((w, guessed.of(works[w])) for w in untyped)) if cache.same_global \
-                else (object(),)
+            more = (cache.version, tuple((w, guessed.of(works[w])) for w in untyped), fin_away) \
+                if cache.same_global else (object(),)
             _keep(cache, "finished", fin_items, fin_works, more, (finished, n_fin, untyped, rows_kept))
     # Needs you: each show whose unmined files in the top wait on a missing file
     needs = []

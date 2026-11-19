@@ -256,3 +256,7 @@ def test_connects_words_keep_their_own_nodes_past_a_sound(tmp_path):
     topic = [t for t in tokens if t.surface == "は"]
     assert topic and all(t.node.feature.pos1 == "助詞" for t in topic)
 
+@pytest.mark.parametrize("line, words", [("ｱｯﾊﾊ！", []), ("ｳｯ、頭が痛い。", ["頭", "が", "痛い"])])
+def test_a_half_width_sound_is_judged_as_the_tagger_reads_it(tokenizer, sanitized, line, words):
+    # half-width katakana is read as full width (ｱｯ is アッ): the same laugh, the same gasp
+    assert _surfaces(tokenizer, line) == words

@@ -63,6 +63,7 @@ LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.du
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting changed: a Generate is due (a6 #5)
+FIRST_CARDS_GO = phase_service.Go("needs", ("first-cards",))   # Kantan-B2b: 鉱 amber while D1's line waits for a yes
 GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
 #                                                         the services' needs module: not imported by the shell at load)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
@@ -1657,6 +1658,7 @@ class ShellWindow(QMainWindow):
             self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
             self.needs_you.changed.connect(self.phase.refresh)
             self.needs_you.changed.connect(self._connect_fault)
+            self.needs_you.changed.connect(self._first_cards_circle)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:
@@ -2700,6 +2702,17 @@ class ShellWindow(QMainWindow):
         if key is not None:
             self.phase.set_extra(phase_service.SURASURA, key, "failed", fault.title)
         self._connect_fault_key = key
+
+    def _first_cards_circle(self):
+        """Kantan-B2b (Sonic 2026-11-19: nothing mines until the yes; PROVISIONAL): while setup's *Make cards for your
+        first 20 episodes?* stands on *Needs you* — asked, or after its *Not now* — 鉱 is amber and its press opens that
+        card (a7: a decision waiting). Gone with the card (the yes). `set_extra` repaints only on a change (S19)."""
+        listed = any(e.kind == "first-cards" for e in self.needs_you.shown_entries())
+        if listed:
+            self.phase.set_extra(phase_service.MINER, "first-cards", "needs", strings.PHASE_FIRST_CARDS,
+                                 FIRST_CARDS_GO)
+        else:
+            self.phase.set_extra(phase_service.MINER, "first-cards")
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the

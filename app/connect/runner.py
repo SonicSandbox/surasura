@@ -60,6 +60,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -533,10 +534,43 @@ def _books_aside(steps, ledger, lang, jobs, reopen=True):
 
 def _open_jobs(ledger, lang, parked, tried=()):
     """The open jobs this pass may try: never one `tried`, nor one parked for the next start — unless you asked for it
-    since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42)."""
-    return [j for j in ledger.open_jobs(lang)
+    since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42) — nor, while
+    the first run waits for your yes, one the placement log queued (Kantan-B2b: `inbox.first_run_held`, read only
+    when such a job is open)."""
+    jobs = [j for j in ledger.open_jobs(lang)
             if not (j["id"] in parked and parked[j["id"]] == j.get("asked_at")) and j["id"] not in tried
             and not ledger.held_by_stop(j)]     # laptop round 8 #47: one you stopped waits for your next ask
+    if any(inbox.first_run_held(j) for j in jobs) and _first_run_waits(ledger, lang):
+        jobs = [j for j in jobs if not inbox.first_run_held(j)]
+    return jobs
+
+
+def _first_run_waits(ledger, lang):
+    """`inbox.first_run_waits`, its seen file unreadable (held by the window's write past its tries) or the ledger's
+    read failing read as waiting: the log's jobs wait for the next look, never mined on a read that failed (logged).
+    S19 (the review's waste lens): `_open_jobs` runs many times a pass (once a sentence in the AI voice's stop
+    check), so the answer is kept on the ledger while the seen file's stat (size, time) stays the same — one stat a
+    call, the file read again only once the window wrote it; a waiting answer is never kept (its `mined_from_log`
+    can change within the pass)."""
+    from app.services import needs
+    try:
+        st = os.stat(needs.seen_path(lang))
+        stamp = (st.st_size, st.st_mtime_ns)
+    except FileNotFoundError:
+        stamp = None
+    except OSError:
+        stamp = False                       # (no stat: read it)
+    kept = getattr(ledger, "_first_run_kept", None) or {}
+    if stamp is not False and kept.get(lang) == stamp:
+        return False
+    try:
+        waits = inbox.first_run_waits(lang, ledger)
+    except (OSError, sqlite3.Error):
+        log.warning("Connect couldn't read whether the first cards wait for your yes; they wait", exc_info=True)
+        return True
+    if not waits and stamp is not False:
+        ledger._first_run_kept = dict(kept, **{lang: stamp})
+    return waits
 
 
 def _empty():

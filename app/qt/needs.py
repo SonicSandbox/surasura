@@ -829,6 +829,7 @@ class NeedsYou(QObject):
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
         self.first_cards = _first_cards
+        self.first_run_aside = _first_run_aside        # Kantan-B2b: *Not now* sets the log's queued jobs aside
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
@@ -2319,6 +2320,8 @@ class NeedsYou(QObject):
                 self._stays(name, entry)                 # (the reason said, the line stays)
             told()
             made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
+            if settings_manager.paused(services_settings.get() or {}, "miner"):
+                made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED    # Kantan-B2b: nothing starts while paused (kick)
             self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
             self.refresh()
         self._press(name, entry, run, then=done, failed=failed)
@@ -2328,16 +2331,23 @@ class NeedsYou(QObject):
         self._do_first_cards(entry, line)
 
     def _do_not_now(self, entry, _line):
-        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
-        Connect is: off, where to turn it on; on, that later episodes still get their cards."""
+        """*Not now* (Kantan-B2b; Sonic 2026-11-19: Not now is no yes): the jobs the placement log queued that haven't
+        started set aside (an older version's: `actions.first_run_aside`), then its own answer kept
+        (`FIRST_CARDS_NOT_NOW`) — the line itself stays unanswered, so nothing mines by itself and it stays on the
+        page with *Make cards* alone; never while *Make cards* runs. Connect left as it is. Its line as Connect is."""
         name = "not_now_on" if self._control("not_now_on", entry) is not None else "not_now"
         lang = self.language
         on = settings_manager.connect_on(self.win.services.settings.get() or {})     # B2-8: the one rule
+        aside = self.first_run_aside
+
+        def run():
+            aside(lang)
+            return service.answer(lang, [service.FIRST_CARDS_NOT_NOW])
 
         def done(_n):
             self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
             self.refresh()
-        self._press(name, entry, service.answer, lang, [entry.key], then=done)    # (one press per card)
+        self._press(name, entry, run, then=done)    # (one press per card)
 
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
@@ -2469,6 +2479,12 @@ def _settings_switch_on(settings, log):
     """(A worker.) Connect's switch turned on as Settings › Anki turns it on -> (ok, why)."""
     from app.qt import settings_connect
     return settings_connect._switch_on(settings, log)
+
+
+def _first_run_aside(language):
+    """(A worker; Kantan-B2b.) *Not now*: the log's jobs not started set aside -> how many."""
+    from app.connect import actions
+    return actions.first_run_aside(language)
 
 
 def _first_cards(language, settings, data_dir=None):

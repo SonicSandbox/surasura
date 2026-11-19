@@ -75,6 +75,9 @@ ASKS_FROM = "asks_from:"
 # id>` — the runner stopped it, holding the ask it carried then: it waits until a newer ask (*Mine now*) (`held_by_stop`)
 STOP, STOPPED = "stop:", "stopped:"
 STOPPED_REASON = "Stopped: its cards so far are kept. Press Mine now to go on."      # `runner.STOPPED_BY_YOU`
+# Kantan-B2b: a job the placement log queued, set aside by the first run's *Not now* (`set_aside_first_run`):
+# nothing mines by itself until your yes; *Make cards* queues it again (`back_from_aside`)
+FIRST_RUN_ASIDE = "Set aside: you said Not now to the first cards"
 # Laptop round 8 #52 (review A6): a word Anki Miner had no definition for in this many episodes is no card anywhere
 UNCARDABLE_AFTER = 2
 
@@ -365,15 +368,46 @@ class Ledger:
         return cur.lastrowid
 
     def ever_had_job(self, language, item_id):
-        """Michi-EO: has the item had any job, in any state (a show's catch-up queues only a part that never had)?"""
-        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? LIMIT 1",
-                                 (language, item_id)).fetchone() is not None
+        """Michi-EO: has the item had any job, in any state (a show's catch-up queues only a part that never had)? One
+        the first run's *Not now* set aside (Kantan-B2b) doesn't count: your *Mine now* on a later part brings it."""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND NOT (state = 'skipped' "
+                                 "AND reason IS ?) LIMIT 1", (language, item_id, FIRST_RUN_ASIDE)).fetchone() is not None
 
-    def queued_from_log(self, language):
-        """Kantan-B2: has Connect ever queued a job from the placement log in this language (a job with its event)?
-        An ask's, a gap's or a level job's carries none."""
-        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND event_id IS NOT NULL LIMIT 1",
-                                 (language,)).fetchone() is not None
+    def mined_from_log(self, language):
+        """Kantan-B2b: has Connect ever finished an episode from the placement log in this language, with cards (a
+        `done` job with its event, no ask, and a card made)? Only that lifts the first run's hold on an old unanswered
+        line: a job only queued (3.0.15's, its episode never reached), one part-way, or one your *Mine now* moved
+        first never does. An ask's, a gap's or a level job's carries no event."""
+        return self.conn.execute(
+            "SELECT 1 FROM jobs j WHERE j.language = ? AND j.event_id IS NOT NULL AND j.asked_at IS NULL AND "
+            "j.state = ? AND EXISTS (SELECT 1 FROM outcomes o WHERE o.job_id = j.id AND o.outcome = 'made') LIMIT 1",
+            (language, DONE)).fetchone() is not None
+
+    def set_aside_first_run(self, language):
+        """Kantan-B2b (*Not now* on the first run's line): every job the placement log queued that hasn't started (no
+        ask on it, never reached Anki Miner) set aside — `skipped` for FIRST_RUN_ASIDE, its row the learner's *Mine*
+        again — inside the caller's transaction or its own -> how many. A job part-way stays where it stopped."""
+        marks = ",".join("?" * (len(BEFORE_MINING) - 1))
+        sql = (f"UPDATE jobs SET state = 'skipped', reason = ?, resume = NULL, updated_at = ? WHERE language = ? AND "
+               f"event_id IS NOT NULL AND asked_at IS NULL AND (state = 'queued' OR (state = 'waiting' AND "
+               f"(resume IS NULL OR resume IN ({marks})))) AND NOT EXISTS (SELECT 1 FROM batches b WHERE "
+               f"b.job_id = jobs.id AND b.state != 'refused')")
+        params = (FIRST_RUN_ASIDE, _now(), language) + BEFORE_MINING[1:]
+        if self.conn.in_transaction:
+            return self.conn.execute(sql, params).rowcount
+        with self.transaction():
+            return self.conn.execute(sql, params).rowcount
+
+    def back_from_aside(self, language):
+        """Kantan-B2b (the first run's *Make cards*, after a *Not now*): the jobs it set aside queued again, oldest
+        first, where the item has no other open job and none done (your *Mine now* mined it meanwhile) -> how many.
+        One whose item left the top 20 meanwhile is dropped at its turn, as any (`runner._job`)."""
+        marks = ",".join("?" * (len(OPEN) + 1))
+        sql = (f"UPDATE jobs SET state = 'queued', reason = NULL, updated_at = ? WHERE language = ? AND "
+               f"state = 'skipped' AND reason = ? AND NOT EXISTS (SELECT 1 FROM jobs o WHERE o.language = jobs.language "
+               f"AND o.item_id = jobs.item_id AND o.state IN ({marks}))")
+        with self.transaction():
+            return self.conn.execute(sql, (_now(), language, FIRST_RUN_ASIDE) + OPEN + (DONE,)).rowcount
 
     def last_read(self, language):
         """When Connect last read the language's placement log, or None."""

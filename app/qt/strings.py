@@ -531,7 +531,8 @@ MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made,
 # Surasura won't mine again (cards you deleted in Anki) with *Allow again* (app/qt/unmined_words.py)
 MINE_AGAIN = "Mine again"
 MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you deleted in Anki come back, the cards "
-                  "still there stay as they are\n• Undo takes the ask back")
+                  "still there stay as they are\n• The show's earlier episodes never mined are queued too"
+                  "\n• Undo takes the ask back")
 MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
 UNMINED_ENTRY = "Words it won't mine again…"
 UNMINED_ENTRY_TIP = "The words of this episode whose cards you deleted in Anki: allow one again"
@@ -695,6 +696,7 @@ PHASE_PRESS_RESTORE = "• Click: undo the unfinished reorder in 順's window"
 # T6: 届's words while a source folder is gone (its *Needs you* card stands)
 PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
 PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"
+PHASE_FIRST_CARDS = "No cards until you say yes: Needs you asks"    # Kantan-B2b: 鉱 amber (PROVISIONAL)
 PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
 # try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing"): a circle whose
 # work is under way and can be seen somewhere — the title Anki Miner makes cards for, 順's window — opens there; its
@@ -1529,13 +1531,13 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "first_cards": ("Make cards",
     "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
                                   "• Change it any time: Settings › Anki & mining"),
-    "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
-                           "• Turn it on any time: Settings › Anki & mining"),
+    "not_now": ("Not now", "No cards are made until you say yes.\n"
+                           "• This question stays on Needs you"),
     # … the same line once setup's page 5 turned *Make cards for me as I watch* on: it asks only about these episodes
     "first_cards_on": ("Make cards", "Make cards for these episodes now.\n"
                                      "• What comes into your top 20 later gets its cards already: Settings › Anki & mining"),
-    "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
-                              "• What comes into your top 20 later still gets its cards"),
+    "not_now_on": ("Not now", "No cards are made until you say yes.\n"
+                              "• This question stays on Needs you"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
                                       "next Generate"),
     "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
@@ -1651,9 +1653,11 @@ NEEDS_STOPPED_READING_ONE = "Stopped reading {name}: its episode stays in your l
 NEEDS_STOPPED_READING_NONE = "Stopped reading {name}"
 NEEDS_KEEP_WAITING = "Waiting for {name}: Needs you asks again if it comes back and goes again"
 NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki & mining"
-NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki & mining"
+# Kantan-B2b (Sonic 2026-11-19: Not now is no yes — nothing mines by itself until *Make cards*; PROVISIONAL words)
+NEEDS_FIRST_CARDS_LATER = "No cards until you say yes · Make cards stays on Needs you"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
-NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
+NEEDS_FIRST_CARDS_MADE_PAUSED = "Their cards are made once you resume Anki Miner"   # (Anki Miner paused at the bar)
+NEEDS_FIRST_CARDS_LATER_ON = NEEDS_FIRST_CARDS_LATER
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
 NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
 NEEDS_KNOWN_MARKED_NONE = "Their words were known already"

@@ -1108,8 +1108,12 @@ def _job(steps, ledger, lang, job, store_now, line, out):
 def _stop_here(steps, ledger, lang, job, step, record):
     """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
-    if step in ("filling", "ordering") or not (ledger.stop_asked(job["id"]) or _paused_now(steps)):
+    if step in ("filling", "ordering"):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    if not ledger.stop_asked(job["id"]):
+        if not _paused_now(steps):
+            return
+        _cut_by_pause(steps, job["id"])
     _stopped(steps, ledger, lang, job, step, record)
 
 
@@ -1118,10 +1122,11 @@ def _stopped(steps, ledger, lang, job, step, record):
     (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
     are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
     stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask.
-    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours: only a press or a pause cuts a job) it is never
-    marked stopped — whether or not the pause still holds now (a resume a moment after the cut is no Stop either) —
-    its cards so far kept, it waits `PAUSED` for this run alone and the resume's kick goes on from `step`."""
-    if not ledger.stop_asked(job["id"]):
+    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours; `_cut_by_pause` marked it, so a resume a moment
+    after the cut is no Stop either) it is never marked stopped — its cards so far kept, it waits `PAUSED` for this run
+    alone and the resume's kick goes on from `step`."""
+    if not ledger.stop_asked(job["id"]) and (getattr(steps, "paused_cut", None) == job["id"] or _paused_now(steps)):
+        _cut_by_pause(steps, None)
         made = _keep_made(steps, ledger, lang, job, record)
         log.info("Connect: job %s paused before %s (%d words made so far)", job["id"], step or "its pick", len(made))
         raise Wait(PAUSED, look=False, resume=step)
@@ -2162,10 +2167,24 @@ def _stop_pressed(ledger, jid, steps=None):
     (Mado-PZ: the job is cut at the same point, resumably, `_stopped`)? A read that fails is no press (logged): the
     job goes on."""
     try:
-        return ledger.stop_asked(jid) or _paused_now(steps)
+        if ledger.stop_asked(jid):
+            return True
+        if _paused_now(steps):
+            _cut_by_pause(steps, jid)
+            return True
+        return False
     except Exception:
         log.warning("Connect couldn't look for a Stop on job %s", jid, exc_info=True)
         return False
+
+
+def _cut_by_pause(steps, jid):
+    """Mado-PZ: the job `jid` is being cut by a pause (not your Stop) — remembered on the run's steps, so `_stopped`
+    still knows it was a pause when the resume came a moment after the cut."""
+    try:
+        steps.paused_cut = jid
+    except AttributeError:
+        pass
 
 
 def _paused_now(steps):

@@ -282,8 +282,10 @@ def _read(tokenizer, text, language):
     if language != "ja":
         return [(sentence, token, None) for sentence, token in read]
     joins = analyzer.affix_joins()
+    # a sound standing on its own is no token (analyzer § Sounds are no words): never a node a word is paired with
     nodes = [node for line in text.split("\n")
-             for node in analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)]
+             for node in analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)
+             if node.__class__ is not analyzer.SoundNode]
     out, at = [], 0
     for sentence, token in read:
         node = None

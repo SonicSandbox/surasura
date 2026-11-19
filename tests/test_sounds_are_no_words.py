@@ -190,12 +190,14 @@ def test_a_real_chinese_lines_particle_stays(zh_tokenizer, test_resources_dir):
 
 
 @pytest.mark.parametrize("pieces, sounds", [
-    ([], []), (["啊"], [0]), (["啊", "，", "好"], [0]), (["好", "啊"], []), (["嗯", "嗯"], []),
-    (["哈哈哈", "！"], [0]), (["\n", "嗯", " "], [1]), (["喂", "，"], []),
+    ([], []), (["啊"], [0]), (["啊", "，", "好"], [0]), (["好", "啊"], []), (["嗯", "嗯"], [0, 1]),
+    (["好", "啊", "啊"], []), (["啊啊啊", "！"], [0]), (["哈哈哈", "！"], [0]), (["\n", "嗯", " "], [1]),
+    (["喂", "，"], []),
 ])
 def test_which_chinese_pieces_are_sounds(pieces, sounds):
-    # edge cases: nothing, alone, before a mark, glued, two glued sounds, a run, between a line break and a space,
-    # a word that is said (喂 'hello')
+    # edge cases: nothing, alone, before a mark, glued, two sounds in a row (standing together), the same after a
+    # word, one interjection's character said over, a laugh's run, between a line break and a space, a word that is
+    # said (喂 'hello')
     assert analyzer.chinese_sounds(pieces) == sounds
 
 
@@ -206,3 +208,42 @@ def test_the_chinese_table_is_dictionary_data():
     table = cedict_data.interjections()
     assert {"啊", "嗯", "哦", "唉", "呃", "哈哈", "呵呵", "嘿嘿", "嘻嘻", "哎呀"} <= table
     assert not {"喂", "恭喜", "对了", "谢谢", "你好", "好", "哈"} & table
+
+
+@pytest.mark.parametrize("line", ["啊啊，好痛！", "嗯嗯。", "啊啊啊！"])
+def test_chinese_sounds_in_a_row_stand_together(zh_tokenizer, line):
+    assert not {"啊", "嗯", "啊啊啊"} & set(_zh_words(zh_tokenizer, line))
+
+
+@pytest.mark.parametrize("line, gone", [
+    ("あっあっ", ["あっ"]),                       # two gasps, glued to each other only
+    ("うえ～ん、痛いよ。", ["うー", "えー", "んー"]),   # crying, three fillers in a row
+])
+def test_japanese_sounds_in_a_row_stand_together(tokenizer, sanitized, line, gone):
+    lemmas = [lemma for _s, tokens in _sentences(tokenizer, line) for lemma, _surface in tokens]
+    assert not set(gone) & set(lemmas)
+
+
+def test_a_card_for_a_sound_still_makes_its_glued_word_known(tmp_path, sanitized):
+    # KnownWord.json holds a card for えっと: alone it is a sound (no word), but its word えーと stays known where a
+    # line glues it to the next word (えっとですね) — the card's word is known, as before
+    import json
+    path = tmp_path / "KnownWord.json"
+    path.write_text(json.dumps([{"dictForm": "えっと", "knownStatus": "KNOWN", "hasCard": 1}], ensure_ascii=False),
+                    encoding="utf-8")
+    tuples, lemmas = analyzer.load_known_words(str(path), analyzer.JapaneseTokenizer())[:2]
+    assert ("えーと", "エート") in tuples and "えーと" in lemmas
+
+
+def test_connects_words_keep_their_own_nodes_past_a_sound(tmp_path):
+    # app/cues.py pairs each word with its node by its text: a sound (は？) is no word and never the node of the
+    # particle は after it (before the fix: the particle took the sound's node, an interjection)
+    from app import cues
+    path = tmp_path / "scene.ja.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:03,000\n来る。は？　は、大事だ。\n", encoding="utf-8")
+    analyzer.SANITIZE_JA = True
+    read = cues.read(str(path), "ja")
+    tokens = cues.tokens(read, "ja")
+    topic = [t for t in tokens if t.surface == "は"]
+    assert topic and all(t.node.feature.pos1 == "助詞" for t in topic)
+

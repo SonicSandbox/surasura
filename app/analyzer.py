@@ -21,7 +21,7 @@ import unicodedata
 import bisect
 from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, chain, compress, repeat
-from operator import attrgetter, eq, itemgetter
+from operator import attrgetter, eq, itemgetter, methodcaller
 from datetime import datetime
 import abc
 
@@ -939,7 +939,7 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
                                    LOGIC.get("names_work_terms", True))
     # Sounds are no words (§ Sounds are no words): only a line holding an interjection or a katakana gasp has one
     if fillers or "ッ" in "".join(map(_SURFACE, words)):
-        words = _mark_sounds(words)
+        words = _mark_sounds(words, fillers)
     return words
 
 
@@ -1256,7 +1256,7 @@ def _give_way_to_names(words, joined, at, table):
 # unknown word of its own. Such a word is the sound word the tagger reads that sound said twice as, alone, when it is
 # one — an interjection or an adverb — shown as written: ハァハァハァ is はあはあ's. A sound whose double is no such word
 # stays as it was (ヘヘヘ: ヘヘ reads as two words; ゼロゼロゼロ).
-_UNKNOWN, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos2")
+_UNKNOWN, _POS1, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos1"), attrgetter("feature.pos2")
 _ONE_KANA = re.compile(f"^[{KANA_LETTERS}][ー〜]*$")      # UniDic spells some fillers with 〜 (え〜)
 _KATAKANA_WORD = re.compile("^[\u30a1-\u30fa\u30fc-\u30ff]+$")
 _SOUND_POS1 = frozenset(("感動詞", "副詞"))
@@ -1389,6 +1389,8 @@ def _sound_shape(surface, kind):
             while k < len(morae) and morae[-1 - k] == last:
                 k += 1
             held = last not in _PLAIN_VOWELS and last not in ("ん", "ー") and k >= 2 and len(morae) - k <= 1
+        if len(_SOUND_SHAPES) > 5000:       # a library's sounds are a few hundred spellings: start again past that
+            _SOUND_SHAPES.clear()
         _SOUND_SHAPES[(surface, kind)] = held
     return held
 
@@ -1398,25 +1400,44 @@ def _sound_ends(words, j):
     return j >= len(words) or getattr(words[j], "white_space", "") or words[j].feature.pos1 in _SOUND_EDGES
 
 
-def _mark_sounds(words):
+def _sound_kind(w):
+    """The kind `_sound_shape` judges `w` as ("f", "i", "n"), or None when no sound can be one."""
+    f = w.feature
+    if isinstance(w, JoinedWord):
+        return None
+    if f.pos1 == "感動詞":
+        return "f" if f.pos2 == "フィラー" else "i"
+    return "n" if f.pos2 == "固有名詞" and w.surface[-1:] == "ッ" else None
+
+
+def _mark_sounds(words, fillers):
     """join_affixes' last step (§ above): `words` with each sound standing on its own a SoundNode — the same list when
-    there is none."""
-    out, n = None, len(words)
-    for i, w in enumerate(words):
-        f = w.feature
-        if f.pos1 == "感動詞":
-            kind = "f" if f.pos2 == "フィラー" else "i"
-        elif f.pos2 == "固有名詞" and w.surface[-1:] == "ッ":
-            kind = "n"
-        else:
+    there is none. Sounds in a row stand together (あっあっ, う + え～ + ん): the run is between marks, or none of it is.
+    Only the interjections (on a line holding one: `fillers`) and the words ending in ッ are looked at, found in C."""
+    n = len(words)
+    seen = set(compress(range(n), map(eq, map(_POS1, words), repeat("感動詞")))) if fillers else set()
+    seen.update(compress(range(n), map(methodcaller("endswith", "ッ"), map(_SURFACE, words))))
+    sounds = []
+    for i in sorted(seen):
+        kind = _sound_kind(words[i])
+        if kind and _sound_shape(words[i].surface, kind):
+            sounds.append(i)
+    out, k = None, 0
+    while k < len(sounds):
+        a = b = sounds[k]
+        while k + 1 < len(sounds) and sounds[k + 1] == b + 1:      # a run of sounds, glued or spaced
+            k += 1
+            b = sounds[k]
+        k += 1
+        if not (a == 0 or getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES):
             continue
-        if (isinstance(w, JoinedWord) or not _sound_shape(w.surface, kind)
-                or not (i == 0 or getattr(w, "white_space", "") or words[i - 1].feature.pos1 in _SOUND_EDGES)
-                or not (_sound_ends(words, i + 1) or (words[i + 1].surface == "と" and _sound_ends(words, i + 2)))):
+        if not (_sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))):
             continue
         if out is None:
             out = list(words)
-        out[i] = SoundNode(w.surface, f, w.is_unk, getattr(w, "white_space", ""))
+        for i in range(a, b + 1):
+            w = words[i]
+            out[i] = SoundNode(w.surface, w.feature, w.is_unk, getattr(w, "white_space", ""))
     return words if out is None else out
 
 
@@ -2665,15 +2686,26 @@ def chinese_word(word):
 def chinese_sounds(pieces):
     """The indices of `pieces` (chinese_cut's, in Simplified) that are sounds standing on their own — no word, as in
     Japanese (§ Sounds are no words): an interjection, a laugh or a modal particle said alone (啊, 嗯, 哦, 呃, 哈哈 and
-    its runs: app/cedict_data.py's INTERJECTIONS) between marks, spaces or its line's edges — 啊，好痛！ — never one
-    glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word). Empty with the table unreadable."""
+    its runs, 啊啊啊: app/cedict_data.py's INTERJECTIONS) between marks, spaces or its line's edges — 啊，好痛！, 嗯嗯。
+    (sounds in a row stand together) — never one glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word). Empty with
+    the table unreadable."""
     table = _cedict_table("interjections")
     if not table:
         return ()
-    n, out = len(pieces), []
+    heads = _CEDICT.get("interjection_heads")
+    if heads is None:
+        heads = _CEDICT["interjection_heads"] = frozenset(word[0] for word in table)
+    out, run = [], []
     for i, piece in enumerate(pieces):
-        if (piece in table or (len(piece) > 2 and chinese_base(piece) in table)) and _zh_edge(pieces, i - 1)                 and _zh_edge(pieces, i + 1):
-            out.append(i)
+        if piece in table or (piece[:1] in heads and (
+                (piece[0] in table and piece == piece[0] * len(piece)) or chinese_base(piece) in table)):
+            run.append(i)
+            continue
+        if run and _zh_edge(pieces, run[0] - 1) and _zh_edge(pieces, i):
+            out.extend(run)
+        run = []
+    if run and _zh_edge(pieces, run[0] - 1):
+        out.extend(run)
     return out
 
 
@@ -3156,6 +3188,15 @@ def load_known_words(json_path, tokenizer):
                     for lemma, reading in pieces or ():
                         known_tuples.add((lemma, reading))
                         known_lemmas.add(lemma)
+                    # A known sound — a card for えっと or あっ, no word alone (§ Sounds are no words) — still makes
+                    # its word known where a line glues it to one (えっとですね, あっという間).
+                    if pieces is not None and not tokens:
+                        for node in join_affixes(tokenizer.tagger(term), library=False):
+                            if node.__class__ is SoundNode:
+                                lemma = node.feature.lemma or node.surface
+                                lemma = _sanitize_term(lemma) if SANITIZE_JA else lemma
+                                known_tuples.add((lemma, node.feature.lForm or node.feature.kana or ""))
+                                known_lemmas.add(lemma)
 
                     # 2. Heuristic: If multiple tokens, add the combined form too.
                     # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 

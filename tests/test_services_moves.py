@@ -5404,7 +5404,14 @@ class Scanner:
     made = []
 
     def __init__(self, path):
-        self.f = open(path, encoding="utf-8")
+        for _ in range(200):                            # (the writer's own replace may hold it this instant)
+            try:
+                self.f = open(path, encoding="utf-8")
+                break
+            except PermissionError:
+                time.sleep(0.01)
+        else:
+            raise AssertionError(f"the journal stayed locked: {path}")
         Scanner.made.append(self)
 
     def close(self):
@@ -5531,6 +5538,30 @@ def test_JR_a_start_replays_only_the_commands_still_queued_when_the_rewrite_that
         assert h.until(lambda: not os.path.exists(path))
     finally:
         w2.finish(time.monotonic() + 5)
+
+
+@held_refuses
+def test_JR_a_new_journal_write_refused_after_an_earlier_one_was_given_up_gets_its_own_retries(
+        stub_writer, tmp_path, monkeypatch, scanners):
+    # why: the tries are bounded for each refused write, never for the whole run — a hold met hours later (a drag's
+    # moves, journalled while nothing lands) is tried again too, or a crash then loses those moves
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.3, 0.6), raising=False)
+    w, heard, store, opener = stub_writer()
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["set_tier"])
+    scanner = Scanner(str(path))
+    opener.mode, opener.reason = "store", None
+    assert h.until(lambda: store.calls and not w.pending())
+    assert h.until(lambda: w._owed is None and w._owed_tries == len(M.JOURNAL_RETRY_S))     # given up
+    w.hold()                                            # a drag: its move is journalled, nothing lands
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: w._owed is not None)         # that write refused: tried again
+    scanner.close()
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["move"])
+    w.release()
+    assert h.until(lambda: not w.pending() and not os.path.exists(path))
 
 
 @held_refuses

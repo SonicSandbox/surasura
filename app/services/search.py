@@ -34,10 +34,11 @@ LIMIT = 6                                   # hits shown a group (A2 #81)
 GROUPS = ("current", "goal", "arrivals", "finished")
 
 Hit = namedtuple("Hit", "key group title spans where item_ids work_id piece_id can_play can_top play_tip cover_title "
-                        "accessible top_ids", defaults=(None,))
+                        "accessible top_ids audio", defaults=(None, ""))
 #   spans: ((start, end), …) in `title`'s characters, the parts the query lights; () when the title doesn't hold it
 #   top_ids (W3.2 Q3): what ⤒ moves when it isn't `item_ids` — a Goal title's next part (the piece holding its next
 #   unwatched file, else its first), the rest staying in Goal (A2 #83); None elsewhere
+#   audio (Kantan-T, PROVISIONAL): the 🎧's hover of the title's row ('' with no audiobook): painted as every title is
 Group = namedtuple("Group", "kind label hits total")
 
 STRINGS = {
@@ -105,12 +106,12 @@ def _range_of(media, episodes):
 
 
 def _hit(key, group, title, query, language, where, item_ids, work_id, piece_id, can_play=False, can_top=True,
-         play_tip="", cover_title=None, top_ids=None):
+         play_tip="", cover_title=None, top_ids=None, audio=""):
     return Hit(key=key, group=group, title=title, spans=spans(title, query, language), where=where,
                item_ids=tuple(item_ids), work_id=work_id, piece_id=piece_id, can_play=can_play, can_top=can_top,
                play_tip=play_tip, cover_title=cover_title or title,
                accessible=STRINGS["acc_hit"].format(title=title, where=where),
-               top_ids=tuple(top_ids) if top_ids is not None else None)
+               top_ids=tuple(top_ids) if top_ids is not None else None, audio=audio or "")
 
 
 def _next_part(files):
@@ -179,7 +180,7 @@ def _goal_read(store, view, works, items, probe, query, language, limit):
         where = STRINGS["goal_next" if n > 1 and nxt is not None else "goal"].format(
             n=view_rows.thousands(n), units=one if n == 1 else many, next=nxt.label if nxt is not None else "")
         hits.append(_hit(f"w{w}", "goal", row.title, query, language, where, [r["id"] for r in files], w, None,
-                         cover_title=row.cover_title, top_ids=_next_part(files)))
+                         cover_title=row.cover_title, top_ids=_next_part(files), audio=row.audio))
     return tuple(hits), len(order), {w for w, _o in first}
 
 
@@ -228,18 +229,18 @@ def search(store, view, query, limit=LIMIT):
         _hit(r.key, "current", r.title, query, language,
              split(r.work_id, STRINGS["in_current"].format(n=r.index), r.media, r.episodes),
              (e.id for e in r.episodes), r.work_id, r.piece_id, can_play=bool(r.can_play), can_top=r.index != 1,
-             play_tip=r.play_tip, cover_title=r.cover_title)
+             play_tip=r.play_tip, cover_title=r.cover_title, audio=r.audio)
         for r in current[:limit])
     arrival_hits = tuple(                          # the tray's line is the piece's range already (or its channel)
         _hit(a.key, "arrivals", a.title, query, language,
              STRINGS["arrivals"].format(line=a.line) if a.line else STRINGS["arrivals_plain"], a.item_ids, a.work_id,
-             a.piece_id, cover_title=a.cover_title)
+             a.piece_id, cover_title=a.cover_title, audio=a.audio)
         for a in arrivals[:limit])
     finished_hits = tuple(
         _hit(r.key, "finished", r.title, query, language,
              split(r.work_id, STRINGS["finished_plain"] if label == view_rows.STRINGS["earlier"] else
                    STRINGS["finished"].format(month=label), r.media, r.episodes),
-             (e.id for e in r.episodes), r.work_id, r.piece_id, cover_title=r.cover_title)
+             (e.id for e in r.episodes), r.work_id, r.piece_id, cover_title=r.cover_title, audio=r.audio)
         for label, r in finished[:limit])
 
     made = {"current": (current_hits, len(current)), "goal": (goal_hits, goal_total),

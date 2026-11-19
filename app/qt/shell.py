@@ -2418,7 +2418,10 @@ class ShellWindow(QMainWindow):
         parts = [(self.bar_failure, failure, self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
                  (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
-            parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
+            # Kantan-T (PROVISIONAL): the chip is the way back to a hidden sheet's *Cancel* / *Stop it* — its ✕ (*Later*
+            # for this run) with an offer only, never while the update downloads or waits
+            runs = d.update_state is not None and d.update_state.state in ("downloading", "waiting")
+            parts += [(d.update_mark, update, d.paints), (d.update_cross, update and not runs, d.paints)]
         for part, shown, paints in parts:
             if part.isHidden() == shown:
                 part.setVisible(shown)
@@ -2853,10 +2856,11 @@ class ShellWindow(QMainWindow):
         d.update_cross.clicked.connect(self._update_dismissed)
         d.update_cross.setVisible(False)
         row.insertWidget(row.indexOf(d.update_mark) + 1, d.update_cross)
-        # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
+        # the update sheet (an overlay: Esc and Back close it). Closing it only hides it (Kantan-T, Sonic 2026-11-18,
+        # replacing IK-2): an update downloading or waiting goes on, the chip still shows it; *Cancel* cancels, and the
+        # window's own close still does (`_stop_starting`: `updates.quit`)
         d.sheet = duties_module.UpdateSheet(self.centralWidget())
         d.sheet.action.connect(self._update_action)
-        d.sheet.dismissed.connect(self._sheet_dismissed)
         self.register_overlay(d.sheet)
         # Needs you: the update's cards, above the page's list
         page = self.page_widgets["needs"]
@@ -3672,12 +3676,6 @@ class ShellWindow(QMainWindow):
         return next((b for b in sender.findChildren(QPushButton) if b.property("action") == name and b.isVisible()
                      and (name != "stop" or b.property("program") == key)), None)
 
-    def _sheet_dismissed(self):
-        """Esc, Back or *Later* closed the sheet: an update downloading or waiting is cancelled (IK-2, as Tk)."""
-        state = self.duties.update_state
-        if state is not None and state.state in ("downloading", "waiting"):
-            self._cancel_update()
-
     def _cancel_update(self):
         """The update cancelled (its sheet has closed: the bar's arc turns until the service answered)."""
         s = self.services
@@ -4406,7 +4404,9 @@ SWITCH_INTERVAL_S = 0.001
 # each slot, each delegate paint), and beside the writer's numbers following a move (4–9 ms of Python) ⋯ → Goal's
 # stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
 # asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
-# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`)
+# awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`) — or once its stretch outlasts
+# `window_idle.LONG_S` (a page built in slices, the start: the window never rests, and beside the start's ten busy
+# workers the spin left it ~1 % of the lock — Settings 21 s to build instead of 1.3 s)
 AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 

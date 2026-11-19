@@ -29,6 +29,8 @@ PLACED = {
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_spot_every_episode": "neither",     # Michi-T1: when Connect hears a video's audio, never a run
     "connect_zh_word_audio": "neither",      # Word audio from Google (Zh-C): a Chinese card's word audio, never a run
+    "connect_clip_cuts": "neither",          # Clips cut at once (Michi-LP): how hard Anki Miner works, never a run
+    "connect_low_priority": "neither",       # Beta, Run Anki Miner at low priority (Michi-LP): never a run
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "subs_with_hato": "neither",             # Michi-NS: hato finds the waiting videos' subtitles, never a run

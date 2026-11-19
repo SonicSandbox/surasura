@@ -253,6 +253,9 @@ ROWS = (
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
+    # Michi-LP (PROVISIONAL words): how many clips Anki Miner cuts at once — Automatic (this PC's number), or yours
+    _row("connect_clip_cuts", "anki", "select", ("connect_clip_cuts",), options=("auto", 1, 2, 3, 4, 5, 6), adv=True,
+         when=_CONNECT),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
     # from being suspended under either choice, so it is never greyed)
     _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",
@@ -414,11 +417,13 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    # The Beta list (Michi-LP, PROVISIONAL): one list under one name, each item a switch and one ? line, off as shipped
     # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
     _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
+    _row("connect_low_priority", "app", "toggle", ("connect_low_priority",), when=_CONNECT),     # Michi-LP
     # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
     # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
-    # Content's *Sort again or start over…* offers it)
+    # Content's *Sort again or start over…* offers it). Never a row of the group above it (`settings_page`)
     _row("surasura", "app", "links", options=("github", "discord", "website")),
 )
 ROW = {row.id: row for row in ROWS}
@@ -591,6 +596,9 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id == "connect_clip_cuts":           # Michi-LP: Automatic names what it picks on this PC now
+        from app.connect import power
+        labels = dict(labels, auto=S.CLIP_CUTS_AUTO.format(n=power.clip_cuts()))
     if row.id in PROGRAM_ROWS:
         labels = dict(labels, program=program_label(row, settings)[0])
     return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()))

@@ -2518,8 +2518,9 @@ class Steps:
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
-        from app.connect import power
+        from app.connect import anki_miner, power
         power.lower_priority()
+        anki_miner.LOW_PRIORITY = self.loaded.get("connect_low_priority") is True     # Michi-LP: Beta, off
 
     def update_staged(self):
         from app import library_store
@@ -4172,6 +4173,13 @@ class Steps:
             raise Skip("Anki Miner isn't installed")
         mapping = self._mapping = setup[2]
         self._mapping_job = job.get("id")
+        # Michi-LP: how hard Anki Miner works on this batch, as settings.json says now — the clips it cuts at once
+        # (this PC's number, or yours) and, Beta, idle priority
+        from app.connect import power
+        now = self._settings(lang)
+        anki_miner.LOW_PRIORITY = now.get("connect_low_priority") is True
+        export = (held.get("set") or (None,) * 4)[3]
+        workers = power.clip_cuts(now.get("connect_clip_cuts", power.AUTO), own=power.profile_cuts(export))
         try:
             done = anki_miner.mine_batch(miner, lang, _tag(job), picked["video"], picked["subtitle"], words,
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
@@ -4182,7 +4190,7 @@ class Steps:
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
-                                         word_audio=runfile.word_audio_on(self._settings(lang), lang))
+                                         word_audio=runfile.word_audio_on(now, lang), workers=workers)
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

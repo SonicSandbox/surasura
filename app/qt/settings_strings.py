@@ -603,6 +603,15 @@ ROWS = {
     "auto_update_enabled": ("Update automatically", "One click for small releases",
                             "One-click updates for small releases; big ones by hand.",
                             "update automatic"),
+    # Michi-LP (PROVISIONAL words): the Beta list's switch, and Connect's clips at once (More options)
+    "connect_low_priority": ("Run Anki Miner at low priority",
+                             "Mining waits for whatever else you run, so cards take longer",
+                             "Beta: Anki Miner and its clip cutting use only the CPU nothing else wants",
+                             "low priority anki miner ffmpeg cpu fans slow busy beta idle"),
+    "connect_clip_cuts": ("Clips cut at once",
+                          "Fewer: a quieter PC while cards are made. Automatic: from this PC, fewer on battery",
+                          "How many clips Anki Miner cuts at the same time. Anki Miner's own setting stays as it is",
+                          "clips cut parallel ffmpeg workers cpu fans laptop desktop load"),
     # Iro-AA (PROVISIONAL words): the AI voice's beta
     "ai_audio": ("AI audio for cards without audio", "A local AI voice reads sentences on cards without audio.",
                  "Try the AI voice (beta) for cards without sentence audio",
@@ -680,7 +689,9 @@ OPTIONS = {
     "word_search_category": {"all": "All", "anime": "Anime", "liveaction": "Live action", "youtube": "YouTube"},
     "text_size": {"S": "Small", "M": "Medium", "L": "Large"},
     "app_motion": {"follow": "Follow Windows", "full": "Full", "reduced": "Reduced"},
+    "connect_clip_cuts": {"auto": "Automatic", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6"},
 }
+CLIP_CUTS_AUTO = "Automatic · {n} here"         # Michi-LP: the number Automatic picks on this PC now
 # The line under each choice card (Connect's own words, P3.1)
 OPTION_LINES = {
     "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},

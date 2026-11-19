@@ -14,7 +14,7 @@ from app import anki_connect
 from app.connect import known_signal
 
 URL = "http://127.0.0.1:8765"
-SETTINGS = {"connect_enabled": True}  # known_from_anki defaults to ["suspended"]
+SETTINGS = {"connect_enabled": True}  # the default terms; this fake answers any search
 
 # Real Japanese words, one note each.
 UPPER = (201, 11, "上層部")

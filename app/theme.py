@@ -682,13 +682,14 @@ MIXES.update({
     "logo-tile": ("LOGOS.md: Anki Miner's tile behind its logo", "#2d2d2d"),
 })
 _COLOURS = {theme_: _build(theme_) for theme_ in THEMES}
-SETTINGS_TEXT = MappingProxyType({**SETTINGS_TEXT, "sub-label": "ink-dim", "more": "accent", "kbd": "ink-dim"})
+SETTINGS_TEXT = MappingProxyType({**SETTINGS_TEXT, "sub-label": "ink-dim", "more": "accent", "kbd": "ink-dim",
+                                  "nav-head": "ink-dim"})      # (Mado-EZA: the nav's heads, Cards · Library · App)
 # where the page's own roles sit besides the two slabs (S5: proven in place by tests/qt/test_settings_page.py)
 SETTINGS_PAGE_GROUNDS = MappingProxyType({
     "label": SETTINGS_GROUNDS, "sub-label": SETTINGS_GROUNDS, "help": SETTINGS_GROUNDS, "group": SETTINGS_GROUNDS,
     "hint": SETTINGS_GROUNDS + ("content",), "more": SETTINGS_GROUNDS, "greyed": SETTINGS_GROUNDS,
     "value": SETTINGS_GROUNDS, "nav-lit": ("settings-nav-lit",), "nav-unlit": ("settings-nav",),
-    "search": ("cut",), "placeholder": ("cut",), "kbd": ("cut",),
+    "nav-head": ("settings-nav",), "search": ("cut",), "placeholder": ("cut",), "kbd": ("cut",),
 })
 TYPE.update({
     "settings-head": (12, 700), "settings-label": (13, 550), "settings-help": (11.5, 400), "settings-nav": (13, 400),
@@ -699,6 +700,8 @@ SIZES.update({
     "settings-nav-icon": 15, "settings-head-icon": 16, "settings-search-icon": 14, "settings-more-icon": 12,
     # a row's words never narrower than this beside its control; narrower, they stand above it (FX-page B4 / S7)
     "settings-words-min": 200,
+    # Fine-tune (Mado-EZA): a changed row's dot, drawn in the row's left margin, and the room a press of it takes
+    "settings-dot": 6, "settings-dot-hit": 14,
 })
 SPACING.update({
     "settings-nav": (18, 10, 20, 16), "settings-main": (18, 26, 60), "settings-head": (13, 16, 11),

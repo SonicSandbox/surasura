@@ -716,7 +716,10 @@ def test_live_flip_the_settings_row_mid_move_mid_fade_mid_loop_through_the_setti
     flip.check_landed()
     page.row("app_motion").controls[0].changed.emit("full")
     assert c.mode.setting == "full"
-    assert [a for a in c.active if a is not flip.spinner._anim] == [] and flip.card.isVisible()
+    # nothing restarts — but the save's own feedback starts now (Fine-tune, EZ2-9): the row's flash, *✓ Saved*'s rise
+    from app.qt import settings_page as sp
+    new = [a for a in c.active if isinstance(a.owner, sp.RowView) or a.owner is win.toasts.card]
+    assert [a for a in c.active if a is not flip.spinner._anim and a not in new] == [] and flip.card.isVisible()
     flip.release()
 
 

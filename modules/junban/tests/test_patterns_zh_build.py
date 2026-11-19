@@ -110,12 +110,21 @@ def test_zero_and_the_extension_characters_are_chinese_to_the_builder_as_to_the_
 def test_a_doubled_form_is_keyed_by_its_word_as_the_analyzer_counts_it(same_boundaries):
     # 开开心心 is 开心's (analyzer.chinese_base), as 休息休息 is one 休息 and 哈哈哈哈哈 one 哈哈; the token keeps the
     # text it covers, so the rules still read the sentence as written.
-    text = "大家都开开心心的。\n你應該休息休息。\n哈哈哈哈哈！\n这里有形形色色的人。"
+    text = "大家都开开心心的。\n你應該休息休息。\n大家哈哈哈哈哈地笑了。\n这里有形形色色的人。"
     words = _words(text)
     assert words == _analyzer(text, "s")
     assert {"开心", "休息", "哈哈", "形形色色"} <= set(words) and "开开心心" not in words
     happy = next(t for s in pz.iter_tokens(text, frozenset(BOUNDARIES)) for t in s if t.key == "开心")
     assert (happy.text, happy.orig) == ("开开心心", "开开心心")
+
+
+def test_a_sound_standing_alone_counts_as_no_word_as_the_analyzer_counts_it(same_boundaries):
+    # 哈哈哈哈哈！ and 嗯， said alone are sounds, no words (analyzer.chinese_sounds): the builder keys them "" as the list
+    # never counts them; glued to a word (好啊) the particle stays a word in both
+    text = "哈哈哈哈哈！\n嗯，我知道了。\n好啊，走吧。"
+    words = _words(text)
+    assert words == _analyzer(text, "s")
+    assert not {"哈哈", "嗯"} & set(words) and {"知道", "啊"} <= set(words)
 
 
 def test_crlf_never_reaches_a_key():

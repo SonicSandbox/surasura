@@ -269,7 +269,10 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         new = _other(row, settings, language)
         changes, update = catalog.change(row, settings, language, new)
         assert changes, f"{row.id}: a new value wrote nothing"
-        assert set(changes) <= set(row.keys), f"{row.id} wrote {sorted(changes)}"
+        # *Count as known in Anki*'s one rider here: Kantan-B3's marker, beside a pick (the sync's switch rides only
+        # with Connect on, `_wanted`)
+        riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+        assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:
             assert not key.startswith("logic.") or key.count(".") >= 1 and key != "logic"
@@ -323,9 +326,11 @@ def test_the_sentence_length_range_writes_only_the_end_that_moved():
 def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_flipped():
     settings = {"known_from_anki": ["suspended"], "junban_backfill_fills": ["patterns"]}
     # known_from_anki: every state picked must hold ("and"), saved in the setting's own order; none picked is off
+    # (+ Kantan-B3's marker: a pick, never read as an old default)
     assert catalog.change(catalog.ROW["known_from_anki"], settings, "ja", {"flag:3", "suspended"})[0] == \
-        {"known_from_anki": ["suspended", "flag:3"]}
-    assert catalog.change(catalog.ROW["known_from_anki"], settings, "ja", [])[0] == {"known_from_anki": []}
+        {"known_from_anki": ["suspended", "flag:3"], "known_from_anki_chosen": True}
+    assert catalog.change(catalog.ROW["known_from_anki"], settings, "ja", [])[0] == \
+        {"known_from_anki": [], "known_from_anki_chosen": True}
     # Q31: a list's values as switches — one switch writes the whole list, its values in the switches' order
     assert catalog.change(catalog.ROW["backfill_sentence"], settings, "ja", True)[0] == \
         {"junban_backfill_fills": ["patterns", "sentence"]}
@@ -540,7 +545,8 @@ def test_a_change_never_writes_a_key_outside_its_own_row():
     assert catalog.change(level, manual, "ja", {"logic.selection.auto": True, "words_per_day": 40})[0] == \
         {"logic.selection.auto": True}
     known = catalog.ROW["known_from_anki"]
-    assert set(catalog.change(known, {}, "ja", ["marked"])[0]) == {"known_from_anki"}
+    # its one rider: Kantan-B3's marker, written beside a pick (never a key of the mapping handed in)
+    assert set(catalog.change(known, {}, "ja", ["marked"])[0]) == {"known_from_anki", "known_from_anki_chosen"}
 
 
 def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_frozen_copy():
@@ -674,11 +680,12 @@ def test_rows_waiting_for_their_owner_and_the_anki_label_without_decks_stay_hidd
 
 # --- W3.2 L3: the covers' switch in Connections -------------------------------------------------------------------- #
 def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove_is_an_action_under_it():
-    """The window's spec 01 §1.3 C1: Settings → Connections holds *Download covers* (its own key, nothing else) with
-    *Remove downloaded covers* under it — shown in both languages, the switch off or on (old covers can be removed)."""
+    """The window's spec 01 §1.3 C1: *Download covers* (its own key, nothing else) with *Remove downloaded covers*
+    under it — shown in both languages, the switch off or on (old covers can be removed). In Content since Fine-tune
+    (Mado-EZA, EZ-4 §2.4: the covers read with the library)."""
     row, remove = catalog.ROW["covers_download"], catalog.ROW["remove_downloaded_covers"]
-    assert (row.section, row.kind, row.keys) == ("connect", "toggle", ("covers_download",))
-    assert (remove.section, remove.kind, remove.keys, remove.sub) == ("connect", "action", (), True)
+    assert (row.section, row.kind, row.keys) == ("content", "toggle", ("covers_download",))
+    assert (remove.section, remove.kind, remove.keys, remove.sub) == ("content", "action", (), True)
     ids = [r.id for r in catalog.ROWS]
     assert ids.index("remove_downloaded_covers") == ids.index("covers_download") + 1
     for language in ("ja", "zh"):
@@ -687,9 +694,8 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
     assert catalog.change(row, {"covers_download": False}, "ja", True) == ({"covers_download": True}, None)
     assert catalog.FILLED_BY["remove_downloaded_covers"] == "app.qt.settings_live"
     assert "covers_download" not in catalog.NOT_SHOWN and "covers_download" not in catalog.FILLED_BY
-    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a "
-                        "show's last episode, also asks AniList whether it is still airing, so it isn't finished "
-                        "early. Nothing else.")                                         # what is sent (3.0.1: airing)
+    # what is sent (3.0.1; EZ-12's shorter line: the airing check asks AniList by the same name) — and nothing else
+    assert row.help == "Sends AniList a show's name or id, YouTube a video's id. Nothing else."
 
 
 def test_anki_miner_card_credits_zero_in_sonics_words_on_two_lines():
@@ -970,8 +976,10 @@ def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
     on, off = _shown(CONNECT_ON, "ja"), _shown({}, "ja")
     assert "known_from_anki" in on and "anki_sync_include_suspended" not in on
     assert "anki_sync_include_suspended" in off and "known_from_anki" not in off
-    assert "every state you pick" in row.help                                   # the "and", in the line itself
-    assert "struggled" in suspended.tip and "whenever you suspended them" in suspended.tip
+    # the "and": in sight whenever two states are picked (`help_line`), and in the tip; the ? line says the default
+    # (Kantan-B3)
+    assert "every state you pick" in row.tip and "Suspended + Marked" in row.help
+    assert "Studied, then suspended" in suspended.tip                          # (EZ-12: the why went for 12 words)
     # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
     assert "New cards you suspend never count" in suspended.tip and "New cards count too" in row.tip
     # neither names the other any more: they never stand together
@@ -982,13 +990,13 @@ def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
     # the sync's switch on (set with Connect off), Suspended alone still picked: it stays, nothing written for it
     (True, ["suspended"], {}),
     # Suspended unpicked: the sync stops counting suspended cards too — never a count on an answer no longer shown
-    (True, [], {"known_from_anki": [], "anki_sync_include_suspended": False}),
+    (True, [], {"known_from_anki": [], "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
     # Suspended AND Marked ("and"): the sync's every-suspended-card count would break the "and" — off with it
     (True, ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"],
-                                      "anki_sync_include_suspended": False}),
+                                      "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
     # off stays off: this row never turns the sync's switch on (that is its own row's, with Connect off)
     (False, ["suspended"], {}),
-    (False, ["marked"], {"known_from_anki": ["marked"]}),
+    (False, ["marked"], {"known_from_anki": ["marked"], "known_from_anki_chosen": True}),
 ])
 def test_count_as_known_in_anki_turns_the_syncs_switch_off_when_its_answer_no_longer_holds(held, picks, wanted):
     row = catalog.ROW["known_from_anki"]
@@ -997,9 +1005,10 @@ def test_count_as_known_in_anki_turns_the_syncs_switch_off_when_its_answer_no_lo
 
 
 def test_count_as_known_in_anki_with_the_syncs_switch_unwritten_reads_it_as_off():
-    """A settings.json without the key (the default, off): unpicking Suspended writes the picks alone."""
+    """A settings.json without the key (the default, off): unpicking Suspended writes the picks alone (+ the marker)."""
     row = catalog.ROW["known_from_anki"]
-    assert catalog.change(row, dict(CONNECT_ON), "ja", ["marked"])[0] == {"known_from_anki": ["marked"]}
+    assert catalog.change(row, dict(CONNECT_ON), "ja", ["marked"])[0] == \
+        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}
 
 
 def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_never_silent():
@@ -1028,7 +1037,7 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
     assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
     assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
-    assert "i+1 lines where it can" in row.help and "Only i+1" in row.help
+    assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
     assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
 
@@ -1038,7 +1047,7 @@ def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library
     for videos kept elsewhere — under Anki & mining's *More options*, with Connect on."""
     row = catalog.ROW["connect_video_folders"]
     assert (row.section, row.adv, row.kind, row.label) == ("anki", True, "list", "More video folders")
-    assert "always searched" in row.help and "somewhere else" in row.help
+    assert "searched already" in row.help and "Add others only if needed" in row.help    # (EZ-12's shorter line)
     assert "connect_video_folders" in _shown(CONNECT_ON, "ja") and "connect_video_folders" not in _shown({}, "ja")
 
 
@@ -1101,7 +1110,8 @@ def test_count_as_known_follows_the_switch_known_from_anki_obeys_make_cards_for_
     shown = _shown(off, "ja")
     assert "anki_sync_include_suspended" in shown and "known_from_anki" not in shown
     row = catalog.ROW["known_from_anki"]
-    assert catalog.change(row, off, "ja", ["marked"])[0] == {"known_from_anki": ["marked"]}   # the sync's untouched
+    assert catalog.change(row, off, "ja", ["marked"])[0] == \
+        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}             # the sync's untouched
 
 
 def test_count_as_known_says_when_the_syncs_hidden_switch_counts_more_than_its_picks():

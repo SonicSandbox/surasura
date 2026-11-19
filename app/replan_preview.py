@@ -92,6 +92,7 @@ REPLAN_THEN_GENERATE_CM = "Anki re-ordered · your list refreshes (Generate) whe
 # 3.0's gate (`stands_aside`): why the host does nothing now.
 AUTOMATION_OFF = "Automation is off — Anki is re-ordered only when you run 順 yourself"
 JUNBAN_OFF = "順 is off — switch it on to re-order Anki as you move"
+JUNBAN_PAUSED = "順 is paused — click its circle to re-order Anki as you move again"     # Mado-PZ
 JUNBAN_ABSENT = "順 isn't installed — Anki isn't re-ordered as you move"
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 STAND_ASIDE = {
@@ -145,7 +146,7 @@ OFF = GivesUp("")      # no words: nothing re-orders now by the user's own choic
 def ends_with(why):
     """`stands_aside`'s reason `why` as a waiting press ends with it: OFF for the user's own choices (D29 off, 順 off or
     absent), else the reason as a line that gives up (the deck to pick, D7's one deck)."""
-    return OFF if why in (AUTOMATION_OFF, JUNBAN_OFF, JUNBAN_ABSENT) else GivesUp(why)
+    return OFF if why in (AUTOMATION_OFF, JUNBAN_PAUSED, JUNBAN_OFF, JUNBAN_ABSENT) else GivesUp(why)
 
 
 def junban_present():
@@ -236,6 +237,8 @@ def _stand_aside(settings, language):
     settings = settings or {}
     if not settings_manager.automation(settings):
         return AUTOMATION_OFF, False
+    if settings_manager.paused(settings, "junban"):        # Mado-PZ: paused at the bar, until a click resumes it
+        return JUNBAN_PAUSED, False
     if settings.get("enable_junban") is not True:
         return JUNBAN_OFF, False
     if not junban_present():

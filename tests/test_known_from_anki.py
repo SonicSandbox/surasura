@@ -20,9 +20,10 @@ def _on(**extra):
     return settings
 
 
-def test_default_signal_is_suspended_when_preview_on_and_no_list_saved():
-    # The default term is "suspended" (Sonic: "Default to suspend"), used when settings.json has no list yet.
-    assert known_signal.signal(_on()) == ["suspended"]
+def test_default_signal_is_suspended_and_marked_when_preview_on_and_no_list_saved():
+    # The default terms are "suspended" AND "marked" (Kantan-B3, Sonic 2026-11-18: a plain suspend is often a bad
+    # sentence), used when settings.json has no list yet.
+    assert known_signal.signal(_on()) == ["suspended", "marked"]
 
 
 def test_signal_keeps_the_picked_terms_in_the_order_the_user_picked_them():

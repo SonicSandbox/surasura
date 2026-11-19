@@ -114,12 +114,14 @@ def sends_line_skip(app):
     return version is not None and (version + (0, 0, 0))[:3] >= LINE_SKIP_FROM
 
 
-def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
+def config(mapping, app, features=(), sentence_keys=None, word_audio=True, workers=None):
     """The run's `config`: every filter off, and the deck, note type and fields `mapping` names (fields.Mapping); the
     target bolded in its sentence where Anki Miner takes that (Z-5, 08-zero: sent per run; Junban and Backfill read
     the bold, K56). `sentence_keys` overrides the version's rule (the caller's one retry without them). `word_audio`
     False (`word_audio_on`): the word-audio field sent unmapped — Anki Miner fetches a word's audio only into a mapped
-    one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C)."""
+    one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C). `workers` (Michi-LP,
+    `power.clip_cuts`): how many clips Anki Miner cuts at once in this run (`max_parallel_workers`; None: the
+    profile's own)."""
     out = dict(FILTERS_OFF)
     out.update(anki_deck_name=mapping.deck, anki_note_type=mapping.note_type, anki_fields=dict(mapping.fields))
     if not word_audio:
@@ -128,6 +130,8 @@ def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
         out.update(deduplicate_sentences=False, use_i_plus_one_filter=False)
     if BOLD_TARGET in (features or ()):
         out["bold_target_in_sentence"] = True
+    if workers is not None:
+        out["max_parallel_workers"] = int(workers)
     return out
 
 

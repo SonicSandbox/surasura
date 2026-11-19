@@ -21,11 +21,13 @@ User Files/<lang>/anki_young.json), then the newest known words: no Anki call, s
 """
 import json
 import os
+import re
 import threading
 import unicodedata
 from contextlib import contextmanager
 
 from app.anki_sync import YOUNG_FILE
+from app.unicode_ranges import KANA
 
 # The practice chat's name as the learner sees it (Sonic 2026-10-29, "for now"): the Settings row, the server's title,
 # the prompt and the copied setup say it; the server's id stays `surasura`, so a copied setup outlives a new name.
@@ -37,6 +39,11 @@ STARTER = "Start a Surasura practice round: write me a short story with 5 of my 
 # report's words and what was expected — and the window opens Report a problem with them (app/qt/report.py)
 REPORT_ARG = "--piyo-report"
 MODES = ("chat", "reading")
+# The learner's own text (a produce round's answer, Piyo's output drills): no verdict on new words — only what it holds,
+# its target words found or not and its banned words present or not (`Checker.check`'s `targets` / `avoid`).
+ANSWER = "answer"
+NEAR_KANA = 4                   # a reading this long or longer may be matched near (one kana off; two from five up)
+LEMMAS_SHOWN = 100              # the tokens an answer's `lemmas` lists, at most
 READING_SHARE = 0.03            # a reading's new words: under 3 % of its words (Sonic, P-1)
 RECENT = 100                    # the words a round practises first (`practise_terms`), at most
 # An easy common noun (PROVISIONAL technical rule, scope.md): ja — UniDic's 普通名詞 ranked in the top EASY_JA_RANK
@@ -262,13 +269,128 @@ class Checker:
         return _zh_tag(word) == "n" and _zh_rank(word) <= EASY_ZH_RANK
 
     # --- the check -------------------------------------------------------------------------------------------- #
-    def check(self, text, mode="chat"):
+    def check(self, text, mode="chat", targets=(), avoid=(), resolve=None):
         """The verdict on `text` in `mode` (MODES) -> {"pass", "reasons", "sentences", "new_words", "new_share",
-        "words", "known_used", "recent_used"}. `reasons` are instructions in plain words, empty on a pass."""
-        if mode not in MODES:
-            raise ValueError(f"mode must be one of {', '.join(MODES)}")
+        "words", "known_used", "recent_used"}. `reasons` are instructions in plain words, empty on a pass.
+
+        A produce round's words (`targets`) and banned crutch words (`avoid`), when given, are looked for too
+        (`_look`): the answer adds "text" (exactly what was checked), "lemmas" (what the tokenizer read), "targets"
+        and "avoid". In a draft (chat, reading) a target found is a reason: the AI never shows the word before the
+        learner has produced it. Mode ANSWER is the learner's own text: no verdict, no pass or reasons — what it holds.
+        `resolve(tokenizer, language, word)` -> (key, phrase, look, reading) reads a target as a card's word is read
+        (the MCP server passes its `_card_reading`); without it, the word's own tokens."""
+        if mode not in MODES + (ANSWER,):
+            raise ValueError(f"mode must be one of {', '.join(MODES + (ANSWER,))}")
+        targets, avoid = _words_of(targets), _words_of(avoid)
+        text = str(text or "")
         with _reading(self.japanese):
-            return self._check(str(text or ""), mode)
+            out = self._check(text, "chat" if mode == ANSWER else mode)
+            if not (targets or avoid or mode == ANSWER):
+                return out
+            out = self._look(text, out, targets, avoid, resolve or _own_tokens)
+        if mode == ANSWER:
+            return {"mode": ANSWER, "text": text, "words": out["words"],
+                    "new_words": [{k: w[k] for k in ("word", "lemma", "reading")} for w in out["new_words"]],
+                    "lemmas": out["lemmas"], "targets": out["targets"], "avoid": out["avoid"]}
+        shown = [t for t in out["targets"] if t["found"] and t["how"] != "near_reading"]
+        for t in shown:
+            out["reasons"].append(f"The draft gives away the target word {t['word']} (as {t['form']}): never show "
+                                  f"it, its spelling or its reading before the learner has produced it. Rewrite "
+                                  f"without it, with hints about meaning only.")
+        out["pass"] = not out["reasons"]
+        return out
+
+    def _look(self, text, out, targets, avoid, resolve):
+        """`out` with the targets and banned words looked for in `text`, as the tokenizer reads it."""
+        from app import analyzer
+        tokens = [t for t in self.tokenizer.tokenize(text.replace("\r\n", "\n"))
+                  if analyzer.has_target_language(t[0], self.language) or analyzer.has_target_language(t[2],
+                                                                                                      self.language)]
+        kana = self._kana_nodes(text) if self.japanese else None
+        out = dict(out, text=text, lemmas=[{"surface": s, "lemma": l, "reading": r}
+                                           for l, r, s, _o in tokens[:LEMMAS_SHOWN]])
+        out["targets"] = [self._find(word, text, tokens, kana, resolve, near=True) for word in targets]
+        out["avoid"] = []
+        for word in avoid:
+            found = self._find(word, text, tokens, kana, resolve, near=False)
+            out["avoid"].append({"word": word, "present": found["found"],
+                                 **({"form": found["form"], "how": found["how"]} if found["found"] else {})})
+        return out
+
+    def _kana_nodes(self, text):
+        """[(kana, surface)] per tagger node of `text`, the kana folded to hiragana (a symbol, or a node with no
+        reading, None: no reading runs across it)."""
+        from app.anki_match import fold_kana
+        out = []
+        for node in self.tokenizer.tagger(text):
+            surface = node.surface
+            kana = getattr(node.feature, "kana", None) or (surface if _KANA_ONLY.fullmatch(surface or "") else None)
+            if getattr(node.feature, "pos1", "") in ("補助記号", "記号", "空白") and not _KANA_ONLY.fullmatch(surface):
+                kana = None
+            out.append((fold_kana(kana) if kana else None, surface))
+        return out
+
+    def _find(self, word, text, tokens, kana, resolve, near):
+        """Where `word` is in the text -> {"word", "found"} and, when found, "how" — lemma (the word itself, any
+        form: "spelling" says same, kana, or other: another kanji, a reading_error candidate), written (its own
+        spelling inside a longer word), reading (its reading at a word's start, written otherwise: kana alone or
+        other kanji) or near_reading (`near` only: a reading one kana off, two from five up — the word misread, or
+        another word) — "form" (the text as written) and "note"."""
+        from app.anki_match import fold_kana
+        out = {"word": word, "found": False}
+        key, phrase, _look, reading = resolve(self.tokenizer, self.language, word)
+        own = self.tokenizer.tokenize(word)
+        lemmas = (key[0],) if key else tuple(phrase or ())
+        n = len(lemmas)
+        for i in range(len(tokens) - n + 1) if n else ():
+            run = tokens[i:i + n]
+            # by its lemma, or by its own dictionary spelling (臭い, a word of its own to the card matching, is
+            # 匂い's lemma to the tagger: written 臭い, it is the word)
+            if all(t[0] == lemma or (t[3] or t[2]) == lemma for t, lemma in zip(run, lemmas)):
+                spelling = _spelling(run, own)
+                out.update(found=True, how="lemma", form="".join(t[2] for t in run), spelling=spelling)
+                if spelling == "other":
+                    out["note"] = "the word, written with other kanji: a reading_error candidate"
+                return out
+        if len(word) >= 2 and word in text:
+            out.update(found=True, how="written", form=word, note="the word as written, though the tokenizer read "
+                                                                  "the text otherwise (inside a longer word?)")
+            return out
+        if not (kana and reading):
+            return out
+        want = fold_kana(reading)
+        starts, ends, joined, pos = [], set(), "", 0
+        for k, _surface in kana:
+            starts.append(pos)
+            piece = k if k else "\x00"
+            joined += piece
+            pos += len(piece)
+            ends.add(pos)
+        for i, start in enumerate(starts):
+            if kana[i][0] and joined.startswith(want, start) and (start + len(want) in ends or len(want) >= 3):
+                out.update(found=True, how="reading", form=_cover(kana, starts, i, start + len(want)),
+                           note="the word's reading, written otherwise (kana alone or other kanji): a reading_error "
+                                "candidate")
+                return out
+        if not near or len(want) < NEAR_KANA:
+            return out
+        most = 1 if len(want) <= NEAR_KANA else 2
+        best = None                 # (distance, length off, node, end): the closest whole-word span
+        for i, start in enumerate(starts):
+            if not kana[i][0]:
+                continue
+            for end in ends:
+                window = joined[start:end] if start < end else ""
+                if not window or "\x00" in window or abs(len(window) - len(want)) > 1 or window == want:
+                    continue
+                d = _distance(window, want)
+                if d <= most and (best is None or (d, abs(len(window) - len(want))) < best[:2]):
+                    best = (d, abs(len(window) - len(want)), i, end)
+        if best:
+            out.update(found=True, how="near_reading", form=_cover(kana, starts, best[2], best[3]),
+                       note="close to the word's reading: the word misread (reading_error), or another word — "
+                            "judge which")
+        return out
 
     def _check(self, text, mode):
         from app import analyzer
@@ -338,6 +460,77 @@ class Checker:
             reasons.append(f"New words are {share:.1%} of this reading; keep them under {READING_SHARE:.0%}. Replace "
                            f"some with words the learner knows, or make the reading longer with known words.")
         return reasons
+
+
+# --- a produce round's words in a text (`Checker._look`) ------------------------------------------------------------ #
+_KANA_ONLY = re.compile(f"[{KANA}]+")
+WORDS_MOST = 10                 # targets or banned words one check looks for, at most
+WORD_CHARS = 30                 # one of them, at most
+
+
+def _words_of(values):
+    """The targets or banned words a check is given, each stripped (NFKC), once; a lone string is one word. Too many
+    or too long -> ValueError saying what to do."""
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    out = []
+    for value in values:
+        word = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if word and word not in out:
+            out.append(word)
+    if len(out) > WORDS_MOST:
+        raise ValueError(f"At most {WORDS_MOST} target or banned words in one check.")
+    for word in out:
+        if len(word) > WORD_CHARS:
+            raise ValueError(f"A target or banned word is one word, {WORD_CHARS} characters at most, not "
+                             f"\"{word[:20]}…\".")
+    return out
+
+
+def _own_tokens(tokenizer, _language, word):
+    """`resolve` without the card matching: one token is that word, more are a run of lemmas."""
+    tokens = tokenizer.tokenize(word)
+    if len(tokens) == 1:
+        return tuple(tokens[0][:2]), None, None, tokens[0][1]
+    return None, (tuple(t[0] for t in tokens) or None), None, "".join(t[1] for t in tokens)
+
+
+def _spelling(run, own):
+    """How a target found by its lemma is written against its own spelling: same, kana (written in kana alone where
+    the word has kanji) or other (other kanji: 匂い for 臭い, both におい — a reading_error candidate)."""
+    by_lemma = {t[0]: (t[3] or t[2]) for t in own}
+    seen = "same"
+    for lemma, _reading, surface, orth in run:
+        want, got = by_lemma.get(lemma), orth or surface
+        if want is None or unicodedata.normalize("NFKC", got) == unicodedata.normalize("NFKC", want):
+            continue
+        if _KANA_ONLY.fullmatch(surface) and not _KANA_ONLY.fullmatch(want):
+            seen = "kana"
+        else:
+            return "other"
+    return seen
+
+
+def _cover(kana, starts, first, end):
+    """The text as written of the tagger nodes from `first` that the reading span up to `end` covers."""
+    out = []
+    for i in range(first, len(kana)):
+        if starts[i] >= end:
+            break
+        out.append(kana[i][1])
+    return "".join(out)
+
+
+def _distance(a, b):
+    """Levenshtein distance of two short kana strings."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
 
 
 # --- Chinese: jieba's own tags and counts, read once (analyzer.chinese_verb reads the same table) ---------------- #

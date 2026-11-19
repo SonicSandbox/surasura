@@ -300,3 +300,60 @@ def test_last_round_passes_an_unreadable_newest_file_and_reads_the_next():
     when, n = pr.last_round("ja")
     assert n == 2
     assert open(broken, encoding="utf-8").read() == "{冒険"
+
+
+# --- a produce round's results (Piyo's output drills, 2026-11-19): each attempt as the AI judged it, a log only ------ #
+PRODUCE_START = {"round": {"words": 1, "role": "coworker", "kind": "produce", "source": "known"},
+                 "words": [{"word": "跳躍", "orth": "跳躍", "reading": "チョウヤク", "lines": []}]}
+
+
+def test_a_produce_rounds_results_are_kept_in_order_and_listed_by_count():
+    round_id = pr.new_id()
+    pr.save("ja", round_id, start=PRODUCE_START)
+    pr.save("ja", round_id, results=[{"word": "跳躍", "error_type": "reading_error", "attempt": 1, "ok": False,
+                                      "note": "ちょうちゃく"}])
+    data = pr.save("ja", round_id, results=[{"word": "跳躍", "error_type": "ok", "attempt": 2, "ok": True}])
+    assert [(r["error_type"], r["attempt"], r["ok"], r.get("note")) for r in data["results"]] == [
+        ("reading_error", 1, False, "ちょうちゃく"), ("ok", 2, True, None)]
+    assert all(r["at"] for r in data["results"])
+    with open(_round_file("ja", round_id), encoding="utf-8") as f:
+        assert json.load(f)["results"] == data["results"]
+    (listed,) = pr.rounds("ja")
+    assert listed["results_kept"] == 2 and listed["kind"] == "produce"
+
+
+@pytest.mark.parametrize("bad, says", [
+    ({"word": "跳躍", "error_type": "typo", "attempt": 1, "ok": False}, "error_type is one of"),
+    ({"word": "跳躍", "error_type": "ok", "attempt": 0, "ok": True}, "attempt"),
+    ({"word": "跳躍", "error_type": "ok", "attempt": True, "ok": True}, "attempt"),
+    ({"word": "跳躍", "error_type": "ok", "attempt": 1, "ok": "yes"}, "ok is true"),
+    ({"word": "", "error_type": "ok", "attempt": 1, "ok": True}, "word"),
+    ({"word": "跳躍", "error_type": "ok", "attempt": 1, "ok": True, "score": 9}, "not score"),
+    ({"word": "跳躍", "error_type": "ok", "attempt": 1, "ok": True, "note": "x" * (pr.TEXT_CHARS + 1)}, "note"),
+    ("ok", "Each result"),
+])
+def test_a_result_that_isnt_one_is_refused_with_what_to_send_and_nothing_is_saved(bad, says):
+    round_id = pr.new_id()
+    pr.save("ja", round_id, start=PRODUCE_START)
+    good = {"word": "跳躍", "error_type": "ok", "attempt": 1, "ok": True}
+    with pytest.raises(ValueError, match=says):
+        pr.save("ja", round_id, lines=["kept?"], results=[good, bad])
+    data = pr.load("ja", round_id)
+    assert data["lines"] == [] and "results" not in data
+
+
+def test_too_many_results_in_one_save_are_refused():
+    round_id = pr.new_id()
+    pr.save("ja", round_id, start=PRODUCE_START)
+    one = {"word": "跳躍", "error_type": "retrieval_miss", "attempt": 1, "ok": False}
+    with pytest.raises(ValueError, match="At most"):
+        pr.save("ja", round_id, results=[one] * (pr.PER_SAVE + 1))
+
+
+def test_a_round_kept_before_results_still_loads_lists_and_reads_back():
+    round_id = _saved("ja", JA_START, lines=["冒険に行こう。"])
+    with open(_round_file("ja", round_id), encoding="utf-8") as f:
+        assert "results" not in json.load(f)
+    (listed,) = pr.rounds("ja")
+    assert "results_kept" not in listed and listed["lines_kept"] == 1
+    assert pr.context("ja")[0]["lines"] == ["冒険に行こう。"]

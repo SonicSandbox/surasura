@@ -413,3 +413,93 @@ def test_a_learner_with_more_young_cards_than_a_round_can_use_gets_the_first_hun
     assert len(checker.recent_words()) == practice.RECENT == 100
     # and no more are read: a KnownWord.json of thousands of dated words would otherwise be tokenized at every load
     assert len(checker.recent) == len(checker.recent_terms) == 100
+
+
+# --- a produce round's words in a text (Piyo's output drills, 2026-11-19): what the learner's own answer holds -------- #
+def _answer(text, targets=(), avoid=(), resolve=None, language="ja", known=(TALK,)):
+    return _checker(language, list(known)).check(text, practice.ANSWER, targets=targets, avoid=avoid, resolve=resolve)
+
+
+def _target(result):
+    (found,) = result["targets"]
+    return found
+
+
+def test_an_answer_says_where_its_target_is_which_banned_words_it_holds_and_what_the_tokenizer_read():
+    """No verdict on the learner's own text: no pass, no reasons. The target found by its lemma in its inflected form,
+    a crutch word present, the other absent, the text exactly as checked, the lemmas the tokenizer read."""
+    text = "サイコロを振ったら、有名人が来た。"
+    result = _answer(text, targets=["振る"], avoid=["有名人", "投げる"])
+    assert "pass" not in result and "reasons" not in result and result["mode"] == "answer"
+    assert result["text"] == text
+    assert _target(result) == {"word": "振る", "found": True, "how": "lemma", "form": "振っ", "spelling": "same"}
+    assert result["avoid"] == [{"word": "有名人", "present": True, "form": "有名人", "how": "lemma"},
+                               {"word": "投げる", "present": False}]
+    assert {"surface": "振っ", "lemma": "振る", "reading": "フル"} in result["lemmas"]
+
+
+def test_a_target_missing_from_an_answer_is_not_found():
+    """跳躍 asked, ジャンプ said: a retrieval miss for the judge; the crutch word is present."""
+    result = _answer("ジャンプに成功した。", targets=["跳躍"], avoid=["ジャンプ"])
+    assert _target(result) == {"word": "跳躍", "found": False}
+    assert result["avoid"][0]["present"] is True
+
+
+def test_a_target_written_in_kana_alone_is_found_by_its_reading():
+    """はいゆう: the tokenizer reads はい + ゆうに, so no lemma 俳優 — the reading finds it, a reading_error candidate."""
+    found = _target(_answer("はいゆうになりたい。", targets=["俳優"]))
+    assert found["found"] and found["how"] == "reading" and found["form"].startswith("はいゆう")
+    assert "reading_error" in found["note"]
+
+
+def test_an_inflected_target_in_kana_is_found_by_its_lemma_and_said_to_be_kana():
+    found = _target(_answer("サイコロをふった。", targets=["振る"]))
+    assert (found["how"], found["form"], found["spelling"]) == ("lemma", "ふっ", "kana")
+
+
+def test_a_misread_target_is_found_near_its_reading():
+    """ちょうちゃく for 跳躍 (ちょうやく): the trial's reading error, two kana off on a five-kana reading."""
+    found = _target(_answer("ちょうちゃくに成功した。", targets=["跳躍"]))
+    assert (found["how"], found["form"]) == ("near_reading", "ちょうちゃく")
+
+
+def test_a_short_reading_is_matched_on_whole_words_only():
+    """橋 (はし) is no part of はしる; はしを渡る is the reading of a whole word, written in kana."""
+    assert _target(_answer("はしる", targets=["橋"]))["found"] is False
+    assert _target(_answer("はしを渡る。", targets=["橋"]))["how"] == "reading"
+
+
+def test_another_kanji_with_the_targets_reading_is_found_by_reading_when_its_reading_is_given():
+    """臭い (におい in the round) answered 匂い: the same reading in other kanji. The bare 臭い reads くさい, so the
+    round's reading decides (the MCP server passes it)."""
+    def resolve(tokenizer, language, word):
+        return practice._own_tokens(tokenizer, language, word)[:3] + ("ニオイ",)
+    found = _target(_answer("変な匂いがする。", targets=["臭い"], resolve=resolve))
+    assert (found["how"], found["form"]) == ("reading", "匂い")
+    assert _target(_answer("変な臭いがする。", targets=["臭い"], resolve=resolve))["how"] == "lemma"
+
+
+def test_a_draft_that_gives_the_target_away_fails_and_one_without_targets_reads_as_before():
+    checker = _checker("ja", [TALK, "昨日、有名な俳優に会ったよ。", "有名な人"])
+    plain = checker.check("昨日、有名な俳優に会ったよ。")
+    assert plain["pass"] and set(plain) == {"pass", "reasons", "mode", "sentences", "new_words", "new_share", "words",
+                                           "known_used", "recent_used"}
+    leak = checker.check("昨日、有名な俳優に会ったよ。", "chat", targets=["俳優"])
+    assert leak["pass"] is False and "gives away the target word 俳優" in leak["reasons"][-1]
+    hidden = checker.check("昨日、有名な人に会ったよ。", "chat", targets=["俳優"])
+    assert hidden["pass"] and hidden["targets"] == [{"word": "俳優", "found": False}]
+
+
+def test_too_many_or_too_long_target_words_say_what_to_send():
+    checker = _checker("ja", [TALK])
+    with pytest.raises(ValueError, match="At most"):
+        checker.check(TALK, practice.ANSWER, targets=[f"語{n}" for n in range(practice.WORDS_MOST + 1)])
+    with pytest.raises(ValueError, match="one word"):
+        checker.check(TALK, practice.ANSWER, targets=["冒険" * 20])
+
+
+def test_chinese_a_target_is_found_by_its_word_and_no_reading_is_looked_for():
+    result = _answer("我们明天去看电影吧。", targets=["电影", "冒险"], avoid=["片子"], language="zh", known=(ZH,))
+    assert result["targets"][0] == {"word": "电影", "found": True, "how": "lemma", "form": "电影", "spelling": "same"}
+    assert result["targets"][1] == {"word": "冒险", "found": False}
+    assert result["avoid"] == [{"word": "片子", "present": False}]

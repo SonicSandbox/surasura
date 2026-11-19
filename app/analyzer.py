@@ -938,7 +938,7 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
         words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True),
                                    LOGIC.get("names_work_terms", True))
     # Sounds are no words (§ Sounds are no words): only a line holding an interjection or a katakana gasp has one
-    if fillers or "ッ" in "".join(map(_SURFACE, words)):
+    if fillers or not _GASP_CHARS.isdisjoint("".join(map(_SURFACE, words))):
         words = _mark_sounds(words, fillers)
     return words
 
@@ -1337,6 +1337,8 @@ class SoundNode(ReadNode):
 
 
 _SOUND_EDGES = frozenset(("補助記号", "空白"))
+_GASP_ENDS = ("ッ", "ｯ")     # a katakana gasp ends so, full width or half (str.endswith takes the tuple)
+_GASP_CHARS = frozenset(_GASP_ENDS)
 _SOUND_SHAPES = {}          # (surface, kind) -> whether it is a sound's shape, asked once per spelling
 _SMALL_JOINING = frozenset("ゃゅょゎ")
 _SMALL_VOWELS = frozenset("ぁぃぅぇぉ")
@@ -1411,7 +1413,7 @@ def _sound_kind(w):
         return None
     if f.pos1 == "感動詞":
         return "f" if f.pos2 == "フィラー" else "i"
-    return "n" if f.pos2 == "固有名詞" and w.surface[-1:] == "ッ" else None
+    return "n" if f.pos2 == "固有名詞" and _read(w)[-1:] == "ッ" else None
 
 
 def _mark_sounds(words, fillers):
@@ -1420,11 +1422,11 @@ def _mark_sounds(words, fillers):
     Only the interjections (on a line holding one: `fillers`) and the words ending in ッ are looked at, found in C."""
     n = len(words)
     seen = set(compress(range(n), map(eq, map(_POS1, words), repeat("感動詞")))) if fillers else set()
-    seen.update(compress(range(n), map(methodcaller("endswith", "ッ"), map(_SURFACE, words))))
+    seen.update(compress(range(n), map(methodcaller("endswith", _GASP_ENDS), map(_SURFACE, words))))
     sounds = []
     for i in sorted(seen):
         kind = _sound_kind(words[i])
-        if kind and _sound_shape(words[i].surface, kind):
+        if kind and _sound_shape(_read(words[i]), kind):      # as the tagger read it: ｱｯ is アッ
             sounds.append(i)
     out, k = None, 0
     while k < len(sounds):
@@ -1436,7 +1438,7 @@ def _mark_sounds(words, fillers):
         left = 1 if a == 0 else (2 if getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES
                                  else 0)
         right = _sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))
-        if not left or not right or left + right < 3:      # glued to a word, or a word read alone
+        if left + right < 3:        # glued to a word on a side (0), or a word read alone (1 + 1): no sound
             continue
         if out is None:
             out = list(words)

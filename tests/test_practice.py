@@ -469,6 +469,14 @@ def test_a_short_reading_is_matched_on_whole_words_only():
     assert _target(_answer("はしを渡る。", targets=["橋"]))["how"] == "reading"
 
 
+@pytest.mark.parametrize("target, text", [("政治", "誠実な人です。"), ("今日", "教育が大事だ。")])
+def test_a_reading_is_never_found_inside_a_kanji_word(target, text):
+    """せいじ starts せいじつ (誠実), きょう starts きょういく (教育): neither word is there, as a target or a banned word."""
+    result = _answer(text, targets=[target], avoid=[target])
+    assert _target(result) == {"word": target, "found": False}
+    assert result["avoid"] == [{"word": target, "present": False}]
+
+
 def test_another_kanji_with_the_targets_reading_is_found_by_reading_when_its_reading_is_given():
     """臭い (におい in the round) answered 匂い: the same reading in other kanji. The bare 臭い reads くさい, so the
     round's reading decides (the MCP server passes it)."""

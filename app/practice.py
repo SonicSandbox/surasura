@@ -367,7 +367,11 @@ class Checker:
             pos += len(piece)
             ends.add(pos)
         for i, start in enumerate(starts):
-            if kana[i][0] and joined.startswith(want, start) and (start + len(want) in ends or len(want) >= 3):
+            # at a word's start; ending at a word's end too, or mid-word only in kana the tagger cut otherwise (はいゆう
+            # read はい + ゆうに) — never inside a kanji word (政治 is no part of 誠実, 今日 none of 教育)
+            if kana[i][0] and joined.startswith(want, start) and (
+                    start + len(want) in ends
+                    or (len(want) >= 3 and _KANA_ONLY.fullmatch(_cover(kana, starts, i, start + len(want))))):
                 out.update(found=True, how="reading", form=_cover(kana, starts, i, start + len(want)),
                            note="the word's reading, written otherwise (kana alone or other kanji): a reading_error "
                                 "candidate")

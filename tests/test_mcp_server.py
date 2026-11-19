@@ -678,6 +678,7 @@ def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_
     for words in ("One word at a time", "2-4 banned crutch words", "a precise word for this that you know",
                   "only the crutch words are banned", "Never show, spell or hint", "about meaning and use only",
                   "targets=[the word]", 'mode="answer"', "After 2 failed tries", "bring it back later",
+                  "a retry, feedback on a miss", "check drafts without targets", "hides it again",
                   "at most 1-2 other fixes", "Show exactly the text you checked", "coworker", "丁寧語"):
         assert words in rules, words
     for error_type in _error_types():
@@ -792,3 +793,22 @@ def test_the_practice_prompt_leaves_the_source_to_the_round_when_none_is_given()
     produce, chat = _run(_state(), calls)
     assert "source=" not in produce.messages[0].content.text and 'kind="produce"' in produce.messages[0].content.text
     assert 'source="top"' in chat.messages[0].content.text
+
+
+def test_a_chinese_produce_round_starts_and_checks_its_word_by_the_word_alone(monkeypatch):
+    """Chinese through the server: the round starts (no patterns database here), the answer's target is found by its
+    word through the card matching's Chinese branch, a banned word is present, and no reading is looked for."""
+    _set_up("zh")
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "电影", "orth": "电影", "reading": "dian4 ying3", "kana": "dian4 ying3", "lines": []}])
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+        answer = _data(await client.call_tool("surasura_check_text", {
+            "text": ZH_TALK, "mode": "answer", "targets": ["电影", "冒险"], "avoid": ["明天"]}))
+        return brief, answer
+    brief, answer = _run(_zh_state(), calls)
+    assert brief["round"]["source"] == "known" and [w["word"] for w in brief["round_words"]] == ["电影"]
+    assert answer["targets"][0]["found"] is True and answer["targets"][0]["how"] == "lemma"
+    assert answer["targets"][1] == {"word": "冒险", "found": False}
+    assert answer["avoid"][0]["present"] is True

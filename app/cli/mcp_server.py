@@ -575,8 +575,10 @@ def produce_rules(role, recent):
         "Never show, spell or hint at the target's kanji, kana or reading before the learner has produced it: not in "
         "the scenario, a hint, a retry or feedback. Hints are about meaning and use only (what it describes, where "
         "it is said, its opposite).",
-        "Before you show a scenario or a hint, call surasura_check_text(draft, mode=\"chat\", targets=[the word]): it "
-        "fails when the draft gives the word away. Rewrite as its reasons say and show only a draft that passed.",
+        "Until the learner has produced the word, check every draft you show (the scenario, a hint, a retry, feedback "
+        "on a miss) with surasura_check_text(draft, mode=\"chat\", targets=[the word]): it fails when the draft gives "
+        "the word away. Rewrite as its reasons say and show only a draft that passed. Once the word is produced or "
+        "shown, check drafts without targets; a scenario that brings it back hides it again: check it with targets.",
         "Check each answer with surasura_check_text(answer, mode=\"answer\", targets=[the word], avoid=[the crutch "
         "words]), and judge by it and the word's patterns (its usual particles, forms, collocations, register; "
         "書き言葉 means it leans written): how lemma is the word itself (its spelling other: other kanji); reading or "

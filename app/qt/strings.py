@@ -733,7 +733,8 @@ DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
 DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
-DRAG_TAKE_OUT_TIP = "Suspended in Anki and tagged, never deleted. Undo brings them back."         # P4.1 L2 (TF fix 10, IK #6)
+# P4.1 L2 (TF fix 10, IK #6)
+DRAG_TAKE_OUT_TIP = "Its new cards: suspended in Anki and tagged, never deleted. Undo brings them back."
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
 ANKI_WAIT_GENERATE_STOPPED = "Generate was stopped, so Anki wasn't changed"     # ... a Generate stopped from the bar

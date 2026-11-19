@@ -336,7 +336,7 @@ def place(args):
         if loaded.get("connect_enabled"):       # set-up (P4.1 row 4.1.1): the watermark, never a start (`_kick`'s)
             _store_write(lambda: library.ensure_reader(store), args.wait)
         change = _store_write(lambda: library.place(store, args.file, tier, before_id=before_id, after_id=after_id,
-                                                    source=source), args.wait)
+                                                    source=source, exact=args.position is not None), args.wait)
         tier, position = store.place_of(args.file)
         if args.to == "current" and tier == "soon":
             position += len(store.ids("now"))           # its place in Current: NOW, then Soon

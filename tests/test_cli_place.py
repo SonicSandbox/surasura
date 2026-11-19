@@ -43,6 +43,29 @@ def test_with_connect_on_the_placement_is_logged_under_its_source():
     assert mine and all(by == "my-script" for _i, _k, by in mine), mine
 
 
+@pytest.mark.parametrize("position", [1, None])
+def test_a_named_position_1_is_exact_and_no_position_lets_an_episode_join_its_show(position):
+    """(Kura-EO 3.0.16; train 40's intent keeper) `--position 1` names a place: the very top, exactly — an episode whose
+    show is in Current goes there, not after its show (position 1 used to read as "no position"). With no position the
+    store's own placing reads the show: episode 9 after its 8."""
+    from tests.test_library_store_episode_order import _record
+    from tests.test_library_store_support import names, touch
+    c.library(connect=False, arrivals=True)
+    data_dir, _u = c.dirs()
+    show = names("ja")[176]
+    eps = {}
+    with c.store() as s:
+        for n in (8, 9):
+            rel, record = _record("ja", show, n)
+            eps[n] = s.register(touch(data_dir, rel, f"{show} {n}\n"), record).added[0]
+        s.place([eps[8]], "top")
+    args = ["place", "--file", str(eps[9]), "--to", "now", "--source", "test"]
+    code, line = h.call(*(args + (["--position", str(position)] if position is not None else [])))
+    now = _ids("now")
+    want = [eps[9], eps[8]] if position == 1 else [eps[8], eps[9]]
+    assert code == 0 and now[:2] == want and line["position"] == now.index(eps[9]) + 1
+
+
 @pytest.mark.parametrize("position, expect", [(None, 1), (1, 1), (2, 2), (99, "last")])
 def test_positions_count_from_one_and_past_the_end_is_the_end(position, expect):
     c.library()

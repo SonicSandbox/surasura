@@ -319,6 +319,24 @@ def test_A2_83_top_on_a_goal_title_brings_its_next_part_up_and_the_rest_stays(wo
     assert ids == list(hit.top_ids) and kw["tier"] == "now" and kw["before_id"] is None and kw["after_id"] is None
 
 
+def test_top_on_a_goal_title_saved_in_its_shows_order_says_so(world, monkeypatch):
+    """(Kura-EO 3.0.16) Search's *Top* of a 6+ Months title whose show is in Current: once the store saved it in the
+    show's episode order (`Change.show_order`), the toast says it is in Current with its show, not "up next"."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = True                     # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    goal_work = next(r["work_id"] for r in seed.items if r["tier"] == "goal")
+    title = next(w["title"] for w in seed.works if w["id"] == goal_work)
+    hit = hits_of(ask(win, title), "goal")[0]
+    win.search.top(hit)
+    want = strings.TRAY_PLACED_WITH_SHOW.format(title=hit.title)
+    assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
+
+
 def test_top_on_a_finished_hit_puts_it_back_with_its_cards(world):
     seed, win, writer = world()
     hit = hits_of(ask(win, "がらす"), "finished")[0]

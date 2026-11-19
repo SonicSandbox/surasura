@@ -226,6 +226,17 @@ class ToastHost(QObject):
         self.place()
         self.card.update()
 
+    def reword(self, message):
+        """(Kura-EO) The shown toast's words once its write saved somewhere other than its press said (an *Up next*
+        that joined its show): the same toast, its time and Undo unchanged — only the words, told to a screen reader."""
+        if not self.alive or message == self.text:
+            return
+        self.text = message
+        self.card.set_message(message, strings.TOAST_SAVING if self.saving else "")
+        self.place()
+        self.card.update()
+        self._announce(message)
+
     def keep_room(self):
         """The shown toast may say *· saving…*: its room kept from now on, so nothing moves when it does."""
         if self.alive and self.card.room != strings.TOAST_SAVING:

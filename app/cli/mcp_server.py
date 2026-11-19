@@ -1118,13 +1118,13 @@ def build(state=None, warm=True, serving=False, calls=None):
     @server.tool(annotations=starts, description=(
         "Start a practice round with the learner's choices. words: how many words to practise (1-20). role: who's "
         "talking — friend, coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child. kind: chat, reading "
-        "(a short story), quiz (on lines from their own content) or produce (output drills: the learner says words "
-        "they know, each from a scenario with banned crutch words). source (default soon; known for produce): "
+        "(a short story), quiz (on lines from their own content) or produce (the learner says words they know). "
+        "source (default soon; known for produce): "
         f"{SOURCE_CHOICES}. language: ja or zh "
         "(default: Surasura's). again: a past round's round_id (surasura_rounds) to do it again with the same role, "
         "kind and words. Returns the round's rules, the known words to use (newly learned first), the round's words "
-        "with lines from their library (a produce round's also with their patterns: usual particles, forms, "
-        "collocations), and while rounds are kept its round_id and what earlier rounds kept."))
+        "with lines from their library (produce: and their patterns), and while rounds are kept its round_id and what "
+        "earlier rounds kept."))
     def surasura_practice_start(words: int = 5, role: str = "friend", kind: str = "chat", source: str = "",
                                 language: str = "", again: str = "") -> dict:
         return _answered(practice_start, state, words, role, kind, source, language or None, again or None)

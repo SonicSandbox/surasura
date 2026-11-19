@@ -5,6 +5,8 @@ and `connect` (in P2.1: `--consume-only`, the inbox read once); P2.5's `undo` (a
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
   nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5. Its body after the
   read is `register_record`, which hato's back-fill (`app/connect/hato.py`, P3.2) calls for each of hato's pairings.
+  **A video in a folder the learner skipped** (*Never read this folder*: the record's `video_path`, or the subtitle
+  hato wrote beside it) answers `skipped` too (`folder skipped`), nothing written (Kura-NA).
 - `connect` (P2.4) runs Connect's loop (`app/connect/runner.py`) until no job is left; `--consume-only` reads the
   inbox once and exits (P2.1).
 - `place` and `finish` are a person's verbs, accepted from any program: each placement is logged with `--source`
@@ -36,6 +38,7 @@ REQUIRED = ("schema", "content_key", "producer", "producer_version", "language",
 _TEXT = ("producer", "producer_version", "video_path", "subtitle_path", "library_path", "verdict", "picked_by",
          "paired_at")
 PREVIEW_OFF = "connect preview off"
+FOLDER_SKIPPED = "folder skipped"           # Kura-NA: the video lies in a folder the learner skipped (`Store.skipped_holding`)
 AUTOMATION_OFF = "automation off"           # D29's switch (`logic.automation`): Connect mines nothing by itself
 PAUSED = "paused"                           # Mado-PZ: Anki Miner's circle paused at the bar
 TIER_OF = {"now": "now", "soon": "soon", "later": "goal"}
@@ -245,6 +248,9 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
 
     out = {"file_id": done.file_id, "landed": done.landed, "tier": done.tier, "position": done.position,
            "pairing": done.pairing, "content_key": key}
+    if done.landed == "skipped":                    # Kura-NA: a skipped folder's video — nothing written, as hato's
+        out["skipped"] = FOLDER_SKIPPED             # `skipped` answer records it (its file left where it is)
+        return out
     if backfill:
         return out
     work = False

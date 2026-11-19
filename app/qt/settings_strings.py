@@ -952,7 +952,6 @@ SOURCES_SKIP = "Skip a folder…"
 SOURCES_SKIP_TIP = ("Never read a folder inside one that is read.\n• Its files go to the trash for 30 days; Undo "
                     "brings them back")
 # (Sonic's lean B, 2026-10-24, PROVISIONAL: it turns until saved; its line and Undo in this window, the toast's one Undo)
-SOURCES_SKIP_QUEUED = "Skipping {name} after the look under way…"
 SOURCES_SKIP_UNDO_TIP = "Undo the skip: its files return to your library."
 SOURCES_SKIP_SWITCHED = "Nothing skipped: the library changed to another language meanwhile"
 # Row 32 (laptop round 4): the page's summary, and the folders in their own window (*Manage folders…*)

@@ -93,12 +93,13 @@ def _entry(tools):
 
 def _expected(verbs, langs):
     """09-hato-layer v2 §3: a source checkout's entry (no window exe), each set-up language's drop folder: the store's
-    HATO_FOLDER under the root's data folder, absolute."""
+    HATO_FOLDER under the root's data folder, absolute; and (Kura-NA) each library's skipped folders — none here."""
     return {"schema": 1, "tool": "surasura", "name": "Surasura", "version": __version__,
             "cli": os.environ["SURASURA_TOOLS_CLI"], "app": None, "contract": CONTRACT, "verbs": verbs,
             "drop_folders": {lang: os.path.normpath(os.path.join(h.root(), "data", lang,
                                                                  *library_store.HATO_FOLDER.split("/")))
-                             for lang in langs}}
+                             for lang in langs},
+            "skipped_folders": {lang: [] for lang in langs}}
 
 
 def _hato_finds_surasura():

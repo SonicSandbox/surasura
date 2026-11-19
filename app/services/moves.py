@@ -1008,6 +1008,8 @@ class Writer:
             elif _follows_after(cmd) and not cmd.get("numbered") and self._numbers_expect(cmd):
                 cmd["numbered"] = "after"           # a nudge, a place by its rule: followed from the store's own result
             self._apply(store, cmd)
+            if cmd["op"] in ("undo", "start_over"):
+                _drops_back(store)                  # Kura-NA: a skip undone here (inside this writer's own write)
         except lib.StoreBusy:
             self._busy(cmd)
         except lib.StoreReadOnly as e:
@@ -2405,6 +2407,19 @@ def _trash(lib, store, rel, row=None, taken=(), since=None):
     if to is None and row is not None and row.get("availability") != "missing":
         to = _trashed_before(store, row, set(taken), since)
     return to
+
+
+def _drops_back(store):
+    """Kura-NA: the hato files a skip kept out, let in once that skip is gone (an Undo, a Start over: `Store.undo` runs
+    inside this writer's own write, so the store's own call waits for this one) — after the command's write, each in
+    its own (`Store.let_drops_back`). Never the command's failure: a file not let in now is tried at the next call."""
+    let = getattr(store, "let_drops_back", None)
+    if let is None:
+        return
+    try:
+        let()
+    except Exception as e:
+        print(f"Window writer: a skip's kept-out hato files weren't let in yet: {e!r}")
 
 
 def _queued_at():

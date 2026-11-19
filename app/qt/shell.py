@@ -2653,8 +2653,12 @@ class ShellWindow(QMainWindow):
     def _stop_circle(self, circle, automatic=False):
         """*Stop* from a circle's menu: Anki Miner's episode through its row's own Stop (*Stopping…* on the row and in
         the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel.
-        `automatic` (a pause, Mado-PZ): only what started by itself — Connect's episode is always Connect's own."""
+        `automatic` (a pause, Mado-PZ): only what started by itself; Connect's episode is cut by Connect at its watch's
+        next look (`runner.Steps.paused`), kept to go on from its step — never the row's Stop, which waits for a new
+        ask (train 45's intent keeper #1)."""
         if circle == phase_service.MINER:
+            if automatic:                                  # a pause: Connect cuts the episode itself, resumably —
+                return                                     # never the row's Stop (it would wait for a new ask)
             got = self._mining_now()
             if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
                 from app.qt import rows as qrows

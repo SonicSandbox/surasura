@@ -203,3 +203,19 @@ def test_mine_now_while_anki_miner_is_paused_is_asked_and_the_bar_says_it_waits(
         mine_actions.MineActions._told(SimpleNamespace(win=win), "saved", [], 1)
         assert said == expect
 
+
+def test_pausing_anki_miner_mid_episode_never_presses_its_rows_stop(world, monkeypatch):
+    """Train 45's intent keeper #1: the row's Stop waits for a new *Mine now*; a pause must let the resume go on — so
+    the window never presses it: Connect cuts the episode itself at its watch's next look, resumably. The menu's own
+    *Stop* is still the row's Stop."""
+    from types import SimpleNamespace
+    win = world.win
+    item = SimpleNamespace(stoppable=True, stopping=False, job=7, kind="mining")
+    monkeypatch.setattr(win, "_mining_now", lambda: (11, item))
+    stopped = []
+    monkeypatch.setattr(win, "mine", SimpleNamespace(stop=lambda ask: stopped.append(ask.id)), raising=False)
+    win._circle_pressed(P.MINER)
+    assert world.services.paused == {P.MINER} and stopped == []
+    win._circle_asked(P.MINER, "stop")
+    assert stopped == [11], "your Stop from the menu: the row's, as before"
+

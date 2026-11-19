@@ -269,3 +269,15 @@ def test_a_closed_fold_shows_its_rows_values_on_one_line_and_never_moves_the_pag
     assert slab.more_row.height() == height
     page.fold("sentences")                                      # opened: the rows themselves say it
     assert slab.folded.text() == ""
+
+def test_a_per_language_undo_after_the_language_changed_writes_nothing(qapp):
+    # the cap's Undo stands for Japanese's entry: once the window shows Chinese, it must not write Chinese's
+    page, store = make_page(ALL_ON, "ja")
+    change(page.rows["connect_backlog_cap"].controls[0], 120)
+    store.land()
+    undo = page.last_toast[1]
+    store.outside({"target_language": "zh"})
+    assert page.language == "zh"
+    store.calls.clear()
+    undo()
+    assert store.calls == []

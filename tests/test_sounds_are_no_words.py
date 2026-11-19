@@ -260,3 +260,8 @@ def test_connects_words_keep_their_own_nodes_past_a_sound(tmp_path):
 def test_a_half_width_sound_is_judged_as_the_tagger_reads_it(tokenizer, sanitized, line, words):
     # half-width katakana is read as full width (ｱｯ is アッ): the same laugh, the same gasp
     assert _surfaces(tokenizer, line) == words
+
+@pytest.mark.parametrize("line, lemma", [("へー、すごい。", "へえ"), ("あー、疲れた。", "ああ"), ("ほー、なるほど。", "ほう")])
+def test_a_stretched_interjection_is_a_word(tokenizer, sanitized, line, lemma):
+    # the stretch is a mora of its own: へー is へえ 'really?', two morae, a word — never one mora said alone
+    assert lemma in [l for _s, tokens in _sentences(tokenizer, line) for l, _surface in tokens]

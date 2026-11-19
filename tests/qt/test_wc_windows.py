@@ -127,6 +127,9 @@ def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_chan
     else of the form; the next letter changes no button, so only the box repaints."""
     w = _press(main)
     assert QTest.qWaitForWindowExposed(w)
+    # the send state's read (a worker, `read_send`) answered before the count: `_press` waits for the list's read
+    # only, and the send state's answer landing inside the count lays the form out again (one whole-window pass)
+    assert wait_until(lambda: getattr(w, "send_read", None) == w._reads, 15)
     wc.settle()
     w.what.setPlainText("")
     w.what.setFocus()

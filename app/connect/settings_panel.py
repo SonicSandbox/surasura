@@ -168,7 +168,6 @@ class Panel:
                 revert(current)
             return False
         self.settings[key] = saved.get(key, value) if merge is not None else value
-        self.settings.update(also or {})
         self.save_note.config(text="")
         return True
 

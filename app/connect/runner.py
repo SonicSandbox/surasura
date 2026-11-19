@@ -604,6 +604,9 @@ def _woken(steps, ledger, parked):
     # again this run — never a job still waiting as it was parked
     for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("state") == "queued"]:
         del parked[job_id]
+    if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
+        for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
+            del parked[job_id]
     if woke != kick.VIDEOS:
         return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:

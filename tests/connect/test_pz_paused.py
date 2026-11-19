@@ -193,3 +193,31 @@ def test_steps_reads_the_pause_again_only_when_settings_json_changed(monkeypatch
     h.write_settings(connect_enabled=True, paused=[])
     os.utime(os.path.join(h.root(), "settings.json"))
     assert steps.paused() is False and len(reads) == 2
+
+
+def test_a_resume_while_connect_still_runs_lets_the_cut_job_go_on_in_that_run(tmp_path, ledger):
+    """Haiku's review of round 2: the cut job is parked for its run; a resume (its kick) before that run ends lets it go
+    on there, never only at a later start that might not come."""
+    job_id = _queue(ledger, "ja", 1)
+    state = {"paused": False, "cut": False, "kicked": False}
+
+    def pause(n, _job):
+        if n == 1 and not state["cut"]:
+            state["paused"] = True
+
+    def paused():
+        if state["paused"]:
+            state.update(paused=False, cut=True, kicked=True)       # the cut, then the click again at once
+            return True
+        return False
+
+    def kicked():
+        was, state["kicked"] = state["kicked"], False
+        return was
+    steps = _steps(tmp_path, "ja", {"on_word": pause})
+    steps.paused, steps.kicked = paused, kicked
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert state["cut"]
+    assert ledger.job_by_id(job_id)["state"] == "done", "resumed in the same run: the episode finished"
+    assert sorted(steps.anki.words()) == sorted(w for w, _r in EPISODE_WORDS["ja"])
+

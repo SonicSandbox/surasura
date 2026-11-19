@@ -141,7 +141,7 @@ def test_by_default_a_plain_suspend_is_never_known_and_suspended_and_marked_is(a
 def test_a_learners_explicit_suspended_only_is_kept_and_still_counts_a_plain_suspend(anki, language):
     # why: a learner who chose Suspended alone keeps exactly that — the new default never rewrites a choice
     bad_sentence, *_rest = WORDS[language]
-    _write_settings({"connect_enabled": True, "known_from_anki": ["suspended"]})
+    _write_settings({"connect_enabled": True, "known_from_anki": ["suspended"], "known_from_anki_chosen": True})
     settings = settings_manager.load_settings()
     assert settings["known_from_anki"] == ["suspended"]
     known_signal.read(language, URL, [DECK], [], settings)
@@ -149,18 +149,65 @@ def test_a_learners_explicit_suspended_only_is_kept_and_still_counts_a_plain_sus
     assert known_signal.read(language, URL, [DECK], [], settings)["marked"] == [bad_sentence]
 
 
-@pytest.mark.parametrize("chosen", [["suspended"], ["marked"], ["flag:3"], []])
+@pytest.mark.parametrize("chosen", [["suspended"], ["marked"], ["flag:3"], [], ["suspended", "marked"]])
 def test_a_save_of_another_setting_never_writes_or_rewrites_the_choice(chosen):
     # why: "never rewritten" — the window's saves write only their own keys onto the file as it is: a chosen value
-    # stays byte-for-byte, and a file without the key never gains the default (else the next default change could
-    # not tell a choice from a default)
-    _write_settings({"connect_enabled": True, "known_from_anki": chosen})
+    # stays byte-for-byte, and a file without the key never gains it
+    _write_settings({"connect_enabled": True, "known_from_anki": chosen, "known_from_anki_chosen": True})
     settings_manager.save_keys({"words_per_day": 7})
-    assert _file()["known_from_anki"] == chosen
+    assert _file()["known_from_anki"] == chosen and _file()["known_from_anki_chosen"] is True
     assert settings_manager.load_settings()["known_from_anki"] == chosen
     _write_settings({"connect_enabled": True})
     settings_manager.save_keys({"words_per_day": 7})
     assert "known_from_anki" not in _file()
+
+
+@pytest.mark.parametrize("chosen", [["marked"], ["flag:3"], [], ["suspended", "flag:1"]])
+def test_a_choice_saved_before_the_marker_existed_is_kept(chosen):
+    # why: only the old default itself can be a copy of a default; any other value was a learner's pick (2.x, 3.0)
+    _write_settings({"connect_enabled": True, "known_from_anki": chosen})
+    assert settings_manager.load_settings()["known_from_anki"] == chosen
+
+
+@pytest.mark.parametrize("marker", [None, False])
+def test_the_old_default_saved_by_a_first_save_reads_as_the_new_default(marker):
+    # why: the root cause found in review — a first save with no settings.json yet writes every default
+    # (`save_keys` → `_read_file_as_is` → `load_settings`), so most 3.0 installs hold ["suspended"] though nobody
+    # picked it; read as written, the new default would reach almost no one
+    on_disk = {"connect_enabled": True, "known_from_anki": ["suspended"]}
+    if marker is not None:
+        on_disk["known_from_anki_chosen"] = marker
+    _write_settings(on_disk)
+    assert settings_manager.load_settings()["known_from_anki"] == ["suspended", "marked"]
+    assert _file()["known_from_anki"] == ["suspended"]                         # read so, never rewritten
+
+
+def test_a_first_save_with_no_file_writes_todays_default_and_no_pick():
+    # why: the same first save today: what it writes reads back as the default, never as a learner's pick
+    assert not os.path.exists(get_settings_path())
+    settings_manager.save_keys({"words_per_day": 7})
+    assert _file().get("known_from_anki_chosen") is False
+    assert settings_manager.load_settings()["known_from_anki"] == ["suspended", "marked"]
+
+
+@pytest.mark.parametrize("picks, written", [
+    (["suspended"], ["suspended"]),                     # Suspended alone, picked from the default: kept from now on
+    (["marked"], ["marked"]),
+    ([], []),                                           # off
+])
+def test_a_pick_in_settings_writes_the_marker_so_suspended_alone_stays_chosen(picks, written):
+    # why: without the marker a learner's Suspended alone would read as the old default and turn back into both
+    from app.qt import settings_catalog as catalog
+    from app.services.settings import freeze
+    row = catalog.ROW["known_from_anki"]
+    _write_settings({"connect_enabled": True})
+    changes, _update = catalog.change(row, freeze(settings_manager.load_settings()), "ja", picks)
+    assert changes == {"known_from_anki": written, "known_from_anki_chosen": True}
+    settings_manager.save_keys(changes)
+    assert settings_manager.load_settings()["known_from_anki"] == written
+    # the shown states picked again: nothing written, the marker neither (S19)
+    again = catalog.change(row, freeze(settings_manager.load_settings()), "ja", written)[0]
+    assert again == {}
 
 
 # --- Surasura's own suspensions: never ---------------------------------------------------------------------------- #
@@ -203,6 +250,23 @@ def test_on_the_old_default_words_already_counted_stay_known_and_the_next_read_o
     assert _known_forms(language) == {counted}                                   # still known
     anki.add(4, WORDS[language][3], new=False, suspended=True)                    # a plain suspend from now on
     assert known_signal.read(language, URL, [DECK], [], now)["marked"] == []
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_an_offer_still_asked_from_the_old_default_never_marks_a_plain_suspend(anki, language):
+    # why: found in review — an upgrader's unanswered *Mark their words known?* was made under the old default's
+    # search; answered after the change with nothing new, its plain-suspended cards must be checked again under the
+    # new signal: only the ones also marked become known
+    plain, both, *_rest = WORDS[language]
+    old = {"connect_enabled": True, "known_from_anki": ["suspended"]}
+    anki.add(1, plain, new=False, suspended=True)
+    anki.add(2, both, new=False, suspended=True, tags=["marked"])
+    assert known_signal.read(language, URL, [DECK], [], old)["offered"] == 2     # the first read: an offer
+    now = {"connect_enabled": True}
+    got = known_signal.read(language, URL, [DECK], [], now)                     # other terms, nothing new
+    assert got["marked"] == [] and got["offered"] == 0
+    assert known_signal.accept_offer(language, URL) == [both]
+    assert _known_forms(language) == {both}
 
 
 # --- where a learner sees it --------------------------------------------------------------------------------------- #

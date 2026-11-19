@@ -234,6 +234,11 @@ def read(language, url, decks, fields, settings):
                 state["offer"] = {"state": "pending", "query": q,
                                   "cards": kept + [{"word": w, "card": c, "note": n} for w, c, n in found
                                                    if c not in have]}
+            elif (state.get("offer") or {}).get("state") == "pending":
+                # nothing new, an offer still asked: its cards are checked again under the signal now when you
+                # answer (`accept_offer`), never the one it was made under (Kantan-B3: the old default's plain
+                # suspends never marked known by an old question)
+                state["offer"] = dict(state["offer"], query=q)
             out["offered"] = len(found)
         elif found:
             out["marked"] = _mark(language, found, state, now, "signal", terms)

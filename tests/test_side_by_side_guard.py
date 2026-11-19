@@ -50,6 +50,11 @@ def _library(language, spec, line, tiers=None, seasons=None, mine=20):
     return store, ids
 
 
+def _count(store):
+    """The store's kept count without its time (Kyou-E's `SIDE_AT`): {card key: 0 / 1}."""
+    return {k: v for k, v in (store._side_cards() or {}).items() if k != ls.SIDE_AT}
+
+
 def _letters(store, ids, seq):
     of = {i: letter for letter, group in ids.items() for i in group}
     return "".join(of[i] for i in seq)
@@ -274,7 +279,7 @@ def test_two_seasons_of_one_show_take_one_turn(language):
     assert _letters(store, ids, store._mine_ids(6)) == "ACACAC"
     groups = store.side_by_side()
     assert store.set_side_cards([(groups[0], 0), (groups[1], 1)])
-    assert sorted(store._side_cards()) == sorted({ls.card_key(("w", store._seasons()[store.conn.execute(
+    assert sorted(_count(store)) == sorted({ls.card_key(("w", store._seasons()[store.conn.execute(
         "SELECT work_id FROM items WHERE id = ?", (ids["A"][0],)).fetchone()[0]])), ls.card_key(
         ("w", store.conn.execute("SELECT work_id FROM items WHERE id = ?", (ids["C"][0],)).fetchone()[0]))})
     store.close()
@@ -300,6 +305,6 @@ def test_a_count_handed_from_the_second_season_is_the_shows(language):
             for letter in "ABC"}
     show = min(work["A"], work["B"])
     assert store.set_side_cards([(ids["B"] + ids["A"], 1), (ids["C"], 0)])
-    assert sorted(store._side_cards().items()) == sorted({ls.card_key(("w", show)): 1,
+    assert sorted(_count(store).items()) == sorted({ls.card_key(("w", show)): 1,
                                                           ls.card_key(("w", work["C"])): 0}.items())
     store.close()

@@ -267,6 +267,17 @@ STUDIED = ([("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼�
            [B_SOURCE, B_SOURCE, C_SOURCE, D_SOURCE, None])
 
 
+def studied_list(where, b, loose):
+    """Kyou-D (ruling 3): a card is its word's first title on the journey — `STUDIED`'s list meeting B's words in B's
+    files and the loose file's in its own (numbered as Generate numbers them, side by side's interleave included), so
+    A, whose files hold none of them, has no card. Written over the scene's list at `where`."""
+    from modules.junban import show_tags
+    from modules.junban.tests.test_reposition import _results
+    number = show_tags.file_items("ja").index
+    _results(where, progressive=[(number(b[0]) + 1, "老婆", "老婆", 30, 3), (number(b[1]) + 1, "眼鏡", "眼鏡", 10, 1),
+                                 (number(loose) + 1, "散歩", "散歩", 20, 2)])
+
+
 def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch):
     """End to end on a real store: A (Current's first title, its next file mined) has no new card left in Anki. Junban
     weaves B and the loose file first; its count, recorded by the host, makes the store's top (Connect's top N, the
@@ -285,13 +296,7 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: side)
     fake = _fake_with(tmp_path, *STUDIED)
-    # Kyou-D (ruling 3): a card is its word's first title on the journey — the list meets B's words in B's files and
-    # the loose file's in its own (numbered as Generate numbers them), so A, whose files hold none, has none
-    from modules.junban import show_tags
-    from modules.junban.tests.test_reposition import _results
-    number = show_tags.file_items("ja").index
-    _results(tmp_path, progressive=[(number(b[0]) + 1, "老婆", "老婆", 30, 3), (number(b[1]) + 1, "眼鏡", "眼鏡", 10, 1),
-                                    (number(loose) + 1, "散歩", "散歩", 20, 2)])
+    studied_list(tmp_path, b, loose)
     with _patched(fake):
         report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]

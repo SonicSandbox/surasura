@@ -620,6 +620,7 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
 _SPEECH = {}
 SPEECH_ITEM = "speech_model"
 SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: never five launches every look)
+SPEECH_BUSY_S = 60      # Michi-T1: a no only because Anki Miner was busy (a mine beside the check) is asked sooner
 
 
 def speech_ready(path, language, profile, folder):
@@ -629,22 +630,25 @@ def speech_ready(path, language, profile, folder):
     (`settings_import`'s `asr_model`: Surasura's own profile only — the window's is refused, never changed) and checked
     again, so a model downloaded for the other size is found. -> True / False. Kept True for this run (a check a look
     costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
-    from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one)."""
+    from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one); a no
+    because Anki Miner was busy setting the other model (a mine beside a check, Michi-T1) only SPEECH_BUSY_S."""
     key = (path, language, profile)
     said = _SPEECH.get(key)
     if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
         return said[0]
-    ok, set_to = _speech_ok(check(path, language, profile)), None
+    ok, set_to, at = _speech_ok(check(path, language, profile)), None, time.monotonic()
     for model in SPEECH_MODELS if not ok and profile else ():
         try:
             settings_import(path, language, {"asr_model": model}, folder, profile=profile)
-        except AnkiMinerError:
+        except AnkiMinerError as e:
+            if e.kind == "busy":        # asked again soon, not in 15 minutes: the other size may be there
+                at -= SPEECH_NO_S - SPEECH_BUSY_S
             break                       # the window's profile, or a busy Anki Miner: as it is
         set_to = model
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
-    _SPEECH[key] = (ok, time.monotonic(), set_to)
+    _SPEECH[key] = (ok, at, set_to)
     return ok
 
 

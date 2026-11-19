@@ -716,8 +716,18 @@ def pill_size(status, dpr=1.0):
 
 
 def heard_title(row):
-    """a5-2 (Hon): a title as painted — 🎧 before it when the row holds an audiobook (`Row.audio`, its hover)."""
+    """a5-2 (Hon): a title as painted — 🎧 before it when the row holds an audiobook (`Row.audio`, its hover). Every
+    place a title is shown paints it through here (Kantan-T: Current, New arrivals, Finished, Goal's tiles, search, the
+    sort screen): anything with `title` and `audio` (a Row, an Arrival, a GoalWork, a search Hit)."""
     return f"{HEADPHONES}{row.title}" if getattr(row, "audio", "") else row.title
+
+
+def heard_tip(row, text=None):
+    """The hover of a title painted by `heard_title`: `text` (else the title), then the 🎧's words on a line of their
+    own when it holds an audiobook — the tray's row hover's one rule (a5-2), shared by every place a title shows."""
+    text = row.title if text is None else text
+    audio = getattr(row, "audio", "")
+    return f"{text}\n{audio}" if audio else text
 
 
 def _audio_part(row, rect, role):
@@ -1781,8 +1791,8 @@ class RowDelegate(QStyledItemDelegate):
                                                               cols["stat"].center().y() - size.height() // 2,
                                                               size.width(), size.height()),
                                              ep.media_word or row.media_word))       # LM11b G1: its own type's word
-            if ep.n_new is not None and not hero:   # --- Hover-W: the episode's *N new* shows its words
-                out.append((NEW_PART, cols["diff"], None, ep))
+            if ep.n_new is not None:                 # --- Hover-W: the episode's *N new* shows its words (Up Next's
+                out.append((NEW_PART, cols["diff"], None, ep))   # too, Mado-UN: a part, so its click is never Qt's)
             state = stone_state(ep)
             out.append(("stone", cols["tick"], stone_tip(
                 ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
@@ -4642,7 +4652,12 @@ class RowsView(QListView):
                     self._press = (idx.row(), part[0], part[3], event.pos(), getattr(entry[1], "key", None))
                     event.accept()
                     return
-        super().mousePressEvent(event)
+        scrolls = self.hasAutoScroll()               # Mado-UN: Qt's press starts its delayed auto-scroll — a double-
+        self.setAutoScroll(False)                    # click's time later it scrolled a tall opened row's top back in
+        try:                                         # (Up Next's list jumped to its top under the hand): a press on
+            super().mousePressEvent(event)           # the list never moves it
+        finally:
+            self.setAutoScroll(scrolls)
 
     def mouseDoubleClickEvent(self, event):
         """P4.1 WF (adversary N1): a double-click on a part acts once. The press records no `pressedIndex` for Qt (it

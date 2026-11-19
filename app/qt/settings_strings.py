@@ -289,6 +289,14 @@ ROWS = {
                       "A card you delete in Anki is never made again by itself. These are its words: allow one again "
                       "and the next episode that has it makes its card", "deleted cards words mine again allow "
                       "never made again record reset"),
+    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
+    "connect_spot_every_episode": ("Check every episode’s audio first",
+                                   "Slower: Surasura listens to each episode before its cards, not once a release",
+                                   "Surasura listens to a few lines of one episode of each release while it mines, "
+                                   "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
+                                   "another language). On: every episode is listened to before its cards are "
+                                   "made. Only with Anki Miner’s speech model on this PC",
+                                   "audio check every episode dub language listen speech safe"),
     # Q29: one choice — where your own cards go — and the tag that marks them under it
     "junban_order_all": ("Your own cards", "The cards you make yourself, never marked or suspended as not on your list",
                          "First: the cards you made yourself go ahead of the cards made for you, in the order "
@@ -328,7 +336,8 @@ ROWS = {
                       "Shows 順, which reorders the new cards already in your Anki into Surasura's learn order",
                       "junban reorder order backlog enable"),
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
-                     "scope deck all decks choose the deck preview order restore undo the last reorder"),
+                     "scope deck all decks choose the deck change the deck which deck mining deck new cards deck "
+                     "preview order restore undo the last reorder"),
     "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
                      "order leverage meet content priority"),
     "junban_unlisted": ("Cards too rare for your list go",
@@ -730,6 +739,11 @@ SETUP_FILLED = "{fills} filled {how}"
 SETUP_FILLED_AUTO = "automatically"
 SETUP_FILLED_HAND = "by hand"
 SETUP_NOTHING_FILLED = "nothing filled"
+SETUP_DECK = "“{deck}”"                 # Kantan-T (PROVISIONAL): *Cards in Anki* leads with Junban's deck
+# Kantan-T (PROVISIONAL): *Which cards* names Junban's deck in sight (the deck setup picked; *Junban…* beside it changes it)
+JUNBAN_DECK_LINE = "Deck: “{deck}”"
+JUNBAN_NO_DECK = "No deck chosen yet"
+JUNBAN_ALL_DECKS = "Every deck with new cards"     # *All decks*: still a line in sight (a choice never moves the page)
 # The level readout under the slider, when the time between meetings is under an hour, or unknown
 READOUT_HOURS = "≈{words} words · {coverage}% of your content · about every {hours} hours"   # S4
 READOUT_MINUTES = "≈{words} words · {coverage}% of your content · about every {minutes} minutes"

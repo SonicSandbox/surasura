@@ -2523,6 +2523,8 @@ class Numbers:
         self._engine = None
         self._plan_key = None
         self._why = "not read yet"
+        self._seeded = None                         # the start's cached figures, the last shown until the first load
+        #                                             (`seed`): a plan read out of date keeps them (`_kept`)
         self._shown = None                          # Hover-W: (engine, plan key) whose *N new* the rows show — the
         #                                             live one, or the last one while its figures are kept (faded)
         self._data_dir = None                       # the library's data folder, as the store last said (`words`)
@@ -2546,6 +2548,24 @@ class Numbers:
         drop (the version does): New arrivals asks its numbers again on this."""
         with self._lock:
             return self._plan_key
+
+    def plan_stamp(self):
+        """The plan file's key as `plan_key` keeps it — (mtime, size), None without one — read from the disk now (one
+        stat, any thread): the first screen's cache is matched with it at the start, before the plan is read."""
+        try:
+            st = os.stat(self._plan_path())
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def seed(self, table):
+        """(Any thread.) The figures the start's cached rows show ({item_id: (known, counted, n_new)}), before the first
+        load: the last ones shown, as a table this provider published would be — a first load that finds the plan out
+        of date (an update, a setting, an edited file) keeps their *N new*, faded, never shown and then gone. Once a
+        load has answered: ignored."""
+        with self._lock:
+            if self._why == "not read yet":
+                self._seeded = dict(table)
 
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""
@@ -2757,8 +2777,11 @@ class Numbers:
             self._set(None, {}, "plan: another language", key)
             return
         store = self._store()
-        if store is None:                           # asked again at the next resync (no key kept)
-            self._set(None, {}, f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
+        if store is None:                           # asked again at the next resync (no key kept); the start's figures
+            with self._lock:                        # kept meanwhile, faded, for the load that follows (`seed`)
+                seeded = self._seeded
+            self._set(None, Kept(seeded) if seeded else {},
+                      f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
         self._data_dir = getattr(store, "data_dir", None)
         by_key = store.item_keys()
@@ -2881,7 +2904,7 @@ class Numbers:
         the next one, and the rows never blink blank between the two; faded (`Kept`). A row the last table never
         numbered has none."""
         with self._lock:
-            last = self._table
+            last = self._table if self._seeded is None else self._seeded
         return Kept({item: (known, counted, (last.get(item) or (0, 0, None))[2])
                      for item, (known, counted, _n) in counts.items()})
 
@@ -2903,6 +2926,7 @@ class Numbers:
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
+            self._seeded = None                     # (the start's figures: the first load's only)
             if eng is not None:
                 self._shown = (eng, key)
             elif not isinstance(table, Kept):

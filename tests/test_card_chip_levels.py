@@ -191,3 +191,23 @@ def test_the_ledger_busy_as_an_episodes_cards_move_drops_its_split_and_reads_it_
         assert chips.idle(10) and chips.answers()[("level", 1)] == (2, 0)
     finally:
         chips.close()
+
+
+def test_an_episode_loses_its_split_when_a_new_card_has_no_mark_or_when_it_is_let_go(tmp_path):
+    """Split (1, 1), then a card made from it whose word the pick never marked (a job from before): unsplit, never the
+    old split over new words (mutant L9). Let go (not in Anki any more): no split kept for it (mutant L10)."""
+    lib = _Lib(tmp_path)
+    lib.made = {1: {"延長", "小説"}, 2: {"夜"}}
+    lib.flags = {1: {"延長": True, "小説": False}, 2: {"夜": True}}
+    chips = lib.chips()
+    try:
+        chips.want({1: ("a.srt", 1, 2), 2: ("b.srt", 1, 1)})
+        assert chips.idle(10) and chips.answers()[("level", 1)] == (1, 1)
+        lib.made[1] = {"延長", "小説", "雨宿り"}                       # 雨宿り: no mark
+        chips.want({1: ("a.srt", 1, 3)})
+        assert chips.idle(10) and ("level", 1) not in chips.answers()
+        assert chips.answers()[("level", 2)] == (1, 0)
+        chips.want({2: None})
+        assert chips.idle(10) and ("level", 2) not in chips.answers()
+    finally:
+        chips.close()

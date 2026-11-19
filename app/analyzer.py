@@ -21,7 +21,7 @@ import unicodedata
 import bisect
 from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, chain, compress, repeat
-from operator import attrgetter, eq, itemgetter
+from operator import attrgetter, eq, itemgetter, methodcaller
 from datetime import datetime
 import abc
 
@@ -193,7 +193,9 @@ ENSURE_AUDIO_EXAMPLE = False
 # 42: a word the tagger doesn't know, cut at a kanji it does (§ Words the tagger doesn't know): an unknown word of two
 #     kanji or more and the one-kanji nouns / な-words touching it are one word — 犍陀多 was 犍陀 + 多 and 犍陀 topped the
 #     Japanese sample's list. SCHEMA_VERSION 24. 3.0.x.
-ENGINE_REVISION = 42
+# 43: sounds are no words (§ Sounds are no words): a filler, an interjection of one mora said alone or cut short (ほっ,
+#     なっ, え？) or a laugh (えへへ, ふふっ) standing on its own is no use, no row and no card. SCHEMA_VERSION 25.
+ENGINE_REVISION = 43
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -588,6 +590,8 @@ def word_lemma(word):
         return f.lForm if f.pos2 == "文字" and f.lForm and has_target_language(word.surface, "ja") else None
     if word.surface in _DASH:                           # one lookup: this runs for every token
         return None
+    if word.__class__ is SoundNode:                     # a sound standing on its own (§ Sounds are no words)
+        return None
     return f.lemma or word.surface
 
 
@@ -933,6 +937,9 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
     if library:
         words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True),
                                    LOGIC.get("names_work_terms", True))
+    # Sounds are no words (§ Sounds are no words): only a line holding an interjection or a katakana gasp has one
+    if fillers or not _GASP_CHARS.isdisjoint("".join(map(_SURFACE, words))):
+        words = _mark_sounds(words, fillers)
     return words
 
 
@@ -1249,7 +1256,7 @@ def _give_way_to_names(words, joined, at, table):
 # unknown word of its own. Such a word is the sound word the tagger reads that sound said twice as, alone, when it is
 # one — an interjection or an adverb — shown as written: ハァハァハァ is はあはあ's. A sound whose double is no such word
 # stays as it was (ヘヘヘ: ヘヘ reads as two words; ゼロゼロゼロ).
-_UNKNOWN, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos2")
+_UNKNOWN, _POS1, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos1"), attrgetter("feature.pos2")
 _ONE_KANA = re.compile(f"^[{KANA_LETTERS}][ー〜]*$")      # UniDic spells some fillers with 〜 (え〜)
 _KATAKANA_WORD = re.compile("^[\u30a1-\u30fa\u30fc-\u30ff]+$")
 _SOUND_POS1 = frozenset(("感動詞", "副詞"))
@@ -1308,6 +1315,137 @@ def _sounds(words, fillers):
         last = i + width
     out.extend(words[last:])
     return out
+
+
+# --- Sounds are no words ------------------------------------------------------------------------------------------- #
+# An interjection that is only a sound is said, not learned: never a use, a list row, an unknown in a sentence or a
+# card. A sound is one of UniDic's fillers (フィラー: えー, あのー, えっと), an interjection of one mora said alone or cut
+# short (あ, え, ん, は？, あっ, ほっ, なっ, ちぇっ — the sokuon is no mora here, a stretch is one: ねー stays ねえ), or a
+# laugh: a mora with a consonant said twice or more, after at most one other mora (ふふ, ははは, くくっ, えへへ, あはは,
+# はっはっは). A katakana gasp the tagger reads as a foreign name (ウッ, ナッ: one mora cut short) is one too.
+# Only where it stands on its own, between marks, spaces or its line's edges, a mark or a space on one side at least:
+# glued to a word, the tagger may have cut a word or a set phrase there (あっ + という + 間, 目 + ん + 玉, 様 + あー +
+# 見る), and it stays as it is read — but for a と that ends the utterance: えっ + と, read in a longer line, is the
+# filler えっと the tagger cut. A word read alone (a card's word, a known entry, an Ignore line: あっ, えっと) is a word
+# given, never an utterance, and stays one; a subtitle cue alone has its 。 (close_cue), so えへへ said alone goes.
+# Every other interjection is a word — ありがとう, こんにちは, はい, うん, ええ, ああ, おい, ねえ, くそ, よし, おっと —
+# and nothing else changes: ほっと and はっと are adverbs, なっ in なっちゃった is 成る. Its text stays in the sentence;
+# word_lemma counts it as no word (SoundNode), as it does a mark.
+class SoundNode(ReadNode):
+    """An interjection that is a sound (§ Sounds are no words): read like the node it was, counted as no word."""
+    __slots__ = ()
+
+
+_SOUND_EDGES = frozenset(("補助記号", "空白"))
+_GASP_ENDS = ("ッ", "ｯ")     # a katakana gasp ends so, full width or half (str.endswith takes the tuple)
+_GASP_CHARS = frozenset(_GASP_ENDS)
+_SOUND_SHAPES = {}          # (surface, kind) -> whether it is a sound's shape, asked once per spelling
+_SMALL_JOINING = frozenset("ゃゅょゎ")
+_SMALL_VOWELS = frozenset("ぁぃぅぇぉ")
+_PLAIN_VOWELS = frozenset("あいうえお")
+
+
+def _vowel(kana):
+    """The vowel a hiragana letter ends in, from its Unicode name (HIRAGANA LETTER KA -> A; ん -> N)."""
+    return unicodedata.name(kana, "?")[-1]
+
+
+def _morae(surface):
+    """`surface`'s morae as a sound says them — hiragana, katakana folded; っ is none; a stretch (ー 〜 ～, or a small
+    vowel after its own vowel) is the mora "ー"; a small ゃ or ぇ joins the kana before it — or None when it holds
+    anything but kana, or starts with a stretch."""
+    out = []
+    for ch in surface:
+        if "ァ" <= ch <= "ヶ":
+            ch = chr(ord(ch) - 0x60)
+        if ch == "っ":
+            continue
+        if ch in "ー〜～" or (ch in _SMALL_VOWELS and out and _vowel(out[-1][-1]) == _vowel(ch)):
+            if not out:
+                return None
+            out.append("ー")
+        elif ch in _SMALL_JOINING or ch in _SMALL_VOWELS:
+            if not out or out[-1] == "ー":
+                return None
+            out[-1] += ch
+        elif "ぁ" <= ch <= "ゖ":
+            out.append(ch)
+        else:
+            return None
+    return out
+
+
+def _sound_shape(surface, kind):
+    """Is `surface` a sound's shape (§ above)? `kind`: "i" an interjection, "f" a filler, "n" a katakana proper noun."""
+    held = _SOUND_SHAPES.get((surface, kind))
+    if held is None:
+        morae = _morae(surface)
+        if kind == "f":
+            held = True
+        elif not morae:
+            held = False
+        elif kind == "n":
+            held = len(morae) == 1 and surface[-1] == "ッ"
+        elif len(morae) == 1:
+            held = True
+        else:
+            last, k = morae[-1], 1
+            while k < len(morae) and morae[-1 - k] == last:
+                k += 1
+            held = last not in _PLAIN_VOWELS and last not in ("ん", "ー") and k >= 2 and len(morae) - k <= 1
+        if len(_SOUND_SHAPES) > 5000:       # a library's sounds are a few hundred spellings: start again past that
+            _SOUND_SHAPES.clear()
+        _SOUND_SHAPES[(surface, kind)] = held
+    return held
+
+
+def _sound_ends(words, j):
+    """How an utterance ends before words[j]: 2 at a space or a mark, 1 at the line's end, 0 not at all."""
+    if j >= len(words):
+        return 1
+    return 2 if getattr(words[j], "white_space", "") or words[j].feature.pos1 in _SOUND_EDGES else 0
+
+
+def _sound_kind(w):
+    """The kind `_sound_shape` judges `w` as ("f", "i", "n"), or None when no sound can be one."""
+    f = w.feature
+    if isinstance(w, JoinedWord):
+        return None
+    if f.pos1 == "感動詞":
+        return "f" if f.pos2 == "フィラー" else "i"
+    return "n" if f.pos2 == "固有名詞" and _read(w)[-1:] == "ッ" else None
+
+
+def _mark_sounds(words, fillers):
+    """join_affixes' last step (§ above): `words` with each sound standing on its own a SoundNode — the same list when
+    there is none. Sounds in a row stand together (あっあっ, う + え～ + ん): the run is between marks, or none of it is.
+    Only the interjections (on a line holding one: `fillers`) and the words ending in ッ are looked at, found in C."""
+    n = len(words)
+    seen = set(compress(range(n), map(eq, map(_POS1, words), repeat("感動詞")))) if fillers else set()
+    seen.update(compress(range(n), map(methodcaller("endswith", _GASP_ENDS), map(_SURFACE, words))))
+    sounds = []
+    for i in sorted(seen):
+        kind = _sound_kind(words[i])
+        if kind and _sound_shape(_read(words[i]), kind):      # as the tagger read it: ｱｯ is アッ
+            sounds.append(i)
+    out, k = None, 0
+    while k < len(sounds):
+        a = b = sounds[k]
+        while k + 1 < len(sounds) and sounds[k + 1] == b + 1:      # a run of sounds, glued or spaced
+            k += 1
+            b = sounds[k]
+        k += 1
+        left = 1 if a == 0 else (2 if getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES
+                                 else 0)
+        right = _sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))
+        if left + right < 3:        # glued to a word on a side (0), or a word read alone (1 + 1): no sound
+            continue
+        if out is None:
+            out = list(words)
+        for i in range(a, b + 1):
+            w = words[i]
+            out[i] = SoundNode(w.surface, w.feature, w.is_unk, getattr(w, "white_space", ""))
+    return words if out is None else out
 
 
 # Words the tagger doesn't know: UniDic reads kanji it has no word for two at a time as an unknown word, and a kanji
@@ -2552,6 +2690,38 @@ def chinese_word(word):
     return not spared or zh_script.to_simplified(word) in spared
 
 
+def chinese_sounds(pieces):
+    """The indices of `pieces` (chinese_cut's, in Simplified) that are sounds standing on their own — no word, as in
+    Japanese (§ Sounds are no words): an interjection, a laugh or a modal particle said alone (啊, 嗯, 哦, 呃, 哈哈 and
+    its runs, 啊啊啊: app/cedict_data.py's INTERJECTIONS) between marks, spaces or its line's edges — 啊，好痛！, 嗯嗯。
+    (sounds in a row stand together) — never one glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word), nor a text
+    that is only the sound (a card's word, a known entry: 啊). Empty with the table unreadable."""
+    table = _cedict_table("interjections")
+    if not table:
+        return ()
+    heads = _CEDICT.get("interjection_heads")
+    if heads is None:
+        heads = _CEDICT["interjection_heads"] = frozenset(word[0] for word in table)
+    out, run = [], []
+    for i, piece in enumerate(pieces):
+        if piece in table or (piece[:1] in heads and (
+                (piece[0] in table and piece == piece[0] * len(piece)) or chinese_base(piece) in table)):
+            run.append(i)
+            continue
+        if run and _zh_edge(pieces, run[0] - 1) and _zh_edge(pieces, i):
+            out.extend(run)
+        run = []
+    if run and _zh_edge(pieces, run[0] - 1) and run[0] > 0:     # the whole text a sound: a word read alone (a card)
+        out.extend(run)
+    return out
+
+
+def _zh_edge(pieces, j):
+    """Is pieces[j] no word's neighbour — before the first, after the last, or a mark or a space (no letter, digit or
+    character in it)?"""
+    return j < 0 or j >= len(pieces) or not any(map(str.isalnum, pieces[j]))
+
+
 _ZH_TAGS = []      # jieba's own tag table (jieba.posseg's word_tag_tab), read on the first ask
 
 
@@ -2619,7 +2789,9 @@ class ChineseTokenizer(Tokenizer):
                 yield w, words[pos:end], (shown[pos:end] if at is None else shown[at[pos]:at[end]])
                 pos = end
 
-        seg_list = _aligned(chinese_cut(cut))
+        pieces = chinese_cut(cut)
+        sounds = set(chinese_sounds(pieces))    # sounds standing on their own: no word (§ Sounds are no words)
+        seg_list = _aligned(pieces)
         
         current_sentence_tokens = []
         current_sentence_surface = []
@@ -2630,7 +2802,7 @@ class ChineseTokenizer(Tokenizer):
         # but for now we include everything that isn't strict punctuation/space.
         
         ended = line_end = False
-        for piece, word, surface in seg_list:
+        for k, (piece, word, surface) in enumerate(seg_list):
             # What closes a sentence stays with it (UAX #29 SB8a / SB9, § above JapaneseTokenizer):
             # ？？ and ？！ end together, and a closing quote joins the sentence it closes — “是黑车吗？”
             # — where it used to open the next one. A line end ends the sentence where it stands.
@@ -2653,7 +2825,7 @@ class ChineseTokenizer(Tokenizer):
                 word = chinese_base(piece, word) or word
             # Strict filtering: a Chinese word holds a Chinese character and no kana letter (chinese_word,
             # the builder's test too).
-            is_skippable = not chinese_word(word)
+            is_skippable = not chinese_word(word) or k in sounds
             
             # For Chinese, "lemma" is just the word. "Reading" (Pinyin) requires pypinyin, 
             # but user didn't ask for Pinyin injection yet, and existing data might not have it.

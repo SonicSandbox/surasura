@@ -183,7 +183,7 @@ def test_the_words_are_in_the_first_copy_only(tmp_path):
     read = cues.read(_write(tmp_path, "ep01.ja.srt", STREAMING), "ja")
     found = cues.tokens(read, "ja")
     assert [t.cue for t in found if t.lemma == "違う"] == [0]
-    assert {t.cue for t in found} == {0, 2, 4}
+    assert {t.cue for t in found} == {0, 4}     # cue 2's えっ… is a sound, no word (analyzer § Sounds are no words)
 
 
 def test_a_sung_line_shown_again_is_never_read_on_its_own(tmp_path):

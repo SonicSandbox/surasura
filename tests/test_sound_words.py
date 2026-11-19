@@ -52,9 +52,12 @@ def test_the_pair_is_one_word_of_the_interjections_row(tokenizer, sanitized):
 
 
 def test_fillers_that_read_otherwise_alone_stay_as_they_are(tokenizer, sanitized):
-    # うえ～ん (crying): う + え〜 alone reads as 上 'above', え〜 + ん as no interjection — no word is made of them.
+    # うえ～ん (crying): う + え〜 alone reads as 上 'above', え〜 + ん as no interjection — no word is made of them; the
+    # three fillers, standing together before a mark, are a sound and no word (analyzer § Sounds are no words).
     lemmas = [lemma for lemma, _s in _keys(tokenizer, "うえ～ん、痛いよ。")]
-    assert lemmas[:3] == ["うー", "えー", "んー"] and "上" not in lemmas
+    assert lemmas[:1] == ["痛い"] and "上" not in lemmas
+    tokens = analyzer.join_affixes(tokenizer.tagger("うえ～ん、痛いよ。"))
+    assert [t.feature.lemma for t in tokens[:3]] == ["うー", "えー", "んー"]      # read as before: only the count goes
 
 
 @pytest.mark.parametrize("line, surface", [

@@ -357,7 +357,9 @@ def test_one_show_finished_counts_none_of_its_uses_keeps_its_names_and_sentences
     assert finished == {key: n - a_uses[key] for key, n in listed.items() if n - a_uses[key]}, \
         "every word: the first run's count less Show A's uses, exactly"
     plain = [key for key, n in listed.items() if total[key] == n]
-    assert len(plain) >= 0.9 * len(listed), len(plain)
+    # the rest are the set-phrase and grammar rows (あっと言う間, と言う: their counts are phrases.tally's) — 63 of 630 when
+    # sounds were words, 63 of 626 since (Kotoba-J: 4 plain sound rows left the list), so the share sits just under 0.9
+    assert len(plain) >= 0.85 * len(listed), len(plain)
     a_tokenized = sum((uses[n] for n in show_a), Counter())
     assert {key: a_uses[key] for key in plain} == {key: a_tokenized[key] for key in plain}, \
         "Show A's uses as the token store's own tokenizer counts them"

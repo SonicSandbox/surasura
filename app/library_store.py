@@ -11258,7 +11258,14 @@ def _store_keep_drop_out(self, path, pairing, folder_id):
                                  (note, DROP_SKIPPED, key)).rowcount:       # (bookkeeping: no view, no version)
             self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES (?, ?, ?, ?, ?)",
                               (self._root_id(), key, DROP_SKIPPED, _now(), note))
+        self._copy_dirty()                               # train 44's keeper: the JSON copy carries the exclusions
         return True
+
+
+def _store_copy_dirty(self):
+    """(Inside a write.) The JSON copy carries what this write changed (`copy_dirty`: the helper writes it), for a
+    change that moves no version (a kept-out row: train 44's keeper)."""
+    self._set_meta({"copy_dirty": int(self._meta().get("copy_dirty") or 0) + 1})
 
 
 def _store_let_drops_back(self):
@@ -11280,6 +11287,9 @@ def _store_let_drops_back(self):
         if note.get("folder") in live:
             continue                                     # (its folder still skipped: kept out)
         rel, record = note.get("rel"), note.get("record")
+        if isinstance(record, dict) and \
+                self._skip_holding([record.get("video_path"), record.get("subtitle_path")]) is not None:
+            continue                                     # train 44's keeper: another skip (a parent's) still holds it
         full = os.path.join(self.data_dir, *str(rel or "").split("/")) if rel else None
         try:
             if full and os.path.isfile(full) and isinstance(record, dict) and record.get("content_key"):
@@ -11288,7 +11298,8 @@ def _store_let_drops_back(self):
             elif full and os.path.isfile(full):
                 continue                                 # (a record it can't be registered by: stays kept out)
             with self._writing():
-                self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (ex_id, DROP_SKIPPED))
+                if self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (ex_id, DROP_SKIPPED)).rowcount:
+                    self._copy_dirty()                   # (the copy carries the exclusions)
         except Exception as e:                           # that file alone: kept out, tried again at the next call
             print(f"Library: a kept-out hato file wasn't let back in yet ({rel}): {e!r}")
     return n
@@ -13712,6 +13723,7 @@ Store.skip_folder = _store_skip_folder
 Store.skipped_holding = _store_skipped_holding
 Store._skip_holding = _store_skip_holding
 Store.keep_drop_out = _store_keep_drop_out
+Store._copy_dirty = _store_copy_dirty
 Store.let_drops_back = _store_let_drops_back
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved

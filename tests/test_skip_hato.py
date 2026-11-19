@@ -383,3 +383,56 @@ def test_the_window_writers_undo_of_a_skip_lets_a_refused_hand_over_in_with_its_
     finally:
         w.finish(time.monotonic() + 5)
         store.close()
+
+
+# --- train 44's intent keeper (Kura-NA round 3) ------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_out_file_waits_while_any_skip_still_holds_its_video(language):
+    """Nested skips: `Anime/Downloading` skipped, then `Anime`. The hand-over is refused; *Read again* of the inner folder
+    alone lets nothing in — the parent still skips that video ("hato skips what you skip"); read the parent again too
+    and it comes in with its record."""
+    store, data_dir = _empty(language)
+    src = _drive("Downloads")
+    outer = os.path.join(src, "Anime")
+    inner = os.path.join(outer, "Downloading")
+    video = _video(os.path.join(inner, "%s - 03.mkv" % _SHOWS[language][1]), body=b"fake matroska n3")
+    with store:
+        store.add_source(src)
+        store.skip_folder(inner)
+        store.skip_folder(outer)
+        ids = {ls.folder_path(f["path"]): f["id"] for f in store.skipped_folders()}
+    path, record = _hato_drop(data_dir, language, video, 3)
+    assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        again.read_folder_again(ids[ls.folder_path(inner)])
+        assert _ids(again) == [] and again.skipped_holding([record["video_path"]]) is not None
+        again.sync_disk()
+        assert _ids(again) == []
+        again.read_folder_again(ids[ls.folder_path(outer)])
+        (item,) = _ids(again)
+        assert _pairing_of(again, item)["video_path"] == record["video_path"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_out_row_written_or_dropped_marks_the_copy_to_be_written(language):
+    """The store's JSON copy carries the exclusions: a kept-out row written (a refusal) or dropped (its file gone at a
+    Read again) marks the copy dirty, so the helper writes it — never a copy that, read back, brings the file in."""
+    store, data_dir = _empty(language)
+    src, inside, video = _downloads(language)
+    with store:
+        store.add_source(src)
+        store.skip_folder(inside)
+        (folder,) = [f["id"] for f in store.skipped_folders()]
+        before = int(store.meta().get("copy_dirty") or 0)
+    path, record = _hato_drop(data_dir, language, video, 3)
+    assert ls.register_headless(language, path, record, data_dir=data_dir, user_files_dir=store.user_files_dir,
+                                looks=0).landed == "skipped"
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        refused = int(again.meta().get("copy_dirty") or 0)
+        assert refused > before
+        os.remove(path)                                                           # (hato's file gone meanwhile)
+        again.read_folder_again(folder)
+        assert again.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = ?", (ls.DROP_SKIPPED,)).fetchone()[0] == 0
+        assert int(again.meta().get("copy_dirty") or 0) > refused

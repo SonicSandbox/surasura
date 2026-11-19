@@ -16,6 +16,7 @@ from another epoch) run on a stand-in store recording each call. The numbers run
 a plan file shaped like a Generate's.
 """
 import gzip
+import io
 import json
 import os
 import random
@@ -181,10 +182,33 @@ def journal(language):
     return read_journal(M.journal_path(language))
 
 
+def open_journal(path):
+    """How a test opens the journal to read it: on Windows with FILE_SHARE_DELETE, so the writer may replace or remove
+    the file while a test reads it — a test's look is never the reason the writer's write is refused (the writer gives
+    a refused write up after ~0.1 s: `test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write`)."""
+    if os.name != "nt":
+        return open(path, encoding="utf-8")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    # GENERIC_READ; share read | write | delete; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    handle = create(os.fspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        code = ctypes.get_last_error()
+        if code in (2, 3):                              # not found (the file, its folder)
+            raise FileNotFoundError(2, "the journal is not there", path)
+        raise PermissionError(13, f"the journal can't be opened (Windows error {code})", path)   # (delete pending)
+    return io.open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8")
+
+
 def read_journal(path):
     for _ in range(50):
         try:
-            with open(path, encoding="utf-8") as f:
+            with open_journal(path) as f:
                 return json.load(f)
         except FileNotFoundError:                       # (none, or removed between a look and the read)
             return None
@@ -372,6 +396,28 @@ def test_an_anchor_gone_meanwhile_places_beside_the_nearest_neighbour_the_window
     assert order.index(goal[10]) == order.index(goal[2]) + 1      # after the nearest one still there
     assert heard.notes == [WORDS["nearest"]] and heard.rereads >= 1
     assert w.can_undo()
+
+
+@pytest.mark.parametrize("fallback", ["nearest", "top"])
+def test_an_exact_move_whose_anchor_went_meanwhile_is_exact_where_it_falls_back_too(lib, make_writer, fallback):
+    """(Kura-EO 3.0.16, mutants) An exact move (Current's ⋯ *Up next*, a step across the Soon line: `exact`) whose
+    anchor left Current while it was queued lands at the window's next neighbour — or, none left, the top — exactly
+    there too, never in its show's episode order: episode 9 before its show's 8, where it was put."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[178]
+    ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (8, 9))
+    lib.store.place([ep8], "top")
+    now = lib.ids("now")
+    anchor = now[3]
+    near = [(anchor, "before")] + ([(ep8, "before")] if fallback == "nearest" else [])
+    w, heard = make_writer()
+    w.hold()
+    w.move([ep9], "now", before_id=anchor, near=near, exact=True)
+    lib.store.move([anchor], "goal")                    # meanwhile the anchor leaves Current
+    w.release()
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[:2] == [ep9, ep8], "exactly before 8 (the neighbour) / at the top: never after its show"
+    assert heard.notes == [WORDS[fallback]]
 
 
 def test_an_anchor_gone_with_no_neighbour_left_goes_to_the_top_of_the_tier(lib, make_writer):
@@ -700,6 +746,7 @@ class StubStore:
         self.calls, self.fail, self.always = [], {}, set()
         self.changed_in = {}
         self.gate = None
+        self.in_order = []
 
     def _maybe_fail(self, op):
         exc = self.fail.get(op)
@@ -708,7 +755,8 @@ class StubStore:
                 del self.fail[op]
             raise exc
 
-    def move(self, ids, tier, before_id=None, after_id=None):
+    def move(self, ids, tier, before_id=None, after_id=None, in_order=True):
+        self.in_order.append(in_order)                  # (Kura-EO: the window's `exact` → `in_order=False`)
         if self.gate is not None:
             self.gate.wait(10)                          # a slow write (the test opens the gate)
         self.calls.append(("move", list(ids), tier, before_id, after_id))
@@ -1054,6 +1102,29 @@ class Recorder:
 
     def resync(self):
         self.resyncs += 1
+
+
+def test_an_exact_move_reaches_the_store_without_the_episode_order_even_after_a_busy_store(stub_writer):
+    """(Kura-EO 3.0.16) `Writer.move(exact=True)` (↑ ↓ across the NOW / Soon edge, Current's ⋯ *Up next*) is
+    `Store.move(in_order=False)` — also when it first met a busy store and was queued; a plain move keeps the order."""
+    w, heard, store, _opener = stub_writer()
+    store.fail["move"] = ls.StoreBusy("busy")
+    w.move([5], "now", before_id=3, exact=True)
+    w.move([6], "now", before_id=3)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert store.in_order[-2:] == [False, True]
+
+
+def test_an_exact_move_left_in_the_journal_replays_exact_never_the_episode_order():
+    """(Kura-EO 3.0.16, review round 2) A move queued while the store was stuck is journalled; at the next start its
+    replay is rebuilt from the entry (`_entry` → `_from_entry`). An exact move (Current's ⋯ *Up next*, a step across
+    the Soon line) must come back exact — else the replay puts the episode in its show's order, not where it was put."""
+    cmd = {"op": "move", "ids": [5], "tier": "now", "before_id": 3, "after_id": None, "near": [], "label": "x",
+           "exact": True}
+    assert M._from_entry(M._entry(cmd)).get("exact") is True
+    plain = dict(cmd)
+    del plain["exact"]
+    assert "exact" not in M._from_entry(M._entry(plain)), "a plain move replays as a plain move"
 
 
 def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_busy(stub_writer):
@@ -3803,6 +3874,27 @@ def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, 
     assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
 
 
+def test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write(lib, make_writer, short_lock_wait):
+    # why (Kura-EO, a --stress-changed red, 2026-11-18): the waits above read the journal again and again while the
+    # writer rewrites and at last removes it; the writer tries a refused write for ~0.1 s, then gives up for good when
+    # nothing is left queued — so a test's look held a moment too long under load (here: 0.5 s) left the journal in
+    # place and the wait for it to go failed. A test's look must never be the reason the writer's write is refused.
+    w, heard = make_writer()
+    a = _arrival(lib, lib.ids("goal")[5])
+    holder = LockHolder(lib.db)
+    w.place([a], "top")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["place"])
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    looking = open_journal(M.journal_path(lib.language))     # a test's look, held across the replay's writes
+    threading.Timer(0.5, looking.close).start()
+    assert w2.replay()
+    assert h.until(lambda: not w2.pending() and lib.ids("now")[0] == a)
+    assert h.until(lambda: looking.closed)              # (the look let go: the writer had no write left to make)
+    assert journal(lib.language) is None, "the replay's last write (the file removed) was refused"
+
+
 def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_let_go_quietly(lib, make_writer,
                                                                                           short_lock_wait):
     # W3.2 H (C3): what it asked for holds (its file is back), as a GUARDED command's `_done` reads it — the store
@@ -4303,6 +4395,70 @@ def test_a_move_the_store_puts_in_its_shows_episode_order_is_followed_where_the_
     w.move([lib.ids("goal")[0]], "now", after_id=a, label="moved")
     assert h.until(lambda: len(heard.saved) == 2)
     assert len(numbers.moves) == 3 and heard.rereads == 1
+
+
+def test_a_shows_row_the_store_sorts_by_episode_is_followed_item_by_item(lib, make_writer):
+    """(Kura-EO 3.0.16.) A drag of a show's row reading 10, 8, 9 below another title: the store lands it 8, 9, 10
+    (`Store._into_show`'s block sort). The numbers, which followed the drop as 10, 8, 9 (the engine keeps a block's own
+    order), follow the store's order one item at a time — 8 after the target, 9 after 8, 10 after 9 — never a re-plan;
+    the window lets its drop order go."""
+    from tests.test_library_store_episode_order import _ten_eight_nine
+    ep8, ep9, ep10 = _ten_eight_nine(lib.store, lib.language, names(lib.language)[168])
+    target = lib.ids("now")[4]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move([ep10, ep8, ep9], "now", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    now = lib.ids("now")
+    assert now[now.index(target) + 1:now.index(target) + 4] == [ep8, ep9, ep10]
+    assert numbers.moves[1:] == [([ep8], "now", None, target), ([ep9], "now", None, ep8), ([ep10], "now", None, ep9)]
+    assert h.until(lambda: heard.rereads == 1)
+    assert numbers.resyncs == 0
+
+
+def test_a_long_block_the_store_sorts_is_compared_once_never_followed_item_by_item(lib, make_writer):
+    """Past `FOLLOW_EACH_MOST` items (each engine move copies the window's table and publishes) a sorted block isn't
+    followed one item at a time: the numbers compare once after the write (one resync), the drop's own follow
+    aside."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[174]
+    n = M.FOLLOW_EACH_MOST + 2
+    eps = [_episode(lib.store, lib.language, show, e) for e in range(1, n + 1)]
+    for ep in eps:
+        lib.store.move([ep], "soon", in_order=False)    # each to Soon's top: the show reads n … 1 there
+    soon = lib.ids("soon")
+    at = soon.index(eps[-1])
+    assert soon[at:at + n] == eps[::-1], "the setup"
+    target = soon[at + n + 1]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move(eps[::-1], "soon", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    soon = lib.ids("soon")
+    assert soon[soon.index(target) + 1:soon.index(target) + 1 + n] == eps
+    assert len(numbers.moves) == 1 and h.until(lambda: numbers.resyncs >= 1)
+
+
+def test_a_block_the_stores_rule_places_and_sorts_is_followed_item_by_item_too(lib, make_writer):
+    """*Soon* of a show's episodes standing 10, 8, 9 in 6+ Months: the place is the store's rule (followed after the
+    write, `numbered` "after") and the store sorts the block — the numbers follow it one item at a time: 8 at Soon's
+    top, 9 after 8, 10 after 9."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[171]
+    ep10, ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (10, 8, 9))
+    lib.store.move([ep10, ep8, ep9], "goal")
+    assert [i for i in lib.ids("goal") if i in (ep8, ep9, ep10)] == [ep10, ep8, ep9], "the setup"
+
+    class Expecting(Recorder):                          # told before the write, as the window's `Numbers.expect`
+        def expect(self, cmd):
+            self.expected = cmd["op"]
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    w.place([ep10, ep8, ep9], "soon", label="soon")
+    assert h.until(lambda: heard.saved)
+    assert numbers.expected == "place", "the setup: the store's rule, followed after the write"
+    assert lib.ids("soon")[:3] == [ep8, ep9, ep10]
+    assert numbers.moves == [([ep8], "soon", None, None), ([ep9], "soon", None, ep8), ([ep10], "soon", None, ep9)]
 
 
 def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):

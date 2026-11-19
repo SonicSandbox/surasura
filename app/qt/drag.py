@@ -1093,7 +1093,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks", "rides", "why", "buttons")
+                 "marks", "rides", "why", "buttons", "reword")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -1109,6 +1109,7 @@ class Ticket:
         self.rides = False                           # a Finished choice the setting made: undone with its drop
         self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
         self.buttons = ()                            # Kantan-B4: its toast's own buttons (a Remove's *Removed…*)
+        self.reword = None                           # Kura-EO: change -> its toast's words where it landed, or None
 
 
 def mines_why(lines, place):
@@ -2365,6 +2366,24 @@ class DragController(QObject):
             after_paint(self.writer.go)
         return seq
 
+    def _reworded(self, ticket, change):
+        """Kura-EO: a ticket whose words depend on where the store put it (`Ticket.reword`: an *Up next* the store put
+        in its show's episode order says so, never "#1") — its words, and its toast's while it shows, once saved."""
+        if ticket.reword is None:
+            return
+        try:
+            words = ticket.reword(change)
+        except Exception as e:                       # (the words as given: never a lost save over a toast)
+            print(f"Window moves: a toast's words couldn't follow the save: {e!r}")
+            return
+        if not words or words == ticket.text:
+            return
+        ticket.text = words
+        if self.toasted is ticket:
+            reword = getattr(self.win.toasts, "reword", None)
+            if reword is not None:
+                reword(words)
+
     def _toast(self, ticket, buttons=()):
         ticket.toast = True
         self.toasted = ticket
@@ -2517,6 +2536,7 @@ class DragController(QObject):
     def _saved(self, change, label):
         if isinstance(label, Ticket):
             label.change = change
+            self._reworded(label, change)
             _tell(label, "saved")
             if label.rides and label.follows is not None:
                 self._rides[change] = label.follows
@@ -3142,7 +3162,10 @@ class DragController(QObject):
         else:
             def command(t):
                 return self.writer.place(ids, "top", label=t)
-        return self._give(Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids), command, anki=anki)
+        ticket = Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids)
+        shown = strings.PICKS_DONE_WITH_SHOW.format(title=title)       # Kura-EO: saved in the show's episode order
+        ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        return self._give(ticket, command, anki=anki)
 
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):
@@ -3175,9 +3198,11 @@ class DragController(QObject):
         if land == row.tier and getattr(row, "soon_from", None) is None:
             self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))
         elif step < 0:
-            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t,
+                                                          exact=True))
         else:
-            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t,
+                                                          exact=True))
 
     def menu_entries(self, row):
         """⋯'s entries for a row, in order: [(name, label, tip, enabled)]. *Up next* not for Up Next itself; *Finished*
@@ -3254,7 +3279,7 @@ class DragController(QObject):
         keys = order_after([r.key for r in base.rows], row.key, 0)
         self._ahead(reordered(base, keys, {row.key: hero.tier}))
         self._give(Ticket(strings.DRAG_UP_NEXT.format(title=row.title), (row.key,), ids),
-                   lambda t: self.writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t))
+                   lambda t: self.writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t, exact=True))
 
     # --- files from Explorer ----------------------------------------------------------------------------------- #
     @staticmethod

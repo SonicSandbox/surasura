@@ -196,10 +196,15 @@ def open_journal(path):
                        wintypes.DWORD, wintypes.HANDLE)
     create.restype = wintypes.HANDLE
     # GENERIC_READ; share read | write | delete; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    status = ctypes.WinDLL("ntdll").RtlGetLastNtStatus
+    status.restype = ctypes.c_ulong
     handle = create(os.fspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
     if handle in (None, wintypes.HANDLE(-1).value):
+        pending = status() == 0xC0000056                # STATUS_DELETE_PENDING (read first: this call's own answer)
         code = ctypes.get_last_error()
-        if code in (2, 3):                              # not found (the file, its folder)
+        if code in (2, 3) or pending:                   # not found (the file, its folder) — or removed already and
+            # only still listed while another program (a virus scanner) holds it a moment: gone, as the writer left
+            # it (Kura-JR, a --stress-changed red 2026-11-19: such a hold outlasted `read_journal`'s 0.5 s)
             raise FileNotFoundError(2, "the journal is not there", path)
         raise PermissionError(13, f"the journal can't be opened (Windows error {code})", path)   # (delete pending)
     return io.open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8")
@@ -215,6 +220,24 @@ def read_journal(path):
         except PermissionError:                         # Windows: the writer's replace holds it this instant
             time.sleep(0.01)
     raise AssertionError(f"the journal stayed locked: {path}")
+
+
+def left_beside(journal_file):
+    """The journal's files still beside it (itself, its note, a .tmp) — not one that is only still listed because
+    another program holds it a moment after its removal (`open_journal`: delete pending, as good as gone)."""
+    folder, name = os.path.split(journal_file)
+    stem = os.path.splitext(name)[0]
+    out = []
+    for n in os.listdir(folder):
+        if n.startswith(stem):
+            try:
+                open_journal(os.path.join(folder, n)).close()
+                out.append(n)
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                out.append(n)
+    return out
 
 
 def journalled(language):
@@ -5480,8 +5503,7 @@ def test_JR_a_start_that_finds_a_journal_whose_commands_all_landed_clears_it_wit
     assert w2.attempts == 0, "a command that had landed was written again"
     assert heard2.notes == [] and heard2.saved == [] and heard2.rereads == 0
     assert {t: lib.ids(t) for t in ("now", "soon", "goal")} == order and lib.store.item(now[1])["pinned"] == pinned
-    assert not [n for n in os.listdir(os.path.dirname(M.journal_path(lib.language)))
-                if n.startswith(f"window_pending_{lib.language}")], "nothing of the journal left beside it"
+    assert not left_beside(M.journal_path(lib.language)), "nothing of the journal left beside it"
 
 
 @held_refuses
@@ -5683,3 +5705,30 @@ def test_JR_a_crashed_writer_writes_no_journal_after_its_crash_even_from_a_savin
     time.sleep(0.5)                                     # a window in which nothing may happen
     with open(path, "rb") as f:
         assert f.read() == left, "a timer of the crashed writer rewrote its journal"
+
+
+@held_refuses
+def test_JR_a_journal_the_writer_removed_while_another_program_still_holds_it_reads_as_gone(tmp_path):
+    # why (a --stress-changed red, 2026-11-19): a scanner that looks at the journal just as the writer removes it
+    # keeps it listed, and unopenable, until it lets go ("delete pending"); the tests' look read that as a lock held
+    # and gave up after 0.5 s. The writer left it gone, and so must the look
+    path = str(tmp_path / "window_pending_ja.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "pending": []}, f)
+    looking = open_journal(path)                        # the scanner's look (it shares delete, as scanners do)
+    try:
+        os.remove(path)                                 # the writer's remove: done, the name still listed
+        assert os.path.basename(path) in os.listdir(tmp_path)
+        assert read_journal(path) is None and journal_gone(path)
+        assert left_beside(path) == []
+    finally:
+        looking.close()
+    assert os.path.basename(path) not in os.listdir(tmp_path)
+
+
+def journal_gone(path):
+    try:
+        open_journal(path).close()
+        return False
+    except FileNotFoundError:
+        return True

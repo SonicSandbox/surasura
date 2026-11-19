@@ -508,14 +508,14 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
 def test_a_non_video_mine_this_tip_never_names_anki_miners_window_and_needs_no_connect():
     """WF fixes 6 and 7 (IK S5, N2), alpha 4 M1: a non-video file's *Mine this* tip is its status's own (never "mine it
     now", never Anki Miner's window), the same while Connect is off — it asks nothing; a video's *Mine this* is
-    refused while Connect is off."""
+    refused while Connect is off. (*Mine* is its pickaxe alone: its hover names it first, Michi-CK.)"""
     from app.services import view_rows
     st = view_rows.Status("mine", "Mine", "Not in your top 20: it isn't mined yet", "ink")
     name, tip, _ask = rows.action_of(st, (_ep(st),), None, "text")
-    assert name == "mine-this" and tip == st.tip and "Anki Miner" not in tip
+    assert name == "mine-this" and tip == rows.status_tip(st) == f"Mine\n{st.tip}" and "Anki Miner" not in tip
     assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "text")[1] == tip
     assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "video")[1] == strings.ROWS_ACTION_OFF.format(
-        tip=st.tip, why=feed.OFF_CONNECT)
+        tip=rows.status_tip(st), why=feed.OFF_CONNECT)
     assert not rows.asks_connect("no-media") and not rows.asks_connect("mine-this", "text")
     assert rows.asks_connect("mine-now") and rows.asks_connect("mine-this", "video")
 

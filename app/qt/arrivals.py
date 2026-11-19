@@ -720,8 +720,7 @@ def part_tip(arrival, part):
     if part == "number":
         return arrival.tip
     if part == "row":                # a6 #3: the full title (the painted one is cut), as Current's; a5-2: then the 🎧's
-        audio = getattr(arrival, "audio", "")
-        return f"{arrival.title}\n{audio}" if audio else arrival.title
+        return rows.heard_tip(arrival)
     return None
 
 

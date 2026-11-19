@@ -25,7 +25,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QAbstractButton, QApplication, QPushButton
+from PyQt6.QtWidgets import QAbstractButton, QApplication, QLabel, QPushButton
 
 from app.qt import shell, strings
 from app.services import automation as A
@@ -378,7 +378,55 @@ def test_update_mark_says_ready_and_a_click_opens_the_sheet(world):
     assert "99.0" in sheet.title.text() and sheet.body.text() == "A quick in-app update."
     assert sheet.buttons["start"].isVisibleTo(sheet) and not sheet.buttons["download"].isVisibleTo(sheet)
     world.updates.push(state=U.WAITING, programs=(U.Program(1, "Content Manager", True),))
-    assert wait_until(lambda: mark.text() == strings.UPDATE_RESTART)
+    assert wait_until(lambda: mark.text() == strings.UPDATE_WAITS_FOR.format(name="Content Manager"))
+
+
+def test_update_waiting_on_ankis_reorder_says_what_it_waits_for_never_restart(world):
+    """A Send report (2026-11-18): the download was in, the update waited for Anki's re-order (wait-only, no Stop), and
+    the bar's chip read *Restart to update* — a press opened the sheet and restarted nothing, so it looked dead. The
+    chip says what it waits for; a press shows the sheet saying Surasura restarts by itself once that finishes; with
+    nothing left to wait for it reads *Restarting to update…*."""
+    from app import updater
+    mark, sheet = world.d.update_mark, world.d.sheet
+    _offer(world)
+    world.updates.push(state=U.WAITING, programs=(U.Program(7, updater.REPLAN_ROW, False),))
+    assert wait_until(lambda: mark.text() == strings.UPDATE_WAITS_FOR.format(name="Re-ordering Anki's new cards"))
+    assert "Restart" not in mark.text() and "99.0" in mark.toolTip()
+    mark.click()
+    assert wait_until(lambda: sheet.isVisible())
+    assert sheet.body.text() == strings.UPDATE_WAITING_LINE and "restarts by itself" in sheet.body.text()
+    names = [label.text() for row in sheet.program_rows for label in row.findChildren(QLabel)]
+    assert names == [updater.REPLAN_ROW]
+    assert not sheet.buttons["stop-all"].isVisibleTo(sheet), "a write to Anki is waited for, never stopped"
+    assert sheet.buttons["cancel"].isVisibleTo(sheet)
+    world.updates.push(state=U.WAITING, programs=())
+    assert wait_until(lambda: mark.text() == strings.UPDATE_HANDING)
+    world.updates.push(state=U.READY, programs=())
+    assert wait_until(lambda: mark.text() == strings.UPDATE_HANDING)
+
+
+def test_a_download_the_connection_let_down_offers_try_again_and_the_releases_page(world):
+    """A Send report (2026-11-18): after WinError 10060 the sheet said nothing but the raw error. The release stays on
+    offer: the sheet says what happened in words, its main button reads *Try again* (the same *Update now*), *Download*
+    opens the releases page beside it; a new offer reads *Update now* again."""
+    sheet = world.d.sheet
+    _offer(world, message=U.OFFLINE, retry=True)
+    assert wait_until(lambda: not world.d.update_mark.isHidden())
+    world.win.open_update_sheet()
+    assert wait_until(lambda: sheet.isVisible())
+    start = sheet.buttons["start"]
+    assert start.text() == strings.UPDATE_TRY_AGAIN and start.accessibleName() == strings.UPDATE_TRY_AGAIN
+    assert start.isVisibleTo(sheet) and sheet.buttons["download"].isVisibleTo(sheet)
+    assert sheet.message.text() == U.OFFLINE and sheet.message.isVisibleTo(sheet)
+    card_start = [b for b in world.d.cards.findChildren(QPushButton) if b.property("action") == "start"]
+    assert [b.text() for b in card_start] == [strings.UPDATE_TRY_AGAIN], "Needs you's offer card says the same"
+    start.click()
+    assert wait_until(lambda: world.updates.called("updates.start"))
+    sheet.buttons["download"].click()
+    assert wait_until(lambda: world.updates.called("updates.open_download"))
+    _offer(world, message=None, retry=False)
+    assert wait_until(lambda: start.text() == strings.UPDATE_NOW)
+    assert not sheet.buttons["download"].isVisibleTo(sheet)
 
 
 def test_update_sheet_buttons_call_the_service(world):
@@ -436,12 +484,12 @@ def test_update_skip_writes_only_skipped_version(qapp, monkeypatch):
         services.shutdown(0.5)
 
 
-def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_it_changes(world):
+def test_update_esc_while_waiting_only_hides_the_sheet_and_the_wait_list_repaints_only_when_it_changes(world):
     programs = (U.Program(41, "Content Manager", True), U.Program("Anki sync", "Anki sync", False))
     _offer(world)
     world.updates.push(state=U.WAITING, programs=programs)
     sheet = world.d.sheet
-    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_RESTART)
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_WAITS_FOR_MANY.format(count=2))
     world.win.open_update_sheet()
     assert wait_until(lambda: sheet.isVisible())
     stops = [b for b in sheet.findChildren(QPushButton) if b.text() == strings.UPDATE_STOP and b.isVisibleTo(sheet)]
@@ -456,10 +504,56 @@ def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_i
     assert world.updates.called("updates.stop")[0] == ("updates.stop", 41)
     sheet.buttons["stop-all"].click()
     assert wait_until(lambda: ("updates.stop", None) in world.updates.calls)
-    QTest.keyClick(world.win, Qt.Key.Key_Escape)                 # Esc while it waits: the update is cancelled (IK-2)
+    # Kantan-T (Sonic 2026-11-18, replacing IK-2): Esc while it waits only hides the sheet — the update waits on, the
+    # bar's chip still says what it waits for, and the sheet opens again on the chip as it was
+    QTest.keyClick(world.win, Qt.Key.Key_Escape)
+    assert wait_until(lambda: not sheet.isVisible())
+    assert not wait_until(lambda: world.updates.called("updates.cancel"), 0.1)          # (a cancel would come by now)
+    assert not world.automation.called("automation.update_cancelled")
+    assert not world.d.update_mark.isHidden()
+    assert world.d.update_mark.text() == strings.UPDATE_WAITS_FOR_MANY.format(count=2)
+    world.d.update_mark.click()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.buttons["cancel"].isVisibleTo(sheet)
+    sheet.buttons["cancel"].click()                              # *Cancel* cancels
     assert wait_until(lambda: world.updates.called("updates.cancel"))
     assert not sheet.isVisible()
     assert wait_until(lambda: world.automation.called("automation.update_cancelled"))   # a held Generate asks again
+
+
+def test_update_closing_the_sheet_while_downloading_leaves_the_download_going_on_in_the_chip(world):
+    """Kantan-T (Sonic 2026-11-18, replacing IK-2): the sheet's own close (Esc, Back, a click outside) only hides it —
+    the download goes on, the chip shows its progress as it moves, the sheet opens again on the chip at that progress;
+    *Cancel* there cancels. The window's own close still cancels (`updates.quit`, the quit tests above)."""
+    _offer(world)
+    world.updates.push(state=U.DOWNLOADING, done=3, total=20)
+    sheet = world.d.sheet
+    mark = world.d.update_mark
+    assert wait_until(lambda: mark.text() == strings.UPDATE_DOWNLOADING.format(pct=15))
+    world.win.open_update_sheet()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.progress.isVisibleTo(sheet)
+    sheet.close()                                                 # the router's close (Esc / Back / outside)
+    assert wait_until(lambda: not sheet.isVisible())
+    assert not wait_until(lambda: world.updates.called("updates.cancel"), 0.1)          # (a cancel would come by now)
+    world.updates.push(state=U.DOWNLOADING, done=10, total=20)    # it goes on with the sheet closed
+    assert wait_until(lambda: mark.text() == strings.UPDATE_DOWNLOADING.format(pct=50)) and not mark.isHidden()
+    mark.click()
+    assert wait_until(lambda: sheet.isVisible()) and sheet.progress.value() == 50
+    sheet.buttons["cancel"].click()
+    assert wait_until(lambda: world.updates.called("updates.cancel")) and not sheet.isVisible()
+
+
+def test_update_chip_has_no_cross_while_an_update_runs_so_a_hidden_sheet_can_always_come_back(world):
+    """Kantan-T (PROVISIONAL): with the sheet only hidden, the chip is the way back to *Cancel* and *Stop it* — its ✕
+    (*Later* for this run) shows with an offer only, never while the update downloads or waits."""
+    cross = world.d.update_cross
+    _offer(world)
+    assert wait_until(lambda: not world.d.update_mark.isHidden()) and not cross.isHidden()     # an offer: *Later* ✕
+    world.updates.push(state=U.DOWNLOADING, done=1, total=20)
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_DOWNLOADING.format(pct=5))
+    assert cross.isHidden() and not world.d.update_mark.isHidden()
+    world.updates.push(state=U.WAITING, programs=(U.Program(41, "Content Manager", True),))
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_WAITS_FOR.format(name="Content Manager"))
+    assert cross.isHidden() and not world.d.update_mark.isHidden()
 
 
 def test_update_a_critical_release_opens_the_sheet_once(world):

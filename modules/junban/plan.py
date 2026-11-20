@@ -383,14 +383,16 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
     head, body = ordered[:lead], ordered[lead:]
     picks = [entry for entry in body if entry[3]["card_id"] in weave_of and entry[3]["card_id"] not in skip
              and entry[1] not in ("known", "yours")]
-    per = [0] * groups                              # Kyou-C: each group's picks, and its pinned and *yours* cards
-    for entry in picks + [entry for entry in ordered if entry[3]["card_id"] in weave_of     # (train 40's keeper:
-                          and (entry[3]["card_id"] in lift or entry[1] == "yours")]:        # a pinned title stays)
+    # Kyou-D (Sonic, choice 2, 2026-11-16): side by side weaves only list words — a pick is a list card (the list's,
+    # the library's, a phrase), or one held by *i+1 first* (a list card whose word waits: woven once its word is
+    # picked); a title's cards off the list are never woven, they keep their place in the planned order
+    picks = [entry for entry in picks if TIERS.get(entry[1], 9) <= 0 or entry[3].get("waits")]
+    per = [0] * groups                              # Kyou-C: each group's picks (Kyou-D: its list words still new),
+    for entry in picks + [entry for entry in ordered if entry[3]["card_id"] in weave_of     # and its pinned and *yours*
+                          and (entry[3]["card_id"] in lift or entry[1] == "yours")]:        # cards (train 40's keeper)
         per[weave_of[entry[3]["card_id"]]] += 1
     if not picks:
         return ordered, 0, per
-    taken = {entry[3]["card_id"] for entry in picks}
-    rest = [entry for entry in body if entry[3]["card_id"] not in taken]
     inf = float("inf")
 
     def place_of(impact, rank):
@@ -451,18 +453,34 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
             heapq.heappop(heap)
         return heap[0][0] if heap else None
 
-    def listed():                                   # Kyou-B: does any group's next card still place with the list?
-        return any(k is not None and k[0] <= 0 for k in map(top, heaps))
+    # Kyou-D (stable phase, the lead's call on Sonic's ruling 3): the turns start with the title that owns the woven
+    # card Anki has first now (the lowest `due` among the list picks), so a re-plan after an odd number of studied
+    # cards keeps every pair as it was instead of swapping them all. While it is one of a round's takers (the first
+    # `width` groups with a list word), the takers go from it, in turn; otherwise the rounds go in Current's order
+    firsts = [entry for entry in picks if TIERS.get(entry[1], 9) <= 0]
+    anchor = (weave_of[min(firsts, key=lambda entry: (entry[3].get("due", inf), entry[3]["card_id"]))[3]["card_id"]]
+              if firsts else None)
 
-    while any(top(heap) is not None for heap in heaps):
+    def visits():
+        able = [g for g, k in enumerate(map(top, heaps)) if k is not None and k[0] <= 0]
+        takers = able if width is None else able[:width]
+        if anchor not in takers:
+            return range(groups)
+        at = takers.index(anchor)
+        front = takers[at:] + takers[:at]
+        return front + [g for g in range(groups) if g not in front]
+
+    while any(k is not None and k[0] <= 0 for k in map(top, heaps)):     # Kyou-D: while a group has a list word
         took = 0                                    # Kyou-B: `width` groups a round — the first that can take a turn
-        for g, heap in enumerate(heaps):
+        for g in visits():
+            heap = heaps[g]
             if width is not None and took >= width:
                 break
             while True:
                 k = top(heap)
-                if k is None or (k[0] > 0 and listed()):
-                    break                           # Kyou-B: both titles' list words first, then the rest in turns
+                if k is None or k[0] > 0:
+                    break                           # Kyou-D: a turn only with a list word (a held one still waiting:
+                    #                                 none; it keeps its planned place)
                 n = heapq.heappop(heap)[1]
                 placed.add(n)
                 card = picks[n][3]
@@ -485,6 +503,8 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
                 took += 1
                 break
     woven = ahead + [entry for block in out for entry in block] + twins
+    taken = {entry[3]["card_id"] for entry in woven}
+    rest = [entry for entry in body if entry[3]["card_id"] not in taken]   # off the list, or never woven: planned order
     return head + woven + rest, len(woven), per
 # --- end Kyou-A
 

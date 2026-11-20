@@ -52,6 +52,7 @@ CALL_SITES = {
     "app/services/anki_miner_setup.py": 4,
     "app/connect/ankiconnect_install.py": 1,     # 3.0.1: its staging folder ("ankiconnect-install", PARTS)
     "app/services/arrivals.py": 1,
+    "app/services/card_chip.py": 1,               # Michi-CK2: card_chip_<lang>.json (PARTS: card_chip)
     "app/services/chores.py": 1,
     "app/services/covers.py": 4,
     "app/services/covers_online.py": 6,

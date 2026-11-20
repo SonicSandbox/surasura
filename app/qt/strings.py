@@ -716,6 +716,8 @@ PHASE_SETTINGS = ("Settings", "Open its settings")
 # what it runs by itself — its ring takes the paused colour with two bars on it — and a second click resumes it; kept
 # across a restart, said at the start. Amber still means a decision: an amber circle's click goes to it (a7).
 PHASE_PAUSED = "Paused · click to resume"          # the hover's line while paused (and the strip's read-out)
+PHASE_PAUSED_DECIDE = "Paused · right-click to resume"   # Mado-PZ3 (PROVISIONAL): paused and amber — its click
+#   opens the decision (a7), so its hover never says a click resumes it
 PHASE_PRESS_PAUSE = "• Click: pause what it runs by itself"
 PHASE_PAUSE = ("Pause", "Nothing starts here by itself until you resume it. What runs now stops at its next safe point")
 PHASE_RESUME = ("Resume", "What waited starts again, from where it stopped")

@@ -6574,10 +6574,12 @@ class Store:
             counts[kind] = counts.get(kind, 0) + 1
         return media_type_guess(counts, row[2], row[3]), None
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, unlock=False):
         """A title's cover record (05 §5.5). The fetch (the window's services, `locked=False`) is refused — nothing
-        written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a generated cover*
-        (`locked=True`) always writes. `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
+        written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a plain cover*
+        (`locked=True`) always writes, and so does the user's *Look for a cover again* (`unlock`: that lock let go,
+        unlocked — Mado-CV; only over a record of the same source: a press from a stale view never undoes a newer
+        pick). `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
         user's, in User Files/<lang>/covers/, kept by the window with a dated backup on replace). Undo by the value
         check. Returns the change, or None (refused, or nothing new). An unlocked online cover (AniList, TMDB,
         YouTube: a background fetch) is written only over none, the generated one, or its own source's cache record —
@@ -6589,8 +6591,10 @@ class Store:
         with self._command("set_cover") as cmd:
             row = self.conn.execute("SELECT cover_locked, cover_source, cover_path FROM works WHERE id = ?",
                                     (work_id,)).fetchone()
-            if row is None or (row[0] and not locked):
+            if row is None or (row[0] and not (locked or unlock)):
                 return None
+            if unlock and not locked and row[1] != source:
+                return None                             # Mado-CV: the lock it lets go was replaced since
             if (not locked and source in ("anilist", "tmdb", "youtube") and row[1] not in (None, "generated")
                     and not (row[1] == source and (row[2] is None or str(row[2]).startswith("cache:")))):
                 return None                             # a fetch never over disk art or another source (B2)

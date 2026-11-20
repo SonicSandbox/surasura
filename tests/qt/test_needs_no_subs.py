@@ -181,3 +181,24 @@ def test_find_them_with_hato_keeps_its_own_librarys_yes_with_its_own_words(world
     mine, other = no_subs.setting(language), no_subs.setting("ja" if language == "zh" else "zh")
     assert wait_until(lambda: win.services.settings.get().get(mine) is True, 5)
     assert not win.services.settings.get().get(other)
+
+
+@pytest.mark.parametrize("language, action", [("ja", "find_with_hato"), ("zh", "find_with_hato_zh")])
+def test_find_them_with_hato_while_new_arrivals_is_paused_says_its_look_waits_and_names_the_circle(
+        world, subs, monkeypatch, language, action):
+    """Mado-PZ2 (Mado-PZ's Decision 2, Sonic kept it): 届 paused holds hato's look (`no_subs.find` → paused), so the
+    press keeps its yes but never says hato looks *now*: the one shared line names the circle that resumes it."""
+    monkeypatch.setattr(service, "no_subs_offer", lambda view, settings: {"make": False, "hato": True})
+    real = service._no_subs_entry
+    monkeypatch.setattr(service, "_no_subs_entry",
+                        lambda view, offer, seen: real(view._replace(language=language), offer, seen))
+    seed, win, writer, ny = world()
+    win.services.paused = frozenset({"arrivals"})
+    said = []
+    real_say = win.say
+    win.say = lambda text, hold=None: said.append(text) or real_say(text, hold)
+    entry = entry_of(ny, service.NO_SUBS)
+    button(ny, entry.key, action).click()
+    waits = strings.PAUSED_WAITS.format(what=strings.NEEDS_HATO_WAITS, circle=strings.PAUSED_CIRCLE["arrivals"])
+    assert wait_until(lambda: waits in said, 5), said
+    assert strings.NEEDS_HATO_ON not in said

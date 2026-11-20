@@ -56,3 +56,64 @@ def apply(store, item_id, record, settings):
     library.place(store, item_id, {"top": "now"}.get(target, target), source=source, explicit=1,
                   exact=True)               # (a rule's target is exactly that: its Top the very top, Kura-EO D-1)
     return target
+
+
+HELD_WAIT_S = 5.0       # how long the list's own write waits for a library another program is writing
+
+
+def place_held(settings, languages=("ja", "zh")):
+    """Kantan-G: New arrivals resumed — the hato drops its pause kept waiting (`connect_verbs.register_record` →
+    `Store.hold_drops`) placed by their rules now, oldest first, as hato's register would have placed them; one the
+    learner placed meanwhile, or whose rule is now *wait*, stays where it is (`apply`). Then Connect kicked when the
+    placements gave it something to read. A worker's call -> {language: the drops placed}. Each drop is forgotten
+    only once settled (`Store.forget_drops`): a library busy or absent, or one that fails part-way, keeps the rest for
+    the next resume."""
+    placed = {}
+    for lang in languages:
+        work = False
+        try:
+            store = library.open_store(lang, role="window")
+            if store is None:
+                continue
+            with store:
+                held = store.held_drops()
+                if not held:
+                    continue
+                done, settled = [], []
+                try:
+                    for drop in held:
+                        try:
+                            if apply(store, drop["id"], drop, settings):
+                                done.append(drop["id"])
+                        except ValueError:          # its anchor moved meanwhile: it waits there, as an unpaused
+                            pass                    # register's does for hato's retry
+                        settled.append(drop["id"])
+                finally:
+                    _forget(store, settled)         # (a busy library mid-way: what wasn't tried stays held)
+                placed[lang] = done
+                from app.connect import inbox
+                work = bool(done) and inbox.pending(store)
+        except Exception as e:                      # never the window's fault: the drops wait in New arrivals
+            print(f"New arrivals ({lang}): hato's waiting drops weren't placed: {e!r}")
+        if work:
+            try:
+                from app.connect import kick
+                kick.kick(settings)
+            except Exception as e:
+                print(f"Connect wasn't started after New arrivals resumed: {e!r}")
+    return placed
+
+
+def _forget(store, ids):
+    """`Store.forget_drops`, retried while another program writes the library for up to HELD_WAIT_S; still busy, the
+    drops stay held (the next resume finds each where it is now: one placed already is skipped by `apply`)."""
+    import time
+    from app import library_store
+    deadline = time.monotonic() + HELD_WAIT_S
+    while ids:
+        try:
+            return store.forget_drops(ids)
+        except library_store.StoreBusy:
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.1)

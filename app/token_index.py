@@ -129,10 +129,12 @@ from operator import itemgetter
 #    犍陀多, ENGINE_REVISION 42): a v23 blob holds the pieces — users rebuild once.
 # v25 a sound standing on its own (a filler, ほっ, えへへ: analyzer § Sounds are no words, ENGINE_REVISION 43) is no
 #    word: a v24 blob counts it — users rebuild once.
-# v26 each file also keeps each sentence's line and its song marks (`lines`: app/song_lines.file_lines, ENGINE_REVISION
-#    44), which a run reads to leave a show's opening and ending songs out of the counts: a v25 row has none — users
+# v26 a transcript's groups in parentheses go (a Netflix transcript's speaker labels and sound notes: analyzer
+#    _TRANSCRIPT_GROUP_RE, ENGINE_REVISION 44): a v25 blob counts them — users rebuild once.
+# v27 each file also keeps each sentence's line and its song marks (`lines`: app/song_lines.file_lines, ENGINE_REVISION
+#    45), which a run reads to leave a show's opening and ending songs out of the counts: a v26 row has none — users
 #    rebuild once.
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

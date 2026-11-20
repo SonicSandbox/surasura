@@ -233,7 +233,9 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert catalog.value(row, on_file, language) == control.value(), row.id
             else:
                 assert given_update is None
-                assert set(changes) == set(expected) and set(changes) <= set(row.keys), (row.id, changes)
+                # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
+                beside = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+                assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()
     shown_at_end = {v.row.id for v in shown_views(page) if v.controls}

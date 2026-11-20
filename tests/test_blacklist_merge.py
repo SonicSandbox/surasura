@@ -96,12 +96,8 @@ def test_chinese_lines_are_kept_as_typed_never_cut_at_a_space_and_comments_kept(
 
 def test_a_word_is_compared_as_the_run_reads_it_a_gloss_never_makes_a_second_line():
     # why: そう-様態5 is そう to every run (cut at the hyphen); the Ignore list's "そう - so" already names it
-    _put("IgnoreList.txt", "# 無視
-そう - so
-")
-    _put("Blacklist.txt", "そう-様態5
-為る
-")
+    _put("IgnoreList.txt", "# 無視\nそう - so\n")
+    _put("Blacklist.txt", "そう-様態5\n為る\n")
     result = word_lists.merge_blacklist("ja")
     assert result["present"] == 1 and result["added"] == 1
     assert _bytes(_path("IgnoreList.txt")).decode("utf-8").splitlines()[-1] == "為る"
@@ -130,6 +126,19 @@ def test_a_word_the_ignore_lists_encoding_cannot_hold_turns_the_file_utf8_and_ke
     word_lists.merge_blacklist("ja")
     assert _bytes(ignore).decode("utf-8").splitlines()[-1] == "𠮟る"
     assert "冒険" in _ignore_set("ja")
+
+
+def test_a_utf16_blacklist_notepad_saved_is_merged_and_moved():
+    # why: Windows' Notepad saves "Unicode" as UTF-16 with a BOM; its words are read and the file still moves (the
+    # check before the move compares like with like, never raw bytes against a re-encoding)
+    _put("IgnoreList.txt", JA_IGNORE)
+    black = _path("Blacklist.txt")
+    with open(black, "wb") as f:
+        f.write("\ufeff# ja Blacklist\r\n為る\r\n其の\r\n".encode("utf-16-le"))
+    result = word_lists.merge_blacklist("ja")
+    assert result["error"] is None and result["added"] == 2
+    assert not os.path.exists(black)
+    assert _bytes(_path("IgnoreList.txt")).decode("utf-8-sig").splitlines()[-2:] == ["為る", "其の"]
 
 
 def test_no_ignore_list_yet_one_is_made_with_its_header():
@@ -191,8 +200,7 @@ def test_a_blacklist_saved_while_it_is_merged_is_never_moved_unread_and_merges_a
 
     def save_meanwhile(path, data):
         real(path, data)
-        _put("Blacklist.txt", JA_BLACKLIST + "冒険
-")             # the learner's editor, between the write and the move
+        _put("Blacklist.txt", JA_BLACKLIST + "冒険\n")             # the learner's editor, between the write and the move
     monkeypatch.setattr(anki_sync, "_atomic_write_bytes", save_meanwhile)
     first = word_lists.merge_blacklist("ja")
     assert first["error"] and os.path.exists(black) and not any(n.startswith("Blacklist.") for n in _trash())

@@ -451,12 +451,11 @@ def merge_blacklist(language):
             if held is not None:
                 held.release()
     try:
-        with open(black_path, "rb") as f:
-            if hashlib.sha256(f.read()).hexdigest()[:12] != digest:      # saved meanwhile (an editor): its new words
-                result["error"] = "Your Blacklist changed while it was merged: it is merged again at the next start."
-                return result                                           # are merged next time, never moved unread
+        if _File(black_path, language).data() != black.data():         # saved meanwhile (an editor): its new words
+            result["error"] = "Your Blacklist changed while it was merged: it is merged again at the next start."
+            return result                                               # are merged next time, never moved unread
         result["retired"] = path_utils.backup_to_trash(black_path, move=True)
-    except OSError as e:
+    except (OSError, Unreadable) as e:
         result["error"] = (f"Your Blacklist's words are on your Ignore list; the Blacklist itself could not be "
                            f"moved ({e}).")
     return result

@@ -5503,7 +5503,8 @@ def test_JR_a_start_that_finds_a_journal_whose_commands_all_landed_clears_it_wit
     assert w2.attempts == 0, "a command that had landed was written again"
     assert heard2.notes == [] and heard2.saved == [] and heard2.rereads == 0
     assert {t: lib.ids(t) for t in ("now", "soon", "goal")} == order and lib.store.item(now[1])["pinned"] == pinned
-    assert not left_beside(M.journal_path(lib.language)), "nothing of the journal left beside it"
+    # (waited on: the writer removes the journal, then its note — a look between the two is too early)
+    assert h.until(lambda: not left_beside(M.journal_path(lib.language))), "nothing of the journal left beside it"
 
 
 @held_refuses

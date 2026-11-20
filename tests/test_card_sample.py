@@ -227,6 +227,28 @@ def test_the_bundled_picture_is_the_specs_four_lines_with_your_list_first():
     assert card_sample.fallback("ko") == card_sample.fallback("ja")       # any other language: the Japanese one
 
 
+def test_each_mark_is_its_own_modes_answer_and_another_episode_counts_only_words_without_a_card_here():
+    # Why: the marks read each mode's own answer — a word off the list is "rare" only under Your list; under Only
+    # one-new-word sentences a word with no line alone here is "another episode" only when one has it, else no card;
+    # and a word carded here is never counted as coming from elsewhere (the café episode's own words and lines).
+    one = {"word": "急に", "reading": "キュウニ", "surface": "急に", "listed": True, "other_new": 0, "line_start": 17.6,
+           "line_text": "ええ、駅まで歩いてきたら、急に雨が降ってきて。"}
+    first = {"word": "出てくる", "reading": "デテクル", "surface": "出てくる", "listed": True, "other_new": 1,
+             "line_start": 103.6, "line_text": "何回も出てくる言葉だけ、あとで調べるんです。"}
+    second = dict(first, word="調べる", reading="シラベル", surface="調べる")
+    rare = {"word": "モカブレンド", "reading": "モカブレンド", "surface": "モカブレンド", "listed": False, "other_new": 0,
+            "line_start": 112.6, "line_text": "お待たせしました。モカブレンドです。"}
+    picks = {"list": [one, first, second], "unknown": [one, first, second, rare], "i1": [one]}
+    pic = card_sample.picture(picks, elsewhere=[("出てくる", "デテクル"), ("急に", "キュウニ")], source="喫茶店の朝")
+    marks = {w["word"]: w["outcome"] for line in pic["lines"] for w in line["words"]}
+    assert marks["モカブレンド"] == {"list": "rare", "unknown": "card", "i1": "none"}
+    assert marks["出てくる"] == {"list": "amber", "unknown": "amber", "i1": "other"}
+    assert marks["調べる"] == {"list": "amber", "unknown": "amber", "i1": "none"}
+    assert marks["急に"] == {"list": "card", "unknown": "card", "i1": "card"}
+    assert pic["counts"] == {"list": {"here": 3, "elsewhere": 0}, "unknown": {"here": 4, "elsewhere": 0},
+                             "i1": {"here": 1, "elsewhere": 1}}          # 急に is carded here: never from elsewhere
+
+
 def test_an_episode_without_a_two_new_word_line_is_drawn_as_the_bundled_sample():
     # Why: the picture exists to show one new word vs two; an episode whose list words all sit alone can't show it,
     # so the window draws the bundled sample (named a sample) instead of a picture that teaches nothing.

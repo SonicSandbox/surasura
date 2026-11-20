@@ -195,7 +195,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     Japanese sample's list. SCHEMA_VERSION 24. 3.0.x.
 # 43: sounds are no words (§ Sounds are no words): a filler, an interjection of one mora said alone or cut short (ほっ,
 #     なっ, え？) or a laugh (えへへ, ふふっ) standing on its own is no use, no row and no card. SCHEMA_VERSION 25.
-ENGINE_REVISION = 43
+# 44: a transcript's groups in parentheses are no speech (_TRANSCRIPT_GROUP_RE: SUB-PARENS, widened): a Netflix
+#     transcript's speaker labels and sound notes no longer count as words, nor the speakers' names once per line they
+#     speak. SCHEMA_VERSION 26. 3.0.17.
+ENGINE_REVISION = 44
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3618,6 +3621,14 @@ def parse_ass(file_path, language='ja'):
 # text' (the time as the cue's timing line wrote it: clean_vtt_cues). 93 of 原作's 160 uses came from headers.
 _TRANSCRIPT_RULE = "-" * 60
 _TRANSCRIPT_TIME_RE = re.compile(r'^\[(?:\d+:)?\d{2}:\d{2}\] ', re.M)
+# A caption's group in parentheses — a speaker label （平野）, a name's reading （風早(かぜはや)）, a sound （足音） — is no
+# speech: a transcript drops it as a subtitle's cue does (SUB-PARENS; clean_subtitle_text). A Netflix or Disney+
+# episode arrives as a transcript (app/online_receiver.py), its labels on about half its lines. The downloader writes a
+# YouTube transcript as ONE line (its cues joined with spaces), so a group here is one level deep at most and short
+# (_TRANSCRIPT_GROUP_MAX characters inside, a nested one counted whole): a stray bracket is text, never a reason to drop
+# the speech up to some later one. The line player leaves the same groups out of its search (cues._transcript_removed).
+_TRANSCRIPT_GROUP_MAX = 40
+_TRANSCRIPT_GROUP_RE = re.compile(r'[(（](?:[^()（）\n]|[(（][^()（）\n]*[)）]){0,%d}[)）]' % _TRANSCRIPT_GROUP_MAX)
 _CAPTION_KIND_RE = re.compile(r'\(([^()]*)\)$')
 # The header's caption kinds that no person wrote, as the transcript downloader names them: YouTube's own speech
 # recognition, and its machine translation of another language's captions. The recognizer misspells a word the same
@@ -3742,13 +3753,13 @@ def _strip_verse_numbers(text):
 
 def strip_text_conventions(text, language='ja', ext='.txt'):
     """A text file's content without what its format writes around the text: the downloader's header, its
-    timestamps and the captions' sound cues; Markdown's markup (.md); and in Japanese books Aozora Bunko's ruby,
+    timestamps, the captions' sound cues and groups in parentheses (labels, readings, sounds); Markdown's markup (.md); and in Japanese books Aozora Bunko's ruby,
     notes and colophon, a reading in parentheses (as paren_readings() says) and a scripture's apparatus
     (references, footnote marks, verse numbers). The words and punctuation of the text itself are taken as
     written."""
     body = transcript_body(text)
     if body is not None:
-        return _SOUND_CUE_RE.sub('', _TRANSCRIPT_TIME_RE.sub('', body))
+        return _TRANSCRIPT_GROUP_RE.sub('', _SOUND_CUE_RE.sub('', _TRANSCRIPT_TIME_RE.sub('', body)))
     if ext == '.md':
         text = _MD_LINK_RE.sub(r'\1', _SUBRIP_TAG_RE.sub('', text))
         text = _MD_INLINE_RE.sub('', _MD_BLOCK_RE.sub('', text))

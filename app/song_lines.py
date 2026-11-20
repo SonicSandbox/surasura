@@ -1,4 +1,4 @@
-"""Songs out of the counts (Kotoba-OP, 3.0.18): a show's opening and ending songs, which its subtitles write again every
+"""Songs out of the counts (Kotoba-OP, 3.0.17): a show's opening and ending songs, which its subtitles write again every
 episode, are left out of a run's counts while `logic.count_song_lyrics` is off (the default).
 
 Measured on a 746-episode library: 17 of 45 shows counted their

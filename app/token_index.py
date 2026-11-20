@@ -296,7 +296,7 @@ def _schema_ready(conn):
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         return False
     try:
-        conn.execute("SELECT names, bound, lines FROM files LIMIT 1")
+        conn.execute("SELECT names, bound FROM files LIMIT 1")
         conn.execute("SELECT 1 FROM aggregate LIMIT 1")
         conn.execute("SELECT 1 FROM bound LIMIT 1")
         conn.execute("SELECT 1 FROM meta LIMIT 1")
@@ -333,7 +333,8 @@ def _ensure_schema(conn):
 KEPT, COUNTED, ASIDE = 0, 1, 2
 _STATE = "CASE WHEN counted = 1 THEN 1 WHEN aside = 1 THEN 2 ELSE 0 END"
 _EVIDENCE = "(counted = 1 OR aside = 1)"
-_ADDED = (("counted", "INTEGER NOT NULL DEFAULT 1"), ("aside", "INTEGER NOT NULL DEFAULT 0"))
+_ADDED = (("counted", "INTEGER NOT NULL DEFAULT 1"), ("aside", "INTEGER NOT NULL DEFAULT 0"),
+          ("lines", "BLOB"))      # a row written before it has none: no song marks until the file is read again
 
 
 def _columns(state):

@@ -288,3 +288,23 @@ def test_a_rule_that_fails_never_stops_a_generate(tmp_path):
     with patch("app.song_lines.left_out", side_effect=RuntimeError("boom")):
         rows = _generate(tmp_path, "ja", JA_SHOW)
     assert {"背中", "約束"} <= set(rows["Word"])
+
+
+def test_a_marked_run_needs_only_three_episodes_in_a_long_show():
+    """A 24-episode show (bar 6): a second ending sung with ♪ in only four episodes is a song (a run half marked needs
+    3); the same four lines unmarked in four episodes — a flashback — stay under the bar."""
+    def lines(texts, note):
+        return [[song_lines.line_key(t), song_lines.NOTE if note else 0] for t in texts]
+    said = ["今日はどこへ行くの", "駅まで歩こう", "雨が降りそうだね", "傘を持ってきた"]
+    ending = ["星の降る夜に", "君の名前を呼んだ", "遠く離れても", "この歌を忘れない"]
+    files = []
+    for n in range(24):
+        body = lines([f"第{n}話の台詞です"], False)
+        if n < 4:
+            body += lines(ending, True) + lines([f"第{n}話の次の台詞", f"第{n}話のまた別の台詞"], False)
+            body += lines(said, False)
+        files.append((f"e{n}", n, body))
+    assert song_lines.need(24) == 6
+    out = song_lines.left_out(files)
+    assert out["e0"] == {1, 2, 3, 4}, "the ♪ ending's four lines"
+    assert not out["e10"]

@@ -199,7 +199,7 @@ ENSURE_AUDIO_EXAMPLE = False
 # 44: a show's opening and ending songs are out of the counts while logic.count_song_lyrics is off (the default;
 #     app/song_lines.py, `songs_left_out`): an .ass event in a song style, a run of lines repeated in a quarter of a
 #     title's episodes, a ♪ line that is one of them. The token store keeps each sentence's line (`lines`):
-#     SCHEMA_VERSION 26. 3.0.18.
+#     SCHEMA_VERSION 26. 3.0.17.
 ENGINE_REVISION = 44
 
 # Load Logic Settings from settings.json

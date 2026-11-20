@@ -3110,7 +3110,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
         if store is not None:
             try:
                 stamps = store.file_stamps(paths)
-                digest = hashlib.sha1(json.dumps([song_lines.RULE, built, sorted((p, stamps.get(p)) for p in paths)],
+                digest = hashlib.sha1(json.dumps([song_lines.RULE, ENGINE_REVISION, built, sorted((p, stamps.get(p)) for p in paths)],
                                                  ensure_ascii=False).encode("utf-8")).hexdigest()
             except Exception:
                 digest = None
@@ -3138,7 +3138,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
             files.append((path, lines))
         found = {path: numbers for path, numbers in songs_left_out(files).items() if numbers}
         out.update(found)
-        if digest is not None:
+        if digest is not None and all(path in held for path in paths):   # never kept from a file without lines
             keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
     if stats is not None:
         stats.update(read=read, kept=used)

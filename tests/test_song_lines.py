@@ -385,3 +385,32 @@ def test_a_changed_episode_or_a_new_rule_finds_the_songs_again(tmp_path):
         assert again[third] == first[third], "the new line sits after the ending: the numbers before it hold"
     finally:
         store.close()
+
+
+def test_kept_songs_that_are_no_answer_are_read_as_none_kept(tmp_path):
+    """A damaged meta value (valid JSON, but not the kept answers) is no answer: the run finds the songs and keeps them
+    again — never a warning every Generate until someone clears it."""
+    found, data_dir, db = _indexed_show(tmp_path)
+    store = ti.open_store("ja", db)
+    try:
+        store.set_meta("songs_left_out", "[1, 2]")
+        assert store.songs_kept() == {}
+        assert analyzer.song_sentences(found, data_dir, store, None, "ja")
+        assert isinstance(store.songs_kept(), dict) and store.songs_kept()
+    finally:
+        store.close()
+
+
+def test_a_work_with_a_file_the_store_holds_no_lines_for_is_never_kept(tmp_path):
+    """A row written before the lines column has none: its work's answer is found but never kept, so the file read
+    again later is counted right."""
+    found, data_dir, db = _indexed_show(tmp_path)
+    store = ti.open_store("ja", db)
+    try:
+        store.conn.execute("UPDATE files SET lines = NULL WHERE path = ?", (os.path.normcase(os.path.abspath(found[0][0])),))
+        store.conn.commit()
+        assert found[0][0] not in store.file_lines([found[0][0]])
+        analyzer.song_sentences(found, data_dir, store, None, "ja")
+        assert store.songs_kept() == {}
+    finally:
+        store.close()

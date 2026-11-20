@@ -776,7 +776,8 @@ class Store:
             rows = self.conn.execute(f"SELECT path, lines FROM files WHERE path IN ({','.join('?' * len(batch))})",
                                      batch).fetchall()
             for path, blob in rows:
-                out[keys[path]] = _decode_tokens(blob)
+                if blob is not None:                 # a row written before the column has none: not held
+                    out[keys[path]] = _decode_tokens(blob)
         return out
 
     def file_stamps(self, paths):
@@ -795,12 +796,19 @@ class Store:
         """The songs a run left out, each work's kept until its files change (analyzer.song_sentences): {work:
         [digest, {path: [sentence number, ...]}]}, or {} (none kept, or unreadable)."""
         try:
-            return json.loads(self.get_meta("songs_left_out") or "{}")
+            kept = json.loads(self.get_meta("songs_left_out") or "{}")
         except ValueError:
             return {}
+        return kept if isinstance(kept, dict) else {}
 
     def keep_songs(self, kept):
-        self.set_meta("songs_left_out", json.dumps(kept, ensure_ascii=False, separators=(",", ":")))
+        """Keep `kept` (`songs_kept`'s shape) — rolled back on a failure (a store locked by the indexer), so the run's
+        connection is left with no transaction open."""
+        try:
+            self.set_meta("songs_left_out", json.dumps(kept, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):

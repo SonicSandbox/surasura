@@ -682,9 +682,10 @@ def first_cards(language, settings, data_dir=None):
     explicit, by "user"): Connect's inbox makes their jobs; then Connect kicked (`kick.kick`: nothing while it's off)
     -> the ids logged ([]: no library). Kantan-B2: the line's answer is kept before the log is written — while it is
     unanswered Connect holds every entry (`inbox.first_run_waits`), so a Connect already looking never passes these
-    by; the log failing takes the answer back (the line asks again)."""
+    by; the log failing takes the answer back (the line asks again). Kantan-B2b: the jobs its *Not now* set aside are
+    queued again first (`actions.first_run_back`: mined in their old order, before the top 20's new ones)."""
     from app import library_store
-    from app.connect import kick, library
+    from app.connect import actions, kick, library
     from app.path_utils import get_data_path, get_user_files_path
     from app.services import needs
     language = _language(language)
@@ -694,6 +695,7 @@ def first_cards(language, settings, data_dir=None):
         return []
     answered = needs.answer(language, [needs.FIRST_CARDS])
     try:
+        actions.first_run_back(language)             # (its failure takes the answer back too, as the log's)
         with store:
             library.ensure_reader(store)                 # Connect's watermark first: what is logged next is read
             ids = store.enter_mine_line(by="user")

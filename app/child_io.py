@@ -18,7 +18,8 @@ _state = {"gone": False}
 
 
 def parent_gone():
-    """Has a write to this process's stdout or stderr failed: the program reading it has gone?"""
+    """Has a write to this process's stdout failed: the program reading it has gone? (stderr's failing only goes
+    quiet: it may be a log file, never the parent's channel.)"""
     return _state["gone"]
 
 
@@ -26,8 +27,9 @@ class _ToParent:
     """A stream to the parent that never raises for a parent that has gone: from the first failed write or flush on,
     everything goes to os.devnull (the old stream closed quietly, its unsent bytes dropped)."""
 
-    def __init__(self, stream):
+    def __init__(self, stream, tells=True):
         self._stream = stream
+        self._tells = tells                 # a failure here is the parent gone (stdout's, the channel), or only quiet
 
     def write(self, text):
         try:
@@ -45,7 +47,8 @@ class _ToParent:
             self._left()
 
     def _left(self):
-        _state["gone"] = True
+        if self._tells:
+            _state["gone"] = True
         old, self._stream = self._stream, open(os.devnull, "w", encoding="utf-8")
         try:
             old.close()                     # its buffer's flush fails once more here, never at the process's exit
@@ -56,14 +59,15 @@ class _ToParent:
         return getattr(self._stream, name)
 
 
-def guarded(stream):
-    """`stream` as a `_ToParent` (None and an already guarded stream as they are)."""
+def guarded(stream, tells=True):
+    """`stream` as a `_ToParent` (None and an already guarded stream as they are); `tells`: its failure is
+    `parent_gone()`'s."""
     if stream is None or isinstance(stream, _ToParent):
         return stream
-    return _ToParent(stream)
+    return _ToParent(stream, tells)
 
 
 def guard_std_streams():
     """sys.stdout and sys.stderr guarded (`guarded`) for the rest of this process."""
     sys.stdout = guarded(sys.stdout)
-    sys.stderr = guarded(sys.stderr)
+    sys.stderr = guarded(sys.stderr, tells=False)

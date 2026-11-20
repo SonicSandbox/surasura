@@ -482,16 +482,21 @@ def _a_window(kind):
 
 def _window_gone(steps):
     """Haya-CL 3.0.17: has the window this Connect worked beside closed — one open at a look of this run, none now
-    (looked at most every WINDOW_LOOK_S)? Never for a Connect that saw no window, a stand-in without the look, or a
-    look that fails (`_window_open`)."""
-    if getattr(steps, "window_open", None) is None:
+    (looked at most every WINDOW_LOOK_S)? Never for a Connect that saw no window, nor a stand-in without the look; a
+    look that fails is no look (logged): neither a window seen nor one gone."""
+    window_open = getattr(steps, "window_open", None)
+    if window_open is None:
         return False
     now = time.monotonic()
     looked = getattr(steps, "window_look", None)
     if looked is not None and now - looked[0] < WINDOW_LOOK_S:
         open_now = looked[1]
     else:
-        open_now = _window_open(steps)
+        try:
+            open_now = bool(window_open())
+        except Exception:
+            log.warning("Connect couldn't look for an open window; it goes on", exc_info=True)
+            return False
         try:
             steps.window_look = (now, open_now)
             steps.window_seen = getattr(steps, "window_seen", False) or open_now

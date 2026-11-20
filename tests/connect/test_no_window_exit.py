@@ -48,6 +48,13 @@ class Steps(FakeSteps):
         return bool(self.plan.get("replaced"))
 
 
+@pytest.fixture(autouse=True)
+def one_start_look(monkeypatch):
+    # 3.0.17: Connect's start looks for the window once (`_window_gone`) and keeps that look WINDOW_LOOK_S; held for
+    # the test, the answers in turn below never depend on how fast the machine is
+    monkeypatch.setattr(runner, "WINDOW_LOOK_S", 3600, raising=False)
+
+
 @pytest.fixture
 def ledger(tmp_path):
     with Ledger(str(tmp_path / "ledger.sqlite")) as led:
@@ -78,10 +85,9 @@ def test_with_a_window_open_it_still_looks_every_2_minutes(tmp_path, ledger):
     assert slept == [runner.LOOK_EVERY_S] * 2 and "no_window" not in summary
 
 
-def test_the_window_closing_during_the_waits_ends_connect_at_its_next_look(tmp_path, ledger, monkeypatch):
+def test_the_window_closing_during_the_waits_ends_connect_at_its_next_look(tmp_path, ledger):
     # why: the window open at the first look and closed during the pause: the next look is the last one (the first
-    # answer is Connect's start's own look since 3.0.17, kept for the run: `_window_gone`)
-    monkeypatch.setattr(runner, "WINDOW_LOOK_S", 3600, raising=False)
+    # answer is Connect's start's own look since 3.0.17, kept for the run: `one_start_look`)
     _steps, summary, slept = _run(tmp_path, ledger, dict(WAITING, window=[True, True, False]), looks=5)
     assert slept == [runner.LOOK_EVERY_S] and summary["looks"] == 2 and summary.get("no_window") is True
 

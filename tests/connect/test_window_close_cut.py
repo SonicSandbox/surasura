@@ -138,3 +138,22 @@ def test_the_window_look_is_no_window_for_a_stand_in_without_it_or_a_look_that_f
     failing = Failing()
     failing.window_seen = True
     assert runner._window_gone(failing) is False, "a failed look waits as before, never a cut"
+
+
+def test_a_failed_first_look_is_no_window_seen(tmp_path, ledger):
+    # the state lens: a look that fails answered "open" (waiting's safe side) and was kept as a window seen — a
+    # Connect started with no window (hato's) whose first look failed was then cut by the next look's "no window"
+    job_id = _queue(ledger, "ja", 1)
+    answers = iter([OSError("the running marks can't be listed")])
+
+    class FirstLookFails(Steps):
+        window = False
+
+        def window_open(self):
+            failure = next(answers, None)
+            if failure is not None:
+                raise failure
+            return self.window
+    steps = FirstLookFails(str(tmp_path), {"line": {"ja": [1]}, "words": {"1": EPISODE_WORDS["ja"]}})
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert ledger.job_by_id(job_id)["state"] == "done" and "stopped" not in summary

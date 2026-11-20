@@ -53,6 +53,14 @@ def test_a_closed_stream_counts_as_gone_too(fresh):
     stream.close()
 
 
+def test_stderr_failing_alone_goes_quiet_but_is_no_parent_gone(fresh):
+    # stderr may be a log file the window never reads: its failure must never cancel a live run
+    stream = child_io.guarded(_closed_pipe(), tells=False)
+    print("Traceback: 認真", file=stream, flush=True)
+    assert not child_io.parent_gone()
+    stream.close()
+
+
 def test_text_the_stream_cant_hold_is_no_parent_gone(fresh):
     # a UnicodeEncodeError is a ValueError: it must stay the caller's error, never silence the child for good
     stream = child_io.guarded(io.TextIOWrapper(io.BytesIO(), encoding="ascii"))

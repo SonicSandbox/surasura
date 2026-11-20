@@ -12,8 +12,9 @@ and when — to tell Anki Miner the line to cut a card from. This reads them, by
   naming its first copy — a Generate reads the line once, and the cues and their order stay the file's (Anki Miner
   indexes its own). Two units are kept (R05-C12): each Cue is the event Anki Miner cuts a card
   from, and `caption` numbers the caption window a Generate reads it in (an .srt's cue is its own; an .ass file's
-  events on screen together in one colour are one, `analyzer._captions`). A sung line — karaoke timing, a style the
-  subtitler named OP / ED / song, a ♪ — is kept and marked `sung`: a card is never cut from one.
+  events on screen together in one colour are one, `analyzer._captions`). A sung line — karaoke timing, a song
+  style (`song_lines.song_style`: OPJP, EDCN, 歌, Lyrics …, the style a Generate leaves a song out by), a ♪
+  (`song_lines.noted`) — is kept and marked `sung`: a card is never cut from one.
 - `tokens(cues, language)` -> [Token]: each cue's words, keyed as every caller keys them — Japanese through
   `JapaneseTokenizer` (so `join_affixes`, the library's name tables, sanitized lemmas), Chinese through
   `ChineseTokenizer` (`chinese_cut` / `chinese_word`, in the `script` asked for) — each with the index of the cue it
@@ -36,7 +37,7 @@ import re
 import unicodedata
 from collections import namedtuple
 
-from app import analyzer, zh_script
+from app import analyzer, song_lines, zh_script
 from app.path_utils import SIDECAR_SUFFIX, read_text
 
 # One subtitle line: `index` its place among the cues kept (file order), `start` / `end` milliseconds as the file
@@ -53,6 +54,7 @@ class Cues(list):
     text's sentences (`reading`), not a subtitle's lines."""
     joiner = ""
     units = False
+    clues = None        # (Japanese .srt) the file's own name clues, read as a Generate reads them (names.file_clues)
 
 # One word said in a cue: the analyzer's key and spellings (lemma, reading, surface, orth), the index of its cue,
 # the sentence it was read in (its text, as the tokenizer yields it), and (Japanese) the tagger's node it was read
@@ -66,10 +68,6 @@ SUBTITLES = (".srt", ".ass", ".ssa")
 _SRT_TIMING_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})")
 # ASS / SSA: "0:00:02.42" (hundredths).
 _ASS_TIME_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$")
-# A style the subtitler named for a song (OP_JP, ED-Romaji, Insert Song, Karaoke): sung, though its lines carry no
-# karaoke timing. Only the pick reads this; a Generate still counts the line's words.
-_SONG_STYLE_RE = re.compile(r"(?i)(?:^|[^a-z])(?:op|ed|opening|ending|song|karaoke|insert)(?:[^a-z]|$)")
-_SONG_MARKS = frozenset("♪♫♬〽")
 
 
 def _ms(hours, minutes, seconds, fraction):
@@ -83,7 +81,8 @@ def seconds(ms):
 
 
 def _sung(text):
-    return not _SONG_MARKS.isdisjoint(text)
+    """A line carrying a song's mark (♪ ♫ ♬ …) — song_lines' own test, the one a Generate leaves songs out by."""
+    return song_lines.noted(text)
 
 
 def _srt(content, language):
@@ -170,7 +169,7 @@ def _ass(content, language):
             counted = False
         if text:
             colour = analyzer._ass_colour(raw, colours.get(style, ""), colours)
-            out.append((start, end, text, karaoke or bool(_SONG_STYLE_RE.search(style)) or _sung(text), colour,
+            out.append((start, end, text, karaoke or song_lines.song_style(style) or _sung(text), colour,
                         counted))
     return out
 
@@ -185,6 +184,9 @@ def read(path, language="ja"):
         return cues
     content = read_text(path, language)
     srt = lower.endswith(".srt")
+    if srt and language == "ja":
+        from app import names
+        cues.clues = names.file_clues(content)      # as extract_text reads them: the words are the token store's
     if not srt:                             # read as a Generate reads it: TV captions cleaned (ENGINE_REVISION 31)
         from app import caption_clean
         content = caption_clean.clean(content, arrows=False)     # arrows kept: "runs on", as a Generate reads
@@ -223,11 +225,13 @@ def reading(path, language="ja", script="asis", tokenizer=None):
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                      else analyzer.JapaneseTokenizer())
-    text = analyzer.extract_text(str(path), language) or ""
+    facts = {}          # its own name clues too (Japanese), read as the token store reads them
+    text = analyzer.extract_text(str(path), language, facts) or ""
     shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
     cues, out, last, cursor, said = Cues(), [], None, 0, 0
     cues.units = True
-    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language):
+    cues.clues = facts.get("clues")
+    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language, cues.clues):
         if sentence is not last:
             last = sentence
             found = shown.find(sentence, said) if sentence else -1
@@ -274,16 +278,25 @@ def _text(cues, language):
     return "".join(parts), starts
 
 
-def _read(tokenizer, text, language):
+def _read(tokenizer, text, language, clues=None):
     """[(sentence, (lemma, reading, surface, orth), node)] of `text`, as the tokenizer reads it; the node (Japanese)
-    found by reading the text once more through `join_affixes` and matching surfaces in order."""
-    read = [(sentence, token) for sentence, sentence_tokens in tokenizer.tokenize_sentences(text)
-            for token in sentence_tokens]
+    found by reading the text once more through `join_affixes` and matching surfaces in order. `clues`: the file's own
+    name clues (Japanese), applied as the token store applies them."""
+    sentences = tokenizer.tokenize_sentences(text, clues=clues) if clues else tokenizer.tokenize_sentences(text)
+    read = [(sentence, token) for sentence, sentence_tokens in sentences for token in sentence_tokens]
     if language != "ja":
         return [(sentence, token, None) for sentence, token in read]
     joins = analyzer.affix_joins()
-    nodes = [node for line in text.split("\n")
-             for node in analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)]
+    work = None
+    if clues:
+        from app import names
+        work = names.WorkNames(clues)
+    nodes = []
+    for line in text.split("\n"):
+        words = analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)
+        # a sound standing on its own is no token (analyzer § Sounds are no words): never a node a word is paired with
+        nodes.extend(node for node in (work.words(tokenizer, line, list(words), joins) if work is not None else words)
+                     if node.__class__ is not analyzer.SoundNode)
     out, at = [], 0
     for sentence, token in read:
         node = None
@@ -309,7 +322,7 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
         # Chinese words come out in the script asked for: look for them in the text so written (length-preserving)
         shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
         offsets, cursor = [offset for offset, _cue in starts], 0
-        for sentence, (lemma, reading, surface, orth), node in _read(tokenizer, text, language):
+        for sentence, (lemma, reading, surface, orth), node in _read(tokenizer, text, language, cues.clues):
             found = shown.find(surface, cursor) if surface else -1
             at = cursor if found < 0 else found
             cursor = at + len(surface)
@@ -447,7 +460,7 @@ def timeline(path, language="ja", script="asis"):
     """The timed lines of the file at `path` and the text a Generate reads from it: Timeline. A subtitle (.srt, .ass,
     .ssa): `read` and the text `tokens` reads (`_text`), so a sentence's lines are the cues Connect cuts a card from.
     A video transcript: its sidecar's lines (`_transcript`), searched without what a Generate takes out of it (its
-    timestamps, sound cues, inline readings: `analyzer.strip_text_conventions`). Anything else has none (every `line`
+    timestamps, sound cues, groups in parentheses: `analyzer.strip_text_conventions`). Anything else has none (every `line`
     is None)."""
     if str(path).lower().endswith(SUBTITLES):
         cues = read(path, language)
@@ -461,10 +474,12 @@ _TRANSCRIPT_REMOVED = []
 
 
 def _transcript_removed():
-    """What a Generate takes out of a video transcript's text — its timestamps, the captions' sound cues, what the
-    reader removes inside a line (`analyzer.REMOVED_INLINE`) — as one pattern, made once."""
+    """What a Generate takes out of a video transcript's text — its timestamps, the captions' sound cues, its groups in
+    parentheses (`analyzer._TRANSCRIPT_GROUP_RE`), what the reader removes inside a line (`analyzer.REMOVED_INLINE`)
+    — as one pattern, made once."""
     if not _TRANSCRIPT_REMOVED:
         _TRANSCRIPT_REMOVED.append(re.compile("|".join((analyzer._TRANSCRIPT_TIME_RE.pattern,
-                                                        analyzer._SOUND_CUE_RE.pattern, analyzer.REMOVED_INLINE)),
+                                                        analyzer._SOUND_CUE_RE.pattern,
+                                                        analyzer._TRANSCRIPT_GROUP_RE.pattern, analyzer.REMOVED_INLINE)),
                                               re.M))
     return _TRANSCRIPT_REMOVED[0]

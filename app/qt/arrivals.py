@@ -674,6 +674,7 @@ class ArrivalsInset(QToolButton):
 # the window's thread at 20,000 rows).
 HEAD = "head:"
 _KEY = operator.attrgetter("key")
+SETTLE_VIEWS = 2           # Kura-NA: the reader's views after a skip is saved before its pressed rows are the store's
 PARTS = ("more", "icon", "number")          # a row's controls, hit-tested in this order (anything else: the row)
 
 
@@ -720,8 +721,7 @@ def part_tip(arrival, part):
     if part == "number":
         return arrival.tip
     if part == "row":                # a6 #3: the full title (the painted one is cut), as Current's; a5-2: then the 🎧's
-        audio = getattr(arrival, "audio", "")
-        return f"{arrival.title}\n{audio}" if audio else arrival.title
+        return rows.heard_tip(arrival)
     return None
 
 
@@ -1481,6 +1481,9 @@ class ArrivalsTray(motion.Overlay):
         self.kept_out = (0, (), ())         # (how many, the Removes' trash ids, the folders they were kept out of)
         self.giving = None                  # a Bring back saving: the looks' last word on them, held meanwhile
         self.groups = ()                    # the view's arrival_groups last given (shown, or waiting for `open`)
+        self._given = ()                    # Kura-NA: ... as the reader gave them (`groups` holds them without
+        self.leaving = frozenset()          # the rows of `leaving`: item ids a skip takes, gone from its press —
+        self._skips = {}                    # the union of each skip's own: {its token: [ids, saved]})
         self._applied = ()                  # ... and those the rows show (the model is brought up to date open only)
         self._target = ((), [], [], {})     # IK-6: (groups, the rows' keys, their objects, {head kind: its row})
         self._filling = False               # ... the rows coming in in steps (a first open at 20,000)
@@ -1538,12 +1541,66 @@ class ArrivalsTray(motion.Overlay):
         """The reader's `View.arrival_groups`. -> True when anything changed: only the rows whose arrival is a new
         object are repainted; an unchanged view (the same tuple, S1's cache) touches nothing (S19). While the tray is
         closed the groups are only kept (no row work): `open` brings the rows up to date."""
-        if groups is self.groups:
+        if groups is self._given:
             return False
-        self.groups = groups
+        self._given = groups
+        if any(s[1] for s in self._skips.values()):
+            self._settled(groups, view=True)             # (a saved skip's ids the store's view no longer holds)
+        self.groups = self._without_leaving(groups)
         if self.open_now():
             self._apply()
         return True
+
+    # --- Kura-NA: a skip's rows leave at its press, the store following ------------------------------------------ #
+    def _without_leaving(self, groups):
+        """`groups` without the rows every item of which a skip under way takes (`leaving`); the same tuple when none
+        does (nothing looked at again while nothing leaves)."""
+        gone = self.leaving
+        if not gone:
+            return groups
+        out, changed = [], False
+        for g in groups:
+            rows = tuple(a for a in g.rows if not (a.item_ids and gone.issuperset(a.item_ids)))
+            if len(rows) == len(g.rows):
+                out.append(g)
+                continue
+            changed = True
+            if rows:
+                out.append(g._replace(rows=rows, keys=tuple(map(_KEY, rows))))
+        return tuple(out) if changed else groups
+
+    def _leaving(self):
+        """The rows every skip under way takes leave now (`leaving`: the union of each skip's ids)."""
+        ids = frozenset().union(*(s[0] for s in self._skips.values()))
+        if ids == self.leaving:
+            return False
+        self.leaving = ids
+        self.groups = self._without_leaving(self._given)
+        if self.open_now():
+            self._apply()
+        return True
+
+    def skips_undone(self):
+        """A skip undone (its toast's Undo or Ctrl+Z, whose own ticket is no skip's — `drag._skips_moved`): every saved
+        skip's rows are the store's to show now; a skip still on its way keeps its own out."""
+        if any(s[1] for s in self._skips.values()):
+            self._skips = {t: s for t, s in self._skips.items() if not s[1]}
+            self._leaving()
+
+    def _settled(self, groups, view=False):
+        """A saved skip's ids leave `leaving` once the store's view (`groups`) no longer holds them: from then on the
+        store's own view keeps them out, and the same items back later (*Put back* from the Removed list, under their
+        old ids) show again. Train 43's keeper (finding 4): the store's answer was read before the skip was saved, so it
+        may name an item the save kept — `view`: a new view of the reader's; SETTLE_VIEWS of them after the save, the
+        skip lets go of all it still holds (those rows are the store's to show)."""
+        held = {i for g in groups for a in g.rows for i in a.item_ids}
+        for token, s in list(self._skips.items()):
+            if s[1]:
+                s[0] = frozenset(i for i in s[0] if i in held)
+                s[2] += bool(view)
+                if not s[0] or s[2] >= SETTLE_VIEWS:
+                    del self._skips[token]
+        self.leaving = frozenset().union(*(s[0] for s in self._skips.values()))
 
     def _apply(self):
         """The rows brought up to the groups last given: the model's inserts, removes and repaints of what changed. A
@@ -2304,12 +2361,53 @@ class ArrivalsTray(motion.Overlay):
     def skip_folder(self, arrival, path):
         """Q7 *Never read this folder*: `Writer.skip_folder` through the window's writer (`item_menu.give_skip`, a list
         row's one rule): one change — every file under the folder leaves, the tray's rows and the list's with it, as
-        *Remove…* takes them — its toast with one Undo, which brings them back; a refusal is the writer's note."""
+        *Remove…* takes them — its toast with one Undo, which brings them back; a refusal is the writer's note. Its
+        rows leave at the press (`skip_leaves`, Kura-NA)."""
         from app.qt import item_menu
         moves = self._moves()
         if moves is None or moves.refused() is not None:
             return None
         return item_menu.give_skip(moves, path, list(arrival.item_ids))
+
+    def skip_leaves(self, path, ids=()):
+        """Kura-NA: a skip of the folder `path` given (⋯'s, the tray's, Settings' *Skip a folder…* — `give_skip`, the
+        one rule): its rows leave the tray at the press — the rows of `ids` (the row it was asked from) at once, then
+        every row the store says lies under the folder (`SourceLooks.under`, its asks worker: a read, never in line
+        behind a look) in their place — and come back if nothing was skipped (refused, ended unsaved) or it is undone;
+        saved, the store's own view follows (the rows are gone from it). -> `told(event)` for the skip's ticket."""
+        from app.qt import bridge
+        token = object()
+        self._skips[token] = [frozenset(ids), False, 0]          # [its ids, saved, the store's views since]
+        self._leaving()
+        looks = getattr(self.win, "looks", None)
+        if looks is not None and hasattr(looks, "under"):
+            relay = bridge.Relay(self)
+
+            def found(got):
+                relay.deleteLater()
+                if sip.isdeleted(self):
+                    return
+                s = self._skips.get(token)
+                if s is not None and got is not None:    # (undone or refused meanwhile: nothing leaves)
+                    s[0] = frozenset(got)
+                    if s[1]:
+                        self._settled(self._given)
+                    self._leaving()
+            relay.said.connect(found)
+            if not looks.under(path, relay.call):
+                relay.deleteLater()
+
+        def told(event):
+            if sip.isdeleted(self):
+                return
+            if event in ("refused", "undone", "ended"):
+                self._skips.pop(token, None)
+                self._leaving()
+            elif event == "saved" and token in self._skips:
+                self._skips[token][1] = True
+                self._settled(self._given)               # (the store's view may hold it already)
+                self.groups = self._without_leaving(self._given)
+        return told
 
     # --- a drag from it ---------------------------------------------------------------------------------------------- #
     def start_drag(self, key, global_pos):

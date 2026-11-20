@@ -96,7 +96,7 @@ class Tile(QWidget):
             return False
         self.work = work
         self.sets += 1
-        self.setToolTip(work.tip)
+        self.setToolTip(rows.heard_tip(work, work.tip))    # Kantan-T: then the 🎧's words, as a row's
         self.setAccessibleName(work.accessible)
         name = strings.GOAL_TILE_MORE_NAME.format(title=work.title)
         self.more.setAccessibleName(name)
@@ -208,7 +208,7 @@ class Tile(QWidget):
         y = pad + ch + round(8 * _f())
         th = rows.TEXT.metrics("row-title").height()
         room = self.more.x() - pad - 2                   # the ⋯ stands right of the title and its line
-        rows.TEXT.draw(p, pad, y + th / 2, self.work.title, "row-title", room, rows.c("ink"), dpr=dpr)
+        rows.TEXT.draw(p, pad, y + th / 2, rows.heard_title(self.work), "row-title", room, rows.c("ink"), dpr=dpr)
         sh = rows.TEXT.metrics("row-sub").height()
         rows.TEXT.draw(p, pad, y + th + sh / 2, self.work.line, "row-sub", room, rows.c("overlay-ink-dim"), dpr=dpr)
         if self.work.key in self.sheet.picks:          # --- A4: picked, as a picked row is (`row-picked`, the accent)
@@ -700,7 +700,12 @@ class GoalSheet(motion.Overlay):
             def command(t):
                 return writer.move(ids, "soon", after_id=after_id, label=t)
         self.close()
-        seq = moves._give(Ticket(text, ids=ids), command)
+        ticket = Ticket(text, ids=ids)
+        if where == "top":                           # Kura-EO: saved in its show's episode order, its toast says so
+            shown = (strings.GOAL_UP_SHOW if rest else strings.GOAL_UP_ALL_SHOW).format(title=work.title,
+                                                                                        first=piece.line)
+            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        seq = moves._give(ticket, command)
         if seq is not None:
             self.seeking = (ids[0], time.monotonic() + SHEET["seek-s"])
         return seq

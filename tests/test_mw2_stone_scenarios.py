@@ -27,7 +27,7 @@ pytest.importorskip("modules.junban")
 from modules.junban import reposition  # noqa: E402
 from modules.junban.tests.test_reposition import _patched  # noqa: E402
 from tests.test_replan_preview import _generate, _host, _list_words, _settings_file, _word_cards, lib  # noqa: E402,F401
-from tests.test_replan_preview_watched import ACTING, _acting, _job, _suspended  # noqa: E402
+from tests.test_replan_preview_watched import ACTING, _acting, _job, _suspended, _window  # noqa: E402
 
 LATER = "Surasura::later"
 
@@ -122,14 +122,14 @@ def test_a_word_the_episode_shares_with_a_counted_file_keeps_its_card_on_the_lis
         text = f.read()
     from tests.test_replan_preview_watched import _episode_with_its_own_words
     alone = set(_episode_with_its_own_words(store)[1])
-    early = _word_cards(fake, [w for w in _list_words(root, 40) if w in text and w not in alone])
+    early = _word_cards(fake, [w for w in _window(root) if w in text and w not in alone])
 
     def kept():
         assert early and not _suspended(fake, early), "a word still counted elsewhere keeps its card (at once too)"
     with _patched(fake):
         host._job("catch-up")
         _mark_and_generate(root, store, fake, host, episode, between=kept)
-    shared = [word for word in _list_words(root, 40) if word in text]
+    shared = [word for word in _window(root) if word in text]
     assert shared, "RP-2's episode shares listed words with other files"
     cards = _word_cards(fake, shared)
     assert cards and not _suspended(fake, cards), "a word still counted elsewhere keeps its card"
@@ -155,7 +155,7 @@ def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_s
     listed = set(_list_words(root))
     library = anki_match.load_library(os.path.join(root, "results", "library_frequency.json"), "ja")
     below = next(k for k in sorted(library) if len(k) > 1 and k not in listed and k not in text)
-    words = list(dict.fromkeys(_list_words(root, 40) + own + [below]))
+    words = list(dict.fromkeys(_window(root) + own + [below]))
     cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
     fake = ParkingCollection(cards, notes, actions=ACTIONS)
     host, _lines = _host(generate=lambda reason: None)
@@ -168,7 +168,7 @@ def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_s
             # List first off: until the Generate rewrites the library map the stone's own words are placed by it —
             # their file left the order, so after every listed card (`replan_preview.places`); parked after it
             mine = set(_word_cards(fake, own))
-            listed = _word_cards(fake, [w for w in _list_words(root, 40) if w not in own])
+            listed = _word_cards(fake, [w for w in _window(root) if w not in own])
             last = max(fake.cards[c]["due"] for c in listed if fake.cards[c]["queue"] == 0 and c not in mine)
             assert all(fake.cards[c]["due"] > last for c in mine if fake.cards[c]["queue"] == 0),                 "the stone's own cards still ahead of a listed card"
         _mark_and_generate(root, store, fake, host, episode, between=placed)

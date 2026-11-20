@@ -1364,6 +1364,8 @@ class KnownPage(_Page):
         decks.addWidget(self.deck_well)
         self.no_decks = _label("wizsub", S.NO_DECKS, self.decks_part)
         decks.addWidget(self.no_decks)
+        self.signal_line = _label("wizsub", S.KNOWN_FROM_ANKI_SIGNAL, self.decks_part)   # Kantan-B3 (PROVISIONAL)
+        decks.addWidget(self.signal_line)
         self.box.addWidget(self.decks_part)
         self.closed_part, self.closed_line, self.closed_steps, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)

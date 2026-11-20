@@ -118,6 +118,10 @@ _SUBS = frozenset({"subs", "subtitles", "subtitle", "sub", "字幕"})   # a fold
 _VERSIONS = en.RETIMED | {"versions", "alt", "alternate"}
 _FOLDER_MARKS = re.compile(r"[\[\]()（）【】「」]|\b(?:subs?|subtitles?)\b|字幕")   # around a named folder's words
 _SUB_WORDS = frozenset({"sub", "subs", "subtitle", "subtitles"})                      # a word's piece: `JPN_Subs`
+# Kantan-T (a tester's library, 3.0.15: `<Show>/Season 01/ass/` sorted as a title of its own): a folder named for the
+# subtitles' format is a subtitles folder too — alone (`ass`, `SRT`, `[ASS]`, `ASS Subs`, `ass_srt`) as `Subs`, beside
+# our language's word (`jpn_ass`, `Japanese ASS`) as that language's folder
+_FORMATS = frozenset({"ass", "ssa", "srt"})
 # a language word's region or script code (`ja-JP`, `zh_CN`, `zh-Hant`: D2) — never any short word (`Chi-Bi`)
 _CODES = frozenset({"jp", "cn", "tw", "hk", "sg", "mo", "hans", "hant", "jpan", "chs", "cht"})
 
@@ -557,7 +561,8 @@ def _subtitle_folder(name, parent, language):
     -> "versions" (`_VERSIONS`: `synced`, `retimed`, `alt`…: other versions of the episodes above), "subs" (`Subs`,
     `Subtitles`; the show folder's own name — a download unpacked into it, LF-16), the library's language (a folder
     named only for it — `JP`, `[Japanese]`, `Japanese Subs`, `中文字幕`, `CHS&CHT`, `Chinese (Simplified)` — by the
-    language names `Subs/<language>/` reads, `_LANGS`: its untagged texts are that language's, LF-15), or None:
+    language names `Subs/<language>/` reads, `_LANGS`: its untagged texts are that language's, LF-15; Kantan-T: a
+    folder named for the subtitles' format, `ass` / `srt` / `[ASS]` -> "subs", `jpn_ass` -> our language), or None:
     `Part 2`, `Movie`, `English`, `<Show> [archive]`, `JP-Story` — a folder of its own.
     The name is read WHOLE (D2, D3): brackets and Subs / 字幕 off (`_FOLDER_MARKS`), split into words at spaces and
     `& + ,`, each word into pieces at `-` / `_`. A versions folder: a versions word, the rest versions, language or
@@ -570,7 +575,11 @@ def _subtitle_folder(name, parent, language):
     pieces = [p for w in words for p in re.split(r"[-_]", w) if p]
     if any(p in _VERSIONS for p in pieces) and all(p in _VERSIONS or p in _LANGS or p in _SUB_WORDS for p in pieces):
         return "versions"
-    return language if words and all(_word_language(w) == language for w in words) else None
+    if pieces and all(p in _FORMATS for p in pieces):                  # Kantan-T: `ass`, `[ASS]`, `ASS Subs`
+        return "subs"
+    # Kantan-T: a format beside our language's word (`Japanese ASS`, `jpn_ass`, `ass_ja`) is that language's folder
+    named = [n for n in ("-".join(p for p in re.split(r"[-_]", w) if p and p not in _FORMATS) for w in words) if n]
+    return language if named and all(_word_language(w) == language for w in named) else None
 
 
 def _video_named(name, vids):
@@ -611,12 +620,24 @@ def _show_of(root, parts, name, folders=()):
         if en.season_folder(parts[0]) is not None:
             parts = [root_name] + list(parts)
         return "/".join(parts)
-    show = clean_name(ls.show_of_name(name) or "")
-    key = en.show_key(show) if folders and en.identity(name).key[2] is not None else ""
+    full = ls.show_of_name(name) or ""
+    show = clean_name(full)
+    # Kura-NA: the "same show?" key from the name as written, never the folder name's cut (`extract.NAME_LIMIT`): a show
+    # named longer than that is still its own folder's show
+    key = en.show_key(full) if folders and en.identity(name).key[2] is not None else ""
     same = [f for f, k in folders if k == key] if key else []
     if len(same) == 1:
         return same[0]
     return show or root_name
+
+
+def full_show(show, origin):
+    """Kura-NA: the show a loose file's name reads, as written, when its `Library/<show>` folder name `show` is that
+    name cut (`extract.clean_name` at NAME_LIMIT) — the name its title goes by (`Store.take_in`'s `show_name`: the
+    "same show?" key and the new title's names, so hato's record naming it uncut finds it); else None."""
+    from app.extract import clean_name
+    full = ls.show_of_name(os.path.basename(str(origin or ""))) or ""
+    return full if show and full != show and clean_name(full) == show else None
 
 
 def _show_folders(subs):
@@ -2669,6 +2690,11 @@ class _Look:
         if not found:
             return None
         made = [f["rel"] for f in found if f.get("rel") in self.made]
+        for f in found:                                      # Kura-NA: a cut show's title goes by its uncut name
+            if f.get("rel") and not f.get("show_name"):
+                name = full_show(f.get("show"), f.get("origin"))
+                if name:
+                    f["show_name"] = name
         follow = {f["origin"]: self.follow.pop(f["origin"]) for f in found if f["origin"] in self.follow}
         try:
             change = self.store.take_in(self.root_id, found, first=self.first, rules=self.rules)

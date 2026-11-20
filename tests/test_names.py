@@ -119,10 +119,13 @@ def test_a_repeated_sound_and_a_stutter_stay_in_pieces(tokenizer):
 def test_laughter_and_cries_stay_in_pieces(tokenizer):
     """A run made only of interjections — every piece one the tagger reads as an interjection (アッ + ハハ, ウワ +
     アア) — is laughter or a cry, not a name: it stays in pieces, each the interjection it is. A run with any other
-    piece may still be a name: ハイ + ミロ (an interjection, then a name) is one word, as before."""
-    assert _surfaces(tokenizer, "アッハハ！") == ["アッ", "ハハ"]
+    piece may still be a name: ハイ + ミロ (an interjection, then a name) is one word, as before. Standing alone, a laugh's
+    pieces are sounds and no words at all (analyzer § Sounds are no words); a cry of two morae each stays."""
+    def pieces(text):
+        return [w.surface for w in analyzer.join_affixes(tokenizer.tagger(text))][:2]
+    assert pieces("アッハハ！") == ["アッ", "ハハ"] and _surfaces(tokenizer, "アッハハ！") == []
     assert _surfaces(tokenizer, "ウワアア！") == ["ウワ", "アア"]
-    assert _surfaces(tokenizer, "ｱｯﾊﾊ！") == ["ｱｯ", "ﾊﾊ"], "half-width is read as katakana: the same laugh"
+    assert pieces("ｱｯﾊﾊ！") == ["ｱｯ", "ﾊﾊ"], "half-width is read as katakana: the same laugh"
     assert ("ハイミロ", "", "ハイミロ", "ハイミロ") in _tokens(tokenizer, "ハイミロが来た")
 
 

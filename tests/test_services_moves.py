@@ -16,6 +16,7 @@ from another epoch) run on a stand-in store recording each call. The numbers run
 a plan file shaped like a Generate's.
 """
 import gzip
+import io
 import json
 import os
 import random
@@ -181,16 +182,62 @@ def journal(language):
     return read_journal(M.journal_path(language))
 
 
+def open_journal(path):
+    """How a test opens the journal to read it: on Windows with FILE_SHARE_DELETE, so the writer may replace or remove
+    the file while a test reads it — a test's look is never the reason the writer's write is refused (the writer gives
+    a refused write up after ~0.1 s: `test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write`)."""
+    if os.name != "nt":
+        return open(path, encoding="utf-8")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    # GENERIC_READ; share read | write | delete; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    status = ctypes.WinDLL("ntdll").RtlGetLastNtStatus
+    status.restype = ctypes.c_ulong
+    handle = create(os.fspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        pending = status() == 0xC0000056                # STATUS_DELETE_PENDING (read first: this call's own answer)
+        code = ctypes.get_last_error()
+        if code in (2, 3) or pending:                   # not found (the file, its folder) — or removed already and
+            # only still listed while another program (a virus scanner) holds it a moment: gone, as the writer left
+            # it (Kura-JR, a --stress-changed red 2026-11-19: such a hold outlasted `read_journal`'s 0.5 s)
+            raise FileNotFoundError(2, "the journal is not there", path)
+        raise PermissionError(13, f"the journal can't be opened (Windows error {code})", path)   # (delete pending)
+    return io.open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8")
+
+
 def read_journal(path):
     for _ in range(50):
         try:
-            with open(path, encoding="utf-8") as f:
+            with open_journal(path) as f:
                 return json.load(f)
         except FileNotFoundError:                       # (none, or removed between a look and the read)
             return None
         except PermissionError:                         # Windows: the writer's replace holds it this instant
             time.sleep(0.01)
     raise AssertionError(f"the journal stayed locked: {path}")
+
+
+def left_beside(journal_file):
+    """The journal's files still beside it (itself, its note, a .tmp) — not one that is only still listed because
+    another program holds it a moment after its removal (`open_journal`: delete pending, as good as gone)."""
+    folder, name = os.path.split(journal_file)
+    stem = os.path.splitext(name)[0]
+    out = []
+    for n in os.listdir(folder):
+        if n.startswith(stem):
+            try:
+                open_journal(os.path.join(folder, n)).close()
+                out.append(n)
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                out.append(n)
+    return out
 
 
 def journalled(language):
@@ -372,6 +419,28 @@ def test_an_anchor_gone_meanwhile_places_beside_the_nearest_neighbour_the_window
     assert order.index(goal[10]) == order.index(goal[2]) + 1      # after the nearest one still there
     assert heard.notes == [WORDS["nearest"]] and heard.rereads >= 1
     assert w.can_undo()
+
+
+@pytest.mark.parametrize("fallback", ["nearest", "top"])
+def test_an_exact_move_whose_anchor_went_meanwhile_is_exact_where_it_falls_back_too(lib, make_writer, fallback):
+    """(Kura-EO 3.0.16, mutants) An exact move (Current's ⋯ *Up next*, a step across the Soon line: `exact`) whose
+    anchor left Current while it was queued lands at the window's next neighbour — or, none left, the top — exactly
+    there too, never in its show's episode order: episode 9 before its show's 8, where it was put."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[178]
+    ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (8, 9))
+    lib.store.place([ep8], "top")
+    now = lib.ids("now")
+    anchor = now[3]
+    near = [(anchor, "before")] + ([(ep8, "before")] if fallback == "nearest" else [])
+    w, heard = make_writer()
+    w.hold()
+    w.move([ep9], "now", before_id=anchor, near=near, exact=True)
+    lib.store.move([anchor], "goal")                    # meanwhile the anchor leaves Current
+    w.release()
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[:2] == [ep9, ep8], "exactly before 8 (the neighbour) / at the top: never after its show"
+    assert heard.notes == [WORDS[fallback]]
 
 
 def test_an_anchor_gone_with_no_neighbour_left_goes_to_the_top_of_the_tier(lib, make_writer):
@@ -700,6 +769,7 @@ class StubStore:
         self.calls, self.fail, self.always = [], {}, set()
         self.changed_in = {}
         self.gate = None
+        self.in_order = []
 
     def _maybe_fail(self, op):
         exc = self.fail.get(op)
@@ -708,7 +778,8 @@ class StubStore:
                 del self.fail[op]
             raise exc
 
-    def move(self, ids, tier, before_id=None, after_id=None):
+    def move(self, ids, tier, before_id=None, after_id=None, in_order=True):
+        self.in_order.append(in_order)                  # (Kura-EO: the window's `exact` → `in_order=False`)
         if self.gate is not None:
             self.gate.wait(10)                          # a slow write (the test opens the gate)
         self.calls.append(("move", list(ids), tier, before_id, after_id))
@@ -785,7 +856,8 @@ def stub_writer(tmp_path):
         return w, heard, store, opener
     yield make
     for w in made:
-        w.finish(time.monotonic() + 5)
+        if not w._abandoned:                            # a crashed writer is gone: nothing to finish
+            w.finish(time.monotonic() + 5)
 
 
 def test_a_store_that_turns_read_only_during_a_write_says_its_reason_and_lets_go_of_its_handle(stub_writer):
@@ -1056,6 +1128,41 @@ class Recorder:
         self.resyncs += 1
 
 
+def test_an_exact_move_reaches_the_store_without_the_episode_order_even_after_a_busy_store(stub_writer):
+    """(Kura-EO 3.0.16) `Writer.move(exact=True)` (↑ ↓ across the NOW / Soon edge, Current's ⋯ *Up next*) is
+    `Store.move(in_order=False)` — also when it first met a busy store and was queued; a plain move keeps the order."""
+    w, heard, store, _opener = stub_writer()
+    store.fail["move"] = ls.StoreBusy("busy")
+    w.move([5], "now", before_id=3, exact=True)
+    w.move([6], "now", before_id=3)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert store.in_order[-2:] == [False, True]
+
+
+def test_an_exact_move_left_in_the_journal_replays_exact_never_the_episode_order():
+    """(Kura-EO 3.0.16, review round 2) A move queued while the store was stuck is journalled; at the next start its
+    replay is rebuilt from the entry (`_entry` → `_from_entry`). An exact move (Current's ⋯ *Up next*, a step across
+    the Soon line) must come back exact — else the replay puts the episode in its show's order, not where it was put."""
+    cmd = {"op": "move", "ids": [5], "tier": "now", "before_id": 3, "after_id": None, "near": [], "label": "x",
+           "exact": True}
+    assert M._from_entry(M._entry(cmd)).get("exact") is True
+    plain = dict(cmd)
+    del plain["exact"]
+    assert "exact" not in M._from_entry(M._entry(plain)), "a plain move replays as a plain move"
+
+
+def test_a_look_for_a_cover_again_left_in_the_journal_replays_as_the_lock_let_go():
+    """(Mado-CV 3.0.17) *Look for a cover again* (`set_cover(..., unlock=True)`) queued while the store was stuck is
+    journalled; its replay must still let the lock go — else the store refuses it (a locked cover takes no unlocked
+    write) and the learner's press is lost after a restart."""
+    cmd = {"op": "set_cover", "ids": [], "work_id": 7, "source": "generated", "ref": None, "path": None,
+           "locked": False, "label": "x", "unlock": True}
+    assert M._from_entry(M._entry(cmd)).get("unlock") is True
+    plain = dict(cmd)
+    del plain["unlock"]
+    assert not M._from_entry(M._entry(plain)).get("unlock"), "an ordinary cover write replays as one"
+
+
 def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_busy(stub_writer):
     numbers = Recorder()
     w, heard, store, opener = stub_writer(numbers=numbers)
@@ -1229,6 +1336,131 @@ def test_a_damaged_plan_answers_nothing_and_says_why(tmp_path):
     numbers = M.Numbers(seed.opener, "ja", plan_file=str(path))
     numbers.load()
     assert numbers.idle(30) and numbers.why().startswith("plan:") and numbers()[1] == {}
+    numbers.close()
+
+
+def test_the_plan_stamp_on_disk_is_the_key_the_numbers_keep_once_they_read_the_plan(tmp_path):
+    """The first screen's cache is written under `plan_key` (the plan the numbers read) and matched at the next start
+    against `plan_stamp` (the file on disk, before the numbers have read it): the two must be the same value for the
+    same file, or the cache is never shown again — and differ as soon as a Generate writes another plan."""
+    seed, _analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    assert numbers.plan_key() is None and numbers.plan_stamp() is not None     # not read yet: the disk has it
+    # ... and says so in the words the reader waits on before it lets the cached rows' figures go
+    from app.services import library_reader
+    assert numbers.why() == library_reader.NOT_READ
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    assert numbers.plan_key() == numbers.plan_stamp()
+    read = numbers.plan_key()
+    numbers.close()
+    with open(path, "ab") as f:                                                 # another plan (a Generate since)
+        f.write(b"\0")
+    assert M.Numbers(seed.opener, "ja", plan_file=path).plan_stamp() != read
+    assert M.Numbers(seed.opener, "ja", plan_file=str(tmp_path / "none.json.gz")).plan_stamp() is None
+
+
+def test_a_restart_whose_plan_is_out_of_date_keeps_the_cached_figures_faded_never_gone(tmp_path):
+    """After an update, a setting change or an edited file, the start's cache still matches (the same plan file) and
+    shows last session's *N new*; the numbers' first load then finds the plan out of date (a Generate first). The
+    figures stay, faded — as a plan that can't be followed keeps the last ones (`Kept`) — never shown and then gone (the
+    start's blink, reversed: the intent keeper, train 42)."""
+    from app.services import library_reader
+    from tests.test_library_reader import _collect, _wait
+    for language in ("ja", "zh"):
+        seed, _analysed, path = _small(tmp_path / language, language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        numbers = M.Numbers(seed.opener, language, plan_file=path)
+        numbers.load()
+        assert numbers.idle(30) and numbers.why() is None, language
+        first = library_reader.LibraryReader(seed.opener, language=language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=numbers)
+        first.start()
+        assert _wait(lambda: os.path.exists(cache)), language
+        first.stop()
+        numbers.close()
+        held = []
+        stale = M.Numbers(seed.opener, language, plan_file=path, check=lambda plan, store: "another app version",
+                          on_change=lambda: held[0].refresh())
+        again = library_reader.LibraryReader(seed.opener, language=language, mining=seed.mining, poll=0.02,
+                                             cache_file=cache, numbers=stale)
+        held.append(again)
+        views, _ = _collect(again)
+        again.start()
+        try:
+            assert _wait(lambda: any(not v.cached for _, v in views)), language
+            assert views[0][1].cached, language
+            cached = {e.id: e.n_new for r in views[0][1].rows for e in r.episodes if e.n_new is not None}
+            assert cached, language
+            stale.load()                                    # the window's first frame asks for it
+            assert stale.idle(30) and stale.why() == "stale: another app version", language
+
+            def faded():                                    # the load's view (published after the reader takes its
+                last = {e.id: e.new_faded for r in views[-1][1].rows for e in r.episodes if e.id in cached}
+                return bool(last) and all(last.values())    # version): faded, the plan can't be followed
+            assert _wait(faded), language
+            for _tid, view in list(views):                  # every view: the cached figures, never a blank
+                shown = {e.id: e.n_new for r in view.rows for e in r.episodes if e.id in cached}
+                assert shown == {i: cached[i] for i in shown}, (language, view.cached)
+        finally:
+            again.stop()
+            stale.close()
+
+
+class _Away:
+    """The store's opener while the store can't be opened yet (`away`): another mode, then the real one."""
+
+    def __init__(self, opener):
+        self._opener, self.away = opener, True
+
+    @property
+    def mode(self):
+        return "busy" if self.away else self._opener.mode
+
+    def __getattr__(self, name):
+        return getattr(self._opener, name)
+
+
+def test_a_first_load_with_no_store_keeps_the_start_figures_faded_for_the_load_after_it(tmp_path):
+    """The start's cached figures handed over (`seed`), and the first load finds no store to read (asked again at the
+    next resync): they stay, faded — and the load after it, finding the plan out of date, still keeps them; never a
+    blank between the two."""
+    for language in ("ja", "zh"):
+        seed, analysed, path = _small(tmp_path / language, language=language)
+        opener = _Away(seed.opener)
+        numbers = M.Numbers(opener, language, plan_file=path, check=lambda plan, store: "another app version")
+        shown = {r["id"]: (1, 2, 30 + k) for k, r in enumerate(analysed[:5])}
+        numbers.seed(shown)
+        numbers.load()
+        assert numbers.idle(30) and numbers.why().startswith("no store"), language
+        table = numbers()[1]
+        assert isinstance(table, M.Kept) and {i: table[i] for i in shown} == shown, language
+        opener.away = False
+        numbers.resync()
+        assert numbers.idle(30) and numbers.why() == "stale: another app version", language
+        table = numbers()[1]
+        assert isinstance(table, M.Kept) and {i: table[i][2] for i in shown} == {i: v[2] for i, v in shown.items()}
+        numbers.close()
+
+
+def test_figures_handed_over_after_the_first_load_answered_are_never_kept(tmp_path):
+    """`seed` is the start's, for the first load only: once a load answered, the table it published is the last shown —
+    a later plan read out of date keeps that one's *N new*, never the start's figures, nor figures handed over late."""
+    seed, analysed, path = _small(tmp_path)
+    verdict = [None]
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: verdict[0])
+    numbers.seed({r["id"]: (1, 2, 998) for r in analysed})              # the start's: the first load answers them
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = {i: n for i, (_k, _c, n) in numbers()[1].items()}
+    assert 998 not in before.values()
+    numbers.seed({r["id"]: (1, 2, 999) for r in analysed})              # too late: ignored
+    verdict[0] = "known words changed"
+    write_plan(path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed], n_words=300, seed=9)
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() == "stale: known words changed"
+    assert {i: n for i, (_k, _c, n) in numbers()[1].items()} == before and isinstance(numbers()[1], M.Kept)
     numbers.close()
 
 
@@ -3678,6 +3910,27 @@ def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, 
     assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
 
 
+def test_S2_a_tests_look_at_the_journal_never_refuses_the_writers_own_write(lib, make_writer, short_lock_wait):
+    # why (Kura-EO, a --stress-changed red, 2026-11-18): the waits above read the journal again and again while the
+    # writer rewrites and at last removes it; the writer tries a refused write for ~0.1 s, then gives up for good when
+    # nothing is left queued — so a test's look held a moment too long under load (here: 0.5 s) left the journal in
+    # place and the wait for it to go failed. A test's look must never be the reason the writer's write is refused.
+    w, heard = make_writer()
+    a = _arrival(lib, lib.ids("goal")[5])
+    holder = LockHolder(lib.db)
+    w.place([a], "top")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["place"])
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    looking = open_journal(M.journal_path(lib.language))     # a test's look, held across the replay's writes
+    threading.Timer(0.5, looking.close).start()
+    assert w2.replay()
+    assert h.until(lambda: not w2.pending() and lib.ids("now")[0] == a)
+    assert h.until(lambda: looking.closed)              # (the look let go: the writer had no write left to make)
+    assert journal(lib.language) is None, "the replay's last write (the file removed) was refused"
+
+
 def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_let_go_quietly(lib, make_writer,
                                                                                           short_lock_wait):
     # W3.2 H (C3): what it asked for holds (its file is back), as a GUARDED command's `_done` reads it — the store
@@ -4178,6 +4431,70 @@ def test_a_move_the_store_puts_in_its_shows_episode_order_is_followed_where_the_
     w.move([lib.ids("goal")[0]], "now", after_id=a, label="moved")
     assert h.until(lambda: len(heard.saved) == 2)
     assert len(numbers.moves) == 3 and heard.rereads == 1
+
+
+def test_a_shows_row_the_store_sorts_by_episode_is_followed_item_by_item(lib, make_writer):
+    """(Kura-EO 3.0.16.) A drag of a show's row reading 10, 8, 9 below another title: the store lands it 8, 9, 10
+    (`Store._into_show`'s block sort). The numbers, which followed the drop as 10, 8, 9 (the engine keeps a block's own
+    order), follow the store's order one item at a time — 8 after the target, 9 after 8, 10 after 9 — never a re-plan;
+    the window lets its drop order go."""
+    from tests.test_library_store_episode_order import _ten_eight_nine
+    ep8, ep9, ep10 = _ten_eight_nine(lib.store, lib.language, names(lib.language)[168])
+    target = lib.ids("now")[4]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move([ep10, ep8, ep9], "now", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    now = lib.ids("now")
+    assert now[now.index(target) + 1:now.index(target) + 4] == [ep8, ep9, ep10]
+    assert numbers.moves[1:] == [([ep8], "now", None, target), ([ep9], "now", None, ep8), ([ep10], "now", None, ep9)]
+    assert h.until(lambda: heard.rereads == 1)
+    assert numbers.resyncs == 0
+
+
+def test_a_long_block_the_store_sorts_is_compared_once_never_followed_item_by_item(lib, make_writer):
+    """Past `FOLLOW_EACH_MOST` items (each engine move copies the window's table and publishes) a sorted block isn't
+    followed one item at a time: the numbers compare once after the write (one resync), the drop's own follow
+    aside."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[174]
+    n = M.FOLLOW_EACH_MOST + 2
+    eps = [_episode(lib.store, lib.language, show, e) for e in range(1, n + 1)]
+    for ep in eps:
+        lib.store.move([ep], "soon", in_order=False)    # each to Soon's top: the show reads n … 1 there
+    soon = lib.ids("soon")
+    at = soon.index(eps[-1])
+    assert soon[at:at + n] == eps[::-1], "the setup"
+    target = soon[at + n + 1]
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    w.move(eps[::-1], "soon", after_id=target, label="row")
+    assert h.until(lambda: heard.saved)
+    soon = lib.ids("soon")
+    assert soon[soon.index(target) + 1:soon.index(target) + 1 + n] == eps
+    assert len(numbers.moves) == 1 and h.until(lambda: numbers.resyncs >= 1)
+
+
+def test_a_block_the_stores_rule_places_and_sorts_is_followed_item_by_item_too(lib, make_writer):
+    """*Soon* of a show's episodes standing 10, 8, 9 in 6+ Months: the place is the store's rule (followed after the
+    write, `numbered` "after") and the store sorts the block — the numbers follow it one item at a time: 8 at Soon's
+    top, 9 after 8, 10 after 9."""
+    from tests.test_library_store_episode_order import _episode
+    show = names(lib.language)[171]
+    ep10, ep8, ep9 = (_episode(lib.store, lib.language, show, n) for n in (10, 8, 9))
+    lib.store.move([ep10, ep8, ep9], "goal")
+    assert [i for i in lib.ids("goal") if i in (ep8, ep9, ep10)] == [ep10, ep8, ep9], "the setup"
+
+    class Expecting(Recorder):                          # told before the write, as the window's `Numbers.expect`
+        def expect(self, cmd):
+            self.expected = cmd["op"]
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    w.place([ep10, ep8, ep9], "soon", label="soon")
+    assert h.until(lambda: heard.saved)
+    assert numbers.expected == "place", "the setup: the store's rule, followed after the write"
+    assert lib.ids("soon")[:3] == [ep8, ep9, ep10]
+    assert numbers.moves == [([ep8], "soon", None, None), ([ep9], "soon", None, ep8), ([ep10], "soon", None, ep9)]
 
 
 def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):
@@ -5110,3 +5427,321 @@ def test_the_trash_helper_passes_over_the_copies_it_is_told_are_taken(lib):
     second = M._trash(ls, lib.store, rel, row, taken=trashed.values(), since=None)
     assert first == f".trash/{base}_20000101000000{ext}"
     assert second == f".trash/{base}_20000101000001{ext}", "the second item takes the next copy, never the first's"
+
+
+# --- Kura-JR (3.0.17): a refused journal write retried; a journal whose commands landed cleared at the start -------- #
+held_refuses = pytest.mark.skipif(os.name != "nt", reason="only Windows refuses a replace / remove of a held file")
+
+
+class Scanner:
+    """Another program (a virus scanner, a backup tool) holding the journal open a while: a plain open — no
+    FILE_SHARE_DELETE on Windows — so the writer's replace and remove are refused until `close()`."""
+    made = []
+
+    def __init__(self, path):
+        for _ in range(200):                            # (the writer's own replace may hold it this instant)
+            try:
+                self.f = open(path, encoding="utf-8")
+                break
+            except PermissionError:
+                time.sleep(0.01)
+        else:
+            raise AssertionError(f"the journal stayed locked: {path}")
+        Scanner.made.append(self)
+
+    def close(self):
+        self.f.close()
+
+
+@pytest.fixture
+def scanners():
+    """Every Scanner a test made is let go, whatever the test's end (a failed assert never leaves a handle open)."""
+    yield Scanner
+    while Scanner.made:
+        Scanner.made.pop().close()
+
+
+@held_refuses
+def test_JR_a_last_journal_remove_refused_while_a_scanner_holds_it_is_retried_once_the_file_frees(lib, make_writer,
+                                                                                                   short_lock_wait,
+                                                                                                   scanners):
+    # why (Kura-EO's S2 note): the writer tried a refused write ~0.1 s and, with nothing left queued, gave it up for
+    # good — the journal stayed, and the next start replayed commands that had already landed
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    w.pin([now[1]])
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["move", "pin"])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and len(heard.saved) == 2)
+    time.sleep(0.5)                                     # the scanner holds it past the writer's ~0.1 s of tries
+    w.nudge([now[2]], "up", label="nudged")             # the writer goes on meanwhile: never waits on the journal
+    assert h.until(lambda: len(heard.saved) == 3, seconds=5)
+    assert os.path.exists(M.journal_path(lib.language))
+    scanner.close()
+    assert h.until(lambda: journal(lib.language) is None, seconds=10), "a refused remove was never tried again"
+    assert heard.notes == []
+
+
+@held_refuses
+def test_JR_a_start_that_finds_a_journal_whose_commands_all_landed_clears_it_without_replaying(lib, make_writer,
+                                                                                               short_lock_wait,
+                                                                                               monkeypatch, scanners):
+    # why: a scanner that holds the journal past every retry (or a crash meanwhile) still leaves it behind; the start
+    # must know its commands landed — never replay them (a note *couldn't be applied*, a reread, a write again)
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.05,), raising=False)
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    w.pin([now[1]])
+    w.set_tier([lib.ids("soon")[0]], "goal")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["move", "pin", "set_tier"])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and len(heard.saved) == 3)
+    time.sleep(0.5)                                     # every retry refused
+    w._abandon()                                        # the crash, the scanner still on the file
+    scanner.close()
+    assert [op for op, _i in journalled(lib.language)] == ["move", "pin", "set_tier"]     # left behind, all landed
+    order = {t: lib.ids(t) for t in ("now", "soon", "goal")}
+    pinned = lib.store.item(now[1])["pinned"]
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None, seconds=10)
+    assert h.until(lambda: not w2.pending())
+    assert w2.attempts == 0, "a command that had landed was written again"
+    assert heard2.notes == [] and heard2.saved == [] and heard2.rereads == 0
+    assert {t: lib.ids(t) for t in ("now", "soon", "goal")} == order and lib.store.item(now[1])["pinned"] == pinned
+    # (waited on: the writer removes the journal, then its note — a look between the two is too early)
+    assert h.until(lambda: not left_beside(M.journal_path(lib.language))), "nothing of the journal left beside it"
+
+
+@held_refuses
+def test_JR_the_quit_tries_a_refused_journal_remove_again_until_its_deadline(lib, make_writer, short_lock_wait,
+                                                                             scanners):
+    # why: the quit is the last chance this run has: a scanner that lets go before the deadline leaves no journal
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and heard.saved)
+    closing = threading.Timer(0.4, scanner.close)
+    closing.start()
+    assert w.finish(time.monotonic() + 5)
+    closing.join(5)
+    assert not os.path.exists(M.journal_path(lib.language)), "the quit gave the journal up while it had time left"
+
+
+@held_refuses
+def test_JR_a_start_replays_only_the_commands_still_queued_when_the_rewrite_that_dropped_the_landed_one_was_refused(
+        stub_writer, tmp_path, monkeypatch, scanners):
+    # why: one command landed, the next still waits on a busy store, and the rewrite without the first is refused to
+    # the end (a crash): the next start replays the waiting one only — never the one that landed
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.05,), raising=False)
+    w, heard, store, opener = stub_writer()
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"  # (the store busy: both wait and are journalled)
+    w.set_tier([3], "goal")
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] ==
+                   ["set_tier", "move"])
+    scanner = Scanner(str(path))
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    opener.mode, opener.reason = "store", None
+    assert h.until(lambda: any(c[0] == "set_tier" for c in store.calls) and w.pending() == 1)
+    note = tmp_path / "window_pending_ja.landed.json"
+    assert h.until(lambda: os.path.exists(note))        # the refusal told the note what landed
+    assert read_journal(note)["landed"] == [0]
+    time.sleep(0.4)                                     # every retry of the rewrite refused
+    w._abandon()
+    scanner.close()
+    store2 = StubStore()
+    w2 = M.Writer(StubOpener(store2), "ja", journal_file=str(path), words=WORDS, retry=0.02, **Heard().kw())
+    try:
+        w2.start()
+        assert w2.replay()
+        assert h.until(lambda: store2.calls)
+        assert h.until(lambda: not w2.pending())
+        assert [c[0] for c in store2.calls] == ["move"], "the set_tier that had landed was replayed"
+        assert h.until(lambda: not os.path.exists(path))
+    finally:
+        w2.finish(time.monotonic() + 5)
+
+
+@held_refuses
+def test_JR_a_new_journal_write_refused_after_an_earlier_one_was_given_up_gets_its_own_retries(
+        stub_writer, tmp_path, monkeypatch, scanners):
+    # why: the tries are bounded for each refused write, never for the whole run — a hold met hours later (a drag's
+    # moves, journalled while nothing lands) is tried again too, or a crash then loses those moves
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.3, 0.6), raising=False)
+    w, heard, store, opener = stub_writer()
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["set_tier"])
+    scanner = Scanner(str(path))
+    opener.mode, opener.reason = "store", None
+    assert h.until(lambda: store.calls and not w.pending())
+    assert h.until(lambda: w._owed is None and w._owed_tries == len(M.JOURNAL_RETRY_S))     # given up
+    w.hold()                                            # a drag: its move is journalled, nothing lands
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: w._owed is not None)         # that write refused: tried again
+    scanner.close()
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["move"])
+    w.release()
+    assert h.until(lambda: not w.pending() and not os.path.exists(path))
+
+
+@held_refuses
+def test_JR_a_quit_whose_deadline_the_hold_outlasts_leaves_the_journal_and_its_note_and_the_start_clears_both(
+        lib, make_writer, short_lock_wait, scanners):
+    # why: the quit never waits past its deadline for a held file (the window is closing); what it leaves behind is
+    # read right at the next start — the landed move never written twice
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and heard.saved)
+    began = time.monotonic()
+    assert w.finish(began + 0.6)
+    assert time.monotonic() - began < 2.0, "the quit waited on the held journal past its deadline"
+    scanner.close()
+    note = M._landed_path(M.journal_path(lib.language))
+    assert journalled(lib.language) == [("move", [goal[5]])] and read_journal(note)["landed"] == [0]
+    order = lib.ids("goal")
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not os.path.exists(note))
+    assert w2.attempts == 0 and heard2.notes == [] and heard2.rereads == 0 and lib.ids("goal") == order
+
+
+def test_JR_a_note_of_another_journal_a_damaged_one_or_none_drops_nothing_and_a_journal_without_a_token_replays_whole(
+        stub_writer, tmp_path):
+    # why: a note is trusted only for the very file it was written about (its token): a note left over from an older
+    # file, a damaged one, or a journal an older version wrote (no token) must never cost a command its replay
+    path = str(tmp_path / "window_pending_ja.json")
+    note = M._landed_path(path)
+    assert note == str(tmp_path / "window_pending_ja.landed.json")
+    assert M._landed_of(path, "abc") == set()                                   # no note
+    for body, token, want in [({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [0, 2]}, "abc", {0, 2}),
+                              ({"version": M.JOURNAL_VERSION, "token": "old", "landed": [0]}, "abc", set()),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [0]}, None, set()),
+                              ({"version": M.JOURNAL_VERSION + 1, "token": "abc", "landed": [0]}, "abc", set()),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [True, "1", 2.0, 3]}, "abc",
+                               {3}),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": None}, "abc", set()),
+                              (["not", "a", "note"], "abc", set())]:
+        with open(note, "w", encoding="utf-8") as f:
+            json.dump(body, f)
+        assert M._landed_of(path, token) == want, body
+    with open(note, "w", encoding="utf-8") as f:
+        f.write("{damaged")
+    assert M._landed_of(path, "abc") == set()
+    # an older version's journal (no token) beside a note that names its entries: every entry replays
+    with open(note, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "token": None, "landed": [0, 1]}, f)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "language": "ja",
+                   "pending": [{"op": "move", "ids": [7], "tier": "goal"},
+                               {"op": "set_tier", "ids": [8], "tier": "now"}]}, f)
+    w, heard, store, opener = stub_writer()
+    assert w.replay()
+    assert h.until(lambda: len(store.calls) == 2 and not w.pending())
+    assert [c[0] for c in store.calls] == ["move", "set_tier"]
+    assert h.until(lambda: not os.path.exists(path) and not os.path.exists(note))
+
+
+def test_JR_the_retries_pause_longer_each_time_and_stop_after_a_few():
+    # why: a held file is tried again soon, then less and less often — never a spin, never forever (bounded: the
+    # start's note covers a hold that outlasts them)
+    pauses = M.JOURNAL_RETRY_S
+    assert 3 <= len(pauses) <= 8 and pauses[0] >= 0.1 and sum(pauses) <= 30
+    assert all(b > a for a, b in zip(pauses, pauses[1:]))
+
+
+@held_refuses
+def test_JR_a_command_queued_during_a_drag_whose_journal_write_was_refused_is_journalled_once_the_file_frees(
+        lib, make_writer, scanners):
+    # why: the refused write was the one that added a new command (a drag holds the queue: nothing lands, nothing
+    # writes the journal again on its own) — the retry must write that command too, or a crash loses it
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.hold()                                            # a drag: the moves queue and are journalled at once
+    w.move([goal[5]], "goal", before_id=goal[0], label="first")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    w.pin([now[1]])
+    assert h.until(lambda: w._owed is not None)         # its journal write refused
+    scanner.close()
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]]), ("pin", [now[1]])], seconds=10)
+    w._abandon()                                        # the crash, the drag still held
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.ids("goal")[0] == goal[5] and lib.store.item(now[1])["pinned"] is not None
+
+
+@held_refuses
+def test_JR_a_crashed_writer_writes_no_journal_after_its_crash_even_from_a_saving_timer_still_running(
+        stub_writer, tmp_path, scanners):
+    # why (a --stress-changed red, 2026-11-19): while the journal is held, each busy attempt's journal write takes its
+    # ~0.1 s of tries, so the attempt's *saving…* timer fires on a thread of its own; the test's crash (`_abandon`)
+    # stopped the writer's thread but not those, and one rewrote the journal after the next start had removed it.
+    # A crash stops every journal write of the crashed writer — nothing written after `_abandon` returns.
+    w, heard, store, opener = stub_writer(saving_after=0.01)
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] ==
+                   ["set_tier", "move"])
+    scanner = Scanner(str(path))
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    opener.mode, opener.reason = "store", None          # the set_tier lands; the move's attempts stay busy, and
+    assert h.until(lambda: any(c[0] == "set_tier" for c in store.calls))    # each one's journal write is refused
+    time.sleep(0.5)                                     # (~0.1 s each: its timer fires on a thread of its own)
+    w._abandon()                                        # the crash
+    scanner.close()
+    with open(path, "rb") as f:
+        left = f.read()
+    time.sleep(0.5)                                     # a window in which nothing may happen
+    with open(path, "rb") as f:
+        assert f.read() == left, "a timer of the crashed writer rewrote its journal"
+
+
+@held_refuses
+def test_JR_a_journal_the_writer_removed_while_another_program_still_holds_it_reads_as_gone(tmp_path):
+    # why (a --stress-changed red, 2026-11-19): a scanner that looks at the journal just as the writer removes it
+    # keeps it listed, and unopenable, until it lets go ("delete pending"); the tests' look read that as a lock held
+    # and gave up after 0.5 s. The writer left it gone, and so must the look
+    path = str(tmp_path / "window_pending_ja.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "pending": []}, f)
+    looking = open_journal(path)                        # the scanner's look (it shares delete, as scanners do)
+    try:
+        os.remove(path)                                 # the writer's remove: done — the name still listed here
+        #   (delete pending, as on Windows 10 1809), or gone at once (a newer Windows' POSIX delete): gone either way
+        assert read_journal(path) is None and journal_gone(path)
+        assert left_beside(path) == []
+    finally:
+        looking.close()
+    assert os.path.basename(path) not in os.listdir(tmp_path)
+
+
+def journal_gone(path):
+    try:
+        open_journal(path).close()
+        return False
+    except FileNotFoundError:
+        return True

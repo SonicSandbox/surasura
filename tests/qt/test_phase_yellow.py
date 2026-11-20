@@ -128,6 +128,31 @@ def test_anki_miner_amber_opens_needs_you_at_its_episodes_card_highlighted(world
     assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
 
 
+# --- Mado-PZ3: the first-run question's amber 鉱, clicked with the mouse in the real window ------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("paused", [False, True])
+def test_first_cards_amber_miner_opens_its_card_on_a_real_click_and_never_pauses_or_resumes(world, washed, language,
+                                                                                            paused):
+    """Mado-PZ3 (Sonic 2026-11-20: "if it's yellow then i expected it to take them to the setting … to make the
+    decision"): setup's *Make cards for your first 20 episodes?* makes 鉱 amber (Kantan-B2b), and a plain click with the
+    mouse — the strip's own press, not the shell's handler called by hand — opens Needs you at that card, washed, and
+    leaves the pause as it was (paused or not): amber is a decision's, a click there never pauses."""
+    from tests.qt.test_phase_strip import _centre, _click
+    seed, win, writer, ny = world(language, looks=Looks())
+    if paused:
+        win.set_paused({P.MINER})
+    entry = service.Entry(key=service.FIRST_CARDS, kind=service.FIRST_CARDS, title="Make cards for your first 20 "
+                          "episodes?", lines=(), actions=("first_cards", "not_now"), unseen=True, say="",
+                          data={"at": 0})
+    _entries(ny, entry)
+    assert win.phase.states[P.MINER].needs == strings.PHASE_FIRST_CARDS and win.phase.go(P.MINER).place == "needs"
+    before = win.services.paused
+    _click(win.phase, _centre(win.phase, P.MINER))
+    _settle()
+    assert win.current_tab() == "needs" and ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+    assert win.services.paused == before == (frozenset({P.MINER}) if paused else frozenset())
+
+
 # --- Anki: a prompt or another profile waits on you; closed is a plain wait ------------------------------------------- #
 @pytest.mark.parametrize("reason", [anki_session.UNUSABLE, anki_session.OTHER_PROFILE.format("日本語", "User 1")])
 def test_anki_asking_for_you_is_amber_and_opens_needs_yous_anki_line_highlighted(world, reason, washed, monkeypatch):
@@ -145,9 +170,9 @@ def test_anki_asking_for_you_is_amber_and_opens_needs_yous_anki_line_highlighted
     assert washed == [ny.cards.card(entry.key)]
 
 
-def test_anki_closed_is_a_plain_wait_never_amber_and_its_press_opens_its_settings(world, washed, monkeypatch):
+def test_anki_closed_is_a_plain_wait_never_amber_and_its_press_pauses_as_at_rest(world, washed, monkeypatch):
     """Anki closed decides nothing (its cards are made once it opens): a still arc with its words in the hover; the
-    press opens the known-words settings as at rest, and *Needs you* keeps its own line with *Open Anki*."""
+    press does what it does at rest (Mado-PZ: it pauses), and *Needs you* keeps its own line with *Open Anki*."""
     from app.connect import feed
     seed, win, writer, ny = world("ja", looks=Looks())
     opened = []
@@ -157,9 +182,9 @@ def test_anki_closed_is_a_plain_wait_never_amber_and_its_press_opens_its_setting
     st = win.phase.states[P.ANKI]
     assert st.needs is None and st.waiting and win.phase.go(P.ANKI) is None
     assert "Waiting for Anki: it isn&#x27;t open · 1 episode" in win.phase.hover_text(P.ANKI)
-    assert strings.PHASE_PRESS in win.phase.hover_text(P.ANKI)
+    assert strings.PHASE_PRESS_PAUSE in win.phase.hover_text(P.ANKI)
     win._circle_pressed(P.ANKI)
-    assert opened == ["known"] and washed == [] and ny.revealed is None
+    assert opened == [] and washed == [] and ny.revealed is None and win.services.paused == {P.ANKI}
 
 
 # --- 届: gone is a decision, offline is not ------------------------------------------------------------------------ #
@@ -181,8 +206,8 @@ def test_todoke_amber_for_a_gone_folder_opens_its_card_highlighted_and_offline_a
     assert st.needs is None and not st.waiting and win.phase.go(P.ARRIVALS) is None
     assert "N:\\Media" in win.phase.hover_text(P.ARRIVALS)
     win.show_tab("current")
-    win._circle_pressed(P.ARRIVALS)
-    assert opened == ["library_folders"]
+    win._circle_pressed(P.ARRIVALS)                                       # nothing to decide: a pause (Mado-PZ)
+    assert opened == [] and win.services.paused == {P.ARRIVALS}
 
 
 # --- 順: a deck to pick or an unfinished reorder opens its window there; nothing else is amber ------------------------ #
@@ -253,7 +278,7 @@ def test_junbans_deck_waits_grey_until_anki_answers_with_the_automatic_sync_off(
                                   rp.GivesUp(rp.NOT_BY_ITSELF.format(mode="Coverage %")),
                                   rp.GivesUp(rp.CLOSED), rp.GivesUp(rp.PRESS_GENERATE), rp.GivesUp(rp.NEW_CONTENT),
                                   rp.Fails("Re-ordering as you move stopped: disk full")])
-def test_junban_with_nothing_to_decide_is_never_amber_and_its_press_opens_its_settings(junban_world, monkeypatch,
+def test_junban_with_nothing_to_decide_is_never_amber_and_its_press_pauses(junban_world, monkeypatch,
                                                                                          line):
     """Sonic's case first: Only i+1 on, Generate re-ordering Anki — a fact, said in the hover, never amber. A fault is
     red, not amber."""
@@ -267,7 +292,7 @@ def test_junban_with_nothing_to_decide_is_never_amber_and_its_press_opens_its_se
     assert st.needs is None and win.phase.go(P.JUNBAN) is None
     assert bool(st.failed) is isinstance(line, rp.Fails)
     win._circle_pressed(P.JUNBAN)
-    assert launched == [] and opened == ["junban"]
+    assert launched == [] and opened == [] and win.services.paused == {P.JUNBAN}      # (Mado-PZ)
 
 
 # --- the one rule, across every circle -------------------------------------------------------------------------- #
@@ -290,7 +315,7 @@ def test_a7_episodes_held_by_any_connect_need_open_its_card_whatever_its_kind(wo
 
 def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, washed, monkeypatch):
     """a7 (and at startup): a wait on you is amber only while its *Needs you* card is on the
-    page — before the page's first gather it is a plain wait (the press opens the settings), amber once the card lands,
+    page — before the page's first gather it is a plain wait (the press pauses, Mado-PZ), amber once the card lands,
     and a plain wait again when *Not now* puts the card away (nothing left to land on)."""
     from app.connect import feed
     seed, win, writer, ny = world("ja", looks=Looks())
@@ -301,13 +326,13 @@ def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, w
     st = win.phase.states[P.MINER]
     assert st.needs is None and st.waiting and win.phase.go(P.MINER) is None
     win._circle_pressed(P.MINER)
-    assert opened == ["connect_enabled"] and washed == []
+    assert opened == [] and washed == [] and win.services.paused == {P.MINER}     # (Mado-PZ: no decision, a pause)
     entry = _connect_entry("ja")
     _entries(ny, entry)                                                   # the gather lands its card: amber
     assert win.phase.states[P.MINER].needs and win.phase.go(P.MINER) is not None
-    win._circle_pressed(P.MINER)
+    win._circle_pressed(P.MINER)                                          # amber: the decision, never the resume
     _settle()
-    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)] and win.services.paused == {P.MINER}
     ny._hidden_now[entry.key] = None                                      # *Not now* (its press's first frame)
     ny._paint()
     assert win.phase.states[P.MINER].needs is None and win.phase.go(P.MINER) is None
@@ -404,7 +429,8 @@ def test_a7_a_junban_fault_looked_at_stays_said_and_the_same_fault_again_is_red_
 
 
 def test_a7_the_keyboard_reaches_every_circle_a_press_can_open(junban_world):
-    """a7: the keyboard's circles are the pointer's — an amber one with a place too."""
+    """a7: the keyboard's circles are the pointer's — an amber one with a place too (Mado-PZ: every circle, since a
+    click pauses any)."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QKeyEvent
     from PyQt6.QtCore import QEvent
@@ -412,7 +438,7 @@ def test_a7_the_keyboard_reaches_every_circle_a_press_can_open(junban_world):
     s = win.phase
     s.set_opens({P.ARRIVALS})
     s.set_extra(P.ANKI, "asks", "needs", "Waiting for Anki's profile", P.Go("needs", ("anki-wait",)))
-    s._focus = P.ARRIVALS
+    s._focus = P.JUNBAN
     s.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier))
     assert s._focus == P.ANKI
 

@@ -120,7 +120,7 @@ class HitRow(QWidget):
         self.current = False                              # picked with ↑ ↓
         self.setObjectName("searchhit")
         self.setAccessibleName(hit.accessible)
-        self.setToolTip(strings.SEARCH_SHOW_TIP[hit.group])
+        self.setToolTip(rows.heard_tip(hit, strings.SEARCH_SHOW_TIP[hit.group]))   # Kantan-T: then the 🎧's words
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         f = _f()
@@ -182,9 +182,13 @@ class HitRow(QWidget):
         tm, sm = rows.TEXT.metrics("row-title"), rows.TEXT.metrics("row-sub")
         base = mid - 2 * f
         whole = scrub.shown(self.hit.title)                # (a picture being taken: scrubbed, never half a name)
-        title = tm.elidedText(whole, Qt.TextElideMode.ElideRight, int(width))
         p.setFont(title_font)
         at = x
+        if getattr(self.hit, "audio", "") and width > tm.horizontalAdvance(rows.HEADPHONES):   # Kantan-T: 🎧 first
+            p.setPen(style.qcolor(cs["ink"]))
+            p.drawText(QPointF(at, base), rows.HEADPHONES)
+            at += tm.horizontalAdvance(rows.HEADPHONES)
+        title = tm.elidedText(whole, Qt.TextElideMode.ElideRight, int(max(0, width - (at - x))))
         for text, lit in split_lit(title, self.hit.spans if whole == self.hit.title else ()):
             p.setPen(style.qcolor(cs["accent" if lit else "ink"]))
             p.drawText(QPointF(at, base), text)
@@ -710,7 +714,10 @@ class SearchCut(QWidget):
             moves._give(drag.Ticket(text, (), ids), lambda t: writer.put_back(ids, label=t))
         else:
             ids = list(hit.top_ids or hit.item_ids)
-            moves._give(drag.Ticket(text, (), ids), lambda t: writer.move(ids, "now", label=t))
+            ticket = drag.Ticket(text, (), ids)
+            shown = strings.TRAY_PLACED_WITH_SHOW.format(title=hit.title)   # Kura-EO: saved in its show's order
+            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+            moves._give(ticket, lambda t: writer.move(ids, "now", label=t))
         self.timer.start()                               # the where-lines asked again (the view follows)
 
     # --- painting ---------------------------------------------------------------------------------------------- #

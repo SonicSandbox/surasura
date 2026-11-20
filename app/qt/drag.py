@@ -310,7 +310,18 @@ def side_read(view, rows_):
     n = getattr(view, "mine_line", None)
     if not n or not getattr(view, "side_by_side", False):
         return None
-    return view_rows.side_top(rows_, n, bool(getattr(view, "keep_watched", False)), getattr(view, "side_cards", None))
+    return view_rows.side_top(rows_, n, bool(getattr(view, "keep_watched", False)), getattr(view, "side_cards", None),
+                              getattr(view, "side_line", None), getattr(view, "side_seasons", None))   # Kyou-D
+
+
+def side_pills(view, turned):
+    """Kyou-D: the ids the pills sit on after a drop (`side_read`'s third), read on the drop's order: none when the
+    rows hold fewer than two titles to study; the view's own when the drop's read didn't run (no top line)."""
+    if turned is not None:
+        return turned[2]
+    if getattr(view, "side_by_side", False) and getattr(view, "mine_line", None):
+        return ()
+    return getattr(view, "side_on", ())
 
 
 def lines_for(view, rows_, turned=None):
@@ -381,7 +392,8 @@ def topped(view, rows_, turned=None):
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
                             feed.items if feed is not None and feed.on else None,
                             side=bool(getattr(view, "side_by_side", False)),     # Kyou-B (KA-4): in turns, at once
-                            turned=turned, cards=getattr(view, "side_cards", None))
+                            turned=turned, cards=getattr(view, "side_cards", None),
+                            line=getattr(view, "side_line", None), seasons=getattr(view, "side_seasons", None))
 
 
 def mines_itself(lines, place):
@@ -412,6 +424,7 @@ def reordered(view, keys, tiers=None):
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
     turned = side_read(view, out)                   # Kyou-C: once for the drop (topped and its lines)
     out, moved = topped(view, out, turned)
+    out = view_rows.with_side(out, side_pills(view, turned))   # Kyou-D: the pills move at the drop
     files = sum(r.n_files for r in out)
     counts = view.counts._replace(current_rows=len(out), current_files=files)
     lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
@@ -421,6 +434,7 @@ def reordered(view, keys, tiers=None):
             {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
         worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
     return view._replace(rows=tuple(out), lines=lines_for(view, out, turned), counts=counts, subline=subline,
+                         side_on=side_pills(view, turned),   # Kyou-D: pills
                          worst=worst)
 
 
@@ -1093,7 +1107,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks", "rides", "why", "buttons")
+                 "marks", "rides", "why", "buttons", "reword")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -1109,6 +1123,7 @@ class Ticket:
         self.rides = False                           # a Finished choice the setting made: undone with its drop
         self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
         self.buttons = ()                            # Kantan-B4: its toast's own buttons (a Remove's *Removed…*)
+        self.reword = None                           # Kura-EO: change -> its toast's words where it landed, or None
 
 
 def mines_why(lines, place):
@@ -1157,6 +1172,14 @@ def _skips_moved(win, change, undone=False):
     Remove's."""
     if getattr(change, "folder", None) is None:
         return
+    try:                                             # Kura-NA: hato reads the skipped folders from surasura.json
+        from app import tools_entry
+        tools_entry.refresh_soon()
+    except Exception as e:
+        print(f"Window drag: surasura.json wasn't refreshed after a skip: {e!r}")
+    tray = getattr(win, "arrivals_tray", None)
+    if undone and tray is not None and hasattr(tray, "skips_undone"):
+        tray.skips_undone()                          # Kura-NA: a Ctrl+Z tells no skip's own ticket: the rows it hid
     try:
         from app.qt import settings_sources
         settings_sources.skips_moved(win, undone=change if undone else None)
@@ -1173,6 +1196,18 @@ def _trash_moved(win, change):
         removed.trash_heard(win, change)
     except Exception as e:                           # (the lists stay as they were until they are read again)
         print(f"Window drag: the Removed list wasn't read again: {e!r}")
+
+
+def _words_heard(win, change):
+    """Kantan-B2: an *Allow again* saved or undone, as it lands — the open *Words Surasura won't mine again* lists read
+    again (`unmined_words.words_heard`; a ticket's "undone" is told at the Undo's press, before it lands)."""
+    if getattr(change, "kind", None) != "allow_again":
+        return
+    try:
+        from app.qt import unmined_words
+        unmined_words.words_heard(win)
+    except Exception as e:                           # (the list stays as it was until it is read again)
+        print(f"Window drag: the words list wasn't read again: {e!r}")
 
 
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
@@ -1445,8 +1480,10 @@ class DragController(QObject):
             return view
         turned = side_read(view, rows_)             # Kyou-C: once (topped and its lines)
         rows_, moved = topped(view, rows_, turned)  # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        rows_ = view_rows.with_side(rows_, side_pills(view, turned))   # Kyou-D: a Done can hand a title's place on
         worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
-        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_, turned), worst=worst)
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_, turned), worst=worst,
+                             side_on=side_pills(view, turned))   # Kyou-D
 
     def _marks_ahead(self, write, marks, key):
         """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands
@@ -2365,6 +2402,24 @@ class DragController(QObject):
             after_paint(self.writer.go)
         return seq
 
+    def _reworded(self, ticket, change):
+        """Kura-EO: a ticket whose words depend on where the store put it (`Ticket.reword`: an *Up next* the store put
+        in its show's episode order says so, never "#1") — its words, and its toast's while it shows, once saved."""
+        if ticket.reword is None:
+            return
+        try:
+            words = ticket.reword(change)
+        except Exception as e:                       # (the words as given: never a lost save over a toast)
+            print(f"Window moves: a toast's words couldn't follow the save: {e!r}")
+            return
+        if not words or words == ticket.text:
+            return
+        ticket.text = words
+        if self.toasted is ticket:
+            reword = getattr(self.win.toasts, "reword", None)
+            if reword is not None:
+                reword(words)
+
     def _toast(self, ticket, buttons=()):
         ticket.toast = True
         self.toasted = ticket
@@ -2517,6 +2572,7 @@ class DragController(QObject):
     def _saved(self, change, label):
         if isinstance(label, Ticket):
             label.change = change
+            self._reworded(label, change)
             _tell(label, "saved")
             if label.rides and label.follows is not None:
                 self._rides[change] = label.follows
@@ -2554,11 +2610,13 @@ class DragController(QObject):
         _skips_moved(self.win, change)
         _sources_stopped(self.win, change, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
+        _words_heard(self.win, change)
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
         _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
+        _words_heard(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if change is not None:
             self._marks_of.pop(change, None)
@@ -3142,7 +3200,10 @@ class DragController(QObject):
         else:
             def command(t):
                 return self.writer.place(ids, "top", label=t)
-        return self._give(Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids), command, anki=anki)
+        ticket = Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids)
+        shown = strings.PICKS_DONE_WITH_SHOW.format(title=title)       # Kura-EO: saved in the show's episode order
+        ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        return self._give(ticket, command, anki=anki)
 
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):
@@ -3175,9 +3236,11 @@ class DragController(QObject):
         if land == row.tier and getattr(row, "soon_from", None) is None:
             self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))
         elif step < 0:
-            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t,
+                                                          exact=True))
         else:
-            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t,
+                                                          exact=True))
 
     def menu_entries(self, row):
         """⋯'s entries for a row, in order: [(name, label, tip, enabled)]. *Up next* not for Up Next itself; *Finished*
@@ -3254,7 +3317,7 @@ class DragController(QObject):
         keys = order_after([r.key for r in base.rows], row.key, 0)
         self._ahead(reordered(base, keys, {row.key: hero.tier}))
         self._give(Ticket(strings.DRAG_UP_NEXT.format(title=row.title), (row.key,), ids),
-                   lambda t: self.writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t))
+                   lambda t: self.writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t, exact=True))
 
     # --- files from Explorer ----------------------------------------------------------------------------------- #
     @staticmethod

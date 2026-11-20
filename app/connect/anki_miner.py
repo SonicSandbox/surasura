@@ -306,6 +306,18 @@ def _command(path):
 # One call
 # --------------------------------------------------------------------------- #
 _job_handle = None      # Windows: one job object for this process's Anki Miner calls, closed (and they ended) with it
+# Michi-LP (Beta *Run Anki Miner at low priority*, `connect_low_priority`): True -> every call starts at idle priority
+# (`power.popen_idle`; its ffmpeg inherits it). Set only by Connect's run (`runner.Steps`), so the window's look-ups
+# never wait behind other work
+LOW_PRIORITY = False
+
+
+def _popen(args, **kwargs):
+    """`subprocess.Popen`, at idle priority while LOW_PRIORITY is on."""
+    if LOW_PRIORITY:
+        from app.connect import power
+        return power.popen_idle(args, **kwargs)
+    return subprocess.Popen(args, **kwargs)
 
 
 def _bind(proc):
@@ -373,8 +385,8 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
     try:
-        proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, creationflags=flags, env=env)
+        proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, creationflags=flags, env=env)
         if bind:
             _bind(proc)
     except FileNotFoundError:
@@ -418,8 +430,8 @@ def start(path, args, out, bind=True):
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         with open(out, "wb") as f:
-            proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=f,
-                                    stderr=subprocess.DEVNULL, creationflags=flags)
+            proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=f,
+                          stderr=subprocess.DEVNULL, creationflags=flags)
     except FileNotFoundError:
         raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
     except OSError as e:
@@ -620,6 +632,7 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
 _SPEECH = {}
 SPEECH_ITEM = "speech_model"
 SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: never five launches every look)
+SPEECH_BUSY_S = 60      # Michi-T1: a no only because Anki Miner was busy (a mine beside the check) is asked sooner
 
 
 def speech_ready(path, language, profile, folder):
@@ -629,22 +642,25 @@ def speech_ready(path, language, profile, folder):
     (`settings_import`'s `asr_model`: Surasura's own profile only — the window's is refused, never changed) and checked
     again, so a model downloaded for the other size is found. -> True / False. Kept True for this run (a check a look
     costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
-    from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one)."""
+    from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one); a no
+    because Anki Miner was busy setting the other model (a mine beside a check, Michi-T1) only SPEECH_BUSY_S."""
     key = (path, language, profile)
     said = _SPEECH.get(key)
     if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
         return said[0]
-    ok, set_to = _speech_ok(check(path, language, profile)), None
+    ok, set_to, at = _speech_ok(check(path, language, profile)), None, time.monotonic()
     for model in SPEECH_MODELS if not ok and profile else ():
         try:
             settings_import(path, language, {"asr_model": model}, folder, profile=profile)
-        except AnkiMinerError:
+        except AnkiMinerError as e:
+            if e.kind == "busy":        # asked again soon, not in 15 minutes: the other size may be there
+                at -= SPEECH_NO_S - SPEECH_BUSY_S
             break                       # the window's profile, or a busy Anki Miner: as it is
         set_to = model
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
-    _SPEECH[key] = (ok, time.monotonic(), set_to)
+    _SPEECH[key] = (ok, at, set_to)
     return ok
 
 
@@ -941,7 +957,7 @@ def tag_names(url, words, outcomes):
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
                known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
-               word_audio=True):
+               word_audio=True, workers=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -964,7 +980,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     learner can find and check them. `names` (Michi-YT): [folder, name] the cards' Source carries instead of the video's
     (an online title's fetched video: its transcript's, `online.of`). `word_audio` False (Zh-C: a Chinese run with
     *Word audio from Google* off, `runfile.word_audio_on`): the run's word-audio field is sent unmapped
-    (`runfile.config`), so no word goes to Google."""
+    (`runfile.config`), so no word goes to Google. `workers` (Michi-LP, `power.clip_cuts`): the clips Anki Miner cuts
+    at once in this run (None: the profile's own)."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -980,7 +997,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names, word_audio)
+                              reading, from_audio, names, word_audio, workers)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -1028,7 +1045,7 @@ ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner fro
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None, from_audio=False, names=None, word_audio=True):
+               show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -1054,7 +1071,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")), tags=tags,
                                   subtitle_offset=subtitle_offset, audio=audio, names=names)
     data = runfile.build(run_dir, language, [episode], profile=profile,
-                         run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio))
+                         run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
+                                                   workers=workers))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     try:            # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)

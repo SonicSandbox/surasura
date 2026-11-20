@@ -120,6 +120,26 @@ def note_anki_miner(info):
     return write_record(record)
 
 
+def note_miner_deck(language, deck):
+    """Michi-DK: Anki Miner's own deck for `language` (its settings export's, the deck its window mines into) onto the
+    record, read by Settings' Anki Miner card (`miner_deck`). Written only when it changed, and only into a record that
+    already exists (as `note_anki_miner`). -> written or not; never raises."""
+    record = read_record()
+    deck = str(deck or "").strip()
+    decks = record.get("miner_decks") if isinstance(record.get("miner_decks"), dict) else {}
+    if not record or not deck or decks.get(language) == deck:
+        return False
+    record["miner_decks"] = dict(decks, **{language: deck})
+    return write_record(record)
+
+
+def miner_deck(language):
+    """Anki Miner's own deck for `language` as the last run read it (`note_miner_deck`), or None. Never raises."""
+    decks = read_record().get("miner_decks")
+    deck = decks.get(language) if isinstance(decks, dict) else None
+    return deck if isinstance(deck, str) and deck.strip() else None
+
+
 # Michi-U (alpha 9.1 try, Sonic: "i updated anki miner, but there was no update in surasura for the books ... after i
 # stepped away it began working"): an Anki Miner updated is followed at once (`follow_install`)
 FOLLOW_RETRY_S = 120            # a look that didn't find the new version is tried again after this,

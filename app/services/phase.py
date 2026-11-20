@@ -103,12 +103,14 @@ def press_circle(key):
     return PRESSES.get(word)
 
 
-def stoppable(views, circle):
+def stoppable(views, circle, automatic=False):
     """The ids of `circle`'s live jobs a Stop may cancel (its owner's cancel; try a9.1): one with a cancel, not past the
     point it can stop at (`on_quit` "wait": an Anki write finishing its batch, Generate writing your list) and not
-    stopping already — the update's *Stop it* rule. -> a tuple, oldest first."""
+    stopping already — the update's *Stop it* rule. `automatic`: only the ones that started by themselves (Mado-PZ:
+    a pause stops what runs by itself, never a job you pressed). -> a tuple, oldest first."""
     return tuple(v.id for v in views if circle_of(v) == circle and v.can_cancel and v.on_quit != "wait"
-                 and v.state in (jobs_module.QUEUED, jobs_module.WAITING, jobs_module.RUNNING))
+                 and v.state in (jobs_module.QUEUED, jobs_module.WAITING, jobs_module.RUNNING)
+                 and (v.automatic or not automatic))
 
 
 def _stepped(view):

@@ -86,7 +86,7 @@ def test_frozen_entry_names_the_cli_and_app_beside_the_running_exe(root, tools, 
         "schema": 1, "tool": "surasura", "name": "Surasura", "version": __version__,
         "cli": str(frozen / "surasura-cli.exe"), "app": str(frozen / "Surasura.exe"),
         "contract": contract.CONTRACT, "verbs": ["status"],
-        "drop_folders": {"ja": _hato_folder(root, "ja")},
+        "drop_folders": {"ja": _hato_folder(root, "ja")}, "skipped_folders": {},
     }
     assert os.path.isabs(got["drop_folders"]["ja"]) and "/" not in got["drop_folders"]["ja"].replace(os.sep, "")
 

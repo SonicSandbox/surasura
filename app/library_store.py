@@ -311,12 +311,78 @@ def side_seen(cards, mined_at):
     return at is None or _utc_key(mined_at) <= _utc_key(at)
 
 
-def side_pair(rows, keep=False, cards=None):
-    """The one rule for who takes turns while side by side is on -> (every title to study, the titles taking turns, the
-    titles stepping aside), each in Current's order — or None with fewer than two titles to study (every reader then
-    as before). `rows`: Current in order, `(id, tier, work_id, availability, watched, mined_at)`; `keep`: the library's
-    `keep_watched`; `cards`: Junban's last count (`side_cards`; None or {}: no count — every title by its files, as
-    before). A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
+def above_line(rows, line):
+    """Kyou-D: the `title_key`s with a row above the Soon line's own count `line` — Current's first `line` rows with
+    text, and the waiting rows right after them, as `Store._keep_line` cuts it (the count, never the line's reach, so
+    a title stepping in never moves it for itself); 0: none."""
+    out, seen = set(), 0
+    if line > 0:
+        for r in rows:
+            if seen == line and r[3] != "waiting":
+                break
+            out.add(title_key(r[0], r[2]))
+            seen += r[3] != "waiting"
+    return out
+
+
+def season_works(works):
+    """Kyou-D: the seasons of one show folder as one title side by side — `works`: (work id, folder key) pairs ->
+    {work id: the show's title}, the show's smallest work id, for every work whose folder is a season of a show folder
+    (`<show>/Season 2`, `episode_names.season_folder`) that another season shares; nothing else. The store keeps each
+    season its own title (its cover, its AniList entry); only the turns read them as one, so a show's second season
+    never takes turns with its first. Pure; the store and the window read it on the same works."""
+    from app.episode_names import season_folder
+    shows = {}
+    for work_id, folder in works:
+        head, _sep, last = (folder or "").rpartition("/")
+        if head and isinstance(season_folder(last), int):
+            shows.setdefault(head, []).append(work_id)
+    return {w: min(ids) for ids in shows.values() if len(ids) > 1 for w in ids}
+
+
+def as_seasons(rows, seasons):
+    """`rows` (`side_pair`'s) with each season's work read as its show's (`season_works`): unchanged when none."""
+    if not seasons:
+        return rows
+    return [r if r[2] not in seasons else (r[0], r[1], seasons[r[2]]) + tuple(r[3:]) for r in rows]
+
+
+def side_reach(rows, n, taken, keep=False):
+    """The Soon line's count side by side (`Store._side_line`): down to the last of the turns' first `n` files `taken`
+    (answer 5: both titles stay above it), counting rows with text — Kyou-D: but never pulling more than `n` files to
+    study the turns don't take below the line's own count (a long first title was pulled in whole to reach the
+    second: the line then stops at the last of `taken` it reached, else at `n`). A row that doesn't count (watched,
+    `keep` off) is free, as before (KA-7)."""
+    take, left = set(taken), len(set(taken))
+    seen, cut, free = 0, n, n
+    for r in rows:
+        if r[3] == "waiting":
+            continue
+        seen += 1
+        if r[0] in take:
+            left -= 1
+            if seen > n:
+                cut = seen
+            if not left:
+                break
+        elif seen > n and counts(r[1], r[4], keep):
+            free -= 1
+            if free < 0:
+                break
+    return cut
+
+
+def side_pair(rows, keep=False, cards=None, line=None):
+    """The one rule for who takes turns while side by side is on -> (every title that can take turns, the titles taking
+    turns, the titles stepping aside), each in Current's order — or None with fewer than two titles to study (every
+    reader then as before). `rows`: Current in order, `(id, tier, work_id, availability, watched, mined_at)` (a show's
+    seasons already one title: `as_seasons`); `keep`: the library's `keep_watched`; `cards`: Junban's last count
+    (`side_cards`; None or {}: no count — every title by its files, as before); `line`: the Soon line's count (None: a
+    library with no line — nothing to reach for, every title as before). Kyou-D
+    (the lead's lean, Sonic 2026-11-16: a 100-part book was pulled into NOW whole): only titles above the line step in —
+    Current's first two titles to study take turns wherever they stand (answer 5), any other only with a row above
+    the line's own count (`above_line`); a title below it waits until it is above the line or one of the first two.
+    A title the count says has no still-new card steps aside (its files after every turn) — unless Connect
     hasn't mined its next file to study yet (that file can still make its cards: a title new to Current, or one whose
     mined files have been watched) — Kyou-E: or mined it only after the count's time (`side_seen`: the count never saw
     its cards, so a receipt never sets a title aside; Junban's next count decides); a title the count doesn't name (in
@@ -324,6 +390,9 @@ def side_pair(rows, keep=False, cards=None):
     titles = side_titles(rows, keep)
     if len(titles) < SIDE_TITLES:
         return None
+    if line is not None and len(titles) > SIDE_TITLES:
+        above = above_line(rows, line)
+        titles = titles[:SIDE_TITLES] + [t for t in titles[SIDE_TITLES:] if t in above]
     if not cards:
         return titles, titles, []
     mined = {}                                  # each title's next file to study: did the count see it mined?
@@ -398,9 +467,11 @@ PUT_BACK_KINDS = ("undo", "restore", "unsort")
 # never a walk back through the tier (a big take-in of one-file titles: each would read every earlier row)
 ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = 'arrivals' AND (ord, id) < (?, ?) "
                       "ORDER BY ord DESC, id DESC LIMIT 1")
-# … and `Store._into_show`'s "is any of this title in Current?": on the title's index too, never a walk of Current
-SHOW_IN_CURRENT_SQL = "SELECT 1 FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT 1"
+# … and `Store._into_show`'s "is any of this title in Current, besides the moved items?": on the title's index too,
+# never a walk of Current (LIMIT: one past the moved items already there)
+SHOW_IN_CURRENT_SQL = "SELECT id FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT ?"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
+HATO_FOLDERS_JOINED = "hato_folders_joined"   # meta: 1 once 3.0.16's `Hato/<series>` titles joined their shows (Kura-HJ)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
@@ -444,13 +515,14 @@ OUTSIDE_ROLES = ("connect",)     # a writer with no window of its own and a life
 OUTSIDE_IDLE_WAIT = 1.0          # its checkpoint waits this long for the write lock (a writer then has it: skipped)
 OUTSIDE_IDLE_S = 2.0             # its copy trigger fires this long after its last commit (a burst, one export)
 TWIN_HASHES = 8                  # hato's file is checked by its bytes against this many items of its size at most (F12)
+HELD_DROPS = "held_drops"        # meta: hato's drops a paused New arrivals kept waiting (Kantan-G; JSON ids, oldest first)
 
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
             "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side",
-            "processed_split")
+            "processed_split", "hato_folders_joined")
 
 
 class StoreError(Exception):
@@ -532,13 +604,18 @@ def _below_tier(rel):
     folder counts as one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any
     case the file system reads as it (as `take_in` and the sync compare it). The downloader's `YOUTUBE_FOLDER` too,
     down to its channel folder only (`YouTube/<channel>/<playlist>/x.txt` → '<channel>'; a file directly in it:
-    '')."""
+    ''). Kura-HJ: hato's drop folder the same way — hato copies each subtitle into its series' own folder
+    (`HighPriority/Hato/<series>/x.srt` → '<series>', since hato 1.1), the same key as the learner's `Library/<series>`,
+    never `Hato/<series>` (a title of its own beside the show)."""
     folder = _rel_dir(_strip(rel))
     if not folder or path_key(folder) in (path_key(HATO_FOLDER), path_key(PROCESSED_FOLDER)):
         return ""
     parts = folder.split("/")
     if path_key(parts[0]) == path_key(YOUTUBE_FOLDER):        # `YouTube/<channel>/…`: the channel's folder alone
         return parts[1] if len(parts) > 1 else ""
+    hato = HATO_FOLDER.count("/") + 1
+    if len(parts) > hato and path_key("/".join(parts[:hato])) == path_key(HATO_FOLDER):    # `Hato/<series>/…`
+        return parts[hato]
     if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):
         parts = parts[1:]
     return "/".join(parts)
@@ -571,6 +648,22 @@ def specials_home(below):
     from app.episode_names import season_folder
     head, _sep, last = (below or "").rpartition("/")
     return head if head and season_folder(last) == "special" else None
+
+
+def subtitles_home(below, language):
+    """The folder a show's subtitles folder belongs to (Kantan-T, 2026-11-18, PROVISIONAL: a tester's `<show>/Season
+    01/ass/` sorted as a title of its own): `<folder>/<name>` -> `<folder>` when `<name>` is a subtitles folder by the
+    look's one named-folder rule (`sources._subtitle_folder`: `Subs`, `Subtitles`, `ass`, `srt`, our language's folder,
+    a versions folder, a folder named as the one above it), down through nested ones (`<show>/Subs/ja` -> `<show>`);
+    anything else (a season, `Extras`, `Part 2`, `English`, a folder alone) -> None. As written or folded alike. Pure."""
+    from app.sources import _subtitle_folder
+    home, out = below or "", None
+    while "/" in home:
+        head, _sep, last = home.rpartition("/")
+        if not head or not _subtitle_folder(last, head.rpartition("/")[2], language):
+            break
+        home = out = head
+    return out
 
 
 def folder_title(below):
@@ -1911,6 +2004,7 @@ class Change:
         self.to = None        # Mado-O: the tier a `place` put its items in (`Store.unsort` reads it)
         self.show_order = False   # Kura-EO: the move went to its show's episode order, not where it was asked to go
                                   #   (`Store._into_show`; the window's writer follows the store's place then)
+        self.show_sorted = False  # … and its block was sorted by episode (the writer follows it item by item)
         self.ignored = []     # Mado-O (SO-1): the Ignores an `unsort` brought back [{"ids", "folder", "of"}] — its Undo
                               #   (the window's writer: files move) ignores them again
 
@@ -1993,7 +2087,9 @@ class _Command:
         # Schema 2 (L3.1): what the command's settling step reads (`Store._settle`)
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
+        self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
+        self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
         self.fed_inline = set()  # … already written with their placement
@@ -2095,30 +2191,41 @@ class Check:
         self.started_at = started_at
 
 
-def _walk_back(seqs, items, okset):
+def _walk_back(seqs, items, okset, one=False):
     """`Store._replace`'s walk: a change's `items` (its recorded previous order) back into `seqs` ({tier: _Seq}, the
     items of `okset` already taken out) — each right after its recorded predecessor if that item is in the tier now
     (untouched, or put back earlier in this walk); else after that predecessor's own recorded predecessor, along the
     list; else before the nearest recorded successor outside the change's set that is in the tier; else at the tier's
-    top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers."""
+    top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers. Kyou-D:
+    Current is one order, NOW then Soon (the Soon line is a count): a recorded neighbour now on the line's other side
+    is still the place — the item goes beside it, in its tier, and the line's settling cuts the order again (the line
+    had moved with the drop, so an Undo put a row from NOW's end at NOW's top). `seqs` holds both or neither. `one`:
+    only while the library has a Soon line (the caller's `_one_current`); without one, NOW and Soon are two places."""
     info = {it["id"]: it for it in items}
+    other = {"now": seqs.get("soon"), "soon": seqs.get("now")} if one else {}
     inset = set(info)
     restored = set()
     for it in items:
         if it["id"] not in okset:
             continue
-        seq = seqs[it["tier"]]
+        seq = home = seqs[it["tier"]]
+        beside = other.get(it["tier"])          # Kyou-D: the line's other side of Current, when this is Current
+
+        def side_of(x):
+            return home if x in home else beside if beside is not None and x in beside else None
         where = None
         p, seen = it["prev"], set()
         while p is not None and p not in seen:
             seen.add(p)
             if p in inset:
                 if p in restored:
+                    seq = side_of(p) or home
                     where = ("after", p)
                     break
                 p = info[p]["prev"]
                 continue
-            if p in seq:
+            if side_of(p) is not None:
+                seq = side_of(p)
                 where = ("after", p)
             break
         if where is None:
@@ -2128,7 +2235,8 @@ def _walk_back(seqs, items, okset):
                 if n in inset:
                     n = info[n]["next"]
                     continue
-                if n in seq:
+                if side_of(n) is not None:
+                    seq = side_of(n)
                     where = ("before", n)
                 break
         if where is None:
@@ -2426,6 +2534,40 @@ class Store:
                 values = dict(values, copy_dirty=self._meta().get("copy_dirty", 0) + 1)
             self._set_meta(values)
 
+    def _held_drops(self):
+        try:
+            got = json.loads(self._meta().get(HELD_DROPS) or "[]")
+        except ValueError:
+            return []
+        return [d for d in got if isinstance(d, dict) and isinstance(d.get("id"), int)] if isinstance(got, list) else []
+
+    def hold_drops(self, drops):
+        """Kantan-G: hato's drops that New arrivals' pause kept waiting — each {"id": item id, "producer", "channel_id"}
+        (what its rule is read by, `connect.rules.rule_for`), one per item, oldest first; a bookkeeping write (no
+        version moves). Placed by their rule at the circle's resume (`connect.rules.place_held`), which forgets each
+        once it is settled (`forget_drops`)."""
+        with self._writing():
+            held = self._held_drops()
+            have = {d["id"] for d in held}
+            held += [dict(d, id=int(d["id"])) for d in drops if int(d["id"]) not in have]
+            self._set_meta({HELD_DROPS: json.dumps(held, ensure_ascii=False, sort_keys=True)})
+
+    def held_drops(self):
+        """The drops `hold_drops` kept, oldest first (a read)."""
+        return self._held_drops()
+
+    def forget_drops(self, ids):
+        """The held drops `ids` settled (placed, or no longer anything a rule places): taken out of the list, the rest
+        kept as they are — one held meanwhile (another program's register) too."""
+        ids = {int(i) for i in ids}
+        if not ids:
+            return
+        with self._writing():
+            held = self._held_drops()
+            left = [d for d in held if d["id"] not in ids]
+            if len(left) != len(held):
+                self._set_meta({HELD_DROPS: json.dumps(left, ensure_ascii=False, sort_keys=True)})
+
     # --- reading -------------------------------------------------------------------------------- #
 
     def _rows(self, ids, entry=True):
@@ -2474,12 +2616,32 @@ class Store:
                 out[item_id] = (prev_id, next_id)
         return out
 
+    def _current_edges(self, rows, near):
+        """Kyou-D: `near` with Current read as one order — Soon's first row follows NOW's last (and NOW's last is
+        followed by Soon's first), as the Undo's walk-back reads both sides (`_walk_back`): the Soon line moves with
+        a drop while side by side reaches, so a tier's edge is no place to go back to. Only the Undo's record."""
+        edge = {r[0]: r[1] for r in rows if r[1] in CURRENT}
+        if not edge:
+            return near
+        last = self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id DESC LIMIT 1"
+                                 ).fetchone()
+        first = self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT 1").fetchone()
+        out = dict(near)
+        for item_id, tier in edge.items():
+            prev_id, next_id = out.get(item_id, (None, None))
+            if tier == "soon" and prev_id is None and last is not None:
+                out[item_id] = (last[0], next_id)
+            elif tier == "now" and next_id is None and first is not None:
+                out[item_id] = (prev_id, first[0])
+        return out
+
     def _before(self, change, rows, explicit=1, near=None):
         """Record each row's place just before the change, in the previous order (§6.11). `near`: the rows'
         `_neighbours`, when the caller has read them."""
         rows = sorted(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
         if near is None:
             near = self._neighbours(rows)
+        near = self._current_edges(rows, near)
         for r in rows:
             prev_id, next_id = near.get(r[0], (None, None))
             change.items.append({"id": r[0], "tier": r[1], "prev": prev_id, "next": next_id,
@@ -2519,10 +2681,15 @@ class Store:
         return _keep_value(row[0] if row else None)
 
     def _current_rows(self):
-        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched, mined_at)`."""
-        return self.conn.execute(
+        """Current in order (NOW, then Soon; each by ord, id): `(id, tier, work_id, availability, watched, mined_at)`
+        — Kyou-D: a show's seasons read as one title (`as_seasons`)."""
+        return as_seasons(self.conn.execute(
             "SELECT id, tier, work_id, availability, watched, mined_at FROM items WHERE tier IN ('now', 'soon') "
-            "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall()
+            "ORDER BY CASE tier WHEN 'now' THEN 0 ELSE 1 END, ord, id").fetchall(), self._seasons())
+
+    def _seasons(self):
+        """Kyou-D: `season_works` over the library's works (a season folder's key holds a `/`)."""
+        return season_works(self.conn.execute("SELECT id, folder_key FROM works WHERE folder_key LIKE '%/%'"))
 
     def _side_cards(self):
         """Kyou-C: Junban's last count (`SIDE_CARDS`, `side_cards`), or None (none written, or unreadable)."""
@@ -2538,7 +2705,7 @@ class Store:
             return None
         rows = self._current_rows()
         pair = side_pair(rows, self._keep_watched() if keep is None else keep,
-                         self._side_cards() if cards is None else cards)
+                         self._side_cards() if cards is None else cards, self._soon_line())
         return None if pair is None else (rows,) + pair
 
     def _side_split(self, cards=None):
@@ -2555,7 +2722,8 @@ class Store:
             side = self._side()
         if side is None:
             return []
-        rows, titles, _on, _aside = side           # Kyou-C: every title to study, so Junban counts each again
+        rows, titles, _on, _aside = side           # Kyou-C: every title that can take turns, so Junban counts each
+        #                                            again (Kyou-D: not a title below the Soon line: it never steps in)
         groups = {key: [] for key in titles}
         for r in rows:
             key = title_key(r[0], r[2])
@@ -2577,9 +2745,7 @@ class Store:
         taken = woven(study, title_of, titles, aside=aside, n=n)
         if len(taken) < n:
             return n
-        place = {r[0]: k for k, r in enumerate(rows)}
-        last = max(place[i] for i in taken)
-        return max(n, sum(1 for r in rows[:last + 1] if r[3] != "waiting"))
+        return side_reach(rows, n, taken, keep)
     # --- end Kyou-A
 
     def _root_id(self):
@@ -3055,6 +3221,100 @@ class Store:
                 cmd.touch()
             return change
 
+    def join_hato_folders(self):
+        """Once a store, in the helper's run (Kura-HJ, Sonic 2026-11-19: the titles already split heal by themselves):
+        a title 3.0.16's rule made of hato's series folder — `HighPriority/Hato/<series>/` read as a show folder of its
+        own, named and keyed `Hato/<series>` beside the learner's show — becomes part of its show: the ONE title a new
+        drop of it finds now (`_hato_show`: the series folder's key, else its records' show by name or by `show_key`),
+        joined by `_merge_into` as `join_specials` does (nobody's ask: `users_first`; the show's name kept, the path name
+        dropped; the record's id goes with it). No show, or the ids / types say another: it is named by its records'
+        show (else its folder) and keyed by its series folder, as a new drop's title is — unless that key is another
+        title's, then none. Only a title of hato's files alone, never one the learner named; one he put in one group of
+        his own with the show, or kept apart from it, stays exactly as it is (never renamed to the show's name). No item, order, piece, mark or file touched:
+        only which title the items are. ONE command, its Change undone by `undo` (the works' value check); the mark
+        (`meta.hato_folders_joined`) is set in it, so the next run finds nothing. -> the Change, or None."""
+        if self._meta().get(HATO_FOLDERS_JOINED):
+            return None
+        with self._command("join_hato_folders", "sync") as cmd:
+            if self._meta().get(HATO_FOLDERS_JOINED):           # another helper got there first
+                return None
+            self._set_meta({HATO_FOLDERS_JOINED: 1})
+            old = path_key(HATO_FOLDER.split("/", 1)[1]) + "/"   # the old rule's key: `hato/<series>` below the tier
+            apart = {tuple(sorted(p)) for p in json.loads(self._meta().get("kept_apart") or "[]")}
+            change = None
+            for (wid,) in self.conn.execute("SELECT id FROM works WHERE substr(folder_key, 1, ?) = ? AND "
+                                            "title_by_user = 0 ORDER BY id", (len(old), old)).fetchall():
+                w = self._work_row(wid)
+                rels = [r for (r,) in self.conn.execute("SELECT rel_path FROM items WHERE work_id = ?", (wid,))]
+                keys = {folder_key_of(r) for r in rels}
+                if w is None or not rels or not all(_in_hato(r) for r in rels) or len(keys) != 1 or None in keys:
+                    continue                                # (a learner's own `Hato` show folder in another tier)
+                key, series = keys.pop(), _below_tier(rels[0])
+                shows = []
+                for (text,) in self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id IN (SELECT id FROM "
+                                                 f"items WHERE work_id = ?) AND {_PREFERRED_ROW} ORDER BY item_id",
+                                                 (wid,)):
+                    try:
+                        name = _show_title(json.loads(text))
+                    except ValueError:
+                        continue
+                    if name and name not in shows:
+                        shows.append(name)
+                if change is None:
+                    change = self._change(cmd, "join_hato_folders")
+                    change.works = {"rows": [], "items": [], "fields": [], "created": []}
+                keep = self._hato_show(wid, key, shows, cmd)
+                if keep is not None and (self._grouped_together([keep, wid]) or tuple(sorted((keep, wid))) in apart):
+                    continue                    # the learner's own answer (his group, *Keep apart*): as it stands
+                if keep is not None and not (self._titles_apart([keep, wid]) or
+                                             _media_family(self.media_type(keep)[0]) !=
+                                             _media_family(self.media_type(wid)[0])):
+                    self._merge_into(cmd, change, keep, [wid], users_first=True)
+                    self._carry_apart(keep, [wid])
+                    k = self._work_row(keep)
+                    fields = {"titles": _dumps([t for t in json.loads(k["titles"] or "[]")
+                                                if not path_key(t).startswith(old)])}      # the path name goes
+                    if k["folder_key"] == w["folder_key"]:      # (it had none: it took the old key)
+                        fields["folder_key"] = key if self._key_free(key, keep) else None
+                    self._set_work_fields(cmd, change, keep, fields)
+                    continue
+                name = shows[0] if shows else folder_title(series)
+                titles = [t for t in json.loads(w["titles"] or "[]") + [series]
+                          if t != name and not path_key(t).startswith(old)]
+                self._set_work_fields(cmd, change, wid, {"title": name, "titles": _dumps(list(dict.fromkeys(titles))),
+                                                         "folder_key": key if self._key_free(key, wid) else None})
+            return change
+
+    def _key_free(self, key, wid):
+        """No title but `wid` holds this folder key."""
+        return self.conn.execute("SELECT 1 FROM works WHERE folder_key = ? AND id != ?", (key, wid)).fetchone() is None
+
+    def _hato_show(self, wid, key, shows, cmd):
+        """`join_hato_folders`' show for the old rule's title `wid` (its series folder's `key`, its records' `shows`): the
+        title holding that folder key; else the ONE title one of the shows names (folded, as `_work_by_record` reads
+        it), else the ONE of the same `show_key` (as `_same_show_folder`); never `wid` itself. None when none or two."""
+        row = self.conn.execute("SELECT id FROM works WHERE folder_key = ? AND id != ? ORDER BY id LIMIT 1",
+                                (key, wid)).fetchone()
+        if row is not None:
+            return row[0]
+        found = set()
+        for show in shows:
+            fold = "\n" + search_fold(show, self.language) + "\n"
+            found |= {w for (w,) in self.conn.execute("SELECT id FROM works WHERE id != ? AND "
+                                                      "instr(char(10) || search_key || char(10), ?) > 0", (wid, fold))}
+        if len(found) == 1:
+            return found.pop()
+        if found:
+            return None
+        from app.episode_names import show_key
+        wants = {k for k in (show_key(search_fold(n, self.language)) for n in list(shows) + [key]) if k}
+        index = self._show_titles(cmd)["key"]
+        for w in sorted(set().union(*(index.get(k, ()) for k in wants)) - {wid}) if wants else ():
+            row = self.conn.execute("SELECT search_key FROM works WHERE id = ?", (w,)).fetchone()
+            if row is not None and wants & _show_keys(row[0]):
+                found.add(w)
+        return found.pop() if len(found) == 1 else None
+
     def _cover_video_in(self, video_id, item_ids):
         """`split_processed`'s: is `video_id` (a YouTube cover's `cover_ref`) one of these items' videos (a record's
         `video_id`)?"""
@@ -3357,9 +3617,9 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
-            asked = (tier, before_id, after_id)
+            asked, eps = (tier, before_id, after_id), None
             if in_order:
-                tier, before_id, after_id = self._into_show(ids, tier, before_id, after_id)
+                tier, before_id, after_id, eps = self._into_show(ids, tier, before_id, after_id)
                 anchor = before_id if before_id is not None else after_id
             # the anchor in the same read, the rows' neighbours too (the no-op check's and the undo record's); no entry:
             # a move never reads it (R6)
@@ -3372,13 +3632,19 @@ class Store:
                     raise ValueError("the anchor is not in that tier")
             ordered = sorted(rows.values(), key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
             block = [r[0] for r in ordered]
+            if eps:                                 # Kura-EO 3.0.16: one title's episodes land sorted (`_into_show`)
+                at = {i: n for n, i in enumerate(block)}
+                block = sorted(block, key=lambda i: (eps[i], at[i]))
+            sorted_ = block != [r[0] for r in ordered]
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
-            if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
-                              where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
+            if not sorted_ and self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
+                                              where[1] if where[0] == "after" else None, end=where[0] == "end",
+                                              near=near):
                 return None
             change = self._change(cmd, "move")
-            change.show_order = (tier, before_id, after_id) != asked
+            change.show_order = sorted_ or (tier, before_id, after_id) != asked
+            change.show_sorted = sorted_
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
                       (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,
@@ -3508,10 +3774,10 @@ class Store:
         held = self.conn.execute("SELECT piece_id FROM items WHERE id = ?", (target,)).fetchone()[0]
         if held is not None and any(r[10] != held for r in block) and self._is_group(held):
             target = self._past_group(target, -1 if up else 1)
-        moving = [r[0] for r in block]
+        moving = [r[0] for r in block]      # (Kura-EO: one exact step — ↑ ↓ never take the episode order)
         if up:
-            return self.move(moving, tier, before_id=target)
-        return self.move(moving, tier, after_id=target)
+            return self.move(moving, tier, before_id=target, in_order=False)
+        return self.move(moving, tier, after_id=target, in_order=False)
 
     def _tier_top(self, tier, excl):
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
@@ -3973,6 +4239,11 @@ class Store:
                     # Kura-PR2: a channel's first video — its folder's title named by the channel (the record), never
                     # by its folder's safe spelling (`ハチ: 公式` is the folder `ハチ 公式`: kept among its titles)
                     self._new_work(_show_title(pairing), fk, cmd, titles=(_below_tier(rel),))
+                if fk is not None and _in_hato(rel) and _show_title(pairing):
+                    # Kura-HJ: hato's series folder is its show's — the record names the show for the folder's title
+                    # (`_folder_work`, at the insert: the same show under another spelling, `_same_show_folder`; a new
+                    # title named by it, the folder's name kept among its titles)
+                    cmd.show_names[path_key(rel)] = _show_title(pairing)
                 # Mado-Q: a playlist's video goes in its list's order among its title's videos of that list
                 spot = self._series_spot(pairing, ("arrivals",) if meta.get("arrivals_on") else CURRENT)
                 if spot is not None:
@@ -4270,13 +4541,22 @@ class Store:
                 wid = row[0] if row else None
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
+        home = subtitles_home(_below_tier(rel), self.language) if wid is None else None
+        if home is not None:            # Kantan-T: a show's subtitles folder is the folder above's, its title and key
+            top = _strip(rel).split("/")[:-1]
+            up = top[:len(top) - (len(_below_tier(rel).split("/")) - len(home.split("/")))]
+            wid = self._folder_work("/".join(up + [rel.rsplit("/", 1)[-1]]), title, cmd, cache)
+            if cache is not None:
+                cache[fk] = wid
+            return wid
         if wid is None:
             wid = self._specials_work(rel, cache)
+        full = cmd.show_names.get(path_key(rel)) if fk is not None else None    # Kura-NA: a long name's folder is cut
         if wid is None:
-            wid = self._same_show_folder(fk, rel, cmd)
+            wid = self._same_show_folder(fk, rel, cmd, show=full)
         if wid is None:
             below = _below_tier(rel)
-            wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
+            wid = self._new_work(full or folder_title(below), fk, cmd, titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -4315,7 +4595,7 @@ class Store:
             "AND instr(substr(rel_key, ?), '/') = 0 LIMIT 2", (base, base[:-1] + "0", len(base) + 1)).fetchall()
         return found[0][0] if len(found) == 1 else None         # (two: the user's split — none of them)
 
-    def _same_show_folder(self, fk, rel, cmd):
+    def _same_show_folder(self, fk, rel, cmd, show=None):
         """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
         item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
         `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
@@ -4324,17 +4604,20 @@ class Store:
         `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
         one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
         here: two titles already made stay *Same title?*'s to ask. The titles of a key come from `_show_titles` (kept on
-        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. -> the work, or None."""
+        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. Kura-NA: `show`, the
+        show as its files name it when the folder's name is its cut (`sources.full_show`), is the key asked; a title of
+        the cut name alone (one made before) counts too. -> the work, or None."""
         if "/" in fk:
             return None
         from app.episode_names import show_key
-        want = show_key(search_fold(fk, self.language))   # (folded as the titles' names are: a Chinese library's 臺 is 台)
-        if not want:
+        # (folded as the titles' names are: a Chinese library's 臺 is 台)
+        wants = [k for k in dict.fromkeys(show_key(search_fold(n, self.language)) for n in (show, fk) if n) if k]
+        if not wants:
             return None
-        found = []
-        for w in sorted(self._show_titles(cmd)["key"].get(want, ())):
+        found, index = [], self._show_titles(cmd)["key"]
+        for w in sorted(set().union(*(index.get(k, ()) for k in wants))):
             row = self.conn.execute("SELECT search_key FROM works WHERE id = ?", (w,)).fetchone()
-            if row is not None and want in _show_keys(row[0]):
+            if row is not None and any(k in _show_keys(row[0]) for k in wants):
                 found.append(w)
         if len(found) != 1:
             return None
@@ -4448,9 +4731,13 @@ class Store:
         title of its own, named by its file (or the show read from it, SRC-11): on the first hand-off the record's title
         takes it, as `register` places a new drop (`_work_by_record`, else a new title named by its show). Only that
         title: alone, never paired, no id, nothing of the user's in it. The emptied title goes in the helper's run
-        (`tidy_works`)."""
-        if folder_key_of(rel) is not None or \
-                self.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (item_id,)).fetchone():
+        (`tidy_works`). Kura-HJ: a drop in hato's series folder (`_hato_series_drop`)."""
+        fk = folder_key_of(rel)
+        if self.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (item_id,)).fetchone():
+            return
+        if fk is not None:
+            if _in_hato(rel):
+                self._hato_series_drop(cmd, item_id, fk, record)
             return
         cur, title = self.conn.execute("SELECT work_id, title FROM items WHERE id = ?", (item_id,)).fetchone()
         w = self._work_row(cur) if cur is not None else None
@@ -4463,6 +4750,29 @@ class Store:
         if target is None and _show_title(record):
             target = self._new_work(_show_title(record), None, cmd)
         if target is None or target == cur:
+            return
+        self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (target, item_id))
+        cmd.reworked.add(item_id)
+        cmd.feed([item_id])
+        cmd.fed_works.update((cur, target))
+        cmd.touch()
+
+    def _hato_series_drop(self, cmd, item_id, fk, record):
+        """Kura-HJ (Sonic 2026-11-19: hato's episode of a show already in the library joins it by itself): a drop the
+        disk sync found in hato's series folder (`Hato/<series>/`) before hato's hand-off has its folder's title — the
+        learner's show when the series folder is named as his (`_below_tier`: one key), else a title the sync made for
+        hato's folder alone. At the first hand-off the record decides (`_work_by_record`: its ids, its show's title),
+        as `register` places a new drop (both orders end alike) — before `_fill_work`, so the record's id lands on the
+        show, never on that title. Only from the title of the drop's own folder key (never one the learner moved it
+        into), nothing of the user's on it (his name, type or cover), and never across two ids. An emptied title goes in
+        the helper's run."""
+        cur = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+        w = self._work_row(cur) if cur is not None else None
+        if w is None or w["folder_key"] != fk or w["title_by_user"] or w["media_type_by"] == "user" or \
+                w["cover_locked"] or w["cover_source"] == "user":
+            return
+        target = self._work_by_record(record)
+        if target is None or target == cur or self._titles_apart([cur, target]):
             return
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (target, item_id))
         cmd.reworked.add(item_id)
@@ -4778,6 +5088,11 @@ class Store:
         except (TypeError, ValueError):
             return None
 
+    def _one_current(self, tiers):
+        """Kyou-D: does an Undo walk Current back as one order (`_walk_back`) — a tier of Current among `tiers`, and a
+        Soon line (without one, NOW and Soon are two places, as before)."""
+        return bool(set(tiers) & set(CURRENT)) and self._soon_line() is not None
+
     def _keep_line(self, cmd):
         """The tiers follow the line (05 §5.1, G2.2-1): Current is NOW then Soon in one order; its first `soon_line`
         rows, available or missing, are NOW. A row crossing takes the command's version (a tier change, as any)."""
@@ -4818,6 +5133,19 @@ class Store:
             if up:
                 self._put("now", up, ("end",), cmd.version)
                 cmd.touch(CURRENT)
+        if cmd.walked:
+            # Kyou-D: an Undo walks a row back beside its recorded neighbour, on the line's other side when that is
+            # where the neighbour stands now (`_walk_back`); the line then cuts the order again. A row it cut back
+            # into the tier the Undo recorded never crossed: its recorded `changed_in`, not this command's version; a
+            # row that ends on the other side (walked there, or cut there) crossed: this command's version, as any
+            # crossing. Where the rows stand now, read in chunks (a 20k Undo: one statement per 500, Mado-O)
+            now = {}
+            for part in _chunks(sorted(cmd.walked), 500):
+                now.update(self.conn.execute(f"SELECT id, tier FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                             part).fetchall())
+            self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",
+                                  [(ci if now.get(i) == tier else cmd.version, i)
+                                   for i, (tier, ci) in cmd.walked.items()])
 
     BIG_SETTLE = 200      # items: from here the settling step reads each touched tier's order once
 
@@ -5639,7 +5967,8 @@ class Store:
             for chunk in _chunks(first, 500):
                 work.update(self.conn.execute(f"SELECT id, work_id FROM items WHERE id IN "
                                               f"({','.join('?' * len(chunk))})", chunk).fetchall())
-            want = {card_key(title_key(int(ids[0]), work[int(ids[0])])): 1 if n else 0
+            seasons = self._seasons()           # Kyou-D: a show's seasons are one title, as `_side` reads them
+            want = {card_key(title_key(int(ids[0]), seasons.get(work[int(ids[0])], work[int(ids[0])]))): 1 if n else 0
                     for ids, n in groups if ids and int(ids[0]) in work}
             at = str(at) if at else _now()
             had = self._side_cards()
@@ -5721,7 +6050,9 @@ class Store:
             anchor, before = spot
             return self.move([item_id], tier, before_id=anchor if before else None,
                              after_id=None if before else anchor, by=by, explicit=explicit, in_order=False) is not None
-        return self.move([item_id], tier, by=by, explicit=explicit) is not None
+        # a rule's target is exactly that (Kura-EO D-1, PROVISIONAL): its *Top of Current* the very top — *After its
+        # show* is the rule that follows the show
+        return self.move([item_id], tier, by=by, explicit=explicit, in_order=False) is not None
 
     def place(self, item_ids, where, by="user", explicit=None, after_id=None):
         """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
@@ -5763,57 +6094,83 @@ class Store:
         return _json_dict(row[0]) if row else None
 
     def _into_show(self, ids, tier, before_id, after_id):
-        """(Kura-EO, adapted from Mattias's #482: a show's episodes moved into Current one at a time read 10, 9, 8 — a
-        Netflix season sent one episode at a time, an airing show's weekly episode) A `move` of ONE title's items into
-        Current (NOW or Soon) from outside it — New arrivals' *Top* and *Soon*, a drop in the list, a placing rule, a
-        6+ Months title's *Up next* — joins that title's items already in Current in episode order, as `after-show`
-        reads it (after the highest lower episode, before the lowest higher one; the same season), unless the learner
-        chose the spot:
-        - no anchor (the top of NOW, of Soon), or a drop at the edge of the title's rows (the gap beside exactly one of
-          them: a row draws the title as one, so no order inside it is chosen there; the tray's drop lands by halves)
-          → the order;
-        - a drop away from the title's rows, or between two of them → where it was dropped;
-        - a move to Soon (*Soon*, the Soon well, a drop below the line) whose order's place is in NOW → as given: Soon
-          never lands above the Soon line (a move to NOW may follow its show into Soon: Current is one order).
+        """(Kura-EO, adapted from the outside proposals #482 and #492: a show's episodes moved into Current one at a time
+        read 10, 9, 8, and after a morning's drags inside Current 10, 8, 9) A `move` of ONE title's items into Current
+        (NOW or Soon) — from outside it (New arrivals' *Top* and *Soon*, a drop in the list, a placing rule, a 6+
+        Months title's *Up next*) or inside it (a drag, ↑ ↓) — keeps the show in episode order, as `after-show` reads it
+        (after the highest lower episode, before the lowest higher one; the same season), unless the learner chose the
+        spot:
+        - a drop beside the title's other rows in Current (above, below or between two of them: the gap with one of
+          them on a side), or no anchor for items coming in from outside Current → the order;
+        - a drop away from the title's rows, a drop inside a group (LM11: the learner's own row; `after-show` never
+          lands inside one), and *Top* / Up next of items already in Current → where asked; ↑ ↓ are one exact step
+          (`nudge`: `in_order=False`);
+        - a move to Soon whose order's place is in NOW → as given: Soon never lands above the Soon line (a move to NOW
+          may follow its show into Soon: Current is one order).
+        A block of the title's episodes (its whole row dragged, a pick of several) also lands sorted by episode
+        (-> `eps`, read only when every item names an episode of one season: `_block_episodes`), wherever it goes.
         Only when the order can be read (`_show_spot(ordered=True)`: episode numbers, a list's places, a folder's run):
-        else — a channel's single video, a title with nothing in Current — as given; a move of anything already in
-        Current, or of no title's item, too. Inside the move's command: one Undo, the feed and the versions as ever.
-        Reads by the title's index (`SHOW_IN_CURRENT_SQL`, items_work) and the moved rows' keys, never a tier walk.
-        -> (tier, before_id, after_id)."""
-        given = (tier, before_id, after_id)
+        else — a channel's single video, a title with nothing else in Current — as given; several titles, an item of
+        no title, too. Inside the move's command: one Undo, the feed and the versions as ever. Reads by the title's
+        index (`SHOW_IN_CURRENT_SQL`, items_work), the moved rows' keys and records, never a tier walk.
+        -> (tier, before_id, after_id, eps: {item id: episode} or None)."""
         if tier not in CURRENT or not ids:
-            return given
-        work = None
+            return (tier, before_id, after_id, None)
+        work, inside = None, set()
         for part in _chunks(ids, 500):
-            for t, w in self.conn.execute(f"SELECT tier, work_id FROM items WHERE id IN ({','.join('?' * len(part))})",
-                                          part):
-                if t in CURRENT or w is None or (work is not None and w != work):
-                    return given                    # a move inside Current, no title's item, two titles: as given
+            for i, t, w in self.conn.execute(
+                    f"SELECT id, tier, work_id FROM items WHERE id IN ({','.join('?' * len(part))})", part):
+                if w is None or (work is not None and w != work):
+                    return (tier, before_id, after_id, None)    # no title's item, two titles: as given
                 work = w
-        if work is None or self.conn.execute(SHOW_IN_CURRENT_SQL, (work,)).fetchone() is None:
-            return given                            # (the moved items are all outside Current: none of them counts)
+                if t in CURRENT:
+                    inside.add(i)
+        if work is None:
+            return (tier, before_id, after_id, None)
+        eps = self._block_episodes(ids) if len(ids) > 1 else None
+        given = (tier, before_id, after_id, eps)
+        if not any(i not in inside for (i,) in self.conn.execute(SHOW_IN_CURRENT_SQL, (work, len(inside) + 1))):
+            return given                            # none of the title in Current but the moved items themselves
         anchor = before_id if before_id is not None else after_id
         if anchor is not None:
-            sides = [s for s in self._current_beside(anchor, before_id is not None) or () if s is not None]
-            if not sides or sum(w == work for (w,) in self.conn.execute(
-                    f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(sides))})", sides)) != 1:
-                return given                        # away from the title, or between two of its rows: the drop's own
-        spot = self._after_show(ids[0], self._show_record(ids[0]), set(ids), ordered=True)
-        if spot is None or (tier == "soon" and spot[0] != "soon"):
-            return given
-        return spot
+            held = self.conn.execute("SELECT piece_id FROM items WHERE id = ?", (anchor,)).fetchone()
+            if held is not None and held[0] is not None and self._is_group(held[0]):
+                return given                        # into a group (LM11, the learner's own row): where it was dropped
+            sides = [s for s in self._current_beside(anchor, before_id is not None, inside) or () if s is not None]
+            if not sides or not any(w == work for (w,) in self.conn.execute(
+                    f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(sides))})", sides)):
+                return given                        # away from the title's rows: the drop's own
+        elif len(inside) == len(ids):
+            return given                            # *Top* / Up next of what's in Current already: the learner's own
+        first = min(ids, key=lambda i: eps[i]) if eps else ids[0]       # (a block: from its lowest episode)
+        spot = self._after_show(first, self._show_record(first), set(ids), ordered=True)
+        if spot is None or (tier == "soon" and spot[0] != "soon") or spot[1] in ids or spot[2] in ids:
+            return given                            # (never beside one of the block's own rows)
+        return spot + (eps,)
 
-    def _current_beside(self, anchor, before):
+    def _block_episodes(self, ids):
+        """{item id: its episode} for a block of one title's items whose records each name an episode of the same
+        season (`_episode`, the record `after-show` reads: `_show_record`); else None — a mixed pick, a title without
+        numbers, two seasons: the block keeps its order."""
+        out, season = {}, None
+        for item_id in ids:
+            ep = _episode(self._show_record(item_id))
+            if ep is None or (season is not None and ep[0] != season):
+                return None
+            season, out[item_id] = ep[0], ep[1]
+        return out
+
+    def _current_beside(self, anchor, before, excl=()):
         """(the item above, the item below) the gap a move lands in — before `anchor` (`before`), else after it — in
-        Current's order (NOW then Soon: the Soon line is no gap); None when the anchor isn't in Current. (The moved
-        items are outside Current, `_into_show`: none to skip.)"""
+        Current's order (NOW then Soon: the Soon line is no gap), skipping `excl` (the moved items already in Current:
+        they leave the gap); None when the anchor isn't in Current."""
         row = self.conn.execute("SELECT id, tier, ord FROM items WHERE id = ?", (anchor,)).fetchone()
         if row is None or row[1] not in CURRENT:
             return None
         step = -1 if before else 1
-        found = self._beyond(row[1], (row[0], row[2]), (), step, 1)
+        found = self._beyond(row[1], (row[0], row[2]), excl, step, 1)
         if not found and row[1] == ("soon" if before else "now"):
-            found = self._beyond("now" if before else "soon", None, (), step, 1)
+            found = self._beyond("now" if before else "soon", None, excl, step, 1)
         other = found[0][0] if found else None
         return (other, anchor) if before else (anchor, other)
 
@@ -6022,11 +6379,14 @@ class Store:
         if not okset:
             return set()
         tiers = {it["tier"] for _c, it in items} | {rows[i][1] for i in okset}
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for i in okset:
             seqs[rows[i][1]].remove(i)
         for c in plain:
-            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version})
+            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version}, one)
         self._write_seqs(seqs, ords, okset, lambda i: cmd.version)
         self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                               [(it.get("graduated_at"), it["id"]) for _c, it in items if it["tier"] != rows[it["id"]][1]])
@@ -6249,10 +6609,12 @@ class Store:
             counts[kind] = counts.get(kind, 0) + 1
         return media_type_guess(counts, row[2], row[3]), None
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, unlock=False):
         """A title's cover record (05 §5.5). The fetch (the window's services, `locked=False`) is refused — nothing
-        written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a generated cover*
-        (`locked=True`) always writes. `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
+        written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a plain cover*
+        (`locked=True`) always writes, and so does the user's *Look for a cover again* (`unlock`: that lock let go,
+        unlocked — Mado-CV; only over a record of the same source: a press from a stale view never undoes a newer
+        pick). `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
         user's, in User Files/<lang>/covers/, kept by the window with a dated backup on replace). Undo by the value
         check. Returns the change, or None (refused, or nothing new). An unlocked online cover (AniList, TMDB,
         YouTube: a background fetch) is written only over none, the generated one, or its own source's cache record —
@@ -6264,8 +6626,10 @@ class Store:
         with self._command("set_cover") as cmd:
             row = self.conn.execute("SELECT cover_locked, cover_source, cover_path FROM works WHERE id = ?",
                                     (work_id,)).fetchone()
-            if row is None or (row[0] and not locked):
+            if row is None or (row[0] and not (locked or unlock)):
                 return None
+            if unlock and not locked and row[1] != source:
+                return None                             # Mado-CV: the lock it lets go was replaced since
             if (not locked and source in ("anilist", "tmdb", "youtube") and row[1] not in (None, "generated")
                     and not (row[1] == source and (row[2] is None or str(row[2]).startswith("cache:")))):
                 return None                             # a fetch never over disk art or another source (B2)
@@ -6420,6 +6784,22 @@ class Store:
             return {}
         return {w: json.loads(n) for w, n in self.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?",
                                                                (item_id,))}
+
+    def made_words_of(self, item_ids):
+        """{item_id: {word}} Connect made a card for that still has a note in Anki (`notes_gone` empties a deleted
+        card's notes, its word kept) — the ✓ chip's cards made since the last sync (`services/card_chip.py`)."""
+        ids = list(dict.fromkeys(item_ids))
+        out = {i: set() for i in ids}
+        with self._reading():
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_words'").fetchone():
+                return out
+            for chunk in _chunks(ids, 500):
+                for item_id, word, notes in self.conn.execute(
+                        f"SELECT item_id, word, note_ids FROM made_words WHERE item_id IN ({','.join('?' * len(chunk))})",
+                        chunk):
+                    if word and any(_note_id(n) is not None for n in _json_list(notes)):
+                        out[item_id].add(word)
+        return out
 
     def record_anki_changes(self, changes, by="connect"):     # P4.1 L2 (TF fix 10): `by`, the caller
         """The re-plan's record of the cards it changed for an item (05 §5.7, D14): [(item_id, action, [note ids],
@@ -6769,6 +7149,71 @@ class Store:
         return self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                                  (name,)).fetchone() is not None
 
+    # --- Kantan-B2: the words Surasura won't mine again (a new tester, 2026-11-18: "where does it keep that?") ---- #
+    def unmined_words(self, item_ids=None):
+        """The words Connect made a card for whose every card is gone from Anki — each `made_words` row of the word
+        emptied by `notes_gone` (G1.3-4: never made again unless you ask) -> [{"word", "items": [item ids, the newest
+        made first], "made_at": its last}], the newest first. `item_ids`: only the words one of those items made.
+        A read (no write); [] while the table isn't there."""
+        if not self._has_table("made_words"):
+            return []
+        with self._reading():
+            rows = self.conn.execute(
+                "SELECT word, item_id, made_at FROM made_words WHERE word IN (SELECT word FROM made_words GROUP BY "
+                "word HAVING SUM(note_ids NOT IN ('[]', '')) = 0) ORDER BY made_at DESC, item_id DESC").fetchall()
+        out, by_word = [], {}
+        for word, item_id, made_at in rows:
+            entry = by_word.get(word)
+            if entry is None:
+                entry = by_word[word] = {"word": word, "items": [], "made_at": made_at}
+                out.append(entry)
+            entry["items"].append(item_id)
+        if item_ids is not None:
+            wanted = set(item_ids)
+            out = [e for e in out if wanted & set(e["items"])]
+        return out
+
+    def allow_again(self, words):
+        """*Allow again* (Kantan-B2): each word whose every card is gone from Anki is freed — its `made_words` rows
+        deleted, so a later job may make its card again; a word with a card still in Anki (or not recorded) is left
+        as it is. One command; Undo puts the rows back (`_undo_allow`). -> the Change (`made_rows`: the rows taken), or
+        None (nothing to free)."""
+        words = sorted({str(w) for w in words or () if w})
+        if not words or not self._has_table("made_words"):
+            return None
+        with self._command("allow_again") as cmd:
+            rows = []
+            for chunk in _chunks(words, 500):
+                rows += self.conn.execute(
+                    f"SELECT item_id, word, note_ids, made_at, batch FROM made_words WHERE word IN "
+                    f"({','.join('?' * len(chunk))})", chunk).fetchall()
+            held = {r[1] for r in rows if _json_list(r[2])}
+            take = [tuple(r) for r in rows if r[1] not in held]
+            if not take:
+                return None
+            self.conn.executemany("DELETE FROM made_words WHERE item_id = ? AND word = ?", [(r[0], r[1]) for r in take])
+            cmd.touch()
+            change = self._change(cmd, "allow_again")
+            change.made_rows = take
+            return change
+
+    def _undo_allow(self, cmd, change):
+        """*Allow again* undone: each row back — unless the word was made again meanwhile (a row there now: the new
+        card's record stands, the value check)."""
+        out = self._change(cmd, "undo")
+        back, skipped = [], []
+        for row in change.made_rows:
+            if self.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? AND word = ?", row[:2]).fetchone():
+                skipped.append(row[0])
+                continue
+            self.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                              "(?, ?, ?, ?, ?)", row)
+            back.append(row)
+        if back:
+            cmd.touch()
+        out.made_rows = back
+        return out, skipped
+
     def _notes_held(self, gone):
         """(the gone notes the store holds, [(item_id, word)] for each made word that names one, [trash ids] for each
         removed item whose kept links name one). A list entry that isn't a note id is kept as it is, never a reason
@@ -6918,7 +7363,14 @@ class Store:
         """Undo one recorded change, in any order: a later change by anyone else is protected by the
         conflict rule (an item whose `changed_in` isn't the change's version is skipped, with a note);
         each undo restores the `changed_in` it replaced, so several undos in a row work. Returns the
-        undo's own change (its `notes` say what was skipped), or None when nothing could be undone."""
+        undo's own change (its `notes` say what was skipped), or None when nothing could be undone. Kura-NA: a skip's
+        Undo then lets in the hato files the skip kept out (`let_drops_back`, after the undo's own write)."""
+        out = self._undo_one(change, trashed_paths, rel_paths)
+        if getattr(change, "folder", None) is not None and out is not None:
+            self.let_drops_back()
+        return out
+
+    def _undo_one(self, change, trashed_paths=None, rel_paths=None):
         meta = self.meta()
         if change.epoch != meta["epoch"]:
             raise UndoRefused("the library was rebuilt since; that change can't be undone")
@@ -6990,6 +7442,8 @@ class Store:
                 out, skipped = self._undo_options(cmd, change)
             elif kind == "stop_source":
                 out, skipped = self._undo_roots(cmd, change)
+            elif kind == "allow_again":                              # Kantan-B2: the freed words' rows back
+                out, skipped = self._undo_allow(cmd, change)
             elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "move" and change.status:      # P4.1 L2 (TF fix 8): out of Finished, back in the order
@@ -7125,12 +7579,16 @@ class Store:
         if not ok:
             return out, skipped
         tiers = {it["tier"] for it in ok} | {cur[it["id"]][1] for it in ok}
+        one = self._one_current(tiers)          # Kyou-D: Current walked back as one order (`_walk_back`)
+        if one:
+            tiers |= set(CURRENT)
         seqs, ords = self._seqs(tiers)
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
-        _walk_back(seqs, items, okset)
+        _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
+        cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
         for it in ok:
             if it.get("piece") is not None:
                 cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)
@@ -8891,6 +9349,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.split_processed()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"split_processed failed: {type(exc).__name__}: {exc}")
+        try:
+            did = bool(store.join_hato_folders()) or did
+        except Exception as exc:                # as above: the next run tries again
+            _log(db_path, f"join_hato_folders failed: {type(exc).__name__}: {exc}")
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
@@ -9107,7 +9569,8 @@ def _sync_delta(store, walk, known, scope=None, as_new=()):
     data_dir = store.data_dir
     walked_tops = _scope_tops(scope) if scope is not None else [path_key(f) + "/" for f in WALK_FOLDERS]
     content = path_key(CONTENT_FOLDER) + "/"
-    kept_out = {r[0] for r in store.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}
+    kept_out = {r[0] for r in store.conn.execute("SELECT pattern FROM exclusions WHERE kind IN ('duplicate', ?)",
+                                                 (DROP_SKIPPED,))}           # Kura-NA: a refused hand-over's file
     seen, fresh, respell, refresh = set(), [], [], []
     for rel, size, mtime_ns in walk["files"]:
         key = path_key(rel)
@@ -9394,7 +9857,8 @@ def _store_reset_order(self, walk=None):
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
-        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}  # K3
+        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind IN ('duplicate', ?)",
+                                                  (DROP_SKIPPED,))}  # K3; Kura-NA: a refused hand-over's file
         arrivals = cmd.meta.get("arrivals_on")
         content = path_key(CONTENT_FOLDER) + "/"           # the content folder's copies come in by `take_in` only (B2)
         untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))
@@ -11050,6 +11514,9 @@ def _store_removed_for(self, keys):
 # same command — Undo puts them back and drops the row; *Read again* drops the row and its marked 'removed' rows, so
 # the next look takes its files in as new (SRC-2), never twice (SRC-7). `sources._Look` never lists a skipped folder.
 FOLDER_SKIP = "folder"
+# Kura-NA (train 43's keeper): hato's file of a hand-over refused for a skipped folder — kept out of the disk sync and
+# Reset (`pattern` its rel key) until the folder is read again, when it is registered with the record its note holds
+DROP_SKIPPED = "skipped-drop"
 SKIP_NOT_FOLDER = "That isn't a folder."
 SKIP_IS_SOURCE = "That's a folder Surasura reads: to leave all of it out, stop reading it."
 SKIP_OUTSIDE = "That folder isn't inside a folder Surasura reads."
@@ -11104,22 +11571,128 @@ def _store_skip_refused(self, path):
 
 def _store_items_under(self, path):
     """K6: the live items whose every origin lies inside the folder `path`, in id order — an item with an origin
-    elsewhere, or a record of another producer (hato's), stays. A range read on the origins' keys."""
-    lo = SOURCE_KEY + path_key(folder_path(path)).rstrip("/") + "/"
+    elsewhere stays. Kura-NA: a record of another producer (hato's) is inside when the video it names lies there (hato
+    found it in that folder: its own item, or a source item it took over, leaves with the folder's others); one naming
+    no video, or one elsewhere, keeps the item. A range read on the origins' keys, and one read of the records' videos."""
+    folder = path_key(folder_path(path)).rstrip("/")
+    lo = SOURCE_KEY + folder + "/"
     hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
     with self._reading():
-        inside = sorted({r[0] for r in self.conn.execute(
+        inside = {r[0] for r in self.conn.execute(
             f"SELECT item_id FROM pairings p WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL AND "
-            f"NOT {_VERSION_ROW}", (lo, hi))})               # LM1b: a version's place is never the item's
+            f"NOT {_VERSION_ROW}", (lo, hi))}               # LM1b: a version's place is never the item's
+        held = {}                                        # {item_id: records of others not inside} (Kura-NA)
+        for item_id, video in self.conn.execute(
+                f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END "
+                f"FROM pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IS NOT NULL"):
+            there = isinstance(video, str) and bool(video) and _under(path_key(folder_path(video)), folder)
+            held[item_id] = held.get(item_id, 0) + (not there)
+            if there:
+                inside.add(item_id)
         out = []
-        for chunk in _chunks(inside, 500):
+        for chunk in _chunks(sorted(inside), 500):
             for item_id, every, there in self.conn.execute(
                     f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings p WHERE item_id "
-                    f"IN ({','.join('?' * len(chunk))}) AND NOT {_VERSION_ROW} GROUP BY item_id ORDER BY item_id",
-                    [lo, hi] + chunk):
-                if every == there:
+                    f"IN ({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW} AND NOT {_VERSION_ROW} GROUP BY item_id "
+                    f"ORDER BY item_id", [lo, hi] + chunk):
+                if every == there and not held.get(item_id):
                     out.append(item_id)
-    return out
+            have = {r[0] for r in self.conn.execute(f"SELECT DISTINCT item_id FROM pairings p WHERE item_id IN "
+                                                    f"({','.join('?' * len(chunk))}) AND {_ORIGIN_ROW}", chunk)}
+            out += [i for i in chunk if i not in have and i in held and not held[i]]   # hato's alone: no origin
+    return sorted(out)
+
+
+def _store_skipped_holding(self, paths):
+    """Kura-NA: the skipped folder (its one spelling, `folder_path`) holding any of `paths` — hato's record's video and
+    the subtitle it wrote beside it — or None: hato's hand-over of a skipped folder's video is refused (`register_headless`
+    answers `skipped`). One short read of the skipped folders."""
+    f = self._skip_holding(paths)
+    return folder_path(f["path"]) if f is not None else None
+
+
+def _store_skip_holding(self, paths):
+    """`skipped_holding`'s skipped folder row ({id, root, key, path}), or None."""
+    keys = [path_key(folder_path(p)) for p in paths if isinstance(p, str) and p.strip()]
+    if not keys:
+        return None
+    for f in self.skipped_folders():
+        if any(_under(k, f["key"]) for k in keys):
+            return f
+    return None
+
+
+def _store_keep_drop_out(self, path, pairing, folder_id):
+    """Kura-NA (train 43's keeper, finding 1): hato's hand-over of `path` refused for the skipped folder `folder_id` —
+    ONE command: a row the disk sync made for hato's file a moment before (R1's `_sync_drop`: nothing of anyone's on it)
+    is taken out, and the file is kept out of every later sync and Reset by a `DROP_SKIPPED` exclusion holding hato's
+    record (`note`: {folder, record}) — never an arrival with no record (it could never be mined, and hato never hands
+    a skipped one over again). *Read again* / the skip's Undo registers it with that record (`_unskip`). hato's file is
+    never deleted or moved. The exclusion alone moves no version (no item, record or event: `register`'s `skipped`
+    says nothing was written to the library). The skip is checked again inside the command (read again meanwhile: not
+    kept out — hato's hand-over is taken as any); a newer refused record replaces the one kept. -> True when kept out."""
+    rel = library_rel(self.data_dir, path)
+    if rel is None:
+        raise NotInLibrary(f"not in the library: {path}")
+    key = path_key(_strip(rel))
+    note = _dumps({"folder": folder_id, "rel": rel, "record": pairing})
+    with self._command("register", _producer(pairing)) as cmd:
+        if not self.conn.execute("SELECT 1 FROM exclusions WHERE id = ? AND kind = ?",
+                                 (folder_id, FOLDER_SKIP)).fetchone():
+            return False
+        row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
+        if row is not None and self._sync_drop(row[0], rel, pairing):
+            self._take_out(cmd, row[0])
+            self._change(cmd, "register")
+        if not self.conn.execute("UPDATE exclusions SET note = ? WHERE kind = ? AND pattern = ?",
+                                 (note, DROP_SKIPPED, key)).rowcount:       # (bookkeeping: no view, no version)
+            self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES (?, ?, ?, ?, ?)",
+                              (self._root_id(), key, DROP_SKIPPED, _now(), note))
+        self._copy_dirty()                               # train 44's keeper: the JSON copy carries the exclusions
+        return True
+
+
+def _store_copy_dirty(self):
+    """(Inside a write.) The JSON copy carries what this write changed (`copy_dirty`: the helper writes it), for a
+    change that moves no version (a kept-out row: train 44's keeper)."""
+    self._set_meta({"copy_dirty": int(self._meta().get("copy_dirty") or 0) + 1})
+
+
+def _store_let_drops_back(self):
+    """Each hato file a skip kept out (`DROP_SKIPPED`) whose folder is no longer skipped (read again, the skip undone)
+    is let in — registered with the record it was refused with, so it keeps its video — in its own command, AFTER the
+    write that read the folder again (never nested in it: a failure rolls back that file alone, and register's own
+    clean-up runs). Its exclusion goes only once it is registered, or when the file is gone; one that can't be
+    registered now stays kept out (never an arrival with no record) and is tried at the next call. Called after
+    `read_folder_again`, after a skip's Undo, and before each hato hand-over (`register_headless`). -> files let in."""
+    if self._cmd is not None or getattr(self, "_depth", 0):
+        return 0                                         # (inside another write: the next call lets them in)
+    with self._reading():
+        rows = self.conn.execute("SELECT id, note FROM exclusions WHERE kind = ? ORDER BY id", (DROP_SKIPPED,)).fetchall()
+        live = {r[0] for r in self.conn.execute("SELECT id FROM exclusions WHERE kind = ?", (FOLDER_SKIP,))} \
+            if rows else set()
+    n = 0
+    for ex_id, raw in rows:
+        note = _json_dict(raw) or {}
+        if note.get("folder") in live:
+            continue                                     # (its folder still skipped: kept out)
+        rel, record = note.get("rel"), note.get("record")
+        if isinstance(record, dict) and \
+                self._skip_holding([record.get("video_path"), record.get("subtitle_path")]) is not None:
+            continue                                     # train 44's keeper: another skip (a parent's) still holds it
+        full = os.path.join(self.data_dir, *str(rel or "").split("/")) if rel else None
+        try:
+            if full and os.path.isfile(full) and isinstance(record, dict) and record.get("content_key"):
+                self.register(full, record)
+                n += 1
+            elif full and os.path.isfile(full):
+                continue                                 # (a record it can't be registered by: stays kept out)
+            with self._writing():
+                if self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (ex_id, DROP_SKIPPED)).rowcount:
+                    self._copy_dirty()                   # (the copy carries the exclusions)
+        except Exception as e:                           # that file alone: kept out, tried again at the next call
+            print(f"Library: a kept-out hato file wasn't let back in yet ({rel}): {e!r}")
+    return n
 
 
 def _store_skip_choices(self, item_ids, own=False):
@@ -11136,11 +11709,20 @@ def _store_skip_choices(self, item_ids, own=False):
             f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
             f"({','.join('?' * len(ids))}) "
             f"ORDER BY p.content_key", ids).fetchall()
+        # Kura-NA: an item hato brought (no origin of its own) — the folder of the video its record names
+        theirs = self.conn.execute(
+            f"SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') END FROM "
+            f"pairings p WHERE NOT {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) ORDER BY p.content_key",
+            ids).fetchall()
     starts, came = [], set()
     for item_id, t in rows:
         origin = (_json_dict(t) or {}).get("origin")
         if isinstance(origin, str) and origin:
             starts.append(folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin))))
+            came.add(item_id)
+    for item_id, video in theirs:
+        if item_id not in came and isinstance(video, str) and video.strip() and os.path.isabs(video):
+            starts.append(folder_path(os.path.dirname(video)))
             came.add(item_id)
     if own:
         if not starts or came != set(ids):
@@ -11159,7 +11741,7 @@ def _store_skip_choices(self, item_ids, own=False):
             continue
         top, out = max(held, key=len), []
         while _under(path_key(folder).rstrip("/"), top):
-            if own and self._holds_others(folder, ids):
+            if own and (self._holds_others(folder, ids) or not set(self.items_under(folder)) <= set(ids)):
                 break                                   # (a folder above it holds those others too)
             if skip_refusal(folder, sources, skipped)[0] is None:
                 out.append(folder)
@@ -11231,7 +11813,10 @@ def _store_read_folder_again(self, folder_id):
     next look takes its files in as new (shows never shown → New arrivals, SRC-2; never twice, SRC-7). Not on Undo.
     -> True when it was skipped."""
     with self._writing():
-        return self._unskip(folder_id)
+        read = self._unskip(folder_id)
+    if read:
+        self.let_drops_back()                            # Kura-NA: hato's refused files, with their records
+    return read
 
 
 def _store_take_in(self, root_id, found, first=False, rules=None):
@@ -11332,6 +11917,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
+            if rel is not None and f.get("show_name"):   # Kura-NA: its title goes by the show uncut (`_folder_work`)
+                cmd.show_names[path_key(rel)] = str(f["show_name"])
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
                 self._let_audiobook_back(key, f.get("let_back_from"), out)
@@ -13523,6 +14110,11 @@ Store.items_under = _store_items_under
 Store.skip_choices = _store_skip_choices
 Store._holds_others = _store_holds_others
 Store.skip_folder = _store_skip_folder
+Store.skipped_holding = _store_skipped_holding
+Store._skip_holding = _store_skip_holding
+Store.keep_drop_out = _store_keep_drop_out
+Store._copy_dirty = _store_copy_dirty
+Store.let_drops_back = _store_let_drops_back
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved
 Store.read_folder_again = _store_read_folder_again
@@ -15872,6 +16464,12 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if store is None:
             return _registered(EXIT_NEEDS_YOU)
     with store:
+        # Kura-NA: a video of a folder the learner skipped is skipped for hato too — its file left where hato wrote it,
+        # kept out of the disk sync (train 43's keeper: never an arrival with no record) until the folder is read again
+        store.let_drops_back()                           # (a folder read again since: its kept-out files first)
+        held = store._skip_holding([pairing.get("video_path"), pairing.get("subtitle_path")])
+        if held is not None and store.keep_drop_out(path, pairing, held["id"]):
+            return Registered(EXIT_DONE, None, "skipped", None, None, None, None)
         if reader:
             store.register_reader(reader)
         try:

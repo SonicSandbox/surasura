@@ -66,6 +66,20 @@ def test_a_toast_rises_into_place_48_px_above_the_bottom_and_shows_its_message_w
     assert stage.height() - card.geometry().bottom() - 1 == theme.MOTION["toast-bottom"]   # stays put on resize
 
 
+def test_a_reworded_toast_shows_its_new_words_at_once_whether_or_not_it_reads_saving(clock, stage):
+    """(Kura-EO 3.0.16, mutants) `reword`: the shown toast takes the words its write saved with (an *Up next* that
+    joined its show) at once — also when it never read *saving…* (a quick save: nothing else repaints it), and keeping
+    the *saving…* tail while it does."""
+    host = toast.ToastHost(stage)
+    host.show(JA, undo=lambda: None)
+    _up(host, clock)
+    host.reword(ZH)
+    assert host.text == ZH and host.card.base == ZH, "no saving tail: the words repainted by reword itself"
+    host.set_saving(True)
+    host.reword(JA)
+    assert host.text == JA and host.card.base == JA and host.saving
+
+
 def test_a_long_message_is_elided_within_92_percent_and_kept_whole_in_its_tooltip(clock, stage):
     host = toast.ToastHost(stage)
     long_zh = ZH * 8

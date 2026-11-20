@@ -1284,7 +1284,28 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
-    return info, profile, mapping
+    if kept is None:                    # Michi-DK: Anki Miner's own deck, for Settings' line (never a reason to stop)
+        from app.connect import setup
+        setup.note_miner_deck(lang, mapping.deck)
+    return info, profile, _run_mapping(loaded, lang, mapping)
+
+
+def _run_mapping(loaded, lang, mapping):
+    """Michi-DK: `mapping` with the deck Surasura shows for new cards (`fields.for_run`) — the deck 順 keeps in order,
+    named in this run's file alone. Anki's decks are read first (a deck Anki lacks: Anki Miner's own, as before);
+    Anki not answering: Surasura's deck all the same (Anki Miner's own check then says what's wrong)."""
+    from app import anki_connect
+    from app.connect import fields
+    deck = fields.surasura_deck(loaded, lang)
+    if not deck or deck == mapping.deck:
+        return mapping
+    decks = None
+    if not os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        try:                            # one call, never long (an episode's pick and its mine each ask)
+            decks = anki_connect.invoke("deckNames", anki_connect.address(loaded), timeout=2)
+        except anki_connect.AnkiError:
+            decks = None
+    return fields.for_run(mapping, loaded, lang, decks if isinstance(decks, list) else None)
 
 
 def _check_note_type(loaded, mapping, info=None):
@@ -1371,7 +1392,7 @@ def pick(args):
             out["skipped"] = "anki miner absent"
 
     contract.emit_progress("choosing the words and their lines", 2, 3)
-    keys, source = picking.carded(lang, loaded, [setup[2].deck] if setup else ())
+    keys, source = picking.carded(lang, loaded, [d for d in (setup[2].deck, setup[2].own_deck) if d] if setup else ())
     # Connect's runner (P2.4): every word it has made a card for, whatever became of the card (G1.3-4: a card you
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())

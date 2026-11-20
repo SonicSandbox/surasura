@@ -211,3 +211,31 @@ def test_a_doubled_form_folds_unless_it_has_a_meaning_of_its_own(b):
 def test_a_run_folds_only_to_a_sound(b):
     entries, _ = b.parse_cedict(DOUBLED_LINES)
     assert b.sound_runs(entries) == {"哈哈", "汪汪"}, "好好 'well' is no sound; 哈哈哈 isn't 哈's shortest"
+
+# Real CC-CEDICT lines (2026-09-23): words only said, and words that are said but also meant.
+SAID_LINES = """\
+啊 啊 [a1] /interjection of surprise/Ah!/Oh!/
+啊 啊 [a5] /modal particle ending sentence, showing affirmation, approval, or consent/
+嗯 嗯 [en1] /(a groaning sound)/
+嗯 嗯 [en4] /(nonverbal grunt as interjection)/OK, yeah/what?/
+嗯 嗯 [en5] /interjection indicating approval, appreciation or agreement/
+哦 哦 [e2] /to chant/
+哦 哦 [o2] /oh (interjection indicating doubt or surprise)/
+哦 哦 [o4] /oh (interjection indicating that one has just learned sth)/
+餵 喂 [wei4] /hey/to feed (an animal, baby, invalid etc)/
+恭喜 恭喜 [gong1 xi3] /to congratulate/(interj.) congratulations!/
+對了 对了 [dui4 le5] /Correct!/Oh, that's right, ... (when one suddenly remembers sth)/Oh, by the way, .../
+嘆詞 叹词 [tan4 ci2] /interjection/exclamation/
+哈哈 哈哈 [ha1 ha1] /(onom.) laughing out loud/
+"""
+
+
+def test_the_words_only_said_are_interjections_by_most_of_their_senses(b):
+    # INTERJECTIONS: 啊 (every sense said or a particle's), 嗯 and 哦 (most senses said), jieba's interjection 嘘 and
+    # one-character modal particle 呃, SOUNDS's 哈哈 — never 喂 'to feed', 恭喜 'to congratulate', 对了 'correct', the
+    # word 叹词 'interjection' itself, a two-character modal particle (罢了) or a word jieba's dictionary lacks (哎嘿)
+    entries, _ = b.parse_cedict(SAID_LINES)
+    freq = dict.fromkeys(("啊", "嗯", "哦", "喂", "恭喜", "对了", "叹词", "哈哈", "嘘", "呃", "罢了"), 100)
+    tags = {"嘘": "e", "呃": "y", "罢了": "y", "哎嘿": "e", "喂": "v"}
+    said = b.interjections(entries, freq, tags, b.sound_runs(entries))
+    assert said == {"啊", "嗯", "哦", "嘘", "呃", "哈哈"}

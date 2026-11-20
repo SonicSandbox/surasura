@@ -126,32 +126,33 @@ def test_junbans_reorder_hover_names_it_plainly_then_says_its_own_counted_line(s
     replan.finish()
 
 
-def test_a_spinning_circle_that_can_be_seen_says_a_press_shows_it_and_offers_show_stop_settings(strip):
+def test_a_spinning_circle_that_can_be_seen_offers_show_stop_settings_in_its_menu_and_a_click_pauses(strip):
+    # Mado-PZ: a click pauses (or resumes) what a circle runs by itself; *Show* (try a9.1) is its right-click's
     registry = JobRegistry()
     strip.set_opens({P.MINER, P.JUNBAN, P.SURASURA})
     asked = []
     strip.stops = lambda c: asked.append(c) or c == P.MINER
-    assert not strip.showing(P.MINER)                                  # at rest: a press opens its settings
-    assert [w for _p, w in strip.menu_entries(P.MINER)] == ["stop", "settings"]
+    assert not strip.showing(P.MINER)
+    assert [w for _p, w in strip.menu_entries(P.MINER)] == ["pause", "pause_all", "stop", "settings"]   # (+ Mado-PZ2)
     mine = registry.record("mine", "Making cards", automatic=False)
     mine.progress(f"{TITLE} · Filling fields 40%")
     strip.set_jobs(registry.snapshot())
-    assert strip.showing(P.MINER) and strip.press_words(P.MINER) == strings.PHASE_PRESS_SHOW
+    assert strip.showing(P.MINER) and strip.press_words(P.MINER) == strings.PHASE_PRESS_PAUSE
     entries = strip.menu_entries(P.MINER)
-    assert [pair for pair, _w in entries] == [strings.PHASE_SHOW, strings.PHASE_STOP, strings.PHASE_SETTINGS]
+    assert [pair for pair, _w in entries] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL, strings.PHASE_SHOW,
+                                              strings.PHASE_STOP, strings.PHASE_SETTINGS]
     text = strip.hover_text(P.MINER)
-    assert html.escape(TITLE) in text and html.escape(strings.PHASE_PRESS_SHOW) in text
-    assert html.escape(strings.PHASE_MENU_TIP.format(items="Stop · Settings")) in text    # (Show: the press's own)
+    assert html.escape(TITLE) in text and html.escape(strings.PHASE_PRESS_PAUSE) in text
+    assert html.escape(strings.PHASE_MENU_TIP.format(items="Show · Stop · Settings")) in text   # (Pause: the click's)
     strip.can_show = lambda c: False                                  # nothing to see now (its install, a press
     assert not strip.showing(P.MINER)                                 # ... before Connect's job): no promise of it
-    assert strip.press_words(P.MINER) == strings.PHASE_PRESS
-    assert html.escape(strings.PHASE_MENU_TIP.format(items="Stop")) in strip.hover_text(P.MINER)
+    assert html.escape(strings.PHASE_MENU_TIP.format(items="Stop · Settings")) in strip.hover_text(P.MINER)
     strip.can_show = None
     gen = registry.submit("generate", "Generating", lambda j: None)
     strip.set_jobs(registry.snapshot())
-    assert not strip.showing(P.SURASURA)                               # ス has no place of its own: its settings
-    assert strip.press_words(P.SURASURA) == strings.PHASE_PRESS
-    assert "Right-click" not in strip.hover_text(P.SURASURA)           # one item, the press's own: not said twice
+    assert not strip.showing(P.SURASURA)                               # ス has no place of its own
+    assert strip.press_words(P.SURASURA) == strings.PHASE_PRESS_PAUSE
+    assert html.escape(strings.PHASE_MENU_TIP.format(items="Settings")) in strip.hover_text(P.SURASURA)
     for j in (mine, gen):
         j.finish()
 
@@ -177,14 +178,16 @@ def test_the_right_click_is_the_bottom_bars_one_menu_and_each_item_asks_the_shel
     strip.asked.connect(lambda c, what: said.append((c, what)))
     at = strip.rect_of(P.JUNBAN).center().toPoint()
     QApplication.sendEvent(strip, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, strip.mapToGlobal(at)))
-    assert built[0] == [strings.PHASE_SHOW, strings.PHASE_SETTINGS]    # no Stop: the host's Anki write can't stop
-    for do in built[1]:
+    assert built[0] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL, strings.PHASE_SHOW,
+                        strings.PHASE_SETTINGS]                         # no Stop: the host's
+    for do in built[1]:                                                 # Anki write can't stop
         do()
-    assert said == [(P.JUNBAN, "show"), (P.JUNBAN, "settings")] and built[2][0] == "exec"
+    assert said == [(P.JUNBAN, "pause"), (P.JUNBAN, "pause_all"), (P.JUNBAN, "show"), (P.JUNBAN, "settings")]
+    assert built[2][0] == "exec"
     built.clear()
-    at = strip.rect_of(P.ANKI).center().toPoint()                      # nothing to offer: no menu at all
+    at = strip.rect_of(P.ANKI).center().toPoint()                      # Mado-PZ: every circle offers its pause
     QApplication.sendEvent(strip, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, strip.mapToGlobal(at)))
-    assert built == []
+    assert built[0] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL]   # (Mado-PZ2: and right under it, all five)
     replan.finish()
 
 
@@ -202,7 +205,7 @@ def test_menu_of_makes_one_item_per_entry_with_its_tip_and_runs_it(qapp):
 
 
 # --- in the window ------------------------------------------------------------------------------------------------ #
-def test_in_the_window_anki_miners_press_while_mining_goes_to_its_title_and_stop_is_its_rows_stop(world, monkeypatch):
+def test_in_the_window_anki_miners_show_while_mining_goes_to_its_title_and_stop_is_its_rows_stop(world, monkeypatch):
     win = world.win
     item = _mining()
     monkeypatch.setattr(win, "_mining_now", lambda: (11, item))
@@ -220,7 +223,7 @@ def test_in_the_window_anki_miners_press_while_mining_goes_to_its_title_and_stop
     mine = world.registry.record(S.CONNECT_JOB_KIND, S.CONNECT_JOB_LABEL)   # (as the mirror lists it, shown at once)
     win.phase.set_jobs(world.registry.snapshot())
     assert win.phase.showing(P.MINER)
-    win._circle_pressed(P.MINER)
+    win._circle_asked(P.MINER, "show")                                 # (Mado-PZ: *Show* from its right-click)
     assert shown == [("current", "row:ヤコブ書")] and settings == []
     assert win._circle_stops(P.MINER)
     win._circle_asked(P.MINER, "stop")
@@ -242,7 +245,7 @@ def test_in_the_window_a_circles_stop_cancels_its_own_cancellable_job(world):
     job.finish(cancelled=True)
 
 
-def test_in_the_window_junbans_press_while_it_reorders_opens_its_window(world, monkeypatch):
+def test_in_the_window_junbans_show_while_it_reorders_opens_its_window(world, monkeypatch):
     win = world.win
     opened, settings = [], []
     monkeypatch.setattr(win, "_open_junban", lambda at=None: opened.append(at) or True)
@@ -250,15 +253,17 @@ def test_in_the_window_junbans_press_while_it_reorders_opens_its_window(world, m
     replan = world.registry.record("replan", "Re-ordering Anki's new cards", automatic=False, on_quit="wait")
     win.phase.set_jobs(world.registry.snapshot())
     win.phase.set_opens(win.phase.opens - {P.JUNBAN})                  # Junban not here (the public checkout's look)
-    win._circle_pressed(P.JUNBAN)                                       # ... nothing to open, nothing done
-    assert opened == [] and settings == [] and not win.phase.showing(P.JUNBAN)
+    assert not win.phase.showing(P.JUNBAN)                              # ... nothing to show
+    assert "show" not in [w for _p, w in win.phase.menu_entries(P.JUNBAN)]
     win.phase.set_opens(win.phase.opens | {P.JUNBAN})                  # Junban found
-    win._circle_pressed(P.JUNBAN)
+    win._circle_asked(P.JUNBAN, "show")
     assert opened == [None] and settings == []
     replan.finish()
     win.phase.set_jobs(world.registry.snapshot())
-    win._circle_pressed(P.JUNBAN)                                       # at rest: its settings, as before (alpha 3)
+    win._circle_asked(P.JUNBAN, "settings")                             # its settings, a right-click away
     assert opened == [None] and settings == ["junban"]
+    win._circle_pressed(P.JUNBAN)                                       # Mado-PZ: the click pauses it
+    assert opened == [None] and settings == ["junban"] and world.services.paused == {P.JUNBAN}
 
 
 def test_on_the_seed_anki_miners_show_goes_to_its_row_washed_and_its_stop_marks_that_rows_pill(act, monkeypatch):

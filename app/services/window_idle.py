@@ -35,22 +35,37 @@ SAVE_SWITCH_S = 0.00025         # while a save holds the store's write lock: the
 _holds = []                     # finer hand-overs held while something runs (`hold`): a save's, a re-order host's
 _handed = {"before": None, "set": None}   # (no window wired) the hand-over under the holds, and the last one set here
 _SWITCH_LOCK = threading.Lock() # the hand-over is set by one at a time: the window's busy / rest, a hold, a let-go
+# The awake hand-over is for a stretch's few milliseconds (a press, a save's view: Mado-SP's 7–26 ms). A stretch that
+# goes on — a page built in slices (Settings: ~135 turns of the loop, the window never resting between them), the
+# start's first seconds — keeps the at-rest one from LONG_S on until the window rests: under 1 ms every waiting thread
+# spins on Windows, and with the start's ten busy workers Settings took 21 s to build instead of 1.3 s (a 2,500-file
+# library; the window's own share of Python's lock fell to about 1 %)
+LONG_S = 0.1
+_long = [False]                 # this stretch outlasted LONG_S: the at-rest hand-over until the window rests
 
 
 def set_switch(awake, at_rest):
     """(The window's process, `shell.wire_idle`.) While the window is awake Python's lock changes hands every `awake`
-    seconds, and every `at_rest` once it goes back to wait; (None, None): never changed here (Mado-SP)."""
+    seconds — for `LONG_S` of a stretch at most —, and every `at_rest` once it goes back to wait or its stretch goes on;
+    (None, None): never changed here (Mado-SP)."""
     _switch[0], _switch[1] = awake, at_rest
 
 
 def busy():
-    """(The window's thread.) It woke: it has events to handle — and, in the window's process, the lock comes back to it
-    at once from a busy worker (`set_switch`)."""
+    """(The window's thread, at every turn of its loop: the dispatcher's *awake*.) It woke: it has events to handle —
+    and, in the window's process, the lock comes back to it at once from a busy worker (`set_switch`); a stretch older
+    than `LONG_S` hands the lock over as at rest again (one clock read a turn)."""
     if _idle.is_set():
         _woke[0] = time.perf_counter()
         with _SWITCH_LOCK:
             _idle.clear()
+            _long[0] = False
             if _switch[0] is not None:
+                _hand_over()
+    elif not _long[0] and _switch[0] is not None and time.perf_counter() - _woke[0] > LONG_S:
+        with _SWITCH_LOCK:
+            if not _idle.is_set():
+                _long[0] = True
                 _hand_over()
 
 
@@ -60,6 +75,7 @@ def rest():
     with _SWITCH_LOCK:
         was = _idle.is_set()
         _idle.set()
+        _long[0] = False
         if not was and _switch[1] is not None:
             _hand_over()
 
@@ -84,7 +100,7 @@ def let_go(interval):
 def _hand_over():
     """(Under `_SWITCH_LOCK`.) The finest of the window's own (else the one in force before the holds) and the holds."""
     now = sys.getswitchinterval()
-    own = _switch[1] if _idle.is_set() else _switch[0]
+    own = _switch[1] if _idle.is_set() or _long[0] else _switch[0]
     if own is not None:
         _handed["before"] = own                     # (the window unwired under a hold falls back to its last own)
     else:

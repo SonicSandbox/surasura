@@ -21,7 +21,7 @@ import unicodedata
 import bisect
 from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, chain, compress, repeat
-from operator import attrgetter, eq, itemgetter
+from operator import attrgetter, eq, itemgetter, methodcaller
 from datetime import datetime
 import abc
 
@@ -33,6 +33,7 @@ from app import word_selection
 from app import modality
 from app import zh_script   # cheap: its tables decode only on the first conversion
 from app import names       # cheap: its tables decode only when a Japanese word is first read
+from app import song_lines  # pure: the songs left out of the counts (§ Songs out of the counts)
 from app.batch_gc import without_cycle_collection
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 from app import plan_rules  # the rules a Generate and the fast re-plan share (Orth / Forms, the progressive pass)
@@ -193,7 +194,19 @@ ENSURE_AUDIO_EXAMPLE = False
 # 42: a word the tagger doesn't know, cut at a kanji it does (§ Words the tagger doesn't know): an unknown word of two
 #     kanji or more and the one-kanji nouns / な-words touching it are one word — 犍陀多 was 犍陀 + 多 and 犍陀 topped the
 #     Japanese sample's list. SCHEMA_VERSION 24. 3.0.x.
-ENGINE_REVISION = 42
+# 43: sounds are no words (§ Sounds are no words): a filler, an interjection of one mora said alone or cut short (ほっ,
+#     なっ, え？) or a laugh (えへへ, ふふっ) standing on its own is no use, no row and no card. SCHEMA_VERSION 25.
+# 44: a transcript's groups in parentheses are no speech (_TRANSCRIPT_GROUP_RE: SUB-PARENS, widened): a Netflix
+#     transcript's speaker labels and sound notes no longer count as words, nor the speakers' names once per line they
+#     speak. SCHEMA_VERSION 26. 3.0.17.
+# 45: a show's own name clues (names § A show's own name clues): in a file, a run its speaker labels or the readings
+#     it gives spell is ONE person's name, keyed by its reading (爽子 サワコ, not 爽 + 子; 平野 ヒラノ, not 'plain'), and
+#     a reading + ちん or っち is a nickname (やのちん); name_data gains SHOW_NAMES. SCHEMA_VERSION 27. 3.0.17.
+# 46: a show's opening and ending songs are out of the counts while logic.count_song_lyrics is off (the default;
+#     app/song_lines.py, `songs_left_out`): an .ass event in a song style, a run of lines repeated in a quarter of a
+#     title's episodes, a ♪ line that is one of them. The token store keeps each sentence's line (`lines`):
+#     SCHEMA_VERSION 28. 3.0.17.
+ENGINE_REVISION = 46
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -588,6 +601,8 @@ def word_lemma(word):
         return f.lForm if f.pos2 == "文字" and f.lForm and has_target_language(word.surface, "ja") else None
     if word.surface in _DASH:                           # one lookup: this runs for every token
         return None
+    if word.__class__ is SoundNode:                     # a sound standing on its own (§ Sounds are no words)
+        return None
     return f.lemma or word.surface
 
 
@@ -636,6 +651,13 @@ class JoinedWord:
     def __init__(self, surface, feature, parts, white_space=""):
         self.surface, self.feature, self.parts, self.is_unk = surface, feature, parts, False
         self.white_space = white_space
+
+
+class WorkName(JoinedWord):
+    """A person's name the file itself says it holds — a speaker label, a reading it gives (names § A show's own name
+    clues) — made one word in that file: keyed by its reading in katakana, as UniDic keys a person's name; Ignore names
+    ignores it (names.name_lemma)."""
+    __slots__ = ()
 
 
 _MERGED = {}   # name -> (the tables a merged table below was built from, the merged table): built once
@@ -933,6 +955,9 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
     if library:
         words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True),
                                    LOGIC.get("names_work_terms", True))
+    # Sounds are no words (§ Sounds are no words): only a line holding an interjection or a katakana gasp has one
+    if fillers or not _GASP_CHARS.isdisjoint("".join(map(_SURFACE, words))):
+        words = _mark_sounds(words, fillers)
     return words
 
 
@@ -1249,7 +1274,7 @@ def _give_way_to_names(words, joined, at, table):
 # unknown word of its own. Such a word is the sound word the tagger reads that sound said twice as, alone, when it is
 # one — an interjection or an adverb — shown as written: ハァハァハァ is はあはあ's. A sound whose double is no such word
 # stays as it was (ヘヘヘ: ヘヘ reads as two words; ゼロゼロゼロ).
-_UNKNOWN, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos2")
+_UNKNOWN, _POS1, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos1"), attrgetter("feature.pos2")
 _ONE_KANA = re.compile(f"^[{KANA_LETTERS}][ー〜]*$")      # UniDic spells some fillers with 〜 (え〜)
 _KATAKANA_WORD = re.compile("^[\u30a1-\u30fa\u30fc-\u30ff]+$")
 _SOUND_POS1 = frozenset(("感動詞", "副詞"))
@@ -1308,6 +1333,137 @@ def _sounds(words, fillers):
         last = i + width
     out.extend(words[last:])
     return out
+
+
+# --- Sounds are no words ------------------------------------------------------------------------------------------- #
+# An interjection that is only a sound is said, not learned: never a use, a list row, an unknown in a sentence or a
+# card. A sound is one of UniDic's fillers (フィラー: えー, あのー, えっと), an interjection of one mora said alone or cut
+# short (あ, え, ん, は？, あっ, ほっ, なっ, ちぇっ — the sokuon is no mora here, a stretch is one: ねー stays ねえ), or a
+# laugh: a mora with a consonant said twice or more, after at most one other mora (ふふ, ははは, くくっ, えへへ, あはは,
+# はっはっは). A katakana gasp the tagger reads as a foreign name (ウッ, ナッ: one mora cut short) is one too.
+# Only where it stands on its own, between marks, spaces or its line's edges, a mark or a space on one side at least:
+# glued to a word, the tagger may have cut a word or a set phrase there (あっ + という + 間, 目 + ん + 玉, 様 + あー +
+# 見る), and it stays as it is read — but for a と that ends the utterance: えっ + と, read in a longer line, is the
+# filler えっと the tagger cut. A word read alone (a card's word, a known entry, an Ignore line: あっ, えっと) is a word
+# given, never an utterance, and stays one; a subtitle cue alone has its 。 (close_cue), so えへへ said alone goes.
+# Every other interjection is a word — ありがとう, こんにちは, はい, うん, ええ, ああ, おい, ねえ, くそ, よし, おっと —
+# and nothing else changes: ほっと and はっと are adverbs, なっ in なっちゃった is 成る. Its text stays in the sentence;
+# word_lemma counts it as no word (SoundNode), as it does a mark.
+class SoundNode(ReadNode):
+    """An interjection that is a sound (§ Sounds are no words): read like the node it was, counted as no word."""
+    __slots__ = ()
+
+
+_SOUND_EDGES = frozenset(("補助記号", "空白"))
+_GASP_ENDS = ("ッ", "ｯ")     # a katakana gasp ends so, full width or half (str.endswith takes the tuple)
+_GASP_CHARS = frozenset(_GASP_ENDS)
+_SOUND_SHAPES = {}          # (surface, kind) -> whether it is a sound's shape, asked once per spelling
+_SMALL_JOINING = frozenset("ゃゅょゎ")
+_SMALL_VOWELS = frozenset("ぁぃぅぇぉ")
+_PLAIN_VOWELS = frozenset("あいうえお")
+
+
+def _vowel(kana):
+    """The vowel a hiragana letter ends in, from its Unicode name (HIRAGANA LETTER KA -> A; ん -> N)."""
+    return unicodedata.name(kana, "?")[-1]
+
+
+def _morae(surface):
+    """`surface`'s morae as a sound says them — hiragana, katakana folded; っ is none; a stretch (ー 〜 ～, or a small
+    vowel after its own vowel) is the mora "ー"; a small ゃ or ぇ joins the kana before it — or None when it holds
+    anything but kana, or starts with a stretch."""
+    out = []
+    for ch in surface:
+        if "ァ" <= ch <= "ヶ":
+            ch = chr(ord(ch) - 0x60)
+        if ch == "っ":
+            continue
+        if ch in "ー〜～" or (ch in _SMALL_VOWELS and out and _vowel(out[-1][-1]) == _vowel(ch)):
+            if not out:
+                return None
+            out.append("ー")
+        elif ch in _SMALL_JOINING or ch in _SMALL_VOWELS:
+            if not out or out[-1] == "ー":
+                return None
+            out[-1] += ch
+        elif "ぁ" <= ch <= "ゖ":
+            out.append(ch)
+        else:
+            return None
+    return out
+
+
+def _sound_shape(surface, kind):
+    """Is `surface` a sound's shape (§ above)? `kind`: "i" an interjection, "f" a filler, "n" a katakana proper noun."""
+    held = _SOUND_SHAPES.get((surface, kind))
+    if held is None:
+        morae = _morae(surface)
+        if kind == "f":
+            held = True
+        elif not morae:
+            held = False
+        elif kind == "n":
+            held = len(morae) == 1 and surface[-1] == "ッ"
+        elif len(morae) == 1:
+            held = True
+        else:
+            last, k = morae[-1], 1
+            while k < len(morae) and morae[-1 - k] == last:
+                k += 1
+            held = last not in _PLAIN_VOWELS and last not in ("ん", "ー") and k >= 2 and len(morae) - k <= 1
+        if len(_SOUND_SHAPES) > 5000:       # a library's sounds are a few hundred spellings: start again past that
+            _SOUND_SHAPES.clear()
+        _SOUND_SHAPES[(surface, kind)] = held
+    return held
+
+
+def _sound_ends(words, j):
+    """How an utterance ends before words[j]: 2 at a space or a mark, 1 at the line's end, 0 not at all."""
+    if j >= len(words):
+        return 1
+    return 2 if getattr(words[j], "white_space", "") or words[j].feature.pos1 in _SOUND_EDGES else 0
+
+
+def _sound_kind(w):
+    """The kind `_sound_shape` judges `w` as ("f", "i", "n"), or None when no sound can be one."""
+    f = w.feature
+    if isinstance(w, JoinedWord):
+        return None
+    if f.pos1 == "感動詞":
+        return "f" if f.pos2 == "フィラー" else "i"
+    return "n" if f.pos2 == "固有名詞" and _read(w)[-1:] == "ッ" else None
+
+
+def _mark_sounds(words, fillers):
+    """join_affixes' last step (§ above): `words` with each sound standing on its own a SoundNode — the same list when
+    there is none. Sounds in a row stand together (あっあっ, う + え～ + ん): the run is between marks, or none of it is.
+    Only the interjections (on a line holding one: `fillers`) and the words ending in ッ are looked at, found in C."""
+    n = len(words)
+    seen = set(compress(range(n), map(eq, map(_POS1, words), repeat("感動詞")))) if fillers else set()
+    seen.update(compress(range(n), map(methodcaller("endswith", _GASP_ENDS), map(_SURFACE, words))))
+    sounds = []
+    for i in sorted(seen):
+        kind = _sound_kind(words[i])
+        if kind and _sound_shape(_read(words[i]), kind):      # as the tagger read it: ｱｯ is アッ
+            sounds.append(i)
+    out, k = None, 0
+    while k < len(sounds):
+        a = b = sounds[k]
+        while k + 1 < len(sounds) and sounds[k + 1] == b + 1:      # a run of sounds, glued or spaced
+            k += 1
+            b = sounds[k]
+        k += 1
+        left = 1 if a == 0 else (2 if getattr(words[a], "white_space", "") or words[a - 1].feature.pos1 in _SOUND_EDGES
+                                 else 0)
+        right = _sound_ends(words, b + 1) or (words[b + 1].surface == "と" and _sound_ends(words, b + 2))
+        if left + right < 3:        # glued to a word on a side (0), or a word read alone (1 + 1): no sound
+            continue
+        if out is None:
+            out = list(words)
+        for i in range(a, b + 1):
+            w = words[i]
+            out[i] = SoundNode(w.surface, w.feature, w.is_unk, getattr(w, "white_space", ""))
+    return words if out is None else out
 
 
 # Words the tagger doesn't know: UniDic reads kanji it has no word for two at a time as an unknown word, and a kanji
@@ -2221,16 +2377,16 @@ class JapaneseTokenizer(Tokenizer):
         # (`tokenize_sentences(names=…)`) and applies the tables to its cached tokens as it reads them.
         self.library = library
 
-    def tokenize(self, text, pieces=None):
+    def tokenize(self, text, pieces=None, clues=None):
         """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples. `pieces`, a
         list, also receives the (lemma, reading) of each piece of every joined word (§ above)."""
         # Simple wrapper around sentences
         all_tokens = []
-        for _, tokens in self.tokenize_sentences(text, pieces):
+        for _, tokens in self.tokenize_sentences(text, pieces, clues=clues):
             all_tokens.extend(tokens)
         return all_tokens
 
-    def tokenize_sentences(self, text, pieces=None, names=None):
+    def tokenize_sentences(self, text, pieces=None, names=None, clues=None):
         """Yields (sentence_string, list_of_filtered_tokens).
 
         Fugashi consumes newlines, so '\\n' in the boundary set never fired and separate lines
@@ -2239,6 +2395,8 @@ class JapaneseTokenizer(Tokenizer):
 
         `names`, an app.names.Record, receives every run the library's name tables could join, with the
         sentence (as yielded) and the counted tokens it covers — how the token store keeps them for later.
+        `clues`, the file's own name clues (extract_text's facts "clues"), makes each name it says it holds one
+        word in this text (names § A show's own name clues); a text without them reads as before.
         """
         # Unidic-lite pos1: '補助記号' (punctuation), '空白' (spaces)
         # A frozenset + isdisjoint keeps the per-token boundary test in C. This runs millions of
@@ -2248,11 +2406,18 @@ class JapaneseTokenizer(Tokenizer):
         joins = affix_joins()
         sanitized = _SANITIZED.get      # a term met before, cleaned (_sanitize_term): looked up for every token
         yielded = 0                  # sentences yielded so far: the index of the one being built
+        if clues:
+            from app import names as _names
+            work = _names.WorkNames(clues)
+        else:
+            work = None
 
         for line in text.split("\n"):
             current_sentence_tokens = []
             current_sentence_surface = []
             words = join_affixes(self.tagger(line), joins, library=self.library)
+            if work is not None:
+                words = work.words(self, line, words, joins)
             surfaces = [word.surface for word in words]
             # Where each token lands — (sentence, counted tokens before it) — for the name candidates' spans.
             cands = names.read_line(words) if names is not None else ()
@@ -2552,6 +2717,38 @@ def chinese_word(word):
     return not spared or zh_script.to_simplified(word) in spared
 
 
+def chinese_sounds(pieces):
+    """The indices of `pieces` (chinese_cut's, in Simplified) that are sounds standing on their own — no word, as in
+    Japanese (§ Sounds are no words): an interjection, a laugh or a modal particle said alone (啊, 嗯, 哦, 呃, 哈哈 and
+    its runs, 啊啊啊: app/cedict_data.py's INTERJECTIONS) between marks, spaces or its line's edges — 啊，好痛！, 嗯嗯。
+    (sounds in a row stand together) — never one glued to a word (好啊's 啊 is grammar, 哈哈大笑 a word), nor a text
+    that is only the sound (a card's word, a known entry: 啊). Empty with the table unreadable."""
+    table = _cedict_table("interjections")
+    if not table:
+        return ()
+    heads = _CEDICT.get("interjection_heads")
+    if heads is None:
+        heads = _CEDICT["interjection_heads"] = frozenset(word[0] for word in table)
+    out, run = [], []
+    for i, piece in enumerate(pieces):
+        if piece in table or (piece[:1] in heads and (
+                (piece[0] in table and piece == piece[0] * len(piece)) or chinese_base(piece) in table)):
+            run.append(i)
+            continue
+        if run and _zh_edge(pieces, run[0] - 1) and _zh_edge(pieces, i):
+            out.extend(run)
+        run = []
+    if run and _zh_edge(pieces, run[0] - 1) and run[0] > 0:     # the whole text a sound: a word read alone (a card)
+        out.extend(run)
+    return out
+
+
+def _zh_edge(pieces, j):
+    """Is pieces[j] no word's neighbour — before the first, after the last, or a mark or a space (no letter, digit or
+    character in it)?"""
+    return j < 0 or j >= len(pieces) or not any(map(str.isalnum, pieces[j]))
+
+
 _ZH_TAGS = []      # jieba's own tag table (jieba.posseg's word_tag_tab), read on the first ask
 
 
@@ -2619,7 +2816,9 @@ class ChineseTokenizer(Tokenizer):
                 yield w, words[pos:end], (shown[pos:end] if at is None else shown[at[pos]:at[end]])
                 pos = end
 
-        seg_list = _aligned(chinese_cut(cut))
+        pieces = chinese_cut(cut)
+        sounds = set(chinese_sounds(pieces))    # sounds standing on their own: no word (§ Sounds are no words)
+        seg_list = _aligned(pieces)
         
         current_sentence_tokens = []
         current_sentence_surface = []
@@ -2630,7 +2829,7 @@ class ChineseTokenizer(Tokenizer):
         # but for now we include everything that isn't strict punctuation/space.
         
         ended = line_end = False
-        for piece, word, surface in seg_list:
+        for k, (piece, word, surface) in enumerate(seg_list):
             # What closes a sentence stays with it (UAX #29 SB8a / SB9, § above JapaneseTokenizer):
             # ？？ and ？！ end together, and a closing quote joins the sentence it closes — “是黑车吗？”
             # — where it used to open the next one. A line end ends the sentence where it stands.
@@ -2653,7 +2852,7 @@ class ChineseTokenizer(Tokenizer):
                 word = chinese_base(piece, word) or word
             # Strict filtering: a Chinese word holds a Chinese character and no kana letter (chinese_word,
             # the builder's test too).
-            is_skippable = not chinese_word(word)
+            is_skippable = not chinese_word(word) or k in sounds
             
             # For Chinese, "lemma" is just the word. "Reading" (Pinyin) requires pypinyin, 
             # but user didn't ask for Pinyin injection yet, and existing data might not have it.
@@ -2833,13 +3032,28 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
     return known
 
 
+def _text_and_clues(file_path, language):
+    """(text, clues): the file's text as every run reads it, and its own name clues (extract_text's facts)."""
+    facts = {}
+    text = extract_text(file_path, language, facts)
+    return text, facts.get("clues")
+
+
+def _tokenize_file(tokenizer, file_path, language):
+    """A file's sentences tokenized here, as the token store tokenizes it (its own name clues applied)."""
+    text, clues = _text_and_clues(file_path, language)
+    if clues and isinstance(tokenizer, JapaneseTokenizer):
+        return tokenizer.tokenize_sentences(text, clues=clues)
+    return tokenizer.tokenize_sentences(text)
+
+
 def file_sentences(store, tokenizer, file_path, language):
     """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
     tokenized here."""
     if store is None:
         if not os.path.exists(file_path):
             return []                   # a missing item (9b) with no token store to read it from
-        return tokenizer.tokenize_sentences(extract_text(file_path, language))
+        return _tokenize_file(tokenizer, file_path, language)
     sentences = store.file_tokens(file_path)
     # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
     # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
@@ -2847,10 +3061,93 @@ def file_sentences(store, tokenizer, file_path, language):
     if not sentences:
         try:
             if os.path.getsize(file_path) > 0:
-                sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+                sentences = _tokenize_file(tokenizer, file_path, language)
         except OSError:
             pass
     return sentences
+
+
+# --- Songs out of the counts (ENGINE_REVISION 46; app/song_lines.py) ------------------------------------------------ #
+# A show's opening and ending songs, written in its subtitles every episode, are left out of a run's counts while
+# logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
+# number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
+# (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
+_SPOKEN = ("subtitle", "youtube", "bilibili")
+
+
+def songs_left_out(files):
+    """{path: {sentence number, …}} of one work's song lines — `files`: [(path, lines)], `lines` as the token store
+    keeps them (song_lines.file_lines). An episode is the one its file name reads (episode_names.identity: an .srt and an
+    .ass of one episode are one), else its file."""
+    from app import episode_names
+    episodes = []
+    for path, lines in files:
+        name = episode_names.identity(path)
+        episodes.append((path, name.key if name.episode is not None else path, lines))
+    return song_lines.left_out(episodes)
+
+
+def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
+    """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
+    source type)]), each work on its own (§ above). With the store, a work's answer is kept (`Store.keep_songs`) under
+    a digest of its files' stamps and the rule's version, so a Generate after nothing changed in a work reads only its
+    stamps; without the store, each file is read and tokenized here. `stats`, a dict, receives "read" (the works whose
+    lines were read) and "kept" (the works whose kept answer was used)."""
+    works = {}
+    for file_path, _label, _weight, source_type in found_files:
+        if source_type in _SPOKEN:
+            works.setdefault(_series_name(file_path, data_dir), []).append(file_path)
+    kept, keep, built = {}, {}, None
+    if store is not None and works:
+        try:
+            kept = store.songs_kept()
+            built = store.get_meta("build_sig")   # a new tokenizer re-reads every file, its stamps unchanged
+        except Exception:
+            kept = {}
+    out, read, used = {}, 0, 0
+    for work, paths in works.items():
+        digest = None
+        if store is not None:
+            try:
+                stamps = store.file_stamps(paths)
+                digest = hashlib.sha1(json.dumps([song_lines.RULE, ENGINE_REVISION, built, sorted((p, stamps.get(p)) for p in paths)],
+                                                 ensure_ascii=False).encode("utf-8")).hexdigest()
+            except Exception:
+                digest = None
+            held = kept.get(work)
+            if digest is not None and held and held[0] == digest:
+                keep[work] = held
+                out.update((path, set(numbers)) for path, numbers in held[1].items())
+                used += 1
+                continue
+        read += 1
+        held = {}                                 # one work's lines held at a time (a 20k library's would be ~1 GB)
+        if store is not None:
+            try:
+                held = store.file_lines(paths)
+            except Exception as e:
+                print(f"Warning: the token store's lines couldn't be read ({e}); reading the subtitles here.")
+                store, digest = None, None
+        files = []
+        for path in paths:
+            lines = held.get(path)
+            if lines is None and store is None and os.path.exists(path):
+                facts = {}
+                lines = song_lines.file_lines(list(tokenizer.tokenize_sentences(extract_text(path, language, facts))),
+                                              facts.get("song_marks") or ())
+            files.append((path, lines))
+        found = {path: numbers for path, numbers in songs_left_out(files).items() if numbers}
+        out.update(found)
+        if digest is not None and all(path in held for path in paths):   # never kept from a file without lines
+            keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
+    if stats is not None:
+        stats.update(read=read, kept=used)
+    if store is not None and keep != kept:
+        try:
+            store.keep_songs(keep)
+        except Exception as e:                    # computed again next time
+            print(f"Warning: the songs found couldn't be kept in the token store ({e}).")
+    return out
 
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
@@ -3147,7 +3444,7 @@ def _join_lines(lines, language='ja'):
     return text
 
 
-def _captions(events, language='ja'):
+def _captions(events, language='ja', marks=None):
     """Each caption's text, closed (close_cue), from an .ass file's `events` — (timing, colour, text) in the
     file's order. Consecutive events with one timing — one start, one end — are on screen together: the
     lines of one caption, read as one cue like an .srt cue's two lines (a broadcast .ja.ass writes
@@ -3157,15 +3454,26 @@ def _captions(events, language='ja'):
     one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
     at once — Netflix writes two speakers talking together so (two cues with one timing, each with its own
-    speaker label)."""
+    speaker label).
+
+    An event may carry a fourth field, whether its style is a song style (parse_ass): `marks`, a list, then receives
+    one per caption yielded — True when every event of that caption is in a song style."""
     screen, shown = {}, None                        # colour -> the texts in it, of the events on screen together
-    for timing, colour, text in events:
+    sung = {}                                       # colour -> whether every event in it is in a song style
+    for timing, colour, text, *song in events:
         if screen and timing != shown:
-            yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
-            screen = {}
+            for key, texts in screen.items():
+                if marks is not None:
+                    marks.append(sung[key])
+                yield close_cue(_join_lines(texts, language))
+            screen, sung = {}, {}
         screen.setdefault(colour, []).append(text)
+        sung[colour] = sung.get(colour, True) and bool(song and song[0])
         shown = timing
-    yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
+    for key, texts in screen.items():
+        if marks is not None:
+            marks.append(sung[key])
+        yield close_cue(_join_lines(texts, language))
 
 
 # A line shown again is one line (ENGINE_REVISION 40, SPEC card-lines rule 5): streaming subtitles show a line through
@@ -3371,7 +3679,7 @@ def _ass_colour(text, colour, colours):
     return colour
 
 
-def parse_ass(file_path, language='ja'):
+def parse_ass(file_path, language='ja', facts=None):
     try:
         content = read_text(file_path, language)    # the file's own encoding (path_utils.read_text)
     except Exception as e:
@@ -3390,6 +3698,7 @@ def parse_ass(file_path, language='ja'):
     colours, colour_index = {}, 3   # each style's PrimaryColour (§ above), and where a Style line holds it
     
     events = []
+    sung = False                    # an event in a song style (app/song_lines.py): `facts`' "song_marks"
     
     for line in lines:
         line = line.strip()
@@ -3420,8 +3729,10 @@ def parse_ass(file_path, language='ja'):
                     if cleaned:
                         colour = _ass_colour(comma_parts[text_index], colours.get(comma_parts[style_index].strip(), ''),
                                              colours)
+                        song = song_lines.song_style(comma_parts[style_index].strip())
+                        sung = sung or song
                         events.append(((comma_parts[start_index].strip(), comma_parts[end_index].strip()),
-                                       colour, cleaned))
+                                       colour, cleaned, song))
         elif line.startswith('Format:'):          # [V4+ Styles] / [V4 Styles]
             fields = [f.strip() for f in line[7:].split(',')]
             if 'PrimaryColour' in fields:
@@ -3434,9 +3745,20 @@ def parse_ass(file_path, language='ja'):
     # A line shown again — drawn twice, or written again through another line — is read once (shown_again)
     again = shown_again([(start, end, text) if start is not None and end is not None else None
                          for start, end, text in ((ass_ms(timing[0]), ass_ms(timing[1]), text)
-                                                  for timing, _colour, text in events)])
+                                                  for timing, _colour, text, _song in events)])
     events = [event for event, first in zip(events, again) if first is None]
-    return " ".join(caption for caption in _captions(events, language) if caption)
+    if not sung or facts is None:
+        return " ".join(caption for caption in _captions(events, language) if caption)
+    # Where the song-styled captions sit in the text: each caption's Japanese / Chinese characters, and whether it
+    # is one — the sentences are matched to them by place (song_lines.file_lines), never by their words.
+    marks, kept, songs = [], [], []
+    captions = list(_captions(events, language, marks))
+    for caption, song in zip(captions, marks):
+        if caption:
+            kept.append(caption)
+            songs.append([song_lines.script_len(caption), 1 if song else 0])
+    facts["song_marks"] = songs
+    return " ".join(kept)
 
 
 # --- what a text file's own format writes around its text ------------------------------------------------------ #
@@ -3446,6 +3768,18 @@ def parse_ass(file_path, language='ja'):
 # text' (the time as the cue's timing line wrote it: clean_vtt_cues). 93 of 原作's 160 uses came from headers.
 _TRANSCRIPT_RULE = "-" * 60
 _TRANSCRIPT_TIME_RE = re.compile(r'^\[(?:\d+:)?\d{2}:\d{2}\] ', re.M)
+# A caption's group in parentheses — a speaker label （平野）, a name's reading （風早(かぜはや)）, a sound （足音） — is no
+# speech: a transcript drops it as a subtitle's cue does (SUB-PARENS; clean_subtitle_text). A Netflix or Disney+
+# episode from the browser extension arrives as a transcript, its labels on about half its lines. The downloader writes
+# a YouTube transcript as ONE line (its cues joined with spaces), so a group here is one level deep at most, within one
+# line, and short — at most _TRANSCRIPT_GROUP_MAX pieces inside, each a character or a nested reading of at most as many
+# (a 25-episode Netflix season's longest group: 15 characters). Past that a bracket is text: a stray （ never drops the
+# speech up to a ） far later. A longer group stays as written, and two levels deep leave the outer brackets. The line
+# player and the report's source link leave the same groups out of their search (cues._transcript_removed,
+# static_html_generator.AnchorFinder._loose).
+_TRANSCRIPT_GROUP_MAX = 40
+_TRANSCRIPT_GROUP_RE = re.compile(r'[(（](?:[^()（）\n]|[(（][^()（）\n]{0,%d}[)）]){0,%d}[)）]'
+                                  % (_TRANSCRIPT_GROUP_MAX, _TRANSCRIPT_GROUP_MAX))
 _CAPTION_KIND_RE = re.compile(r'\(([^()]*)\)$')
 # The header's caption kinds that no person wrote, as the transcript downloader names them: YouTube's own speech
 # recognition, and its machine translation of another language's captions. The recognizer misspells a word the same
@@ -3570,13 +3904,13 @@ def _strip_verse_numbers(text):
 
 def strip_text_conventions(text, language='ja', ext='.txt'):
     """A text file's content without what its format writes around the text: the downloader's header, its
-    timestamps and the captions' sound cues; Markdown's markup (.md); and in Japanese books Aozora Bunko's ruby,
+    timestamps, the captions' sound cues and groups in parentheses (labels, readings, sounds); Markdown's markup (.md); and in Japanese books Aozora Bunko's ruby,
     notes and colophon, a reading in parentheses (as paren_readings() says) and a scripture's apparatus
     (references, footnote marks, verse numbers). The words and punctuation of the text itself are taken as
     written."""
     body = transcript_body(text)
     if body is not None:
-        return _SOUND_CUE_RE.sub('', _TRANSCRIPT_TIME_RE.sub('', body))
+        return _TRANSCRIPT_GROUP_RE.sub('', _SOUND_CUE_RE.sub('', _TRANSCRIPT_TIME_RE.sub('', body)))
     if ext == '.md':
         text = _MD_LINK_RE.sub(r'\1', _SUBRIP_TAG_RE.sub('', text))
         text = _MD_INLINE_RE.sub('', _MD_BLOCK_RE.sub('', text))
@@ -3600,12 +3934,16 @@ def extract_text(file_path, language='ja', facts=None):
     # a UTF-16 or GBK .txt contributed nothing before, silently.
     # `facts`, a dict, receives what the file's own format says about its text — "captions": the kind a downloaded
     # transcript's header names (caption_kind), or None — for the token store (names.Record); the text is the same.
+    # And "clues" (Japanese): the names the file says it holds — its speaker labels, the readings it gives — read from
+    # its text as written, before any of it is taken out (names.file_clues: § A show's own name clues); absent when
+    # it gives none. The tokenizer applies them to this file alone (tokenize_sentences(clues=)).
     ext = os.path.splitext(file_path)[1].lower()
-    text = ""
+    text = raw = ""
     if ext == '.srt':
         try:
             import pysrt   # lazy: only reading a .srt subtitle file pays this import
-            subs = pysrt.from_string(read_text(file_path, language))
+            raw = read_text(file_path, language)
+            subs = pysrt.from_string(raw)
             said = []
             for sub in subs:
                 # Filter out lines without Target characters
@@ -3627,15 +3965,36 @@ def extract_text(file_path, language='ja', facts=None):
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     elif ext in ['.ass', '.ssa']:
-        text = parse_ass(file_path, language)
+        text = parse_ass(file_path, language, facts)
     else:
-        text = read_text(file_path, language)
+        text = raw = read_text(file_path, language)
 
     if ext not in SUBTITLE_EXTENSIONS:
         if facts is not None:
             facts["captions"] = caption_kind(text)
         text = strip_text_conventions(text, language, ext)
+    if facts is not None and language == 'ja' and raw:
+        from app import names
+        clues = names.file_clues(raw, _sidecar_readings(file_path) if ext not in SUBTITLE_EXTENSIONS else None)
+        if clues:
+            facts["clues"] = clues
     return text
+
+
+def _sidecar_readings(file_path):
+    """The readings an item's sidecar keeps (<stem>.surasura.json's names.SIDECAR_READINGS: the ruby a streaming
+    site's player showed), or None — no sidecar, none kept, or one that won't read."""
+    from app import names
+    from app.path_utils import SIDECAR_SUFFIX
+    path = os.path.splitext(file_path)[0] + SIDECAR_SUFFIX
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f).get(names.SIDECAR_READINGS)
+    except Exception:
+        return None
+    return kept if isinstance(kept, dict) else None
 
 def find_context_sentence(full_text, target_surface):
     sentences = re.split(r'([。！？\n])', full_text)
@@ -4927,6 +5286,7 @@ def settings_signature(settings, language):
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "subs_with_hato",               # Michi-NS: hato finds the waiting videos' subtitles (NS-2), never a run
         "subs_with_hato_zh",            # Zh-H: the same yes for the Chinese library, never a run
+        "paused",                       # Mado-PZ: the circles paused at the bar (what runs by itself), never a run
         "open_video", "open_video_program", "open_book", "open_book_program",   # what ▶ opens a file with: never a run
         "finish_cards",                 # When you finish something: its cards' choice (D14), never a run
         "practice_keep_rounds",         # A6: the practice server keeps its rounds, never a run
@@ -4935,9 +5295,12 @@ def settings_signature(settings, language):
         "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
+        "known_from_anki_chosen",       # Kantan-B3: whether those states are the learner's pick, never a run
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run
+        "connect_spot_every_episode",   # Michi-T1: when Connect hears a timed video's audio, never a run
         "connect_zh_word_audio",        # Zh-C: Chinese cards' word audio from Google, never what a run counts
+        "connect_clip_cuts", "connect_low_priority",    # Michi-LP: how hard Anki Miner works, never a run
         # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
         "anki_sync_delay_min",
         # Optional-module switches that change what the app SHOWS, never what a run computes.
@@ -5841,6 +6204,23 @@ def main():
         names.use_library_tables(_store.names_tables() if _store is not None
                                  else _token_index.read_names_tables(language))
 
+    # A show's opening and ending songs out of the counts (§ Songs out of the counts): their sentences read as no words
+    # (`_sentences_of`), in their place — a sentence's number is the plan's and the re-pick's. The set-aside files
+    # (watched, Finished) are their works' episodes too, and the example sentences read them.
+    _songs = {}
+    if not LOGIC.get("count_song_lyrics", False):
+        _songs_t0, _songs_stats = time.perf_counter(), {}
+        try:
+            _songs = song_sentences(list(found_files) + [(a.path, None, None, a.source_type)
+                                                         for a in aside_files(language, _library["schedule"])],
+                                    data_dir, _store, tokenizer, language, _songs_stats)
+        except Exception as e:                    # never a Generate lost to it: the songs counted, as before
+            print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
+        else:
+            print(f"Songs left out: {sum(map(len, _songs.values()))} sentences in {len(_songs)} files "
+                  f"({_songs_stats.get('read', 0)} works read, {_songs_stats.get('kept', 0)} kept; "
+                  f"{time.perf_counter() - _songs_t0:.2f} s)")
+
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
     # above) and forces a fresh normalization, so a change to your known words is always reflected.
@@ -5919,8 +6299,13 @@ def main():
 
     def _sentences_of(file_path):
         """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
-        tokenized here (`file_sentences`, the arrival record's reader too)."""
-        return file_sentences(_store, tokenizer, file_path, language)
+        tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
+        (`song_sentences`, below)."""
+        sentences = file_sentences(_store, tokenizer, file_path, language)
+        out = _songs.get(file_path)
+        if out:
+            sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
+        return sentences
 
     def _floor_count(total_tokens, own_freqs):
         """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a
@@ -5992,7 +6377,9 @@ def main():
         _counts, total_tokens, _bound_counts = Counter(), 0, Counter()
         tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
-            sentences = _sentences_of(file_path)
+            # As the store counts them, songs too (§ Songs out of the counts: only the walk leaves them out), so the
+            # floor and the ranking are the same numbers with or without the store.
+            sentences = file_sentences(_store, tokenizer, file_path, language)
             if tallies is not None:
                 sentences, flat = list(sentences), []
                 tallies.append(_phrases.tally(sentences, _phrase_set, flat))
@@ -6081,6 +6468,8 @@ def main():
         try:
             for number, start, end, index in zip(numbers, numbers, numbers, numbers):
                 tokens, key = sentences[number][1], entries[index].key
+                if not tokens:
+                    continue                    # a song line left out (`_sentences_of`): no phrase there
                 if end - start != len(key) or tokens[start][0] != key[0] or tokens[end - 1][0] != key[-1]:
                     return None
                 found = at.get(number)
@@ -6203,7 +6592,7 @@ def main():
     if _whole is None:
         _whole = Counter()
         for file_path, _label, _weight, _type in found_files:
-            for _s_text, s_tokens in _sentences_of(file_path):
+            for _s_text, s_tokens in file_sentences(_store, tokenizer, file_path, language):     # as the store counts
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _whole[(lemma, reading)] += 1
@@ -7390,10 +7779,12 @@ def main():
         for file_path, _label, _weight, _source_type in found_files:
             # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
             # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
-            # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
+            # cache-miss branch reads the file again as the walk reads it (its songs left out too), so behaviour is
+            # never wrong, only slower.
             file_counter = file_token_cache.get(file_path)
             if file_counter is None:
-                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
+                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
+                                       for (l, r, s, o) in s_tokens)
 
             file_total_tokens = 0
             file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)

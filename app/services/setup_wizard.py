@@ -680,18 +680,32 @@ def first_cards(language, settings, data_dir=None):
     """(A worker; D1's *Make cards*, once Connect is on.) The mine line's episodes — the first 20 of Current, there since
     setup's first scan, which logs nothing — logged as entering it by the user's own choice (`Store.enter_mine_line`,
     explicit, by "user"): Connect's inbox makes their jobs; then Connect kicked (`kick.kick`: nothing while it's off)
-    -> the ids logged ([]: no library)."""
+    -> the ids logged ([]: no library). Kantan-B2: the line's answer is kept before the log is written — while it is
+    unanswered Connect holds every entry (`inbox.first_run_waits`), so a Connect already looking never passes these
+    by; the log failing takes the answer back (the line asks again). Kantan-B2b: the jobs its *Not now* set aside are
+    queued again first (`actions.first_run_back`: mined in their old order, before the top 20's new ones)."""
     from app import library_store
-    from app.connect import kick, library
+    from app.connect import actions, kick, library
     from app.path_utils import get_data_path, get_user_files_path
+    from app.services import needs
     language = _language(language)
     store = library_store.open_store(language, data_dir or get_data_path(language), get_user_files_path(language),
                                      role="window")
     if store is None:
         return []
-    with store:
-        library.ensure_reader(store)                     # Connect's watermark first: what is logged next is read
-        ids = store.enter_mine_line(by="user")
+    answered = needs.answer(language, [needs.FIRST_CARDS])
+    try:
+        actions.first_run_back(language)             # (its failure takes the answer back too, as the log's)
+        with store:
+            library.ensure_reader(store)                 # Connect's watermark first: what is logged next is read
+            ids = store.enter_mine_line(by="user")
+    except BaseException:
+        if answered:
+            try:
+                needs.unanswer(language, [needs.FIRST_CARDS])
+            except Exception as e:                       # the log's own failure is the one said
+                print(f"Setup: the cards line's answer couldn't be taken back ({e})")
+        raise
     try:
         kick.kick(settings or {})
     except Exception as e:                               # its next start reads the log anyway

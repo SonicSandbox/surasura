@@ -25,7 +25,10 @@
     confirms it), so after a crash `replay()` at the next start applies them by id — or, where an item changed
     meanwhile, lists them once (`on_note`: *2 moves from before the crash couldn't be applied*); a status, a title's
     fields, a join or an import (`GUARDED`) is checked against what it touched as queued: changed since → listed, what
-    it writes there already (it landed, its entry left behind) → let go quietly;
+    it writes there already (it landed, its entry left behind) → let go quietly. A journal write or remove another
+    program refuses (a scanner holding the file) is tried again after growing pauses (`JOURNAL_RETRY_S`, between the
+    thread's jobs; the quit's until its deadline), and the entries done with meanwhile are told to the journal's
+    `.landed` note at once: a start whose journal's commands all landed clears it without replaying any (Kura-JR);
   - `None` (nothing to change: the items gone, or already there) → `on_reread()`;
   - a move the store put in its show's episode order instead (`Change.show_order`, Kura-EO) → the numbers follow the
     store's place and `on_reread()` (the window's drop order goes at once: the store's view stands);
@@ -75,6 +78,11 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 DEFER_MAX_S = 0.25              # a press's command waits at most this long for the window's go (`Writer.defer`)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
+JOURNAL_RETRY_S = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+#   Kura-JR: a journal write or remove still refused after those tries (a scanner, a backup tool holding the file) is
+#   tried again after each of these pauses in turn, on the writer's thread between its jobs (never a wait of the
+#   window's, never one that holds a command back); the quit tries until its deadline. What landed meanwhile is told
+#   to the journal's `.landed` note at once, so a start after a crash or a give-up never replays it
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
               "place", "put_back", "import_finished", "relink", "its_new", "audiobook_answer", "link_video", "remove",
               "skip_folder",
@@ -88,6 +96,8 @@ JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
 GUARDED = ("pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "join", "import_finished")
 #   a replay checks these against what they touch as queued (`_as_queued`): their writes move no `changed_in` (a
 #   status, a title's fields) or they hold no ids (a join's pieces, an import's paths)
+FOLLOW_EACH_MOST = 16   # Kura-EO: a block the store sorted is followed item by item up to this many (each one an
+                        # engine move and a publish); a longer one is compared and worked out once after the write
 ANALYSED = ("now", "soon", "goal")                          # the plan engine's tiers, in a Generate's order
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
@@ -108,6 +118,7 @@ KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
 KEPT += ("side_by_side",)                       # Kyou-A: the library's *New cards come from* (Current's top two)
+KEPT += ("unlock",)                             # Mado-CV: *Look for a cover again* (the cover's lock let go)
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
@@ -137,6 +148,7 @@ JOURNALLED += ("audiobook_keep", "audiobook_separate")
 JOURNALLED += ("start_over",)
 KEPT += ("placed",)
 KEPT += ("after",)                              # choice 1: a place after the sort screen's last Current pick
+KEPT += ("exact",)                              # Kura-EO 3.0.16: an exact move replays exact (never the show's order)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -258,6 +270,11 @@ class Writer:
         self._replaced = {}                         # SO-1: an Ignore's change -> the one a Start over's Undo gave again
         self._journalled = set()                    # seqs the journal file holds now
         self._journal_dirty = False
+        self._on_disk = (None, [])                  # Kura-JR: the journal file's token and its entries' seqs, in order
+        #                                             (None: an entry no command of this run stands for — it landed)
+        self._owed = None                           # Kura-JR: a refused journal write to try again: its `everything`
+        self._owed_at = 0.0                         # … at this time (monotonic)
+        self._owed_tries = 0
         self._head_waits = False                    # P-2-F: the head met a busy store (until it lands)
         self._held = False
         self._retry_at = 0.0
@@ -303,14 +320,17 @@ class Writer:
         mode, reason = _state_of(self.opener)
         return None if mode == "store" or reason == "busy" else (reason or mode)
 
-    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False, exact=False):
         """`Store.move`. `near`: [(item_id, "before" | "after"), …], the nearest first — where the window would place the
         block if its anchor is gone when the write lands (its neighbours as painted). `end`: the tier's end as it stands
         when the write lands (a drop on the Goal well: read from the store on this thread, again at a replay — never an
-        id from the window's copy, which a queued write can outlive). -> the command's number, or None when refused
-        (read-only)."""
+        id from the window's copy, which a queued write can outlive). `exact` (Kura-EO): exactly there, never the show's
+        episode order (`Store.move(in_order=False)`: ↑ ↓ across the NOW / Soon edge, Current's ⋯ *Up next*). -> the
+        command's number, or None when refused (read-only)."""
         cmd = {"op": "move", "ids": list(ids), "tier": tier, "before_id": before_id, "after_id": after_id,
                "near": [list(n) for n in near or ()], "label": label}
+        if exact:
+            cmd["exact"] = True
         if end:
             cmd.update(before_id=None, after_id=None, end=True)
         return self._put(cmd)
@@ -550,6 +570,11 @@ class Writer:
         """`Store.ask_mining`: the finishing toast's *Mine it too*."""
         return self._put({"op": "ask_mining", "ids": list(ids), "on": bool(asked), "label": label})
 
+    def allow_again(self, words, label=None):
+        """`Store.allow_again` (Kantan-B2): words whose cards you deleted in Anki, free to be made again — one change,
+        one Undo. Never journalled (a crash before it lands: the list still shows them)."""
+        return self._put({"op": "allow_again", "ids": [], "words": list(words), "label": label})
+
     def split(self, piece_id, at_item_id, label=None):
         """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
         return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
@@ -602,14 +627,17 @@ class Writer:
         return self._put({"op": "set_media_type", "ids": [], "work_ids": list(work_ids), "media_type": media_type,
                           "label": label})
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False, unlock=False):
         """`Store.set_cover`: a title's cover record; a fetch (`locked=False`) never writes over the user's locked
         choice (nothing written, `on_reread`). `auto` (the disk scan's, a book's at its import): nobody's choice —
-        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again)."""
+        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again). `unlock`:
+        the user's *Look for a cover again* (Mado-CV) — the lock let go, on the Undo stack."""
         cmd = {"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref, "path": path,
                "locked": bool(locked), "label": label}
         if auto:
             cmd["auto"] = True
+        if unlock:
+            cmd["unlock"] = True
         return self._put(cmd)
 
     # --- W3.2 B: a producer's files into New arrivals (RUNBOOK §1 *Routing*; Sonic's W3.2-2) ------------------- #
@@ -850,6 +878,14 @@ class Writer:
         thread = self._thread
         if thread is not None:
             thread.join(max(0.0, deadline - time.monotonic()))
+        while True:                                 # Kura-JR: a refused journal write tried again until the deadline
+            with self._cond:
+                if self._owed is None or self._replay_due or time.monotonic() >= deadline:
+                    break
+                pause = max(0.0, min(self._owed_at, deadline) - time.monotonic())
+            time.sleep(pause)                       # (the quit's worker: never the window's thread)
+            if time.monotonic() < deadline:
+                self._sync_journal(everything=False, again=True)     # (`_owed`: the write that was refused)
         return not left
 
     # --- queueing ------------------------------------------------------------------------------------------------- #
@@ -874,12 +910,16 @@ class Writer:
             self._thread.start()
 
     def _abandon(self):
-        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are."""
+        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are — and
+        nothing writes the journal after this returns: a *saving…* timer still running (`_stuck`, on its own thread)
+        finds the writer crashed (Kura-JR: a crash is every thread of it gone, as a real one)."""
         with self._cond:
             self._abandoned = True
             self._cond.notify_all()
         if self._thread is not None:
             self._thread.join(10)
+        with self._jlock:                           # a journal write under way ends first
+            pass
 
     # --- the thread ----------------------------------------------------------------------------------------------- #
     def _run(self):
@@ -894,6 +934,8 @@ class Writer:
                         self._load_journal()
                     elif job == "journal":
                         self._sync_journal(everything=True, fill=True)
+                    elif job == "journal_again":
+                        self._sync_journal(everything=False, again=True)     # (`_owed`: the refused write)
                     elif job == "check":
                         self._check()
                     else:
@@ -922,6 +964,8 @@ class Writer:
                     self._replay_due = False
                     return "replay", None
                 now = time.monotonic()
+                if self._owed is not None and now >= self._owed_at:
+                    return "journal_again", None    # Kura-JR: a refused journal write, tried again (one write)
                 blocked = self._held or now < self._retry_at or now < self._defer_until
                 if self._pending and not blocked:
                     return "apply", self._pending[0]
@@ -931,6 +975,8 @@ class Writer:
                 if now - self._mode_at >= MODE_RECHECK_S:
                     return "check", None
                 wait = WAIT_S
+                if self._owed is not None:
+                    wait = min(wait, self._owed_at - now)
                 if not self._held and now < self._retry_at:
                     wait = min(wait, self._retry_at - now)
                 if not self._held and now < self._defer_until:
@@ -997,6 +1043,8 @@ class Writer:
             elif _follows_after(cmd) and not cmd.get("numbered") and self._numbers_expect(cmd):
                 cmd["numbered"] = "after"           # a nudge, a place by its rule: followed from the store's own result
             self._apply(store, cmd)
+            if cmd["op"] in ("undo", "start_over"):
+                _drops_back(store)                  # Kura-NA: a skip undone here (inside this writer's own write)
         except lib.StoreBusy:
             self._busy(cmd)
         except lib.StoreReadOnly as e:
@@ -1022,7 +1070,8 @@ class Writer:
         note = None
         try:
             if op == "move":
-                change = store.move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"], after_id=cmd["after_id"])
+                change = store.move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"], after_id=cmd["after_id"],
+                                    in_order=not cmd.get("exact"))
             elif op == "nudge":
                 change = store.nudge(cmd["ids"], cmd["direction"])
             elif op == "set_tier":
@@ -1068,12 +1117,14 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
-        if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
-            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
-        elif getattr(change, "show_order", False):  # Kura-EO: the store put it in its show's episode order, not where
-            cmd["followed"] = note is None and self._numbers_follow(cmd, store)   # asked: the numbers follow the
-        if getattr(change, "show_order", False):    # store's place (they had the drop's), and the window's own order
-            cmd["elsewhere"] = True                 # goes at once (`on_reread`): the store's view stands
+        shown = getattr(change, "show_order", False)   # Kura-EO: the store put it in its show's episode order (a place
+        each = getattr(change, "show_sorted", False)    # or the block sorted), not as asked: the numbers follow the
+        if cmd.get("numbered") == "after":          # store's place (they had the drop's) — a sorted block item by item
+            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store, each=each)
+        elif shown:                                 # — and the window's own order goes at once (`on_reread`): the
+            cmd["followed"] = note is None and self._numbers_follow(cmd, store, each=each)   # store's view stands
+        if shown:
+            cmd["elsewhere"] = True
         stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
         if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
             with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
@@ -1160,6 +1211,8 @@ class Writer:
             return store.set_learning_order(ids, cmd["on"])
         if op == "ask_mining":
             return store.ask_mining(ids, cmd["on"])
+        if op == "allow_again":                     # Kantan-B2
+            return store.allow_again(cmd["words"])
         if op == "split":
             return store.split(cmd["piece_id"], ids[0])
         if op == "join":
@@ -1177,7 +1230,7 @@ class Writer:
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
             return store.set_cover(cmd["work_id"], cmd["source"], ref=cmd["ref"], path=cmd["path"],
-                                   locked=cmd["locked"])
+                                   locked=cmd["locked"], unlock=bool(cmd.get("unlock")))
         if op == "forget_covers":                   # W3.2 Q7: the records first, then their files
             from app.services import covers_online
             sql = "SELECT cover_path FROM works WHERE cover_path LIKE 'cache:%'"
@@ -1403,7 +1456,7 @@ class Writer:
         if cmd.get("end"):                          # the end moved since it was read: its end again, no note
             cmd["after_id"] = self._tier_end(store, cmd)
             try:
-                return store.move(cmd["ids"], tier, after_id=cmd["after_id"]), None
+                return store.move(cmd["ids"], tier, after_id=cmd["after_id"], in_order=not cmd.get("exact")), None
             except ValueError:
                 pass
         for anchor, side in cmd.get("near") or ():
@@ -1411,11 +1464,11 @@ class Writer:
                 continue
             try:                                    # one gone or out of the tier too: ValueError, nothing written
                 if side == "before":
-                    return store.move(cmd["ids"], tier, before_id=anchor), "nearest"
-                return store.move(cmd["ids"], tier, after_id=anchor), "nearest"
+                    return store.move(cmd["ids"], tier, before_id=anchor, in_order=not cmd.get("exact")), "nearest"
+                return store.move(cmd["ids"], tier, after_id=anchor, in_order=not cmd.get("exact")), "nearest"
             except ValueError:
                 continue
-        return store.move(cmd["ids"], tier), "top"
+        return store.move(cmd["ids"], tier, in_order=not cmd.get("exact")), "top"
 
     def _tier_end(self, store, cmd):
         """The last item of the command's tier that it doesn't move (`Store.ids`: one indexed read), or None — the top
@@ -1755,41 +1808,79 @@ class Writer:
             self._call(answer, cmd)
 
     # --- the journal (04 §4.5: queued moves survive a crash) ------------------------------------------------------ #
-    def _sync_journal(self, everything, fill=False):
+    def _sync_journal(self, everything, fill=False, again=False):
         """Write the journal: every journalable command queued (`everything`), or only those it already holds (an entry
-        leaving it); none left → the file goes."""
+        leaving it); none left → the file goes. `again`: Kura-JR's retry of a refused one (else a new write: its own
+        `JOURNAL_RETRY_S` tries if it is refused)."""
         if not self.journal_file or self._replay_due:
             return                                  # a crash's journal is read before anything is written over it
         with self._jlock:
+            if self._abandoned:
+                return                              # (tests: a crashed writer writes nothing more, `_abandon`)
             with self._cond:
+                owed, self._owed = self._owed, None     # Kura-JR: this write is the refused one's too
+                if not again:
+                    self._owed_tries = 0
+                everything = everything or bool(owed)
                 if everything:
                     keep = [c for c in self._pending if _journals(c)]
                 else:
                     keep = [c for c in self._pending if c["seq"] in self._journalled]
-                if everything and not fill and {c["seq"] for c in keep} == self._journalled:
+                if everything and not fill and owed is None and {c["seq"] for c in keep} == self._journalled:
                     return                          # the file holds these already (a busy store asked again)
             if fill and keep:
                 store, _busy = self._store()
                 if store is not None:
                     self._fill_seen(store)
+            token = os.urandom(8).hex()
             try:
                 if keep:
                     _write_json(self.journal_file, {"version": JOURNAL_VERSION, "language": self.language,
-                                                    "pending": [_entry(c) for c in keep]})
+                                                    "token": token, "pending": [_entry(c) for c in keep]})
                 elif os.path.exists(self.journal_file):
                     _patiently(os.remove, self.journal_file)
             except OSError as e:
                 print(f"Window writer: the journal couldn't be written: {e!r}")
+                self._refused(everything, keep)
                 return
+            self._on_disk = (token, [c["seq"] for c in keep]) if keep else (None, [])
+            self._owed_tries = 0
+            _drop(_landed_path(self.journal_file))  # its note on the file before (if any) no longer holds
             with self._cond:
                 self._journalled = {c["seq"] for c in keep}
                 if everything and any(_journals(c) and c["seq"] not in self._journalled for c in self._pending):
                     self._journal_dirty = True      # P-2 (M13): given while this write was under way (`_put` saw no
                     self._cond.notify_all()         # journal yet): journalled at once, never at the next ask
 
+    def _refused(self, everything, keep):
+        """Kura-JR: a journal write refused past `_patiently`'s tries. Tried again after the next pause of
+        `JOURNAL_RETRY_S` (none left: given up, in the log); and the entries of the file as it stands whose commands are
+        done with since (landed, let go) are told to its `.landed` note now — a new file beside it, which the hold on
+        the journal doesn't touch — so a start after a crash, or after the give-up, never replays them."""
+        with self._cond:
+            if self._owed_tries < len(JOURNAL_RETRY_S):
+                self._owed = everything
+                self._owed_at = time.monotonic() + JOURNAL_RETRY_S[self._owed_tries]
+                self._owed_tries += 1
+                self._cond.notify_all()
+            else:
+                print(f"Window writer: the journal stayed refused after {self._owed_tries} more tries: left as it is "
+                      f"(its .landed note says what of it landed)")
+            waiting = {c["seq"] for c in self._pending}
+        token, seqs = self._on_disk
+        landed = [n for n, s in enumerate(seqs) if s is None or s not in waiting]
+        if token and landed:
+            try:
+                _write_json(_landed_path(self.journal_file), {"version": JOURNAL_VERSION, "token": token,
+                                                              "landed": landed})
+            except OSError as e:
+                print(f"Window writer: the journal's .landed note couldn't be written: {e!r}")
+
     def _load_journal(self):
         path = self.journal_file
         if not path or not os.path.exists(path):
+            if path:
+                _drop(_landed_path(path))           # a note whose journal went after all
             return
         try:
             with open(path, encoding="utf-8") as f:
@@ -1801,17 +1892,23 @@ class Writer:
             try:
                 os.replace(path, path + ".bad")
             except OSError:
-                pass
+                return                              # (still there: its note stays with it for the next start)
+            _drop(_landed_path(path))
             return
-        with self._cond:
-            for cmd in cmds:
-                cmd["seq"] = next(self._seq)
+        landed = _landed_of(path, data.get("token"))    # Kura-JR: those the run before saw land (its note)
+        with self._jlock, self._cond:               # (`_on_disk` is the journal writes' own: under their lock)
+            seqs = []
+            for n, cmd in enumerate(cmds):
+                cmd["seq"] = None if n in landed else next(self._seq)
+                seqs.append(cmd["seq"])
+            cmds = [c for c in cmds if c["seq"] is not None]
+            self._on_disk = (data.get("token"), seqs)
             self._pending.extendleft(reversed(cmds))
             self._journalled |= {c["seq"] for c in cmds}
             self._replay_failed = self._replay_applied = 0
             self._cond.notify_all()
         if not cmds:
-            self._sync_journal(everything=False)
+            self._sync_journal(everything=False)    # (all landed: the file and its note go, nothing replayed)
 
     def _replay_finished(self):
         failed, applied = self._replay_failed, self._replay_applied
@@ -1941,18 +2038,24 @@ class Writer:
             print(f"Window writer: the numbers couldn't be told a move is coming: {e!r}")
             return False
 
-    def _numbers_follow(self, cmd, store):
+    def _numbers_follow(self, cmd, store, each=False):
         """(After the write, before it lands.) The numbers follow the block to where the store put it — its tier and
         the item just before it there (none: the tier's top), as a move: the one rule that every command moving the
         order is followed once, never worked out again whole (a nudge was a full re-plan of 20,000 files at each
-        Alt+↑ / ↓). -> True when followed (else the numbers compare after the write, as before)."""
+        Alt+↑ / ↓). `each` (Kura-EO 3.0.16): one item at a time in the store's order, each after the one before — the
+        engine keeps a block's own relative order, and the store may have sorted the block by episode. -> True when
+        followed (else the numbers compare after the write, as before)."""
         try:
             at = _placed(store, cmd["ids"])
             if at is None:
                 return False
             tier, block, prev = at
-            self.numbers.after_move(block, tier, after_id=prev, order=lambda t: store.ids(t),
-                                    aside=lambda ids: _set_aside(store, ids))
+            if each and len(block) > FOLLOW_EACH_MOST:
+                return False                        # a long sorted block: compared once after the write instead
+            for part in ([[i] for i in block] if each and len(block) > 1 else [block]):
+                self.numbers.after_move(part, tier, after_id=prev, order=lambda t: store.ids(t),
+                                        aside=lambda ids: _set_aside(store, ids))
+                prev = part[-1]
             return True
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the store's move: {e!r}")
@@ -1977,7 +2080,7 @@ PLACED_TOP = {"top": "now", "goal": "goal"}
 #   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
 #   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
+             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source", "allow_again")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)
@@ -2058,6 +2161,8 @@ def _refused(change, out):
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "stop_source":
         return not getattr(out, "roots", None)      # T6 (A4): read again meanwhile — the value check wrote nothing
+    if change.kind == "allow_again":
+        return not getattr(out, "made_rows", None)  # Kantan-B2: every word made again meanwhile
     if change.kind == "import_finished":
         return _skips(out) >= len(change.items) + len(change.added)
     if change.kind in ("split", "join", "ungroup"):
@@ -2383,6 +2488,19 @@ def _trash(lib, store, rel, row=None, taken=(), since=None):
     return to
 
 
+def _drops_back(store):
+    """Kura-NA: the hato files a skip kept out, let in once that skip is gone (an Undo, a Start over: `Store.undo` runs
+    inside this writer's own write, so the store's own call waits for this one) — after the command's write, each in
+    its own (`Store.let_drops_back`). Never the command's failure: a file not let in now is tried at the next call."""
+    let = getattr(store, "let_drops_back", None)
+    if let is None:
+        return
+    try:
+        let()
+    except Exception as e:
+        print(f"Window writer: a skip's kept-out hato files weren't let in yet: {e!r}")
+
+
 def _queued_at():
     """The time as `trash_file` stamps a trashed file's name (local, to the second): a Remove's or a Skip's, when it is
     queued (H7: its replay takes no older copy)."""
@@ -2471,7 +2589,46 @@ def _write_json(path, data):
         json.dump(data, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    _patiently(os.replace, tmp, path)
+    try:
+        _patiently(os.replace, tmp, path)
+    except OSError:
+        try:                                        # Kura-JR: the file refused (held): no half-step left beside it
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _landed_path(journal_file):
+    """Kura-JR: the journal's `.landed` note (`window_pending_<lang>.landed.json`: it moves with its journal, the
+    install's `window_pending_*.json` row): {"version", "token": the journal's, "landed": its entries' indexes}."""
+    base, ext = os.path.splitext(journal_file)
+    return f"{base}.landed{ext or '.json'}"
+
+
+def _landed_of(journal_file, token):
+    """The indexes of the journal's entries its note says landed — none when there is no note, it is damaged, or it
+    speaks of another journal (another token: a file written since)."""
+    try:
+        with _patiently(open, _landed_path(journal_file), "r", -1, "utf-8") as f:
+            note = json.load(f)
+        if not token or note.get("version") != JOURNAL_VERSION or note.get("token") != token:
+            return set()
+        return {n for n in note["landed"] if type(n) is int}       # (never a bool: a damaged note's `true`)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"Window writer: the journal's .landed note couldn't be read, so it counts for nothing: {e!r}")
+        return set()
+
+
+def _drop(path):
+    """A file let go if it is there; a refusal only logged (the next write, or the next start, tries again)."""
+    try:
+        if os.path.exists(path):
+            _patiently(os.remove, path)
+    except OSError as e:
+        print(f"Window writer: {os.path.basename(path)} couldn't be removed: {e!r}")
 
 
 def _patiently(call, *args):
@@ -2514,6 +2671,8 @@ class Numbers:
         self._engine = None
         self._plan_key = None
         self._why = "not read yet"
+        self._seeded = None                         # the start's cached figures, the last shown until the first load
+        #                                             (`seed`): a plan read out of date keeps them (`_kept`)
         self._shown = None                          # Hover-W: (engine, plan key) whose *N new* the rows show — the
         #                                             live one, or the last one while its figures are kept (faded)
         self._data_dir = None                       # the library's data folder, as the store last said (`words`)
@@ -2537,6 +2696,24 @@ class Numbers:
         drop (the version does): New arrivals asks its numbers again on this."""
         with self._lock:
             return self._plan_key
+
+    def plan_stamp(self):
+        """The plan file's key as `plan_key` keeps it — (mtime, size), None without one — read from the disk now (one
+        stat, any thread): the first screen's cache is matched with it at the start, before the plan is read."""
+        try:
+            st = os.stat(self._plan_path())
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def seed(self, table):
+        """(Any thread.) The figures the start's cached rows show ({item_id: (known, counted, n_new)}), before the first
+        load: the last ones shown, as a table this provider published would be — a first load that finds the plan out
+        of date (an update, a setting, an edited file) keeps their *N new*, faded, never shown and then gone. Once a
+        load has answered: ignored."""
+        with self._lock:
+            if self._why == "not read yet":
+                self._seeded = dict(table)
 
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""
@@ -2748,8 +2925,11 @@ class Numbers:
             self._set(None, {}, "plan: another language", key)
             return
         store = self._store()
-        if store is None:                           # asked again at the next resync (no key kept)
-            self._set(None, {}, f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
+        if store is None:                           # asked again at the next resync (no key kept); the start's figures
+            with self._lock:                        # kept meanwhile, faded, for the load that follows (`seed`)
+                seeded = self._seeded
+            self._set(None, Kept(seeded) if seeded else {},
+                      f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
         self._data_dir = getattr(store, "data_dir", None)
         by_key = store.item_keys()
@@ -2872,7 +3052,7 @@ class Numbers:
         the next one, and the rows never blink blank between the two; faded (`Kept`). A row the last table never
         numbered has none."""
         with self._lock:
-            last = self._table
+            last = self._table if self._seeded is None else self._seeded
         return Kept({item: (known, counted, (last.get(item) or (0, 0, None))[2])
                      for item, (known, counted, _n) in counts.items()})
 
@@ -2894,6 +3074,7 @@ class Numbers:
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
+            self._seeded = None                     # (the start's figures: the first load's only)
             if eng is not None:
                 self._shown = (eng, key)
             elif not isinstance(table, Kept):

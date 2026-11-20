@@ -41,6 +41,12 @@ dictionary, and the app ships only the result:
   SOUNDS   the sounds and laughs a run of one character is read as: for each character CC-CEDICT lists said over, its
            shortest such word, when that word has a sound or a laugh among its senses (哈哈, 呵呵, 汪汪 — never 好好 'well',
            太太 'wife', 爱爱 'make love'): 哈哈哈哈哈 is one 哈哈.
+  INTERJECTIONS  the words that are only said, not meant: one or two characters of jieba's dictionary at least half of
+           whose CC-CEDICT senses are an interjection's, an exclamation's or an onomatopoeia's (a particle's sense,
+           a variant or a pronunciation note counts with them: 啊, 嗯, 哦, 唉, 哎呀 — never 喂 'hello; to feed', 吧 'bar',
+           哈 'Harbin'), those jieba's tag table files as interjections (嘘, 嗨) or, one character, as modal particles
+           (呃, 呀), and SOUNDS (哈哈, 呵呵, 嘻嘻). Standing on its own — between marks, spaces or its line's edges —
+           such a word is a sound, no word (the app: analyzer.chinese_sounds); 好啊's 啊 is grammar and stays.
 
   SURNAMES, GRAMMAR_CHARS, VERB_CHARS  what the guard on jieba's guessed names reads (app/analyzer.py chinese_cut):
            the single characters CC-CEDICT gives a surname sense (李 'surname Li', 王, 龙), and those jieba's tag table
@@ -300,6 +306,40 @@ def sound_runs(entries):
                      if any(_SOUND.search(sense) for _t, _p, senses in entries[word] for sense in senses))
 
 
+# A sense that says its word is said, not meant (INTERJECTIONS): CC-CEDICT marks an interjection, an exclamation or an
+# onomatopoeia so, or glosses it with an English one alone (Ah!, hey, oh dear); a particle's sense, a variant or a
+# pronunciation note is neither said nor meant.
+_SAID = re.compile(
+    r"^\((?:interj|onom|exclamation|nonverbal|a groaning)"         # (onom.) bang · (interj.) ha! · (exclamation)
+    r"|^(?:interjection|exclamation|grunt)\b(?=[ ,])(?! \(part| point| mark)"   # interjection of …, never the term
+    r"|^expression of (?:surprise|recognition|regret|disapproval|agreement|contempt|pain|dismay|doubt|admiration)"
+    r"|\(interj"                                                    # oh (interjection indicating that …)
+    r"|^(?:oh|ah|aha|eh|hey|wow|alas|ouch|ow|oops|uh|uhm|um|hmm|huh|phew|ugh|yo|ha|hee hee|he he|boo hoo|pah|bah|pooh|"
+    r"humph|hush|tut|oh dear|oh my|my)\b[!?]?(?:$|;| \()", re.I)    # Ah! · hey · oh (used to …) · oh dear
+_NEITHER = re.compile(r"particle|syllable filler|^replaces |^variant of|^also pr\.|^Taiwan pr\.|^see |^used in |"
+                      r"^\(Tw\)", re.I)
+INTERJECTION_TAG, MODAL_TAGS = "e", ("y",)
+
+
+def interjections(entries, freq, tags, sounds):
+    """INTERJECTIONS (this module's docstring): the words of jieba's dictionary, one or two characters, that are only
+    said — more than half of their CC-CEDICT senses are said ones (a particle's sense, a variant or a pronunciation
+    note counts with them: 啊, 嗯, 哦, 唉, 哎呀 — never 恭喜 'to congratulate; congratulations!'), jieba's tag table
+    files it as an interjection (嘘, 嗨) or, one character, as a modal particle (呃, 呀) — and the sounds a run is
+    read as (SOUNDS: 哈哈, 呵呵, 嘻嘻)."""
+    out = set(sounds)
+    for word, held in entries.items():
+        if len(word) > 2 or word not in freq:
+            continue
+        senses = [sense for _t, _p, said in held for sense in said]
+        if any(map(_SAID.search, senses)) and 2 * sum(1 for sense in senses if _SAID.search(sense)
+                                                      or _NEITHER.search(sense)) > len(senses):
+            out.add(word)
+    out.update(word for word, tag in tags.items() if word in freq and (
+        (tag == INTERJECTION_TAG and len(word) <= 2) or (tag in MODAL_TAGS and len(word) == 1)))
+    return frozenset(out)
+
+
 def surnames(entries):
     """SURNAMES: the single characters CC-CEDICT gives a surname sense (李 'surname Li', 王, 龙)."""
     return frozenset(word for word, held in entries.items() if len(word) == 1 and any(
@@ -435,9 +475,11 @@ def build(gold_dir=GOLD_DIR, jieba_data=None):
     splits = split_table(entries, units, freq, total, tags, measure)
     folds, own = fold_table(entries, freq, zh_script.to_simplified)
     grammar_chars, verb_chars = name_characters(tags)
+    sounds = sound_runs(entries)
     return {"entries": entries, "cedict_date": cedict_date, "jieba_version": jieba_version, "measure": measure,
             "units": units, "splits": splits, "not_counts": not_counts(entries), "folds": folds, "own_meaning": own,
-            "sounds": sound_runs(entries), "surnames": surnames(entries), "grammar_chars": grammar_chars,
+            "sounds": sounds, "interjections": interjections(entries, freq, tags, sounds),
+            "surnames": surnames(entries), "grammar_chars": grammar_chars,
             "verb_chars": verb_chars}
 
 
@@ -456,6 +498,8 @@ def main(gold_dir=GOLD_DIR, output=OUTPUT, jieba_data=None):
                            n_own=len(tables["own_meaning"]), own=", ".join(sorted(tables["own_meaning"])),
                            n_sounds=len(tables["sounds"]), sounds=", ".join(sorted(tables["sounds"])),
                            sounds_tuple="".join(f'"{word}", ' for word in sorted(tables["sounds"])),
+                           n_interjections=len(tables["interjections"]),
+                           interjections_tuple="".join(f'"{word}", ' for word in sorted(tables["interjections"])),
                            n_surnames=len(tables["surnames"]), surnames=_chars(tables["surnames"]),
                            grammar_chars=_chars(tables["grammar_chars"]), verb_chars=_chars(tables["verb_chars"]))
     wrote = _write(output, text)
@@ -467,6 +511,7 @@ def main(gold_dir=GOLD_DIR, output=OUTPUT, jieba_data=None):
     print(f"{len(tables['folds']):,} doubled forms read as their word; kept whole for a meaning of their own "
           f"({len(tables['own_meaning'])}): " + " ".join(sorted(tables["own_meaning"])))
     print(f"The sounds a run is read as ({len(tables['sounds'])}): " + " ".join(sorted(tables["sounds"])))
+    print(f"The words only said ({len(tables['interjections'])}): " + " ".join(sorted(tables["interjections"])))
 
 
 TEMPLATE = '''"""Chinese words distilled from CC-CEDICT — GENERATED, DO NOT EDIT BY HAND.
@@ -484,6 +529,8 @@ Revision: {revision}   CC-CEDICT: {cedict_date}   jieba: {jieba}
           form's first and third characters make a word CC-CEDICT lists, and the form has no meaning of its own. The
           {n_own} kept whole for one: {own}.
   SOUNDS  the {n_sounds} sounds and laughs a longer run of their character is read as (哈哈哈哈哈 is 哈哈): {sounds}.
+  INTERJECTIONS  the {n_interjections} words that are only said — interjections, laughs, a modal particle said alone
+          (啊, 嗯, 哦, 呃, 哈哈): standing on their own (between marks, spaces or a line's edges) they are no word.
   SURNAMES, GRAMMAR_CHARS, VERB_CHARS  what the guard on jieba's guessed names reads: the {n_surnames} characters
           CC-CEDICT gives a surname sense, and those jieba's tag table files as grammar or as verbs.
 
@@ -516,6 +563,8 @@ _FOLDS = (
 NOT_COUNTS = ({not_counts_tuple})
 
 SOUNDS = ({sounds_tuple})
+
+INTERJECTIONS = ({interjections_tuple})
 
 SURNAMES = (
 {surnames}
@@ -553,6 +602,11 @@ def folds():
 def sounds():
     """The sounds and laughs a longer run of their character is read as (frozen: small, written out above)."""
     return frozenset(SOUNDS)
+
+
+def interjections():
+    """The words only said: standing on their own, no word (frozen: small, written out above)."""
+    return frozenset(INTERJECTIONS)
 
 
 def surnames():

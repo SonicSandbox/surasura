@@ -1047,8 +1047,8 @@ def test_piyo_says_both_ways_to_start_a_round_and_copies_a_starter_message(qapp,
     assert lines[5] == f"• Or, in Claude Code, Codex or Claude Desktop, just say it: “{practice.STARTER}”"
     assert page.row("practice_ai").isAncestorOf(parts["then"])          # the row's own words, beside the starter
     starter = parts["starter"]
-    assert "story is a good first try" in starter.toolTip()
-    assert "short story is a good first try" in S.ROWS["practice_ai"][2]   # the row's own tooltip
+    assert "a short story" in starter.toolTip()                # (EZ-12)
+    assert "Try a short story" in S.ROWS["practice_ai"][2]                # the row's own tooltip (EZ-12)
     starter.click()
     assert QApplication.clipboard().text() == practice.STARTER
     assert starter.text() == S.PRACTICE_COPIED                           # at once, before any event loop turn

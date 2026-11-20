@@ -6,11 +6,13 @@ keys the version it was asked of accepts, checks every string before a byte is w
 UTF-8 without a BOM (K61), replaced atomically.
 
 `config` is Surasura's say over the run (IS:270–277): every filter of Anki Miner's off, so the words Surasura names are
-the words it mines — deck, note type and fields from Anki Miner's own settings export (`fields.py`). Two of those keys,
-`deduplicate_sentences` and `use_i_plus_one_filter`, go only to a version that still needs them: 3.5 and 3.6 take
-them; 3.7 turns both off for every run itself (`sentence-rules-off`, Z-4) and takes them only as false. So they're sent
-only when `features` doesn't say the rules are off already and the version is 3.6 or older; a refusal naming them is
-answered by the caller writing the file again without them, once (a build between the two, am-upstream D1).
+the words it mines — note type and fields from Anki Miner's own settings export (`fields.py`), the deck the one
+Surasura shows for new cards while it shows one (Michi-DK: `fields.for_run`; Anki Miner's own setting never changes).
+Two of those keys, `deduplicate_sentences` and `use_i_plus_one_filter`, go only to a version that still needs them:
+3.5 and 3.6 take them; 3.7 turns both off for every run itself (`sentence-rules-off`, Z-4) and takes them only as
+false. So they're sent only when `features` doesn't say the rules are off already and the version is 3.6 or older; a
+refusal naming them is answered by the caller writing the file again without them, once (a build between the two,
+am-upstream D1).
 
 What Anki Miner 3.7 adds is used only where `version`'s `features` names it (08-zero: a name, never a version number):
 `bold-target` (Z-5): the target bolded in the card's sentence, `bold_target_in_sentence` in `config`; `word-from-line`
@@ -112,12 +114,14 @@ def sends_line_skip(app):
     return version is not None and (version + (0, 0, 0))[:3] >= LINE_SKIP_FROM
 
 
-def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
+def config(mapping, app, features=(), sentence_keys=None, word_audio=True, workers=None):
     """The run's `config`: every filter off, and the deck, note type and fields `mapping` names (fields.Mapping); the
     target bolded in its sentence where Anki Miner takes that (Z-5, 08-zero: sent per run; Junban and Backfill read
     the bold, K56). `sentence_keys` overrides the version's rule (the caller's one retry without them). `word_audio`
     False (`word_audio_on`): the word-audio field sent unmapped — Anki Miner fetches a word's audio only into a mapped
-    one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C)."""
+    one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C). `workers` (Michi-LP,
+    `power.clip_cuts`): how many clips Anki Miner cuts at once in this run (`max_parallel_workers`; None: the
+    profile's own)."""
     out = dict(FILTERS_OFF)
     out.update(anki_deck_name=mapping.deck, anki_note_type=mapping.note_type, anki_fields=dict(mapping.fields))
     if not word_audio:
@@ -126,6 +130,8 @@ def config(mapping, app, features=(), sentence_keys=None, word_audio=True):
         out.update(deduplicate_sentences=False, use_i_plus_one_filter=False)
     if BOLD_TARGET in (features or ()):
         out["bold_target_in_sentence"] = True
+    if workers is not None:
+        out["max_parallel_workers"] = int(workers)
     return out
 
 

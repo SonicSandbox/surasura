@@ -246,7 +246,9 @@ def _label(text, name, parent, wrap=True):
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "check_again", "skip_words", "dismiss",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio")
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
+           "move_cards", "leave_cards",                                                  # Michi-DK
+           "put_back_shelf", "leave_shelf")                                              # Kyou-SH
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -828,6 +830,7 @@ class NeedsYou(QObject):
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
         self.first_cards = _first_cards
+        self.first_run_aside = _first_run_aside        # Kantan-B2b: *Not now* sets the log's queued jobs aside
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
@@ -1051,6 +1054,7 @@ class NeedsYou(QObject):
                                   backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
                                   miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
                                   no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
+                                  strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
                                   generate_log=generate_log)                  # Kantan-B1: its path, in the hover
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
@@ -2190,7 +2194,11 @@ class NeedsYou(QObject):
             return True
 
         def done(_ok):
-            self._say(strings.NEEDS_HATO_ON)
+            if "arrivals" in getattr(self.win.services, "paused", ()):     # Mado-PZ2: 届 paused holds hato's look
+                self._say(strings.PAUSED_WAITS.format(what=strings.NEEDS_HATO_WAITS,
+                                                      circle=strings.PAUSED_CIRCLE["arrivals"]))
+            else:
+                self._say(strings.NEEDS_HATO_ON)
             if looks is not None and hasattr(looks, "asked"):
                 looks.asked(refreshed=True)
             self.refresh()
@@ -2317,6 +2325,8 @@ class NeedsYou(QObject):
                 self._stays(name, entry)                 # (the reason said, the line stays)
             told()
             made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
+            if settings_manager.paused(services_settings.get() or {}, "miner"):
+                made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED    # Kantan-B2b: nothing starts while paused (kick)
             self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
             self.refresh()
         self._press(name, entry, run, then=done, failed=failed)
@@ -2326,16 +2336,23 @@ class NeedsYou(QObject):
         self._do_first_cards(entry, line)
 
     def _do_not_now(self, entry, _line):
-        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
-        Connect is: off, where to turn it on; on, that later episodes still get their cards."""
+        """*Not now* (Kantan-B2b; Sonic 2026-11-19: Not now is no yes): the jobs the placement log queued that haven't
+        started set aside (an older version's: `actions.first_run_aside`), then its own answer kept
+        (`FIRST_CARDS_NOT_NOW`) — the line itself stays unanswered, so nothing mines by itself and it stays on the
+        page with *Make cards* alone; never while *Make cards* runs. Connect left as it is. Its line as Connect is."""
         name = "not_now_on" if self._control("not_now_on", entry) is not None else "not_now"
         lang = self.language
         on = settings_manager.connect_on(self.win.services.settings.get() or {})     # B2-8: the one rule
+        aside = self.first_run_aside
+
+        def run():
+            aside(lang)
+            return service.answer(lang, [service.FIRST_CARDS_NOT_NOW])
 
         def done(_n):
             self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
             self.refresh()
-        self._press(name, entry, service.answer, lang, [entry.key], then=done)    # (one press per card)
+        self._press(name, entry, run, then=done)    # (one press per card)
 
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
@@ -2370,6 +2387,59 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_SHOWS_LEFT)
             self.refresh()
         self._press("leave_shows", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Michi-DK: Connect's cards outside the deck Surasura shows — moved on the press (`connect/decks.move`: under the
+    # one Anki writer, a snapshot first), then a toast with its Undo (`decks.move_back`, on a worker too)
+    def _do_move_cards(self, entry, _line):
+        from app.connect import decks
+        lang, read_settings = self.language, self.read_settings
+
+        def undone(back):
+            self._say((back or {}).get("say") or "")
+            self.refresh()
+
+        def done(got):
+            got = got or {}
+            if not got.get("ok"):
+                self._stays("move_cards", entry)
+            self.refresh()
+            snapshot = got.get("id")            # whenever anything may have moved (Anki stopping mid-way too)
+            if not snapshot:
+                self._say(got.get("say") or "")
+                return
+            if self._alive():
+                self.win.toasts.show(got["say"], undo=lambda: bridge.run_in_worker(
+                    lambda: decks.move_back(read_settings() or {}, snapshot), then=undone, failed=self._failed))
+        deck = (entry.data or {}).get("deck")       # the deck its button names: never another one chosen since
+        self._press("move_cards", entry, lambda: decks.move(read_settings() or {}, lang, deck), then=done)
+
+    def _do_leave_cards(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_CARDS_LEFT)
+            self.refresh()
+        self._press("leave_cards", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-SH (PROVISIONAL): Connect's shelf, said — *Put back* is the put-back Connect's switch uses (`switch.put_back`:
+    # each restore point through `undo.act`, waiting for Anki's write lock; on a worker)
+    def _do_put_back_shelf(self, entry, _line):
+        from app.connect import switch
+        data = entry.data or {}
+
+        def done(failed):
+            if failed:
+                self._stays("put_back_shelf", entry)
+                self._say(strings.NEEDS_SHELF_NOT_BACK.format(why=failed[0]))
+            else:
+                self._say(strings.NEEDS_SHELF_BACK)
+            self.refresh()
+        shelved = {self.language: (data.get("cards") or 0, list(data.get("runs") or ()))}
+        self._press("put_back_shelf", entry, switch.put_back, shelved, then=done)
+
+    def _do_leave_shelf(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SHELF_LEFT)
+            self.refresh()
+        self._press("leave_shelf", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""
@@ -2436,6 +2506,12 @@ def _settings_switch_on(settings, log):
     """(A worker.) Connect's switch turned on as Settings › Anki turns it on -> (ok, why)."""
     from app.qt import settings_connect
     return settings_connect._switch_on(settings, log)
+
+
+def _first_run_aside(language):
+    """(A worker; Kantan-B2b.) *Not now*: the log's jobs not started set aside -> how many."""
+    from app.connect import actions
+    return actions.first_run_aside(language)
 
 
 def _first_cards(language, settings, data_dir=None):

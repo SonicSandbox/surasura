@@ -131,7 +131,9 @@ from operator import itemgetter
 #    word: a v24 blob counts it — users rebuild once.
 # v26 a transcript's groups in parentheses go (a Netflix transcript's speaker labels and sound notes: analyzer
 #    _TRANSCRIPT_GROUP_RE, ENGINE_REVISION 44): a v25 blob counts them — users rebuild once.
-SCHEMA_VERSION = 26
+# v27 a file's own name clues make its names one word (names § A show's own name clues, ENGINE_REVISION 45; name_data
+#    SHOW_NAMES): a v26 blob holds them in pieces or as common words — users rebuild once.
+SCHEMA_VERSION = 27
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -650,6 +652,8 @@ def _rebuilt_text(sentences, names=None):
     facts = {"rebuilt": True}
     if names and names.get("a"):
         facts["auto"] = True
+    if names and names.get("w"):
+        facts["clues"] = names["w"]     # the file's own name clues (names § A show's own name clues), read with it
     return "\n".join(s_text for s_text, _tokens in sentences), facts
 
 
@@ -2219,7 +2223,9 @@ def make_tokenizer(language, reinforce=False, script="asis"):
         record = names.Record() if language == "ja" else None
         if record is not None:
             record.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
-            sentences = list(tok.tokenize_sentences(text, names=record))
+            record.clues = facts.get("clues")      # the file's own name clues, kept with its record
+            sentences = list(tok.tokenize_sentences(text, names=record, clues=record.clues) if record.clues
+                             else tok.tokenize_sentences(text, names=record))
         else:
             sentences = list(tok.tokenize_sentences(text))
         counts, bound = Counter(), Counter()

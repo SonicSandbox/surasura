@@ -736,6 +736,74 @@ def _in_sentence(raw, word, tokenize):
     return None
 
 
+def card_word_in_sentence(word, raw_sentence, tokenize):
+    """The token a card written in kana alone IS in its own sentence, read as Generate reads that sentence — the one
+    rule for a kana card's word (Kyou-KN, 2026-11-20): Junban's known test (`reposition.is_known_word`) and the ✓
+    chip's count (`services/card_chip`) both read it here. Alone, kana is the tagger's guess (まく is 膜); in 水をまく
+    the card is 撒く, in 泥まみれ 泥塗れ. -> the analyzer's `(lemma, reading, surface, orth)`, or None: no tokenizer,
+    a word not in kana alone or of one kana, no sentence that places it (`_word_in_sentence`), or a card the dictionary
+    keeps apart from the sentence's word (`word_of_its_own`: ことに read 事 + に) — each then read as itself."""
+    if (not tokenize or not isinstance(word, str) or len(word) < 2 or not _KANA_ONLY_RE.match(word)
+            or not isinstance(raw_sentence, str) or not raw_sentence):
+        return None
+    placed = _word_in_sentence(word, raw_sentence, tokenize)
+    if placed is None or word_of_its_own(word, *placed):
+        return None
+    return placed[1]
+
+
+def _word_in_sentence(word, sentence, tokenize):
+    """Where a card's kana `word` sits in its `sentence` field, read as Generate reads that sentence ->
+    `(the tokens in its span, the token that is the card's word)`, or None when the sentence doesn't place it.
+
+    A token is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い of まいた:
+    撒く, マク), as K56 finds a word (`connect.find_by_forms`). With a bold mark that holds the word: the token in its
+    span that is the word, else the one holding the word as written there (泥まみれ for a まみれ marked inside it). With
+    none, or a mark on another word (<b>庭</b>にまく): the token of the sentence that is the word (まくらを庭にまく: 撒く,
+    never the 枕 the letters start) — two different words that each could be, never guessed between — else the one
+    holding the word as written (泥まみれ). One read of the sentence."""
+    bold = _BOLD_RE.search(sentence)
+    marked = bool(bold and normalize_word(bold.group(1)))
+    found = sentence_span(sentence, word) if marked else None
+    text = found[0] if found else normalize_word(sentence)
+    if not text:
+        return None
+    placed, at = [], 0
+    for token in tokenize(text):
+        surface = token[2]
+        pos = text.find(surface, at) if surface else -1
+        if pos < 0:
+            continue
+        at = pos + len(surface)
+        placed.append((token, pos, at))
+    wanted = fold_kana(word)
+
+    def is_the_word(token):
+        orth = token[3] if len(token) > 3 else token[2]
+        return wanted in {fold_kana(name or "") for name in (token[0], orth, token[2], token[1])}
+
+    def holding(start, end):
+        return [token for token, pos, after in placed if pos < end and after > start]
+    if found:
+        _text, start, end = found
+        inside = holding(start, end)
+        named = next((token for token in inside if is_the_word(token)), None)
+        if named is not None:
+            return inside, named
+        written = text.find(word, start, end)
+        if written >= 0:
+            inside = holding(written, written + len(word))
+            return (inside, inside[0]) if inside else None
+    named = [token for token, _pos, _after in placed if is_the_word(token)]
+    if len({(token[0], token[1]) for token in named}) > 1:
+        return None
+    if named:
+        return [named[0]], named[0]
+    written = text.find(word)
+    inside = holding(written, written + len(word)) if written >= 0 else []
+    return (inside, inside[0]) if inside else None
+
+
 def sentence_excerpt(raw, word, width=48, tokenize=None):
     """The card's sentence as one line, its word in 【】 — what the user reads to judge a suggestion:
     the `<b>` span or the word as written, else (with `tokenize`) the word as conjugated there. Cut to

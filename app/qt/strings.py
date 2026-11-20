@@ -1577,6 +1577,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "move_cards": ("Move them", "Put these cards in the deck Surasura keeps in order. Their reviews stay as they "
                                 "are.\n• Undo: the message's Undo"),
     "leave_cards": ("Leave them", "They stay where they are and this stops asking"),
+    # Kyou-SH (PROVISIONAL): Connect's shelf, said
+    "put_back_shelf": ("Put back", "Unsuspend them in Anki and take the surasura::shelf tag off: they wait with your "
+                                   "new cards again"),
+    "leave_shelf": ("Leave them", "They stay set aside, and this stops asking until more are set aside"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1692,6 +1696,9 @@ NEEDS_SHOWS_ADDED = "Added {n} shows from your Anki backlog"
 NEEDS_SHOWS_ADDED_ONE = "Added a show from your Anki backlog"
 NEEDS_SHOWS_LEFT = "Left in New arrivals · a show that comes in later asks again"
 NEEDS_CARDS_LEFT = "Left where they are · Surasura's new cards still go to its own deck"   # Michi-DK (PROVISIONAL)
+NEEDS_SHELF_BACK = "Put back · they wait with your new cards again"        # Kyou-SH (PROVISIONAL)
+NEEDS_SHELF_NOT_BACK = "Not put back: {why}"
+NEEDS_SHELF_LEFT = "Left set aside · one comes back by itself when its word comes up"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

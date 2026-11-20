@@ -7,8 +7,8 @@ calls `paint` when they or the settings move). Each card shows what you chose as
 
 - **Known words** — how many words count as known, and where they come from (your Anki cards, or an imported list);
   chips: Anki's state, whether suspended cards count. *Change ›*: Fine-tune's Known words (`page.reveal`).
-- **Cards made for you** — the next episode's two-new-word line with what the current *Words to make cards from* makes
-  of it (the picker's own picture, `card_picker.Picture`); chips: the choice, the deck setup picked (Kantan-T: named on
+- **Cards made for you** — the first two cards the current *Words to make cards from* gives from the next episode, drawn
+  as cards (the picker's own `card_picker.Result`, small); chips: the choice, the deck setup picked (Kantan-T: named on
   Settings' first page), how many episodes ahead, *i+1 first* (with 順). *Change ›*: the picker (`card_picker.open_card_picker`).
 - **Example sentences** — a sample line on a length ruler; chips: the length, how many a word, *i+1 only*.
   *Change ›*: Fine-tune's Example sentences.
@@ -314,7 +314,7 @@ class EssentialsCards(QWidget):
         for w in (self.known_number, self.known_word, self.known_from):
             well.addWidget(w)
         # Cards made for you: the picker's picture, its two-new-word line alone
-        self.picture = card_picker.Picture(self, only_two=True, legend=False)
+        self.picture = card_picker.Result(self, small=True)
         self.cards["cards"].well.addWidget(self.picture)
         # Example sentences: a line on its ruler
         well = self.cards["sentences"].well
@@ -378,10 +378,9 @@ class EssentialsCards(QWidget):
             self.sampler = card_picker.sampler(shell, language, self.page.window())
             self.sampler.changed.connect(self._picture_landed)
         picture = self.sampler.picture if self.sampler is not None else card_picker.card_sample.fallback(language)
-        self.picture.set_picture(picture)
         from app.qt import settings_catalog as catalog
         mode = catalog.value_of(settings, "connect_mine_words")
-        self.picture.set_mode(mode if mode in card_picker.card_sample.MODES else "list")     # (a hand-edited value)
+        self.picture.set(picture, mode if mode in card_picker.card_sample.MODES else "list")     # (a hand-edited value)
 
     def _hear(self):
         """Follow the shown library's views (the mine line is the library's, not settings.json's: a Done that moved

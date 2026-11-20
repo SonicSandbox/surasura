@@ -93,6 +93,12 @@ def _open(host, found=EVERYTHING):
     return picker
 
 
+def _pick(picker, mode):
+    """Press the choice card of `mode` (by its value, never its place)."""
+    picker.words._choose(picker.words.values().index(mode))
+    QApplication.processEvents()
+
+
 def _esc(picker):
     QApplication.sendEvent(picker, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
 
@@ -103,7 +109,7 @@ def test_leaving_without_done_writes_nothing_whatever_was_picked(qapp, leave):
     # outside leave every setting and the library's line as they were.
     host = Host(JUNBAN_ON)
     picker = _open(host)
-    picker.words._choose(2)                                  # Only one-new-word sentences
+    _pick(picker, "i1")
     picker.go(3)
     picker.ahead._choose(picker.ahead.values().index(40))
     picker.wait._choose(picker.wait.values().index(600))
@@ -126,7 +132,7 @@ def test_done_is_one_settings_write_and_one_store_command_and_undo_puts_both_bac
     host = Host(dict(JUNBAN_ON, connect_backlog_cap={"ja": 300, "zh": 150}))
     picker = _open(host)
     assert picker.steps == (1, 2, 3)                          # 順 there and on, Japanese: the second word's step
-    picker.words._choose(2)
+    _pick(picker, "i1")
     picker.go(2)
     picker.ready._choose(0)                                   # Learn the other word first
     picker.go(3)
@@ -140,7 +146,7 @@ def test_done_is_one_settings_write_and_one_store_command_and_undo_puts_both_bac
                                   "connect_backlog_cap": {"ja": 600, "zh": 150}}, None)]
     assert host.writer.calls == [{"mine_line": 10}]
     (message, undo), = host.toasts.shown
-    assert message == strings.PICK_SAVED.format(name="Only one-new-word sentences")
+    assert message == strings.PICK_SAVED.format(name="Only i+1 sentences")
     host.services.library.line = 10                            # the library's view of Done's line landed
     undo()
     assert host.store.calls[-1] == ({"connect_mine_words": "list", "junban_ready_first": False,
@@ -164,7 +170,7 @@ def test_only_the_line_moved_is_the_store_command_alone_and_a_refused_one_still_
     said = []
     refused.bar_line = SimpleNamespace(set_full=said.append)
     picker = _open(refused)
-    picker.words._choose(1)
+    _pick(picker, "unknown")
     picker.go(3)
     picker.ahead._choose(picker.ahead.values().index(40))
     picker.done.click()
@@ -209,59 +215,76 @@ def test_the_second_word_step_shows_only_with_junban_there_and_on_in_japanese(qa
     picker.close()
 
 
-def test_your_list_is_first_and_recommended_and_the_picker_and_fine_tune_name_the_choices_alike(qapp):
-    # Why: SPEC-r2 §0.3 (Sonic: "Your list should be recommended and the standard") — first, marked, the default; and
-    # one table of names and lines for the picker and Fine-tune (`settings_values.WORDS`).
+def test_your_list_is_first_and_recommended_then_only_i_plus_one_and_each_line_is_a_state(qapp):
+    # Why: SPEC-r2 §0.3 (Sonic: "Your list should be recommended and the standard") — first, marked, the default; round
+    # 2: *Only i+1 sentences* next, *Every new word* last; one table of names for the picker and Fine-tune
+    # (`settings_values.WORDS`); each card's line a state (the cards it gives), never an explanation (criteria rule 7).
     host = Host({})
     picker = _open(host)
     options = picker.words._options
-    assert [v for v, _l, _t in options] == ["list", "unknown", "i1"] and picker.words.value() == "list"
+    assert [v for v, _l, _t in options] == list(card_picker.PICK_MODES) == ["list", "i1", "unknown"]
+    assert picker.words.value() == "list"
     assert strings.PICK_RECOMMENDED in options[0][1] and strings.PICK_IN_USE in options[0][1]
     assert all(strings.PICK_RECOMMENDED not in label for _v, label, _t in options[1:])
-    for (value, label, line), (_v, shown, _t), shown_line in zip(settings_values.WORDS, options, picker.words._lines):
-        assert shown.startswith(label) and shown_line.endswith(line)
+    names = {value: label for value, label, _line in settings_values.WORDS}
+    assert names["i1"] == "Only i+1 sentences"
+    for value, shown, _t in options:
+        assert shown.startswith(names[value])
+    assert picker.words._lines == ["4 cards · 1 skipped", "3 cards · 2 later", "5 cards"]
     assert picker.where.text() == strings.PICK_WHERE                           # it says which setting it is
     picker.close()
 
 
 def test_with_no_episode_the_bundled_sample_is_drawn_and_named_a_sample_and_a_real_one_replaces_it(qapp):
-    # Why: an empty library still teaches the difference (the bundled 喫茶店の朝); the worker's real picture replaces
-    # it as soon as it answers, its counts the picker's.
+    # Why: an empty library still shows what each choice gives (the bundled 喫茶店の朝); the worker's real picture
+    # replaces it as soon as it answers, its counts the picker's.
     host = Host(JUNBAN_ON)                                    # the worker answers no picture (no list yet)
     picker = _open(host)
     assert host.worker.asked == 1
-    assert picker.picture.source.text() == strings.PICK_SAMPLE.format(name="喫茶店の朝")
-    assert len(picker.picture.rows) == 4
-    assert picker.words._lines[0].startswith(strings.PICK_HERE.format(n=4))
-    picker.words._choose(2)
-    chips = [c.text() for row in picker.picture.rows for c in row.chips]
-    assert "↗ 出てくる · another episode" in chips and "▭ 香り" in chips
+    assert picker.result.source.text() == strings.PICK_SAMPLE.format(name="喫茶店の朝")
+    assert picker.result.heading.text() == strings.PICK_GET_MORE.format(n=4)
+    _pick(picker, "i1")
+    assert picker.result.heading.text() == strings.PICK_GET_AWAY_UP_TO.format(get=strings.PICK_GET_MORE.format(n=3),
+                                                                               m=2)
     picker.close()
     real = card_sample.fallback("ja")
     real = dict(real, sample=False, source="ぼっち・ざ・ろっく！ 01", elsewhere_exact=True,
                 counts=dict(real["counts"], i1={"here": 3, "elsewhere": 1}))
     host.worker.picture = real
     picker = _open(host)
-    assert wait_until(lambda: picker.picture.source.text() == strings.PICK_SOURCE.format(name="ぼっち・ざ・ろっく！ 01"))
-    assert picker.words._lines[2].startswith(strings.PICK_HERE_AWAY.format(n=3, m=1))
+    assert wait_until(lambda: picker.result.source.text() == strings.PICK_SOURCE.format(name="ぼっち・ざ・ろっく！ 01"))
+    _pick(picker, "i1")
+    assert picker.result.heading.text().startswith(strings.PICK_GET_AWAY.format(get=strings.PICK_GET_MORE.format(n=3),
+                                                                                m=1))
     picker.close()
 
 
-def test_the_picture_marks_each_word_by_the_choice_looked_at(qapp):
-    # The picker's facts (the prototype's selftest): 香り gets its card under Your list; モカブレンド none (rare);
-    # the two-new-word line is two amber cards, and under Only one-new-word sentences each comes from another episode.
+def test_each_choice_is_drawn_as_the_cards_it_gives_and_what_it_skips(qapp):
+    # Why: Sonic's glance test (round 2) — the picture is the result, drawn as cards: Your list gives 急に, 出てくる,
+    # 調べる (each tagged *2 new words*, the other word underlined amber) and 香り, and skips モカブレンド (rarer than
+    # your Level); Only i+1 sentences gives the one-new-word cards and draws 出てくる / 調べる as from a later episode;
+    # Every new word gives モカブレンド too. Its trade-off is behind the heading's ?.
     host = Host(JUNBAN_ON)
     picker = _open(host)
+    result = picker.result
 
-    def chip(word):
-        return next(c for row in picker.picture.rows for c, w in zip(row.chips, row.line["words"]) if w["word"] == word)
-    assert chip("香り").tone() == "card" and chip("モカブレンド").text() == "モカブレンド: no card · rare"
-    assert chip("出てくる").tone() == chip("調べる").tone() == "amber"
-    picker.words._choose(1)                                   # Every new word
-    assert chip("モカブレンド").tone() == "card"
-    picker.words._choose(2)                                   # Only one-new-word sentences
-    assert chip("出てくる").tone() == "other" and chip("急に").tone() == "card"
-    assert not card_picker.SWAP and "⇄" not in "".join(c.text() for row in picker.picture.rows for c in row.chips)
+    def tile(word):
+        return next(t for t in result.tiles if t.card["surface"] == word)
+    assert result.card_words() == ["急に", "出てくる", "調べる", "香り"]
+    assert tile("出てくる").tag is not None and tile("出てくる").tag.text() == strings.PICK_TWO_NEW
+    assert "調べる" in tile("出てくる").sentence.text() and tile("急に").tag is None
+    assert result.skipped.text() == strings.PICK_SKIPPED.format(
+        words=strings.PICK_SKIP_WHY["rare"].format(word="モカブレンド"))
+    assert result.about.toolTip() == strings.PICK_TRADEOFF["list"]
+    _pick(picker, "i1")
+    assert result.card_words() == ["急に", "出てくる", "調べる", "香り", "モカブレンド"]
+    assert tile("出てくる").card["outcome"] == "other" and tile("出てくる").sentence.text() == strings.PICK_LATER
+    assert tile("出てくる").tag is None and not result.skipped.isVisibleTo(picker)
+    assert "skipped" in result.about.toolTip() and "important" in result.about.toolTip()
+    _pick(picker, "unknown")
+    assert result.card_words() == ["急に", "出てくる", "調べる", "香り", "モカブレンド"]
+    assert tile("モカブレンド").card["outcome"] == "card"
+    assert not card_picker.SWAP and all("⇄" not in t.word.text() for t in result.tiles)
     picker.close()
 
 
@@ -297,7 +320,7 @@ def test_undo_leaves_a_setting_changed_since_done_as_it_is(qapp):
     # store's own value check, §6.11).
     host = Host(dict(JUNBAN_ON, connect_backlog_cap={"ja": 300, "zh": 150}))
     picker = _open(host)
-    picker.words._choose(2)
+    _pick(picker, "i1")
     picker.go(3)
     picker.wait._choose(picker.wait.values().index(600))
     picker.done.click()

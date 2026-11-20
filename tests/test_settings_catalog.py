@@ -1038,8 +1038,8 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
     # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list; Mado-EZC
     # (SPEC-r2 §0.3): …and that a word with no i+1 line here gets its card from another episode
-    assert "list or not" in lines["i1"] and "another episode" in lines["i1"]
-    assert "i+1 first, then the rest" in row.help and "Only one-new-word sentences" in row.help   # (EZ-12's line)
+    assert "skipped" in lines["i1"] and "i+1 first, then the rest" in row.help   # (EZ-12's line)
+    assert "Only i+1 sentences" in row.help and "list or not" in row.tip and "even an important one" in row.tip
     # Mado-EZC: *Your list* first and recommended — the picker and Fine-tune read these same words
     assert [v for v, _l, _line in settings_values.WORDS][0] == "list" and lines["list"].startswith("Recommended")
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}

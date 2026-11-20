@@ -461,7 +461,7 @@ def run_integrated(scale, out_dir):
     picker = card_picker.open_card_picker(win)
     inside = lambda: [] if win.rect().contains(picker.geometry()) else [f"the picker {picker.geometry()} leaves"]   # noqa: E731
     shot("picker-words", inside())
-    picker.words._choose(2)
+    picker.words._choose(picker.words.values().index("i1"))
     shot("picker-words-i1", inside())
     picker.go(3)
     shot("picker-ahead", inside())

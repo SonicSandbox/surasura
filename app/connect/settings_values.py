@@ -27,11 +27,12 @@ STAR_FILE = "star.json"
 # (one line each: a choice card is one line high, never wider than `settings-card-w`)
 # Kyou-UL (words PROVISIONAL, 2026-11-19): *Only i+1*'s line says it makes cards for words not on your list too — 順
 # then calls them "not on your list" (a tester read that as Connect's mistake); where they go is 順's placement's
-# Mado-EZC (SPEC-r2 §0.3, words PROVISIONAL): the names *Which words get a card?* draws, one table for it and Fine-tune;
-# *Your list* first and recommended; *Only one-new-word sentences* says where the rest come from (another episode)
+# Mado-EZC (SPEC-r2 §0.3, round 2; words PROVISIONAL): the names *Which words get a card?* draws, one table for it
+# and Fine-tune; *Your list* first and recommended, *Only i+1 sentences* next (Sonic: it is i+1, and it skips words —
+# important ones too — that have no such sentence), *Every new word* last
 WORDS = (("list", "Your list", "Recommended. i+1 and more: each word on your list, on an i+1 line if it has one."),
-         ("unknown", "Every new word", "Rare words too: every word of the episode you don't know yet."),
-         ("i1", "Only one-new-word sentences", "Only from an i+1 line, list or not; else from another episode."))
+         ("i1", "Only i+1 sentences", "Each card's sentence has one new word; a word without one is skipped."),
+         ("unknown", "Every new word", "Rare words too: every word of the episode you don't know yet."))
 # anki_sync_delay_min (E1.1 04 §3)
 SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start and Anki close", "off"))
 # known_from_anki's terms, in the setting's order (known_signal.TERMS) with Anki's flag colours

@@ -247,11 +247,12 @@ ROWS = {
                             "connect make cards mine automatically anki miner needs "
                             + NEEDS_MINER),
     "connect_mine_words": ("Words to make cards from",
-                           "Your list (recommended): i+1 first, then the rest. Only one-new-word sentences: the "
-                           "rest from another episode.",
+                           "Your list (recommended): i+1 first, then the rest. Only i+1 sentences: a word without "
+                           "one is skipped.",
                            "Which words of an episode become cards. Your list: every unknown word on your list, in "
-                           "the list's order, each on an i+1 line when it has one. Only one-new-word sentences: only "
-                           "from an i+1 line, on your list or not; else from another episode, if one has it",
+                           "the list's order, each on an i+1 line when it has one. Only i+1 sentences: only from an "
+                           "i+1 line, on your list or not, in this episode or a later one; a word without one is "
+                           "skipped, even an important one",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name

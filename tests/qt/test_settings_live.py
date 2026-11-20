@@ -236,7 +236,7 @@ def test_essentials_says_what_the_settings_and_the_reads_say(qapp, fakes):
     assert wait_until(lambda: cards(page).known_number.text() == "2,468")
     assert cards(page).known_from.text() == strings.ESS_KNOWN_FROM["anki"]
     assert chips(page, "known") == ["connected", strings.ESS_SUSPENDED[False]]
-    assert chips(page, "cards")[0] == "Only one-new-word sentences"            # the choice by its one name
+    assert chips(page, "cards")[0] == "Only i+1 sentences"                     # the choice by its one name
     assert chips(page, "level") == ["Common", "≈1,234 words", "91.3% of your content"]
     assert chips(page, "sentences")[:2] == ["10–50 characters", "Up to 3 a word"]
     # each Change › goes to its section; Cards made for you opens the picker

@@ -2329,26 +2329,35 @@ ESS_AHEAD = "{n} episodes ahead"
 ESS_READY_FIRST = "i+1 first"
 ESS_DECK = "“{deck}”"                   # Kantan-T: the deck setup picked, named on Settings' first page
 ESS_CARDS_OFF = "Off: you make your cards yourself"
-ESS_FROM_HERE = {1: "One card from this sentence", 2: "Two cards from this sentence"}
-ESS_FROM_HERE_MORE = "{n} cards from this sentence"
-ESS_FROM_AWAY = "Each from another episode, where it's the only new word"
-ESS_FROM_NONE = "No card from this sentence"
-# the picture (the card and the picker share it)
+# the result (round 2: the cards a choice gives, drawn as cards; the picker and Essentials share it)
 PICK_SOURCE = "Your next episode · {name}"
 PICK_SAMPLE = "A sample episode · {name}"
 PICK_SAMPLE_TIP = "No episode of yours to show yet: a short sample instead"
-PICK_LEGEND = (("list", "on your list"), ("rare", "rare: not on it"), ("second", "2nd new word"))
-PICK_NEW = {1: "1 new", 2: "2 new"}
-PICK_NEW_MORE = "{n} new"
-PICK_CHIP = {"card": "▭ {word}", "amber": "▭ {word}", "other": "↗ {word} · another episode",
-             "rare": "{word}: no card · rare", "none": "{word}: no card"}
-PICK_CHIP_TIPS = {
-    "card": "Its card comes from this line",
-    "amber": "Its card is this line, with a second new word in it",
-    "other": "Its card comes from a line where it's the only new word, in another of your next episodes",
-    "rare": "Not on your list: rarer than your Level. Raise the Level and it joins your list, then gets its card",
-    "none": "No card from this line",
+PICK_GET = {1: "You'd get 1 card from it", 0: "You'd get no card from it"}
+PICK_GET_MORE = "You'd get {n} cards from it"
+PICK_GET_AWAY = "{get}, and {m} from a later episode"
+PICK_GET_AWAY_UP_TO = "{get}, and up to {m} from a later episode"
+PICK_FOR_EXAMPLE = "{get} — for example:"
+PICK_TWO_NEW = "2 new words"
+PICK_TWO_NEW_TIP = "This card's sentence has a second word you don't know yet"
+PICK_LATER = "↗ From a later episode, where it's the only new word"
+PICK_OTHER_LINE = "From another sentence of this episode"
+PICK_SKIPPED = "Skipped: {words}"
+PICK_SKIPPED_MORE = "Skipped: {words} and {n} more"
+PICK_SKIP_WHY = {"rare": "{word} (rarer than your Level)", "no-i1": "{word} (no sentence where it's the only new word)",
+                 "none": "{word}"}
+PICK_SKIP_SEP = " · "
+PICK_TRADEOFF = {
+    "list": "Every word on your list gets a card, from its best sentence. If that sentence has two new words, so does "
+            "the card.",
+    "i1": "Every card's sentence has just one new word. A word with no such sentence in your next episodes is skipped, "
+          "even an important one.",
+    "unknown": "Rare words too: every word you don't know yet gets a card, from its best sentence.",
 }
+PICK_STATE = {1: "1 card"}
+PICK_STATE_MORE = "{n} cards"
+PICK_STATE_LATER = "{m} later"
+PICK_STATE_SKIPPED = "{k} skipped"
 # the picker over the window: three steps (the second only with 順, Japanese)
 PICK_EYEBROW = "CARDS MADE FOR YOU"
 PICK_TITLES = ("Which words get a card?", "A card's sentence has a second new word", "How far ahead?")
@@ -2357,9 +2366,6 @@ PICK_WHERE = "Settings › Anki & mining › Words to make cards from"
 PICK_WHERE_TIP = "The same setting, in Fine-tune"
 PICK_RECOMMENDED = "RECOMMENDED"
 PICK_IN_USE = "IN USE"
-PICK_HERE = "{n} cards here"
-PICK_HERE_AWAY = "{n} here · {m} from another episode"
-PICK_HERE_UP_TO = "{n} here · up to {m} elsewhere"
 PICK_CHOICE_TIP = "{name}\n• Click: choose it (saved when you press Done)"
 PICK_READY = ((True, "Learn the other word first", "Its card comes right before, so the sentence has one new word "
                "when you meet it"),

@@ -249,6 +249,30 @@ def test_each_mark_is_its_own_modes_answer_and_another_episode_counts_only_words
                              "i1": {"here": 1, "elsewhere": 1}}          # 急に is carded here: never from elsewhere
 
 
+def test_a_choices_result_is_its_cards_and_its_skipped_words_each_with_why():
+    # Why: round 2 draws each choice as the cards it gives — a card here keeps its sentence (and, with two new words,
+    # the other one to underline); a card from a later episode has no sentence of its own; a skipped word says why.
+    pic = card_sample.fallback("ja")
+    mine = card_sample.result(pic, "list")
+    assert [c["surface"] for c in mine["cards"]] == ["急に", "出てくる", "調べる", "香り"]
+    two = next(c for c in mine["cards"] if c["surface"] == "出てくる")
+    assert two["outcome"] == "amber" and two["others"] == ["調べる"] and "出てくる" in two["text"]
+    assert mine["skipped"] == [{"word": "モカブレンド", "surface": "モカブレンド", "why": "rare"}]
+    assert (mine["here"], mine["elsewhere"], mine["skipped_all"], mine["sample"]) == (4, 0, 1, True)
+    i1 = card_sample.result(pic, "i1")
+    later = [c for c in i1["cards"] if c["outcome"] == "other"]
+    assert [c["surface"] for c in later] == ["出てくる", "調べる"] and all(c["text"] == "" for c in later)
+    assert i1["skipped"] == [] and (i1["here"], i1["elsewhere"]) == (3, 2)
+    # a word with no i+1 sentence anywhere is skipped under Only i+1 sentences, and says so
+    alone = dict(pic, counts=dict(pic["counts"], i1={"here": 3, "elsewhere": 0}),
+                 lines=[dict(line, words=[dict(w, outcome=dict(w["outcome"], i1="none")
+                                               if w["outcome"]["i1"] == "other" else w["outcome"])
+                                          for w in line["words"]]) for line in pic["lines"]])
+    skipped = card_sample.result(alone, "i1")["skipped"]
+    assert [(s["surface"], s["why"]) for s in skipped] == [("出てくる", "no-i1"), ("調べる", "no-i1")]
+    assert card_sample.result(alone, "i1")["skipped_all"] == 2
+
+
 def test_an_episode_without_a_two_new_word_line_is_drawn_as_the_bundled_sample():
     # Why: the picture exists to show one new word vs two; an episode whose list words all sit alone can't show it,
     # so the window draws the bundled sample (named a sample) instead of a picture that teaches nothing.

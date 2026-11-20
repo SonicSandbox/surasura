@@ -135,6 +135,37 @@ def picture(picks, elsewhere=(), source=""):
     return {"source": source, "sample": False, "lines": lines, "counts": counts, "elsewhere_exact": True}
 
 
+def result(picture, mode):
+    """What `mode` makes of the picture, as the picker draws it (round 2: one idea per screen — the cards you'd get):
+    {"cards": [{"word", "surface", "text", "outcome", "others"}], "skipped": [{"word", "surface", "why"}], "here",
+    "elsewhere", "skipped_all", "exact", "source", "sample"}. A card is a drawn word whose outcome is a card here
+    (`card`; `amber`: its sentence holds another new word, `others` their surfaces) or from a later episode (`other`:
+    no sentence of its own here). A card here whose line holds another new word although its card doesn't (`card` on a
+    two-new line: the picker took another line of this episode) is drawn without that line (`text` ""). A skipped word's
+    `why`: `rare` (not on the list), `no-i1` (Only i+1 sentences: no sentence where it's the only new word), `none`.
+    `skipped_all` counts the episode's (the counts'), not only the drawn ones'."""
+    cards, skipped = [], []
+    for line in picture.get("lines") or ():
+        for w in line["words"]:
+            got = w["outcome"][mode]
+            surface = w.get("surface") or w.get("word") or ""
+            if got in ("card", "amber", "other"):
+                text = line["text"] if got == "amber" or (got == "card" and line["new"] == 1) else ""
+                others = [x.get("surface") or x.get("word") or "" for x in line["words"] if x is not w] \
+                    if got == "amber" else []
+                cards.append({"word": w.get("word"), "surface": surface, "text": text, "outcome": got,
+                              "others": others})
+            else:
+                skipped.append({"word": w.get("word"), "surface": surface,
+                                "why": "rare" if got == "rare" else ("no-i1" if mode == "i1" else "none")})
+    counts = picture["counts"]
+    here, away = counts[mode]["here"], counts[mode]["elsewhere"]
+    return {"cards": cards, "skipped": skipped, "here": here, "elsewhere": away,
+            "skipped_all": max(0, counts["unknown"]["here"] - here - away, len(skipped)),
+            "exact": bool(picture.get("elsewhere_exact")), "source": picture.get("source") or "",
+            "sample": bool(picture.get("sample"))}
+
+
 def sample(view, paths, listed, carded=None, send_grammar=True, read=None):
     """(Inside the warm arrivals worker.) The picture of the mine line's first episode `paths[0]` (subtitle files, in
     Connect's order), each choice counted by `pick.pick` (`arrivals.pick_cues`, the view's rules), *another episode* by

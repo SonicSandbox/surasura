@@ -4,13 +4,14 @@ TheForge 3.0 `tracks/window/work/ez/SPEC-r2.md` §0.3, EZ2-7 redone, EZ2-9's cli
 - **`open_card_picker(shell)`** — the one entry point: Essentials' *Cards made for you › Change* and Your path's step ④
   (*Pick your cards*, Mado-EZP: over Current). One picker per window, built at its first open (a later open only sets
   its values); it opens over whatever page shows.
-- **The picture** (`Picture`): up to four lines of the learner's next episode with what each word gets under the choice
-  looked at — a card (amber: its card holds a second new word), *another episode* (only *Only one-new-word sentences*,
-  only when another episode of the mine line has it alone), *no card · rare* (not on the list), or none. The answer is
-  Connect's own picker's (`card_sample`, run by the warm arrivals worker: `Sampler`); until it answers, and with no
+- **The result** (`Result`, round 2: one idea per screen): beside the choices, the cards the one looked at gives —
+  *You'd get 4 cards from it*, each card drawn as a card (`CardTile`: its word, big; its sentence, the word lit and any
+  other new word underlined amber, tagged *2 new words*; a card from a later episode dashed, saying so), then what is
+  skipped and why; the choice's trade-off behind the heading's ?. The answer is Connect's own picker's (`card_sample`,
+  run by the warm arrivals worker: `Sampler`; `card_sample.result` reads it per choice); until it answers, and with no
   episode of the kind, the bundled sample (喫茶店の朝; 孔乙己), named a sample.
-- **Three steps, one question each:** ① which words (*Your list · RECOMMENDED* first: Settings' own three choices,
-  their names and lines one table, `settings_values.WORDS`); ② *A card's sentence has a second new word* — only with
+- **Three steps, one question each:** ① which words (*Your list · RECOMMENDED* · *Only i+1 sentences* · *Every new
+  word*, `PICK_MODES`: Settings' own choices and names, `settings_values.WORDS`; each card's line a state); ② *A card's sentence has a second new word* — only with
   Card order 順 there and on, Japanese (`junban_ready_first`, the row's own rule); ③ *How far ahead?* — the library's
   mine line (5 · 10 · 20 · 40) and how many new cards may wait in Anki (this language's `connect_backlog_cap`).
   The controls are Settings' own (`settings_controls.Cards` / `Choice`).
@@ -30,7 +31,8 @@ import html
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QPainter, QPen
-from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout,
+                             QWidget)
 
 from app import theme
 from app.connect import settings_values
@@ -129,176 +131,209 @@ class Chip(QWidget):
         p.end()
 
 
-# --- the picture ------------------------------------------------------------------------------------------------------ #
+# --- the result: the cards a choice gives, drawn as cards (round 2) ------------------------------------------------ #
 WORD_INK = {"list": "accent", "rare": "accent-2", "second": "warn"}
+PICK_MODES = ("list", "i1", "unknown")      # the choices' order (dropping *Every new word* is taking it out here)
+TILES = 6                                   # cards drawn at most in the picker (Essentials: TILES_SMALL)
+TILES_SMALL = 2
 
 
-def line_html(line):
-    """A picture's line as rich text: each drawn word in its colour, underlined (on the list: the accent; rare: the
-    iris's purple; a line's second new word: the heads-up amber) — the journey page's marks."""
-    c = style.colours()
-    text = line["text"]
+def _underlined(text, colour):
+    return '<span style="color:{c}; text-decoration: underline">{t}</span>'.format(
+        c=style.qss_colour(colour), t=html.escape(text))
+
+
+def _marked(text, marks):
+    """`text` as rich text with each (surface, colour) underlined in its colour (the first place each is found)."""
+    found = []
+    for surface, colour in marks:
+        at = text.find(surface) if surface else -1
+        if at >= 0 and not any(at < end and at + len(surface) > start for start, end, _c in found):
+            found.append((at, at + len(surface), colour))
     out, at = [], 0
-    marks = []
-    for n, word in enumerate(line["words"]):
-        surface = word.get("surface") or word.get("word") or ""
-        found = text.find(surface, at) if surface else -1
-        if found < 0:
-            found = text.find(surface) if surface else -1
-        if found < 0 or any(found < end and found + len(surface) > start for start, end, _k in marks):
-            continue
-        kind = "rare" if not word.get("listed") else ("second" if n and line["new"] > 1 else "list")
-        marks.append((found, found + len(surface), kind))
-    for start, end, kind in sorted(marks):
+    for start, end, colour in sorted(found):
         out.append(html.escape(text[at:start]))
-        out.append(f'<span style="color:{style.qss_colour(c[WORD_INK[kind]])}; text-decoration: underline">'
-                   f'{html.escape(text[start:end])}</span>')
+        out.append(_underlined(text[start:end], colour))
         at = end
     out.append(html.escape(text[at:]))
     return "".join(out)
 
 
-def tinted(words, colour):
-    """`words` in `colour` behind a short rule (the picture's legend), as rich text."""
-    return '<span style="color:{c}">— {w}</span>'.format(c=style.qss_colour(colour), w=html.escape(words))
+def line_html(line):
+    """A line as rich text: each drawn word underlined in its colour (on the list: the accent; rare: the iris's
+    purple; a line's second new word: the heads-up amber) — the journey page's marks."""
+    c = style.colours()
+    marks = []
+    for n, word in enumerate(line["words"]):
+        kind = "rare" if not word.get("listed") else ("second" if n and line["new"] > 1 else "list")
+        marks.append((word.get("surface") or word.get("word") or "", c[WORD_INK[kind]]))
+    return _marked(line["text"], marks)
 
 
-def chip_of(word, mode):
-    """(words, tone, tip) of `word`'s chip under `mode`."""
-    outcome = word["outcome"][mode]
-    tone = {"card": "card", "amber": "amber", "other": "other", "rare": "no", "none": "no"}[outcome]
-    name = word.get("surface") or word.get("word") or ""
-    return strings.PICK_CHIP[outcome].format(word=name), tone, strings.PICK_CHIP_TIPS[outcome]
+def card_html(card):
+    """A card's sentence: its own word in the accent, any other new word in the heads-up amber."""
+    c = style.colours()
+    return _marked(card["text"], [(card["surface"], c["accent"])] + [(o, c["warn"]) for o in card["others"]])
 
 
-def new_badge(n):
-    return strings.PICK_NEW.get(n) or strings.PICK_NEW_MORE.format(n=n)
+class CardTile(QWidget):
+    """One card as the learner would get it: its word, big; its sentence under it (its word lit, another new word
+    underlined amber, tagged *2 new words*); a card from a later episode has a dashed edge and says so instead."""
 
-
-class LineRow:
-    """One line of the picture: the sentence (and its *N new*), the chips of what its words get, on the right. Its
-    widgets are the picture's own children, its layout one of the picture's (no widget of its own: one level less for
-    the Settings page to settle)."""
-
-    def __init__(self, line, parent, into):
-        self.line = line
-        f = _f()
-        self.box = QHBoxLayout()
-        self.box.setContentsMargins(0, round(6 * f), 0, round(6 * f))
-        self.box.setSpacing(round(10 * f))
-        self.sentence = QLabel(parent)
-        self.sentence.setObjectName("nexttitle")
-        self.sentence.setTextFormat(Qt.TextFormat.RichText)
-        self.sentence.setWordWrap(True)
-        self.sentence.setText(line_html(line))
-        self.sentence.setAccessibleName(line["text"])
-        self.badge = Chip(new_badge(line["new"]), "amber" if line["new"] > 1 else "value", parent=parent)
-        self.box.addWidget(self.sentence, 1)
-        self.box.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.chips = [Chip(parent=parent) for _w in line["words"]]
-        column = QVBoxLayout()                          # a line's chips one under another (the sentence keeps its room)
-        column.setSpacing(round(4 * f))
-        for chip in self.chips:
-            column.addWidget(chip, 0, Qt.AlignmentFlag.AlignRight)
-        self.box.addLayout(column)
-        into.addLayout(self.box)
-        self.into = into
-
-    def set_mode(self, mode):
-        for chip, word in zip(self.chips, self.line["words"]):
-            chip.set(*chip_of(word, mode))
-
-    def remove(self):
-        self.into.removeItem(self.box)
-        self.box.setParent(None)                        # (its own layout goes with it: nothing kept per rebuild)
-        for w in [self.sentence, self.badge] + self.chips:
-            w.hide()
-            w.deleteLater()
-
-
-class Picture(QWidget):
-    """The picture: where its lines come from (*Your next episode · …* / *A sample episode · …*), the legend, its
-    lines; `set_mode(mode)` repaints only the chips. `only_two`: the Essentials card's — the two-new-word line alone."""
-
-    def __init__(self, parent=None, only_two=False, legend=True):
+    def __init__(self, card, parent=None):
         super().__init__(parent)
-        self.only_two = only_two
-        self.picture = None
-        self.mode = "list"
-        self.rows = []
+        self.card = card
         f = _f()
-        self.box = QVBoxLayout(self)
-        self.box.setContentsMargins(0, 0, 0, 0)
-        self.box.setSpacing(round(2 * f))
-        head = QHBoxLayout()
-        head.setSpacing(round(10 * f))
+        box = QVBoxLayout(self)
+        box.setContentsMargins(round(14 * f), round(10 * f), round(14 * f), round(12 * f))
+        box.setSpacing(round(4 * f))
+        top = QHBoxLayout()
+        top.setSpacing(round(8 * f))
+        self.word = QLabel(card["surface"], self)
+        self.word.setObjectName("confirmtitle")
+        self.word.setTextFormat(Qt.TextFormat.PlainText)
+        top.addWidget(self.word)
+        top.addStretch(1)
+        self.tag = None
+        if card["outcome"] == "amber":
+            self.tag = Chip(strings.PICK_TWO_NEW, "amber", strings.PICK_TWO_NEW_TIP, self)
+            top.addWidget(self.tag, 0, Qt.AlignmentFlag.AlignVCenter)
+        box.addLayout(top)
+        self.sentence = QLabel(self)
+        self.sentence.setWordWrap(True)
+        if card["text"]:
+            self.sentence.setObjectName("confirmline")
+            self.sentence.setTextFormat(Qt.TextFormat.RichText)
+            self.sentence.setText(card_html(card))
+        else:
+            self.sentence.setObjectName("helpalso")
+            self.sentence.setTextFormat(Qt.TextFormat.PlainText)
+            self.sentence.setText(strings.PICK_LATER if card["outcome"] == "other" else strings.PICK_OTHER_LINE)
+        self.sentence.setAccessibleName(card["text"] or self.sentence.text())
+        box.addWidget(self.sentence)
+        box.addStretch(1)
+        self.setAccessibleName(card["surface"])
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.ensurePolished()                           # styled now: the picker measures it in this same turn
+
+    def paintEvent(self, _event):
+        c = style.colours()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        edge = {"amber": "warn", "other": "accent"}.get(self.card["outcome"], "line")
+        pen = QPen(style.qcolor(c[edge]))
+        pen.setWidthF(1.0)
+        if self.card["outcome"] == "other":
+            pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(style.qcolor(c["raised"]))
+        radius = theme.RADII["r-sm"]
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        p.end()
+
+
+def get_words(r, shown):
+    """The result's heading: how many cards it gives (here, and from a later episode), *for example* when more than
+    the cards drawn."""
+    get = strings.PICK_GET.get(r["here"]) or strings.PICK_GET_MORE.format(n=r["here"])
+    if r["elsewhere"]:
+        get = (strings.PICK_GET_AWAY if r["exact"] else strings.PICK_GET_AWAY_UP_TO).format(get=get, m=r["elsewhere"])
+    if shown < r["here"] + r["elsewhere"]:
+        get = strings.PICK_FOR_EXAMPLE.format(get=get)
+    return get
+
+
+def skipped_words(r):
+    if not r["skipped"]:
+        return ""
+    words = strings.PICK_SKIP_SEP.join(strings.PICK_SKIP_WHY[s["why"]].format(word=s["surface"]) for s in r["skipped"])
+    more = r["skipped_all"] - len(r["skipped"])
+    return strings.PICK_SKIPPED_MORE.format(words=words, n=more) if more > 0 else strings.PICK_SKIPPED.format(words=words)
+
+
+def state_words(picture, mode):
+    """A choice card's line: a state, never an explanation — *4 cards · 1 skipped*, *3 cards · 2 later*."""
+    r = card_sample.result(picture, mode)
+    parts = [strings.PICK_STATE.get(r["here"]) or strings.PICK_STATE_MORE.format(n=r["here"])]
+    if r["elsewhere"]:
+        parts.append(strings.PICK_STATE_LATER.format(m=r["elsewhere"]))
+    if r["skipped_all"]:
+        parts.append(strings.PICK_STATE_SKIPPED.format(k=r["skipped_all"]))
+    return words_label(parts)
+
+
+class Result(QWidget):
+    """The result of one choice: where the cards come from, *You'd get N cards* with its trade-off behind a ?, the
+    cards (two a row), and what is skipped, with why. `small`: Essentials' card — two cards, no heading, no skipped."""
+
+    def __init__(self, parent=None, small=False):
+        super().__init__(parent)
+        self.small = small
+        self.picture, self.mode = None, None
+        self.tiles = []
+        f = _f()
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(round(8 * f))
         self.source = QLabel(self)
         self.source.setObjectName("helpalso")
         self.source.setTextFormat(Qt.TextFormat.PlainText)
-        head.addWidget(self.source, 1)
-        self.legend = []
-        if legend:
-            c = style.colours()
-            for kind, words in strings.PICK_LEGEND:
-                mark = QLabel(self)
-                mark.setObjectName("helpalso")
-                mark.setTextFormat(Qt.TextFormat.RichText)
-                mark.setText(tinted(words, c[WORD_INK[kind]]))
-                mark.setAccessibleName(words)
-                head.addWidget(mark)
-                self.legend.append(mark)
-        self.box.addLayout(head)
-        self.lines_box = QVBoxLayout()
-        self.lines_box.setSpacing(0)
-        self.box.addLayout(self.lines_box)
-        self.outcome = QLabel(self)
-        self.outcome.setObjectName("helpalso")
-        self.outcome.setTextFormat(Qt.TextFormat.PlainText)
-        self.outcome.setVisible(only_two)
-        self.box.addWidget(self.outcome)
+        box.addWidget(self.source)
+        head = QHBoxLayout()
+        head.setSpacing(round(6 * f))
+        self.heading = QLabel(self)
+        self.heading.setObjectName("nexttitle")
+        self.heading.setTextFormat(Qt.TextFormat.PlainText)
+        head.addWidget(self.heading)
+        self.about = AboutMark(strings.HELP_MARK, self)
+        head.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+        box.addLayout(head)
+        self.grid = QGridLayout()
+        self.grid.setSpacing(round(10 * f))
+        self.grid.setColumnStretch(0, 1)
+        self.grid.setColumnStretch(1, 1)
+        box.addLayout(self.grid)
+        self.skipped = QLabel(self)
+        self.skipped.setObjectName("helpalso")
+        self.skipped.setTextFormat(Qt.TextFormat.PlainText)
+        self.skipped.setWordWrap(True)
+        box.addWidget(self.skipped)
+        if small:
+            self.heading.hide()
+            self.about.hide()
+            self.skipped.hide()
 
-    def lines(self):
-        if self.picture is None:
-            return []
-        lines = self.picture["lines"]
-        if self.only_two:
-            two = [line for line in lines if line["new"] > 1]
-            return two[:1] or lines[:1]
-        return lines
-
-    def set_picture(self, picture):
-        """A new picture: its lines made again (a picture changes rarely: an episode, a list, a new answer)."""
-        if picture == self.picture:
+    def set(self, picture, mode):
+        """The cards `mode` gives in `picture`, made again only when either changed."""
+        if picture is self.picture and mode == self.mode:
             return
-        self.picture = picture
-        for row in self.rows:
-            row.remove()
-        self.rows = [LineRow(line, self, self.lines_box) for line in self.lines()]
-        name = picture.get("source") or ""
-        sample = picture.get("sample")
-        self.source.setText((strings.PICK_SAMPLE if sample else strings.PICK_SOURCE).format(name=name))
-        self.source.setToolTip(strings.PICK_SAMPLE_TIP if sample else "")
-        self.set_mode(self.mode, force=True)
+        self.picture, self.mode = picture, mode
+        r = card_sample.result(picture, mode)
+        for tile in self.tiles:
+            self.grid.removeWidget(tile)
+            tile.hide()
+            tile.deleteLater()
+        cards = r["cards"][:TILES_SMALL if self.small else TILES]
+        self.tiles = [CardTile(card, self) for card in cards]
+        for n, tile in enumerate(self.tiles):
+            self.grid.addWidget(tile, n // 2, n % 2)
+            tile.show()                                 # (shown now, not a turn later: the picker measures them now)
+        self.source.setText((strings.PICK_SAMPLE if r["sample"] else strings.PICK_SOURCE).format(name=r["source"]))
+        self.source.setToolTip(strings.PICK_SAMPLE_TIP if r["sample"] else "")
+        if not self.small:
+            self.heading.setText(get_words(r, len(cards)))
+            self.about.set_about(name_of(mode), strings.PICK_TRADEOFF[mode])
+            self.skipped.setText(skipped_words(r))
+            self.skipped.setVisible(bool(r["skipped"]))
 
-    def set_mode(self, mode, force=False):
-        if mode == self.mode and not force:
-            return
-        self.mode = mode
-        for row in self.rows:
-            row.set_mode(mode)
-        if self.only_two:
-            self.outcome.setText(self.outcome_words())
+    def set_mode(self, mode):
+        if self.picture is not None:
+            self.set(self.picture, mode)
 
-    def outcome_words(self):
-        """What the current choice makes of the Essentials card's line, in one line."""
-        lines = self.lines()
-        if not lines:
-            return ""
-        got = [w["outcome"][self.mode] for w in lines[0]["words"]]
-        here = sum(o in ("card", "amber") for o in got)
-        if here:
-            return strings.ESS_FROM_HERE.get(here) or strings.ESS_FROM_HERE_MORE.format(n=here)
-        return strings.ESS_FROM_AWAY if any(o == "other" for o in got) else strings.ESS_FROM_NONE
+    def card_words(self):
+        """The cards' words, in order (a test's look)."""
+        return [tile.card["surface"] for tile in self.tiles]
 
 
 # --- the sampler: Connect's picker's answer, from the warm worker --------------------------------------------------- #
@@ -426,15 +461,6 @@ def name_of(mode):
     return next(label for value, label, _line in settings_values.WORDS if value == mode)
 
 
-def counts_words(picture, mode):
-    """A choice's count in the picture: *4 cards here*, *3 here · 2 from another episode* (the bundled one: up to)."""
-    c = picture["counts"][mode]
-    if not c["elsewhere"]:
-        return strings.PICK_HERE.format(n=c["here"])
-    words = strings.PICK_HERE_AWAY if picture.get("elsewhere_exact") else strings.PICK_HERE_UP_TO
-    return words.format(n=c["here"], m=c["elsewhere"])
-
-
 # --- the picker ------------------------------------------------------------------------------------------------------- #
 class CardPicker(motion.Overlay):
     """The window's one picker (`open_card_picker`). `values` the choices as they stand, `draft` as picked."""
@@ -485,17 +511,17 @@ class CardPicker(motion.Overlay):
         box.addLayout(heading)
         self.where = Chip(strings.PICK_WHERE, "plain", strings.PICK_WHERE_TIP, self)
         box.addWidget(self.where, 0, Qt.AlignmentFlag.AlignLeft)
-        # ① which words: the picture beside Settings' own three choice cards
+        # ① which words: Settings' own three choice cards, and beside them the cards the one looked at gives
         self.page1 = QWidget(self)
         one = QHBoxLayout(self.page1)
         one.setContentsMargins(0, 0, 0, 0)
-        one.setSpacing(round(18 * f))
-        self.picture = Picture(self.page1)
-        one.addWidget(self.picture, 3)
+        one.setSpacing(round(22 * f))
         self.words = sc.Cards(self._word_options(None), "list", tooltip=strings.PICK_CHOICE_TIP.format(
             name=strings.PICK_TITLES[0]), name=strings.PICK_TITLES[0], parent=self.page1)
         self.words.changed.connect(self._words_changed)
         one.addWidget(self.words, 2, Qt.AlignmentFlag.AlignTop)
+        self.result = Result(self.page1)
+        one.addWidget(self.result, 3, Qt.AlignmentFlag.AlignTop)
         box.addWidget(self.page1)
         # ② the second new word (with 順)
         self.page2 = QWidget(self)
@@ -579,15 +605,15 @@ class CardPicker(motion.Overlay):
         return b
 
     def _word_options(self, picture):
-        """Settings' three choices as cards: its name with its marks (RECOMMENDED for *Your list*, IN USE for the
-        saved one), its count in the picture and its line."""
+        """Settings' choices as cards, in `PICK_MODES`' order: the name with its marks (RECOMMENDED for *Your list*,
+        IN USE for the saved one) and, as its line, a state: the cards it gives here (*3 cards · 2 skipped*)."""
         out = []
         saved = (self.before or {}).get("words")
-        for value, label, line in settings_values.WORDS:
+        for value in PICK_MODES:
+            label = name_of(value)
             marks = [label, strings.PICK_RECOMMENDED if value == "list" else "",
                      strings.PICK_IN_USE if value == saved else ""]
-            count = counts_words(picture, value) if picture is not None else ""
-            out.append((value, words_label(marks), words_label([count, line]),
+            out.append((value, words_label(marks), state_words(picture, value) if picture is not None else "",
                         strings.PICK_CHOICE_TIP.format(name=label)))
         return out
 
@@ -620,8 +646,7 @@ class CardPicker(motion.Overlay):
 
     def _picture_changed(self):
         picture = self.sampler.picture
-        self.picture.set_picture(picture)
-        self.picture.set_mode(self.draft["words"] if self.draft else "list")
+        self.result.set(picture, self.draft["words"] if self.draft else "list")
         self.words.set_options(self._word_options(picture))
         if self.draft is not None:
             self.words.set_value(self.draft["words"])
@@ -657,8 +682,8 @@ class CardPicker(motion.Overlay):
 
     def _words_changed(self, value):
         self._set("words", value)
-        self.picture.set_mode(value)
-        self.place()                                    # (its chips' words changed: the lines may wrap again)
+        self.result.set_mode(value)
+        self.place()                                    # (other cards: the panel's height may move)
 
     def _set(self, key, value):
         if self.draft is None:

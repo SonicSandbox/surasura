@@ -98,8 +98,9 @@ def test_side_top_is_none_off_the_turns_and_reads_the_turns_while_two_titles_hol
     store, a, b, loose, d = _library(language)
     store.set_library_options(mine_line=4, side_by_side=True)
     view = _view(store)
-    ids, in_top = view_rows.side_top(view.rows, 4)
+    ids, in_top, on = view_rows.side_top(view.rows, 4)
     assert ids == [a[0], b[0], a[1], b[1]] and in_top == _in_top(view)
+    assert on == (a[0], b[0]) == view.side_on, "Kyou-D: the pills' rows, the build's own"
     only_a = [r for r in view.rows if all(e.id in a for e in r.episodes)]
     assert view_rows.side_top(only_a, 4) is None
     store.close()

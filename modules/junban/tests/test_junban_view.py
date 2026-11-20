@@ -303,6 +303,75 @@ def test_a_preview_past_the_cap_says_so():
     assert any("Showing the first 4000 of 4003 cards." == text for text, _t in shown.lines)
 
 
+# --- Kyou-UL (words PROVISIONAL, 2026-11-19): what "not on your list" means, said where you meet it ----------------- #
+# A tester mining with Connect's *Only i+1* (i+1 words on the list or not) read half the cards it had just made going
+# "not on your list" as Connect's mistake: they were i+1 words below the list's level, as built. The words now say why.
+_ZH_CSV = os.path.join(_ROOT, "tests", "Test Resources", "zh", "frequency_list_subtitles.csv")
+_ZH_OFF = ["牛肉面", "珍珠奶茶", "味道", "价格", "合理"]       # night_market.srt's, none on that list
+
+
+def _zh_words():
+    with open(_ZH_CSV, "r", encoding="utf-8-sig", newline="") as handle:
+        return [row["Word"] for row in csv.DictReader(handle)]
+
+
+def _later_dry_run(language):
+    """A genuine dry run over real words — the list's top words mined out of order, then words the list doesn't have
+    (ja: the shared export and real place / food names; zh: the subtitle frequency list as the list, five words of
+    the night-market subtitle it doesn't have as the cards off it) — with §13's tag + flag planned by `unlisted.plan` as `_plan_scope` plans
+    it."""
+    from modules.junban import unlisted
+    if language == "ja":
+        rank_of, ranked, off = RANK_OF, RANKED, _UNRANKED
+    else:
+        words = _zh_words()
+        rank_of = {word: rank for rank, word in enumerate(words)}
+        ranked, off = words[:6], _ZH_OFF
+    cards = [{"card_id": 1700 + i, "due": 2830 + i, "type": 0, "queue": 0, "word": w, "deck": "TheBank",
+              "note": 2700 + i} for i, w in enumerate(reversed(ranked))]
+    cards += [{"card_id": 1800 + i, "due": 2840 + i, "type": 0, "queue": 0, "word": w, "deck": "TheBank",
+               "note": 2800 + i} for i, w in enumerate(off)]
+    _writes, stats = plan(cards, rank_of)
+    stats["decks"], stats["fields"] = ["TheBank"], {"Lapis": "Expression"}
+    stats["later"] = unlisted.plan(stats["order"], {word: () for word in rank_of}, language, {},
+                                   {card["note"]: {"tags": []} for card in cards},
+                                   {"tag": True, "flag": True, "suspend": False})
+    return stats, off
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_cards_not_on_your_list_are_said_to_be_below_its_level_or_known(language):
+    """The preview's sentence names why a card is not on your list — below its level (what *Only i+1* mines too) or a
+    word you know — and every such card is greyed with what will happen to it; the list's own cards never are."""
+    stats, off = _later_dry_run(language)
+    shown = view.preview_view(stats, {}, settings=saved(target_language=language))
+    sentence = [text for text, _tone in shown.lines if text.startswith("Reorder will move")]
+    assert sentence, shown.lines
+    assert " Not on your list (below its level, or known): tag 5 notes, and flag 5 cards purple." in sentence[0]
+    greyed = {row[2]: row for row in shown.rows if row[-1] == "unmatched"}
+    assert set(greyed) == set(off), "exactly the words off the list are greyed"
+    assert all(row[4].endswith("→ tag + flag") for row in greyed.values())
+
+
+def test_the_greyed_rows_tip_names_every_card_your_list_does_not_place():
+    """A greyed row is any card the list doesn't place (`unlisted.PLACED_WITH_LIST`), not only one off the list: a
+    list word waiting for an i+1 sentence ("i+1 first", tier `multi`) is greyed and never tagged — the tip says so."""
+    from modules.junban import qt_strings as qs
+    from modules.junban import unlisted
+    held = {"card_id": 1900, "due": 2900, "type": 0, "queue": 0, "word": RANKED[0], "deck": "TheBank", "note": 2900,
+            "key": RANKED[0], "tier": "multi", "held": True, "sort": (1, 0), "why": "waits for " + RANKED[1]}
+    _writes, stats = plan([held], RANK_OF)
+    stats["later"] = unlisted.plan(stats["order"], {word: () for word in RANK_OF}, "ja", {}, {2900: {"tags": []}},
+                                   {"tag": True, "flag": True, "suspend": False})
+    shown = view.preview_view(stats, {}, settings=saved())
+    assert shown.rows[0][2] == RANKED[0] and shown.rows[0][-1] == "unmatched"
+    assert stats["later"]["cards"] == [], "a held list word is never 'not on your list'"
+    assert not qs.JUNBAN_TABLE_TIP.startswith("Greyed rows are not on your list")
+    assert qs.JUNBAN_TABLE_TIP.startswith(
+        "Greyed rows aren't in your list's order: words below its level, words you know and list words waiting for "
+        "an i+1 sentence go after it; cards you made yourself go first. Click a word on your list to take it off")
+
+
 def test_no_preview_says_so():
     shown = view.preview_view(None, {"problems": ["Anki is not running."]})
     assert shown.empty and shown.rows == () and ("Anki is not running.", "problem") in shown.lines

@@ -95,14 +95,14 @@ def test_off_every_reader_answers_as_today_and_on_the_two_titles_take_turns(lang
     assert change is not None and store.versions()["order_version"] > version, "the order moved: Generate follows"
     assert store.read_feed()["options"]["side_by_side"] == 1
     assert store._mine_ids(4) == [a[0], b[0], a[1], b[1]], "decision 5: the line filled by turns"
-    # Kyou-B: B runs out after three, the loose file (title 3) steps into its place, then Soon's D after it — two
-    # titles take turns while two have files (the Soon line keeps the turns' first ten above it: D's first in NOW)
-    turned = [a[0], b[0], a[1], b[1], a[2], b[2], a[3], loose, a[4], d[0], a[5], d[1]]
+    # Kyou-B: B runs out after three, the loose file (title 3) steps into its place — two titles take turns while two
+    # have files. Kyou-D: Soon's D is below the Soon line, so it never steps in: A goes on alone, then D in its order
+    turned = [a[0], b[0], a[1], b[1], a[2], b[2], a[3], loose, a[4], a[5], d[0], d[1]]
     assert store._mine_ids(9) == turned[:9], "B runs out: the next title steps in, never A alone"
     assert store._mine_ids(20) == turned
     assert _scheduled(store) == _paths(store, turned), "Generate's order follows"
     assert [i for i, _t in store.scheduled_ids()] == turned, "the window's numbers read the same order"
-    assert store.side_by_side() == [a, b, [loose], d], "every title to study, in Current's order (two at a time)"
+    assert store.side_by_side() == [a, b, [loose]], "every title that can take turns (Kyou-D: not D, below the line)"
     store.undo(change)
     assert (store._mine_ids(4), store._mine_ids(20), _scheduled(store), store.scheduled_ids(),
             store.ids("now")) == before, "one Undo: every reader as before"

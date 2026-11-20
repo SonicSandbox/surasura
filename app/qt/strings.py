@@ -728,9 +728,9 @@ PHASE_HOLDS_LINE = "Its pause holds {what}"
 # files wait in New arrivals while 届 is paused, and Anki's pause holds the window's own look at Anki too
 PHASE_HOLDS = {
     "arrivals": "New arrivals' reading, YouTube downloads, hato's look and placing hato's new files",  # (not folder looks)
-    "surasura": "every automatic Generate, the one for the cards made for you too, and reading your files",
+    "surasura": "every automatic Generate (for Cards made for you too) and reading your files",
     "miner": "the cards Anki Miner makes by itself",
-    "junban": "the automatic re-order and Backfill, of the cards made for you too",
+    "junban": "the automatic re-order and Backfill (for Cards made for you too)",
     "anki": "the automatic syncs (known words and AnkiWeb), Open Anki for me and the count of cards waiting in Anki",
 }
 # A press held by a pause, said where it was pressed: one shared line naming the circle to click (Mado-PZ's Decision 2,

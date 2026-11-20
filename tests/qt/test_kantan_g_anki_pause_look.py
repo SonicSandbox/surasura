@@ -118,8 +118,8 @@ def test_connects_waits_say_the_windows_one_shared_line_with_the_circles_mark():
 
 def test_each_hover_names_connects_steps_its_pause_now_holds():
     # (the learner's name for Connect is *Cards made for you*: `test_one_name`)
-    assert "cards made for you" in strings.PHASE_HOLDS[P.SURASURA] and "Generate" in strings.PHASE_HOLDS[P.SURASURA]
-    assert "cards made for you" in strings.PHASE_HOLDS[P.JUNBAN] and "Backfill" in strings.PHASE_HOLDS[P.JUNBAN]
+    assert "Cards made for you" in strings.PHASE_HOLDS[P.SURASURA] and "Generate" in strings.PHASE_HOLDS[P.SURASURA]
+    assert "Cards made for you" in strings.PHASE_HOLDS[P.JUNBAN] and "Backfill" in strings.PHASE_HOLDS[P.JUNBAN]
     anki_words = strings.PHASE_HOLDS[P.ANKI]
     assert "AnkiWeb" in anki_words and "Open Anki for me" in anki_words and "syncs" in anki_words
     assert "hato's new files" in strings.PHASE_HOLDS[P.ARRIVALS]

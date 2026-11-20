@@ -104,7 +104,8 @@ def test_upgrade_seeds_one_work_per_title_folder_across_tiers(language):
 
 def test_folder_key_is_the_path_below_the_tier_folder():
     """The work's folder key: `path_key` of the folder below its tier folder (02 §2.6), never the tier folder, never
-    hato's drop folder (its files are loose: a work each until a record names their show)."""
+    hato's drop folder (its files are loose: a work each until a record names their show) — and hato's series folder
+    inside it is its show's own key (Kura-HJ: the same key as `Library/<show>`, never `Hato/<show>`)."""
     key = ls.folder_key_of
     assert key("HighPriority/冒険/Season 1/第01話.srt") == ls.path_key("冒険/Season 1")
     assert key("HighPriority/冒険/Season 1/x.srt") == key("GoalContent/冒険/Season 1/y.srt") == \
@@ -112,7 +113,8 @@ def test_folder_key_is_the_path_below_the_tier_folder():
     assert key("HighPriority/A/Season 1/x.srt") != key("HighPriority/B/Season 1/x.srt")
     assert key("HighPriority/x.srt") is None and key("GoalContent/新闻.txt") is None
     assert key(ls.HATO_FOLDER + "/Frieren - 05.ja.ass") is None
-    assert key(ls.HATO_FOLDER + "/葬送のフリーレン/05.ja.ass") == ls.path_key("Hato/葬送のフリーレン")
+    assert key(ls.HATO_FOLDER + "/葬送のフリーレン/05.ja.ass") == ls.path_key("葬送のフリーレン") == \
+        key(ls.CONTENT_FOLDER + "/葬送のフリーレン/01.ja.ass")
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

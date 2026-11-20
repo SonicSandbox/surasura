@@ -22,7 +22,10 @@ A3 `split`, 06 E4, E22).
   in its section and place: he asked for one show, never for files to change section) — the store's refusal (two
   AniList ids, TMDB ids or YouTube channels: `TITLES_APART`) said in the bar as the store words it, its toast only
   once the store saved it;
-- *Same show as…* and any list longer than `MENU_PAGE` go on under *More…*, page by page;
+- *Same show as…* and any list longer than `MENU_PAGE` go on under *More…*, page by page; Kura-HJ (Sonic 2026-11-19):
+  it lists the shows inside a group too (each by its own name, where the group stands), and a row whose name is a show
+  the view holds as `episode_names.show_key` reads it (`look_alike`: punctuation apart; a path's last folder) offers
+  *Join <show>* first — the same merge with no question, its toast with Undo;
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
 **⋯ on a group (LM11b G3, IK-5):** the moves, *Study its cards first*, *Split here…*, *Rename…* (a card with the name
@@ -462,6 +465,12 @@ class ItemActions(QObject):
         out = []
         files = view_rows.to_finish(row.episodes)    # a7 (DIAGNOSIS 11): every file not watched yet, at once — first,
         left = [e for e in files if not e.watched]   # beside the moves (Finished is one)
+        shows = [] if group else self.same_shows(row)           # (one walk of the view for both lists)
+        like = self.look_alike(row, shows) if shows else None   # Kura-HJ: *Join <show>* first, one press
+        if like is not None:
+            words, tip = strings.ITEM_MENU["join-show"]
+            out.append(entry("join-show", label=words.format(title=like.title), tip=tip.format(title=like.title),
+                             payload=like))
         if len(files) >= 2 and left:
             out.append(entry("watched-all", tip=strings.ITEM_MENU["watched-all"][1].format(n=len(left)),
                              payload=left))
@@ -494,8 +503,7 @@ class ItemActions(QObject):
             out.append(entry("join", children=[
                 entry("join", label=strings.ITEM_JOIN_PART.format(range=range_text(p), where=where),
                       tip=strings.ITEM_JOIN_PART_TIP.format(range=range_text(p)), payload=p) for p, where in others]))
-        shows = self.same_shows(row)                 # --- LM11b G3 (IK-6)
-        if shows:
+        if shows:                                    # --- LM11b G3 (IK-6)
             out.append(entry("same-show", children=[
                 entry("same-show", label=strings.ITEM_SAME_SHOW_PICK.format(title=s.title, where=s.where),
                       tip=strings.ITEM_SAME_SHOW_PICK_TIP.format(title=s.title), payload=s) for s in shows]))
@@ -708,6 +716,8 @@ class ItemActions(QObject):
             self.ungroup(row)
         elif name == "same-show" and payload is not None:
             self.ask_same_show(row, payload)
+        elif name == "join-show" and payload is not None:   # Kura-HJ: the same merge, no question (its toast's Undo)
+            self.same_show(row, payload)
 
     # --- row 28: an episode's own ⋯ ---------------------------------------------------------------------------- #
     def episode_entries(self, row, ep):
@@ -1047,7 +1057,8 @@ class ItemActions(QObject):
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):
         """*Same show as…*'s shows for `row` (a show's own row, never a group): [Show] — each other show the view holds
-        once, by its title (`work_id`: the merge names no piece), where it first stands: Current's runs in order, Goal's
+        once, by its title (`work_id`: the merge names no piece), where it first stands: Current's runs in order (a
+        group's shows too, each by its own name — Kura-HJ: the report's show sat in a group, never offered), Goal's
         tiles, Finished's, New arrivals'; at most `SAME_SHOW_MAX` from each section."""
         view = self._view()
         if view is None or not joinable(row) or getattr(row, "group", False):
@@ -1062,9 +1073,13 @@ class ItemActions(QObject):
                 taken[section] = taken.get(section, 0) + 1
                 out.append(Show(key, work_id, title, where))
         for n, r in enumerate(view.rows, 1):
-            if joinable(r) and not getattr(r, "group", False):
-                add("now", r.work_id, r.key, r.title,
-                    strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n))
+            where = strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n)
+            if getattr(r, "group", False):
+                for e in r.episodes:                 # (a group's episode names its show: `view_rows._group`)
+                    if e.work_id is not None and e.show:
+                        add("now", e.work_id, r.key, e.show, where)
+            elif joinable(r):
+                add("now", r.work_id, r.key, r.title, where)
         for w in getattr(getattr(view, "goal", None), "works", None) or ():
             if not getattr(w, "group", False):
                 add("goal", w.work_id, w.key, w.title, strings.ITEM_JOIN_WHERE["goal"])
@@ -1075,6 +1090,22 @@ class ItemActions(QObject):
         for a in view.arrivals or ():
             add("arrivals", a.work_id, a.key, a.title, strings.ITEM_JOIN_WHERE["arrivals"])
         return out
+
+    def look_alike(self, row, shows=None):
+        """Kura-HJ (Sonic's ruling, 2026-11-19: a row like a show already there offers *Join <show>*): the ONE
+        show of `same_shows` whose name is this row's as `episode_names.show_key` reads it — punctuation apart, and a
+        name that is a path (`Hato/<show>`, a title an older version named by hato's folder) read by its last folder —
+        or None (none, or two shows of that name: *Same show as…* asks which). `shows`: `same_shows(row)` when the
+        caller has it."""
+        if not joinable(row) or getattr(row, "group", False):
+            return None
+        from app.episode_names import show_key
+        mine = {k for k in (show_key(row.title or ""), show_key((row.title or "").rsplit("/", 1)[-1])) if k}
+        if not mine:
+            return None
+        shows = self.same_shows(row) if shows is None else shows
+        found = [s for s in shows if show_key(s.title or "") in mine]
+        return found[0] if len({s.work_id for s in found}) == 1 else None
 
     def ungroup(self, row):
         """*Ungroup*: `Writer.ungroup` — each show back in a row of its own, in place; its toast with Undo."""

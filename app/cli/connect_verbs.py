@@ -227,7 +227,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     if _sha256(path) != record["subtitle_sha256"]:
         raise _bad("The subtitle's copy in Surasura's library isn't the file hato paired.", library_path=path)
 
-    from app import library_store
+    from app import library_store, settings_manager
     from app.connect import library, rules
     # Connect's watermark set before the registration (a store this call builds too), so the drop is logged after it
     reader = None if backfill else library.READER
@@ -257,7 +257,28 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     store = library.open_store(lang, role="register")
     if store is not None:
         with store:
-            if done.tier == "arrivals":
+            if done.tier == "arrivals" and settings_manager.paused(loaded, "arrivals"):
+                # Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself): New arrivals paused — the
+                # drop waits there, placed by its rule at the circle's resume (`rules.place_held`)
+                _store_write(lambda: store.hold_drops([{"id": done.file_id, "producer": record.get("producer"),
+                                                         "channel_id": record.get("channel_id")}]), wait)
+                out["waits"] = PAUSED
+                try:
+                    fresh = settings()
+                except CliError:
+                    fresh = None
+                if fresh is not None and not settings_manager.paused(fresh, "arrivals"):
+                    # resumed while it was being taken in (the resume's own look may have missed it): placed now
+                    try:
+                        rule = _store_write(lambda: rules.apply(store, done.file_id, record, fresh), wait)
+                    except ValueError:
+                        rule = None
+                    _store_write(lambda: store.forget_drops([done.file_id]), wait)
+                    if rule:
+                        out.pop("waits")
+                        out["rule"] = rule
+                        out["tier"], out["position"] = store.place_of(done.file_id)
+            elif done.tier == "arrivals":
                 # Every call while the item waits, so a retry after a failed first try still places it
                 try:
                     rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), wait)

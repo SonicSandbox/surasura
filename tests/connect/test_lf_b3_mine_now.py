@@ -264,6 +264,7 @@ def _counting(monkeypatch, deck_notes, connect_notes, made):
     monkeypatch.setattr(shelf, "pinned_items", lambda store: set())
     steps = runner.Steps({"anki_sync_decks": {"ja": ["Mining"]}})
     monkeypatch.setattr(steps, "_open", lambda lang: contextlib.nullcontext(object()))
+    monkeypatch.setattr(steps, "_plan_now", lambda lang: None)
     monkeypatch.setattr(steps, "_list_order", lambda lang: None)    # no list: every waiting note counts (Kyou-SH)
     return steps, asked
 

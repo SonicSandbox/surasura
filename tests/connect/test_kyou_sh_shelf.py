@@ -117,7 +117,10 @@ def _counting(monkeypatch, lang, notes, made, listed, theirs=None, pinned=(), cs
         return [{"noteId": n, "modelName": "Lapis", "fields": {"Word": {"value": (theirs or {}).get(n, ""), "order": 0}}}
                 for n in ids]
     monkeypatch.setattr(anki_connect, "notes_info", notes_info)
-    steps._list_order = lambda _lang: None if listed is None else {k: i for i, k in enumerate(listed)}
+    steps._plan_now = lambda _lang: None                    # no re-plan: the last Generate's list
+    steps.list_reads = []
+    steps._list_order = lambda _lang: steps.list_reads.append(_lang) or (
+        None if listed is None else {k: i for i, k in enumerate(listed)})
     from app.cli import verbs
     if csv_rows is None:
         monkeypatch.setattr(verbs, "_results_language", lambda: "none")
@@ -151,6 +154,7 @@ def test_your_own_cards_count_by_junbans_reading_of_their_word(monkeypatch):
     assert steps.waiting_count("ja") == 2
     assert steps.waiting_count("ja") == 2
     assert reads == [[10, 11, 12, 13]], "each of your notes read from Anki once a run (S19)"
+    assert steps.list_reads == ["ja"], "the list read once while it is the same (`_full` asks before every pick)"
 
 
 def test_the_last_generates_spellings_count_too(monkeypatch, tmp_path):
@@ -273,3 +277,22 @@ def test_a_seen_card_stops_counting():
     [entry] = _shelf_entries(_connect())
     [seen] = _shelf_entries(_connect(), seen=frozenset({entry.key}))
     assert not seen.unseen and needs.badge([seen]) == 0
+
+
+def test_the_list_is_read_again_once_its_file_changes(monkeypatch, tmp_path):
+    # why: a Generate meanwhile writes a new list; the cap must follow it within the run, not keep the old keys
+    rows = [{"Word": "血塗れ", "Reading": "チマミレ", "Orth": "血まみれ", "Forms": ""}]
+    steps, _reads = _counting(monkeypatch, "ja", [20], {}, [("血塗れ", "チマミレ")], theirs={20: "眼鏡"},
+                              csv_rows=rows, tmp_path=tmp_path)
+    assert steps.waiting_count("ja") == 0
+    import csv
+    import os
+    from app.cli import verbs
+    path = tmp_path / verbs.PRIORITY_CSV
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["Word", "Reading", "Orth", "Forms"])
+        w.writeheader()
+        w.writerows(rows + [{"Word": "眼鏡", "Reading": "メガネ", "Orth": "眼鏡", "Forms": ""}])
+    st = os.stat(path)
+    os.utime(path, (st.st_atime, st.st_mtime + 5))
+    assert steps.waiting_count("ja") == 1 and steps.list_reads == ["ja", "ja"]

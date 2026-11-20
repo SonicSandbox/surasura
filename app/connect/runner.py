@@ -3401,29 +3401,38 @@ class Steps:
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each
         word and, for Japanese, its kana folded (`anki_match.build_index`'s fold), plus the last Generate's own index
-        (`Orth`, `Forms`) when results/ hold this language -> {key: True}, or {} with no list to read."""
+        (`Orth`, `Forms`) when results/ hold this language -> {key: True}, or {} with no list to read. Built again
+        only when the plan or the list's file changed (S19: `_full` asks before every job's pick)."""
         from app import anki_match
-        order = self._list_order(lang) or {}
+        got = self._plan_now(lang)
+        listed = got.listed if got is not None else None
+        path = held = None
+        try:
+            from app.cli import verbs
+            held = verbs._results_language()
+            path = os.path.join(verbs._results_dir(), verbs.PRIORITY_CSV)
+            stamp = ((path, os.path.getmtime(path), os.path.getsize(path), held)
+                     if (not held or held == lang) and os.path.exists(path) else None)
+        except Exception:
+            log.exception("Connect's cap: the list's file couldn't be looked at")
+            stamp = None
+        tag = (id(listed) if listed is not None else None, stamp)
+        cached = getattr(self, "_keys_of", {}).get(lang)
+        if cached is not None and cached[0] == tag:
+            return cached[1]
+        order = listed if listed is not None else (self._list_order(lang) or {})
         keys = {}
         for word, _reading in order:
             if word:
                 keys[word] = True
                 if lang == "ja":
                     keys.setdefault(anki_match.fold_kana(word), True)
-        if keys:
+        if keys and stamp is not None:
             try:
-                from app.cli import verbs
-                held = verbs._results_language()
-                path = os.path.join(verbs._results_dir(), verbs.PRIORITY_CSV)
-                if (not held or held == lang) and os.path.exists(path):
-                    stamp = (path, os.path.getmtime(path), os.path.getsize(path))
-                    cached = getattr(self, "_index_of", {}).get(lang)
-                    if cached is None or cached[0] != stamp:
-                        cached = (stamp, anki_match.build_index(path, language=lang).marks_of)
-                        self._index_of = dict(getattr(self, "_index_of", {}), **{lang: cached})
-                    keys = dict(cached[1], **keys)
+                keys = dict(anki_match.build_index(path, language=lang).marks_of, **keys)
             except Exception:
                 log.exception("Connect's cap: the list's spellings couldn't be read; its words alone count")
+        self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
         return keys
 
     def _note_words(self, lang, note_ids, loaded):

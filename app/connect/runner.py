@@ -38,6 +38,10 @@ day's words first:
   batch, a hato drop with the window closed) is still done first. And a Connect whose program folder now holds another
   build (`Steps.replaced`: Setup or a swap put a newer Surasura under it) stops at the next step boundary and starts the
   folder's own Connect (`connect_verbs._loop`): never an old version's Connect working on beside a new one.
+- **One heavy job at a time on a gentle PC** (Haya-LD, Sonic 2026-11-20: `power.gentle` — few logical CPUs, little
+  memory, or on battery): the next step that touches Anki waits while a Generate runs (GENERATE_FIRST, its `results`
+  lock: `Steps.blocked`, after the battery), so a Generate goes in at Connect's next step boundary; an ask goes on
+  (a press is the yes, as on battery). A strong PC mines beside a Generate as before.
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
   an ask, nor a level job beyond the line on 3.0 (P4.1 C3, C4: `inbox.keeps`).
@@ -82,6 +86,9 @@ ALL_GONE_MIN = 10               # the deleted-card check: this many notes or mor
 
 # The plain lines a waiting job shows (the status line's, never Needs you)
 ON_BATTERY = "On battery: cards are made once this computer is plugged in."
+# Haya-LD (3.0.18, PROVISIONAL words): on a PC that runs one heavy job at a time (`power.gentle`) the next step that
+# touches Anki waits while a Generate runs (it holds `results`); the window wakes Connect at the Generate's end
+GENERATE_FIRST = "Waiting for Generate to finish: this computer runs one big job at a time."
 ANKI_MINER_OPEN = "Anki Miner is open: close it to make cards."
 # A2-6: told BUSY while Surasura's *Finish its setup* runs Anki Miner's setup (`anki_miner.setting_up`): nothing to close
 SETTING_UP = "Anki Miner is finishing its setup: cards are made once it's done."
@@ -321,6 +328,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
+    began = time.monotonic()
+    _say_machine(languages)                 # Haya-LD: the run's start, and how this PC runs its heavy jobs
     _sweep_online(steps)                    # Michi-YT: a video a killed Connect left goes before anything else
     _release_check(loaded)
     own = ledger is None
@@ -398,6 +407,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
         return summary
     finally:
+        log.info("Connect: the run ends after %.1f s (%d looks)", time.monotonic() - began, summary["looks"])
         if own:
             ledger.close()
         getattr(steps, "end_listening", lambda: None)()     # Michi-T1: a release heard beside the mining ends
@@ -408,6 +418,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
         if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
             summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
+
+
+def _say_machine(languages):
+    """Haya-LD: the run's start line — its languages, and whether this PC runs one heavy job at a time."""
+    try:
+        from app.connect import power
+        gentle, why = power.gentle()
+        log.info("Connect: a run begins (%s): %s", ", ".join(languages),
+                 f"one heavy job at a time on this computer ({why})" if gentle else "a strong computer")
+    except Exception:
+        pass
 
 
 def _release_check(loaded):
@@ -700,11 +721,12 @@ def _language(steps, ledger, lang, prepared, parked, out):
         return _waiting_all(ledger, lang, parked, out, CHINESE, False)
     wait = store_now = None
     only_asked = False          # on battery with a *Mine now* waiting: this pass mines the asked ones alone (M-3)
+    held = ON_BATTERY           # ... or a Generate first on a gentle PC (Haya-LD): the rest wait with its reason
     try:
         wait = _blocked(steps, lang, None)
-        if wait is not None and wait.reason == ON_BATTERY and any(j.get("asked_at") for j in
-                                                                  _open_jobs(ledger, lang, parked)):
-            only_asked = True
+        if wait is not None and wait.reason in (ON_BATTERY, GENERATE_FIRST) and any(
+                j.get("asked_at") for j in _open_jobs(ledger, lang, parked)):
+            only_asked, held = True, wait.reason
             wait = _blocked(steps, lang, None, asked=True)
         if wait is None:
             with _held():                   # two store reads, one open
@@ -754,7 +776,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             return _waiting_all(ledger, lang, parked, out, failed[0], failed[1], tried) or outside
         job = _ordered(jobs, line)[0]
         if only_asked and not job.get("asked_at"):     # the asked ones are mined: the rest still wait for the plug
-            return _waiting_all(ledger, lang, parked, out, ON_BATTERY, True, tried) or outside
+            return _waiting_all(ledger, lang, parked, out, held, True, tried) or outside
         tried.add(job["id"])
         # Michi-T1: the releases of the episodes in line heard beside this one's mining, never waited for
         getattr(steps, "listen_ahead", lambda _l, _j: None)(lang, _ordered(jobs, line)[:AHEAD_JOBS])
@@ -970,7 +992,7 @@ def _blocked(steps, lang, resume, asked=False):
     for a job carrying an ask, on battery is no reason (Sonic 2026-10-22, M-3 A: a *Mine now* press is the yes for
     that one episode) — Anki's own state still is (`steps.session_blocked`)."""
     why = steps.blocked(lang)
-    if asked and why == ON_BATTERY:
+    if asked and why in (ON_BATTERY, GENERATE_FIRST):
         session = getattr(steps, "session_blocked", None)
         why = session(lang) if session is not None else None
     if why is None:
@@ -978,6 +1000,16 @@ def _blocked(steps, lang, resume, asked=False):
     if isinstance(why, Wait):
         return Wait(why.reason, why.look, resume)
     return Wait(why, resume=resume)
+
+
+def _generate_first():
+    """Haya-LD: a gentle PC (`power.gentle`) with a Generate running (its `results` lock held)? Never raises."""
+    try:
+        from app import locks
+        from app.connect import power
+        return power.gentle()[0] and locks.in_use("results")
+    except Exception:
+        return False
 
 
 def _resume_of(job):
@@ -2049,8 +2081,12 @@ def _mine(steps, ledger, lang, job, record=True):
         ran = True
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
+        began = time.monotonic()
         try:
             got = _mine_batch(steps, ledger, lang, job, picked, todo, attempt)
+            # Haya-LD: each batch's length in the log (a startup's timeline had Connect's start and nothing after)
+            log.info("Connect: job %s batch %s: %d words in %.1f s, %d made", jid, attempt, len(todo),
+                     time.monotonic() - began, sum(o.get("outcome") == "made" for o in got.get("outcomes") or ()))
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
@@ -3149,6 +3185,8 @@ class Steps:
             return Wait(ANKI_OFF, look=False)
         if power.on_battery():
             return ON_BATTERY
+        if _generate_first():
+            return GENERATE_FIRST
         return self.session_blocked(lang)
 
     def session_blocked(self, lang):
@@ -4508,12 +4546,14 @@ def anki_needs_you(reason):
 def holds_every(reason):
     """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, a
     wait on Anki (never ANKI_SLOW: Anki answers, one request of that episode's failed), Anki Miner's window open, or
-    your list in another language: the pass ends there, every episode keeps its place, and the next look starts from
+    your list in another language, a Generate first on a gentle PC (Haya-LD): the pass ends there, every episode keeps
+    its place, and the next look starts from
     the top — a later episode (or the next show) is never mined before the ones that waited. A list a Generate left
     unfinished (NO_LIST) too: it is the language's, never one episode's (alpha 6 try #6)."""
     if not isinstance(reason, str) or reason == ANKI_SLOW:
         return False
-    return (reason in (ON_BATTERY, ANKI_MINER_OPEN, SETTING_UP, NO_LIST) or reason.startswith(OTHER_LIST.split("{")[0])
+    return (reason in (ON_BATTERY, GENERATE_FIRST, ANKI_MINER_OPEN, SETTING_UP, NO_LIST)
+            or reason.startswith(OTHER_LIST.split("{")[0])
             or anki_wait(reason))
 
 

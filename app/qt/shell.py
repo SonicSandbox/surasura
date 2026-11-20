@@ -145,6 +145,9 @@ class Services:
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
+        # Haya-LD: the one scheduler the background work asks for a turn (`services.gentle`), made with the duties
+        # (none under SURASURA_NO_UI_TIMERS, nor with a test's given duties: their jobs start as before)
+        self.gentle = None
         self._replan_wired = False
         self._generate_wired = False            # a6: the controller's end heard once (`_generate_ended`)
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
@@ -206,6 +209,9 @@ class Services:
             from app.services import replan_host as replan_module
             self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
                                                on_line=self._replan_line)
+        if self.gentle is None and not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            from app.services import gentle as gentle_module
+            self.gentle = gentle_module.Gentle(self.registry, lambda: settings_service.thaw(self.settings.get()))
         self._provide()
         return self
 
@@ -233,7 +239,11 @@ class Services:
         """(The run's thread.) a6: a Generate that finished wrote a new plan, and nothing else tells the numbers so —
         they re-read it only when the order moves (`moves.open_library`), and a Generate moves no order: Current's rows
         kept *not analysed yet* until the next move. Any Generate — the user's, the automatic one, the keeper's."""
-        if outcome != "current" or self.closing.is_set():
+        if self.closing.is_set():
+            return
+        if getattr(self.gentle, "gentle", False):
+            self._wake_connect()          # Haya-LD: its next step waited for this Generate (GENERATE_FIRST)
+        if outcome != "current":
             return
         resync = getattr(getattr(self.writer, "numbers", None), "resync", None)
         if resync is not None:
@@ -241,6 +251,16 @@ class Services:
                 resync()
             except Exception as e:
                 applog.log("shell", f"the numbers after a Generate: {e!r}")
+
+    @staticmethod
+    def _wake_connect():
+        """Haya-LD: a Connect that runs is woken (its wait ends at its next look, never 2 minutes on); none is started."""
+        try:
+            from app.connect import kick
+            if kick.running():
+                kick.wake()
+        except Exception as e:
+            applog.log("connect", f"not woken after a Generate: {e!r}")
 
     # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
     def _wire_replan(self):
@@ -385,6 +405,7 @@ class Services:
             if self.started or not self.has_duties() or self.closing.is_set():
                 return False
             self.started = True
+            self._be_gentle()
             self._hold_while_setup()
             try:
                 self.controller.check(settings_service.thaw(self.settings.get()), self.language)
@@ -407,6 +428,28 @@ class Services:
             elif session is not None:
                 self._opening_look_unless_paused(session)
         return True
+
+    def _be_gentle(self):
+        """(Under the quit's lock, at the start.) Haya-LD: the scheduler attached — its gate before the chores' and the
+        sync's jobs are asked for — and told when the window's list is up: the library reader's first view that isn't
+        the cached first screen (now, when it came already)."""
+        gentle = self.gentle
+        if gentle is None:
+            return
+        try:
+            gentle.attach()
+            reader = self.library
+            if reader is None:
+                gentle.ready()
+                return
+
+            def seen(view):
+                if view is not None and not getattr(view, "loading", True):
+                    gentle.ready()
+            reader.subscribe(seen)
+            seen(reader.view())
+        except Exception as e:
+            applog.log("shell", f"the gentle scheduler: {e!r}")
 
     def _opening_look_unless_paused(self, session):
         """(Under the quit's lock.) The start's look — or, Anki's circle paused (Kantan-G, Sonic 2026-11-19: a pause
@@ -816,6 +859,8 @@ class Services:
                     self.updates.quit()
                 except Exception as e:
                     applog.log("shell", f"update at quit: {e}")
+            if self.gentle is not None:
+                self.gentle.close()               # Haya-LD: its watcher ends (the closing gate holds every job now)
             if self.chores is not None:
                 try:
                     self.chores.halt()            # its start-up timers taken back: nothing spawned for a closing one

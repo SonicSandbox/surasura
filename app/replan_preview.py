@@ -467,11 +467,15 @@ class Host:
         try:
             for kind in KINDS:
                 if kind in run:
+                    began = time.monotonic()
                     try:
                         self._warm() if kind == "warm" else self._job(kind)
                     except Exception as e:          # a background job must never take the window down
                         self._tell(f"Re-ordering as you move stopped: {e}", fails=True)
+                    _log_took(self.language, kind, time.monotonic() - began)
+            began = time.monotonic()
             self._sync_step(force="sync-now" in run)
+            _log_took(self.language, "AnkiWeb sync", time.monotonic() - began)
             if self._done_at is not None and time.monotonic() >= self._done_at:
                 self._done_at = None
                 self._tell(UP_TO_DATE)
@@ -807,12 +811,15 @@ class Host:
         job.cards_out = True        # P4.1 L2: the host records what *Take its new cards out* changes (`_replan`)
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
+        began = time.monotonic()
         try:
             report = reposition.run(settings, progress=self._progress(job), refresh=False, wait=None,
                                     cancel=self._cancel, verb=VERB, job=job,
                                     on_wait=lambda holder: self._tell(anki_connect.waiting_line(holder)))
         finally:
             self._working(False)
+        _log_took(self.language, f"{kind}'s write to Anki ({len(report.get('written') or [])} cards)",
+                  time.monotonic() - began, at_least=0.0)
         self._sync_at = self._due_sync(settings)
         if report.get("stands_aside") or report.get("one_deck"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
@@ -1081,6 +1088,22 @@ _HELPERS_LOCK = threading.Lock()
 
 
 # --- P4.1 L2: *Take its new cards out* (05 §5.7, D14) — the record Put back restores from ------------------------ #
+LOG_OVER_S = 1.0                # Haya-LD: a step of the helper's this long or longer gets a line in the app's log
+
+
+def _log_took(language, what, took, at_least=LOG_OVER_S):
+    """Haya-LD: one of the helper's steps and how long it took, in the app's log (a startup's timeline had the
+    helper's start and end, nothing between: its reads, its writes to Anki and its AnkiWeb sync told apart). Quick
+    steps (every focus's catch-up with nothing owed) leave no line. Never raises."""
+    if took < at_least:
+        return
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(f"re-order ({language}): {what} took {took:.1f} s")
+    except Exception:
+        pass
+
+
 def _record_cards_out(store, report):
     """A job's *Take its new cards out* changes into the store's `anki_changes`, and the records its Put back restored
     closed (`pins.record`), whatever the run's outcome (what landed is recorded). Never raises: logged."""

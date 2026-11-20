@@ -11,7 +11,9 @@ shares nothing, so it never waits for another job — a Japanese and a Chinese w
 quit ends it). What the worker prints (a crash's traceback) goes to `arrivals-worker-<language>.log` in the logs folder,
 started again when it passes `LOG_CAP`. Requests are written and answers read on
 the client's own threads; each answer goes to its request's callback (or `on_answer`) on the reader thread — a window
-posts it to its own queue. The worker ends by itself after its idle minutes: the next request starts it again, and a
+posts it to its own queue. Haya-LD: each request waits for its turn before it is sent (`gentle.hold`: you reviewing in
+Anki, a busy computer, a heavier job on a gentle PC — the step between two estimates), and the worker's end is one
+line in the app's log (how long it lived, its exit, how many it answered, and why the window ended it). The worker ends by itself after its idle minutes: the next request starts it again, and a
 request the ending worker never answered is sent once more to the new one. A worker that crashed answers each request
 it held with {"id", "error"}. Nothing here imports Qt, Tk, pandas or the analyzer (the import guard).
 """
@@ -81,6 +83,7 @@ class ArrivalsWorker:
         self._pending = {}              # id -> [request, callback, times sent again]
         self._outbox = queue.Queue()    # ids to write, in the order asked
         self._job = None                # the live job (True while it is being made)
+        self._answered = 0              # answers the live worker gave (its end line)
         self._proc = None
         self._closed = False
 
@@ -177,6 +180,7 @@ class ArrivalsWorker:
         if stop:
             _end_soon(proc)
         sent, sent_at, done, stuck = set(), {}, threading.Event(), False
+        began, self._answered = time.monotonic(), 0
         threading.Thread(target=self._read, args=(proc, done), name="arrivals-reader", daemon=True).start()
         while not done.is_set():
             try:
@@ -193,6 +197,11 @@ class ArrivalsWorker:
                 break
             if entry is None:
                 continue
+            from app.services import gentle       # Haya-LD: the step between two estimates waits for its turn
+            gentle.wait_turn(kind_of(self.language), lambda: done.is_set() or job.cancelled, done.wait)
+            if done.is_set():
+                self._outbox.put(rid)               # never sent: the next worker is asked it (`_ended`)
+                break
             sent.add(rid)                           # before writing: a worker that ends now is asked again after
             sent_at[rid] = now
             try:
@@ -201,6 +210,8 @@ class ArrivalsWorker:
             except (OSError, ValueError):
                 break                               # it is ending: what it held is settled below
         done.wait()
+        _log_end(self.language, getattr(proc, "pid", None), time.monotonic() - began, proc.returncode, self._answered,
+                 "stuck: stopped" if stuck else "the window ended it" if job.cancelled or self._closed else None)
         self._ended(job, proc.returncode, sent, "The arrivals worker stopped answering." if stuck else None)
 
     def _read(self, proc, done):
@@ -214,6 +225,7 @@ class ArrivalsWorker:
                     continue
                 with self._lock:
                     entry = self._pending.pop(answer.get("id"), None)
+                    self._answered += entry is not None
                 if entry is not None:
                     self._deliver(entry[1], answer)
         except (OSError, ValueError):
@@ -290,6 +302,16 @@ class ArrivalsWorker:
             callback(answer)
         except Exception as e:                          # a listener's fault never stops the reader
             print(f"Arrivals: a listener failed: {e}")
+
+
+def _log_end(language, pid, lived, code, answered, why):
+    """Haya-LD: the worker's end in the app's log — the startup's timeline had its start and no end."""
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(f"arrivals worker ({language}, pid {pid}): ended after {lived:.1f} s (exit {code}), "
+                      f"{answered} answered" + (f": {why}" if why else ""))
+    except Exception:
+        pass
 
 
 def _written(request):

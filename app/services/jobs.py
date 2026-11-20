@@ -22,7 +22,8 @@ The exclusion rules, in one table (`RESOURCES`): two jobs that use the same reso
 the indexer both write the token store, and one Anki writer at a time (`anki-writer`, E1.4) — and never two of a kind.
 An automatic job yields to one the user started: it never starts while a user's job it conflicts with is queued,
 waiting or running; and a user's request absorbs a queued automatic job of its kind (one run, the user's). Jobs wait in
-the order they were asked for.
+the order they were asked for — except behind an automatic one a gate holds (Haya-LD: New arrivals or the indexer
+waiting for a quiet machine never hold back a Generate asked after them; a user's job a gate holds keeps its turn).
 
 A job is either **gated** (started by the registry when the table allows: `submit(…, start=…)`) or **recorded**
 (`record(…)`: already started by its owner — the Tk dashboard's children — listed for the bar and never held back, nor
@@ -226,6 +227,7 @@ class JobRegistry:
         self._version = 0                   # each change's number: a listener never hears an older one after a newer
         self._deliver = threading.RLock()
         self._gates = []                    # check(kind) -> why a gated job of that kind may not start now, or None
+        self._gate_held = set()             # the automatic jobs a gate held at the last schedule (`_blocker` passes)
 
     # --- asking ------------------------------------------------------------------------------------------------- #
     def submit(self, kind, label, start, cancel=None, automatic=False, on_quit="cancel", cause=None):
@@ -333,6 +335,9 @@ class JobRegistry:
             if other.state in (RUNNING, CANCELLING):
                 return other
             if other.state in (QUEUED, WAITING):
+                if other.automatic and other in self._gate_held:
+                    continue                      # Haya-LD: an automatic job a gate holds isn't next in line — it
+                    #                               never holds a later one back (a user's held job keeps its turn)
                 if job.automatic and not other.automatic:
                     return other                  # an automatic job yields to any user's job it conflicts with
                 if other in earlier and not (other.automatic and not job.automatic):
@@ -355,7 +360,9 @@ class JobRegistry:
         to_start = []
         with self._lock:
             earlier = []
-            for job in [j for j in self._jobs if j.gated and j.state in (QUEUED, WAITING)]:
+            waiting = [j for j in self._jobs if j.gated and j.state in (QUEUED, WAITING)]
+            self._gate_held = {j for j in waiting if j.automatic and self._held(j)}
+            for job in waiting:
                 held = self._held(job)
                 blocker = None if held else self._blocker(job, earlier)
                 if held:

@@ -1148,7 +1148,7 @@ def forget_library_tables():
 # a surname) — never a key a common word has (`_common_word_listed`): Ignore names ignores lemmas, library-wide, and
 # must never hide 平野 'plain' in another show. A file that gives no clue pays one label search and nothing else.
 SIDECAR_READINGS = "readings"   # in an item's <stem>.surasura.json: {spelling: its reading in kana}
-_LABEL_RE = re.compile(r"^[ \t　]*[（(]([^（）()\n]{1,20})[）)](?=[^\s（(])", re.M)
+_LABEL_RE = re.compile(r"^[ \t　]*[（(]([^（）()\n]{1,20})[）)][ 　]*(?=[^\s（(])", re.M)
 _LABEL_PARTS = re.compile("[･・]")
 _NOT_A_NAME_LABEL = re.compile(r"[の：:0-9０-９]")
 _GIVEN_READING_RE = re.compile(f"([{HAN}]{{2,8}})[（(]([ぁ-ゖー]{{2,12}})[）)]")
@@ -1209,7 +1209,10 @@ def file_clues(raw, readings=None):
     if isinstance(readings, dict):
         given.update((str(k), _hira(str(v))) for k, v in readings.items() if k and v)
     for kanji, reading in _GIVEN_READING_RE.findall(raw or ""):
-        given.setdefault(kanji, reading)
+        # the reading is the name's at the run's end (東京爽子(さわこ): 爽子's): the longest end JMnedict reads so
+        spelling = next((kanji[at:] for at in range(len(kanji) - 1)
+                         if reading in (_show_entry(kanji[at:]) or ((), ()))[1]), kanji)
+        given.setdefault(spelling, reading)
     if not labels and not given:
         return None
     names, nick = {}, set()
@@ -1236,11 +1239,12 @@ def file_clues(raw, readings=None):
     candidates = {m.group(1) for m in _NICK_RE.finditer(raw or "")} - nick
     if candidates:
         written = set()
-        for run in set(_KANJI_RUN_RE.findall(raw)):
-            for end in range(2, len(run) + 1):
-                entry = _show_entry(run[:end])
-                if entry:
-                    written.update(entry[1])
+        spellings = {run[at:at + size] for run in set(_KANJI_RUN_RE.findall(raw))
+                     for size in range(2, 5) for at in range(len(run) - size + 1)}     # 東京矢野 holds 矢野
+        for spelling in spellings:
+            entry = _show_entry(spelling)
+            if entry:
+                written.update(entry[1])
         nick |= candidates & written
     if not names and not nick:
         return None
@@ -1262,10 +1266,12 @@ class WorkNames:
             if readings else None
 
     def words(self, tokenizer, line, words, joins):
-        """The line's words with the file's names made one word each (the tagger's words otherwise)."""
+        """The line's words with the file's names made one word each (the tagger's words otherwise). A line's first
+        nickname is cut out (a second in the same line stays as the tagger reads it — never met in a measured
+        season)."""
         from app.analyzer import join_affixes
         nick = self.nick.search(line) if self.nick is not None else None
-        if nick is not None:
+        if nick is not None and not (nick.start() and line[nick.start() - 1] in "おご御"):   # never after お / ご
             recut = getattr(tokenizer, "_recut", None)
             if recut is None:
                 from app.analyzer import Tagger
@@ -1273,9 +1279,12 @@ class WorkNames:
             a, b = nick.span()
             spelled = nick.group()
             name = self._name(list(recut[1](spelled)), spelled, _kata(spelled))
-            before = list(join_affixes(recut[0](line[:a]), joins, library=tokenizer.library)) if a else []
-            after = list(join_affixes(recut[1](line[b:]), joins, library=tokenizer.library)) if b < len(line) else []
-            return self.apply(before) + ([name] if name is not None else []) + self.apply(after)
+            if name is not None:        # no key a common word hasn't: the line as the tagger read it
+                before = list(join_affixes(recut[0](line[:a]), joins, library=tokenizer.library)) if a else []
+                after = list(join_affixes(recut[1](line[b:]), joins, library=tokenizer.library)) \
+                    if b < len(line) else []
+                name.white_space = line[:a][len(line[:a].rstrip()):]       # the space before it, as a node keeps
+                return self.apply(before) + [name] + self.apply(after)
         return self.apply(words)
 
     def apply(self, words):

@@ -127,7 +127,22 @@ def test_no_sidecar_and_no_reading_change_nothing(tmp_path):
     assert _read(_item(tmp_path / "a"))[1] == _read(_item(tmp_path / "b", readings={}))[1] is not None
 
 
+def test_a_label_with_a_space_before_its_line_and_a_reading_after_other_kanji(tmp_path):
+    """（柚葉） はい — a rip's space after the label — still names her; 二年生柚葉(ゆずは): the reading is the name's at the
+    run's end, never 二年生柚葉 whole."""
+    clues = names.file_clues("（紬） はい\n二年生柚葉(ゆずは)です\n")
+    assert clues["n"] == {"紬": "ツムギ", "柚葉": "ユズハ"}
+
+
 # --- nicknames --------------------------------------------------------------------------------------------------- #
+def test_a_nickname_after_o_is_left_as_read(tmp_path):
+    """（PROVISIONAL）Never after お / ご, a nickname as much as a name; the line reads as the tagger reads it."""
+    body = "（ゆずは）おはよう\nおゆずはっちが来た"
+    read, _clues = _read(_item(tmp_path, body))
+    assert "ゆずはっち" not in _surfaces(read)
+    assert "".join(_surfaces(read[1:])) .replace("。", "") in "おゆずはっちが来た", "every character of the line kept"
+
+
 def test_a_nickname_is_cut_out_of_the_line_first(tmp_path):
     """A name's reading + ちん / っち in hiragana is ONE name: ゆずは's label gives the reading; 遠野, written in the file,
     gives とおの (JMnedict reads it so). The rest of the line is read as before."""

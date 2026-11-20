@@ -227,11 +227,13 @@ def reading(path, language="ja", script="asis", tokenizer=None):
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                      else analyzer.JapaneseTokenizer())
-    text = analyzer.extract_text(str(path), language) or ""
+    facts = {}          # its own name clues too (Japanese), read as the token store reads them
+    text = analyzer.extract_text(str(path), language, facts) or ""
     shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
     cues, out, last, cursor, said = Cues(), [], None, 0, 0
     cues.units = True
-    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language):
+    cues.clues = facts.get("clues")
+    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language, cues.clues):
         if sentence is not last:
             last = sentence
             found = shown.find(sentence, said) if sentence else -1
@@ -295,7 +297,7 @@ def _read(tokenizer, text, language, clues=None):
     for line in text.split("\n"):
         words = analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)
         # a sound standing on its own is no token (analyzer § Sounds are no words): never a node a word is paired with
-        nodes.extend(node for node in (work.apply(list(words)) if work is not None else words)
+        nodes.extend(node for node in (work.words(tokenizer, line, list(words), joins) if work is not None else words)
                      if node.__class__ is not analyzer.SoundNode)
     out, at = [], 0
     for sentence, token in read:

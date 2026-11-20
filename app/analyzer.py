@@ -7644,7 +7644,8 @@ def main():
             file_counter = file_token_cache.get(file_path)
             if file_counter is None:
                 text, clues = _text_and_clues(file_path, language)
-                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(text, clues=clues))
+                read = tokenizer.tokenize(text, clues=clues) if clues else tokenizer.tokenize(text)    # zh: no clues
+                file_counter = Counter((l, r) for (l, r, s, o) in read)
 
             file_total_tokens = 0
             file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)

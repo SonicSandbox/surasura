@@ -4098,6 +4098,11 @@ class Store:
                     # Kura-PR2: a channel's first video — its folder's title named by the channel (the record), never
                     # by its folder's safe spelling (`ハチ: 公式` is the folder `ハチ 公式`: kept among its titles)
                     self._new_work(_show_title(pairing), fk, cmd, titles=(_below_tier(rel),))
+                if fk is not None and _in_hato(rel) and _show_title(pairing):
+                    # Kura-HJ: hato's series folder is its show's — the record names the show for the folder's title
+                    # (`_folder_work`, at the insert: the same show under another spelling, `_same_show_folder`; a new
+                    # title named by it, the folder's name kept among its titles)
+                    cmd.show_names[path_key(rel)] = _show_title(pairing)
                 # Mado-Q: a playlist's video goes in its list's order among its title's videos of that list
                 spot = self._series_spot(pairing, ("arrivals",) if meta.get("arrivals_on") else CURRENT)
                 if spot is not None:
@@ -4115,10 +4120,6 @@ class Store:
                 if work is not None:
                     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
                 else:
-                    if fk is not None and _in_hato(rel) and _show_title(pairing):
-                        # Kura-HJ: hato's series folder is its show's — the record names the show (the same show
-                        # under another spelling, `_same_show_folder`; a new title named by it, the folder's kept)
-                        cmd.show_names[path_key(rel)] = _show_title(pairing)
                     self._settle_works(cmd)
             else:
                 item_id = row[0]

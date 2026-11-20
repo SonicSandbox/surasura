@@ -880,7 +880,7 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
     no sentence places."""
     if not word:
         return False
-    if tokenize and sentence and len(word) > 1 and _KANA_ONLY_RE.match(word):
+    if tokenize and isinstance(sentence, str) and sentence and len(word) > 1 and _KANA_ONLY_RE.match(word):
         placed = _in_its_sentence(word, sentence, tokenize)
         if placed is not None and not match.word_of_its_own(word, *placed):
             token = placed[1]

@@ -94,7 +94,9 @@ def test_a_window_opened_with_anki_closed_keeps_the_count_and_reads_no_card_agai
         first = _count(lib, chips)
     finally:
         chips.close()
-    saved = json.load(open(lib.cache, encoding="utf-8"))
+    assert chips.idle(10), "its last save done before the next open reads it (as the chip's own Anki-closed test)"
+    with open(lib.cache, encoding="utf-8") as f:
+        saved = json.load(f)
     assert saved["studied_read"] == ["手伝う"] and [HELP, HELP_SAID, "手伝う"] in saved["reads"]
 
     def no_tagger(_text):
@@ -121,3 +123,22 @@ def test_the_sync_keeps_a_kana_cards_sentence_and_nothing_for_any_other(tmp_path
     assert "sentence" not in anki_sync._backlog_entry(note(HELP, "  "), ["Expression"], "ja")
     assert anki_sync._note_sentence(note("学习", "我们一起学习。"), "学习", "zh") == ""
     assert anki_sync.BACKLOG_VERSION == 4, "a backlog saved before is read again once, its kana cards' sentences in"
+
+
+def test_with_no_tagger_a_kana_card_counts_by_its_letters_and_the_chip_still_counts(lib):
+    # the tagger can't be made (fugashi missing, a broken dictionary): never a chip that stops counting
+    def broken(_text):
+        raise OSError("no dictionary")
+    from app import token_index as ti
+    chips = card_chip.Chips("ja", open_tokens=lambda: ti.open_reader("ja", lib.db), data_dir=lib.data,
+                            read_made=lambda _l, ids: {}, read_backlog=lambda _l: {"走る", (HELP, HELP_SAID)},
+                            backlog_stamp=lambda _l: 0, cache_file=lib.cache, tokenize=broken)
+    try:
+        got = _count(lib, chips)
+    finally:
+        chips.close()
+    assert chips.idle(10)
+    assert got[1] == ("走る" in lib.words[1]), "the rest counted; the kana card by its letters"
+    with open(lib.cache, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["reads"] == [], "nothing kept for a card not read: read again once a tagger is there"

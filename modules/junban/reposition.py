@@ -2276,17 +2276,26 @@ def _note_swept(settings, url, decks, stats, profile=None):
         stats["sweep"] = False
 
 
+def clear_words(flags, tags, done=False):
+    """Kyou-PF's clean-up in plain words (Kyou-KN; Sonic 2026-11-20: "clean it up and just go with it"; PROVISIONAL)
+    — `flags` cards losing Junban's purple flag, `tags` notes its `::later` tag, counted as cards (a note is a card
+    to the learner): " 3 cards are back on your list or already studied, so their purple flag and 'later' tag come
+    off." (`done`: "were … came off"); "" when neither. The preview (`junban_view.clear_clause`) and the run's
+    message (`_clear_clause`) say it alike."""
+    count = max(flags or 0, tags or 0)
+    if not count:
+        return ""
+    marks = " and ".join(name for name, n in (("purple flag", flags), ("'later' tag", tags)) if n)
+    one = count == 1
+    verb = ("was" if one else "were") if done else ("is" if one else "are")
+    comes = "came" if done else ("comes" if " and " not in marks else "come")
+    return (f" {count} card{'' if one else 's'} {verb} back on your list or already studied, so "
+            f"{'its' if one else 'their'} {marks} {comes} off.")
+
+
 def _clear_clause(done, tag):
-    """" Back on your list or studied: took the purple flag off 3 cards and the 'Surasura::later' tag off 2 notes." —
-    "" when nothing came off (Kyou-PF; words PROVISIONAL)."""
-    parts = []
-    if (done or {}).get("flag"):
-        count = len(done["flag"])
-        parts.append(f"took the purple flag off {count} card{'' if count == 1 else 's'}")
-    if (done or {}).get("tag"):
-        count = len(done["tag"])
-        parts.append(f"{'took ' if not parts else ''}the '{tag}' tag off {count} note{'' if count == 1 else 's'}")
-    return f" Back on your list or studied: {' and '.join(parts)}." if parts else ""
+    """What the clean-up took off, for the run's message (`clear_words`, said as done) — "" when nothing came off."""
+    return clear_words(len((done or {}).get("flag") or ()), len((done or {}).get("tag") or ()), done=True)
 
 
 def _moved_notes(writes, placements, note_by_card):

@@ -302,7 +302,11 @@ class Chips:
         for pair in said:
             if pair not in self._reads:
                 from app import anki_match
-                token = anki_match.card_word_in_sentence(pair[0], pair[1], self._tokenizer())
+                try:
+                    token = anki_match.card_word_in_sentence(pair[0], pair[1], self._tokenizer())
+                except Exception as e:                 # no tagger: the card counts by its letters, read again later
+                    print(f"Card chip: a kana card's sentence couldn't be read ({e!r})")
+                    continue
                 self._reads[pair] = token[0] if token is not None else ""
             if self._reads[pair]:
                 out.add(self._reads[pair])

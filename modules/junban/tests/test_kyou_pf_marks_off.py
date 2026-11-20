@@ -131,7 +131,8 @@ def test_a_card_back_on_the_list_loses_junbans_purple_flag_and_later_tag(tmp_pat
     assert report["ok"], report["problems"]
     assert _flag(fake, "散歩") == 0, "its word is on the list: no longer 'not on your list'"
     assert LATER.lower() not in _tags(fake, "散歩")
-    assert "Back on your list or studied: took the purple flag off" in report["message"], report["message"]
+    assert (" 3 cards were back on your list or already studied, so their purple flag and 'later' tag came off."
+            in report["message"]), report["message"]
 
 
 def test_a_card_you_studied_loses_junbans_purple_flag_and_later_tag(tmp_path):
@@ -214,9 +215,21 @@ def test_the_preview_says_it_before_anything_is_written(tmp_path):
         _writes, stats = reposition.dry_run(connect_settings(), job=junban_view.window_job({}))
     clear = stats["clear"]
     assert clear["counts"] == {"flag": 3, "tag": 2}, clear     # 散歩 + 図書館 + 老婆's flags; 散歩's + 図書館's tags
-    assert junban_view.clear_clause(stats) == (" Back on your list or studied: take the purple flag off 3 cards and "
-                                              "the 'Surasura::later' tag off 2 notes.")
+    # Kyou-KN (Sonic 2026-11-20: "clean it up"): plain words, one count in cards — re-pinned on purpose, PROVISIONAL
+    assert junban_view.clear_clause(stats) == (" 3 cards are back on your list or already studied, so their purple "
+                                              "flag and 'later' tag come off.")
     assert fake.flag_writes == [] and not [c for c in fake.tag_calls if c[0] == "removeTags"], "a preview writes nothing"
+
+
+def test_the_clean_up_is_said_in_plain_words_one_count_in_cards():
+    # Kyou-KN (Sonic 2026-11-20: "Hard to understand the text. clean it up"; PROVISIONAL): one number, in cards (a
+    # note is a card to the learner), and only what comes off
+    words = reposition.clear_words
+    assert words(1, 1) == " 1 card is back on your list or already studied, so its purple flag and 'later' tag come off."
+    assert words(2, 0) == " 2 cards are back on your list or already studied, so their purple flag comes off."
+    assert words(0, 2, done=True) == (" 2 cards were back on your list or already studied, so their 'later' tag "
+                                      "came off.")
+    assert words(0, 0) == "" and words(None, None) == ""
 
 
 def test_restore_puts_the_purple_flags_and_tags_back(tmp_path):

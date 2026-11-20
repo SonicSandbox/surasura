@@ -65,17 +65,11 @@ def returning_clause(stats):
 
 
 def clear_clause(stats):
-    """" Back on your list or studied: take the purple flag off 3 cards and the 'Surasura::later' tag off 2 notes." —
-    Kyou-PF's clean-up (Sonic 2026-11-20), stated before the write (I5); "" when there is none. Words PROVISIONAL."""
-    clear = (stats or {}).get("clear") or {}
-    counts = clear.get("counts") or {}
-    parts = []
-    if counts.get("flag"):
-        parts.append(f"take the purple flag off {counts['flag']} card{'' if counts['flag'] == 1 else 's'}")
-    if counts.get("tag"):
-        parts.append(f"{'take ' if not parts else ''}the '{clear.get('tag')}' tag off {counts['tag']} "
-                     f"note{'' if counts['tag'] == 1 else 's'}")
-    return f" Back on your list or studied: {' and '.join(parts)}." if parts else ""
+    """" 3 cards are back on your list or already studied, so their purple flag and 'later' tag come off." — Kyou-PF's
+    clean-up (Sonic 2026-11-20), stated before the write (I5); "" when there is none. In plain words since Kyou-KN
+    (`reposition.clear_words`, PROVISIONAL)."""
+    counts = ((stats or {}).get("clear") or {}).get("counts") or {}
+    return reposition.clear_words(counts.get("flag") or 0, counts.get("tag") or 0)
 
 
 def marker_glyphs(marks):

@@ -145,9 +145,10 @@ class Services:
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
-        # Haya-LD: the one scheduler the background work asks for a turn (`services.gentle`), made with the duties
-        # (none under SURASURA_NO_UI_TIMERS, nor with a test's given duties: their jobs start as before)
+        # Haya-LD: the one scheduler the background work asks for a turn (`services.gentle`): `open_services`' (the real
+        # window's, attached before anything can ask), none under SURASURA_NO_UI_TIMERS or for a test's own Services
         self.gentle = None
+        self.boot = threading.Event()     # Haya-LD: the window booted (`booted`): its list from disk drawn, idle once
         self._replan_wired = False
         self._generate_wired = False            # a6: the controller's end heard once (`_generate_ended`)
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
@@ -209,9 +210,6 @@ class Services:
             from app.services import replan_host as replan_module
             self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
                                                on_line=self._replan_line)
-        if self.gentle is None and not os.environ.get("SURASURA_NO_UI_TIMERS"):
-            from app.services import gentle as gentle_module
-            self.gentle = gentle_module.Gentle(self.registry, lambda: settings_service.thaw(self.settings.get()))
         self._provide()
         return self
 
@@ -405,7 +403,6 @@ class Services:
             if self.started or not self.has_duties() or self.closing.is_set():
                 return False
             self.started = True
-            self._be_gentle()
             self._hold_while_setup()
             try:
                 self.controller.check(settings_service.thaw(self.settings.get()), self.language)
@@ -429,27 +426,14 @@ class Services:
                 self._opening_look_unless_paused(session)
         return True
 
-    def _be_gentle(self):
-        """(Under the quit's lock, at the start.) Haya-LD: the scheduler attached — its gate before the chores' and the
-        sync's jobs are asked for — and told when the window's list is up: the library reader's first view that isn't
-        the cached first screen (now, when it came already)."""
-        gentle = self.gentle
-        if gentle is None:
+    def booted(self):
+        """(Any thread; once.) Haya-LD: the window booted — Current's list from disk drawn, its loop idle once (or its
+        limit passed): the scheduler lets background work go (`gentle.ready`). The window starts its duties after it."""
+        if self.boot.is_set():
             return
-        try:
-            gentle.attach()
-            reader = self.library
-            if reader is None:
-                gentle.ready()
-                return
-
-            def seen(view):
-                if view is not None and not getattr(view, "loading", True):
-                    gentle.ready()
-            reader.subscribe(seen)
-            seen(reader.view())
-        except Exception as e:
-            applog.log("shell", f"the gentle scheduler: {e!r}")
+        self.boot.set()
+        if self.gentle is not None:
+            self.gentle.ready()
 
     def _opening_look_unless_paused(self, session):
         """(Under the quit's lock.) The start's look — or, Anki's circle paused (Kantan-G, Sonic 2026-11-19: a pause
@@ -1837,6 +1821,9 @@ class ShellWindow(QMainWindow):
 
         # --- W3.5: the dashboard's duties: their controls arrive with them (given: now; else `start_duties`) ------- #
         self._duties_asked = False
+        # Haya-LD: the boot's watch (`_arm_boot`): the duties start, and background work goes, only once it booted
+        self.boot_gate = not os.environ.get("SURASURA_NO_UI_TIMERS")
+        self._after_boot, self._boot_armed, self._boot_view_seen, self._framed = [], False, False, False
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
         self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
@@ -2031,6 +2018,8 @@ class ShellWindow(QMainWindow):
         star = getattr(self, "star_ask", None)      # Surasura's star ask: once, when your own cards first land
         if star is not None:
             star.view_shown(view, self.services.library)
+        if not getattr(view, "loading", False) and not self.services.boot.is_set():
+            self._boot_after_idle()                 # Haya-LD: Current's list from disk drawn: booted at the next idle
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
@@ -2916,18 +2905,86 @@ class ShellWindow(QMainWindow):
         from app.qt import first_run                          # W3.5 part 3: the setup wizard over the window, first run
         first_run.host(self)                                  # (never raises; nothing when setup is finished)
 
+        self._arm_boot()                                      # Haya-LD: booted first, then the background
+
         def ready(_services=None):
             self._attach_duties()
             wiz = first_run.opened(self)
             if wiz is not None:
                 wiz.raise_()                                  # above the update sheet the duties made
-            bridge.run_in_worker(self.services.start, then=lambda started: started and self._duties_started(),
-                                 failed=lambda info: applog.log("shell", f"duties at start: {info[1]}"))
+            self._when_booted(lambda: bridge.run_in_worker(
+                self.services.start, then=lambda started: started and self._duties_started(),
+                failed=lambda info: applog.log("shell", f"duties at start: {info[1]}")))
         if self.services.has_duties():
             ready()
         else:
             bridge.run_in_worker(self.services.make_duties, then=ready,
                                  failed=lambda info: applog.log("shell", f"duties not made: {info[1]}"))
+
+    # --- Haya-LD: booted first (Sonic, 2026-11-20: "first boot up / launch before doing the rest") ---------------- #
+    def _arm_boot(self):
+        """(The first frame's.) The boot's watch: a list from disk already shown (or no library to show) -> booted at
+        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. Off
+        under SURASURA_NO_UI_TIMERS (`boot_gate`): booted at once, as the duties started before."""
+        self._framed = True
+        if not self.boot_gate:
+            self._booted_now()
+            return
+        from PyQt6.QtCore import QTimer
+        from app.services import gentle as gentle_module
+        QTimer.singleShot(int(gentle_module.BOOT_MAX_S * 1000), lambda: self._booted_now(late=True))
+        if self._boot_view_seen or self.services.library is None:
+            self._boot_after_idle()
+
+    def _boot_after_idle(self):
+        """Current's list from disk is drawn: booted once the event loop has nothing left to do (its paints flushed:
+        the dispatcher's `aboutToBlock`). Before the first frame, only remembered (`_arm_boot` asks)."""
+        if self._boot_armed or self.services.boot.is_set():
+            return
+        if not self._framed:
+            self._boot_view_seen = True
+            return
+        from PyQt6.QtCore import QAbstractEventDispatcher
+        d = QAbstractEventDispatcher.instance()
+        if d is None:
+            self._booted_now()
+            return
+        self._boot_armed = True
+        d.aboutToBlock.connect(self._booted_at_idle)
+
+    def _booted_at_idle(self):
+        from PyQt6.QtCore import QAbstractEventDispatcher
+        d = QAbstractEventDispatcher.instance()
+        try:
+            d.aboutToBlock.disconnect(self._booted_at_idle)
+        except (TypeError, RuntimeError):
+            pass
+        self._booted_now()
+
+    def _booted_now(self, late=False):
+        """Booted: said in the log with the time since the process began (the time to a usable window), the scheduler
+        told, and what waited for it started (`_when_booted`). Once."""
+        services = self.services
+        if services.boot.is_set():
+            return
+        if self.boot_gate:
+            age = hud._process_age_ms()
+            applog.log("shell", ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
+                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
+        services.booted()
+        waiting, self._after_boot = self._after_boot, []
+        for call in waiting:
+            try:
+                call()
+            except Exception as e:
+                applog.log("shell", f"after the boot: {e!r}")
+
+    def _when_booted(self, call):
+        """`call()` now when the window booted, else as it boots (the window's thread)."""
+        if self.services.boot.is_set():
+            call()
+        else:
+            self._after_boot.append(call)
 
     def _attach_duties(self):
         """The duties' controls (the header's Generate and journey, the bar's marks, the update sheet, Needs you's
@@ -4585,6 +4642,13 @@ def open_services(settings=None, freeze_gc=False, **kw):
     services = Services(settings=settings, library=reader, writer=writer,
                         library_for=lambda other: library_for(other, settings, freeze_gc), **kw)
     services.library_after_frame = True      # its first-screen cache read and first feed read never in the first frame
+    if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+        try:                                 # Haya-LD: the scheduler's gate on before any job can be asked for
+            from app.services import gentle as gentle_module
+            services.gentle = gentle_module.Gentle(services.registry,
+                                                   lambda: settings_service.thaw(settings.get())).attach()
+        except Exception as e:
+            applog.log("shell", f"the gentle scheduler: {e!r}")
     return services
 # --- end W3.2 P0 ---------------------------------------------------------------------------------------------------- #
 

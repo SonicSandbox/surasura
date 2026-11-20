@@ -125,7 +125,7 @@ def test_on_a_gentle_pc_background_work_waits_for_the_windows_list_then_its_sett
     assert job.state == jobs.WAITING, "the window's first paints get their few seconds"
     w.later(1.0)
     assert job.state == jobs.RUNNING and started, "the watcher's look starts what waited"
-    assert any("list is up" in line for line in w.lines)
+    assert any("booted" in line for line in w.lines)
 
 
 def test_a_list_never_seen_holds_nothing_past_its_limit():
@@ -136,7 +136,7 @@ def test_a_list_never_seen_holds_nothing_past_its_limit():
     assert job.state == jobs.WAITING, "the settle still follows the limit"
     w.later(G.SETTLE_S + 1)
     assert job.state == jobs.RUNNING
-    assert any("wasn't seen" in line for line in w.lines)
+    assert any("boot wasn't told" in line for line in w.lines)
 
 
 @pytest.mark.parametrize("arrivals", ["arrivals-ja", "arrivals-zh"])
@@ -176,8 +176,23 @@ def test_a_press_always_goes_first_whatever_the_scheduler_holds():
     assert generate.state != jobs.WAITING or generate.reason != G.WINDOW_FIRST
 
 
+@pytest.mark.parametrize("gentle", [True, False])
+def test_on_every_pc_nothing_automatic_starts_before_the_window_booted(gentle):
+    # why (Sonic 2026-11-20): "first boot up / launch before doing the rest … consistent across the board"
+    w = _World(gentle=gentle)
+    generate, _ = w.submit("generate", label="Generating (automatic)")
+    estimates, _ = w.submit("arrivals-ja")
+    assert (generate.reason, estimates.reason) == (G.WINDOW_FIRST, G.WINDOW_FIRST)
+    assert G.hold("covers") == G.WINDOW_FIRST
+    w.g.ready()
+    assert generate.state == jobs.RUNNING, "the boot reschedules at once: a Generate needs no settle"
+    if not gentle:
+        assert estimates.state == jobs.RUNNING, "a strong PC: no settle, side by side"
+
+
 def test_on_a_strong_pc_the_rest_runs_beside_a_generate_as_before():
     w = _World(gentle=False)
+    w.g.ready()
     generate, _ = w.submit("generate", label="Generating (automatic)")
     assert generate.state == jobs.RUNNING, "no window-first hold on a strong PC"
     estimates, _ = w.submit("arrivals-ja")
@@ -232,6 +247,7 @@ def test_a_busy_cpu_holds_the_rest_until_it_is_quiet_with_no_flapping_at_the_lin
 
 def test_a_pc_that_stays_busy_still_gets_its_background_work_after_the_limit():
     w = _World(gentle=False)
+    w.g.ready()
     w.load.share = 0.95
     w.later(G.TICK_S)
     job, _ = w.submit("arrivals-ja")
@@ -271,11 +287,13 @@ def test_the_generate_is_never_held_by_a_review_or_load():
 
 def test_unplugging_a_laptop_makes_it_gentle_at_the_next_battery_look():
     w = _World(gentle=False)
+    w.g.ready()
     w.machine = (True, "on battery")
     w.later(G.BATTERY_EVERY_S)
     assert w.g.gentle and any("one job at a time (on battery)" in line for line in w.lines)
-    job, _ = w.submit("indexer")
-    assert job.reason == G.WINDOW_FIRST
+    w.registry.record("indexer", "Indexing", automatic=True)
+    job, _ = w.submit("arrivals-ja")
+    assert job.reason == G.TURN.format(label="Indexing"), "one heavy job at a time from the next look"
 
 
 def test_with_no_scheduler_attached_nothing_waits_and_after_its_close_nothing_does():
@@ -311,6 +329,7 @@ def test_a_reading_that_fails_never_holds_and_never_stops_the_watcher():
     g = G.Gentle(registry, machine=broken, load=_Load(), reviewing=broken, clock=_Clock(),
                  log=lambda line: None).attach(watch=False)
     registry.record("indexer", "Indexing", automatic=True)
+    g.ready()
     g.tick()
     assert not g.gentle and not g.reviewing
     job = registry.submit("arrivals-ja", "Counting new arrivals", start=lambda j: None, automatic=True)

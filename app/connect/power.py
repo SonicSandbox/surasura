@@ -197,6 +197,27 @@ def total_memory_mb():
         return None
 
 
+def usable_cpus():
+    """The logical CPUs this process may run on (Windows: its affinity mask — a PC's cores held to a few, a VM's share),
+    else `os.cpu_count()`; at least 1."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL("kernel32")
+            k.GetCurrentProcess.restype = wintypes.HANDLE
+            k.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                                 ctypes.POINTER(ctypes.c_size_t)]
+            mine, system = ctypes.c_size_t(), ctypes.c_size_t()
+            if k.GetProcessAffinityMask(k.GetCurrentProcess(), ctypes.byref(mine), ctypes.byref(system)) and mine.value:
+                return bin(mine.value).count("1")
+        elif hasattr(os, "sched_getaffinity"):
+            return len(os.sched_getaffinity(0)) or 1
+    except Exception:
+        pass
+    return os.cpu_count() or 1
+
+
 def gentle(cpus=None, total_mb=None, battery=None):
     """Does this PC run its background work one heavy job at a time (Haya-LD)? -> (True, why) with why in plain words
     (*on battery*, *8 logical CPUs*, *8 GB of memory*), or (False, None) on a strong PC. `cpus` / `total_mb` /
@@ -204,7 +225,7 @@ def gentle(cpus=None, total_mb=None, battery=None):
     the battery to decide)."""
     if battery if battery is not None else on_battery():
         return True, "on battery"
-    cpus = cpus if cpus is not None else (os.cpu_count() or 1)
+    cpus = cpus if cpus is not None else usable_cpus()
     if cpus < STRONG_CPUS:
         return True, f"{cpus} logical CPUs"
     total_mb = total_mb if total_mb is not None else total_memory_mb()

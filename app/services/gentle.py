@@ -3,6 +3,16 @@ running … new arrivals is probably something that could wait" · "yes go to mo
 machines need more gently vs not?"). Qt-free. One per window (`Gentle`), the one scheduler the window's background work
 asks for a turn — never one per feature.
 
+**Booted first, on every PC** (Sonic, 2026-11-20: "I would like it to first boot up / launch before doing the rest.
+that would be consistent across the board"): the window is *booted* when Current's list, filled from what is on disk
+(the library reader's first view that isn't the cached first screen), has been drawn and the window's event loop has
+gone idle once after it (`ShellWindow._boot_after_idle`: the dispatcher's `aboutToBlock`) — or BOOT_MAX_S after its
+first frame, whichever comes first. Until then nothing in the background starts: the window holds `Services.start`
+itself (the Anki look and Connect's kick, the known-words sync, the journey's Generate, the update check, the chores:
+the indexer, the store's helper, Koe; 順's catch-up) and this scheduler holds every automatic job and step
+(WINDOW_FIRST: an automatic Generate, New arrivals, covers…), from the moment the window's services are made
+(`shell.open_services`). `ready()` is the window's word that it booted. The adaptive part below applies only after.
+
 **The order.** The window first → Generate (only when it's needed) → Connect's mining → the rest last, and only while
 the machine is quiet. *The rest* (`BACKGROUND`) is New arrivals' estimates, the indexer's catch-up, 順's re-order
 catch-up (and the one after a Generate), covers from online. A press always goes first: every rule here is asked of
@@ -12,11 +22,10 @@ arrivals worker is sent, the next round of covers, the next re-order catch-up).
 
 **Which machines** (`power.gentle`: logical CPUs, total memory, on battery — measured at the start, the battery read
 again every BATTERY_EVERY_S): on a **gentle** PC (a laptop, a small or unplugged one) —
-- every background kind waits until the window's list is up (`ready()`: the library reader's first view that isn't
-  the cached first screen, or START_HOLD_MAX_S after the start, whichever comes first), then SETTLE_S more;
+- every background kind waits SETTLE_S more after the boot (its first paints' follow-ups);
 - and while another heavy job runs (`HEAVY`: a Generate, Connect making cards, the indexer, a re-order writing to
   Anki, the sentence dictionary) — one heavy job at a time;
-- an automatic Generate waits until the window's list is up, and while Connect makes cards (`mine`: one batch's
+- an automatic Generate waits while Connect makes cards (`mine`: one batch's
   episode) — Connect's next step in turn waits while a Generate runs (`runner.Steps.blocked`, GENERATE_FIRST), so
   the Generate goes in at Connect's next step boundary.
 On **every** PC (a strong desktop runs the rest side by side as before):
@@ -47,13 +56,15 @@ TICK_S = 1.0                    # the watcher's look: the CPU sampled, the holds
 LOAD_WINDOW_S = 5.0             # the CPU's busy share is the mean of this many seconds' samples
 REVIEW_LOOK_S = 10.0            # `guiReviewActive` asked at most this often, only while background work wants a turn
 BATTERY_EVERY_S = 30.0          # plugged in or not, read again (a laptop unplugged becomes gentle)
-SETTLE_S = 3.0                  # after the window's list is up, the rest waits this much more (its first paints)
-START_HOLD_MAX_S = 60.0         # the window's list never seen: the rest goes this long after the start all the same
+SETTLE_S = 3.0                  # on a gentle PC, after the boot the rest waits this much more (its first paints)
+START_HOLD_MAX_S = 60.0         # the boot never told (a window that never drew its list): the rest goes this long after
+#                                 the services were made all the same (the window's own limit, BOOT_MAX_S, comes first)
 HOLD_MAX_S = 300.0              # a kind held for load alone goes after this long (still below normal priority)
 WANTED_FOR_S = 30.0             # a `hold` asked within this long counts as background work wanting a turn
 STEP_LOOK_S = 1.0               # how often a step held outside the registry asks again (`wait_turn`)
 
 WINDOW_FIRST = "Waits for the window to finish opening"
+BOOT_MAX_S = 30.0               # the window's limit after its first frame: booted all the same (`ShellWindow`)
 REVIEWING = "Waits while you review in Anki"
 BUSY_NOW = "Waits for a quieter moment: this computer is busy"
 TURN = "Waits its turn: {label} first"
@@ -146,7 +157,7 @@ class Gentle:
         return self
 
     def ready(self):
-        """The window's list is up (its first view that isn't the cached first screen): the rest may go after
+        """The window booted (its list from disk drawn, its loop idle once): the rest may go — on a gentle PC after
         SETTLE_S. Once."""
         with self._lock:
             if self._ready_at is not None:
@@ -154,7 +165,7 @@ class Gentle:
             self._ready_at = self._clock()
             began = self._started_at
         if began is not None:
-            self._log(f"the window's list is up {self._ready_at - began:.1f} s after the start")
+            self._log(f"the window booted {self._ready_at - began:.1f} s after its services were made")
         self._reconsider()
 
     def close(self):
@@ -177,13 +188,13 @@ class Gentle:
         now = self._clock()
         with self._lock:
             if kind == GENERATE:
-                if not self.gentle:
-                    return None
                 if not self._window_up(now, settle=False):
-                    return WINDOW_FIRST
-                return self._turn(kind, live, (MINE,))
+                    return WINDOW_FIRST                 # booted first, on every PC
+                return self._turn(kind, live, (MINE,)) if self.gentle else None
             if kind not in BACKGROUND:
                 return None
+            if not self._window_up(now, settle=False):
+                return WINDOW_FIRST                     # booted first, on every PC
             if self.reviewing:
                 return REVIEWING
             if self.busy:
@@ -195,7 +206,7 @@ class Gentle:
             if not self.gentle:
                 return None
             if not self._window_up(now, settle=True):
-                return WINDOW_FIRST
+                return WINDOW_FIRST                     # its settle (a gentle PC's)
             return self._turn(kind, live, HEAVY)
 
     @staticmethod
@@ -210,7 +221,7 @@ class Gentle:
             if self._started_at is None or now - self._started_at < START_HOLD_MAX_S:
                 return False
             self._ready_at = now        # never seen: the rest goes all the same (logged by the watcher)
-            self._log(f"the window's list wasn't seen in {START_HOLD_MAX_S:.0f} s: background work goes on")
+            self._log(f"the window's boot wasn't told in {START_HOLD_MAX_S:.0f} s: background work goes on")
         return not settle or now - self._ready_at >= SETTLE_S
 
     # --- the watcher ---------------------------------------------------------------------------------------------- #
@@ -277,7 +288,8 @@ class Gentle:
         the registry asked again — what may go starts, and what still waits shows its reason now, never an old one."""
         now = self._clock()
         with self._lock:
-            state = (self.reviewing, self.busy, self.gentle, not self.gentle or self._window_up(now, settle=True))
+            state = (self.reviewing, self.busy, self.gentle, self._window_up(now, settle=False),
+                     not self.gentle or self._window_up(now, settle=True))
             changed, self._open = state != self._open, state
             # a kind held for load alone past HOLD_MAX_S goes now (told once, until the CPU is quiet again)
             overdue = [k for k, since in self._held_since.items()

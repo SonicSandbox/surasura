@@ -126,13 +126,14 @@ def test_half_width_and_full_width_brackets_and_windows_line_ends(tmp_path, monk
 
 
 def test_a_markdown_book_too_but_never_a_transcript_or_a_chinese_file(tmp_path, monkeypatch):
-    """A .md book is a book. The downloader's transcript is captions, not a book: its text is kept as spoken. And
-    the rule is Japanese: a Chinese file's brackets are its own."""
+    """A .md book is a book. The downloader's transcript is captions, not a book: every group in parentheses goes,
+    as a subtitle's does, whichever option (test_transcript_brackets.py). And the rule is Japanese: a Chinese book's
+    brackets are its own."""
     _choose(monkeypatch, "any")
     assert _read(tmp_path, "# 第一章\n東京（とうきょう）に着いた。\n", name="book.md") == "第一章\n東京に着いた。\n"
     transcript = ("東京散歩\n散歩チャンネル | 2025-05-01 | 3:10\nCaptions: Japanese (manual)\n"
                   "https://www.youtube.com/watch?v=abcdefghijk\n\n" + "-" * 60 + "\n東京（とうきょう）に着きました\n")
-    assert "（とうきょう）" in _read(tmp_path, transcript, name="walk [abcdefghijk].txt")
+    assert _read(tmp_path, transcript, name="walk [abcdefghijk].txt") == "東京に着きました\n"
     assert _read(tmp_path, "我到了东京（とうきょう）。\n", name="zh.txt", language="zh") == "我到了东京（とうきょう）。\n"
 
 

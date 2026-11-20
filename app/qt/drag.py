@@ -310,7 +310,18 @@ def side_read(view, rows_):
     n = getattr(view, "mine_line", None)
     if not n or not getattr(view, "side_by_side", False):
         return None
-    return view_rows.side_top(rows_, n, bool(getattr(view, "keep_watched", False)), getattr(view, "side_cards", None))
+    return view_rows.side_top(rows_, n, bool(getattr(view, "keep_watched", False)), getattr(view, "side_cards", None),
+                              getattr(view, "side_line", None), getattr(view, "side_seasons", None))   # Kyou-D
+
+
+def side_pills(view, turned):
+    """Kyou-D: the ids the pills sit on after a drop (`side_read`'s third), read on the drop's order: none when the
+    rows hold fewer than two titles to study; the view's own when the drop's read didn't run (no top line)."""
+    if turned is not None:
+        return turned[2]
+    if getattr(view, "side_by_side", False) and getattr(view, "mine_line", None):
+        return ()
+    return getattr(view, "side_on", ())
 
 
 def lines_for(view, rows_, turned=None):
@@ -381,7 +392,8 @@ def topped(view, rows_, turned=None):
     return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
                             feed.items if feed is not None and feed.on else None,
                             side=bool(getattr(view, "side_by_side", False)),     # Kyou-B (KA-4): in turns, at once
-                            turned=turned, cards=getattr(view, "side_cards", None))
+                            turned=turned, cards=getattr(view, "side_cards", None),
+                            line=getattr(view, "side_line", None), seasons=getattr(view, "side_seasons", None))
 
 
 def mines_itself(lines, place):
@@ -412,6 +424,7 @@ def reordered(view, keys, tiers=None):
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
     turned = side_read(view, out)                   # Kyou-C: once for the drop (topped and its lines)
     out, moved = topped(view, out, turned)
+    out = view_rows.with_side(out, side_pills(view, turned))   # Kyou-D: the pills move at the drop
     files = sum(r.n_files for r in out)
     counts = view.counts._replace(current_rows=len(out), current_files=files)
     lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
@@ -421,6 +434,7 @@ def reordered(view, keys, tiers=None):
             {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
         worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
     return view._replace(rows=tuple(out), lines=lines_for(view, out, turned), counts=counts, subline=subline,
+                         side_on=side_pills(view, turned),   # Kyou-D: pills
                          worst=worst)
 
 
@@ -1466,8 +1480,10 @@ class DragController(QObject):
             return view
         turned = side_read(view, rows_)             # Kyou-C: once (topped and its lines)
         rows_, moved = topped(view, rows_, turned)  # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        rows_ = view_rows.with_side(rows_, side_pills(view, turned))   # Kyou-D: a Done can hand a title's place on
         worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
-        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_, turned), worst=worst)
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_, turned), worst=worst,
+                             side_on=side_pills(view, turned))   # Kyou-D
 
     def _marks_ahead(self, write, marks, key):
         """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands

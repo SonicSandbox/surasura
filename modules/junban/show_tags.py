@@ -22,7 +22,8 @@ per show whose notes changed.
   (`Surasura`) takes its children too, this label among them; the next re-order puts it back. Known from Anki never
   reads it (it reads suspensions).
 
-Pure apart from `file_shows`' reads (the run's file list and the store, read-only). Light: the standard library.
+Pure apart from `file_shows`' reads (the run's file list and the store, read-only) — which `file_items` shares (Kyou-D:
+the same files' store items, for side by side's titles). Light: the standard library.
 """
 import os
 import unicodedata
@@ -39,6 +40,23 @@ def file_shows(language, current=False):
     move re-labels at the next re-order (a fast re-plan's numbers are the new order's). None when the library can't be
     read, and while a move waits for the next Generate unless `current` (the caller's numbers are the store's order as it
     stands: a fast re-plan's): then no label is touched. Read again only when the store changed (its versions)."""
+    found = _files(language, current)
+    return found[0] if found else None
+
+
+def file_items(language, current=False):
+    """Kyou-D (Sonic's ruling 3, 2026-11-17): [item id or None, …] by study-order file number, read as `file_shows`
+    reads it (the same files, the same `current` rule, one read for both) — the store item of the file a word is first
+    met in, so side by side weaves a card by its word's title (`pins.side_groups`). [] when there are no numbers to go
+    by (no store, a library that can't be read: every card by its mined source, as before); None while the numbers are
+    the last Generate's and the order has moved since (nothing to count by: the caller leaves the store's count be)."""
+    found = _files(language, current)
+    return None if found is False else found[1] if found else []
+
+
+def _files(language, current):
+    """`([title or None, …], [item id or None, …])` by study-order file number; None when the library can't be read,
+    False while a move waits for the next Generate (see `file_shows`)."""
     try:
         from app import analyzer
         from modules.junban import pins
@@ -51,26 +69,29 @@ def file_shows(language, current=False):
         with store, store._reading():
             versions = store._versions()
             if not current and versions.get("analysed_order_version", 0) < versions.get("order_version", 0):
-                return None             # round 2 B2: the numbers are the last Generate's, the order has moved since
+                return False            # round 2 B2: the numbers are the last Generate's, the order has moved since
             key = tuple(sorted(versions.items()))
             hit = _MEMO.get(language)
             if hit is not None and hit[0] == key:
                 return hit[1]
-            rows = store.conn.execute("SELECT i.rel_path, w.title FROM items i LEFT JOIN works w ON w.id = i.work_id"
-                                      ).fetchall()
+            rows = store.conn.execute("SELECT i.rel_path, w.title, i.id FROM items i LEFT JOIN works w ON w.id = "
+                                      "i.work_id").fetchall()
         found = analyzer.resolve_found_files(language, verbose=False, missing=True)
     except Exception:
         return None
     by_name = {}
-    for rel, title in rows:
+    for rel, title, item_id in rows:
         rel = _norm(rel)
-        by_name.setdefault(rel.rsplit("/", 1)[-1], []).append((rel, title))
-    out = []
+        by_name.setdefault(rel.rsplit("/", 1)[-1], []).append((rel, title, item_id))
+    shows, items = [], []
     for path, *_rest in found:
         path = _norm(path)
-        hits = [title for rel, title in by_name.get(path.rsplit("/", 1)[-1], ())
+        hits = [(title, item_id) for rel, title, item_id in by_name.get(path.rsplit("/", 1)[-1], ())
                 if rel and (path == rel or path.endswith("/" + rel))]
-        out.append(hits[0] if len(set(hits)) == 1 and hits[0] else None)
+        titles = {title for title, _i in hits}
+        shows.append(hits[0][0] if len(titles) == 1 and hits[0][0] else None)
+        items.append(hits[0][1] if len({i for _t, i in hits}) == 1 else None)     # Kyou-D: one item, or none named
+    out = (shows, items)
     _MEMO[language] = (key, out)
     return out
 

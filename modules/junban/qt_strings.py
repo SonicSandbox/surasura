@@ -110,7 +110,12 @@ JUNBAN_EARLIER_TIP = "Show earlier answers to change them: tick or untick, then 
 JUNBAN_EARLIER_LINK = "see or change them"
 JUNBAN_COLUMNS = ("#", "new pos", "word", "{marks}", "why", "deck")
 JUNBAN_TABLE_NAME = "The new order, as Reorder will write it"
-JUNBAN_TABLE_TIP = ("Greyed rows are not on your list, so they go after it. Click a word on your list to take it off: it "
+# Kyou-UL (words PROVISIONAL, 2026-11-19): a greyed row is any card your list doesn't place (`junban_view`'s tone: a tier
+# outside `unlisted.PLACED_WITH_LIST`) — a list word waiting for an i+1 sentence and your own cards too, never only
+# "not on your list"
+JUNBAN_TABLE_TIP = ("Greyed rows aren't in your list's order: words below its level, words you know and list words "
+                    "waiting for an i+1 sentence go after it; cards you made yourself go first. "
+                    "Click a word on your list to take it off: it "
                     "goes with the cards not on your list, and whatever you ticked for them applies to it too. Click a "
                     "greyed card to leave it alone: it keeps its order at the back and nothing touches it. Click again "
                     "to undo. Space does the same to the row you are on.")

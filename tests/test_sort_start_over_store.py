@@ -187,6 +187,51 @@ def test_titles_the_soon_line_moved_as_others_were_placed_still_go_back(language
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undos_row_the_line_really_moves_across_takes_the_undos_version(language, library):
+    """Kyou-D (the mutant that dropped the tier check): an Undo puts a row back beside its recorded neighbour, which
+    another placement has since pushed below the Soon line — the row lands in Soon though it was recorded in NOW: it
+    crossed the line, so it takes the Undo's own version (a crossing's rule); its title's other rows, recorded in Soon
+    and back in Soon, get their recorded versions back. The line holds A's rows and B's first (the rest of B in Soon);
+    B to 6+ Months; C to the top; then B's Undo — B goes back after A, now below the line."""
+    store, shows = library(language)
+    a, b, c = shows.values()
+    line = len(a) + 1
+    store.set_soon_line(line)
+    store.place(a, "top")
+    store.place(b, "top", after_id=a[-1])
+    assert _state(store)[0]["now"] == a + b[:1] and _state(store)[0]["soon"][:len(b) - 1] == b[1:]
+    before = {i: _state(store)[1][i][-1] for i in b}
+    moved = store.place(b, "goal")
+    store.place(c, "top")
+    undone = store.undo(moved)
+    order, values = _state(store)
+    assert order["now"] == (c + a)[:line] and order["soon"][:len(c) + len(a) - line + len(b)] == (c + a)[line:] + b
+    assert values[b[0]][-1] == undone.version != before[b[0]], "recorded in NOW, back in Soon: it crossed"
+    assert [values[i][-1] for i in b[1:]] == [before[i] for i in b[1:]], "recorded in Soon, back in Soon: their own"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_without_a_soon_line_an_undo_never_walks_a_row_into_the_other_tier(language, library):
+    """Kyou-D: Current is one order only while the library has a Soon line. Without one, NOW and Soon are two places
+    the learner keeps apart — B (recorded in NOW after A) comes back in NOW though A has since gone to Soon, with its
+    recorded version, as before side by side's walk."""
+    store, shows = library(language)
+    a, b, _c = shows.values()
+    with store._command("test_no_line", "sync"):                  # (a library from before the line: schema 1)
+        store.conn.execute("DELETE FROM meta WHERE key = 'soon_line'")
+    assert store._soon_line() is None
+    store.place(a, "top")
+    store.place(b, "top", after_id=a[-1])
+    before = {i: _state(store)[1][i][-1] for i in b}
+    moved = store.place(b, "goal")
+    store.place(a, "soon")
+    store.undo(moved)
+    order, values = _state(store)
+    assert order["now"] == b and order["soon"] == a
+    assert [values[i][-1] for i in b] == [before[i] for i in b]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_in_two_placements_goes_back_by_the_newest_alone(language, library):
     """Adversary #5 (a8): finished, then put on top (not a screen path today, a store caller's): the reset undoes the
     newest placement only — the title back in Finished, watched, as that one placement's own Undo leaves it."""

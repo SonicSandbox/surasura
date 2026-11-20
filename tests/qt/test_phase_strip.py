@@ -333,7 +333,7 @@ def test_at_100_and_200_percent_the_circles_paint_inside_the_footers_height(stri
     img = _image(strip, dpr)
     assert img.height() == round(strip.height() * dpr) <= round(theme.size("footer") * dpr)
     assert _near(_ring(strip, P.SURASURA, img, dpr=dpr), C()["accent"])
-    assert strip.width() == 6 * theme.size("phase-circle") + 5 * theme.size("phase-gap")     # (+ Pause all, Mado-PZ)
+    assert strip.width() == 5 * theme.size("phase-circle") + 4 * theme.size("phase-gap")     # (Mado-PZ2: no Pause all bubble)
 
 
 def test_the_credits_name_ankis_trademark_its_link_and_anki_miners_licence():
@@ -486,7 +486,9 @@ def test_a3_the_hover_is_name_and_what_it_does_then_now_then_the_last_run_named_
     assert strings.PHASE_IDLE in parts[1]                               # nothing now, said once
     assert strings.PHASE_DONE.format(what="Generating", time=at) in parts[2]               # the last run, named
     assert strings.PHASE_PRESS_PAUSE in parts[3]                         # Mado-PZ: what a click does ...
-    assert strings.PHASE_SETTINGS[0] in parts[4] and len(parts) == 5     # ... and its settings, a right-click away
+    assert strings.PHASE_HOLDS[P.SURASURA] in parts[4]                   # Mado-PZ2: what its pause holds ...
+    assert strings.PHASE_SHIFT_PAUSE_ALL in parts[5]                     # ... the Shift-click: all five ...
+    assert strings.PHASE_SETTINGS[0] in parts[6] and len(parts) == 7     # ... and its settings, a right-click away
     assert strings.PHASE_PRESS_PAUSE in strip.hover_text(P.ANKI)         # every circle pauses: no settings needed
     gen = registry.submit("generate", "Generating", lambda j: None)
     gen.progress("Reading your files", 3, 12)

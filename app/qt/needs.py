@@ -2192,7 +2192,11 @@ class NeedsYou(QObject):
             return True
 
         def done(_ok):
-            self._say(strings.NEEDS_HATO_ON)
+            if "arrivals" in getattr(self.win.services, "paused", ()):     # Mado-PZ2: 届 paused holds hato's look
+                self._say(strings.PAUSED_WAITS.format(what=strings.NEEDS_HATO_WAITS,
+                                                      circle=strings.PAUSED_CIRCLE["arrivals"]))
+            else:
+                self._say(strings.NEEDS_HATO_ON)
             if looks is not None and hasattr(looks, "asked"):
                 looks.asked(refreshed=True)
             self.refresh()

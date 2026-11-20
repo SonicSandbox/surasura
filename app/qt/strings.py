@@ -551,8 +551,9 @@ UNMINED_ALLOW_NAME = "Allow {word} again"
 UNMINED_ALLOW_TIP = ("Let Surasura make a card for {word} again, from the next episode that has it\n"
                      "• Undo keeps it out again")
 UNMINED_ALLOWED = "{word} may be mined again"
-MINE_PAUSED = "Asked · Anki Miner is paused: it makes them once you click its circle to resume"     # Mado-PZ
+MINE_WAITS = "Asked · your cards wait"           # Mado-PZ: *Mine now* while Anki Miner is paused (PAUSED_WAITS)
 MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
+MAKE_CARDS_WAIT = {True: "1 episode's cards wait", False: "{n} episodes' cards wait"}    # Mado-PZ2: Anki Miner paused
 MAKE_CARDS_NONE = "Nothing left to make: each of those episodes has its cards made for you already"
 MAKE_CARDS_GONE = "Surasura has no record of those episodes' cards now: nothing was made"
 # --- end P4.1 WF
@@ -713,8 +714,26 @@ PHASE_PAUSED = "Paused · click to resume"          # the hover's line while pau
 PHASE_PRESS_PAUSE = "• Click: pause what it runs by itself"
 PHASE_PAUSE = ("Pause", "Nothing starts here by itself until you resume it. What runs now stops at its next safe point")
 PHASE_RESUME = ("Resume", "What waited starts again, from where it stopped")
-PHASE_PAUSE_ALL = "Pause everything that runs by itself"     # the ⏸ after the circles: its hover and its name
-PHASE_RESUME_ALL = "Resume everything that was paused"
+# Mado-PZ2 (Sonic 2026-11-19: no *Pause all* bubble — it's in each circle's right-click, under *Pause* / *Resume*, and a
+# Shift-click on any circle does it; PROVISIONAL words): each does to all five what the click does to that one (an
+# amber circle's too: Shift pauses, it never opens the decision)
+PHASE_PAUSE_ALL = ("Pause all", "Pause what all five circles run by themselves, until you resume")
+PHASE_RESUME_ALL = ("Resume all", "Resume all five circles: what waited starts again")
+PHASE_SHIFT_PAUSE_ALL = "• Shift-click: pause all five"
+PHASE_SHIFT_RESUME_ALL = "• Shift-click: resume all five"
+# ... and each circle's hover says what its pause holds (the map's model: Mado-PZ's table)
+PHASE_HOLDS_LINE = "Its pause holds {what}"
+PHASE_HOLDS = {
+    "arrivals": "New arrivals' reading, YouTube downloads and hato's look",     # (never the folder looks)
+    "surasura": "the automatic Generate and reading your files",
+    "miner": "the cards Anki Miner makes by itself",
+    "junban": "the automatic re-order and Backfill",
+    "anki": "the automatic known-words sync and the count of cards waiting in Anki",
+}
+# A press held by a pause, said where it was pressed: one shared line naming the circle to click (Mado-PZ's Decision 2,
+# Sonic kept it) — the circle as the strip shows it: its mark, or a logo's name
+PAUSED_WAITS = "{what} · {circle} is paused · click it to resume"
+PAUSED_CIRCLE = {"arrivals": "届", "surasura": "ス", "miner": "Anki Miner", "junban": "順", "anki": "Anki"}
 PAUSED_HELD = "paused"                              # a paused circle's job waiting at the gate: *Generating · paused*
 PAUSED_AT_START = "Paused: {names} · click a circle at the bottom left to resume"
 # A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
@@ -1742,6 +1761,7 @@ NEEDS_SUBS_BUSY = "Anki Miner is busy (its setup, or another one being made): pr
 NEEDS_SUBS_MODEL_FAILED = "Anki Miner's speech model didn't download: {why}"
 NEEDS_SUBS_BESIDE = "Kept in Surasura's library only: their video folder took no copy beside the video"
 NEEDS_HATO_ON = "hato looks for these subtitles now, and for every new video with none from now on"
+NEEDS_HATO_WAITS = "Yes kept · hato's look waits"    # Mado-PZ2: 届 paused holds it (PAUSED_WAITS)
 NEEDS_MINER_UPDATED = "Anki Miner is updated · Surasura makes the waiting cards by itself"
 NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed before it finished"
 NEEDS_MINER_BUSY = "Anki Miner is in use (Surasura is making cards with it, or its window is open): Update again once it's free"
@@ -1758,26 +1778,28 @@ COVER_MENU = {
     "choose": ("Choose an image…",
     "Use a picture from this computer as its cover. It's copied into your User Files and "
                                   "kept, even when another picture is found"),
-    "generated": ("Use a generated cover", "Show its painted cover from now on, even when a picture is found beside "
-                                           "its files"),
+    # Mado-CV (PROVISIONAL words for Sonic): what it is, said plainly — and its way back once kept
+    "generated": ("Use a plain cover", "A plain card with its name. Surasura stops looking for a picture"),
+    "again": ("Look for a cover again", "Surasura looks for its picture again, as for a new title"),
 }
 COVER_PICK_TITLE = "Choose a cover image"
 COVER_PICK_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp)"
 COVER_CHOSEN = "New cover for {title}"
-COVER_GENERATED = "{title} shows its generated cover"
+COVER_GENERATED = "{title} shows a plain cover"
+COVER_AGAIN = "Looking for a cover for {title} again"
 COVER_NOT_IMAGE = "That file isn't a picture Surasura can use as a cover"
 COVER_CANT = "The library can't be changed right now, so its cover stays as it is"
 # --- end W3.2 Q6
 # --- W3.2 L3: Change cover…'s online entries (only with Download covers on) and its words
 COVER_ONLINE = ("Find it online…", "Look its name up on AniList and choose one of the top five covers")
-COVER_PASTE = ("Paste a link", "Use the cover of the AniList, TMDB or YouTube page whose link you copied")
+COVER_PASTE = ("Paste a link", "Use the cover of the AniList or YouTube page whose link you copied")
 COVER_LOOKING = "Looking {title} up on AniList…"
 COVER_CANDIDATE_TIP = "Use this cover for {title}; it stays even if others are found."
 COVER_NONE_FOUND = "No cover found on AniList for {title}"
 COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
 COVER_FETCHING = "Fetching the cover for {title}…"
 COVER_LOOKUP_BROKE = "The cover lookup for {title} stopped with an error: {why}"
-COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList, TMDB or YouTube link. For a book's cover, save the "
+COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList or YouTube link. For a book's cover, save the "
                           "picture, then use Choose an image…")
 COVER_PASTE_WHY = {
     "off": "Download covers is off in Settings › Content: nothing was fetched.",

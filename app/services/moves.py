@@ -25,7 +25,10 @@
     confirms it), so after a crash `replay()` at the next start applies them by id — or, where an item changed
     meanwhile, lists them once (`on_note`: *2 moves from before the crash couldn't be applied*); a status, a title's
     fields, a join or an import (`GUARDED`) is checked against what it touched as queued: changed since → listed, what
-    it writes there already (it landed, its entry left behind) → let go quietly;
+    it writes there already (it landed, its entry left behind) → let go quietly. A journal write or remove another
+    program refuses (a scanner holding the file) is tried again after growing pauses (`JOURNAL_RETRY_S`, between the
+    thread's jobs; the quit's until its deadline), and the entries done with meanwhile are told to the journal's
+    `.landed` note at once: a start whose journal's commands all landed clears it without replaying any (Kura-JR);
   - `None` (nothing to change: the items gone, or already there) → `on_reread()`;
   - a move the store put in its show's episode order instead (`Change.show_order`, Kura-EO) → the numbers follow the
     store's place and `on_reread()` (the window's drop order goes at once: the store's view stands);
@@ -75,6 +78,11 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 DEFER_MAX_S = 0.25              # a press's command waits at most this long for the window's go (`Writer.defer`)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
+JOURNAL_RETRY_S = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+#   Kura-JR: a journal write or remove still refused after those tries (a scanner, a backup tool holding the file) is
+#   tried again after each of these pauses in turn, on the writer's thread between its jobs (never a wait of the
+#   window's, never one that holds a command back); the quit tries until its deadline. What landed meanwhile is told
+#   to the journal's `.landed` note at once, so a start after a crash or a give-up never replays it
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
               "place", "put_back", "import_finished", "relink", "its_new", "audiobook_answer", "link_video", "remove",
               "skip_folder",
@@ -110,6 +118,7 @@ KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
 KEPT += ("side_by_side",)                       # Kyou-A: the library's *New cards come from* (Current's top two)
+KEPT += ("unlock",)                             # Mado-CV: *Look for a cover again* (the cover's lock let go)
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
@@ -261,6 +270,11 @@ class Writer:
         self._replaced = {}                         # SO-1: an Ignore's change -> the one a Start over's Undo gave again
         self._journalled = set()                    # seqs the journal file holds now
         self._journal_dirty = False
+        self._on_disk = (None, [])                  # Kura-JR: the journal file's token and its entries' seqs, in order
+        #                                             (None: an entry no command of this run stands for — it landed)
+        self._owed = None                           # Kura-JR: a refused journal write to try again: its `everything`
+        self._owed_at = 0.0                         # … at this time (monotonic)
+        self._owed_tries = 0
         self._head_waits = False                    # P-2-F: the head met a busy store (until it lands)
         self._held = False
         self._retry_at = 0.0
@@ -613,14 +627,17 @@ class Writer:
         return self._put({"op": "set_media_type", "ids": [], "work_ids": list(work_ids), "media_type": media_type,
                           "label": label})
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False, unlock=False):
         """`Store.set_cover`: a title's cover record; a fetch (`locked=False`) never writes over the user's locked
         choice (nothing written, `on_reread`). `auto` (the disk scan's, a book's at its import): nobody's choice —
-        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again)."""
+        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again). `unlock`:
+        the user's *Look for a cover again* (Mado-CV) — the lock let go, on the Undo stack."""
         cmd = {"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref, "path": path,
                "locked": bool(locked), "label": label}
         if auto:
             cmd["auto"] = True
+        if unlock:
+            cmd["unlock"] = True
         return self._put(cmd)
 
     # --- W3.2 B: a producer's files into New arrivals (RUNBOOK §1 *Routing*; Sonic's W3.2-2) ------------------- #
@@ -861,6 +878,14 @@ class Writer:
         thread = self._thread
         if thread is not None:
             thread.join(max(0.0, deadline - time.monotonic()))
+        while True:                                 # Kura-JR: a refused journal write tried again until the deadline
+            with self._cond:
+                if self._owed is None or self._replay_due or time.monotonic() >= deadline:
+                    break
+                pause = max(0.0, min(self._owed_at, deadline) - time.monotonic())
+            time.sleep(pause)                       # (the quit's worker: never the window's thread)
+            if time.monotonic() < deadline:
+                self._sync_journal(everything=False, again=True)     # (`_owed`: the write that was refused)
         return not left
 
     # --- queueing ------------------------------------------------------------------------------------------------- #
@@ -885,12 +910,16 @@ class Writer:
             self._thread.start()
 
     def _abandon(self):
-        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are."""
+        """(Tests: a crash.) The thread stops at its next look, leaving the queue and the journal as they are — and
+        nothing writes the journal after this returns: a *saving…* timer still running (`_stuck`, on its own thread)
+        finds the writer crashed (Kura-JR: a crash is every thread of it gone, as a real one)."""
         with self._cond:
             self._abandoned = True
             self._cond.notify_all()
         if self._thread is not None:
             self._thread.join(10)
+        with self._jlock:                           # a journal write under way ends first
+            pass
 
     # --- the thread ----------------------------------------------------------------------------------------------- #
     def _run(self):
@@ -905,6 +934,8 @@ class Writer:
                         self._load_journal()
                     elif job == "journal":
                         self._sync_journal(everything=True, fill=True)
+                    elif job == "journal_again":
+                        self._sync_journal(everything=False, again=True)     # (`_owed`: the refused write)
                     elif job == "check":
                         self._check()
                     else:
@@ -933,6 +964,8 @@ class Writer:
                     self._replay_due = False
                     return "replay", None
                 now = time.monotonic()
+                if self._owed is not None and now >= self._owed_at:
+                    return "journal_again", None    # Kura-JR: a refused journal write, tried again (one write)
                 blocked = self._held or now < self._retry_at or now < self._defer_until
                 if self._pending and not blocked:
                     return "apply", self._pending[0]
@@ -942,6 +975,8 @@ class Writer:
                 if now - self._mode_at >= MODE_RECHECK_S:
                     return "check", None
                 wait = WAIT_S
+                if self._owed is not None:
+                    wait = min(wait, self._owed_at - now)
                 if not self._held and now < self._retry_at:
                     wait = min(wait, self._retry_at - now)
                 if not self._held and now < self._defer_until:
@@ -1195,7 +1230,7 @@ class Writer:
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
             return store.set_cover(cmd["work_id"], cmd["source"], ref=cmd["ref"], path=cmd["path"],
-                                   locked=cmd["locked"])
+                                   locked=cmd["locked"], unlock=bool(cmd.get("unlock")))
         if op == "forget_covers":                   # W3.2 Q7: the records first, then their files
             from app.services import covers_online
             sql = "SELECT cover_path FROM works WHERE cover_path LIKE 'cache:%'"
@@ -1773,41 +1808,79 @@ class Writer:
             self._call(answer, cmd)
 
     # --- the journal (04 §4.5: queued moves survive a crash) ------------------------------------------------------ #
-    def _sync_journal(self, everything, fill=False):
+    def _sync_journal(self, everything, fill=False, again=False):
         """Write the journal: every journalable command queued (`everything`), or only those it already holds (an entry
-        leaving it); none left → the file goes."""
+        leaving it); none left → the file goes. `again`: Kura-JR's retry of a refused one (else a new write: its own
+        `JOURNAL_RETRY_S` tries if it is refused)."""
         if not self.journal_file or self._replay_due:
             return                                  # a crash's journal is read before anything is written over it
         with self._jlock:
+            if self._abandoned:
+                return                              # (tests: a crashed writer writes nothing more, `_abandon`)
             with self._cond:
+                owed, self._owed = self._owed, None     # Kura-JR: this write is the refused one's too
+                if not again:
+                    self._owed_tries = 0
+                everything = everything or bool(owed)
                 if everything:
                     keep = [c for c in self._pending if _journals(c)]
                 else:
                     keep = [c for c in self._pending if c["seq"] in self._journalled]
-                if everything and not fill and {c["seq"] for c in keep} == self._journalled:
+                if everything and not fill and owed is None and {c["seq"] for c in keep} == self._journalled:
                     return                          # the file holds these already (a busy store asked again)
             if fill and keep:
                 store, _busy = self._store()
                 if store is not None:
                     self._fill_seen(store)
+            token = os.urandom(8).hex()
             try:
                 if keep:
                     _write_json(self.journal_file, {"version": JOURNAL_VERSION, "language": self.language,
-                                                    "pending": [_entry(c) for c in keep]})
+                                                    "token": token, "pending": [_entry(c) for c in keep]})
                 elif os.path.exists(self.journal_file):
                     _patiently(os.remove, self.journal_file)
             except OSError as e:
                 print(f"Window writer: the journal couldn't be written: {e!r}")
+                self._refused(everything, keep)
                 return
+            self._on_disk = (token, [c["seq"] for c in keep]) if keep else (None, [])
+            self._owed_tries = 0
+            _drop(_landed_path(self.journal_file))  # its note on the file before (if any) no longer holds
             with self._cond:
                 self._journalled = {c["seq"] for c in keep}
                 if everything and any(_journals(c) and c["seq"] not in self._journalled for c in self._pending):
                     self._journal_dirty = True      # P-2 (M13): given while this write was under way (`_put` saw no
                     self._cond.notify_all()         # journal yet): journalled at once, never at the next ask
 
+    def _refused(self, everything, keep):
+        """Kura-JR: a journal write refused past `_patiently`'s tries. Tried again after the next pause of
+        `JOURNAL_RETRY_S` (none left: given up, in the log); and the entries of the file as it stands whose commands are
+        done with since (landed, let go) are told to its `.landed` note now — a new file beside it, which the hold on
+        the journal doesn't touch — so a start after a crash, or after the give-up, never replays them."""
+        with self._cond:
+            if self._owed_tries < len(JOURNAL_RETRY_S):
+                self._owed = everything
+                self._owed_at = time.monotonic() + JOURNAL_RETRY_S[self._owed_tries]
+                self._owed_tries += 1
+                self._cond.notify_all()
+            else:
+                print(f"Window writer: the journal stayed refused after {self._owed_tries} more tries: left as it is "
+                      f"(its .landed note says what of it landed)")
+            waiting = {c["seq"] for c in self._pending}
+        token, seqs = self._on_disk
+        landed = [n for n, s in enumerate(seqs) if s is None or s not in waiting]
+        if token and landed:
+            try:
+                _write_json(_landed_path(self.journal_file), {"version": JOURNAL_VERSION, "token": token,
+                                                              "landed": landed})
+            except OSError as e:
+                print(f"Window writer: the journal's .landed note couldn't be written: {e!r}")
+
     def _load_journal(self):
         path = self.journal_file
         if not path or not os.path.exists(path):
+            if path:
+                _drop(_landed_path(path))           # a note whose journal went after all
             return
         try:
             with open(path, encoding="utf-8") as f:
@@ -1819,17 +1892,23 @@ class Writer:
             try:
                 os.replace(path, path + ".bad")
             except OSError:
-                pass
+                return                              # (still there: its note stays with it for the next start)
+            _drop(_landed_path(path))
             return
-        with self._cond:
-            for cmd in cmds:
-                cmd["seq"] = next(self._seq)
+        landed = _landed_of(path, data.get("token"))    # Kura-JR: those the run before saw land (its note)
+        with self._jlock, self._cond:               # (`_on_disk` is the journal writes' own: under their lock)
+            seqs = []
+            for n, cmd in enumerate(cmds):
+                cmd["seq"] = None if n in landed else next(self._seq)
+                seqs.append(cmd["seq"])
+            cmds = [c for c in cmds if c["seq"] is not None]
+            self._on_disk = (data.get("token"), seqs)
             self._pending.extendleft(reversed(cmds))
             self._journalled |= {c["seq"] for c in cmds}
             self._replay_failed = self._replay_applied = 0
             self._cond.notify_all()
         if not cmds:
-            self._sync_journal(everything=False)
+            self._sync_journal(everything=False)    # (all landed: the file and its note go, nothing replayed)
 
     def _replay_finished(self):
         failed, applied = self._replay_failed, self._replay_applied
@@ -2510,7 +2589,46 @@ def _write_json(path, data):
         json.dump(data, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    _patiently(os.replace, tmp, path)
+    try:
+        _patiently(os.replace, tmp, path)
+    except OSError:
+        try:                                        # Kura-JR: the file refused (held): no half-step left beside it
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _landed_path(journal_file):
+    """Kura-JR: the journal's `.landed` note (`window_pending_<lang>.landed.json`: it moves with its journal, the
+    install's `window_pending_*.json` row): {"version", "token": the journal's, "landed": its entries' indexes}."""
+    base, ext = os.path.splitext(journal_file)
+    return f"{base}.landed{ext or '.json'}"
+
+
+def _landed_of(journal_file, token):
+    """The indexes of the journal's entries its note says landed — none when there is no note, it is damaged, or it
+    speaks of another journal (another token: a file written since)."""
+    try:
+        with _patiently(open, _landed_path(journal_file), "r", -1, "utf-8") as f:
+            note = json.load(f)
+        if not token or note.get("version") != JOURNAL_VERSION or note.get("token") != token:
+            return set()
+        return {n for n in note["landed"] if type(n) is int}       # (never a bool: a damaged note's `true`)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"Window writer: the journal's .landed note couldn't be read, so it counts for nothing: {e!r}")
+        return set()
+
+
+def _drop(path):
+    """A file let go if it is there; a refusal only logged (the next write, or the next start, tries again)."""
+    try:
+        if os.path.exists(path):
+            _patiently(os.remove, path)
+    except OSError as e:
+        print(f"Window writer: {os.path.basename(path)} couldn't be removed: {e!r}")
 
 
 def _patiently(call, *args):

@@ -157,15 +157,17 @@ def test_shift_enter_on_the_circle_in_focus_asks_for_all_five(strip):
 
 def test_each_circles_hover_lists_what_its_pause_holds_and_says_the_shift_click(strip):
     """The line *Pause all*'s hover was to carry, on the circle it belongs to; the Shift-click said where it's used."""
+    import html
     assert set(strings.PHASE_HOLDS) == set(P.CIRCLES)
     for c in P.CIRCLES:
         text = strip.hover_text(c)
-        assert strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[c]) in text, c
+        assert html.escape(strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[c])) in text, c     # (rich text)
         assert strings.PHASE_SHIFT_PAUSE_ALL in text and strings.PHASE_SHIFT_RESUME_ALL not in text, c
         assert strings.PHASE_PAUSE_ALL[0] not in text, "said once: the Shift-click line, not the right-click's again"
     strip.set_paused({P.MINER})
     text = strip.hover_text(P.MINER)
-    assert strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[P.MINER]) in text, "paused: what waits, said"
+    assert html.escape(strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[P.MINER])) in text, \
+        "paused: what waits, said"
     assert strings.PHASE_SHIFT_RESUME_ALL in text and strings.PHASE_SHIFT_PAUSE_ALL not in text
     assert strings.PHASE_SHIFT_PAUSE_ALL in strip.hover_text(P.ANKI)
 

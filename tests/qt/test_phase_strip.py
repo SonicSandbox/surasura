@@ -486,7 +486,9 @@ def test_a3_the_hover_is_name_and_what_it_does_then_now_then_the_last_run_named_
     assert strings.PHASE_IDLE in parts[1]                               # nothing now, said once
     assert strings.PHASE_DONE.format(what="Generating", time=at) in parts[2]               # the last run, named
     assert strings.PHASE_PRESS_PAUSE in parts[3]                         # Mado-PZ: what a click does ...
-    assert strings.PHASE_SETTINGS[0] in parts[4] and len(parts) == 5     # ... and its settings, a right-click away
+    assert strings.PHASE_HOLDS[P.SURASURA] in parts[4]                   # Mado-PZ2: what its pause holds ...
+    assert strings.PHASE_SHIFT_PAUSE_ALL in parts[5]                     # ... the Shift-click: all five ...
+    assert strings.PHASE_SETTINGS[0] in parts[6] and len(parts) == 7     # ... and its settings, a right-click away
     assert strings.PHASE_PRESS_PAUSE in strip.hover_text(P.ANKI)         # every circle pauses: no settings needed
     gen = registry.submit("generate", "Generating", lambda j: None)
     gen.progress("Reading your files", 3, 12)

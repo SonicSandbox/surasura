@@ -83,7 +83,9 @@ def test_timestamps_kept_crlf_and_a_bracket_left_open_on_its_line(tmp_path):
     an opener left open on one line keeps the lines after it, up to a closer two cues later."""
     body = "\r\n".join(("[00:01:02] （平野）おはよう", "[00:01:05] （遠藤）おはよう 平野さん", "[00:01:09] えっと（ 何だっけ",
                         "[00:01:12] 宿題 やった？", "[00:01:15] まだ）やってない"))
-    text = _read(tmp_path, _transcript(body).replace("\n", "\r\n"))
+    path = tmp_path / "雲の上の郵便屋さん S01E04 [netflix-81234568].txt"
+    path.write_bytes(_transcript(body).replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))   # CRLF once
+    text = analyzer.extract_text(str(path), "ja")
     assert "[00:" not in text and "平野）" not in text and "遠藤" not in text
     for said in ("おはよう 平野さん", "何だっけ", "宿題 やった？", "やってない"):
         assert said in text, said

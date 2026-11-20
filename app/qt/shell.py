@@ -2921,7 +2921,7 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(self.services.make_duties, then=ready,
                                  failed=lambda info: applog.log("shell", f"duties not made: {info[1]}"))
 
-    # --- Haya-LD: booted first (Sonic, 2026-11-20: "first boot up / launch before doing the rest") ---------------- #
+    # --- Haya-LD: booted first, on every PC (2026-11-20): the window opens fully before the background starts ---- #
     def _arm_boot(self):
         """(The first frame's.) The boot's watch: a list from disk already shown (or no library to show) -> booted at
         the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. Off

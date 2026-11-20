@@ -3,7 +3,7 @@ Anki waits while a Generate runs (its `results` lock) — GENERATE_FIRST — so 
 step boundary; a strong PC mines beside it as before, and an episode you asked for (*Mine now*) goes on (a press is
 the yes, as on battery).
 
-What a wrong answer would cost: on the laptop (report #8158GX) Connect's Anki Miner and ffmpeg ran beside a Generate
+What a wrong answer would cost: on a laptop (a 3.0.16 problem report) Connect's Anki Miner and ffmpeg ran beside a Generate
 and Anki crawled; held the other way, a *Mine now* that does nothing while a Generate runs, or a desktop slowed for
 nothing. Against `FakeSteps` (real words) and the real ledger in a temp folder; the machine, the lock and Anki are
 stand-ins. Never a live Anki.

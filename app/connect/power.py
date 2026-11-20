@@ -21,18 +21,16 @@ below-normal priority, so a laptop on battery or in use never pays for it.
   Anki Miner calls start at idle priority instead (`popen_idle`, `anki_miner.LOW_PRIORITY`), and the ffmpeg it starts
   inherits it. Where this sits beside *Run things by themselves* and the bar's pause (Mado-PZ): those say whether
   Surasura works by itself; these, how hard it works while it does.
-
-- **Which machines need it more gently** (Haya-LD, 3.0.18; Sonic 2026-11-20: "is there a way to tell which machines
-  need more gently vs not?" — automatic, no setting at first): `gentle()` reads the PC — its logical CPUs, its total
-  memory, on battery or not. Fewer than STRONG_CPUS logical CPUs, less than STRONG_RAM_MB of memory, or on battery →
-  gentle: the window's background work goes one heavy job at a time, in an order (`app/services/gentle.py`), and
-  Connect's next step waits while a Generate runs. A strong desktop (this one: 24 logical CPUs, 32 GB) runs them side
-  by side as before. `CpuLoad` is the system's CPU busy share between two samples (every core, every program: Windows'
-  `GetSystemTimes`), the load the window's scheduler watches on every machine (BUSY).
-  Why these numbers: Sonic's laptop (8 logical CPUs, the 3.0.16 report #8158GX) lagged with six jobs at once; a
-  12-thread PC with 16 GB still has two or three cores free beside a Generate's pool (half the logical CPUs, K5) and
-  Anki; and 70 % busy across every core is the point past which Windows' scheduler starts sharing time slices with the
-  foreground (Anki, the window), so a background step there would be felt.
+ - **Which machines need it more gently** (Haya-LD, 3.0.18, 2026-11-20 — automatic, no setting at first): `gentle()`
+  reads the PC — its logical CPUs, its total memory, on battery or not. Fewer than STRONG_CPUS logical CPUs, less than
+  STRONG_RAM_MB of memory, or on battery → gentle: the window's background work goes one heavy job at a time, in an
+  order (`app/services/gentle.py`), and Connect's next step waits while a Generate runs. A strong desktop (this one:
+  24 logical CPUs, 32 GB) runs them side by side as before. `CpuLoad` is the system's CPU busy share between two
+  samples (every core, every program: Windows' `GetSystemTimes`), the load the window's scheduler watches on every
+  machine (BUSY). Why these numbers: a laptop with 8 logical CPUs (a 3.0.16 problem report) lagged with six jobs at
+  once; a 12-thread PC with 16 GB still has two or three cores free beside a Generate's pool (half the logical CPUs,
+  K5) and Anki; and 70 % busy across every core is the point past which Windows' scheduler starts sharing time slices
+  with the foreground (Anki, the window), so a background step there would be felt.
 
 A machine asleep runs nothing, so there is nothing to check. Never raises: a call that fails leaves things as they were.
 """

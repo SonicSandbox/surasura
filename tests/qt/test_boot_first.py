@@ -1,12 +1,12 @@
-"""Booted first, on every PC (Haya-LD, 3.0.18; Sonic 2026-11-20: "I would like it to first boot up / launch before
-doing the rest. that would be consistent across the board").
+"""Booted first, on every PC (Haya-LD, 3.0.18, 2026-11-20): the window opens fully before the background starts,
+the same on every machine.
 
 The window is *booted* when Current's list, filled from what is on disk (a view that isn't the cached first screen),
 has been drawn and its event loop has gone idle once after it — or `gentle.BOOT_MAX_S` after its first frame. Until
 then `Services.start` — the Anki look and Connect's kick, the known-words sync, the journey check, the update check,
 the chores (the indexer, the store's helper) — waits; then it starts once, and the scheduler hears it (`booted`).
 
-What a wrong answer would cost: on the laptop (report #8158GX) Current stayed blank 79 s while six background jobs
+What a wrong answer would cost: on a laptop (a 3.0.16 problem report) Current stayed blank 79 s while six background jobs
 started beside it; held the other way, a window whose list never draws (a store that can't be read) would never sync,
 mine or index at all. The duties are the bar's test's stand-ins (`tests/qt/test_jobs_bar.py`), the view a real
 `view_rows` view; `boot_gate` is turned on here (the suites run with it off: SURASURA_NO_UI_TIMERS).

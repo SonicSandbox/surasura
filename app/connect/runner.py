@@ -38,7 +38,7 @@ day's words first:
   batch, a hato drop with the window closed) is still done first. And a Connect whose program folder now holds another
   build (`Steps.replaced`: Setup or a swap put a newer Surasura under it) stops at the next step boundary and starts the
   folder's own Connect (`connect_verbs._loop`): never an old version's Connect working on beside a new one.
-- **One heavy job at a time on a gentle PC** (Haya-LD, Sonic 2026-11-20: `power.gentle` — few logical CPUs, little
+- **One heavy job at a time on a gentle PC** (Haya-LD, 2026-11-20: `power.gentle` — few logical CPUs, little
   memory, or on battery): the next step that touches Anki waits while a Generate runs (GENERATE_FIRST, its `results`
   lock: `Steps.blocked`, after the battery), so a Generate goes in at Connect's next step boundary; an ask goes on
   (a press is the yes, as on battery). A strong PC mines beside a Generate as before.

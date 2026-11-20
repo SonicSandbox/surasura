@@ -1,25 +1,24 @@
-"""Gentle on the machine (Haya-LD, 3.0.18; Sonic 2026-11-20: "anki on my laptop can get really slow when everything is
-running … new arrivals is probably something that could wait" · "yes go to more gently … is there a way to tell which
-machines need more gently vs not?"). Qt-free. One per window (`Gentle`), the one scheduler the window's background work
-asks for a turn — never one per feature.
+"""Gentle on the machine (Haya-LD, 3.0.18, 2026-11-20: a laptop and its Anki slowed down when everything started at
+once; New arrivals and the rest can wait, and which machines need it is told automatically). Qt-free. One per window
+(`Gentle`), the one scheduler the window's background work asks for a turn — never one per feature.
 
-**Booted first, on every PC** (Sonic, 2026-11-20: "I would like it to first boot up / launch before doing the rest.
-that would be consistent across the board"): the window is *booted* when Current's list, filled from what is on disk
-(the library reader's first view that isn't the cached first screen), has been drawn and the window's event loop has
-gone idle once after it (`ShellWindow._boot_after_idle`: the dispatcher's `aboutToBlock`) — or BOOT_MAX_S after its
-first frame, whichever comes first. Until then nothing in the background starts: the window holds `Services.start`
-itself (the Anki look and Connect's kick, the known-words sync, the journey's Generate, the update check, the chores:
-the indexer, the store's helper, Koe; 順's catch-up) and this scheduler holds every automatic job and step
-(WINDOW_FIRST: an automatic Generate, New arrivals, covers…), from the moment the window's services are made
-(`shell.open_services`). `ready()` is the window's word that it booted. The adaptive part below applies only after.
+**Booted first, on every PC** (2026-11-20: the window opens fully before anything else, the same on every machine):
+the window is *booted* when Current's list, filled from what is on disk (the library reader's first view that isn't
+the cached first screen), has been drawn and the window's event loop has gone idle once after it
+(`ShellWindow._boot_after_idle`: the dispatcher's `aboutToBlock`) — or BOOT_MAX_S after its first frame, whichever
+comes first. Until then nothing in the background starts: the window holds `Services.start` itself (the Anki look and
+Connect's kick, the known-words sync, the journey's Generate, the update check, the chores: the indexer, the store's
+helper, Koe; 順's catch-up) and this scheduler holds every automatic job and step (WINDOW_FIRST: an automatic Generate,
+New arrivals, covers…), from the moment the window's services are made (`shell.open_services`). `ready()` is the
+window's word that it booted. The adaptive part below applies only after.
 
 **The order.** The window first → Generate (only when it's needed) → Connect's mining → the rest last, and only while
 the machine is quiet. *The rest* (`BACKGROUND`) is New arrivals' estimates, the indexer's catch-up, 順's re-order
 catch-up (and the one after a Generate), covers from online, the library store's helper (`library-maintain`: the
-window's start and focus checks; one at a time in every program, `library_store.spawn_maintain`). A press always goes first: every rule here is asked of
-automatic work only (the registry's `gate(…, automatic=True)`; a re-order a move asked for — `poke` — is never held),
-and nothing already running is stopped: a held kind waits **between its steps** (a job's start, the next estimate the
-arrivals worker is sent, the next round of covers, the next re-order catch-up).
+window's start and focus checks; one at a time in every program, `library_store.spawn_maintain`). A press always goes
+first: every rule here is asked of automatic work only (the registry's `gate(…, automatic=True)`; a re-order a move
+asked for — `poke` — is never held), and nothing already running is stopped: a held kind waits **between its steps**
+(a job's start, the next estimate the arrivals worker is sent, the next round of covers, the next re-order catch-up).
 
 **Which machines** (`power.gentle`: logical CPUs, total memory, on battery — measured at the start, the battery read
 again every BATTERY_EVERY_S): on a **gentle** PC (a laptop, a small or unplugged one) —

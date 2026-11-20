@@ -9395,7 +9395,7 @@ def take_owed(language):
 def spawn_maintain(language, *extra):
     """Start the helper detached and untracked (§6.7: not in `active_processes`, so closing the dashboard
     doesn't kill it), with the same arguments frozen and from source. Spawns nothing while an update is
-    staged, nor while one is at work already (Haya-LD, Sonic's report #93EQV7: five started within 50 s of a start —
+    staged, nor while one is at work already (Haya-LD, a 3.0.16 problem report: five started within 50 s of a start —
     the window's start and focus, the analyzer's read, the idle trigger — each a program's start, then a 10 s wait
     for the lock and exit 5): the ask is remembered (`take_owed`), and what it would have done the running one, or
     the next trigger, does. Returns the Popen, or None."""

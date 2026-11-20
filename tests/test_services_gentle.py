@@ -2,7 +2,7 @@
 `power.CpuLoad`, and the window's one scheduler (`services.gentle.Gentle`) — the registry's gate for automatic jobs,
 and `hold` / `wait_turn` for the steps outside the registry (New arrivals' estimates, 順's re-order catch-up, covers).
 
-What a wrong answer would cost: on Sonic's laptop (report #8158GX) six jobs started inside two minutes of a cold start
+What a wrong answer would cost: on a laptop (a 3.0.16 problem report) six jobs started inside two minutes of a cold start
 and Anki crawled; a scheduler that holds too much costs the opposite — a press that waits behind background work (the
 rule: a press always goes first), a strong desktop slowed for nothing, a busy PC whose estimates never come, or a job
 held forever because the window's list was never seen. Every reading (the machine, the CPU, your review in Anki, the
@@ -26,7 +26,7 @@ ZH = os.path.join(os.path.dirname(__file__), "Test Resources", "zh", "chinese_te
 
 # --- which machines -------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("cpus, total_mb, battery, expect", [
-    (8, 32 * 1024, False, (True, "8 logical CPUs")),          # Sonic's laptop's class: few cores
+    (8, 32 * 1024, False, (True, "8 logical CPUs")),          # a laptop's class: few cores
     (24, 8 * 1024, False, (True, "8 GB of memory")),          # many cores, little memory
     (24, 32 * 1024, True, (True, "on battery")),              # this desktop unplugged (a UPS, a laptop)
     (24, 32 * 1024, False, (False, None)),                    # this desktop: side by side as before
@@ -178,7 +178,7 @@ def test_a_press_always_goes_first_whatever_the_scheduler_holds():
 
 @pytest.mark.parametrize("gentle", [True, False])
 def test_on_every_pc_nothing_automatic_starts_before_the_window_booted(gentle):
-    # why (Sonic 2026-11-20): "first boot up / launch before doing the rest … consistent across the board"
+    # why (2026-11-20): the window opens fully before anything else, the same on every machine
     w = _World(gentle=gentle)
     generate, _ = w.submit("generate", label="Generating (automatic)")
     estimates, _ = w.submit("arrivals-ja")
@@ -537,7 +537,7 @@ def test_a_pressed_estimate_goes_before_the_held_ones_and_a_long_hold_kills_no_h
     assert not any("stuck" in line for line in logged), logged
 
 
-# --- the library store's helper: one at a time (Sonic's report #93EQV7: five within 50 s of a start) -------------- #
+# --- the library store's helper: one at a time (a 3.0.16 problem report: five within 50 s of a start) ------------ #
 class _Running:
     def __init__(self):
         self.code = None
@@ -628,3 +628,37 @@ class _NoSettings:
 class _Timer:
     def cancel(self):
         pass
+
+
+def test_a_helper_asked_for_while_the_windows_own_ran_is_looked_at_again_when_it_ends(monkeypatch):
+    from app import library_store as LS
+    from app.services import chores as C
+    monkeypatch.setattr(LS, "_owed", {"ja"})            # a trigger came while this helper ran
+    asked = []
+    chores = C.Chores(jobs.JobRegistry(), _NoSettings(), "ja", update_staged=lambda: False,
+                      timer=lambda delay, call: _Timer(), needed=lambda *a: False, log_folder=None)
+    monkeypatch.setattr(chores, "_maintain", lambda: asked.append("check"))
+
+    class _Ended:
+        pid = 4242
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+    try:
+        chores._watch(_Ended(), "ja")
+        assert _wait_for(lambda: asked == ["check"]), "its end asks the check once more"
+        assert not LS.take_owed("ja"), "the ask is taken, never asked twice"
+    finally:
+        chores.close(store=False)
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()

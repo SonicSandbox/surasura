@@ -13,9 +13,10 @@ started again when it passes `LOG_CAP`. Requests are written and answers read on
 the client's own threads; each answer goes to its request's callback (or `on_answer`) on the reader thread — a window
 posts it to its own queue. Haya-LD: each request waits for its turn before it is sent (`gentle.hold`: you reviewing in
 Anki, a busy computer, a heavier job on a gentle PC — the step between two estimates), and the worker's end is one
-line in the app's log (how long it lived, its exit, how many it answered, and why the window ended it). The worker ends by itself after its idle minutes: the next request starts it again, and a
-request the ending worker never answered is sent once more to the new one. A worker that crashed answers each request
-it held with {"id", "error"}. Nothing here imports Qt, Tk, pandas or the analyzer (the import guard).
+line in the app's log (how long it lived, its exit, how many it answered, and why the window ended it). The worker
+ends by itself after its idle minutes: the next request starts it again, and a request the ending worker never
+answered is sent once more to the new one. A worker that crashed answers each request it held with {"id", "error"}.
+Nothing here imports Qt, Tk, pandas or the analyzer (the import guard).
 """
 import itertools
 import json

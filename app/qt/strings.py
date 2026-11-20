@@ -2238,8 +2238,8 @@ PATH_STAGES = {"board": "On board", "episode": "First episode", "automate": "Aut
 PATH_STAGE_NAME = "{stage}: {state}"                # a stone of the string, for screen readers
 PATH_STAGE_STATES = {"done": "done", "now": "now", "later": "later"}
 PATH_STRING_NAME = "Your path: {stages}"
-PATH_NOW = "NOW · {stage}"                           # the panel's one list: the stage to do now …
-PATH_NOW_LATER = "NOW"                               # … (every stage done: the later steps useful now)
+PATH_NOW = "TO DO · {stage}"                         # the panel's one list: the stage to do now (never "NOW":
+PATH_NOW_LATER = "TO DO"                             # 2.x's tier word) … (every stage done: later steps useful now)
 PATH_NEWS = "NEW FOR YOU · {version}"                # … this update's notes …
 PATH_LATER = "LATER ON YOUR PATH"                    # … the later stages, and steps that can't apply yet …
 PATH_DONE = "DONE"                                   # … and what's done, to do again
@@ -2247,6 +2247,7 @@ PATH_TICK = "✓"
 PATH_TICK_NAME = "{title}: done"
 PATH_OPEN_NAME = "{title}: not done yet"
 PATH_DO = "Do it"                                    # a step's own press, in the panel
+PATH_DO_NAME = "{press}: {title}"                    # … for screen readers
 PATH_AGAIN = "Again"                                 # … a done step's, to do it again
 # Kantan-S2 (Sonic 2026-11-13: past steps to try again, steps that can't apply now; no subtitles — a step's line is
 # behind its ?; every word PROVISIONAL)

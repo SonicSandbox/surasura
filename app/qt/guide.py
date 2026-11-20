@@ -28,7 +28,7 @@ from PyQt6.QtGui import QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
                              QVBoxLayout, QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.qt import motion, shadow, stones, strings, style
 from app.qt.frame import _Away, _iris
 from app.qt.tooltip import AboutMark, FitTitle
@@ -198,7 +198,7 @@ class _StageRow(QWidget):
             p.setFont(font)
             p.setPen(style.qcolor(c["ink"] if state == path_service.NOW else c["overlay-ink-faint"]))
             p.drawText(QRectF(x - step / 2, STAGE_BAND, step, self._label_h), Qt.AlignmentFlag.AlignCenter,
-                       strings.PATH_STAGES[stage])
+                       scrub.shown(strings.PATH_STAGES[stage]))
         p.end()
 
 
@@ -248,7 +248,7 @@ class _StepRow(QWidget):
             b = QPushButton(words, self)
             b.setObjectName("guideshow")
             b.setToolTip(strings.PATH_DO_TIPS[step_id])
-            b.setAccessibleName(f"{words}: {title}")
+            b.setAccessibleName(strings.PATH_DO_NAME.format(press=words, title=title))
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)

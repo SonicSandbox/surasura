@@ -321,6 +321,16 @@ def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key
         assert ran[0][1] == "backfill"
 
 
+def test_step_fours_press_is_the_one_entry_point_the_picker_fills(lib_world, monkeypatch):
+    # the seam with Mado-EZC (lane 3): the card's and the panel's *Pick your cards* both reach `pick_your_cards`
+    win = lib_world
+    went = []
+    monkeypatch.setattr(win, "pick_your_cards", lambda control=None: went.append(control))
+    win.path_press("yours", "button")
+    win.path_act("yours")
+    assert went == ["button", None]
+
+
 def test_turn_on_cards_made_for_you_runs_connects_switch_and_tells_the_window(lib_world, monkeypatch):
     from app.qt import settings_connect
     win = lib_world

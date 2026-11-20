@@ -78,6 +78,7 @@ def file_lines(sentences, song_marks=()):
     (parse_ass: each caption's `script_len`, 1 when every event in it is in a song style); a sentence lying wholly in
     song captions is STYLED — matched by place, so a line said that is also a lyric of the same file stays. When the
     sentences don't add up to the captions, no STYLED mark (the pairs still find a song that repeats)."""
+    sentences = list(sentences)                  # read twice below: a generator would give nothing the second time
     bare = [plain(text) for text, _tokens in sentences]
     styled = _styled([script_len(text) for text, _tokens in sentences], song_marks) if song_marks else ()
     out = []

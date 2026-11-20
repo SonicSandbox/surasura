@@ -3071,7 +3071,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language):
             lines = held.get(path)
             if lines is None and store is None and os.path.exists(path):
                 facts = {}
-                lines = song_lines.file_lines(tokenizer.tokenize_sentences(extract_text(path, language, facts)),
+                lines = song_lines.file_lines(list(tokenizer.tokenize_sentences(extract_text(path, language, facts))),
                                               facts.get("song_marks") or ())
             files.append((path, lines))
         out.update((path, numbers) for path, numbers in songs_left_out(files).items() if numbers)

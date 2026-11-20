@@ -308,3 +308,28 @@ def test_a_marked_run_needs_only_three_episodes_in_a_long_show():
     out = song_lines.left_out(files)
     assert out["e0"] == {1, 2, 3, 4}, "the ♪ ending's four lines"
     assert not out["e10"]
+
+
+def test_a_three_line_exchange_repeated_every_episode_stays():
+    """Three lines are a catchphrase's exchange as often as a song's: a run needs four."""
+    exchange = [[song_lines.line_key(t), 0] for t in ("ただいま", "おかえり", "ご飯できてるよ")]
+    files = [(f"e{n}", n, [[song_lines.line_key(f"第{n}話の始まり"), 0]] + exchange
+              + [[song_lines.line_key(f"第{n}話の続き"), 0]]) for n in range(8)]
+    assert not any(song_lines.left_out(files).values())
+
+
+def test_a_books_chapters_never_lose_a_repeated_passage(tmp_path):
+    """Only spoken files (subtitles, transcripts) have songs: a poem every chapter of a book opens with stays — while
+    the same chapters as subtitles of a show would lose it."""
+    verse = "風が吹いている\n空が晴れている\n鳥が歌っている\n花が咲いている\n"
+    found = []
+    for n in range(1, 5):
+        path = tmp_path / "data" / "ja" / "HighPriority" / "Book" / f"chapter {n:02d}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(verse + f"第{n}章の本文はここから始まる。\n", encoding="utf-8")
+        found.append((str(path), "high", 10, "text"))
+    data_dir = str(tmp_path / "data" / "ja")
+    tokenizer = analyzer.JapaneseTokenizer()
+    assert analyzer.song_sentences(found, data_dir, None, tokenizer, "ja") == {}
+    spoken = [(p, label, weight, "subtitle") for p, label, weight, _t in found]
+    assert len(analyzer.song_sentences(spoken, data_dir, None, tokenizer, "ja")) == 4

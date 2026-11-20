@@ -110,6 +110,7 @@ KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
 KEPT += ("side_by_side",)                       # Kyou-A: the library's *New cards come from* (Current's top two)
+KEPT += ("unlock",)                             # Mado-CV: *Look for a cover again* (the cover's lock let go)
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
@@ -613,14 +614,17 @@ class Writer:
         return self._put({"op": "set_media_type", "ids": [], "work_ids": list(work_ids), "media_type": media_type,
                           "label": label})
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False, unlock=False):
         """`Store.set_cover`: a title's cover record; a fetch (`locked=False`) never writes over the user's locked
         choice (nothing written, `on_reread`). `auto` (the disk scan's, a book's at its import): nobody's choice —
-        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again)."""
+        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again). `unlock`:
+        the user's *Look for a cover again* (Mado-CV) — the lock let go, on the Undo stack."""
         cmd = {"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref, "path": path,
                "locked": bool(locked), "label": label}
         if auto:
             cmd["auto"] = True
+        if unlock:
+            cmd["unlock"] = True
         return self._put(cmd)
 
     # --- W3.2 B: a producer's files into New arrivals (RUNBOOK §1 *Routing*; Sonic's W3.2-2) ------------------- #
@@ -1195,7 +1199,7 @@ class Writer:
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
             return store.set_cover(cmd["work_id"], cmd["source"], ref=cmd["ref"], path=cmd["path"],
-                                   locked=cmd["locked"])
+                                   locked=cmd["locked"], unlock=bool(cmd.get("unlock")))
         if op == "forget_covers":                   # W3.2 Q7: the records first, then their files
             from app.services import covers_online
             sql = "SELECT cover_path FROM works WHERE cover_path LIKE 'cache:%'"

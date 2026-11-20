@@ -149,6 +149,34 @@ def test_a_failed_round_after_a_window_opened_with_anki_closed_keeps_the_kana_ca
         assert json.load(f)["studied_said"] == [[HELP, HELP_SAID]]
 
 
+def test_a_cache_from_before_counts_its_kana_card_once_anki_says_its_sentence(lib):
+    # a chip saved before this (its studied words, no sentences): the same words read again from Anki, now with the
+    # kana card's sentence, are a new answer — never skipped as "the same words as last read"
+    with open(lib.cache, "w", encoding="utf-8") as f:
+        json.dump({"v": card_chip.CACHE_VERSION, "studied": [HELP]}, f, ensure_ascii=False)
+    chips = lib.chips()
+    try:
+        before = _count(lib, chips)
+        chips.studied({HELP: anki_words.Standing(1, sentence=HELP_SAID)})
+        after = _count(lib, chips, 2)
+    finally:
+        chips.close()
+    assert chips.idle(10)
+    assert after[1] == before[1] + 1
+
+
+def test_the_chip_reads_the_backlog_files_kana_cards_with_their_sentences():
+    # what the sync saved (anki_backlog.json) is what the chip reads: each card's word, and a kana card's sentence
+    path = anki_sync._backlog_path("ja")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": anki_sync.BACKLOG_VERSION, "notes": {
+            "1": {"word": HELP, "keys": [HELP], "sentence": HELP_SAID},
+            "2": {"word": "手伝う", "keys": ["手伝う"]},
+            "3": {"word": "まく", "keys": ["まく"], "sentence": ""}}}, f, ensure_ascii=False)
+    assert card_chip._backlog_words("ja") == {HELP, "手伝う", "まく", (HELP, HELP_SAID)}
+
+
 def test_the_sync_keeps_a_kana_cards_sentence_and_nothing_for_any_other(tmp_path):
     # anki_backlog.json's entry and the studied read's Standing carry the sentence the chip reads the card in
     def note(word, sentence):

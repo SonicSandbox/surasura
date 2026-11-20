@@ -312,6 +312,18 @@ def test_the_word_is_the_known_syncs_word_field_read_as_junban_reads_a_card():
     assert _practise(fake, "struggling", settings=_settings(fields=["Word"])) == [("撒く", 2, False)]
 
 
+def test_a_kana_cards_standing_carries_its_sentence_for_the_card_chip():
+    """Kyou-KN: a studied card written in kana alone carries its sentence on its Standing (the ✓ chip reads its word
+    there, Junban's rule: てつだう in 手伝ってくれない is 手伝う); a card with a kanji carries none."""
+    fake = CardCollection()
+    said = "文化祭の準備、<b>てつだって</b>くれない？"
+    fake.card_note("てつだう", [{"ivl": 3}], fields=[("Sentence", said), ("Word", "てつだう")])
+    fake.card_note("撒く", [{"ivl": 3}], fields=[("Sentence", "種を撒く。"), ("Word", "撒く")])
+    with mock.patch("urllib.request.urlopen", fake):
+        states = anki_words.word_states("ja", _settings(fields=["Word"]))
+    assert states["てつだう"].sentence == said and states["撒く"].sentence == ""
+
+
 def test_chinese_cards_are_read_the_same_way():
     fake = CardCollection()
     fake.card_note("冒险", [{"ivl": 3, "lapses": 5}], deck="中文")

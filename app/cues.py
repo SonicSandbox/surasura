@@ -53,6 +53,7 @@ class Cues(list):
     text's sentences (`reading`), not a subtitle's lines."""
     joiner = ""
     units = False
+    clues = None        # (Japanese .srt) the file's own name clues, read as a Generate reads them (names.file_clues)
 
 # One word said in a cue: the analyzer's key and spellings (lemma, reading, surface, orth), the index of its cue,
 # the sentence it was read in (its text, as the tokenizer yields it), and (Japanese) the tagger's node it was read
@@ -185,6 +186,9 @@ def read(path, language="ja"):
         return cues
     content = read_text(path, language)
     srt = lower.endswith(".srt")
+    if srt and language == "ja":
+        from app import names
+        cues.clues = names.file_clues(content)      # as extract_text reads them: the words are the token store's
     if not srt:                             # read as a Generate reads it: TV captions cleaned (ENGINE_REVISION 31)
         from app import caption_clean
         content = caption_clean.clean(content, arrows=False)     # arrows kept: "runs on", as a Generate reads
@@ -223,11 +227,13 @@ def reading(path, language="ja", script="asis", tokenizer=None):
     if tokenizer is None:
         tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                      else analyzer.JapaneseTokenizer())
-    text = analyzer.extract_text(str(path), language) or ""
+    facts = {}          # its own name clues too (Japanese), read as the token store reads them
+    text = analyzer.extract_text(str(path), language, facts) or ""
     shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
     cues, out, last, cursor, said = Cues(), [], None, 0, 0
     cues.units = True
-    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language):
+    cues.clues = facts.get("clues")
+    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language, cues.clues):
         if sentence is not last:
             last = sentence
             found = shown.find(sentence, said) if sentence else -1
@@ -274,18 +280,25 @@ def _text(cues, language):
     return "".join(parts), starts
 
 
-def _read(tokenizer, text, language):
+def _read(tokenizer, text, language, clues=None):
     """[(sentence, (lemma, reading, surface, orth), node)] of `text`, as the tokenizer reads it; the node (Japanese)
-    found by reading the text once more through `join_affixes` and matching surfaces in order."""
-    read = [(sentence, token) for sentence, sentence_tokens in tokenizer.tokenize_sentences(text)
-            for token in sentence_tokens]
+    found by reading the text once more through `join_affixes` and matching surfaces in order. `clues`: the file's own
+    name clues (Japanese), applied as the token store applies them."""
+    sentences = tokenizer.tokenize_sentences(text, clues=clues) if clues else tokenizer.tokenize_sentences(text)
+    read = [(sentence, token) for sentence, sentence_tokens in sentences for token in sentence_tokens]
     if language != "ja":
         return [(sentence, token, None) for sentence, token in read]
     joins = analyzer.affix_joins()
-    # a sound standing on its own is no token (analyzer § Sounds are no words): never a node a word is paired with
-    nodes = [node for line in text.split("\n")
-             for node in analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)
-             if node.__class__ is not analyzer.SoundNode]
+    work = None
+    if clues:
+        from app import names
+        work = names.WorkNames(clues)
+    nodes = []
+    for line in text.split("\n"):
+        words = analyzer.join_affixes(tokenizer.tagger(line), joins, library=tokenizer.library)
+        # a sound standing on its own is no token (analyzer § Sounds are no words): never a node a word is paired with
+        nodes.extend(node for node in (work.words(tokenizer, line, list(words), joins) if work is not None else words)
+                     if node.__class__ is not analyzer.SoundNode)
     out, at = [], 0
     for sentence, token in read:
         node = None
@@ -311,7 +324,7 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
         # Chinese words come out in the script asked for: look for them in the text so written (length-preserving)
         shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
         offsets, cursor = [offset for offset, _cue in starts], 0
-        for sentence, (lemma, reading, surface, orth), node in _read(tokenizer, text, language):
+        for sentence, (lemma, reading, surface, orth), node in _read(tokenizer, text, language, cues.clues):
             found = shown.find(surface, cursor) if surface else -1
             at = cursor if found < 0 else found
             cursor = at + len(surface)

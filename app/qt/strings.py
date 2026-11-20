@@ -2356,6 +2356,7 @@ PICK_SKIPPED_MORE = "Skipped: {words} and {n} more"
 PICK_SKIP_WHY = {"rare": "{word} (rarer than your Level)", "no-i1": "{word} (no sentence where it's the only new word)",
                  "none": "{word}"}
 PICK_SKIP_SEP = " · "
+PICK_SKIPPED_ONLY = "Skipped: {n} other words"
 PICK_TRADEOFF = {
     "list": "Every word on your list gets a card, from its best sentence. If that sentence has two new words, so does "
             "the card.",
@@ -2366,6 +2367,7 @@ PICK_TRADEOFF = {
 PICK_STATE = {1: "1 card"}
 PICK_STATE_MORE = "{n} cards"
 PICK_STATE_LATER = "{m} later"
+PICK_STATE_LATER_UP_TO = "up to {m} later"
 PICK_STATE_SKIPPED = "{k} skipped"
 # the picker over the window: three steps (the second only with 順, Japanese)
 PICK_EYEBROW = "CARDS MADE FOR YOU"

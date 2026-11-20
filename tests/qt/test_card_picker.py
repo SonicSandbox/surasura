@@ -230,7 +230,7 @@ def test_your_list_is_first_and_recommended_then_only_i_plus_one_and_each_line_i
     assert names["i1"] == "Only i+1 sentences"
     for value, shown, _t in options:
         assert shown.startswith(names[value])
-    assert picker.words._lines == ["4 cards · 1 skipped", "3 cards · 2 later", "5 cards"]
+    assert picker.words._lines == ["4 cards · 1 skipped", "3 cards · up to 2 later", "5 cards"]   # (the sample)
     assert picker.where.text() == strings.PICK_WHERE                           # it says which setting it is
     picker.close()
 

@@ -31,7 +31,7 @@ STAR_FILE = "star.json"
 # and Fine-tune; *Your list* first and recommended, *Only i+1 sentences* next (Sonic: it is i+1, and it skips words —
 # important ones too — that have no such sentence), *Every new word* last
 WORDS = (("list", "Your list", "Recommended. i+1 and more: each word on your list, on an i+1 line if it has one."),
-         ("i1", "Only i+1 sentences", "Each card's sentence has one new word; a word without one is skipped."),
+         ("i1", "Only i+1 sentences", "One new word per sentence, list or not; a word without one is skipped."),
          ("unknown", "Every new word", "Rare words too: every word of the episode you don't know yet."))
 # anki_sync_delay_min (E1.1 04 §3)
 SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start and Anki close", "off"))

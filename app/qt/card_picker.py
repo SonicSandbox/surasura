@@ -133,7 +133,8 @@ class Chip(QWidget):
 
 # --- the result: the cards a choice gives, drawn as cards (round 2) ------------------------------------------------ #
 WORD_INK = {"list": "accent", "rare": "accent-2", "second": "warn"}
-PICK_MODES = ("list", "i1", "unknown")      # the choices' order (dropping *Every new word* is taking it out here)
+# the choices' order: Settings' own (`settings_values.WORDS`: dropping *Every new word* is taking it out there)
+PICK_MODES = tuple(value for value, _label, _line in settings_values.WORDS)
 TILES = 6                                   # cards drawn at most in the picker (Essentials: TILES_SMALL)
 TILES_SMALL = 2
 
@@ -244,8 +245,9 @@ def get_words(r, shown):
 
 
 def skipped_words(r):
+    """*Skipped:* each drawn word and why, *and N more* for the episode's others; none drawn: their count alone."""
     if not r["skipped"]:
-        return ""
+        return strings.PICK_SKIPPED_ONLY.format(n=r["skipped_all"]) if r["skipped_all"] else ""
     words = strings.PICK_SKIP_SEP.join(strings.PICK_SKIP_WHY[s["why"]].format(word=s["surface"]) for s in r["skipped"])
     more = r["skipped_all"] - len(r["skipped"])
     return strings.PICK_SKIPPED_MORE.format(words=words, n=more) if more > 0 else strings.PICK_SKIPPED.format(words=words)
@@ -256,7 +258,8 @@ def state_words(picture, mode):
     r = card_sample.result(picture, mode)
     parts = [strings.PICK_STATE.get(r["here"]) or strings.PICK_STATE_MORE.format(n=r["here"])]
     if r["elsewhere"]:
-        parts.append(strings.PICK_STATE_LATER.format(m=r["elsewhere"]))
+        later = strings.PICK_STATE_LATER if r["exact"] else strings.PICK_STATE_LATER_UP_TO
+        parts.append(later.format(m=r["elsewhere"]))
     if r["skipped_all"]:
         parts.append(strings.PICK_STATE_SKIPPED.format(k=r["skipped_all"]))
     return words_label(parts)
@@ -310,7 +313,8 @@ class Result(QWidget):
             return
         self.picture, self.mode = picture, mode
         r = card_sample.result(picture, mode)
-        for tile in self.tiles:
+        old, self.tiles = self.tiles, []
+        for tile in old:
             self.grid.removeWidget(tile)
             tile.hide()
             tile.deleteLater()
@@ -324,8 +328,9 @@ class Result(QWidget):
         if not self.small:
             self.heading.setText(get_words(r, len(cards)))
             self.about.set_about(name_of(mode), strings.PICK_TRADEOFF[mode])
-            self.skipped.setText(skipped_words(r))
-            self.skipped.setVisible(bool(r["skipped"]))
+            words = skipped_words(r)
+            self.skipped.setText(words)
+            self.skipped.setVisible(bool(words))
 
     def set_mode(self, mode):
         if self.picture is not None:

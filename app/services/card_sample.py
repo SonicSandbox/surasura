@@ -4,12 +4,12 @@
 The setting is `connect_mine_words` (*Words to make cards from*): which of an episode's new words Connect sends to Anki
 Miner. The picture shows up to four lines of the learner's top episode and, for each choice, what each word on them
 gets: a card from this episode (amber when its card's lines hold another new word), no card because it isn't on the
-list (rare), a card **from another episode** (only *Only one-new-word sentences*, and only when another episode of the
+list (rare), a card **from another episode** (only *Only i+1 sentences*, and only when another episode of the
 mine line has a line where it is the only new word), or none.
 
 **Counted by Connect's own picker, never again here:** `sample` runs `app.connect.pick.pick` itself — through
 `arrivals.pick_cues`, with the warm view's known words, its learning rule, its tokenizer, the list and the cards the
-last sync saved — once per choice on the top episode, and *Only one-new-word sentences* on the other episodes of the
+last sync saved — once per choice on the top episode, and *Only i+1 sentences* on the other episodes of the
 mine line. So a card's span (`pick.others()`: the line and the lines its expansion adds), one card per word (a word with
 a card is never sent again) and the list are the picker's. `picture` only reads those answers.
 
@@ -42,7 +42,18 @@ FALLBACK = {
 }
 
 
+_FALLBACKS = {}
+
+
 def fallback(language):
+    """The bundled picture (`_fallback`), made once per language and handed out as the same object: never change it."""
+    key = language if language in FALLBACK else "ja"
+    if key not in _FALLBACKS:
+        _FALLBACKS[key] = _fallback(key)
+    return _FALLBACKS[key]
+
+
+def _fallback(language):
     """The bundled picture for `language` (Japanese for any other): the same shape as `picture`'s, `sample` True. Its
     *another episode* is only "up to" (`elsewhere_exact` False): no library was read."""
     data = FALLBACK.get(language) or FALLBACK["ja"]
@@ -126,8 +137,11 @@ def picture(picks, elsewhere=(), source=""):
         words = []
         for k in keys:
             w = drawn_at(k)
+            # each mode's own sentence for the word (two modes may cut its card from different lines)
+            texts = {mode: by_mode[mode][k].get("line_text") for mode in MODES if k in by_mode[mode]}
             words.append({"word": w.get("word"), "reading": w.get("reading"), "surface": w.get("surface") or w.get("word"),
-                          "listed": bool(w.get("listed")), "outcome": outcome(k, bool(w.get("listed")))})
+                          "listed": bool(w.get("listed")), "outcome": outcome(k, bool(w.get("listed"))),
+                          "texts": texts})
         lines.append({"text": first.get("line_text") or "", "new": 1 + int(first.get("other_new") or 0),
                       "words": words})
     counts = {mode: {"here": len(by_mode[mode]), "elsewhere": 0} for mode in MODES}
@@ -150,9 +164,13 @@ def result(picture, mode):
             got = w["outcome"][mode]
             surface = w.get("surface") or w.get("word") or ""
             if got in ("card", "amber", "other"):
-                text = line["text"] if got == "amber" or (got == "card" and line["new"] == 1) else ""
-                others = [x.get("surface") or x.get("word") or "" for x in line["words"] if x is not w] \
-                    if got == "amber" else []
+                own = (w.get("texts") or {}).get(mode)      # this mode's own sentence, when the picker named it
+                if own is not None and own != line["text"]:
+                    text, others = (own, []) if got != "other" else ("", [])
+                else:
+                    text = line["text"] if got == "amber" or (got == "card" and line["new"] == 1) else ""
+                    others = [x.get("surface") or x.get("word") or "" for x in line["words"] if x is not w] \
+                        if got == "amber" else []
                 cards.append({"word": w.get("word"), "surface": surface, "text": text, "outcome": got,
                               "others": others})
             else:
@@ -185,16 +203,20 @@ def sample(view, paths, listed, carded=None, send_grammar=True, read=None):
                                       tokens=tokens)["words"] for mode in MODES}
     here = {_key(w) for w in picks["i1"]}
     wanted = {_key(w) for w in picks["unknown"]} - here
-    elsewhere = set()
+    elsewhere, missed = set(), False
     for path in paths[1:]:
         if not wanted - elsewhere:
             break                                   # every word left has its other episode already
         try:
             other = arrivals.pick_cues(view, read(path), listed, send_grammar, mode="i1", carded=carded)["words"]
         except Exception:                           # an episode that can't be read or picked: it carries nothing,
-            continue                                # and the rest of the picture stands
+            missed = True                           # and the rest of the picture stands (its count only "up to")
+            continue
         elsewhere |= {_key(w) for w in other} & wanted
-    return picture(picks, elsewhere, source=os.path.splitext(os.path.basename(paths[0]))[0])
+    out = picture(picks, elsewhere, source=os.path.splitext(os.path.basename(paths[0]))[0])
+    if out is not None and missed:
+        out["elsewhere_exact"] = False
+    return out
 
 
 def top(language):

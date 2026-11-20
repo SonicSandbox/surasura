@@ -273,6 +273,45 @@ def test_a_choices_result_is_its_cards_and_its_skipped_words_each_with_why():
     assert card_sample.result(alone, "i1")["skipped_all"] == 2
 
 
+def test_a_card_shows_the_sentence_its_own_mode_cuts_it_from():
+    # Why: two choices may cut one word's card from different lines (the list's taken lines differ from every new
+    # word's); each card shows its own mode's sentence, never another mode's, and underlines no other word it can't see.
+    one = {"word": "急に", "reading": "キュウニ", "surface": "急に", "listed": True, "other_new": 0, "line_start": 17.6,
+           "line_text": "ええ、駅まで歩いてきたら、急に雨が降ってきて。"}
+    first = {"word": "出てくる", "reading": "デテクル", "surface": "出てくる", "listed": True, "other_new": 1,
+             "line_start": 103.6, "line_text": "何回も出てくる言葉だけ、あとで調べるんです。"}
+    other_line = dict(one, other_new=1, line_start=5.0, line_text="急に雨が強くなってきた。")
+    pic = card_sample.picture({"list": [one, first], "unknown": [other_line, first], "i1": [one]})
+    unknown = {c["surface"]: c for c in card_sample.result(pic, "unknown")["cards"]}
+    assert unknown["急に"]["text"] == "急に雨が強くなってきた。" and unknown["急に"]["others"] == []
+    listed = {c["surface"]: c for c in card_sample.result(pic, "list")["cards"]}
+    assert listed["急に"]["text"] == one["line_text"]
+    assert listed["出てくる"]["others"] == [] and listed["出てくる"]["outcome"] == "amber"
+
+
+def test_a_later_episode_that_cant_be_read_makes_the_count_up_to(monkeypatch):
+    # Why: an episode of the line that can't be read carries nothing — the picture still stands, but its *from a later
+    # episode* count is no longer exact ("up to").
+    from app import arrivals
+    words = {"a.srt": [{"word": "急に", "reading": "キュウニ", "surface": "急に", "listed": True, "other_new": 0,
+                        "line_start": 1.0, "line_text": "急に雨が降ってきて。"},
+                       {"word": "出てくる", "reading": "デテクル", "surface": "出てくる", "listed": True, "other_new": 1,
+                        "line_start": 2.0, "line_text": "何回も出てくる言葉だけ、あとで調べるんです。"}]}
+
+    def pick_cues(view, read_, listed, send_grammar=True, mode="list", carded=None, tokens=None):
+        if read_ == "bad.srt":
+            raise ValueError("unreadable")
+        ws = words.get(read_, [])
+        return {"words": [w for w in ws if mode != "i1" or not w["other_new"]]}
+    monkeypatch.setattr(arrivals, "pick_cues", pick_cues)
+    monkeypatch.setattr("app.cues.tokens", lambda *a, **k: [])
+    view = type("V", (), {"language": "ja", "script": None, "tokenizer": None})()
+    pic = card_sample.sample(view, ["a.srt", "bad.srt"], {}, read=lambda path: path)
+    assert pic is not None and pic["elsewhere_exact"] is False
+    assert card_sample.sample(view, ["a.srt"], {}, read=lambda path: path)["elsewhere_exact"] is True
+    assert card_sample.fallback("ja") is card_sample.fallback("ja")       # the sample made once: nothing redrawn
+
+
 def test_an_episode_without_a_two_new_word_line_is_drawn_as_the_bundled_sample():
     # Why: the picture exists to show one new word vs two; an episode whose list words all sit alone can't show it,
     # so the window draws the bundled sample (named a sample) instead of a picture that teaches nothing.

@@ -78,15 +78,17 @@ def test_with_a_window_open_it_still_looks_every_2_minutes(tmp_path, ledger):
     assert slept == [runner.LOOK_EVERY_S] * 2 and "no_window" not in summary
 
 
-def test_the_window_closing_during_the_waits_ends_connect_at_its_next_look(tmp_path, ledger):
-    # why: the window open at the first look and closed during the pause: the next look is the last one
-    _steps, summary, slept = _run(tmp_path, ledger, dict(WAITING, window=[True, False]), looks=5)
+def test_the_window_closing_during_the_waits_ends_connect_at_its_next_look(tmp_path, ledger, monkeypatch):
+    # why: the window open at the first look and closed during the pause: the next look is the last one (the first
+    # answer is Connect's start's own look since 3.0.17, kept for the run: `_window_gone`)
+    monkeypatch.setattr(runner, "WINDOW_LOOK_S", 3600, raising=False)
+    _steps, summary, slept = _run(tmp_path, ledger, dict(WAITING, window=[True, True, False]), looks=5)
     assert slept == [runner.LOOK_EVERY_S] and summary["looks"] == 2 and summary.get("no_window") is True
 
 
 def test_work_it_can_do_now_is_done_with_no_window_open(tmp_path, ledger):
-    # why: a hato drop with the window closed, or a batch the window's close came in the middle of, is still mined:
-    # only waiting needs a window
+    # why: a hato drop with the window closed is still mined: only waiting needs a window (a Connect that worked
+    # beside a window stops with it since 3.0.17: test_window_close_cut.py)
     steps, summary, slept = _run(tmp_path, ledger, {"window": False})
     assert ledger.jobs("ja")[0]["state"] == "done" and any(e[0] == "mine" for e in steps.log)
     assert slept == [] and "no_window" not in summary, "it ended because nothing was left, as before"

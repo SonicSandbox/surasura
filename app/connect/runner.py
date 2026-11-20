@@ -232,6 +232,13 @@ JUNBAN_PAUSED = PAUSED_WAITS.format(what="Backfill and the re-order wait", circl
 CIRCLE_WAITS = {"surasura": GENERATE_PAUSED, "junban": JUNBAN_PAUSED}     # its circle -> the wait's words (`_woken`)
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
 REPLACED = "Surasura was updated: the new version makes the cards from here."
+# Haya-CL 3.0.17 (Sonic's laptop, #8158GX: Connect mined on after the window closed; the lead: every child the window
+# starts ends with it; PROVISIONAL): a Connect that worked beside a window stops when it closes — at the next step
+# boundary, and the job under way is cut as a pause cuts it (its cards so far kept), going on from its step at the
+# next start (the window's start kicks Connect). One started with no window open (hato's hand-over) never saw one: it
+# does the work it can do now, then ends (3.0.3's lean)
+WINDOW_CLOSED = "Surasura was closed: this goes on from here when you open it again."
+WINDOW_LOOK_S = 2               # while a program runs, the window is looked for at most this often (a few file reads)
 MINER_ABSENT = "Anki Miner isn't installed"
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
@@ -321,6 +328,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
+    _window_gone(steps)                     # a window open as Connect starts: the one it ends with (Haya-CL 3.0.17)
     _sweep_online(steps)                    # Michi-YT: a video a killed Connect left goes before anything else
     _release_check(loaded)
     own = ledger is None
@@ -444,6 +452,8 @@ def _stop(steps):
         return PAUSED
     if _replaced(steps):
         return REPLACED
+    if _window_gone(steps):
+        return WINDOW_CLOSED
     return None
 
 
@@ -468,6 +478,26 @@ def _a_window(kind):
     """Is a running mark of `kind` a window's? The 3.0 window ("window"), the 2.x Tk window ("dashboard"), and a
     window started with a flag (`Surasura.exe --hud`: app_entry names the mark after its first argument)."""
     return kind in WINDOW_KINDS or (isinstance(kind, str) and kind.startswith("-"))
+
+
+def _window_gone(steps):
+    """Haya-CL 3.0.17: has the window this Connect worked beside closed — one open at a look of this run, none now
+    (looked at most every WINDOW_LOOK_S)? Never for a Connect that saw no window, a stand-in without the look, or a
+    look that fails (`_window_open`)."""
+    if getattr(steps, "window_open", None) is None:
+        return False
+    now = time.monotonic()
+    looked = getattr(steps, "window_look", None)
+    if looked is not None and now - looked[0] < WINDOW_LOOK_S:
+        open_now = looked[1]
+    else:
+        open_now = _window_open(steps)
+        try:
+            steps.window_look = (now, open_now)
+            steps.window_seen = getattr(steps, "window_seen", False) or open_now
+        except AttributeError:
+            return False
+    return not open_now and bool(getattr(steps, "window_seen", False))
 
 
 def _window_open(steps):
@@ -650,6 +680,9 @@ def _woken(steps, ledger, parked):
     if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
         for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
             del parked[job_id]
+    if not _window_gone(steps):             # Haya-CL 3.0.17: the window open again (its start's kick) before this
+        for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == WINDOW_CLOSED]:
+            del parked[job_id]              # run ended: the job its close cut goes on
     for circle, reason in CIRCLE_WAITS.items():     # Kantan-G: one parked on ス's / 順's pause, that circle resumed
         if not _circle_paused(steps, circle):
             for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == reason]:
@@ -1161,9 +1194,10 @@ def _stop_here(steps, ledger, lang, job, step, record):
     if step in ("filling", "ordering"):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
     if not ledger.stop_asked(job["id"]):
-        if not _paused_now(steps):
+        why = _cut_now(steps)
+        if not why:
             return
-        _cut_by_pause(steps, job["id"])
+        _cut_by_pause(steps, job["id"], why)
     _stopped(steps, ledger, lang, job, step, record)
 
 
@@ -1174,12 +1208,16 @@ def _stopped(steps, ledger, lang, job, step, record):
     stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask.
     Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours; `_cut_by_pause` marked it, so a resume a moment
     after the cut is no Stop either) it is never marked stopped — its cards so far kept, it waits `PAUSED` for this run
-    alone and the resume's kick goes on from `step`."""
-    if not ledger.stop_asked(job["id"]) and (getattr(steps, "paused_cut", None) == job["id"] or _paused_now(steps)):
+    alone and the resume's kick goes on from `step`. Haya-CL 3.0.17: cut so by the window's close too (`_cut_now`),
+    waiting WINDOW_CLOSED: the window's next start goes on from `step`."""
+    why = getattr(steps, "cut_why", None) if getattr(steps, "paused_cut", None) == job["id"] else None
+    why = why or _cut_now(steps)
+    if not ledger.stop_asked(job["id"]) and why:
         _cut_by_pause(steps, None)
         made = _keep_made(steps, ledger, lang, job, record)
-        log.info("Connect: job %s paused before %s (%d words made so far)", job["id"], step or "its pick", len(made))
-        raise Wait(PAUSED, look=False, resume=step)
+        log.info("Connect: job %s %s before %s (%d words made so far)", job["id"],
+                 "paused" if why == PAUSED else "cut as the window closed", step or "its pick", len(made))
+        raise Wait(why, look=False, resume=step)
     made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
     if lining_up(now.get("reason")):        # Stage B (AB-Q3): *Stop* while its audiobook is lined up stops that too
@@ -2219,8 +2257,9 @@ def _stop_pressed(ledger, jid, steps=None):
     try:
         if ledger.stop_asked(jid):
             return True
-        if _paused_now(steps):
-            _cut_by_pause(steps, jid)
+        why = _cut_now(steps)
+        if why:
+            _cut_by_pause(steps, jid, why)
             return True
         return False
     except Exception:
@@ -2228,13 +2267,25 @@ def _stop_pressed(ledger, jid, steps=None):
         return False
 
 
-def _cut_by_pause(steps, jid):
+def _cut_by_pause(steps, jid, why=PAUSED):
     """Mado-PZ: the job `jid` is being cut by a pause (not your Stop) — remembered on the run's steps, so `_stopped`
-    still knows it was a pause when the resume came a moment after the cut."""
+    still knows it was a pause when the resume came a moment after the cut. `why`: the wait it gets (PAUSED, or
+    WINDOW_CLOSED: `_cut_now`)."""
     try:
         steps.paused_cut = jid
+        steps.cut_why = why
     except AttributeError:
         pass
+
+
+def _cut_now(steps):
+    """Is the job under way cut now, not by your Stop -> its wait: PAUSED (Anki Miner's circle paused at the bar,
+    Mado-PZ), WINDOW_CLOSED (the window Connect worked beside closed, Haya-CL 3.0.17) — or None."""
+    if _paused_now(steps):
+        return PAUSED
+    if _window_gone(steps):
+        return WINDOW_CLOSED
+    return None
 
 
 def _circle_paused(steps, circle):

@@ -1240,8 +1240,8 @@ def rebuild_command(language="ja", reinforce=False, db=None):
     extra = [] if language == "ja" else ["--language", language] + (["--reinforce"] if reinforce else [])
     if db:
         extra += ["--db", db]
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "junban_patterns"] + extra, env, None
+    if getattr(sys, "frozen", False):           # headless: never a Critical Error box from an unseen child (3.0.17)
+        return [sys.executable, "junban_patterns", "--headless"] + extra, env, None
     env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     return [sys.executable, "-m", "modules.junban.patterns_build"] + extra, env, root
 

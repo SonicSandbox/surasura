@@ -296,3 +296,27 @@ def test_the_list_is_read_again_once_its_file_changes(monkeypatch, tmp_path):
     st = os.stat(path)
     os.utime(path, (st.st_atime, st.st_mtime + 5))
     assert steps.waiting_count("ja") == 1 and steps.list_reads == ["ja", "ja"]
+
+
+def test_a_list_that_couldnt_be_read_just_now_is_asked_again(monkeypatch):
+    # why (the review): the results lock held by a Generate, or the list mid-write, must not be kept for the run —
+    # the cap would count every card (or miss the list's spellings) until the file changed again
+    made = {1: (7, "撒く"), 2: (8, "海原")}
+    steps, _reads = _counting(monkeypatch, "ja", [1, 2], made, LIST_JA)
+    answers = iter([None, {k: i for i, k in enumerate(LIST_JA)}])
+    steps._list_order = lambda _lang: steps.list_reads.append(_lang) or next(answers)
+    assert steps.waiting_count("ja") == 2, "no list just now: every card counts"
+    assert steps.waiting_count("ja") == 1, "asked again: only the card on the list"
+    assert steps.list_reads == ["ja", "ja"]
+
+
+def test_an_unreadable_list_file_keeps_the_words_and_is_read_again(monkeypatch, tmp_path):
+    rows = [{"Word": "血塗れ", "Reading": "チマミレ", "Orth": "血まみれ", "Forms": "まみれ"}]
+    steps, _reads = _counting(monkeypatch, "ja", [20, 21], {}, [("血塗れ", "チマミレ")],
+                              theirs={20: "血塗れ", 21: "まみれ"}, csv_rows=rows, tmp_path=tmp_path)
+    from app import anki_match
+    real = anki_match.build_index
+    monkeypatch.setattr(anki_match, "build_index", lambda *a, **k: anki_match.Index({}, {}, {}, {}))
+    assert steps.waiting_count("ja") == 1, "the words alone count while the file can't be read"
+    monkeypatch.setattr(anki_match, "build_index", real)
+    assert steps.waiting_count("ja") == 2, "read again: its spellings count too"

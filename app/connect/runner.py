@@ -3427,12 +3427,16 @@ class Steps:
                 keys[word] = True
                 if lang == "ja":
                     keys.setdefault(anki_match.fold_kana(word), True)
+        read = bool(keys)               # a list that couldn't be read just now (busy, mid-write) is asked again
         if keys and stamp is not None:
-            try:
-                keys = dict(anki_match.build_index(path, language=lang).marks_of, **keys)
-            except Exception:
-                log.exception("Connect's cap: the list's spellings couldn't be read; its words alone count")
-        self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
+            index = anki_match.build_index(path, language=lang)     # an unreadable file is empty dicts, never raises
+            if index.marks_of:
+                keys = dict(index.marks_of, **keys)
+            else:
+                read = False
+                log.warning("Connect's cap: the list's spellings couldn't be read just now; its words alone count")
+        if read:                        # the review: a failed read is never kept until the file changes again
+            self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
         return keys
 
     def _note_words(self, lang, note_ids, loaded):

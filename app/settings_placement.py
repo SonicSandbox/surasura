@@ -56,6 +56,7 @@ PLACED = {
     "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",
     "logic.phrases_and_titles": "analysis:ja", "logic.pronoun_bases": "analysis:ja", "logic.phrase_rows": "analysis:ja",
     "logic.ignore_names": "analysis:ja",
+    "logic.count_song_lyrics": "analysis",      # Kotoba-OP: a show's opening and ending songs in the counts, or out
     "logic.weights.high": "analysis", "logic.weights.low": "analysis", "logic.weights.goal": "analysis",
     "logic.tiers.thresholds": "analysis",
     "logic.context.search_range": "neither", "logic.context.min_chars": "analysis", "logic.context.max_extra": "neither",

@@ -1,11 +1,11 @@
 """The cap (P2.4 Part B): before a job's first batch, Connect's own waiting cards are counted against the learner's cap.
 Under the cap a job mines; at or over it the job waits with a reason that names the count ("Your 300 cards are
-waiting ...") and Connect keeps looking every 2 minutes; at the cap the shelf is asked first, and if it frees enough
-the batch goes. No cap (None or 0) always mines. The waiting count only counts Connect's own new, unsuspended cards.
+waiting ...") and Connect keeps looking every 2 minutes. Since Kyou-SH (Sonic 2026-11-20: Connect never suspends by
+itself) the shelf is never asked at the cap: the job waits until you study. No cap (None or 0) always mines. The waiting count only counts Connect's own new, unsuspended cards.
 
 What a wrong answer would cost: Connect piling cards past the learner's cap (a backlog nobody asked for), a job that
-waits forever at 299 cards, a job that mines at exactly 300 and grows the pile, or a shelf that is never asked and
-so never makes room.
+waits forever at 299 cards, a job that mines at exactly 300 and grows the pile, or cards suspended at the cap by
+Connect (a tester's 236).
 
 Against `FakeSteps` (real words, item 1 = 3 words); the 2-minute look is the injected `sleep`. Never a live Anki.
 """
@@ -62,26 +62,12 @@ def test_at_or_over_the_cap_the_job_waits_with_its_count_and_keeps_looking(tmp_p
     assert slept and set(slept) == {runner.LOOK_EVERY_S}, "Connect looks again every 2 minutes"
 
 
-def test_at_the_cap_the_shelf_is_asked_before_any_mining(tmp_path, ledger):
-    # why: the shelf is the only thing that can make room; asking it after a mine would be too late
-    steps, _summary, _slept = _run(tmp_path, ledger, {"cap": 300, "waiting": 300}, looks=1)
-    shelves = [e for e in steps.log if e[0] == "shelve"]
-    assert [(e[1], e[2]) for e in shelves] == [(300, 300)], "asked once, with the count and the cap"
-    assert not any(e[0] == "mine" for e in steps.log), "it waits; nothing is mined before the shelf answers"
-
-
-def test_the_shelf_freeing_enough_lets_the_batch_go(tmp_path, ledger):
-    # why: 300 waiting with one card shelved is 299, under the cap, so the batch mines in the same look
-    steps, summary, slept = _run(tmp_path, ledger, {"cap": 300, "waiting": 300, "shelf_frees": 1}, looks=1)
-    assert [e for e in steps.log if e[0] == "shelve"], "the shelf was asked"
-    assert ledger.jobs("ja")[0]["state"] == "done"
-    assert slept == [], "no look needed: the shelf made room at once"
-
-
-def test_the_shelf_freeing_nothing_leaves_the_job_waiting(tmp_path, ledger):
-    # why: a shelf that frees nothing must not let a batch through over the cap
-    steps, summary, slept = _run(tmp_path, ledger, {"cap": 300, "waiting": 300}, looks=1)
-    assert [e for e in steps.log if e[0] == "shelve"], "the shelf was asked"
+@pytest.mark.parametrize("frees", [0, 1, 40])
+def test_at_the_cap_the_shelf_is_never_asked_and_the_job_waits(tmp_path, ledger, frees):
+    # why (Kyou-SH): Connect suspended a tester's 236 cards at the cap; now nothing is shelved, however much the shelf
+    # could free, and nothing is mined past the cap
+    steps, summary, slept = _run(tmp_path, ledger, {"cap": 300, "waiting": 300, "shelf_frees": frees}, looks=1)
+    assert not any(e[0] == "shelve" for e in steps.log), "the shelf never asked"
     assert not any(e[0] == "mine" for e in steps.log)
     assert ledger.jobs("ja")[0]["state"] == "waiting"
 

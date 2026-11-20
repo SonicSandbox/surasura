@@ -127,6 +127,17 @@ def test_a_word_said_only_in_a_song_is_never_sent():
     assert "声" not in _by_word(chosen)
 
 
+def test_a_word_said_only_in_an_opening_styled_opjp_is_never_sent_and_one_also_said_is_cut_from_its_line():
+    # 風の歌 (songs_styled): its opening in OPJP, a style the cue reader read as dialogue before Kotoba-OP2 —
+    # 越える is only sung; 海 is sung and said (海に行きたいな。): its card is cut from the line said
+    read, tokens = _read(os.path.join(RESOURCES, "ja", "songs_styled", "Kaze no Uta - 01.ja.ass"))
+    chosen = pick.pick(read, tokens, "ja", _known(), mode="unknown")
+    reasons = {n["word"]: n["reason"] for n in chosen["not_offered"]}
+    assert reasons["越える"] == "sung" and "越える" not in _by_word(chosen)
+    said = next(c for c in read if c.text == "海に行きたいな。")
+    assert _by_word(chosen)["海"]["line_start"] == cues.seconds(said.start)
+
+
 def test_a_one_kanji_piece_is_never_offered():
     # ５人: 人 after a number is a piece of the count, not the word 人 (analyzer.unoffered)
     read, tokens = _read(SAMPLE)

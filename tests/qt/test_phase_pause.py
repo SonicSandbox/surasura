@@ -269,6 +269,29 @@ def test_an_amber_circles_click_goes_to_its_decision_and_pauses_nothing(world, m
     assert world.services.paused == frozenset()
 
 
+def test_a_paused_amber_circle_says_its_click_opens_the_decision_and_a_real_click_does(strip):
+    """Mado-PZ3 (Sonic 2026-11-20: a yellow circle's click should take you to the decision): a paused circle that turns
+    amber (鉱 paused, then setup's first-cards question) still opens its decision on a click (a7) — so its hover and its
+    read-out never say a click resumes it (they said *Paused · click to resume* over *Click: decide it in Needs you*):
+    they say the right-click resumes it, and the decision is read out first."""
+    from app.qt import shell
+    got = []
+    strip.opened.connect(got.append)
+    strip.set_paused({P.MINER})
+    strip.set_extra(P.MINER, "first-cards", "needs", strings.PHASE_FIRST_CARDS, shell.FIRST_CARDS_GO)
+    assert strip.states[P.MINER].needs and strip.go(P.MINER) == shell.FIRST_CARDS_GO
+    text = strip.hover_text(P.MINER)
+    assert strings.PHASE_PAUSED not in text, "never 'click to resume' on a circle whose click opens its decision"
+    assert strings.PHASE_PAUSED_DECIDE in text and strings.PHASE_PRESS_NEEDS in text
+    said = strip.summary()
+    assert strings.PHASE_PAUSED not in said
+    assert f"{strings.PHASE_NAMES[P.MINER]}: {strings.PHASE_FIRST_CARDS} · {strings.PHASE_PAUSED_DECIDE}" in said
+    _click(strip, _centre(strip, P.MINER))
+    assert got == [P.MINER]                                             # the shell's `_circle_pressed`: its decision
+    strip.set_extra(P.MINER, "first-cards")                             # the yes: no decision left
+    assert strings.PHASE_PAUSED in strip.hover_text(P.MINER), "paused, nothing to decide: a click resumes it again"
+
+
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_a_pause_is_kept_across_a_restart_and_said_at_the_start(qapp, tmp_path, language):
     settings_manager.save_settings({"target_language": language, "paused": ["miner", "junban"]})

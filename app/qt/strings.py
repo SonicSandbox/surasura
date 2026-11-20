@@ -725,7 +725,7 @@ PHASE_HOLDS_LINE = "Its pause holds {what}"
 PHASE_HOLDS = {
     "arrivals": "New arrivals' reading, YouTube downloads and hato's look",     # (never the folder looks)
     "surasura": "the automatic Generate and reading your files",
-    "miner": "Connect making cards",
+    "miner": "the cards Anki Miner makes by itself",
     "junban": "the automatic re-order and Backfill",
     "anki": "the automatic known-words sync and the count of cards waiting in Anki",
 }

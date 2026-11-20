@@ -793,6 +793,7 @@ DRAG_PLACED = "{title} placed at #{n}"
 DRAG_PLACED_MINES = "{title} placed at #{n} · it mines itself"
 DRAG_SOON = "{title} → Soon · #{n}, after the first {files} files"
 DRAG_SOON_NO_COUNT = "{title} → Soon · #{n}"
+DRAG_SOON_SHOW = "{title} → Soon · with its show"     # Kura-SO: once saved in its show's episode order (never "#n")
 DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
 DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
@@ -950,7 +951,8 @@ TRAY_LOADING_TIP = "Arrivals are loading into the list; the first are here."
 TRAY_TITLES = "{n} titles"                            # the picks or a group, named in a toast or a drag
 TRAY_PICKS_MENU_NAME = "What you can do with the {n} picked"
 TRAY_PICKS_MENU = {
-    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order"),
+    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order\n• Episodes of a show already "
+                       "there join it in episode order"),                     # Kura-SO
     "soon": ("Soon", "Move all {n} to Soon, in the tray's order"),
     "goal": ("Goal", "Move all {n} to Goal"),
     "finished": ("Finished", "Record all {n} as finished: you've watched them already"),
@@ -967,10 +969,15 @@ GOAL_TILE_MORE = "⋯"
 GOAL_TILE_MORE_NAME = "What you can do with {title}"
 GOAL_TILE_MORE_TIP = "What you can do with {title}: move, open its folder, remove (Enter)."
 GOAL_MENU_ITEMS = {
-    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal"),
-    "top-all": ("Move to the top", "Bring it up to the top of Current"),
-    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal"),
-    "soon-all": ("Move to Soon", "Bring it up to the top of Soon"),
+    # Kura-SO (train 44's keeper, note 4): the top unless its show is there — then in episode order
+    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal\n• An episode "
+                               "of a show already there joins it in episode order"),
+    "top-all": ("Move to the top", "Bring it up to the top of Current\n• An episode of a show already there "
+                                   "joins it in episode order"),
+    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal\n• An episode of a "
+                             "show already there joins it in episode order"),
+    "soon-all": ("Move to Soon", "Bring it up to the top of Soon\n• An episode of a show already there joins "
+                                 "it in episode order"),
     "finished": ("Move to Finished", "Move all of it to Finished: you're done with it"),
     "folder": ("Open its folder", "Show its files in File Explorer"),
     "remove": ("Remove…", "Send its {n} files to the trash (kept 30 days). You're asked first"),
@@ -982,6 +989,9 @@ GOAL_UP_SHOW = "{title} {first} moved up from Goal · in Current with its show �
 GOAL_UP_ALL_SHOW = "{title} moved up from Goal · in Current with its show"
 GOAL_SOON = "{title} {first} → Soon · #{n} · the rest stays in Goal"
 GOAL_SOON_ALL = "{title} → Soon · #{n}"
+# Kura-SO (train 44's keeper, note 3): the same, once saved, when the store put it in its show's episode order there
+GOAL_SOON_SHOW = "{title} {first} → Soon · with its show · the rest stays in Goal"
+GOAL_SOON_ALL_SHOW = "{title} → Soon · with its show"
 GOAL_REMOVE_ASK = "Remove {title}?"
 GOAL_REMOVE_BODY = "Its {n} files go to the trash, kept for 30 days. Undo puts them back."
 GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts it back."
@@ -2062,7 +2072,8 @@ REMOVED_BROUGHT_BACK_ONE = "A removed file of {name} is back in your library"
 PICKS_TITLES = "{n} titles"                           # the picks named in a toast, the drag's card and the question
 PICKS_MENU_NAME = "What you can do with the {n} picked"
 PICKS_MENU = {
-    "top": ("Up next", "Put all {n} at the top of Current, in the list's order"),
+    "top": ("Up next", "Put all {n} at the top of Current, in the list's order\n• Episodes of a show already "
+                       "there join it in episode order"),                     # Kura-SO
     "soon": ("Soon", "Move all {n} to Soon, in the list's order"),
     "goal": ("Goal", "Move all {n} to Goal"),
     "finished": ("Finished", "Move all {n} to Finished: you're done with them\n• Then choose whether their new cards "

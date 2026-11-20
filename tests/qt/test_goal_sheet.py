@@ -341,6 +341,29 @@ def test_up_next_saved_in_its_shows_episode_order_says_so_never_number_one(world
     assert wait_until(lambda: win.toasts.card.base == want, 3), win.toasts.card.base
 
 
+@pytest.mark.parametrize("joined", [True, False])
+def test_move_to_soon_saved_in_its_shows_episode_order_says_so_never_its_number(world, joined, monkeypatch):
+    """(Kura-SO; train 44's intent keeper, note 3) Goal's *Move to Soon* says "#n" as it goes; the store may put it in
+    its show's episode order in Soon instead (`Change.show_order`) — once saved, its toast says it went to Soon with
+    its show. Saved where asked, "#n" as before."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = joined                   # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    sheet = open_sheet(win)
+    show = two_part(win)
+    sheet.pick(show, "soon")
+    shown = strings.GOAL_SOON_SHOW.format(title=show.title, first="Ep 1–12")
+    if joined:
+        assert wait_until(lambda: win.toasts.card.base == shown, 3), win.toasts.card.base
+    else:
+        settle(300)
+        assert win.toasts.card.base != shown and "#" in win.toasts.card.base
+
+
 def test_up_next_saved_in_its_shows_order_keeps_the_new_words_on_its_ticket(world, monkeypatch):
     """(Kura-EO 3.0.16, mutants) The words that follow the save stay with the press itself (its ticket), not only on
     the toast showing now: the toast shown again and the Undo's own ticket read them there."""

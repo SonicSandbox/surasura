@@ -523,6 +523,36 @@ def test_A2_20_a_drop_on_soon_moves_it_to_the_top_of_soon(world):
     assert win.dock.wells == () or wait_until(lambda: win.dock.wells == (), 2)        # A2 #18: they fold back
 
 
+@pytest.mark.parametrize("how", ["menu", "well"])
+@pytest.mark.parametrize("joined", [True, False])
+def test_a_soon_move_saved_in_its_shows_episode_order_says_so_never_its_number(world, how, joined, monkeypatch):
+    """(Kura-SO; train 44's intent keeper, note 3) Current's ⋯ *Soon* and a drop on the Soon well say "#n" as they go;
+    the store may put the row in its show's episode order instead (`Change.show_order`) — once saved, the toast says
+    it went to Soon with its show, never a number it doesn't hold. Saved where asked, the number stays."""
+    seed, win, writer = world()
+    land = writer._land
+
+    def landed(change, label):
+        change.show_order = joined                   # (the store's answer, as `Store.move` gives it)
+        land(change, label)
+    monkeypatch.setattr(writer, "_land", landed)
+    moved = rows_of(win)[4]
+    if how == "menu":
+        win.moves.menu_pick(moved, "soon")
+    else:
+        lift(win, 4)
+        at = well_point(win, "soon")
+        move_global(win, at)
+        release_global(win, at)
+    assert calls(writer, "move")[-1][2]["tier"] == "soon"
+    shown = strings.DRAG_SOON_SHOW.format(title=moved.title)
+    if joined:
+        assert wait_until(lambda: win.toasts.card.base == shown, 3), win.toasts.card.base
+    else:
+        assert wait_until(lambda: win.moves.expect is None, 3)
+        assert win.toasts.card.base != shown and "#" in win.toasts.card.base
+
+
 def test_A2_19_a_drop_on_goal_sends_it_to_goals_end_and_leaves_current_at_once(world):
     seed, win, writer = world()
     moved = rows_of(win)[5]

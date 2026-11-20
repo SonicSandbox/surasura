@@ -1126,6 +1126,14 @@ class Ticket:
         self.reword = None                           # Kura-EO: change -> its toast's words where it landed, or None
 
 
+def _soon_ticket(ticket, title):
+    """(Kura-SO; train 44's keeper, note 3) A *Soon* toast's "#n" is wrong once the store put the row in its show's
+    episode order instead (`Change.show_order`): saved there, the toast says so. -> the ticket."""
+    shown = strings.DRAG_SOON_SHOW.format(title=title)
+    ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+    return ticket
+
+
 def mines_why(lines, place):
     """*it mines itself*'s cause (help cards §5.2: the toast's *Why?*), or None when the place makes no cards."""
     if place == 0 or not mines_itself(lines, place):
@@ -2225,7 +2233,7 @@ class DragController(QObject):
             place = new_keys.index(d.key)
             text = strings.DRAG_SOON.format(title=d.title, n=place + 1, files=files) if files else \
                 strings.DRAG_SOON_NO_COUNT.format(title=d.title, n=place + 1)
-            ticket = Ticket(text, keys=(d.key,), ids=d.ids)
+            ticket = _soon_ticket(Ticket(text, keys=(d.key,), ids=d.ids), d.title)
             self._end(d)
             self.held = None
             self._ahead(new)
@@ -2245,7 +2253,7 @@ class DragController(QObject):
         if name == "soon":
             base = self.base()
             after_id = soon_slot(base.rows, None)[2] if base is not None else None    # after a show the line cuts
-            ticket = Ticket(strings.DRAG_SOON_NO_COUNT.format(title=d.title, n=1), keys, d.ids)
+            ticket = _soon_ticket(Ticket(strings.DRAG_SOON_NO_COUNT.format(title=d.title, n=1), keys, d.ids), d.title)
             self._give(ticket, lambda t: self.writer.move(d.ids, "soon", after_id=after_id, label=t))
         elif name == "goal":
             ticket = Ticket(strings.DRAG_GOAL.format(title=d.title), keys, d.ids)
@@ -3310,7 +3318,7 @@ class DragController(QObject):
             place = keys.index(row.key)
             text = strings.DRAG_SOON.format(title=row.title, n=place + 1, files=files) if files else \
                 strings.DRAG_SOON_NO_COUNT.format(title=row.title, n=place + 1)
-            self._give(Ticket(text, (row.key,), ids),
+            self._give(_soon_ticket(Ticket(text, (row.key,), ids), row.title),
                        lambda t: self.writer.move(ids, "soon", after_id=after_id, label=t))
             return
         hero = base.rows[0]                          # *Up next*: before Up Next, in its tier

@@ -728,9 +728,9 @@ def unmake(store, item_id, note_ids, words=()):
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None, exact=False):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op. A place named exactly (`exact`: a program's
-    `place --position`, `--position 1` the very top; a placing rule's target — its *Top of Current* is the very top,
-    D-1, PROVISIONAL) or by an anchor is exactly that place; else (`place --to current` with no position) an episode
-    joins its show in episode order (`Store._into_show`, Kura-EO)."""
+    `place --position`, `--position 1` the very top) or by an anchor is exactly that place; else (`place --to current`
+    with no position) an episode joins its show in episode order (`Store._into_show`, Kura-EO). A placing rule's
+    target is the store's `place_by_rule` (Kura-SO)."""
     return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit,
                       in_order=not exact and before_id is None and after_id is None)
 

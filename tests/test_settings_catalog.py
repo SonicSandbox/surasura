@@ -1036,7 +1036,8 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
     assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
     assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
-    assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
+    # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list
+    assert lines["i1"] == "Only words with an i+1 line, list or not: some won't be on your list."
     assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
     assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}

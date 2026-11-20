@@ -838,6 +838,7 @@ PARTS = (
     ("install", "needs_seen_*.json", "needs_seen", MOVES, STAYS),
     ("install", "covers", "covers", MOVES, STAYS),
     ("install", "airing_*.json", "airing", MOVES, STAYS),        # AniList's answers, kept as covers are
+    ("install", "card_chip_*.json*", "card_chip", MOVES, STAYS),  # Michi-CK2: the ✓'s studied words + last answers
     ("install", "settings_import.json", "settings_import", MOVES, STAYS),
     ("install", "backlog_shows_*.json", "junban_backlog_shows", MOVES, STAYS),
     ("install", "anki-miner-install", "staging", MOVES, STAYS),

@@ -1820,11 +1820,12 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         outs = {card_id: items for card_id, items in outs.items()
                 if not match.lookup(word_of.get(card_id) or "", marks_of or {}, language)}
         # --- end P4.1 L2 ---
-        # Kyou-A: *New cards come from: Current's top two, side by side* — the two titles' cards, by the pins' matching
+        # Kyou-A: *New cards come from: Current's top two, side by side* — the titles, read once; their cards (`weave`)
+        # once every card has its place on the journey (Kyou-D, below)
         side = pin_feed.read_side(language)
-        weave = pin_feed.side_groups(language, cards, detail["notes"], side=side)
     else:
-        side = weave = None
+        side = None
+    weave = None
     if not marks_of and not any(pins or ()):
         # M-W2-1: no list at all (`marks_of` covers every row; `only` narrows `rank_of` alone) and no pinned item — nothing
         # is placed, tagged or suspended: the run writes nothing (`_run`), the preview says the list is empty. With a pin
@@ -1949,6 +1950,14 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             card["impact"] = impact(numbers)
             card["file"] = numbers[0]
             card["why"] = "phrase · " + _where(numbers, names)
+    files = []
+    if side is not None and side[0]:
+        # Kyou-D (Sonic's ruling 3, 2026-11-17): a card is the title of the file its word is first met in (its `file`,
+        # just set: the list's, the library map's, a phrase's), whatever it was mined from — numbered as this run's
+        # list numbers its files (a fast re-plan's rows: the order as it stands; the last Generate's: only until the
+        # order moves — then the mined source, and no count for the store, as `show_tags` labels nothing then)
+        files = show_tags.file_items(language, current=getattr(job, "rows", None) is not None)
+        weave = pin_feed.side_groups(language, cards, detail["notes"], side=side, files=files)
     suggestions = {}
     if tiers:
         # Known words last; everything still unplaced by its own sentence, then FreqSort (§5.4).
@@ -1994,9 +2003,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     number = _numbering(language, decks, job, front)
     writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave,
                          width=pin_feed.SIDE_WIDTH if weave else None)     # Kyou-B: two titles at a time
-    if side is not None and side[0]:
+    if side is not None and side[0] and files is not None:
         # Kyou-C: every title's count — the cards the weave could take (none in scope: 0) — for the host to record
-        # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`)
+        # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`).
+        # Kyou-D: none while the numbers are stale — the store keeps the count the fast re-plan recorded at the move
         picks = stats.get("side_picks") or [0] * len(side[0])
         stats["side_cards"] = [[list(ids), int(n)] for ids, n in zip(side[0], picks)]
         stats["side_at"] = counted_at   # Kyou-E: a file Connect mines after it is one this count never saw

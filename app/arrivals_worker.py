@@ -348,9 +348,9 @@ class Worker:
     def sample(self, request):
         """Mado-EZC, *Which words get a card?*'s picture (`card_sample.sample`): the mine line's first episode counted
         by Connect's picker for each choice, *another episode* from the rest of the line (`paths`, else the store's mine
-        line, at most `SAMPLE_EPISODES`), with the list, the cards the last sync saved and the words Connect made. No list yet (no plan, or a
-        Generate writing it): no picture (the window draws the bundled one). Kept by the files' stats, the plan and the
-        known words: asked again, nothing is read again (S19)."""
+        line, at most `SAMPLE_EPISODES`), with the list, the cards the last sync saved and the words Connect made. No
+        list yet (no plan, or a Generate writing it): no picture (the window draws the bundled one). Kept by the files'
+        stats, the plan, the known words, the list and the cards: asked again, nothing is read again (S19)."""
         from app import anki_sync
         from app.services import card_sample
         warm = self.current()

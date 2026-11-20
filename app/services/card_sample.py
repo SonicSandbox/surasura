@@ -72,8 +72,8 @@ def picture(picks, elsewhere=(), source=""):
     """The picture of one episode from Connect's picker's answers: `picks` {mode: pick()'s "words"} for the episode
     (each mode's), `elsewhere` the keys ((word, reading)) another episode of the mine line would card from a line where
     it is the only new word (pick() in `i1` there). -> {"source", "sample": False, "lines": [{"text", "new", "words":
-    [{"word", "reading", "surface", "listed", "outcome": {mode: one of OUTCOMES}}]}], "counts": {mode: {"here", "elsewhere"}},
-    "elsewhere_exact": True}, or None when the episode has no line of each kind the picture needs (a word alone on its
+    [{"word", "reading", "surface", "listed", "outcome": {mode: one of OUTCOMES}}]}], "counts": {mode: {"here",
+    "elsewhere"}}, "elsewhere_exact": True}, or None when the episode has no line of each kind the picture needs (a word alone on its
     line, and a line holding a second new word: the fallback is drawn instead).
 
     A word's outcome under a mode is that mode's answer: in its pick → "card" (`other_new` 0) or "amber"; else under
@@ -123,9 +123,11 @@ def picture(picks, elsewhere=(), source=""):
     lines = []
     for at, keys in sorted(starts.items(), key=lambda kv: kv[0] or 0)[:LINES]:
         first = drawn_at(keys[0])
-        words = [{"word": drawn_at(k).get("word"), "reading": drawn_at(k).get("reading"), "surface": drawn_at(k).get("surface") or drawn_at(k).get("word"),
-                  "listed": bool(drawn_at(k).get("listed")), "outcome": outcome(k, bool(drawn_at(k).get("listed")))}
-                 for k in keys]
+        words = []
+        for k in keys:
+            w = drawn_at(k)
+            words.append({"word": w.get("word"), "reading": w.get("reading"), "surface": w.get("surface") or w.get("word"),
+                          "listed": bool(w.get("listed")), "outcome": outcome(k, bool(w.get("listed")))})
         lines.append({"text": first.get("line_text") or "", "new": 1 + int(first.get("other_new") or 0),
                       "words": words})
     counts = {mode: {"here": len(by_mode[mode]), "elsewhere": 0} for mode in MODES}

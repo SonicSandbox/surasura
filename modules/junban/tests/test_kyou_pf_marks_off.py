@@ -280,6 +280,39 @@ def test_with_set_cards_aside_off_and_no_record_a_tagged_card_you_suspended_stay
     assert not [call for call in fake.suspend_calls if call[0] == "unsuspend"]
 
 
+def test_a_run_reads_the_journal_once_for_its_flags_and_its_parked_cards(tmp_path, monkeypatch):
+    # Kyou-KN (train 50's intent keeper, waste): the record of Junban's flags (does a clean-up run?) and of what it
+    # parked (does a card come back?) are one read of changes.jsonl — it was read twice a run, and it only grows
+    fake = _scene(tmp_path)
+    _journal(fake)
+    reads = []
+    real = first_touch.journal
+    monkeypatch.setattr(first_touch, "journal", lambda language: reads.append(language) or real(language))
+    with _patched(fake):
+        _writes, stats = reposition.dry_run(connect_settings(junban_later_suspend=False), job=junban_view.window_job({}))
+    assert reads == ["ja"], reads
+    # …and the parked cards it read are the record's own: 老婆 comes back by it, Set cards aside off
+    assert first_touch.flagged("ja")["parked"] == first_touch.parked("ja")
+    assert fake.card_of("老婆")["cardId"] in first_touch.parked("ja")["cards"]
+    assert stats["clear"]["counts"]["flag"] == 3, stats["clear"]
+
+
+def test_an_unreadable_journal_is_each_records_safe_side_from_one_read(tmp_path, monkeypatch):
+    # the journal there but held: no flag Junban's, no clean-up done, no card Junban's to bring back — as `parked` alone
+    fake = _scene(tmp_path)
+    _journal(fake)
+    real_open = open
+
+    def held(path, *args, **kwargs):
+        if str(path).endswith(first_touch.JOURNAL):
+            raise PermissionError(13, "held by another program")
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", held)
+    record = first_touch.flagged("ja")
+    assert record["cards"] == {} and record["since"] == 0 and record["swept"] is False
+    assert record["parked"] == first_touch.parked("ja") == {"cards": set(), "named": set(), "notes": set(), "since": 0}
+
+
 # --- ruling 3: the first clean-up waits for one press in 順 -------------------------------------------------------- #
 def test_an_automatic_run_leaves_the_first_clean_up_to_a_press_in_junban(tmp_path):
     fake = _scene(tmp_path)

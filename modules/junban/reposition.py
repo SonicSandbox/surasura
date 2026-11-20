@@ -1843,7 +1843,9 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # one still not on it is left out, as before. ✅ E1.3-2: so is a pinned item's card Junban itself parked — by
     # Junban's lasting record of what it parked (P4.2.2, #9: never a card you suspended after Junban only tagged it).
     gathered = cards
-    parked_record = first_touch.parked(language) if parked_tag else None
+    # Kyou-KN (train 50's intent keeper, waste): the run's one read of the journal (`record`) carries the parked cards too
+    parked_record = ((record["parked"] if record is not None else first_touch.parked(language)) if parked_tag
+                     else None)
     if parked_record is not None and parked_record["since"] is None and not connect.unsuspends(settings, unattended,
                                                                                                acting=acting):
         # Kyou-PF: brought back only by the clean-up (*Set cards aside* off) — by the record alone: with none, a

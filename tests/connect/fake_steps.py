@@ -322,10 +322,6 @@ class FakeSteps:
         """Connect's waiting cards: the plan's `waiting` (cards made before) + the notes made here − the shelved."""
         return int(self.plan.get("waiting", 0)) + len(self.anki.words()) - int(self.plan.get("shelved", 0))
 
-    def shelf_on(self, lang):
-        """Kyou-SH: the shelf follows *Suspend them* — the plan's `shelf_on` (on unless a test says otherwise)."""
-        return self.plan.get("shelf_on", True)
-
     def shelve(self, lang, ledger, todo, count, cap):
         self.log.append(("shelve", count, cap, [w["word"] for w in todo]))
         frees = int(self.plan.pop("shelf_frees", 0))       # once a run, as the real shelf

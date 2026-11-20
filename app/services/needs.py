@@ -67,7 +67,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   are in "Japanese::Anki Miner", not "Japanese::Mining Deck", the deck Surasura keeps in order.* · *Move them to …*
   (`connect/decks.move`: a snapshot, its toast's Undo) · *Leave them* (answered: these decks; another deck asks again).
 - **Connect's shelf** (Kyou-SH, PROVISIONAL): ONE card while cards Connect made sit on its shelf (Connect's record's
-  `shelf`) — *236 cards made for you went to the shelf.* · *Put back* (`connect/switch.put_back`: each restore point
+  `shelf`; Connect no longer shelves at the cap — Sonic 2026-11-20 — so these are the cards an older version, or a
+  show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
   still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
@@ -297,10 +298,10 @@ STRINGS = {
     "strays_where": "“{deck}”", "strays_where_n": "{k} other decks", "strays_move": "Move them to “{deck}”",
     "strays_say": "Surasura's new cards go to “{deck}” now.",
     # Kyou-SH (PROVISIONAL): the shelf's cards, said
-    "shelved_title": "{n:,} cards made for you went to the shelf.",
-    "shelved_title_one": "A card made for you went to the shelf.",
-    "shelved_say": ("At your card cap, Surasura suspended the cards whose words come last on your list, tagged "
-                    "surasura::shelf. One comes back by itself when its word comes up."),
+    "shelved_title": "{n:,} cards made for you are set aside.",
+    "shelved_title_one": "A card made for you is set aside.",
+    "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
+                    "does that by itself. One comes back by itself when its word comes up."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",

@@ -277,7 +277,7 @@ ROWS = {
                           "Opens Anki when you open Surasura, so phone reviews come in.",
                           "closed open anki start session"),
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
-                            "Stop making cards when this many new cards wait. 0: no limit.",
+                            "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",

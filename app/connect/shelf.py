@@ -15,9 +15,10 @@
   cards rank behind every word the batch needs — the lowest go to the shelf (suspended, tagged `surasura::shelf`),
   as many as make room for the batch, never more than rank behind it. **A pinned show's cards never** (✅ N7: "if
   they are pinned then they are at the front"). Nothing else moves a card on its own; nothing is ever deleted here.
-  **Only while Junban's *Suspend them* is on** (Kyou-SH, a tester's 236 cards; PROVISIONAL until Sonic rules:
-  `runner.Steps.shelf_on`): off, nothing goes to the shelf and Connect waits at the cap. A shelving is said in *Needs
-  you* (`app/services/needs.py`'s `SHELVED`: *Put back* · *Leave them*).
+  **Not at the cap any more** (Kyou-SH, a tester's 236 cards suspended with *Suspend them* off; Sonic 2026-11-20:
+  ranking and suspending are Junban's, Connect only makes cards): the runner no longer asks the shelf, and Connect
+  waits at the cap; the cap counts only the cards still on your list (`runner.Steps.waiting_count`). The cards
+  already on the shelf stay, said in *Needs you* (`app/services/needs.py`'s `SHELVED`: *Put back* · *Leave them*).
 - **Remove** (✅ N7): a finished show's "remove" = `shelve_item`: its never-seen Connect cards shelved now, undoable.
 - **The swap-in** (✅ P2.4-5 ⭐): a shelved word one of the top 20 needs again comes back from the shelf (un-suspended,
   its tag taken off), never made again. Its card's line still from the journey (its show not finished or removed) →

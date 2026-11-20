@@ -99,7 +99,7 @@ def test_the_store_keeps_one_line_for_each_sentence_with_its_marks():
     read = _read(JA_SHOW, "ja", ["Hoshi Matsuri - 01.ja.srt"])
     sentences, lines = read["Hoshi Matsuri - 01.ja.srt"]
     assert len(lines) == len(sentences)
-    marks = {_plain(s): m for (s, _t), (_k, m) in zip(sentences, lines)}
+    marks = {_plain(s): v & 3 for (s, _t), v in zip(sentences, lines)}
     assert all(marks[_plain(line)] & song_lines.NOTE for line in OPENING_JA)
     assert not any(marks[_plain(line)] & song_lines.NOTE for line in ENDING_JA)
 
@@ -108,7 +108,7 @@ def test_an_ass_event_in_a_song_style_is_marked_styled():
     """風の歌's opening lines (style OPJP) are STYLED; its dialogue (Default) is not."""
     read = _read(JA_STYLED, "ja")
     sentences, lines = read["Kaze no Uta - 01.ja.ass"]
-    styled = [_plain(s) for (s, _t), (_k, m) in zip(sentences, lines) if m & song_lines.STYLED]
+    styled = [_plain(s) for (s, _t), v in zip(sentences, lines) if v & song_lines.STYLED]
     assert styled == ["風の歌が聞こえる", "青い海を越えて", "まだ知らない明日へ"], "the dialogue's 風の歌が聞こえる？ is not"
 
 
@@ -177,7 +177,7 @@ def test_a_line_with_no_script_is_a_gap_and_two_never_join_a_run():
     """♪～ (no Japanese or Chinese) never pairs: two pairs that recur in every episode, two ♪～ apart, are two short
     runs — never one run of four that would take the said lines with it."""
     def lines(*texts):
-        return [[song_lines.line_key(t), song_lines.NOTE if "♪" in t else 0] for t in texts]
+        return [song_lines.pack(song_lines.line_key(t), song_lines.NOTE if "♪" in t else 0) for t in texts]
     episode = lines("おはよう", "はい", "♪～", "♪～", "ありがとう", "ございます")
     out = song_lines.left_out([(f"e{n}", n, episode) for n in range(6)])
     assert not any(out.values())
@@ -294,7 +294,7 @@ def test_a_marked_run_needs_only_three_episodes_in_a_long_show():
     """A 24-episode show (bar 6): a second ending sung with ♪ in only four episodes is a song (a run half marked needs
     3); the same four lines unmarked in four episodes — a flashback — stay under the bar."""
     def lines(texts, note):
-        return [[song_lines.line_key(t), song_lines.NOTE if note else 0] for t in texts]
+        return [song_lines.pack(song_lines.line_key(t), song_lines.NOTE if note else 0) for t in texts]
     said = ["今日はどこへ行くの", "駅まで歩こう", "雨が降りそうだね", "傘を持ってきた"]
     ending = ["星の降る夜に", "君の名前を呼んだ", "遠く離れても", "この歌を忘れない"]
     files = []
@@ -312,9 +312,9 @@ def test_a_marked_run_needs_only_three_episodes_in_a_long_show():
 
 def test_a_three_line_exchange_repeated_every_episode_stays():
     """Three lines are a catchphrase's exchange as often as a song's: a run needs four."""
-    exchange = [[song_lines.line_key(t), 0] for t in ("ただいま", "おかえり", "ご飯できてるよ")]
-    files = [(f"e{n}", n, [[song_lines.line_key(f"第{n}話の始まり"), 0]] + exchange
-              + [[song_lines.line_key(f"第{n}話の続き"), 0]]) for n in range(8)]
+    exchange = [song_lines.pack(song_lines.line_key(t)) for t in ("ただいま", "おかえり", "ご飯できてるよ")]
+    files = [(f"e{n}", n, [song_lines.pack(song_lines.line_key(f"第{n}話の始まり"))] + exchange
+              + [song_lines.pack(song_lines.line_key(f"第{n}話の続き"))]) for n in range(8)]
     assert not any(song_lines.left_out(files).values())
 
 

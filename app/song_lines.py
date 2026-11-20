@@ -25,6 +25,7 @@ Pure: the standard library and `app.unicode_ranges` (no tokenizer, no store, no 
 import hashlib
 import math
 import re
+from collections import Counter
 
 from app.unicode_ranges import HAN, KANA
 
@@ -72,21 +73,26 @@ def line_key(text):
     return _key(plain(text))
 
 
+def pack(key, marks=0):
+    """One sentence's line as the token store keeps it: its key and its marks in one number (`file_lines`)."""
+    return key << 2 | marks
+
+
 def file_lines(sentences, song_marks=()):
-    """A file's `lines` — [[key, marks], …], one a sentence of `sentences` ([(text, tokens), …]) — what the token store
-    keeps for the rule. `song_marks`: an .ass file's captions in the order of its text, [[length, is a song], …]
-    (parse_ass: each caption's `script_len`, 1 when every event in it is in a song style); a sentence lying wholly in
-    song captions is STYLED — matched by place, so a line said that is also a lyric of the same file stays. When the
-    sentences don't add up to the captions, no STYLED mark (the pairs still find a song that repeats)."""
+    """A file's `lines` — one number a sentence of `sentences` ([(text, tokens), …]), its key and marks (`pack`: a JSON
+    list of plain numbers reads back fast) — what the token store keeps for the rule. `song_marks`: an .ass file's
+    captions in the order of its text, [[length, is a song], …] (parse_ass: each caption's `script_len`, 1 when every
+    event in it is in a song style); a sentence lying wholly in song captions is STYLED — matched by place, so a line
+    said that is also a lyric of the same file stays. When the sentences don't add up to the captions, no STYLED mark
+    (the pairs still find a song that repeats)."""
     sentences = list(sentences)                  # read twice below: a generator would give nothing the second time
-    bare = [plain(text) for text, _tokens in sentences]
     styled = _styled([script_len(text) for text, _tokens in sentences], song_marks) if song_marks else ()
     out = []
     for no, (text, _tokens) in enumerate(sentences):
         marks = NOTE if _NOTE_RE.search(text or "") else 0
         if no in styled:
             marks |= STYLED
-        out.append([_key(bare[no]), marks])
+        out.append(_key(plain(text)) << 2 | marks)
     return out
 
 
@@ -116,47 +122,42 @@ def need(episodes):
 
 def left_out(files):
     """{file: {sentence number, …}} of the song lines among one title's `files` — [(file, episode, lines), …], `lines`
-    as `file_lines` makes them (None or [] for a file with none). Every file of the title, in any order."""
-    files = [(f, ep, lines or []) for f, ep, lines in files]
-    out = {f: set() for f, _ep, _l in files}
-    episodes = {ep for _f, ep, _l in files}
-    bar = need(len(episodes))
-    seqs = {}
-    where = {}                                       # (a, b) -> the episodes the pair is in
+    as `file_lines` makes them (None or [] for a file with none). Every file of the title, in any order. Every sentence
+    keeps its place: one with no line (♪～, an English line: key 0) never pairs and stands as a gap."""
+    out, keys, pairs = {}, {}, {}                    # pairs: episode -> the pairs of lines it holds
     for f, ep, lines in files:
-        # every sentence, in its place: one with no line (♪～, an English line) never pairs and stands as a gap
-        seq = [(no, key, marks) for no, (key, marks) in enumerate(lines)]
-        seqs[f] = seq
-        for (_n1, a, _m1), (_n2, b, _m2) in zip(seq, seq[1:]):
-            if a and b and a != b:
-                where.setdefault((a, b), set()).add(ep)
-        for no, (key, marks) in enumerate(lines):
-            if marks & STYLED:
-                out[f].add(no)
-    if len(episodes) >= LOW:
-        for f, seq in seqs.items():
-            _runs(seq, where, bar, out[f])
-    songs = {key for f, seq in seqs.items() for no, key, _m in seq if key and no in out[f]}
+        lines = lines or []
+        out[f] = {no for no, v in enumerate(lines) if v & STYLED}
+        k = keys[f] = [v >> 2 for v in lines]
+        pairs.setdefault(ep, set()).update(p for p in zip(k, k[1:]) if p[0] and p[1] and p[0] != p[1])
+    if len(pairs) >= LOW:
+        seen = Counter()                             # a pair -> how many episodes hold it
+        for held in pairs.values():
+            seen.update(held)
+        bar = need(len(pairs))
+        for f, ep, lines in files:
+            k = keys[f]
+            counts = [seen.get(p, 0) for p in zip(k, k[1:])]    # a pair with no line, or a line twice, is never held
+            if counts and max(counts) >= LOW:
+                _runs(counts, lines, bar, out[f])
+    songs = {keys[f][no] for f in out for no in out[f] if keys[f][no]}
     if songs:
-        for f, seq in seqs.items():
-            for no, key, marks in seq:
-                if marks & NOTE and key in songs:
-                    out[f].add(no)
+        for f, ep, lines in files:
+            k = keys[f]
+            out[f].update(no for no, v in enumerate(lines or ()) if v & NOTE and k[no] in songs)
     return out
 
 
-def _runs(seq, where, bar, out):
-    """Adds to `out` the sentence numbers of `seq`'s song runs (the module's docstring, 2)."""
-    n = len(seq)
+def _runs(counts, lines, bar, out):
+    """Adds to `out` the sentence numbers of a file's song runs (the module's docstring, 2) — `counts`: the episodes
+    each pair of neighbouring sentences recurs in, `lines` the file's."""
+    n = len(lines)
     count = [0] * n                                  # the most episodes either pair of a sentence recurs in
-    for j in range(n - 1):
-        pair = (seq[j][1], seq[j + 1][1])
-        if pair[0] and pair[1] and pair[0] != pair[1]:
-            e = len(where.get(pair, ()))
-            if e > count[j]:
-                count[j] = e
-            if e > count[j + 1]:
-                count[j + 1] = e
+    for j, e in enumerate(counts):
+        if e > count[j]:
+            count[j] = e
+        if e > count[j + 1]:
+            count[j + 1] = e
     i = 0
     while i < n:
         if count[i] < LOW:
@@ -175,8 +176,8 @@ def _runs(seq, where, bar, out):
         i = last + 1
         if len(members) < RUN:
             continue
-        marked = sum(1 for m in members if seq[m][2])
+        marked = sum(1 for m in members if lines[m] & 3)
         enough = LOW if marked * 2 >= len(members) else bar
         strong = [m for m in members if count[m] >= enough]
         if len(strong) >= RUN:
-            out.update(seq[m][0] for m in members if strong[0] <= m <= strong[-1])
+            out.update(m for m in members if strong[0] <= m <= strong[-1])

@@ -594,6 +594,35 @@ def test_a_locked_cover_refuses_the_fetch(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_generated_lock_lets_go_only_at_the_users_look_again_and_a_newer_choice_replaces_it(language):
+    """Mado-CV (3.0.17): *Use a generated cover* locks the painted cover and a fetch is refused while it holds; the
+    user's *Look for a cover again* (`unlock`) lets it go — the user's write, undone by the value check — so a fetch
+    may fill it again; and the user's own newer choice (a pick, a paste: locked) always replaces the lock."""
+    store = migrated(language)
+    work = _work(store, store.ids("now")[0])
+    store.set_cover(work, "generated", locked=True)
+    assert store.set_cover(work, "anilist", ref="154587", path="cache:154587.jpg") is None, "refused while locked"
+    again = store.set_cover(work, "generated", unlock=True)
+    assert again is not None
+    row = store._work_row(work)
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("generated", None, 0)
+    store.undo(again)
+    assert store._work_row(work)["cover_locked"] == 1, "its Undo locks it again"
+    again = store.set_cover(work, "generated", unlock=True)
+    fetched = store.set_cover(work, "anilist", ref="154587", path="cache:154587.jpg")
+    assert fetched is not None and store._work_row(work)["cover_source"] == "anilist", "a fetch fills it now"
+    store.undo(fetched)
+    store.undo(again)
+    mine = store.set_cover(work, "anilist", ref="154587", path="user:anilist-154587.jpg", locked=True)
+    assert mine is not None, "a paste over the generated lock: the newer choice wins"
+    row = store._work_row(work)
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("anilist", "user:anilist-154587.jpg", 1)
+    assert store.set_cover(work, "generated", unlock=True) is None, "a stale view's press never undoes the newer pick"
+    assert store._work_row(work)["cover_path"] == "user:anilist-154587.jpg"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_forget_downloaded_keeps_user_images(language):
     """05 §5.5: *Remove downloaded covers* clears the fetched, unlocked covers' paths; a user's image (user data) and a
     locked choice stay."""

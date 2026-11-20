@@ -21,6 +21,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from app.qt import settings_controls as sc
 from app.qt import settings_page as sp
 from app.qt import settings_store as store_rows
 from app.qt import settings_strings as S
@@ -517,25 +518,28 @@ def test_W1_the_toggle_through_the_real_writer_is_one_command_and_its_undo_resto
 from tests.test_services_moves import lib, make_writer  # noqa: E402,F401  (the real store's fixtures)
 
 
-# --- Kyou-A: *New cards come from* — the library's `side_by_side`, a choice the store rows draw ----------------- #
-def _choose_top_two(rows):
-    """The second choice, by the keyboard as a learner would: Right, then Space."""
+# --- Kyou-A: the library's `side_by_side` — Mado-PZ2 (Sonic, 2026-11-19): one switch, *Learn two shows at once* ---- #
+def _turn_on(rows):
+    """The switch, by the keyboard as a learner would: Space on it."""
     rows.side.setFocus()
-    QTest.keyClick(rows.side, Qt.Key.Key_Right)
     QTest.keyClick(rows.side, Qt.Key.Key_Space)
 
 
 def test_side_the_row_sits_under_new_cards_a_day_and_shows_the_librarys_choice(qapp):
-    """Under *New cards a day* in Anki & mining (Sonic: reuse what exists, sorted where it belongs); its explainer is
-    the row's ?, never a visible line under it; a library without the option reads *Current's order*."""
+    """Under *New cards a day* in Anki & mining (Sonic: reuse what exists, sorted where it belongs); one switch named
+    *Learn two shows at once* (on: Current's first two titles side by side; off: Current in order) — its explainer is
+    the row's ?, never a visible line under it; a library without the option reads off."""
     from app.qt import settings_catalog as catalog
     anki = [row.id for row in catalog.ROWS if row.section == "anki"]
     assert anki.index("new_cards_from") == anki.index("new_cards_a_day") + 1
-    for options, value in ((dict(LINES, side_by_side=1), "top_two"), (dict(LINES), "current"),
-                           (dict(LINES, side_by_side=0), "current")):
+    assert catalog.ROW["new_cards_from"].label == "Learn two shows at once"
+    for options, value in ((dict(LINES, side_by_side=1), True), (dict(LINES), False),
+                           (dict(LINES, side_by_side=0), False)):
         page, rows, _shell, store = make(options)
         try:
-            assert rows.side.value() == value and rows.side.isEnabled()
+            assert isinstance(rows.side, sc.Toggle)
+            assert rows.side.value() is value and rows.side.isEnabled()
+            assert rows.side.accessibleName() == "Learn two shows at once"
             assert page.custom_row("new_cards_from").layout().indexOf(rows.side) >= 0
             assert rows.side.toolTip() == S.ROWS["new_cards_from"][2]
             assert store.calls == []                                   # nothing written by showing it
@@ -543,14 +547,44 @@ def test_side_the_row_sits_under_new_cards_a_day_and_shows_the_librarys_choice(q
             _close(page)
 
 
+@pytest.mark.parametrize("language", ["ja", "zh"])
+@pytest.mark.parametrize("query", ["parallel", "Parallel", "side by side", "two shows", "learn two"])
+def test_settings_search_finds_the_switch_by_parallel_never_with_parallel_in_its_name(query, language):
+    """Sonic thought "parallel" and searched for it — but doesn't want the word in its name."""
+    from app.qt import settings_catalog as catalog
+    settings = dict(ALL_ON, target_language=language)
+    ctx = frozenset(catalog.MODULES)
+    assert "new_cards_from" in catalog.find(query, settings, language, ctx)
+    row = catalog.ROW["new_cards_from"]
+    assert "parallel" not in row.label.casefold() and "parallel" not in S.ROWS["new_cards_from"][2].casefold()
+
+
+def test_side_the_switch_is_the_one_choice_the_old_two_options_are_gone():
+    """No second state: the stored value is the library's `side_by_side` 0 / 1 as before (no settings migration)."""
+    assert "new_cards_from" not in S.OPTIONS
+    from app.qt import settings_store
+    assert not hasattr(settings_store, "SIDE_VALUES")
+
+
 def test_side_a_choice_shows_at_once_and_writes_one_command_never_settings_json(qapp):
     writer = Writer()
     page, rows, _shell, store = make(dict(LINES), writer=writer)
     try:
-        _choose_top_two(rows)
-        assert rows.side.value() == "top_two"                          # in the frame of the press
+        _turn_on(rows)
+        assert rows.side.value() is True                               # in the frame of the press
         assert writer.calls == [{"side_by_side": True}]                # one command, the option alone
         assert store.calls == []                                       # the library's value, not the file's
+    finally:
+        _close(page)
+
+
+def test_side_turned_off_writes_side_by_side_false(qapp):
+    writer = Writer()
+    page, rows, _shell, store = make(dict(LINES, side_by_side=1), writer=writer)
+    try:
+        _turn_on(rows)                                                 # (Space flips it: on → off)
+        assert rows.side.value() is False
+        assert writer.calls == [{"side_by_side": False}]
     finally:
         _close(page)
 
@@ -560,9 +594,9 @@ def test_side_a_refused_choice_goes_back_and_the_bar_says_why(qapp):
     page, rows, shell, _store = make(dict(LINES), writer=writer)
     try:
         writer._reason = "damaged"
-        _choose_top_two(rows)
+        _turn_on(rows)
         assert writer.calls == [{"side_by_side": True}]
-        assert rows.side.value() == "current"
+        assert rows.side.value() is False
         assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
     finally:
         _close(page)
@@ -574,7 +608,7 @@ def test_side_through_the_real_writer_the_store_weaves_and_its_undo_puts_it_back
     w, _heard = make_writer(after_commit=lambda change, op: changes.append((change, op)))
     page, rows, _shell, _store = make(dict(LINES), writer=w)
     try:
-        _choose_top_two(rows)
+        _turn_on(rows)
         assert h.until(lambda: lib.store.meta().get("side_by_side") == 1)
         assert w.idle(5) and [op for _c, op in changes] == ["set_options"]
         lib.store.undo(changes[0][0])

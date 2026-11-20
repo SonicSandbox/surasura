@@ -1,7 +1,9 @@
 """Mado-PZ (2026-11-18, a tester's ask: what runs by itself taxes the PC; PROVISIONAL): one click on a circle at the
 bar's bottom left pauses what it runs by itself — its ring turns the paused colour with two bars on it, on the press —
-and a second click resumes it; one control after the circles pauses (or resumes) all five; a pause is kept across a
-restart and said at the start; an amber circle's click still goes to its decision (a7).
+and a second click resumes it; a pause is kept across a restart and said at the start; an amber circle's click still
+goes to its decision (a7). Mado-PZ2 (Sonic, 2026-11-19): no *Pause all* bubble — *Pause all* / *Resume all* under each
+circle's own *Pause* / *Resume* in its right-click, and a Shift-click on any circle does it; each hover says what its
+pause holds; a press held elsewhere names the circle to click.
 
 What a wrong answer would cost a learner: a click that seems to do nothing (no change until a worker answers), a
 pause that looks like a decision (amber), every circle repainted for one pause (S19), a job they pressed themselves
@@ -81,21 +83,93 @@ def test_every_circle_takes_a_press_and_the_keyboard_reaches_each(strip):
     assert strip.focusPolicy() == Qt.FocusPolicy.TabFocus
 
 
-def test_the_pause_all_control_sits_after_the_circles_and_says_which_it_does(strip):
-    b = strip.pause_all_button
-    last = strip.rect_of(P.CIRCLES[-1])
-    assert b.geometry().left() > last.right() and b.geometry().right() < strip.width()
+# --- Mado-PZ2 (Sonic, 2026-11-19: no extra bubble — *Pause all* in each circle's right-click + Shift-click) ------- #
+def test_no_pause_all_bubble_the_strip_is_its_five_circles_and_the_question_mark(strip):
+    """Sonic: "I don't want too much there … we already have the ? bubble": nothing between the circles and the ?."""
+    from PyQt6.QtWidgets import QAbstractButton
+    from app import theme
+    assert not hasattr(strip, "pause_all_button")
+    marks = [w for w in strip.findChildren(QAbstractButton) if w is not strip.help]
+    assert marks == [], [w.objectName() for w in marks]
+    width = 5 * theme.size("phase-circle") + 4 * theme.size("phase-gap")
     if strip.help is not None:
-        assert strip.help.geometry().left() > b.geometry().right()
+        assert strip.help.geometry().left() == round(width + theme.size("phase-gap"))
+    else:
+        assert strip.width() == width
+
+
+def test_every_circles_right_click_has_pause_all_right_under_its_own_pause(strip):
+    """The pair reads as one: *Pause* · *Pause all*, *Resume* · *Resume all* — the item names what it does to all five
+    as the item above does to this one; each with its tip (the bubble, a screen reader's description)."""
+    from app.qt import tool_icons
+    strip.set_opens(set(phase_strip.SETTINGS))
+    for c in P.CIRCLES:
+        entries = strip.menu_entries(c)
+        assert entries[:2] == [(strings.PHASE_PAUSE, "pause"), (strings.PHASE_PAUSE_ALL, "pause_all")], c
+    strip.set_paused({P.JUNBAN})
+    assert strip.menu_entries(P.JUNBAN)[:2] == [(strings.PHASE_RESUME, "pause"), (strings.PHASE_RESUME_ALL, "pause_all")]
+    assert strip.menu_entries(P.ANKI)[:2] == [(strings.PHASE_PAUSE, "pause"), (strings.PHASE_PAUSE_ALL, "pause_all")]
+    menu = tool_icons.menu_of(strip, [(pair, lambda: None) for pair, _what in strip.menu_entries(P.JUNBAN)])
+    try:
+        acts = menu.actions()
+        assert [a.text() for a in acts[:2]] == ["Resume", "Resume all"]       # (an item's text is its read-out name)
+        assert all(a.toolTip() and a.toolTip() != a.text() for a in acts[:2])
+    finally:
+        menu.deleteLater()
+
+
+def test_the_menus_pause_all_is_asked_of_the_window_with_its_circle(strip):
     asked = []
-    strip.pause_all.connect(lambda: asked.append(True))
-    _click(b, b.rect().center())
-    assert asked == [True]
-    assert b.toolTip() == strings.PHASE_PAUSE_ALL
-    strip.set_paused(set(P.CIRCLES))
-    assert b.all_paused and b.toolTip() == strings.PHASE_RESUME_ALL == b.accessibleName()
+    strip.asked.connect(lambda c, what: asked.append((c, what)))
+    strip.set_opens(set(phase_strip.SETTINGS))
+    entries = strip.menu_entries(P.SURASURA)
+    assert entries[1][1] == "pause_all"
+    strip.asked.emit(P.SURASURA, entries[1][1])
+    assert asked == [(P.SURASURA, "pause_all")]
+
+
+def test_a_shift_click_on_any_circle_asks_for_all_five_and_opens_nothing(strip):
+    from PyQt6.QtTest import QTest
+    opened, every = [], []
+    strip.opened.connect(opened.append)
+    strip.pause_all.connect(every.append)
+    for c in P.CIRCLES:
+        QTest.mouseClick(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, _centre(strip, c))
+    assert every == list(P.CIRCLES) and opened == []
+    _click(strip, _centre(strip, P.ANKI))                               # a plain click: that circle alone, as before
+    assert opened == [P.ANKI] and every == list(P.CIRCLES)
+
+
+def test_shift_enter_on_the_circle_in_focus_asks_for_all_five(strip):
+    from PyQt6.QtTest import QTest
+    opened, every = [], []
+    strip.opened.connect(opened.append)
+    strip.pause_all.connect(every.append)
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    QApplication.processEvents()
+    QTest.keyClick(strip, Qt.Key.Key_Right)
+    QTest.keyClick(strip, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+    QTest.keyClick(strip, Qt.Key.Key_Space, Qt.KeyboardModifier.ShiftModifier)
+    assert every == [P.SURASURA, P.SURASURA] and opened == []
+    QTest.keyClick(strip, Qt.Key.Key_Return)
+    assert opened == [P.SURASURA]
+
+
+def test_each_circles_hover_lists_what_its_pause_holds_and_says_the_shift_click(strip):
+    """The line *Pause all*'s hover was to carry, on the circle it belongs to; the Shift-click said where it's used."""
+    import html
+    assert set(strings.PHASE_HOLDS) == set(P.CIRCLES)
+    for c in P.CIRCLES:
+        text = strip.hover_text(c)
+        assert html.escape(strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[c])) in text, c     # (rich text)
+        assert strings.PHASE_SHIFT_PAUSE_ALL in text and strings.PHASE_SHIFT_RESUME_ALL not in text, c
+        assert strings.PHASE_PAUSE_ALL[0] not in text, "said once: the Shift-click line, not the right-click's again"
     strip.set_paused({P.MINER})
-    assert not b.all_paused and b.toolTip() == strings.PHASE_PAUSE_ALL
+    text = strip.hover_text(P.MINER)
+    assert html.escape(strings.PHASE_HOLDS_LINE.format(what=strings.PHASE_HOLDS[P.MINER])) in text, \
+        "paused: what waits, said"
+    assert strings.PHASE_SHIFT_RESUME_ALL in text and strings.PHASE_SHIFT_PAUSE_ALL not in text
+    assert strings.PHASE_SHIFT_PAUSE_ALL in strip.hover_text(P.ANKI)
 
 
 # --- the window ---------------------------------------------------------------------------------------------------- #
@@ -132,16 +206,45 @@ def test_a_pause_holds_and_stops_what_runs_by_itself_never_a_job_you_pressed(wor
     assert wait_until(lambda: again.state == J.RUNNING), "what waited starts on the resume"
 
 
-def test_the_pause_all_control_pauses_every_circle_and_then_resumes_them(world):
+def _shift_click(widget, pos):
+    from PyQt6.QtTest import QTest
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos)
+
+
+def test_a_shift_click_pauses_all_five_and_on_a_paused_circle_resumes_all(world):
+    """Shift does to all five what the click does to the one: a running circle's pauses them all, a paused one's
+    resumes them all — painted on the press, kept in settings.json as one click's is."""
     win = world.win
-    _click(win.phase.pause_all_button, win.phase.pause_all_button.rect().center())
+    _shift_click(win.phase, _centre(win.phase, P.SURASURA))
     assert win.phase.paused == set(P.CIRCLES) == world.services.paused
-    _click(win.phase, _centre(win.phase, P.MINER))                     # one resumed: *Pause all* pauses it again
+    assert world.services.settings.flush(5) and settings_manager.paused(settings_manager.load_settings()) == \
+        set(P.CIRCLES)
+    _click(win.phase, _centre(win.phase, P.MINER))                     # one resumed by its own click
     assert win.phase.paused == set(P.CIRCLES) - {P.MINER}
-    _click(win.phase.pause_all_button, win.phase.pause_all_button.rect().center())
+    _shift_click(win.phase, _centre(win.phase, P.MINER))               # it runs: Shift pauses all again
     assert win.phase.paused == set(P.CIRCLES)
-    _click(win.phase.pause_all_button, win.phase.pause_all_button.rect().center())
+    _shift_click(win.phase, _centre(win.phase, P.ANKI))                # paused: Shift resumes all
     assert win.phase.paused == frozenset() == world.services.paused
+
+
+def test_the_menus_pause_all_and_resume_all_are_the_shift_click(world):
+    win = world.win
+    win.phase.asked.emit(P.JUNBAN, "pause_all")
+    assert world.services.paused == set(P.CIRCLES)
+    win.phase.asked.emit(P.JUNBAN, "pause")                            # its own Resume, as a click
+    assert world.services.paused == set(P.CIRCLES) - {P.JUNBAN}
+    win.phase.asked.emit(P.ANKI, "pause_all")                          # Anki is paused: *Resume all*
+    assert world.services.paused == frozenset()
+
+
+def test_a_shift_click_on_an_amber_circle_pauses_all_and_never_opens_its_decision(world, monkeypatch):
+    """Amber's click goes to its decision (a7); Shift is the all-five pause, on any circle."""
+    win = world.win
+    monkeypatch.setattr(win.phase, "go", lambda circle: P.Go("needs", ("no-video",)))
+    shown = []
+    monkeypatch.setattr(win, "show_tab", lambda name: shown.append(name))
+    _shift_click(win.phase, _centre(win.phase, P.MINER))
+    assert world.services.paused == set(P.CIRCLES) and shown == []
 
 
 def test_the_menus_pause_and_resume_are_the_click(world):
@@ -197,7 +300,9 @@ def test_mine_now_while_anki_miner_is_paused_is_asked_and_the_bar_says_it_waits(
         def singleShot(_ms, _call):
             pass
     monkeypatch.setattr(mine_actions, "QTimer", Timer)
-    for paused, expect in (({P.MINER}, [strings.MINE_PAUSED]), (frozenset(), [])):
+    waits = strings.PAUSED_WAITS.format(what=strings.MINE_WAITS, circle=strings.PAUSED_CIRCLE[P.MINER])
+    assert "Anki Miner is paused" in waits, "the one shared line names the circle to click (Mado-PZ2)"
+    for paused, expect in (({P.MINER}, [waits]), (frozenset(), [])):
         said.clear()
         win = SimpleNamespace(services=SimpleNamespace(paused=paused, status=None), say=said.append)
         mine_actions.MineActions._told(SimpleNamespace(win=win), "saved", [], 1)
@@ -219,3 +324,23 @@ def test_pausing_anki_miner_mid_episode_never_presses_its_rows_stop(world, monke
     win._circle_asked(P.MINER, "stop")
     assert stopped == [11], "your Stop from the menu: the row's, as before"
 
+
+
+# --- Mado-PZ2: a press held by a pause names the circle to click ------------------------------------------------ #
+def test_make_their_cards_while_anki_miner_is_paused_says_they_wait_and_which_circle_resumes():
+    """*Make their cards* queues them (nothing lost) but nothing starts while Anki Miner is paused: never *come next*."""
+    for made, one in ((1, True), (3, False)):
+        said = mine_actions._made_words(made, paused=True)
+        assert said == strings.PAUSED_WAITS.format(what=strings.MAKE_CARDS_WAIT[one].format(n=made),
+                                                   circle=strings.PAUSED_CIRCLE[P.MINER])
+        assert mine_actions._made_words(made) == strings.MAKE_CARDS_QUEUED[one].format(n=made)
+    assert mine_actions._made_words(0, paused=True) == strings.MAKE_CARDS_NONE, "nothing queued: nothing waits"
+    assert mine_actions._made_words(False, paused=True) == strings.MAKE_CARDS_GONE
+
+
+def test_every_paused_line_names_a_circle_the_strip_shows():
+    assert set(strings.PAUSED_CIRCLE) == set(P.CIRCLES)
+    for c in (P.ARRIVALS, P.SURASURA, P.JUNBAN):
+        assert strings.PAUSED_CIRCLE[c] == strings.PHASE_MARKS[c], "the mark on the circle itself"
+    for c in (P.MINER, P.ANKI):
+        assert strings.PAUSED_CIRCLE[c] == strings.PHASE_NAMES[c], "a logo: its name"

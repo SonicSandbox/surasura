@@ -34,6 +34,7 @@ def test_a_kana_card_known_only_by_its_letters_is_not_known_in_a_sentence_that_s
     assert not is_known("まく", SPRINKLE)
     assert not is_known("まく", SPRINKLED), "no bold, conjugated: still read in the sentence"
     assert not is_known("まみれ", MUDDY)
+    assert not is_known("まみれ", "服が泥まみれになった。"), "no bold mark: the word that holds it, 泥塗れ"
     # …while the same cards with no sentence keep the letters' answer (the card's rule since 2026-09-27)
     assert is_known("まく") and is_known("まく", "") and is_known("まみれ", None)
 
@@ -84,6 +85,16 @@ def test_a_bold_mark_says_which_word_where_the_sentence_holds_two(tmp_path):
     is_known = reposition.known_test("ja", _settings())
     assert is_known("かける", "鍵を<b>かけて</b>、皿が欠けた。")
     assert not is_known("かける", "鍵をかけて、皿が<b>欠けた</b>。"), "marked: 欠ける, not known"
+
+
+def test_a_bold_mark_inside_a_longer_word_reads_that_word_even_where_the_card_is_said_before_it(tmp_path):
+    # 汗にまみれた手で、泥<b>まみれ</b>の靴: the first まみれ is the verb 塗れる (known here), the marked one 泥塗れ — the mark
+    # says the card is the second
+    _library(tmp_path)
+    _known(tmp_path, ["塗れる"])
+    is_known = reposition.known_test("ja", _settings())
+    assert not is_known("まみれ", "汗にまみれた手で、泥<b>まみれ</b>の靴を拭いた。")
+    assert is_known("まみれ", "汗にまみれた手で、泥まみれの靴を拭いた。"), "no mark: the word said as itself"
 
 
 def test_two_words_a_sentence_could_mean_are_never_guessed_between(tmp_path):

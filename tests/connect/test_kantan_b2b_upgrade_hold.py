@@ -103,6 +103,15 @@ def test_not_now_leaves_an_episode_the_learner_stopped_stopped(tmp_path, upgrade
     assert actions.first_run_back("ja", path) == 1
 
 
+def test_not_now_never_sets_aside_a_job_whose_batch_reached_anki_miner(tmp_path, upgraded):
+    # why: mutant M9 — a job Anki Miner already took a batch of has cards on the way: it stays where it stopped
+    path, ledger = upgraded
+    job = ledger.job("ja", 2)
+    ledger.start_batch(job["id"], 1, str(tmp_path / "run-2"))
+    assert actions.first_run_aside("ja", path) == 1, "only job 3"
+    assert ledger.job_by_id(job["id"])["state"] == "queued"
+
+
 def test_the_yes_mines_them_all_in_their_order(tmp_path, upgraded):
     # why: the learner's yes covers what was waiting: the part-way episode finishes first, then the queued ones
     _path, ledger = upgraded
@@ -136,6 +145,9 @@ def test_mine_now_always_works_while_the_question_asks(tmp_path, upgraded):
     assert ledger.job("ja", 3)["state"] == "done" and ledger.job("ja", 1)["state"] == "mining"
     assert not ledger.mined_from_log("ja"), "an asked episode is no yes to the whole line"
     assert inbox.first_run_waits("ja", ledger) is True
+    # mutant M14: the yes later brings back only job 2 — job 3's episode was mined by the ask meanwhile
+    assert actions.first_run_back("ja", path) == 1
+    assert [j["state"] for j in ledger.jobs("ja") if j["item_id"] == 3].count("queued") == 0
 
 
 def test_an_old_queued_job_the_learner_asked_for_and_that_finished_never_lifts_the_hold(tmp_path, upgraded):
@@ -254,6 +266,28 @@ def test_after_not_now_a_new_episode_entering_the_top_is_never_mined_by_itself(l
     assert _consume(lang)["queued"] == []
     with Ledger() as ledger:
         assert ledger.jobs(lang) == []
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_make_cards_after_not_now_queues_the_set_aside_jobs_again(lang):
+    # why: mutant M6 — the real *Make cards* (setup_wizard.first_cards) must bring back a set-aside show part that
+    # its own log of the top 20 never names (it sits below the line, in Current)
+    from app.connect.ledger import SHOW
+    from app.services import setup_wizard
+    _library(lang, line=1)
+    needs.offer(lang, needs.FIRST_CARDS)
+    _consume(lang)
+    with c.store(lang) as s:
+        below = s.ids("now")[-1]
+        assert below not in library.mine_line(s)
+    with Ledger() as ledger, ledger.transaction():
+        ledger.queue(lang, below, "user", 7, store_id="store-1", kind=SHOW)
+    actions.first_run_aside(lang)
+    needs.answer(lang, [needs.FIRST_CARDS_NOT_NOW])
+    setup_wizard.first_cards(lang, {"connect_enabled": True}, c.dirs(lang)[0])
+    with Ledger() as ledger:
+        job = ledger.job(lang, below)
+        assert (job["state"], job["kind"]) == ("queued", SHOW)
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

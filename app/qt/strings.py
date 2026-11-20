@@ -123,6 +123,9 @@ ITEM_MENU = {
                            "• Undo groups them again"),
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
                                    "(asks first)"),
+    # Kura-HJ (Sonic 2026-11-19): a row that looks like a show already there ({title}: that show) — one press, Undo
+    "join-show": ("Join {title}", "Make this part of {title}: it and its new episodes go into that show\n"
+                                  "• Undo takes it back"),
 }
 # a submenu longer than a page (`item_menu.MENU_PAGE`) goes on in a submenu of its own, page by page
 MENU_MORE = ("More…", "The rest of this list")

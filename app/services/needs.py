@@ -112,6 +112,9 @@ Root = namedtuple("Root", "path rel label files", defaults=(None,))
 BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP = ("bulk", "file-gone", "no-video", "rename-ask", "offline", "failure",
                                                     "gap")
 FIRST_CARDS = "first-cards"         # D1: setup's first scan took shows in; their cards are made only if you say so
+# Kantan-B2b (Sonic 2026-11-19: "Not now is not a yes"): D1's *Not now*, kept as its own key — FIRST_CARDS stays
+# unanswered, so nothing mines by itself (`inbox.first_run_waits`), and its line stays, only *Make cards* on it
+FIRST_CARDS_NOT_NOW = "first-cards:not-now"
 KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked once (B3-1 A)
 # A3W-6 (Sonic, 2026-10-24 night): Connect's episodes wait on Anki for you (closed, a permission prompt, another
 # profile or none: `runner.anki_needs_you`) — one line, read from Connect's record, gone by itself once Anki opens
@@ -267,6 +270,7 @@ STRINGS = {
     "gap_span": "from {a} to {b}", "gap_until": "until {b}",
     "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
+    "first_say_later": "No cards are made until you press Make cards. Mine now makes one episode's.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
     "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
@@ -446,7 +450,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             out.append(big[0])                      # K1 leads the page
         big = big[1:]
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
-        out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
+        out.append(_first_cards_entry(rows, seen, mine_line, cards_on, later=FIRST_CARDS_NOT_NOW in answered))
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
@@ -1057,16 +1061,17 @@ def _gap_entry(gap, seen):
                  unseen=key not in seen, say="", data={"gap_id": gap.get("id"), "item_ids": tuple(items)})
 
 
-def _first_cards_entry(rows, seen, mine_line, cards_on=False):
+def _first_cards_entry(rows, seen, mine_line, cards_on=False, later=False):
     """D1's one line: the first `mine_line` episodes of Current (fewer while Current holds fewer). `cards_on` (Connect's
     switch already on, setup's page 5 said yes): the same question, its actions' words never offering to turn it on
-    (SRC W1 fix, Decision 1)."""
+    (SRC W1 fix, Decision 1). `later` (Kantan-B2b: its *Not now* pressed): it stays until a yes, *Make cards* alone."""
     have = sum(1 for r in rows if r.tier in ("now", "soon") for e in r.episodes if not e.missing)
     n = min(mine_line, have) if have else mine_line
     title = STRINGS["first_title_one"] if n == 1 else STRINGS["first_title"].format(n=n)
     actions = ("first_cards_on", "not_now_on") if cards_on else ("first_cards", "not_now")
-    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions,
-                 unseen=FIRST_CARDS not in seen, say=STRINGS["first_say"], data={"n": n})
+    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions[:1] if later else actions,
+                 unseen=FIRST_CARDS not in seen, say=STRINGS["first_say_later" if later else "first_say"],
+                 data={"n": n})
 
 
 FLAG_WORDS = ("red", "orange", "green", "blue", "pink", "turquoise", "purple")

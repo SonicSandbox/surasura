@@ -442,7 +442,7 @@ def note(language, kind, profile=None, deck=None, **items):
     if profile is None:
         raise ValueError("a first-touch journal line needs the open Anki profile")
     kept = _clean(items)
-    if not any(key in kept for key in _WHAT) and kind != "put_back":
+    if not any(key in kept for key in _WHAT) and kind != "put_back" and kept.get(SWEPT) is not True:
         return False
     started(language)
     now = time.time()
@@ -513,6 +513,56 @@ def parked(language):
             "notes": {note_id for _tag, note_id in state["tags"]}, "since": min(times) if times else None}
 
 
+# --- Kyou-PF (Sonic 2026-11-20): Junban's own purple flags, and the first clean-up ------------------------------- #
+SWEPT = "swept"     # a journal line's mark: a run you started in 順 took Junban's stale marks off (the first clean-up)
+
+
+def flagged(language):
+    """Kyou-PF: the purple flags Junban put on, by this lasting record -> {"cards": {card: the flag to put back} for
+    every card whose last journalled flag is Junban's purple; "named": every card a flag line names (one whose purple
+    a Restore or a clean-up took off since, or you flagged between two of Junban's writes, is not Junban's now);
+    "since": the first line's time in ms, or None (no journal yet); "swept": `swept`'s answer, from the same read}.
+    Every profile's lines, as `parked`. A journal that is there but can't be read is the safe side: no flag is
+    Junban's (`since` 0), and no clean-up done."""
+    from modules.junban.unlisted import FLAG_PURPLE
+    path = os.path.join(folder(language), JOURNAL)
+    try:
+        if os.path.exists(path):
+            open(path, "rb").close()
+    except OSError:
+        return {"cards": {}, "named": set(), "since": 0, "swept": False}
+    lines = journal(language)
+    flags = _state(lines)["flags"]
+    times = [line.get("ms") for line in lines if _whole(line.get("ms"))]
+    # Junban flags only an unflagged card (`unlisted.plan`): a chain that starts from purple began with a clean-up of a
+    # purple it put on before this record (`junbans_flag`'s fallback) — no flag of its own before it, as there
+    return {"cards": {card: (0 if before == FLAG_PURPLE else before) for card, (before, last) in flags.items()
+                      if last == FLAG_PURPLE},
+            "named": set(flags), "since": min(times) if times else None,
+            "swept": any(line.get(SWEPT) is True for line in lines)}
+
+
+def junbans_flag(card_id, record, carries_later):
+    """Kyou-PF: is this purple card's flag Junban's? -> the flag to put back, or None (yours: it stays). By the record
+    (`flagged`): a card it names is Junban's only while its last journalled flag is purple; one it never names that
+    was made before the record began (or with no record at all) is Junban's when its note still carries the `::later`
+    tag Junban flags with — `connect.junbans`' fallback for a parked card; one made since is yours."""
+    if card_id in record["cards"]:
+        return record["cards"][card_id]
+    if card_id in record["named"] or not carries_later:
+        return None
+    since = record.get("since")
+    return 0 if since is None or (isinstance(card_id, int) and card_id < since) else None
+
+
+def swept(language):
+    """Kyou-PF (Sonic's ruling 3): has a run you started in 順 done the first clean-up — taken Junban's stale purple
+    flags and `::later` tags off, and brought back what it parked with *Set cards aside* off — in this language? Until
+    then an automatic run leaves all three to that press, so the first clean-up is one you saw in the preview. (A run
+    reads it with the flags, `flagged(...)["swept"]`: one read of the journal.)"""
+    return flagged(language)["swept"]
+
+
 def has_anything(language):
     """Has Surasura kept anything for this language — an order file or a journal line? Local files only."""
     try:
@@ -541,14 +591,18 @@ def undone_fields(snapshot, edits):
 
 
 def restored(language, url, snapshot=None, deck=None, unsuspended=(), suspended=(), with_tag="", flags=(),
-             tags_off=None, fields=None):
+             tags_off=None, fields=None, tags_on=None):
     """A Restore's journal line, once its writes landed — what it undid: the cards it unsuspended, the returning words'
     cards it set aside again (`suspended`, carrying `with_tag`), `flags` `[(card, the flag put back)]` (off Junban's
-    purple), `tags_off` `{tag: [note ids]}`, `fields` `{note: {field: the value put back}}` (`snapshot` says what
-    Surasura had written). The profile is asked only when there is something to note. Never a reason not to restore."""
+    purple — or, Kyou-PF, Junban's purple back on a card its clean-up took it off: `snapshot`'s `flags_off`),
+    `tags_off` `{tag: [note ids]}`, `tags_on` `{tag: [note ids]}` (a clean-up's `::later` tag put back),
+    `fields` `{note: {field: the value put back}}` (`snapshot` says what Surasura had written). The profile is asked
+    only when there is something to note. Never a reason not to restore."""
     from modules.junban.unlisted import FLAG_PURPLE
+    off = {_int(card): flag for card, flag in ((snapshot or {}).get("flags_off") or {}).items() if _int(card) is not None}
     items = dict(unsuspended=unsuspended, suspended=suspended,
-                 flags={card: [FLAG_PURPLE, flag] for card, flag in flags or ()}, tags_off=tags_off or {},
+                 flags={card: ([off[card], FLAG_PURPLE] if flag == FLAG_PURPLE and card in off else [FLAG_PURPLE, flag])
+                        for card, flag in flags or ()}, tags_off=tags_off or {}, tags=tags_on or {},
                  fields=undone_fields(snapshot, fields))
     if not any(key in _clean(items) for key in _WHAT):
         return False

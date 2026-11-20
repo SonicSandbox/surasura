@@ -128,6 +128,31 @@ def test_anki_miner_amber_opens_needs_you_at_its_episodes_card_highlighted(world
     assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
 
 
+# --- Mado-PZ3: the first-run question's amber 鉱, clicked with the mouse in the real window ------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("paused", [False, True])
+def test_first_cards_amber_miner_opens_its_card_on_a_real_click_and_never_pauses_or_resumes(world, washed, language,
+                                                                                            paused):
+    """Mado-PZ3 (Sonic 2026-11-20: "if it's yellow then i expected it to take them to the setting … to make the
+    decision"): setup's *Make cards for your first 20 episodes?* makes 鉱 amber (Kantan-B2b), and a plain click with the
+    mouse — the strip's own press, not the shell's handler called by hand — opens Needs you at that card, washed, and
+    leaves the pause as it was (paused or not): amber is a decision's, a click there never pauses."""
+    from tests.qt.test_phase_strip import _centre, _click
+    seed, win, writer, ny = world(language, looks=Looks())
+    if paused:
+        win.set_paused({P.MINER})
+    entry = service.Entry(key=service.FIRST_CARDS, kind=service.FIRST_CARDS, title="Make cards for your first 20 "
+                          "episodes?", lines=(), actions=("first_cards", "not_now"), unseen=True, say="",
+                          data={"at": 0})
+    _entries(ny, entry)
+    assert win.phase.states[P.MINER].needs == strings.PHASE_FIRST_CARDS and win.phase.go(P.MINER).place == "needs"
+    before = win.services.paused
+    _click(win.phase, _centre(win.phase, P.MINER))
+    _settle()
+    assert win.current_tab() == "needs" and ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+    assert win.services.paused == before == (frozenset({P.MINER}) if paused else frozenset())
+
+
 # --- Anki: a prompt or another profile waits on you; closed is a plain wait ------------------------------------------- #
 @pytest.mark.parametrize("reason", [anki_session.UNUSABLE, anki_session.OTHER_PROFILE.format("日本語", "User 1")])
 def test_anki_asking_for_you_is_amber_and_opens_needs_yous_anki_line_highlighted(world, reason, washed, monkeypatch):

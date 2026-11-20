@@ -249,6 +249,11 @@ DEFAULT_SETTINGS = {
         # _NON_ANALYSIS_SETTINGS). The token store always records which words are names, so flipping it needs only a
         # Generate.
         "ignore_names": False,
+        # Count song lyrics (OP / ED) (Settings -> Language & Parsing), both languages, off: a show's opening and ending
+        # songs, which its subtitles write again every episode, are out of the counts (app/song_lines.py). It changes
+        # what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS); not in the token store's build
+        # signature — the store keeps every sentence's line either way, so flipping it needs only a Generate.
+        "count_song_lyrics": False,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,

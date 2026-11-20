@@ -86,6 +86,14 @@ def test_a_label_name_is_one_word_and_keyed_by_its_reading(tmp_path):
     assert ("ユズハ", "ゆずは") in [w for line in read for w in line]
 
 
+def test_a_name_the_tagger_already_reads_as_one_keeps_its_key(tmp_path):
+    """A labelled name the tagger reads as a person's name already keeps the tagger's key (千鶴 チズル), so its rows
+    stay the ones every other file gives it (never チヅル beside チズル)."""
+    read, clues = _read(_item(tmp_path, "（千鶴）おはよう\n千鶴 遅いよ"))
+    assert "千鶴" in clues["n"]
+    assert ("チズル", "千鶴") in [w for line in read for w in line]
+
+
 def test_a_role_label_leaves_its_word_a_word(tmp_path):
     """（先生） names a role: 先生 said in a line stays the word 先生; お人形 stays a doll."""
     read, _clues = _read(_item(tmp_path))

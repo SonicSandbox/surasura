@@ -208,6 +208,30 @@ def test_the_rebuilt_text_of_a_gone_file_keeps_its_clues():
     assert facts["clues"] == clues
 
 
+# --- every reader of a file reads it with its clues ------------------------------------------------------------- #
+def test_the_token_store_reads_a_file_with_its_clues(tmp_path):
+    """The token store's own reader (make_tokenizer's tokenize_file): 柚葉 one word, its clues on the record."""
+    result = token_index.make_tokenizer("ja")(_item(tmp_path))
+    words = [t[2] for _s, tokens in result["sentences"] for t in tokens]
+    assert "柚葉" in words and "柚" not in words
+    assert result["names"]["w"]["n"]["柚葉"] == "ユズハ"
+
+
+def test_a_run_without_the_store_reads_a_file_with_its_clues(tmp_path):
+    """No token store (a store-less run, or its cached blob unreadable): the file is tokenized with its clues."""
+    sentences = analyzer.file_sentences(None, analyzer.JapaneseTokenizer(), _item(tmp_path), "ja")
+    assert "柚葉" in [t[2] for _s, tokens in sentences for t in tokens]
+
+
+def test_new_arrivals_read_a_file_with_its_clues(tmp_path):
+    """New arrivals' reader (arrivals.read): the same words the store will keep."""
+    from types import SimpleNamespace
+    from app import arrivals
+    view = SimpleNamespace(language="ja", tokenizer=analyzer.JapaneseTokenizer(), names_tables=None)
+    sentences, record = arrivals.read(view, _item(tmp_path))
+    assert "柚葉" in [t[2] for _s, tokens in sentences for t in tokens]
+
+
 # --- Connect's reader -------------------------------------------------------------------------------------------- #
 def test_connects_cue_reader_reads_the_names_as_the_store_does(tmp_path):
     """A subtitle's cues, read for a card, give the same words as a Generate: 柚葉 one word in both."""

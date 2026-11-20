@@ -168,7 +168,7 @@ def sample(view, paths, listed, carded=None, send_grammar=True, read=None):
 
 def top(language):
     """(the subtitle files of Connect's mine line for `language`, in its order — `connect.library.mine_line`: Current's
-    top N available items, a book, a text or an audiobook left out: Anki Miner mines none of them from a subtitle —,
+    top N available items not mined yet, a book, a text or an audiobook left out: Anki Miner mines none of them from a subtitle —,
     every word Connect has made a card for: `library.made_words_all`, never made again) -> ([], set()) with no store.
     Reads the store only (role `reader`)."""
     import sqlite3
@@ -184,7 +184,8 @@ def top(language):
         return [], set()
     try:
         with store:                                 # (closed at its end)
-            items = [store.item(i) for i in library.mine_line(store)]
+            # (an item mined already is never mined again: Connect queues only the line's unmined ones, `inbox`)
+            items = [store.item(i) for i in library.mine_line(store) if library.mined_at(store, i) is None]
             made = library.made_words_all(store)
     except (library_store.StoreError, sqlite3.Error):
         return [], set()                            # a busy or damaged store: no line read (the sample is drawn)

@@ -141,6 +141,7 @@ def test_done_is_one_settings_write_and_one_store_command_and_undo_puts_both_bac
     assert host.writer.calls == [{"mine_line": 10}]
     (message, undo), = host.toasts.shown
     assert message == strings.PICK_SAVED.format(name="Only one-new-word sentences")
+    host.services.library.line = 10                            # the library's view of Done's line landed
     undo()
     assert host.store.calls[-1] == ({"connect_mine_words": "list", "junban_ready_first": False,
                                      "connect_backlog_cap": {"ja": 300, "zh": 150}}, None)
@@ -160,6 +161,8 @@ def test_only_the_line_moved_is_the_store_command_alone_and_a_refused_one_still_
     picker.done.click()
     assert host.store.calls == [] and host.writer.calls == [{"mine_line": 5}]
     refused = Host(JUNBAN_ON, refuse=True)                    # a read-only library: the line isn't kept
+    said = []
+    refused.bar_line = SimpleNamespace(set_full=said.append)
     picker = _open(refused)
     picker.words._choose(1)
     picker.go(3)
@@ -167,6 +170,28 @@ def test_only_the_line_moved_is_the_store_command_alone_and_a_refused_one_still_
     picker.done.click()
     assert refused.store.calls == [({"connect_mine_words": "unknown"}, None)]
     assert picker.written == ({"connect_mine_words": "unknown"}, None)
+    assert len(said) == 1 and said[0]                          # the bar says the line wasn't kept, and why
+
+
+def test_undo_leaves_a_mine_line_moved_since_done_as_it_is(qapp):
+    # Why: the line has Undo's value check too — one moved in Fine-tune while the toast showed stays.
+    host = Host(JUNBAN_ON)
+    picker = _open(host)
+    picker.go(3)
+    picker.ahead._choose(picker.ahead.values().index(10))
+    picker.done.click()
+    host.services.library.line = 10                            # the library holds Done's line: Undo puts 20 back
+    (_m, undo), = host.toasts.shown
+    undo()
+    assert host.writer.calls == [{"mine_line": 10}, {"mine_line": 20}]
+    picker = _open(host)
+    picker.go(3)
+    picker.ahead._choose(picker.ahead.values().index(5))
+    picker.done.click()
+    host.services.library.line = 40                            # moved elsewhere since: left as it is
+    undo = host.toasts.shown[-1][1]
+    undo()
+    assert host.writer.calls[-1] == {"mine_line": 5}
 
 
 @pytest.mark.parametrize("language, data, found, steps", [

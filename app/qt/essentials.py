@@ -338,13 +338,16 @@ class EssentialsCards(QWidget):
         self.level_bar = LevelBar(self)
         well.addWidget(self.level_bar)
         self._arrange(force=True)
-        self.shown = {}                 # card -> what it shows now (S19: set only when it moved)
         self.sampler = None
+        self._line = None               # the mine line the chip says (`_library_moved`: repainted when it moves)
+        self._heard = None              # the library bridge followed (a language switch makes another)
 
     # --- painting ------------------------------------------------------------------------------------------------ #
     def paint(self, settings, language, facts):
         """Every card from the settings and the facts as they stand: only what moved is set."""
         line = card_picker.mine_line(self.page.shell) if self.page.shell is not None else None
+        self._line = line
+        self._hear()
         ready = card_picker.ready_shown(settings, language, getattr(self.page, "_found", None))
         for card in CARDS:
             self.cards[card].set_chips(chips_of(card, settings, language, facts, line, ready))
@@ -377,7 +380,25 @@ class EssentialsCards(QWidget):
         picture = self.sampler.picture if self.sampler is not None else card_picker.card_sample.fallback(language)
         self.picture.set_picture(picture)
         from app.qt import settings_catalog as catalog
-        self.picture.set_mode(catalog.value_of(settings, "connect_mine_words") or "list")
+        mode = catalog.value_of(settings, "connect_mine_words")
+        self.picture.set_mode(mode if mode in card_picker.card_sample.MODES else "list")     # (a hand-edited value)
+
+    def _hear(self):
+        """Follow the shown library's views (the mine line is the library's, not settings.json's: a Done that moved
+        only the line writes no setting)."""
+        heard = getattr(self.page.shell, "library_bridge", None) if self.page.shell is not None else None
+        if heard is self._heard:
+            return
+        self._heard = heard
+        if heard is not None:
+            heard.library_changed.connect(self._library_moved)
+
+    def _library_moved(self, _view=None):
+        """A view landed: the cards painted again only when the mine line it holds moved (S19)."""
+        if not (_alive(self) and _alive(self.page)) or self.page.shell is None:
+            return
+        if card_picker.mine_line(self.page.shell) != self._line and getattr(self.page, "live", None) is not None:
+            self.page.live._paint_setup()
 
     def _picture_landed(self):
         """The worker's picture came (the sampler outlives a page made again: a gone page's card does nothing)."""

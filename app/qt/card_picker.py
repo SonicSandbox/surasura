@@ -697,6 +697,7 @@ class CardPicker(motion.Overlay):
             writer = getattr(services, "writer", None)
             if writer is None or writer.set_options(mine_line=int(line)) is None:
                 line = None                                     # refused (read-only): the settings still saved
+                self._refused(writer)
         self.written = (changes, line)
         undo_changes, _line = changes_of(self.draft, before, settings, self.language)    # each moved key as it was
 
@@ -708,8 +709,8 @@ class CardPicker(motion.Overlay):
                 back = {k: v for k, v in undo_changes.items() if _thaw(now.get(k)) == changes.get(k)}
                 if back:
                     store.set(back)
-            if line is not None and old_line is not None:
-                writer = getattr(services, "writer", None)
+            if line is not None and old_line is not None and mine_line(self.shell) in (line, None):
+                writer = getattr(services, "writer", None)      # (a line moved since stays as it is)
                 if writer is not None:
                     writer.set_options(mine_line=int(old_line))
         self.undo = undo
@@ -719,6 +720,21 @@ class CardPicker(motion.Overlay):
             toasts.show(strings.PICK_SAVED.format(name=name), undo=undo)
         self._told(done)
         return self.written
+
+    def _refused(self, writer):
+        """The library refused the line (read-only): the bar says why, in the store rows' words."""
+        from app.qt import settings_strings as S
+        from app.qt import windows
+        raw = ""
+        try:
+            raw = (writer.reason() if writer is not None else "") or ""
+        except Exception:
+            pass
+        reason = (strings.READ_ONLY_REASONS.get(raw) or raw) if raw else S.STORE_NO_LIBRARY_TIP
+        try:
+            windows.say_in_bar(self.shell, S.STORE_NOT_SAVED.format(reason=reason))
+        except Exception as e:                      # a host with no bar: the log
+            applog.log("settings", f"Which words get a card: the line wasn't kept: {e}")
 
     @staticmethod
     def _told(done):

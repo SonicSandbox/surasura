@@ -17,6 +17,12 @@ HERE, once, from the dictionary lists, and the app ships only the result:
                       too): a run of kanji the tagger cuts can be one name only when it is spelled as one of
                       them. Kept with whether it is a surname (宮崎 + 駿 is a full name, two words; 司波 is a
                       surname).
+  SHOW_NAMES          every spelling of a person's name in JMnedict, 1–8 characters, kana spellings and the ones that
+                      are dictionary words too (平野, 龍, くるみ), each with its readings and whether it is a common word
+                      as well — one of the top COMMON_RANK spellings of JPDB 2024 or Jiten (先生, 父, 人形: what a
+                      speaker label names when it names a role): a show's own clues (its speaker labels, the readings
+                      it gives) make a name of a spelling only when it is one of these (app/names.py § A show's own
+                      name clues). From the EDRDG's JMnedict as Yomichan's export carries it (jmnedict.zip).
   KANJI_FORMS         every kanji spelling of JMdict (the EDRDG's Japanese-English dictionary), entry by entry:
                       a run of kanji a story keeps using is one word of its own only when no entry is spelled
                       like it (鄭寧 is Sōseki's 丁寧, a dictionary word). Kept by entry, so a spelling also says
@@ -28,7 +34,8 @@ HERE, once, from the dictionary lists, and the app ships only the result:
                       (app/anki_match.py `two_words`).
 
 Inputs live in docs/assets/reference_lists/ (gitignored, like build_reference_data.py's): JPDB 2024.json,
-Jiten.json, anki_miner_wordsets/ (surnames.txt, given-names.txt, LICENSE.txt) and JMdict_e.gz. Output is committed
+Jiten.json, anki_miner_wordsets/ (surnames.txt, given-names.txt, LICENSE.txt), JMdict_e.gz and jmnedict.zip
+(JMnedict in Yomichan's format, its term banks [spelling, reading, tags, …]). Output is committed
 and ships: app/katakana_data.py (the headwords, read wherever Japanese is), app/name_data.py (the person names, read
 only where the library is indexed) and app/jmdict_data.py (the kanji spellings and the readings, read where the
 library's tables are computed and where a card's word is matched) — the EDRDG's licence, CC BY-SA 4.0, in each
@@ -70,6 +77,12 @@ _CREATED = re.compile(r"JMdict created: (\d{4}-\d{2}-\d{2})")
 CARD_TAILS = ("する", "な", "に", "と", "だ", "です", "た", "ない", "ます", "ません")
 HEADWORD_LISTS = ("JPDB 2024", "Jiten")
 NAME_LISTS = (("surnames", 1), ("given-names", 2))     # anki_miner_wordsets/<name>.txt, the bit it sets
+JMNEDICT = "jmnedict.zip"
+PERSON_TAGS = frozenset(("surname", "given", "fem", "masc", "person", "unclass"))   # JMnedict's kinds of person name
+# A spelling one of these lists ranks this high is a common word first (SHOW_NAMES): every role a label names that
+# JMnedict also lists as a name was within it when measured — 先生 326, 男 118, 人形 1,724, 侍 8,599, 船長 10,887 —
+# and a name that is a word too sits past it (くるみ 22,873, 平野 15,043) or isn't listed (爽子, 風早).
+COMMON_RANK = 12000
 _KANA = re.compile(r"^[ぁ-ゖゝゞァ-ヺー-ヾ]+$")
 _HAN = re.compile(f"[{HAN}]")
 
@@ -116,6 +129,29 @@ def person_names(lists_dir):
     print(f"  JMnedict: {len(names):,} person-name spellings with a kanji, {len(names) - len(kept):,} of them "
           f"JPDB 2024 headwords: {len(kept):,} kept")
     return kept
+
+
+def show_names(lists_dir):
+    """SHOW_NAMES' lines, sorted: 'spelling<TAB>1 when a common word<TAB>its readings in hiragana, space-separated'."""
+    import zipfile
+    readings = {}
+    with zipfile.ZipFile(os.path.join(lists_dir, JMNEDICT)) as archive:
+        for member in sorted(archive.namelist()):
+            if not member.startswith("term_bank_"):
+                continue
+            for entry in json.loads(archive.read(member).decode("utf-8")):
+                spelling, tags = entry[0], set(str(entry[2]).split())
+                reading = entry[1] or spelling          # a name written in kana alone: its reading is its spelling
+                if tags & PERSON_TAGS and 1 <= len(spelling) <= 8 and "\t" not in spelling and reading:
+                    readings.setdefault(spelling, set()).add(hiragana(reading))
+    common = set()
+    for name in HEADWORD_LISTS:
+        common.update(_headwords(lists_dir, name)[:COMMON_RANK])
+    lines = [f"{spelling}\t{'1' if spelling in common else ''}\t{' '.join(sorted(readings[spelling]))}"
+             for spelling in sorted(readings)]
+    print(f"  JMnedict (Yomichan): {len(lines):,} person-name spellings, "
+          f"{sum(spelling in common for spelling in readings):,} of them common words too")
+    return lines
 
 
 def _jmdict_entries(lists_dir):
@@ -196,6 +232,7 @@ def main(lists_dir=LISTS_DIR, output=OUTPUT, katakana_output=KATAKANA_OUTPUT, jm
     print(f"Dictionary lists from {lists_dir}")
     headwords = katakana_headwords(lists_dir)
     persons = person_names(lists_dir)
+    shows = show_names(lists_dir)
     kanji_forms, created, n_forms = jmdict_kanji_forms(lists_dir)
     readings, n_read = jmdict_readings(lists_dir)
     surnames = sorted(word for word, bits in persons.items() if bits & 1)
@@ -205,7 +242,8 @@ def main(lists_dir=LISTS_DIR, output=OUTPUT, katakana_output=KATAKANA_OUTPUT, jm
         _write(katakana_output, KATAKANA_TEMPLATE.format(revision=revision, lists=" and ".join(HEADWORD_LISTS),
                                                          n_katakana=len(headwords), katakana_hex=_blob(headwords))),
         _write(output, NAMES_TEMPLATE.format(revision=revision, n_persons=len(persons), n_surnames=len(surnames),
-                                             n_given=len(given), surnames_hex=_blob(surnames), given_hex=_blob(given))),
+                                             n_given=len(given), surnames_hex=_blob(surnames), given_hex=_blob(given),
+                                             n_show=len(shows), common_rank=COMMON_RANK, show_b64=_blob64(shows))),
         _write(jmdict_output, JMDICT_TEMPLATE.format(revision=revision, created=created, n_entries=len(kanji_forms),
                                                      n_forms=n_forms, forms_b64=_blob64(kanji_forms),
                                                      n_readings=len(readings), n_read=n_read,
@@ -261,17 +299,24 @@ Revision: {revision}
   PERSON_NAMES  {n_persons:,} spellings — {n_surnames:,} surnames and {n_given:,} given names of JMnedict
                 with a kanji, 2-8 characters, that are no JPDB 2024 headword: a run of kanji the tagger
                 cuts can be one name only when it is spelled as one of them (app/names.py).
+  SHOW_NAMES    {n_show:,} spellings of a person's name in JMnedict, 1-8 characters, kana and kanji, the
+                dictionary words among them too, each with its readings and whether the top {common_rank:,}
+                spellings of JPDB 2024 or Jiten hold it (a common word first): a show's speaker labels and
+                the readings it gives make names of these alone (app/names.py § A show's own name clues).
 
 Derived from JMnedict, the Japanese proper-names dictionary of the JMdict/EDICT project, property of the
 Electronic Dictionary Research and Development Group (EDRDG), used in conformance with the Group's licence:
 Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0),
 https://creativecommons.org/licenses/by-sa/4.0/ — https://www.edrdg.org/edrdg/licence.html,
 https://www.edrdg.org/enamdict/enamdict_doc.html. Changes: only the spellings of surnames and given names
-are kept (no readings, no glosses), filtered as above. This table is shared under the same licence.
+are kept (PERSON_NAMES: no readings, no glosses; SHOW_NAMES: spellings and readings of person names, no
+glosses), filtered as above. These tables are shared under the same licence.
 
-Stored compressed (zlib, as hexadecimal text) and decoded lazily: only where the library is indexed.
+Stored compressed (PERSON_NAMES: zlib, as hexadecimal text; SHOW_NAMES: zlib, as Base64 text) and decoded
+lazily: only where the library is indexed (SHOW_NAMES: only where a file gives a clue).
 """
 
+import base64
 import zlib
 
 REVISION = "{revision}"
@@ -283,7 +328,16 @@ _SURNAMES = (
 _GIVEN_NAMES = (
     "{given_hex}"
 )
+
+_SHOW_NAMES = (
+    "{show_b64}"
+)
 ''' + _DECODE + '''
+
+def show_names():
+    """SHOW_NAMES' lines, sorted: 'spelling<TAB>1 when a common word<TAB>its readings in hiragana, space-separated'."""
+    return zlib.decompress(base64.b64decode(_SHOW_NAMES)).decode("utf-8").split("\\n")
+''' + '''
 
 def surnames():
     """JMnedict's surname spellings, a list (app/names.py keeps them as hashes)."""

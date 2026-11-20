@@ -1136,7 +1136,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     record = not foreign
     _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
-        # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
+        # at the cap: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
         full = _full(steps, lang, asked=bool(job.get("asked_at")))
         if full is not None:
             raise full
@@ -2438,10 +2438,11 @@ def held_by_cap(asked):
 
 
 def _full(steps, lang, asked=False):
-    """Before a job's pick: a Wait when Connect's waiting cards are at the cap and this run's shelf has had its try (it
-    can free nothing more until you study), else None — one request, so a job waiting at the cap is never picked
-    again at every look. `asked`: the job carries an ask (`held_by_cap`)."""
-    if not held_by_cap(asked) or not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
+    """Before a job's pick: a Wait when the cards waiting on your list are at the cap, else None — one request, so a
+    job waiting at the cap is never picked again at every look. Kyou-SH (a tester's 236 cards suspended with *Suspend
+    them* off; Sonic 2026-11-20: ranking and suspending are Junban's, Connect only makes cards): nothing is shelved
+    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`)."""
+    if not held_by_cap(asked):
         return None
     cap = steps.cap(lang)
     if not cap:
@@ -2453,22 +2454,11 @@ def _full(steps, lang, asked=False):
 
 
 def _at_cap(steps, ledger, lang, todo, asked=False):
-    """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
-    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go. `asked`: the
-    job carries an ask — never held, nothing shelved for it (`held_by_cap`)."""
-    if not held_by_cap(asked):
-        return None
-    cap = steps.cap(lang)
-    if not cap:
-        return None
-    count = steps.waiting_count(lang)
-    if count is None or count < cap:
-        return None
-    if steps.shelve(lang, ledger, todo, count, cap):
-        count = steps.waiting_count(lang)
-        if count is not None and count < cap:
-            return None
-    return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
+    """P2.4 Part B (the cap): a Wait when the cards waiting on your list are at the learner's cap, else None — before a
+    job's first batch, never mid-episode. Connect never suspends a card by itself (Kyou-SH, Sonic 2026-11-20): the
+    shelf is no longer asked at the cap; *Suspend them* is Junban's. `asked`: the job carries an ask — never held
+    (`held_by_cap`)."""
+    return _full(steps, lang, asked)
 
 
 def _outcome(ledger, jid, word):
@@ -3431,25 +3421,97 @@ class Steps:
         return cap_of(loaded.get("connect_backlog_cap", 300), lang)
 
     def waiting_count(self, lang):
-        """The cards waiting in Anki for `lang` — one count everywhere (laptop round 7 #41, Sonic's B3-2 A, 2026-10-22):
-        every new, unsuspended note in the decks you chose for it plus Connect's own, wherever they are
-        (`anki_sync.backlog_query(decks, connect=True)`: the bottom bar's *Anki · N waiting* is that search's saved
-        answer, `anki_backlog.json`). A suspended card isn't waiting: your suspend says "known", Surasura's sets it
-        aside. Your own new cards count toward the cap too. One cap per language (D31): Connect's notes count only
-        those this language's store made (the tag spans every language; review r2 #2). Decks read as settings.json
-        holds them now (`live`). Notes, as the bottom bar counts them."""
+        """The cards waiting in Anki for `lang` that count toward the cap: every new, unsuspended note in the decks you
+        chose for it plus Connect's own, wherever they are (`anki_sync.backlog_query(decks, connect=True)`, laptop
+        round 7 #41, Sonic's B3-2 A) — **only those whose word is still on your list** (Kyou-SH, Sonic 2026-11-20:
+        Junban's own off-list test, `match.lookup` over the list's keys, `_listed_keys`; a card set aside off the list
+        never blocks mining). No list to read → every waiting note counts, as before. A suspended card isn't waiting.
+        One cap per language (D31): Connect's notes count only those this language's store made (the tag spans every
+        language; review r2 #2); a pinned show's Connect cards always count (Junban puts them first). Decks read as
+        settings.json holds them now (`live`). Notes, as the bottom bar counts them (its count stays every note)."""
         from app import anki_connect, anki_sync
         from app.connect import shelf
         loaded = self._settings(lang) if self.live else self.loaded
         decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
         with self._open(lang) as store:
             made = shelf.made_notes(store)
+            pinned = shelf.pinned_items(store)
         try:
             notes = set(anki_connect.find_notes(self.url, anki_sync.backlog_query(decks))) if decks else set()
             notes |= set(anki_connect.find_notes(self.url, anki_sync.backlog_query([], connect=True))) & set(made)
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
-        return len(notes)
+        keys = self._listed_keys(lang)
+        if not keys:
+            return len(notes)
+        from app import anki_match
+        words = {n: made[n][1] for n in notes if n in made}
+        theirs = sorted(n for n in notes if n not in made)
+        try:
+            words.update(self._note_words(lang, theirs, loaded))
+        except anki_connect.AnkiError as e:
+            raise _anki_wait(self.url, "mining", e) from None
+        return sum(1 for n in notes if (n in made and made[n][0] in pinned)
+                   or anki_match.lookup(words.get(n) or "", keys, lang))
+
+    def _listed_keys(self, lang):
+        """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each
+        word and, for Japanese, its kana folded (`anki_match.build_index`'s fold), plus the last Generate's own index
+        (`Orth`, `Forms`) when results/ hold this language -> {key: True}, or {} with no list to read. Built again
+        only when the plan or the list's file changed (S19: `_full` asks before every job's pick)."""
+        from app import anki_match
+        got = self._plan_now(lang)
+        listed = got.listed if got is not None else None
+        path = held = None
+        try:
+            from app.cli import verbs
+            held = verbs._results_language()
+            path = os.path.join(verbs._results_dir(), verbs.PRIORITY_CSV)
+            stamp = ((path, os.path.getmtime(path), os.path.getsize(path), held)
+                     if (not held or held == lang) and os.path.exists(path) else None)
+        except Exception:
+            log.exception("Connect's cap: the list's file couldn't be looked at")
+            stamp = None
+        tag = (id(listed) if listed is not None else None, stamp)
+        cached = getattr(self, "_keys_of", {}).get(lang)
+        if cached is not None and cached[0] == tag:
+            return cached[1]
+        order = listed if listed is not None else (self._list_order(lang) or {})
+        keys = {}
+        for word, _reading in order:
+            if word:
+                keys[word] = True
+                if lang == "ja":
+                    keys.setdefault(anki_match.fold_kana(word), True)
+        read = bool(keys)               # a list that couldn't be read just now (busy, mid-write) is asked again
+        if keys and stamp is not None:
+            index = anki_match.build_index(path, language=lang)     # an unreadable file is empty dicts, never raises
+            if index.marks_of:
+                keys = dict(index.marks_of, **keys)
+            else:
+                read = False
+                log.warning("Connect's cap: the list's spellings couldn't be read just now; its words alone count")
+        if read:                        # the review: a failed read is never kept until the file changes again
+            self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
+        return keys
+
+    def _note_words(self, lang, note_ids, loaded):
+        """{note id: its word} for your own waiting notes (Junban's own reading, `anki_match.target_word` with
+        Junban's word fields), each read from Anki once a run (S19: a note's word is kept by its id)."""
+        cache = getattr(self, "_words_of", {}).setdefault(lang, {})
+        self._words_of = dict(getattr(self, "_words_of", {}), **{lang: cache})
+        unread = [n for n in note_ids if n not in cache]
+        if unread:
+            from app import anki_connect, anki_match
+            overrides = (loaded or {}).get("junban_word_fields")
+            overrides = overrides if isinstance(overrides, dict) else {}
+            for at in range(0, len(unread), 500):
+                for note in anki_connect.notes_info(self.url, unread[at:at + 500]):
+                    if isinstance(note, dict) and isinstance(note.get("noteId"), int):
+                        cache[note["noteId"]] = anki_match.target_word(note, overrides, lang)
+            for n in unread:
+                cache.setdefault(n, "")
+        return {n: cache.get(n, "") for n in note_ids}
 
     def _list_order(self, lang):
         """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan
@@ -3465,8 +3527,9 @@ class Steps:
             return None
 
     def shelve(self, lang, ledger, todo, count, cap):
-        """At the cap, once a run per language: the shelf's plan (a big gap only), shelved -> how many. A look that
-        waits (you review, another writer, Anki gone) spends no try (review B #2, #3)."""
+        """The shelf's plan (a big gap only), shelved -> how many. A look that waits (you review, another writer, Anki
+        gone) spends no try (review B #2, #3). No caller at the cap since Kyou-SH (Sonic 2026-11-20: Connect never
+        suspends by itself); its shelf stays for the cards already on it (*Put back*, the swap-in)."""
         from app import anki_connect, locks
         from app.connect import shelf
         if lang in getattr(self, "_shelved", set()):

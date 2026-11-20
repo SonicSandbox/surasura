@@ -73,6 +73,65 @@ def test_ass_events_keep_their_times_speakers_and_songs(ja_resources_dir):
     assert "じゃあ、この小説を読んでから→" in by_text
 
 
+_ASS_HEAD = """[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: DialogJP,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1
+Style: {song},Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,8,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+@pytest.mark.parametrize("style", ["OPJP", "EDJP", "EDJP_12", "OP - JP", "ED2-JP", "EDCN-CHS", "歌", "Lyrics"])
+def test_a_style_a_generate_leaves_out_as_a_song_is_sung_for_connect_too(tmp_path, style):
+    """Connect's cue reader reads a song style by song_lines' one rule (Kotoba-OP2): OPJP / EDJP / 歌 / Lyrics were
+    read as dialogue by its own older test, so a card could be cut from the opening a Generate no longer counts. The
+    same words said in a dialogue line stay a line to cut a card from."""
+    body = _ASS_HEAD.format(song=style) + (
+        "Dialogue: 0,0:00:05.00,0:00:08.00,DialogJP,,0,0,0,,おはよう、今日は晴れだね。\n"
+        f"Dialogue: 0,0:01:00.00,0:01:04.00,{style},,0,0,0,,風の歌が聞こえる\n"
+        f"Dialogue: 0,0:01:04.00,0:01:08.00,{style},,0,0,0,,青い海を越えて\n"
+        "Dialogue: 0,0:03:00.00,0:03:04.00,DialogJP,,0,0,0,,風の歌が聞こえる？\n")
+    path = _write(tmp_path, "Kaze no Uta - 02.ja.ass", body, encoding="utf-8-sig", newline="\r\n")
+    read = cues.read(path, "ja")
+    assert [(c.text, c.sung) for c in read] == [("おはよう、今日は晴れだね。", False), ("風の歌が聞こえる", True),
+                                                ("青い海を越えて", True), ("風の歌が聞こえる？", False)]
+    assert all(c.counted for c in read)          # a Generate's own reading of the file decides what it counts
+
+
+@pytest.mark.parametrize("style", ["DialogJP_Up", "Default", "Screen", "Staff", "Title", "Sign"])
+def test_a_dialogue_sign_or_credit_style_is_never_sung(tmp_path, style):
+    body = _ASS_HEAD.format(song=style) + f"Dialogue: 0,0:00:05.00,0:00:08.00,{style},,0,0,0,,先生方も可哀想だわ\n"
+    read = cues.read(_write(tmp_path, "ep05.ja.ass", body), "ja")
+    assert [(c.text, c.sung) for c in read] == [("先生方も可哀想だわ", False)]
+
+
+def test_the_styled_opening_of_a_real_episode_is_sung_and_its_dialogue_is_not(ja_resources_dir):
+    # 風の歌 (tests/Test Resources/ja/songs_styled): its opening in an OPJP style, its first line said again later
+    read = cues.read(os.path.join(ja_resources_dir, "songs_styled", "Kaze no Uta - 01.ja.ass"), "ja")
+    assert [c.text for c in read if c.sung] == ["風の歌が聞こえる", "青い海を越えて", "まだ知らない明日へ"]
+    assert not next(c for c in read if c.text == "風の歌が聞こえる？").sung
+
+
+def test_a_chinese_opening_in_its_own_style_is_sung(tmp_path):
+    body = _ASS_HEAD.replace("DialogJP", "DialogCN").format(song="OPCN") + (
+        "Dialogue: 0,0:00:05.00,0:00:08.00,DialogCN,,0,0,0,,老师们也挺可怜的。\n"
+        "Dialogue: 0,0:01:00.00,0:01:04.00,OPCN,,0,0,0,,请不要停下来\n")
+    read = cues.read(_write(tmp_path, "ep02.zh.ass", body), "zh")
+    assert [(c.text, c.sung) for c in read] == [("老师们也挺可怜的。", False), ("请不要停下来", True)]
+
+
+def test_every_song_mark_a_generate_reads_marks_a_line_sung(tmp_path):
+    # song_lines.noted: 🎵 and 🎶 too, which the reader's own list left out
+    path = _write(tmp_path, "ep.ja.srt", "1\n00:00:01,000 --> 00:00:03,000\n🎵夜明けの風が背中を押す\n\n"
+                                          "2\n00:00:04,000 --> 00:00:06,000\n朝ごはん、食べた？\n")
+    assert [c.sung for c in cues.read(path, "ja")] == [True, False]
+
+
 def test_ass_events_on_screen_together_are_one_caption_per_colour(ja_resources_dir):
     read = cues.read(os.path.join(ja_resources_dir, "library_episode.ass"), "ja")
     by_text = {c.text: c for c in read}

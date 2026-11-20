@@ -66,6 +66,10 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   `connect/decks.strays`, read-only) — made before a run named that deck, in Anki Miner's own — *12 cards Surasura made
   are in "Japanese::Anki Miner", not "Japanese::Mining Deck", the deck Surasura keeps in order.* · *Move them to …*
   (`connect/decks.move`: a snapshot, its toast's Undo) · *Leave them* (answered: these decks; another deck asks again).
+- **Connect's shelf** (Kyou-SH, PROVISIONAL): ONE card while cards Connect made sit on its shelf (Connect's record's
+  `shelf`; Connect no longer shelves at the cap — Sonic 2026-11-20 — so these are the cards an older version, or a
+  show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
+  still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -137,11 +141,12 @@ DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another dec
 # Michi-NS (3.0.1, SPEC no-subs §3; NS-2): videos with no subtitles, ONE card: *Find them with hato* (once hato takes a
 # list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
 NO_SUBS = "no-subs"
+SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect made sit on its shelf — said, Put back
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -292,6 +297,11 @@ STRINGS = {
     "strays_title_one": "A card Surasura made is in {where}, not “{deck}”, the deck Surasura keeps in order.",
     "strays_where": "“{deck}”", "strays_where_n": "{k} other decks", "strays_move": "Move them to “{deck}”",
     "strays_say": "Surasura's new cards go to “{deck}” now.",
+    # Kyou-SH (PROVISIONAL): the shelf's cards, said
+    "shelved_title": "{n:,} cards made for you are set aside.",
+    "shelved_title_one": "A card made for you is set aside.",
+    "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
+                    "does that by itself. One comes back by itself when its word comes up."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -460,6 +470,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     stray = _strays_entry(strays, seen, answered) if strays else None
     if stray is not None:
         out.append(stray)
+    shelved = _shelf_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH: Connect's restore
+    if shelved is not None:
+        out.append(shelved)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1208,6 +1221,26 @@ def _strays_entry(record, seen, answered=frozenset()):
                  unseen=key not in seen, say=STRINGS["strays_say"].format(deck=deck),
                  data={"deck": deck, "cards": n, "from": held,
                        "labels": {"move_cards": STRINGS["strays_move"].format(deck=deck)}})
+
+
+def _shelf_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH (a tester's 236 cards: the shelf said nowhere; PROVISIONAL): ONE card while cards Connect made sit on its
+    shelf — Connect's record's `shelf` (`status._shelf`: `on_shelf`, its restore points newest first). Its key names
+    the newest restore point (the review: never an older one once the newest is back), so *Leave them* holds until
+    the shelf takes more. *Put back* puts
+    back every restore point still holding cards (`data["runs"]`: the window's `switch.put_back`, the one Connect's
+    switch uses)."""
+    shelf = connect.get("shelf") or {}
+    n = int(shelf.get("on_shelf") or 0)
+    runs = [r["run"] for r in shelf.get("runs") or () if r.get("run") and (r.get("back") or 0) < (r.get("cards") or 0)]
+    if n <= 0 or not runs:
+        return None
+    key = f"{SHELVED}:{(shelf.get('runs') or [{}])[0].get('run') or runs[0]}"
+    if key in answered:
+        return None
+    title = STRINGS["shelved_title_one"] if n == 1 else STRINGS["shelved_title"].format(n=n)
+    return Entry(key=key, kind=SHELVED, title=title, lines=(), actions=("put_back_shelf", "leave_shelf"),
+                 unseen=key not in seen, say=STRINGS["shelved_say"], data={"runs": runs, "cards": n})
 
 
 def badge(entries_):

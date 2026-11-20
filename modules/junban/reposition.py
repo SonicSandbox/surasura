@@ -1756,8 +1756,13 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     from modules.junban import connect
     preview = connect.preview_on(settings)
     acting = bool(job is not None and job.automatic and job.actions)
+    # Kyou-PF (Sonic 2026-11-20): a run that may act on cards on the 3.0 line — the 順 window's, or an automatic one
+    # applying the actions once a run you started did the first clean-up — takes Junban's stale marks off, and brings
+    # back what it parked whatever *Set cards aside* says now (ruling 2)
+    record = first_touch.flagged(_language(settings)) if job is not None and not unattended else None
+    cleans = _cleans(settings, job, acting, unattended, record)
     parked_tag = (unlisted.later_tag(touchup.options(settings).get("tag"))
-                  if connect.unsuspends(settings, unattended, acting=acting) else None)
+                  if connect.unsuspends(settings, unattended, acting=acting) or cleans else None)
     # M-W1: with Connect off, the 3.0 host's job looks for its parked cards once per list and pin set (a word comes
     # back to the list only with a Generate, a parked card otherwise only by a pin; a move or a Finish adds none): the
     # move budget's moves send nothing more (E2.1). The look counts as done only once all it found is back (`run`).
@@ -1776,7 +1781,9 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     warming = _warm(_language(settings), settings)     # F1: the tables build while Anki answers
     try:
         cards, detail = _gather(url, decks, _word_fields(settings), _language(settings), parked_tag,
-                                card_map=job.cards if job is not None else None, parked_map=parked_key is not None)
+                                card_map=job.cards if job is not None else None,
+                                parked_map=parked_key is not None or bool(cleans and not preview and parked_tag
+                                                                          and job.cards is not None))
     finally:
         if warming is not None:
             warming.join()                              # never outlives the read, even when Anki died
@@ -1836,9 +1843,15 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # one still not on it is left out, as before. ✅ E1.3-2: so is a pinned item's card Junban itself parked — by
     # Junban's lasting record of what it parked (P4.2.2, #9: never a card you suspended after Junban only tagged it).
     gathered = cards
+    parked_record = first_touch.parked(language) if parked_tag else None
+    if parked_record is not None and parked_record["since"] is None and not connect.unsuspends(settings, unattended,
+                                                                                               acting=acting):
+        # Kyou-PF: brought back only by the clean-up (*Set cards aside* off) — by the record alone: with none, a
+        # tagged card you suspended yourself is never taken for one Junban parked (P1.4-adversary #3)
+        parked_record = dict(parked_record, since=0)
     cards, back = (connect.returning(cards, marks_of, language,
                                      pinned={i for g in pins or () for i in g} - _excluded(settings),
-                                     parked=first_touch.parked(language), out=outs)
+                                     parked=parked_record, out=outs)
                    if parked_tag else (cards, []))
     later_back = _later_back(gathered, back, parked_tag)
     if parked_tag and parked_key is not None:
@@ -2097,6 +2110,19 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     if outs:                            # only when something is out: a plan with nothing out returns what it always did
         stats["cards_out"] = unlisted.plan_out(stats.get("order") or [], outs, stats["note_tags"],
                                                parent=opts.get("tag"), exclude=excluded | set(yours))
+    # Kyou-PF: Junban's own purple flag and `::later` tag off the cards the list places again and the ones you studied
+    # — planned in the same pass (I5), the studied ones read apart (no longer new)
+    if cleans and marks_of:
+        studied, studied_notes = (_studied(url, decks, unlisted.later_tag(opts.get("tag")))
+                                  if _studied_due(language, decks, job) else ([], {}))
+        staying = {card.get("note") for card in gathered if card.get("parked") and card.get("card_id") not in set(back)}
+        stats["clear"] = unlisted.plan_clear(
+            stats.get("order") or [], marks_of, language, stats["flags_of"], {**stats["note_tags"], **studied_notes},
+            lambda card_id, carries: first_touch.junbans_flag(card_id, record, carries), later=stats["later"],
+            parent=opts.get("tag"), exclude=excluded - taken, taken_off=taken, out=outs, studied=studied,
+            keep_notes=staying | {n for ids in (later_back or {}).values() for n in ids})
+    if cleans and job is not None and not job.automatic and not record["swept"]:
+        stats["sweep"] = True           # ruling 3: this press is the first clean-up — noted once the run is through
     return writes, stats
 
 
@@ -2123,6 +2149,106 @@ def _later_back(cards, back, tag):
     staying = {card.get("note") for card in cards or () if card.get("parked") and card.get("card_id") not in back}
     notes = sorted({note_of.get(card_id) for card_id in back} - staying - {None})
     return {tag: [n for n in notes if isinstance(n, int)]} if notes else {}
+
+
+def _cleans(settings, job, acting, unattended, record=None):
+    """Kyou-PF (Sonic 2026-11-20, rulings 1–3): does this run take Junban's stale marks off (`unlisted.plan_clear`) and
+    bring back what it parked whatever *Set cards aside* says? A run on the 3.0 line that may act on cards: the 順
+    window's own (a `job`, not automatic), or an automatic one applying the actions once a run you started did the
+    first clean-up (`first_touch.swept`) — never a positions-only move (its settings decided with the "not on your
+    list" actions off: `auto.decide_actions`), nor an unattended run (Connect's step), nor 2.x's job-less run (2.5's,
+    byte for byte: `test_preview_gate.py`). `record`: the run's one read of `first_touch.flagged`."""
+    if job is None or unattended:
+        return False
+    if not job.automatic:
+        return True
+    return (bool(acting) and settings.get("junban_auto_actions") is True
+            and unlisted.is_active(unlisted.options(settings))
+            and bool((record if record is not None else first_touch.flagged(_language(settings)))["swept"]))
+
+
+# Kyou-PF (the review's waste lens): an automatic job runs at every move; the cards you studied change only as you
+# review, so its read of them is paced — a run you start in 順 always reads them
+STUDIED_EVERY_S = 600
+_STUDIED_AT = {}
+
+
+def _studied_due(language, decks, job):
+    """Kyou-PF: does this run read the cards you studied (`_studied`)? Always for the 順 window's; an automatic job at
+    most once every `STUDIED_EVERY_S` per language and decks (a card studied meanwhile is cleaned by the next)."""
+    if job is None or not job.automatic:
+        return True
+    key, now = (language, tuple(sorted(decks))), time.monotonic()
+    if now - _STUDIED_AT.get(key, float("-inf")) < STUDIED_EVERY_S:
+        return False
+    _STUDIED_AT[key] = now
+    return True
+
+
+def _studied(url, decks, tag):
+    """Kyou-PF (ruling 1): the cards in scope you've studied that still show purple or carry the `::later` tag — one
+    `findCards` a deck, then a `cardsInfo` and a `notesInfo` only when there are any -> (`[{"card_id", "note",
+    "flags"}]`, `{note: {"tags": [...]}}`). Raises `AnkiError`."""
+    query = f'-is:new (flag:{unlisted.FLAG_PURPLE} OR "tag:{ankiconnect.escape_query(tag)}")'
+    ids = []
+    for deck in decks:
+        for card_id in ankiconnect.find_cards(url, f'deck:"{ankiconnect.escape_query(deck)}" {query}'):
+            if card_id not in ids:
+                ids.append(card_id)
+    if not ids:
+        return [], {}
+    rows = [row for row in ankiconnect.cards_info(url, ids)     # the search's word, checked: a new card is the plan's
+            if _is_int(row.get("cardId")) and _is_int(row.get("type")) and row.get("type") != 0]
+    if not rows:
+        return [], {}
+    note_ids = sorted({row.get("note") for row in rows if _is_int(row.get("note"))})
+    notes = {note.get("noteId"): {"tags": note.get("tags") or []}
+             for note in (ankiconnect.notes_info(url, note_ids) if note_ids else []) if isinstance(note, dict)}
+    return ([{"card_id": row["cardId"], "note": row.get("note"), "flags": row.get("flags") or 0} for row in rows],
+            notes)
+
+
+def _apply_clear(url, clear, chunk):
+    """Kyou-PF: the clean-up's writes, last of all -> `(done, card_failures, note_failures)`, `done` `{"flag": [card
+    ids], "tag": [note ids]}`. Each card's flag is read again just before it goes, and put back only while it still
+    shows purple — a flag you changed since the preview is yours (first_touch's C3 rule)."""
+    done = {"flag": [], "tag": []}
+    card_failures, note_failures = [], []
+    flags = (clear or {}).get("flags") or {}
+    if flags:
+        try:
+            now = {row.get("cardId"): row.get("flags") or 0 for row in ankiconnect.cards_info(url, sorted(flags))}
+        except AnkiError as e:
+            now, card_failures = {}, [(card_id, str(e)) for card_id in sorted(flags)]
+        ready = [(card_id, flags[card_id]) for card_id in sorted(flags) if now.get(card_id) == unlisted.FLAG_PURPLE]
+        if ready:
+            done["flag"], card_failures = ankiconnect.set_flags(url, ready, chunk=chunk)
+    if (clear or {}).get("tag_notes"):
+        done["tag"], note_failures = ankiconnect.remove_tags(url, clear["tag_notes"], clear["tag"], chunk=chunk)
+    return done, list(card_failures), list(note_failures)
+
+
+def _note_swept(settings, url, decks, stats, profile=None):
+    """Kyou-PF (ruling 3): a run you started in 順 got this far — the first clean-up is done; from now on an automatic
+    run keeps Junban's marks right (`first_touch.swept`). One journal line, once; never a reason to stop."""
+    if stats.get("sweep"):
+        first_touch.noted(_language(settings), "reorder",
+                          profile if profile is not None else first_touch.open_profile_or_none(url), decks,
+                          **{first_touch.SWEPT: True})
+        stats["sweep"] = False
+
+
+def _clear_clause(done, tag):
+    """" Back on your list or studied: took the purple flag off 3 cards and the 'Surasura::later' tag off 2 notes." —
+    "" when nothing came off (Kyou-PF; words PROVISIONAL)."""
+    parts = []
+    if (done or {}).get("flag"):
+        count = len(done["flag"])
+        parts.append(f"took the purple flag off {count} card{'' if count == 1 else 's'}")
+    if (done or {}).get("tag"):
+        count = len(done["tag"])
+        parts.append(f"{'took ' if not parts else ''}the '{tag}' tag off {count} note{'' if count == 1 else 's'}")
+    return f" Back on your list or studied: {' and '.join(parts)}." if parts else ""
 
 
 def _moved_notes(writes, placements, note_by_card):
@@ -2451,10 +2577,13 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # back from the last run), no ladder record
         return _report(True, EMPTY_LIST, warnings=checks["warnings"], decks=decks, stats=stats, empty_list=True)
     later = stats.get("later") or {}
+    clear = stats.get("clear") or {}        # Kyou-PF: Junban's own marks off the cards back on the list or studied
     back = stats.get("returning") or []
     out = (stats.get("cards_out") or {}) if recording else {}       # P4.1 L2: positions-only runs place them last
     labels = stats.get("show_tags")         # #50: none planned for a positions-only move (`_show_tags`)
-    if not writes and not unlisted.has_work(later) and not back and not unlisted.has_work(out):
+    if (not writes and not unlisted.has_work(later) and not back and not unlisted.has_work(out)
+            and not unlisted.has_work(clear)):
+        _note_swept(settings, url, decks, stats)        # Kyou-PF ruling 3: nothing was owed — the first clean-up done
         if job is not None:
             placed = [row.card_id for row in stats.get("order") or []]
             if placed:                                   # every card where the plan puts it: none new any more
@@ -2504,7 +2633,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     # 3.0 (Haya's G2b): an automatic job with an action to write keeps one restore point instead of the
     # baseline — the window's snapshot (2.5's automatic step's), or the run's own given a `run_id`.
     acting = automatic and job.actions and bool(unlisted.has_work(later) or _has_touchups(touchups) or back
-                                                or unlisted.has_work(out))
+                                                or unlisted.has_work(out) or unlisted.has_work(clear))
     connect_cuts = [(cut_id, saved) for cut_id, saved in connect_cuts      # another deck's: left as it is, its own
                     if _same_scope(saved, decks, settings)]                 # Undo puts it back
     taking = bool(connect_cuts)         # this run's window snapshot takes Connect's cut runs over (lead 2026-11-07)
@@ -2534,6 +2663,8 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                          **({"run_id": run_id, "after": writes} if run_id is not None else {}),
                          **({"unsuspended": back} if back else {}),
                          **({"later_back": stats.get("later_back")} if stats.get("later_back") else {}),
+                         flags_off=clear.get("flags"), later_off={clear["tag"]: clear["tag_notes"]}
+                         if clear.get("tag_notes") else None,
                          automatic=automatic and (acting or taking) and run_id is None,
                          cut=taken, finished_automatic=not automatic and (cut is not None or taking))
     map_read = reads is not None and job.cards.reads > reads
@@ -2612,23 +2743,23 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         # Anki is asked in the same request whether a review began after the last position request (04 §6). The
         # snapshot is saved again with what will really be written, so a Restore never unsuspends a card the run
         # didn't suspend (one you suspended meanwhile).
-        planned, planned_out = later, out
+        planned, planned_out, planned_clear = later, out, clear
         if job.stopped_for_review or left:
-            touchups, later, out = {}, {}, {}
+            touchups, later, out, clear = {}, {}, {}, {}
         else:
             later = _still_new(url, later, _has_touchups(touchup.restrict(touchups, moved_notes,
                                                                           touchup.options(settings))))
             if later is None:                   # a review, or Anki stopped answering: nothing is acted on
-                touchups, later, out, held_back = {}, {}, {}, True
+                touchups, later, out, clear, held_back = {}, {}, {}, {}, True
             elif out:                           # P4.1 L2: the taken-out cards read once more the same way
                 out = _still_new(url, out)
                 if out is None:
-                    touchups, later, out, held_back = {}, {}, {}, True
-        if later is not planned or out is not planned_out:
+                    touchups, later, out, clear, held_back = {}, {}, {}, {}, True
+        if later is not planned or out is not planned_out or clear is not planned_clear:
             try:
                 snapshot = save_snapshot(touchups, later)
             except OSError:
-                touchups, later, out = {}, {}, {}   # the copy on disk still names them: then none is written
+                touchups, later, out, clear = {}, {}, {}, {}    # the copy on disk still names them: none is written
         # P4.1 L2, TF fix 6 (adversary S3): a take-out planned and not acted on (a review, a card left, Anki not
         # answering) is your one click, re-derived from nothing: it stays owed (`left`), so neither caller records the
         # plan as written and the next look tries again. A card studied meanwhile only narrows it: never owed.
@@ -2689,8 +2820,22 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
         except (OSError, ValueError) as e:
             record_problem = (f"Surasura couldn't note which cards it suspended ({e}): Put Anki back… offers them "
                               "with its older changes.")
-    failures = list(failures) + later_failures
-    note_failures = note_failures + later_note_failures + later_untag_failures
+    # Kyou-PF (ruling 1): last of all, Junban's own purple flag and `::later` tag off the cards back on the list or
+    # studied — journalled once they landed, so the record never calls a flag Junban's that it took off
+    clear_done, clear_failures, clear_note_failures = _apply_clear(url, clear, _chunk_size(settings))
+    if clear_done["flag"] or clear_done["tag"]:
+        try:
+            first_touch.note(_language(settings), "reorder", profile, decks, landed=True,
+                             flags={card_id: [unlisted.FLAG_PURPLE, clear["flags"][card_id]]
+                                    for card_id in clear_done["flag"]},
+                             tags_off={clear["tag"]: clear_done["tag"]} if clear_done["tag"] else {})
+        except (OSError, ValueError) as e:
+            record_problem = record_problem or (f"Surasura couldn't note which flags it took off ({e}): Put Anki "
+                                                "back… may offer them again.")
+    if not clear_failures and not clear_note_failures:     # the review: a clean-up that didn't land isn't done
+        _note_swept(settings, url, decks, stats, profile)
+    failures = list(failures) + later_failures + clear_failures
+    note_failures = note_failures + later_note_failures + later_untag_failures + clear_note_failures
 
     if refresh:
         _refresh_anki(url)
@@ -2709,6 +2854,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
     message += _touchup_clause(notes_updated, tagged, applied.get("tag"), marker_tagged) + "."
     message += _labels_clause(labelled)
     message += _later_clause(later_done)
+    message += _clear_clause(clear_done, clear.get("tag"))
     if out_done["suspend"]:                     # P4.1 L2
         message += (f" Taken out of your order: suspended {len(out_done['suspend'])} "
                     f"card{'' if len(out_done['suspend']) == 1 else 's'}.")
@@ -2735,6 +2881,7 @@ def _run(settings, progress=None, refresh=True, unattended=False, run_id=None, j
                    snapshot=snapshot, written=written, failures=failures,
                    notes_updated=notes_updated, tagged=tagged, note_failures=note_failures,
                    marker_tagged=marker_tagged, later=later_done,
+                   **({"cleared": clear_done} if clear_done["flag"] or clear_done["tag"] else {}),
                    **({"cards_out": _out_records(out, out_sent, profile)} if out else {}),    # P4.1 L2: `pins.record`
                    **({"cards_taken_out": len(out_done["suspend"])} if out_done["suspend"] else {}),   # (TF fix 10)
                    **({"returned": returned, "run": run_id} if run_id is not None or returned else {}),
@@ -3561,7 +3708,7 @@ def _restore(settings, progress=None, asked=None):
         return _report(False, stopped, problems=[str(e)], decks=decks)
 
     if not pairs and not field_edits and not tag_notes and not marker_tags and not flag_pairs \
-            and not unsuspended and not undo.restore_unsuspended(snapshot):
+            and not unsuspended and not undo.restore_unsuspended(snapshot) and not undo.restore_later_off(snapshot):
         # Nothing left to put back is also "the way back is taken": an interrupted run must not keep
         # blocking new ones once none of its cards can be restored anyway.
         _taken_back(language, snapshot)
@@ -3588,9 +3735,11 @@ def _restore(settings, progress=None, asked=None):
                                                    _chunk_size(settings))
     note_failures = note_failures + untag_failures + unmark_failures + retag_failures
     unflagged, flag_failures = ankiconnect.set_flags(url, flag_pairs, chunk=_chunk_size(settings))
+    retagged, later_off_failures = _later_off_on(url, snapshot, _chunk_size(settings))     # Kyou-PF
+    note_failures = note_failures + later_off_failures
     failures = list(failures) + unsuspend_failures + flag_failures
     _note_restored(settings, snapshot, unsuspended, resuspended, flag_pairs, unflagged, tag, untagged,
-                   marker_tags, unmarked, unmark_failures, field_edits, notes_updated)
+                   marker_tags, unmarked, unmark_failures, field_edits, notes_updated, retagged)
     _refresh_anki(url)
 
     ok = not failures and not note_failures
@@ -3723,10 +3872,12 @@ def _restore_run(settings, run_id, progress=None, away=False):
     untagged, untag_failures = ankiconnect.remove_tags(url, tag_notes, tag, chunk=chunk)
     unmarked, unmark_failures = _apply_marker_tags(ankiconnect.remove_tags, url, marker_tags, chunk)
     unflagged, flag_failures = ankiconnect.set_flags(url, flag_pairs, chunk=chunk)
+    retagged, later_off_failures = _later_off_on(url, snapshot, chunk)                       # Kyou-PF
     _note_restored(settings, snapshot, unsuspended, suspended, flag_pairs, unflagged, tag, untagged,
-                   marker_tags, unmarked, unmark_failures, field_edits, notes_updated)
+                   marker_tags, unmarked, unmark_failures, field_edits, notes_updated, retagged)
     failures = list(failures) + list(unsuspend_failures) + list(suspend_failures) + list(flag_failures)
-    note_failures = list(note_failures) + list(untag_failures) + list(unmark_failures) + list(retag_failures)
+    note_failures = (list(note_failures) + list(untag_failures) + list(unmark_failures) + list(retag_failures)
+                     + list(later_off_failures))
     ok = not failures and not note_failures
     if ok:
         undo.mark_complete(language, run_id=run_id, restored=True)
@@ -3750,7 +3901,7 @@ def _restore_run(settings, run_id, progress=None, away=False):
 
 
 def _note_restored(settings, snapshot, unsuspended, suspended, flag_pairs, unflagged, tag, untagged, marker_tags,
-                   unmarked, unmark_failures, field_edits, notes_updated):
+                   unmarked, unmark_failures, field_edits, notes_updated, retagged=None):
     """FT D4: what a Restore undid, journalled once it landed (`first_touch.restored`; never a reason not to
     restore) — only what Anki took. A returning word's card set aside again carries the parked tag (K3)."""
     done = set(unflagged)
@@ -3763,18 +3914,32 @@ def _note_restored(settings, snapshot, unsuspended, suspended, flag_pairs, unfla
                          unsuspended=unsuspended, suspended=suspended,
                          with_tag=unlisted.later_tag(touchup.options(settings).get("tag")),
                          flags=[pair for pair in flag_pairs if pair[0] in done], tags_off=tags_off,
-                         fields={note_id: field_edits[note_id] for note_id in notes_updated if note_id in field_edits})
+                         fields={note_id: field_edits[note_id] for note_id in notes_updated if note_id in field_edits},
+                         tags_on={name: ids for name, ids in (retagged or {}).items() if ids})
 
 
 def _restore_flags(url, snapshot):
     """`([(card_id, flag)], skipped)` — §13's purple flags put back, read against the cards as they
     stand NOW: a card the user has flagged again since keeps their flag."""
-    wanted = sorted(int(card_id) for card_id in (snapshot.get("flags") or {}))
+    wanted = sorted({int(card_id) for card_id in (snapshot.get("flags") or {})}
+                    | {int(card_id) for card_id in (snapshot.get("flags_off") or {})})    # Kyou-PF: the clean-up's
     if not wanted:
         return [], 0
     current = {row.get("cardId"): row.get("flags") or 0
                for row in ankiconnect.cards_info(url, wanted) if _is_int(row.get("cardId"))}
-    return undo.restore_flags(snapshot, current, unlisted.FLAG_PURPLE)
+    pairs, skipped = undo.restore_flags(snapshot, current, unlisted.FLAG_PURPLE)
+    back_on, kept = undo.restore_flags_off(snapshot, current, unlisted.FLAG_PURPLE)
+    return sorted(pairs + back_on), skipped + kept
+
+
+def _later_off_on(url, snapshot, chunk):
+    """Kyou-PF: a restore puts back the `::later` tag a run's clean-up took off -> (`{tag: [note ids]}` it put back,
+    `[(note id, why)]` it couldn't)."""
+    done, failures = {}, []
+    for tag, notes in undo.restore_later_off(snapshot).items():
+        done[tag], failed = ankiconnect.add_tags(url, notes, tag, chunk=chunk)
+        failures += list(failed)
+    return done, failures
 
 
 def _restore_touchups(url, snapshot):

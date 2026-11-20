@@ -66,6 +66,9 @@ JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting c
 FIRST_CARDS_GO = phase_service.Go("needs", ("first-cards",))   # Kantan-B2b: 鉱 amber while D1's line waits for a yes
 GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
 #                                                         the services' needs module: not imported by the shell at load)
+# Kantan-G: the circles whose pause holds a step of Connect's own (鉱 its mining; ス its Generate, 順 its re-order and
+# Backfill, Anki its syncs — `runner.CIRCLE_WAITS`): their resume kicks Connect, so what waited goes on from its step
+CONNECT_HELD_BY = frozenset((phase_service.MINER, phase_service.SURASURA, phase_service.JUNBAN, phase_service.ANKI))
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 JOURNEY_READ_WAIT = 600.0   # A: how long an export waits for the journey's catch-up (a big library's Generate), at most
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
@@ -156,6 +159,7 @@ class Services:
         self.anki_session_thread = None   # the look's thread at the window's start (`_look_at_anki`), once started
         self.restarted = False            # alpha 4 M6: this start is *Restart now*'s (`RESTARTED`): Anki isn't opened
         self._look_after_setup = False    # B-10: the start's look held while the setup wizard is up (AD-8)
+        self._look_after_pause = False    # Kantan-G: the start's look held while Anki's circle is paused (its resume)
         self._sync_owed = False           # the start's forced known-words sync, owed to the start's look (IK-2)
         self._session_lock = threading.Lock()
         self._session_running = False     # a session look under way (one at a time)
@@ -401,8 +405,28 @@ class Services:
                 # once it closes, on the settings it wrote, whatever Connect was at the start (review F-2)
                 self._look_after_setup = True
             elif session is not None:
-                self._opening_look(session)
+                self._opening_look_unless_paused(session)
         return True
+
+    def _opening_look_unless_paused(self, session):
+        """(Under the quit's lock.) The start's look — or, Anki's circle paused (Kantan-G, Sonic 2026-11-19: a pause
+        stops all a circle runs by itself), none: no Anki opened, no AnkiWeb sync; it waits for the first focus look
+        after the circle's resume (`_focus_look`). Connect is still kicked as the look's end would (Haya-CL): its own
+        Anki steps read the pause."""
+        if phase_service.ANKI in self.paused:
+            self._look_after_pause = True
+            threading.Thread(target=self._kick_connect, name="connect-kick", daemon=True).start()
+            return
+        self._opening_look(session)
+
+    def _kick_connect(self):
+        try:
+            from app.connect import kick
+            settings = self._session_settings()
+            if settings is not None:
+                kick.kick(settings)
+        except Exception as e:
+            applog.log("connect", f"not started at the window's start: {e!r}")
 
     def _opening_look(self, session):
         """The window's start look (`_look_at_anki`, opening): once a window. Alpha 4 M6: a start *Restart now* made
@@ -443,9 +467,24 @@ class Services:
     def _focus_look(self):
         """(A worker.) A focus: the session look again, at most once every SESSION_LOOK_EVERY; it never opens Anki —
         nor looks at all while the setup wizard is up (review F-1: the wizard's close makes the window's look)."""
-        if self.setup_open.is_set():
+        if self.setup_open.is_set() or phase_service.ANKI in self.paused:     # (Kantan-G: Anki's circle paused)
             return
         settings = self._session_settings()
+        with self._quit_lock:                         # Kantan-G: the start's look a pause held — now, once (B-10's way)
+            held, self._look_after_pause = self._look_after_pause, False
+            if held and settings is not None:
+                if self.restarted:
+                    settings = dict(settings, connect_open_anki=False)
+                thread = self._look_at_anki(settings, opening=True)
+                if thread is None:                    # another look still under way: the next focus runs it
+                    self._look_after_pause = True
+                else:
+                    self.anki_session_thread = thread
+                return
+        if held and self._sync_owed:                  # Connect switched off meanwhile: the start's sync goes alone
+            self._sync_owed = False
+            self.automation.session_began(True)
+            return
         if settings is not None:
             self._look_at_anki(settings, opening=False)
 
@@ -528,13 +567,14 @@ class Services:
         with self._quit_lock:                         # review F-4: never between `start`'s look and its hold
             self.setup_open.clear()
             held, self._look_after_setup = self._look_after_setup, False
-        if held and self.started and not self.closing.is_set():
-            session = self._session_settings()
-            if session is not None:
-                self._opening_look(session)
-            elif self._sync_owed:
-                self._sync_owed = False
-                self.automation.session_began(True)
+            if held and self.started and not self.closing.is_set():
+                session = self._session_settings()
+                if session is not None:               # (under the lock: a resume never splits its pause check)
+                    self._opening_look_unless_paused(session)
+                    held = False
+        if held and self.started and not self.closing.is_set() and self._sync_owed:
+            self._sync_owed = False
+            self.automation.session_began(True)
         self.activated()
 
     def activated(self):
@@ -821,20 +861,28 @@ class Services:
 
     def resumed(self, circles):
         """(A worker.) `circles` resumed: the change written first (Connect reads the file), then what waited at the
-        gate started, Connect kicked when Anki Miner resumed, and the focus's look — the journey, the sync, 順, a waiting
-        Generate, the indexer — asked as a return to the window asks it. Nothing once the quit began."""
+        gate started, hato's drops New arrivals kept placed by their rules (Kantan-G), Connect kicked when a circle
+        that holds a step of its own resumed (`CONNECT_HELD_BY`), and the focus's look — the journey, the sync, 順, a
+        waiting Generate, the indexer, and the start's look at Anki its pause held — asked as a return to the window
+        asks it. Nothing once the quit began."""
         if not circles or self.closing.is_set():
             return
         if not self.settings.flush(5):              # (Connect would read the pause still: its next kick starts it)
             applog.log("shell", "a resume's settings weren't written in 5 s")
         self.registry.reschedule()
-        if phase_service.MINER in circles:
+        if phase_service.ARRIVALS in circles:         # Kantan-G: hato's drops the pause kept waiting, placed by rule
             try:
+                from app.connect import rules
+                rules.place_held(settings_service.thaw(self.settings.get()))
+            except Exception as e:
+                applog.log("connect", f"hato's waiting drops after the resume: {e!r}")
+        if circles & CONNECT_HELD_BY:                 # Kantan-G: Connect's own Generate, re-order, Backfill and syncs
+            try:                                      # wait on ス / 順 / Anki too: its jobs go on from their step
                 from app.connect import kick
                 kick.kick(settings_service.thaw(self.settings.get()))
             except Exception as e:
                 applog.log("connect", f"not started after its resume: {e!r}")
-        self.activated()
+        self.activated()                              # (Anki resumed: the focus's look runs the start's look it held)
 
     def replan_settling(self):
         """(Any thread: no lock, no wait.) A move's re-order may still be settling: the close then waits like E20's."""

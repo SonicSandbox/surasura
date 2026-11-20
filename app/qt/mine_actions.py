@@ -258,7 +258,8 @@ class MineActions(QObject):
         `SETTLE_S` later if Connect hasn't moved them by then (A-4); refused — failed; undone — done."""
         if event == "saved":
             if "miner" in getattr(self.win.services, "paused", ()):     # Mado-PZ: the ask waits for the resume
-                self.win.say(strings.MINE_PAUSED)
+                self.win.say(strings.PAUSED_WAITS.format(what=strings.MINE_WAITS,
+                                                         circle=strings.PAUSED_CIRCLE["miner"]))
             refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")
@@ -601,7 +602,8 @@ class MineActions(QObject):
                     print(f"Connect wasn't kicked: {e}")
             service.answer(language, keys)
             return made
-        needs._press("make_cards", entry, run, then=lambda made: needs._connect_done(_made_words(made)))   # (its arc)
+        needs._press("make_cards", entry, run, then=lambda made: needs._connect_done(
+            _made_words(made, paused="miner" in getattr(self.win.services, "paused", ()))))   # (its arc)
 
 
     def _needs_try_again(self, entry, _line=None):
@@ -651,9 +653,14 @@ def _mines_text(ep):
     return text in ("books", "audio") and view_rows._mines(text)
 
 
-def _made_words(made):
+def _made_words(made, paused=False):
+    """*Make their cards*'s line: how many come next — or, Anki Miner paused (Mado-PZ2), that they wait and which
+    circle resumes them."""
     if made is False:
         return strings.MAKE_CARDS_GONE
     if not made:
         return strings.MAKE_CARDS_NONE
+    if paused:
+        return strings.PAUSED_WAITS.format(what=strings.MAKE_CARDS_WAIT[made == 1].format(n=made),
+                                           circle=strings.PAUSED_CIRCLE["miner"])
     return strings.MAKE_CARDS_QUEUED[made == 1].format(n=made)

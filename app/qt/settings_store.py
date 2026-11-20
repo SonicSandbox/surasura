@@ -43,7 +43,6 @@ from app.services.view_rows import keep_watched          # W-1: the feed's optio
 from app.services.view_rows import side_by_side          # Kyou-A: the same way
 
 LINES = ("soon_line", "mine_line")
-SIDE_VALUES = ("current", "top_two")    # Kyou-A: *New cards come from*'s two choices (the store's `side_by_side` 0 / 1)
 CONNECT_KEYS = ("connect_enabled", "logic.automation")      # the two keys `settings_manager.connect_on` reads
 MINE_LINE_DEFAULT = 20          # the store's (`library_store.MINE_LINE_DEFAULT`; not imported: the store is heavy here)
 CEILING = 100000                # a line further down than any library: the field's top
@@ -191,9 +190,8 @@ class StoreRows(QObject):
         self.keep.changed.connect(self._keep_changed)
         page.custom_row("keep_watched").layout().addWidget(self.keep)
         self._keep_asked = None                             # the value pressed, until the library holds it
-        row = catalog.ROW["new_cards_from"]                 # --- Kyou-A: Current's order, or its top two side by side
-        self.side = sc.Choice([(v, S.OPTIONS["new_cards_from"][v]) for v in SIDE_VALUES], "current", tooltip=row.tip,
-                              name=row.label)
+        row = catalog.ROW["new_cards_from"]                 # --- Kyou-A: Current's top two side by side, or in order
+        self.side = sc.Toggle(False, tooltip=row.tip, name=row.label)   # (Mado-PZ2: one switch, *Learn two shows at once*)
         self.side.changed.connect(self._side_changed)
         page.custom_row("new_cards_from").layout().addWidget(self.side)
         self._side_asked = None
@@ -266,7 +264,7 @@ class StoreRows(QObject):
         self._follow_side(options, writable)
 
     def _follow_side(self, options, writable):
-        """Kyou-A's choice, as W-1's toggle: greyed with why, else the library's value — repainted only when it moved
+        """Kyou-A's switch, as W-1's toggle: greyed with why, else the library's value — repainted only when it moved
         (S19), never back over a press still on its way to the store."""
         why = None if writable else S.STORE_NO_LIBRARY_TIP
         if why is None:
@@ -280,7 +278,7 @@ class StoreRows(QObject):
             self.side.setToolTip(tip)
         if not options:
             return
-        value = SIDE_VALUES[1] if side_by_side(options) else SIDE_VALUES[0]
+        value = side_by_side(options)
         if self._side_asked is not None:
             if value != self._side_asked and self._pending():
                 return                                         # the press not in the store yet: shown as pressed
@@ -288,21 +286,21 @@ class StoreRows(QObject):
         if self.side.value() != value:
             self.side.set_value(value)
 
-    def _side_changed(self, value):
-        """A choice pressed (already shown chosen) -> one command on the writer's queue; refused: back as it was, the
+    def _side_changed(self, on):
+        """The switch pressed (already shown flipped) -> one command on the writer's queue; refused: back as it was, the
         reason in the bar."""
         writer = self._writer()
         seq = None
         if writer is not None:
             try:
-                seq = writer.set_options(side_by_side=value == SIDE_VALUES[1])
+                seq = writer.set_options(side_by_side=bool(on))
             except (ValueError, TypeError) as e:
                 applog.log("settings", f"side_by_side: {e}")
         if seq is not None:
-            self._side_asked = value
+            self._side_asked = bool(on)
             return
         self._say_refused(writer)
-        self.side.set_value(SIDE_VALUES[0] if value == SIDE_VALUES[1] else SIDE_VALUES[1])
+        self.side.set_value(not on)
 
     def _follow_keep(self, options, writable):
         """W-1's toggle: greyed with why (no library; a library that can't be saved: the store's reason), else the

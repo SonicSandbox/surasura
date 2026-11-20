@@ -133,14 +133,14 @@ def test_a_spinning_circle_that_can_be_seen_offers_show_stop_settings_in_its_men
     asked = []
     strip.stops = lambda c: asked.append(c) or c == P.MINER
     assert not strip.showing(P.MINER)
-    assert [w for _p, w in strip.menu_entries(P.MINER)] == ["pause", "stop", "settings"]
+    assert [w for _p, w in strip.menu_entries(P.MINER)] == ["pause", "pause_all", "stop", "settings"]   # (+ Mado-PZ2)
     mine = registry.record("mine", "Making cards", automatic=False)
     mine.progress(f"{TITLE} · Filling fields 40%")
     strip.set_jobs(registry.snapshot())
     assert strip.showing(P.MINER) and strip.press_words(P.MINER) == strings.PHASE_PRESS_PAUSE
     entries = strip.menu_entries(P.MINER)
-    assert [pair for pair, _w in entries] == [strings.PHASE_PAUSE, strings.PHASE_SHOW, strings.PHASE_STOP,
-                                              strings.PHASE_SETTINGS]
+    assert [pair for pair, _w in entries] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL, strings.PHASE_SHOW,
+                                              strings.PHASE_STOP, strings.PHASE_SETTINGS]
     text = strip.hover_text(P.MINER)
     assert html.escape(TITLE) in text and html.escape(strings.PHASE_PRESS_PAUSE) in text
     assert html.escape(strings.PHASE_MENU_TIP.format(items="Show · Stop · Settings")) in text   # (Pause: the click's)
@@ -178,14 +178,16 @@ def test_the_right_click_is_the_bottom_bars_one_menu_and_each_item_asks_the_shel
     strip.asked.connect(lambda c, what: said.append((c, what)))
     at = strip.rect_of(P.JUNBAN).center().toPoint()
     QApplication.sendEvent(strip, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, strip.mapToGlobal(at)))
-    assert built[0] == [strings.PHASE_PAUSE, strings.PHASE_SHOW, strings.PHASE_SETTINGS]   # no Stop: the host's
+    assert built[0] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL, strings.PHASE_SHOW,
+                        strings.PHASE_SETTINGS]                         # no Stop: the host's
     for do in built[1]:                                                 # Anki write can't stop
         do()
-    assert said == [(P.JUNBAN, "pause"), (P.JUNBAN, "show"), (P.JUNBAN, "settings")] and built[2][0] == "exec"
+    assert said == [(P.JUNBAN, "pause"), (P.JUNBAN, "pause_all"), (P.JUNBAN, "show"), (P.JUNBAN, "settings")]
+    assert built[2][0] == "exec"
     built.clear()
     at = strip.rect_of(P.ANKI).center().toPoint()                      # Mado-PZ: every circle offers its pause
     QApplication.sendEvent(strip, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, strip.mapToGlobal(at)))
-    assert built[0] == [strings.PHASE_PAUSE]
+    assert built[0] == [strings.PHASE_PAUSE, strings.PHASE_PAUSE_ALL]   # (Mado-PZ2: and right under it, all five)
     replan.finish()
 
 

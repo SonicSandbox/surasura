@@ -458,6 +458,11 @@ ROWS = {
                        "One-kanji words are listed only when they stand alone (手). Off: all.",
                        "Particles, endings and name pieces stay off; 手, 目, 顔 are listed.",
                        "one kanji single character exclude"),
+    # Kotoba-OP (3.0.18; the name PROVISIONAL for Sonic): off, a show's opening and ending songs are out of the counts
+    "count_song_lyrics": ("Count song lyrics (OP / ED)",
+                          "Opening and ending songs repeat every episode. Off: their lyrics don't count.",
+                          "Off: a show's OP / ED lyrics don't count. Next Generate.",
+                          "songs lyrics op ed opening ending karaoke"),
     "how_parsing_works": ("How parsing works", "", "Every rule, with examples — opens in your browser",
                           "how parsing works guide examples"),
 

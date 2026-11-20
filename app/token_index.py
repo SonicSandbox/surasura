@@ -129,7 +129,10 @@ from operator import itemgetter
 #    犍陀多, ENGINE_REVISION 42): a v23 blob holds the pieces — users rebuild once.
 # v25 a sound standing on its own (a filler, ほっ, えへへ: analyzer § Sounds are no words, ENGINE_REVISION 43) is no
 #    word: a v24 blob counts it — users rebuild once.
-SCHEMA_VERSION = 25
+# v26 each file also keeps each sentence's line and its song marks (`lines`: app/song_lines.file_lines, ENGINE_REVISION
+#    44), which a run reads to leave a show's opening and ending songs out of the counts: a v25 row has none — users
+#    rebuild once.
+SCHEMA_VERSION = 26
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -254,6 +257,7 @@ CREATE TABLE IF NOT EXISTS files (
     tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
     names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
     bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
+    lines  BLOB,               -- zlib(json [[line key, marks], ...]) — each sentence's line (app/song_lines.py)
     counted INTEGER NOT NULL DEFAULT 1, -- 1 counted, 0 kept: tokenized, never summed (module docstring)
     aside INTEGER NOT NULL DEFAULT 0    -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
 );
@@ -292,7 +296,7 @@ def _schema_ready(conn):
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         return False
     try:
-        conn.execute("SELECT names, bound FROM files LIMIT 1")
+        conn.execute("SELECT names, bound, lines FROM files LIMIT 1")
         conn.execute("SELECT 1 FROM aggregate LIMIT 1")
         conn.execute("SELECT 1 FROM bound LIMIT 1")
         conn.execute("SELECT 1 FROM meta LIMIT 1")
@@ -752,6 +756,20 @@ class Store:
                 if spans:
                     names.apply_spans(sentences, spans, self._names, *switches)
         return sentences
+
+    def file_lines(self, paths):
+        """{path: lines} of the files of `paths` the store holds: each sentence's [line key, marks]
+        (app/song_lines.file_lines), in the order of `file_tokens`' sentences — what a run reads to leave a show's songs
+        out (analyzer.songs_left_out). One query a batch, only the small column: no sentence is decoded."""
+        keys = {_norm(p): p for p in paths}
+        out, wanted = {}, list(keys)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            rows = self.conn.execute(f"SELECT path, lines FROM files WHERE path IN ({','.join('?' * len(batch))})",
+                                     batch).fetchall()
+            for path, blob in rows:
+                out[keys[path]] = _decode_tokens(blob)
+        return out
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
@@ -1257,12 +1275,14 @@ class Store:
                 if flag == COUNTED or (row is not None and row["counted"] == COUNTED):
                     phrased = True
                 names = result.get("names")
+                lines = result.get("lines")
                 cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, counted, "
-                    "aside) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, lines, "
+                    "counted, aside) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (key, mtime, size, total, _encode_counts(counts),
                      _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
-                     _encode_counts(bound) if bound else None, *_columns(flag)),
+                     _encode_counts(bound) if bound else None, _encode_tokens(lines) if lines else None,
+                     *_columns(flag)),
                 )
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta; a flag that moved moves the counts.
@@ -2192,7 +2212,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     - Japanese, `bound`: Counter('lemma|reading' -> n) of the one-kanji words' uses that are pieces of something
       else as the file reads alone (analyzer.bound_uses) — the bound table the preview reads.
     """
-    from app import analyzer
+    from app import analyzer, song_lines
 
     # ja lemmas carry a gloss suffix the analyzer strips; match it so store lemmas == run lemmas.
     analyzer.SANITIZE_JA = (language == "ja")
@@ -2231,7 +2251,8 @@ def make_tokenizer(language, reinforce=False, script="asis"):
             if record is not None:
                 for i in bound_uses(s_text, s_tokens):
                     bound[make_key(s_tokens[i][0], s_tokens[i][1])] += 1
-        result = {"sentences": sentences, "counts": counts}
+        result = {"sentences": sentences, "counts": counts,
+                  "lines": song_lines.file_lines(sentences, facts.get("song_marks") or ())}
         if record is not None:
             result["names"] = record.data()
             result["bound"] = bound

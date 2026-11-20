@@ -33,6 +33,7 @@ from app import word_selection
 from app import modality
 from app import zh_script   # cheap: its tables decode only on the first conversion
 from app import names       # cheap: its tables decode only when a Japanese word is first read
+from app import song_lines  # pure: the songs left out of the counts (§ Songs out of the counts)
 from app.batch_gc import without_cycle_collection
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 from app import plan_rules  # the rules a Generate and the fast re-plan share (Orth / Forms, the progressive pass)
@@ -195,7 +196,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     Japanese sample's list. SCHEMA_VERSION 24. 3.0.x.
 # 43: sounds are no words (§ Sounds are no words): a filler, an interjection of one mora said alone or cut short (ほっ,
 #     なっ, え？) or a laugh (えへへ, ふふっ) standing on its own is no use, no row and no card. SCHEMA_VERSION 25.
-ENGINE_REVISION = 43
+# 44: a show's opening and ending songs are out of the counts while logic.count_song_lyrics is off (the default;
+#     app/song_lines.py, `songs_left_out`): an .ass event in a song style, a run of lines repeated in a quarter of a
+#     title's episodes, a ♪ line that is one of them. The token store keeps each sentence's line (`lines`):
+#     SCHEMA_VERSION 26. 3.0.18.
+ENGINE_REVISION = 44
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3025,6 +3030,54 @@ def file_sentences(store, tokenizer, file_path, language):
     return sentences
 
 
+# --- Songs out of the counts (ENGINE_REVISION 44; app/song_lines.py) ------------------------------------------------ #
+# A show's opening and ending songs, written in its subtitles every episode, are left out of a run's counts while
+# logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
+# number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
+# (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
+_SPOKEN = ("subtitle", "youtube", "bilibili")
+
+
+def songs_left_out(files):
+    """{path: {sentence number, …}} of one work's song lines — `files`: [(path, lines)], `lines` as the token store
+    keeps them (song_lines.file_lines). An episode is the one its file name reads (episode_names.identity: an .srt and an
+    .ass of one episode are one), else its file."""
+    from app import episode_names
+    episodes = []
+    for path, lines in files:
+        name = episode_names.identity(path)
+        episodes.append((path, name.key if name.episode is not None else path, lines))
+    return song_lines.left_out(episodes)
+
+
+def song_sentences(found_files, data_dir, store, tokenizer, language):
+    """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
+    source type)]), each work on its own (§ above). Without the store, each file is read and tokenized here."""
+    works = {}
+    for file_path, _label, _weight, source_type in found_files:
+        if source_type in _SPOKEN:
+            works.setdefault(_series_name(file_path, data_dir), []).append(file_path)
+    out = {}
+    for paths in works.values():                  # one work's lines held at a time (a 20k library's would be ~1 GB)
+        held = {}
+        if store is not None:
+            try:
+                held = store.file_lines(paths)
+            except Exception as e:
+                print(f"Warning: the token store's lines couldn't be read ({e}); reading the subtitles here.")
+                store = None
+        files = []
+        for path in paths:
+            lines = held.get(path)
+            if lines is None and store is None and os.path.exists(path):
+                facts = {}
+                lines = song_lines.file_lines(tokenizer.tokenize_sentences(extract_text(path, language, facts)),
+                                              facts.get("song_marks") or ())
+            files.append((path, lines))
+        out.update((path, numbers) for path, numbers in songs_left_out(files).items() if numbers)
+    return out
+
+
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
     Scan User Files directory for frequency_list_{lang}_*.csv files.
@@ -3319,7 +3372,7 @@ def _join_lines(lines, language='ja'):
     return text
 
 
-def _captions(events, language='ja'):
+def _captions(events, language='ja', marks=None):
     """Each caption's text, closed (close_cue), from an .ass file's `events` — (timing, colour, text) in the
     file's order. Consecutive events with one timing — one start, one end — are on screen together: the
     lines of one caption, read as one cue like an .srt cue's two lines (a broadcast .ja.ass writes
@@ -3329,15 +3382,26 @@ def _captions(events, language='ja'):
     one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
     at once — Netflix writes two speakers talking together so (two cues with one timing, each with its own
-    speaker label)."""
+    speaker label).
+
+    An event may carry a fourth field, whether its style is a song style (parse_ass): `marks`, a list, then receives
+    one per caption yielded — True when every event of that caption is in a song style."""
     screen, shown = {}, None                        # colour -> the texts in it, of the events on screen together
-    for timing, colour, text in events:
+    sung = {}                                       # colour -> whether every event in it is in a song style
+    for timing, colour, text, *song in events:
         if screen and timing != shown:
-            yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
-            screen = {}
+            for key, texts in screen.items():
+                if marks is not None:
+                    marks.append(sung[key])
+                yield close_cue(_join_lines(texts, language))
+            screen, sung = {}, {}
         screen.setdefault(colour, []).append(text)
+        sung[colour] = sung.get(colour, True) and bool(song and song[0])
         shown = timing
-    yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
+    for key, texts in screen.items():
+        if marks is not None:
+            marks.append(sung[key])
+        yield close_cue(_join_lines(texts, language))
 
 
 # A line shown again is one line (ENGINE_REVISION 40, SPEC card-lines rule 5): streaming subtitles show a line through
@@ -3543,7 +3607,7 @@ def _ass_colour(text, colour, colours):
     return colour
 
 
-def parse_ass(file_path, language='ja'):
+def parse_ass(file_path, language='ja', facts=None):
     try:
         content = read_text(file_path, language)    # the file's own encoding (path_utils.read_text)
     except Exception as e:
@@ -3562,6 +3626,7 @@ def parse_ass(file_path, language='ja'):
     colours, colour_index = {}, 3   # each style's PrimaryColour (§ above), and where a Style line holds it
     
     events = []
+    sung = False                    # an event in a song style (app/song_lines.py): `facts`' "song_marks"
     
     for line in lines:
         line = line.strip()
@@ -3592,8 +3657,10 @@ def parse_ass(file_path, language='ja'):
                     if cleaned:
                         colour = _ass_colour(comma_parts[text_index], colours.get(comma_parts[style_index].strip(), ''),
                                              colours)
+                        song = song_lines.song_style(comma_parts[style_index].strip())
+                        sung = sung or song
                         events.append(((comma_parts[start_index].strip(), comma_parts[end_index].strip()),
-                                       colour, cleaned))
+                                       colour, cleaned, song))
         elif line.startswith('Format:'):          # [V4+ Styles] / [V4 Styles]
             fields = [f.strip() for f in line[7:].split(',')]
             if 'PrimaryColour' in fields:
@@ -3606,9 +3673,20 @@ def parse_ass(file_path, language='ja'):
     # A line shown again — drawn twice, or written again through another line — is read once (shown_again)
     again = shown_again([(start, end, text) if start is not None and end is not None else None
                          for start, end, text in ((ass_ms(timing[0]), ass_ms(timing[1]), text)
-                                                  for timing, _colour, text in events)])
+                                                  for timing, _colour, text, _song in events)])
     events = [event for event, first in zip(events, again) if first is None]
-    return " ".join(caption for caption in _captions(events, language) if caption)
+    if not sung or facts is None:
+        return " ".join(caption for caption in _captions(events, language) if caption)
+    # Where the song-styled captions sit in the text: each caption's Japanese / Chinese characters, and whether it
+    # is one — the sentences are matched to them by place (song_lines.file_lines), never by their words.
+    marks, kept, songs = [], [], []
+    captions = list(_captions(events, language, marks))
+    for caption, song in zip(captions, marks):
+        if caption:
+            kept.append(caption)
+            songs.append([song_lines.script_len(caption), 1 if song else 0])
+    facts["song_marks"] = songs
+    return " ".join(kept)
 
 
 # --- what a text file's own format writes around its text ------------------------------------------------------ #
@@ -3799,7 +3877,7 @@ def extract_text(file_path, language='ja', facts=None):
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     elif ext in ['.ass', '.ssa']:
-        text = parse_ass(file_path, language)
+        text = parse_ass(file_path, language, facts)
     else:
         text = read_text(file_path, language)
 
@@ -6017,6 +6095,18 @@ def main():
         names.use_library_tables(_store.names_tables() if _store is not None
                                  else _token_index.read_names_tables(language))
 
+    # A show's opening and ending songs out of the counts (§ Songs out of the counts): their sentences read as no words
+    # (`_sentences_of`), in their place — a sentence's number is the plan's and the re-pick's. The set-aside files
+    # (watched, Finished) are their works' episodes too, and the example sentences read them.
+    _songs = {}
+    if not LOGIC.get("count_song_lyrics", False):
+        try:
+            _songs = song_sentences(list(found_files) + [(a.path, None, None, a.source_type)
+                                                         for a in aside_files(language, _library["schedule"])],
+                                    data_dir, _store, tokenizer, language)
+        except Exception as e:                    # never a Generate lost to it: the songs counted, as before
+            print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
+
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
     # above) and forces a fresh normalization, so a change to your known words is always reflected.
@@ -6095,8 +6185,13 @@ def main():
 
     def _sentences_of(file_path):
         """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
-        tokenized here (`file_sentences`, the arrival record's reader too)."""
-        return file_sentences(_store, tokenizer, file_path, language)
+        tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
+        (`song_sentences`, below)."""
+        sentences = file_sentences(_store, tokenizer, file_path, language)
+        out = _songs.get(file_path)
+        if out:
+            sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
+        return sentences
 
     def _floor_count(total_tokens, own_freqs):
         """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a
@@ -6168,7 +6263,9 @@ def main():
         _counts, total_tokens, _bound_counts = Counter(), 0, Counter()
         tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
-            sentences = _sentences_of(file_path)
+            # As the store counts them, songs too (§ Songs out of the counts: only the walk leaves them out), so the
+            # floor and the ranking are the same numbers with or without the store.
+            sentences = file_sentences(_store, tokenizer, file_path, language)
             if tallies is not None:
                 sentences, flat = list(sentences), []
                 tallies.append(_phrases.tally(sentences, _phrase_set, flat))
@@ -6257,6 +6354,8 @@ def main():
         try:
             for number, start, end, index in zip(numbers, numbers, numbers, numbers):
                 tokens, key = sentences[number][1], entries[index].key
+                if not tokens:
+                    continue                    # a song line left out (`_sentences_of`): no phrase there
                 if end - start != len(key) or tokens[start][0] != key[0] or tokens[end - 1][0] != key[-1]:
                     return None
                 found = at.get(number)
@@ -6379,7 +6478,7 @@ def main():
     if _whole is None:
         _whole = Counter()
         for file_path, _label, _weight, _type in found_files:
-            for _s_text, s_tokens in _sentences_of(file_path):
+            for _s_text, s_tokens in file_sentences(_store, tokenizer, file_path, language):     # as the store counts
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _whole[(lemma, reading)] += 1
@@ -7566,10 +7665,12 @@ def main():
         for file_path, _label, _weight, _source_type in found_files:
             # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
             # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
-            # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
+            # cache-miss branch reads the file again as the walk reads it (its songs left out too), so behaviour is
+            # never wrong, only slower.
             file_counter = file_token_cache.get(file_path)
             if file_counter is None:
-                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
+                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
+                                       for (l, r, s, o) in s_tokens)
 
             file_total_tokens = 0
             file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)

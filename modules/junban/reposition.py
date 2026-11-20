@@ -69,7 +69,7 @@ import threading
 import time
 
 from app import anki_connect
-from app.anki_match import _KANA_ONLY_RE      # card_key's own test for a word written in kana alone
+from app.anki_match import _BOLD_RE, _KANA_ONLY_RE      # sentence_span's bold mark; card_key's kana-alone test
 from modules.junban import ankiconnect, first_touch, match, pairs, show_tags, spaced, touchup, undo, unlisted
 from modules.junban.ankiconnect import AnkiError
 from modules.junban.plan import TRY_CARDS, plan, try_front as plan_try_front
@@ -588,6 +588,8 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
                                            getattr(getattr(tokenize, "__self__", None), "tagger", None),
                                            _singles(settings))
     skip = _skip(language, _singles(settings))
+    # Kyou-KN: a card's sentence is read once — its known test and its place by that sentence read the same text
+    read_once = _read_once(tokenize) if tokenize else None
 
     def unknown(token):
         return word_unknown(token[0], token[1], token[2])
@@ -624,7 +626,7 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         rank = _freqsort(fields)
         by_freq = rank if rank is not None else float("inf")
         beside = [] if needs else None
-        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), tokenize, unknown, units, skip, beside)
+        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), read_once, unknown, units, skip, beside)
                     if tokenize and word else None)
         if unknowns is None and note.get("unsure"):
             return "rest", (by_freq,), connect.UNSURE
@@ -666,12 +668,12 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         word = card.get("word") or ""
         sentence = connect.sentence_of((notes or {}).get(card.get("note")))
         if answered is None:
-            is_known = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples, sentence=sentence)
+            is_known = is_known_word(word, known, known_lemmas, ignore, read_once, known_tuples, sentence=sentence)
         else:
             memo = _known_key(word, sentence)
             is_known = answered.get(memo)
             if is_known is None:
-                is_known = answered[memo] = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples,
+                is_known = answered[memo] = is_known_word(word, known, known_lemmas, ignore, read_once, known_tuples,
                                                           sentence=sentence)
         if is_known:
             card.update(tier="known", sort=(), why="known", key="")
@@ -872,15 +874,17 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
 
     `sentence` (Kyou-KN, 2026-11-20): the card's own sentence field. A word written in kana alone (more than
     one kana) is then read THERE, as Generate reads it (`_in_its_sentence`): known when Generate would count that word
-    known (`known`) — まく in 水をまく is 撒く, never the 膜 it is alone nor the bare まく a known entry wrote, and
-    まみれ in 泥まみれ 泥塗れ, a word of its own. The letters and the lone reading only when no sentence places it."""
+    known (`known`) — まく in 水をまく is 撒く, never the 膜 it is alone nor the bare まく a known entry wrote; まみれ in
+    泥まみれ is 泥塗れ — or when an ignore line holds the card's word itself (the learner's own line for it). A card
+    the dictionary keeps apart from the sentence's word (ことに read 事 + に) is read as itself, as below; so is one
+    no sentence places."""
     if not word:
         return False
     if tokenize and sentence and len(word) > 1 and _KANA_ONLY_RE.match(word):
         placed = _in_its_sentence(word, sentence, tokenize)
-        if placed is not None:
-            tokens, token = placed
-            return not match.word_of_its_own(word, tokens, token) and bool(known(token[0], token[1]))
+        if placed is not None and not match.word_of_its_own(word, *placed):
+            token = placed[1]
+            return word in ignore or bool(known(token[0], token[1]))
     if word in known_lemmas or word in ignore:
         return True
     if tokenize:
@@ -898,34 +902,54 @@ def _in_its_sentence(word, sentence, tokenize):
     """Kyou-KN: where a card's kana `word` sits in its `sentence` field, read as Generate reads that sentence ->
     `(the tokens in its span, the token that is the card's word)`, or None when the sentence doesn't place it.
 
-    The span: the bold mark's, else the word as written (`match.sentence_span`), else the word found by its forms
-    (`connect.find_by_forms`, K56: まいた for まく; two words that could each be it — never guessed). The token: the one
-    in the span that is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い
-    of まいた: 撒く, マク) — else the one the span starts in (泥まみれ for a まみれ marked inside it)."""
-    from modules.junban import connect
-    found = match.sentence_span(sentence, word)
-    if found is None:
-        found = connect.find_by_forms(sentence, word, tokenize)
-        if found is None or found == connect.UNSURE:
-            return None
-    text, start, end = found
-    inside, at = [], 0
+    A token is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い of まいた:
+    撒く, マク), as K56 finds a word (`connect.find_by_forms`). With a bold mark: the token in its span that is the word,
+    else the one the span starts in (泥まみれ for a まみれ marked inside it). With none: the token of the sentence that is
+    the word (まくらを庭にまく: 撒く, never the 枕 the letters start), two different words that each could be — never
+    guessed between; else the one holding the word as written (泥まみれ). One read of the sentence."""
+    bold = _BOLD_RE.search(sentence)
+    marked = bool(bold and match.normalize_word(bold.group(1)))
+    found = match.sentence_span(sentence, word) if marked else None
+    text = found[0] if found else match.normalize_word(sentence)
+    if not text:
+        return None
+    placed, at = [], 0
     for token in tokenize(text):
         surface = token[2]
         pos = text.find(surface, at) if surface else -1
         if pos < 0:
             continue
         at = pos + len(surface)
-        if pos < end and at > start:
-            inside.append(token)
-    if not inside:
-        return None
+        placed.append((token, pos, at))
     wanted = match.fold_kana(word)
-    for token in inside:
+
+    def is_the_word(token):
         orth = token[3] if len(token) > 3 else token[2]
-        if wanted in {match.fold_kana(name or "") for name in (token[0], orth, token[2], token[1])}:
-            return inside, token
-    return inside, inside[0]
+        return wanted in {match.fold_kana(name or "") for name in (token[0], orth, token[2], token[1])}
+    if found:
+        _text, start, end = found
+        inside = [token for token, pos, after in placed if pos < end and after > start]
+        return (inside, next((token for token in inside if is_the_word(token)), inside[0])) if inside else None
+    named = [token for token, _pos, _after in placed if is_the_word(token)]
+    if len({(token[0], token[1]) for token in named}) > 1:
+        return None
+    if named:
+        return [named[0]], named[0]
+    start = text.find(word)
+    inside = [token for token, pos, after in placed if start >= 0 and pos < start + len(word) and after > start]
+    return (inside, inside[0]) if inside else None
+
+
+def _read_once(tokenize):
+    """`tokenize`, each text's tokens kept for this one placement (a list each: its callers only read them)."""
+    read = {}
+
+    def tokens(text):
+        hit = read.get(text)
+        if hit is None:
+            hit = read[text] = list(tokenize(text))
+        return hit
+    return tokens
 
 
 def _known_key(word, sentence):

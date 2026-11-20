@@ -54,6 +54,43 @@ def test_a_sentence_that_does_not_hold_the_word_leaves_the_lone_reading(tmp_path
     assert is_known("まく", "今日はいい天気だ。")
 
 
+def test_with_no_bold_mark_the_word_is_the_token_that_is_it_never_the_word_its_letters_start(tmp_path):
+    # まくらを庭にまく: the first まく written is the start of 枕 'pillow' — the card's word is the 撒く said after it
+    _library(tmp_path)
+    _known(tmp_path, ["枕"])
+    is_known = reposition.known_test("ja", _settings())
+    assert not is_known("まく", "まくらを庭にまく。")
+    _known(tmp_path, ["撒く"])
+    assert reposition.known_test("ja", _settings())("まく", "まくらを庭にまく。")
+    # …and a bold mark wider than the word still finds it inside (Yomitan marks a phrase now and then)
+    assert reposition.known_test("ja", _settings())("まく", "<b>庭に水をまく</b>。")
+
+
+def test_two_words_a_sentence_could_mean_are_never_guessed_between(tmp_path):
+    # 鍵をかけて、皿が欠けた: 掛ける and 欠ける both read かける — the sentence can't say which the card is, so the
+    # card is read as before (its letters: the learner's かける entry makes it known)
+    _library(tmp_path)
+    _known(tmp_path, ["かける"])
+    assert reposition.known_test("ja", _settings())("かける", "鍵をかけて、皿が欠けた。")
+
+
+def test_an_ignore_line_holding_the_cards_own_word_still_files_it_known(tmp_path):
+    # the learner's own line for that very word (an ignore line is never a tokenizer's guess): known, in any sentence
+    _library(tmp_path)
+    _known(tmp_path, ["無関係"])
+    with open(os.path.join(str(tmp_path), "User Files", "ja", "IgnoreList.txt"), "w", encoding="utf-8") as handle:
+        handle.write("まみれ\n")
+    assert reposition.known_test("ja", _settings())("まみれ", MUDDY)
+
+
+def test_a_card_known_as_itself_stays_known_where_its_sentence_reads_another_word(tmp_path):
+    # ことに 'especially' (殊に) known as itself: 今年はことに暑い reads 事 + に, a word the dictionary keeps apart — the
+    # card is judged as itself, as with no sentence
+    _library(tmp_path)
+    _known(tmp_path, ["ことに"])
+    assert reposition.known_test("ja", _settings())("ことに", "今年は<b>ことに</b>暑い。")
+
+
 def test_a_kana_card_the_dictionary_keeps_apart_from_its_sentence_word_is_not_known_through_it(tmp_path):
     # in 今年はことに暑い the tagger reads こと + に, but ことに is 殊に 'especially', an entry of its own: knowing 事
     # says nothing of it (word_of_its_own, as for the word alone) — where the dictionary files the two together, the

@@ -145,8 +145,7 @@ class Chips:
         self._ref = {}                     # word int -> how many sources hold a card of it (studied, backlog, made)
         self._studied = set()              # ints
         self._studied_words = None         # the words as Anki last said them (saved on disk)
-        self._studied_said = frozenset()   # their kana cards' (word, sentence), as last said
-        self._studied_read = frozenset()   # the words those cards are in their sentences (saved on disk)
+        self._studied_said = frozenset()   # their kana cards' (word, sentence), as last said (saved on disk)
         self._reads = {}                   # (word, sentence) -> the word it is there, or "" (saved on disk: `reads`)
         self._backlog_said = frozenset()   # the backlog's kana cards' (word, sentence)
         self._backlog = set()              # ints
@@ -287,7 +286,7 @@ class Chips:
             with self._lock:
                 if self._studied_new is None:
                     self._studied_new, self._said_new = self._studied_words, self._studied_said
-            self._studied_words, self._studied_said, self._studied_read = None, frozenset(), frozenset()
+            self._studied_words, self._studied_said = None, frozenset()
 
     def _int(self, word):
         n = self._ids.get(word)
@@ -352,19 +351,19 @@ class Chips:
                 kept = cache.get("studied")
                 if isinstance(kept, list):
                     studied = frozenset(str(w) for w in kept)
-                    read = frozenset(str(w) for w in cache.get("studied_read") or () if isinstance(w, str))
-                    self._studied_words, self._studied_read = studied, read
-                    new = {self._int(w) for w in studied | read}
+                    said = frozenset((row[0], row[1]) for row in cache.get("studied_said") or ()
+                                     if isinstance(row, list) and len(row) == 2 and all(isinstance(x, str) for x in row))
+                    self._studied_words, self._studied_said = studied, said
+                    new = {self._int(w) for w in studied | self._read_in(said)}     # (the memo: no tagger)
                     swap(self._studied, new)
                     self._studied = new
                     studied = None
         said = frozenset(said or ())
         if studied is not None and (studied or not self._studied_words) and \
                 (studied != self._studied_words or said != self._studied_said):
-            read = frozenset(self._read_in(said))
-            new = {self._int(w) for w in studied | read}
+            new = {self._int(w) for w in studied | self._read_in(said)}
             swap(self._studied, new)
-            self._studied, self._studied_words, self._studied_said, self._studied_read = new, studied, said, read
+            self._studied, self._studied_words, self._studied_said = new, studied, said
             self._save(studied_moved=True)
         stamp = self._backlog_stamp(self.language)
         if stamp != self._backlog_at:
@@ -642,7 +641,7 @@ class Chips:
             handed = dict(self._handed)
         record = {"v": CACHE_VERSION,
                   "studied": sorted(self._studied_words or ()),
-                  "studied_read": sorted(self._studied_read),
+                  "studied_said": [list(pair) for pair in sorted(self._studied_said)],
                   "reads": [[w, s, self._reads[(w, s)]] for w, s in sorted(self._studied_said | self._backlog_said)
                             if (w, s) in self._reads],
                   "items": {str(k): n for k, n in handed.items() if not isinstance(k, tuple)},

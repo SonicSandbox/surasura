@@ -97,7 +97,7 @@ def test_a_window_opened_with_anki_closed_keeps_the_count_and_reads_no_card_agai
     assert chips.idle(10), "its last save done before the next open reads it (as the chip's own Anki-closed test)"
     with open(lib.cache, encoding="utf-8") as f:
         saved = json.load(f)
-    assert saved["studied_read"] == ["手伝う"] and [HELP, HELP_SAID, "手伝う"] in saved["reads"]
+    assert saved["studied_said"] == [[HELP, HELP_SAID]] and [HELP, HELP_SAID, "手伝う"] in saved["reads"]
 
     def no_tagger(_text):
         raise AssertionError("a card read before was read again")
@@ -110,6 +110,43 @@ def test_a_window_opened_with_anki_closed_keeps_the_count_and_reads_no_card_agai
         assert _count(lib, again)[1] == first[1]
     finally:
         again.close()
+
+
+def test_a_failed_round_after_a_window_opened_with_anki_closed_keeps_the_kana_cards_count(lib, monkeypatch):
+    # review round 3: the next open restores the studied kana cards themselves (word + sentence), so a round that
+    # fails and counts again from scratch still has them — never a count that drops 手伝う and saves the drop
+    chips = lib.chips()
+    try:
+        chips.studied({HELP: anki_words.Standing(1, sentence=HELP_SAID)})
+        first = _count(lib, chips)
+    finally:
+        chips.close()
+    assert chips.idle(10)
+
+    def no_tagger(_text):
+        raise AssertionError("a card read before was read again")
+    again = card_chip.Chips("ja", open_tokens=chips._open_tokens, data_dir=lib.data, read_made=lambda _l, ids: {},
+                            read_backlog=lambda _l: set(), backlog_stamp=lambda _l: 0, cache_file=lib.cache,
+                            tokenize=no_tagger)
+    try:
+        assert _count(lib, again)[1] == first[1]
+        real, failed = again._file_words, []
+
+        def fail_once(rel):
+            if not failed:
+                failed.append(rel)
+                raise OSError("the token store busy")
+            return real(rel)
+        monkeypatch.setattr(again, "_file_words", fail_once)
+        again.want({i: (lib.rel[i], 2, 1) for i in (1, 2, 3, 4)})      # a file changed on disk: read again …
+        _settle(again)                      # … and this round fails: everything let go, the studied cards handed in again
+        assert failed
+        assert _count(lib, again, 3)[1] == first[1], "the kana card still counts after the recount"
+    finally:
+        again.close()
+    assert again.idle(10)
+    with open(lib.cache, encoding="utf-8") as f:
+        assert json.load(f)["studied_said"] == [[HELP, HELP_SAID]]
 
 
 def test_the_sync_keeps_a_kana_cards_sentence_and_nothing_for_any_other(tmp_path):

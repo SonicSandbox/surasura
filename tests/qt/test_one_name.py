@@ -45,7 +45,7 @@ def _module_texts(module, names=None):
 
 def test_the_feature_is_called_cards_made_for_you_where_it_is_named():
     assert S.ROWS["connect_enabled"][0] == NAME and S.ROWS["connect_needs_miner"][0] == NAME
-    assert S.ROWS["setup_mining"][0] == NAME
+    assert strings.ESS_TITLES["cards"] == NAME                    # Essentials' card (Mado-EZC; Your setup's row before)
     assert strings.HELP_CARDS["cards"][0] == NAME
     assert W.MINER_READY.startswith(NAME) and W.STEPS["cards"] == NAME
     assert feed.OFF_CONNECT.startswith(NAME)

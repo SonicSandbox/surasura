@@ -23,6 +23,7 @@ import ast
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,7 @@ SITES = {
     "arrivals.py:ArrivalsTray.start_drag": "the tray's picture fading as a drag leaves it",
     "confirm.py:Confirm.open": "a question's card",
     "help_card.py:HelpCard._open": "a help card's opening (help cards)",
+    "card_picker.py:CardPicker._open": "Which words get a card?'s picker opening (Mado-EZC)",
     "help_card.py:ClipPlayer._sync": "a help card's clip: a loop on the clock, its poster and ▶ under Reduced",
     "drag.py:Parting.move_to": "the gap slide and the slot's glide",
     "drag.py:DragController._glide_home": "the ghost's glide home",
@@ -88,7 +90,7 @@ SITES = {
 OVERLAYS = {
     "add_menu.py:PasteCard", "arrivals.py:ArrivalsTray", "confirm.py:Confirm", "duties.py:UpdateSheet",
     "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "guide.py:GuidePanel",
-    "help_card.py:HelpCard", "search.py:Results",
+    "help_card.py:HelpCard", "search.py:Results", "card_picker.py:CardPicker",
     "settings_live.py:FormatPop", "settings_live.py:CreditsCard", "toast.py:ToastCard",
     "word_peek.py:WordPeek",
 }
@@ -829,6 +831,26 @@ def test_sweep_a_decisions_wash_is_steady_for_its_second_then_gone(sweep):
     QTest.qWait(theme.SETTINGS_MOTION["row-wash-steady"] + 200)
     assert sip.isdeleted(w) or not w.isVisible()
     stage.close()
+
+
+@drives("card_picker.py:CardPicker._open", "card_picker.py:CardPicker")
+def test_sweep_the_card_picker_opens_in_place_and_its_steps_jump(sweep, world):
+    # Mado-EZC: under Reduced the picker opens in place (a fade within FAST, never a slide), and its steps and the
+    # picture's choice change at once — nothing on the clock once it stands.
+    from app.qt import card_picker
+    seed, win, writer = _reduced_window(sweep, world)
+    asked = []
+    win.services.arrivals = SimpleNamespace(sample=lambda paths=None, callback=None: asked.append(1))   # no process
+    sweep.on()
+    picker = card_picker.open_card_picker(win)
+    assert asked == [1]
+    sweep.still()
+    assert picker.isVisible() and motion.opening_of(picker) is None
+    picker.words._choose(2)
+    picker.go(3)
+    sweep.still()
+    assert sweep.clock.active == [] and picker.page3.isVisible() and not picker.page1.isVisible()
+    picker.close()
 
 
 @drives("help_card.py:HelpCard._open", "help_card.py:HelpCard", "help_card.py:ClipPlayer._sync")

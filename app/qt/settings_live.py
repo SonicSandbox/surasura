@@ -4,9 +4,9 @@ the page leaves to its slots (`SettingsPage.custom_row`) and the live parts of a
 `Live(page)` is made by the page. Every read runs on a worker (`bridge.run_in_worker`: the reads are the plain
 functions at the top, Qt-free); the GUI thread only paints the answer, and repaints only what changed (S19).
 
-- **Your setup:** five lines (`setup_lines`, Qt-free) from the settings and what the workers read — the known-words count,
-  Anki's state, Connect's line from the status snapshot, the level and its readout, Junban / Backfill — each with
-  *Change ›* (`page.reveal(section)`). A fact that can't be read leaves its part out: never a wrong number.
+- **Essentials** (Mado-EZC, Your setup's place): the four picture cards (`app/qt/essentials.py`) painted from the
+  settings and what the workers read — the known-words count, Anki's state, the level and its readout (`level_line`,
+  Qt-free) — each with *Change ›*. A fact that can't be read leaves its part out: never a wrong number.
 - **Level:** while *Automatic* is on, the slider shows `automation.level()`'s band (read on a worker, never written:
   S2); under it the readout (`readout`: ≈N words · N % *of your content* · about every N hours: S4) from
   `word_selection.band_previews` over the token store, read again when a level key, the library or the known words
@@ -36,6 +36,7 @@ help line.
 import os
 import time
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
@@ -48,7 +49,7 @@ from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
 from app.services import settings as settings_service
 
-SETUP = ("setup_known", "setup_anki", "setup_mining", "setup_level", "setup_cards")
+ESSENTIALS = "essentials"           # Mado-EZC: the four cards' row (`app/qt/essentials.py`), Your setup's place
 EXPORTS = {"export_frequency_list": "frequency_list", "export_reading_words": "reading_words",
            "export_sentence_list": "sentence_list"}
 COMING = {"jimaku": S.COMING_WITH_HATO, "anilist": S.COMING_LATER, "more_from_houseki": S.COMING_LATER}
@@ -267,28 +268,12 @@ def readout(preview):
     return S.READOUT_NO_TIME.format(words=words, coverage=coverage)
 
 
-def setup_lines(settings, language, facts):
-    """Your setup's five lines. `facts`: "known" (a count or None), "anki" (a key of ANKI_WORDS or None), "connect"
-    (Connect's line or None), "band" / "auto" (`automation.level`'s, None unread), "previews" (every band's numbers or
-    None). A part with nothing behind it is left out."""
+def level_line(settings, language, facts):
+    """The Level's line on its Essentials card (Mado-EZC; *Your setup*'s level line before): Automatic, the band, its
+    words and its coverage. `facts`: "band" / "auto" (`automation.level`'s, None unread), "previews" (every band's
+    numbers or None). A part with nothing behind it is left out: never a wrong number."""
     from app import word_selection
     value = lambda key: catalog.value_of(settings, key)        # noqa: E731
-    lines = {}
-    decks = list(((settings.get("anki_sync_decks") or {}).get(language) or []))
-    known = facts.get("known")
-    parts = [S.SETUP_KNOWN.format(n=known)] if known is not None else []
-    if decks:
-        parts.append(S.SETUP_FROM_ANKI.format(decks=", ".join(decks)))
-    elif known:
-        parts.append(S.SETUP_IMPORTED)
-    lines["setup_known"] = S.SEP.join(parts)
-    anki = facts.get("anki")
-    lines["setup_anki"] = S.ANKI_WORDS[anki] if anki else ""
-    if not settings_manager.connect_on(settings):       # B2-8: "is Connect on" is one rule (the switch and D29)
-        lines["setup_mining"] = S.SETUP_CONNECT_OFF
-    else:
-        mine = S.OPTIONS["connect_mine_words"].get(value("connect_mine_words"), "")
-        lines["setup_mining"] = S.SEP.join(p for p in (mine, facts.get("connect") or "") if p)
     auto = bool(value("logic.selection.auto"))
     band = facts.get("band") if auto and facts.get("auto") else (None if auto else value("logic.selection.band"))
     parts = [S.SETUP_AUTOMATIC] if auto else []
@@ -298,21 +283,7 @@ def setup_lines(settings, language, facts):
         if preview:
             parts.append(S.SETUP_WORDS.format(words=preview["word_count"]))
             parts.append(S.SETUP_COVERAGE.format(coverage=f"{preview['coverage_percent']:.1f}"))
-    lines["setup_level"] = S.SEP.join(parts)
-    if not value("enable_junban"):
-        lines["setup_cards"] = S.SETUP_NOT_ORDERED
-    else:
-        fills = [S.FILLS.get(f, f) for f in (value("junban_backfill_fills") or [])]
-        filled = (S.SETUP_FILLED.format(fills=" + ".join(fills), how=S.SETUP_FILLED_AUTO if value(
-            "junban_auto_backfill") else S.SETUP_FILLED_HAND) if fills else S.SETUP_NOTHING_FILLED)
-        # Fresh-U row 2: the order's words only while 順 keeps the cards in order by itself — else it says off
-        from app.services import setup_wizard
-        order = (S.SETUP_ORDER.get(value("junban_order"), "") if setup_wizard.kept_in_order(settings, language)
-                 else S.SETUP_ORDER_OFF)
-        deck = setup_wizard.junban_deck(settings, language)      # Kantan-T (PROVISIONAL): the deck, first
-        lines["setup_cards"] = S.SEP.join(([S.SETUP_DECK.format(deck=deck)] if deck else []) + [order, filled]
-                                          ).strip(" ·")
-    return lines
+    return S.SEP.join(parts)
 
 
 def flat(text):
@@ -517,6 +488,7 @@ class Live(QObject):
         self.store = page.store
         self.parts = {}                   # row id -> {name: the widget P4 put there}
         self.lines = {}                   # row id -> the help line P4 asked for (applied when the row is built)
+        self.essentials = None            # Mado-EZC: the four cards, once their row is built
         self.facts = {"known": None, "anki": None, "connect": None, "band": None, "auto": False, "previews": None}
         self.said = []                    # every line said (the bar's or the row's), for the record
         self.card = None                  # the credits card while it is open
@@ -617,11 +589,11 @@ class Live(QObject):
     # --- a row built: its live parts ------------------------------------------------------------------------------- #
     def _built(self, row_id):
         row = catalog.ROW[row_id]
-        if row_id in SETUP:
-            door = sc.Door(S.CHANGE, tooltip=row.tip, name=f"{row.label}: {S.CHANGE}")
-            door.clicked.connect(lambda _c=False, t=row.target: self.page.reveal(t))
-            self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"change": door}
+        if row_id == ESSENTIALS:
+            from app.qt.essentials import EssentialsCards
+            self.essentials = EssentialsCards(self.page)
+            self._slot(row_id).layout().addWidget(self.essentials)
+            self.parts[row_id] = {"cards": self.essentials}
             self._paint_setup(keep=False)
         elif row_id == "anki_connection":
             lit, key = self._anki_now()
@@ -758,7 +730,7 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False: self.remove_covers())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"remove": door}                  # --- end W3.2 L3
-        if row_id in self.lines and row_id not in SETUP and row_id != "level":
+        if row_id in self.lines and row_id != ESSENTIALS and row_id != "level":
             self._words(row_id, self.lines[row_id], keep=False)
         if row.section in S.SECTION_WHY:                # S1: its slab is there now: its needs line as Anki has it
             self._paint_needs()
@@ -807,22 +779,18 @@ class Live(QObject):
             self._paint_anki()
             self._paint_setup()
 
-    # --- Your setup ------------------------------------------------------------------------------------------------ #
+    # --- Essentials (Mado-EZC: the four cards, Your setup's place) ------------------------------------------------- #
     def _paint_setup(self, keep=True):
-        facts = dict(self.facts, anki=self._anki_now()[1] if self._anki_known() else None)
-        lines = setup_lines(self._settings(), self.page.language, facts)
-        changed = [r for r in SETUP if self.page.row(r) is not None and self.page.row(r).help.text() != lines[r]]
-        for r in SETUP:
-            self.lines[r] = lines[r]
-        if not changed:
+        """The Essentials cards from the settings and the facts as they stand (each card sets only what moved)."""
+        cards = self.essentials
+        if cards is None or sip.isdeleted(cards):
             return
+        facts = dict(self.facts, anki=self._anki_now()[1] if self._anki_known() else None)
         if keep:
             with self.page._keeping(self.page._last):
-                for r in changed:
-                    self._words(r, lines[r], keep=False)
+                cards.paint(self._settings(), self.page.language, facts)
         else:
-            for r in changed:
-                self._words(r, lines[r], keep=False)
+            cards.paint(self._settings(), self.page.language, facts)
 
     def _read_known(self):
         language = self.page.language

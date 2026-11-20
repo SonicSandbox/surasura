@@ -623,7 +623,7 @@ def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
 def test_module_rows_hide_without_their_module():
     without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
     for row_id in ("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
-                   "enable_youtube_preview", "enable_koe", "koe_door", "setup_cards"):
+                   "enable_youtube_preview", "enable_koe", "koe_door"):
         assert row_id not in without, row_id
         assert row_id in _shown({"enable_koe": True}, "ja"), row_id
 
@@ -1034,11 +1034,14 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
     row = catalog.ROW["connect_mine_words"]
     lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
-    assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
+    assert "i+1 and more" in lines["list"] and "each word on your list" in lines["list"]
     assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
-    # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list
-    assert lines["i1"] == "Only words with an i+1 line, list or not: some won't be on your list."
-    assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
+    # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list; Mado-EZC
+    # (SPEC-r2 §0.3): …and that a word with no i+1 line here gets its card from another episode
+    assert "list or not" in lines["i1"] and "another episode" in lines["i1"]
+    assert "i+1 first, then the rest" in row.help and "Only one-new-word sentences" in row.help   # (EZ-12's line)
+    # Mado-EZC: *Your list* first and recommended — the picker and Fine-tune read these same words
+    assert [v for v, _l, _line in settings_values.WORDS][0] == "list" and lines["list"].startswith("Recommended")
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
     assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
 

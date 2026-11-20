@@ -2293,3 +2293,95 @@ NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes us
 NEXT_OK = "OK"
 NEXT_OK_TIP = "Put this card away"
 # --- end the feature guide's path
+
+# --- Essentials and *Which words get a card?* (Mado-EZC; SPEC-r2 §0.3, EZ-1 / EZ2-7 / EZ2-9; every word PROVISIONAL)
+ESS_TITLES = {"known": "Known words", "cards": "Cards made for you", "sentences": "Example sentences",
+              "level": "Level"}
+ESS_ABOUT = {
+    "known": "The words Surasura counts as known: read from your Anki cards, or from a list you imported.",
+    "cards": "Surasura makes Anki cards from your next episodes by itself. This is which of their new words get one.",
+    "sentences": "The example lines under each word in your reports: how long they may be, and how many.",
+    "level": "How rare a word may be and still make your list.",
+}
+ESS_CHANGE = "Change ›"
+ESS_CHANGE_NAME = "{title}: Change"
+ESS_CHANGE_TIPS = {
+    "known": "Where your known words come from\n• Click: its settings in Fine-tune",
+    "cards": "Which words get a card, and how far ahead\n• Click: pick, then Done",
+    "sentences": "How long a report's example lines may be\n• Click: its settings in Fine-tune",
+    "level": "How rare your list's words may be\n• Click: its slider in Fine-tune",
+}
+ESS_KNOWN_NUMBER = "{n:,}"
+ESS_KNOWN_WORD = "known"
+ESS_KNOWN_UNREAD = "—"
+ESS_KNOWN_FROM = {"anki": "from your Anki cards", "import": "from a list you imported"}
+ESS_SUSPENDED = {True: "Suspended: counted", False: "Suspended: not counted"}
+ESS_SAMPLE_SENTENCE = {"ja": ("あ、おはようございます。外、すごい雨ですよ。", "雨"),
+                       "zh": ("外面的雨下得真大。", "雨")}
+ESS_RULER_END = "{n} characters"
+ESS_LENGTH = "{lo}–{hi} characters"
+ESS_UP_TO = "Up to {n} a word"
+ESS_I1_ONLY = "i+1 only"
+# the Level card's picture: a word at four of the slider's stops (band key, word), dimmed past the chosen band
+ESS_LEVEL_WORDS = {"ja": (("core", "思う"), ("common", "約束"), ("occasional", "延長"), ("rare", "モカブレンド")),
+                   "zh": (("core", "我们"), ("common", "朋友"), ("occasional", "延长"), ("rare", "茴香豆"))}
+ESS_AHEAD = "{n} episodes ahead"
+ESS_READY_FIRST = "i+1 first"
+ESS_DECK = "“{deck}”"                   # Kantan-T: the deck setup picked, named on Settings' first page
+ESS_CARDS_OFF = "Off: you make your cards yourself"
+ESS_FROM_HERE = {1: "One card from this sentence", 2: "Two cards from this sentence"}
+ESS_FROM_HERE_MORE = "{n} cards from this sentence"
+ESS_FROM_AWAY = "Each from another episode, where it's the only new word"
+ESS_FROM_NONE = "No card from this sentence"
+# the picture (the card and the picker share it)
+PICK_SOURCE = "Your next episode · {name}"
+PICK_SAMPLE = "A sample episode · {name}"
+PICK_SAMPLE_TIP = "No episode of yours to show yet: a short sample instead"
+PICK_LEGEND = (("list", "on your list"), ("rare", "rare: not on it"), ("second", "2nd new word"))
+PICK_NEW = {1: "1 new", 2: "2 new"}
+PICK_NEW_MORE = "{n} new"
+PICK_CHIP = {"card": "▭ {word}", "amber": "▭ {word}", "other": "↗ {word} · another episode",
+             "rare": "{word}: no card · rare", "none": "{word}: no card"}
+PICK_CHIP_TIPS = {
+    "card": "Its card comes from this line",
+    "amber": "Its card is this line, with a second new word in it",
+    "other": "Its card comes from a line where it's the only new word, in another of your next episodes",
+    "rare": "Not on your list: rarer than your Level. Raise the Level and it joins your list, then gets its card",
+    "none": "No card from this line",
+}
+# the picker over the window: three steps (the second only with 順, Japanese)
+PICK_EYEBROW = "CARDS MADE FOR YOU"
+PICK_TITLES = ("Which words get a card?", "A card's sentence has a second new word", "How far ahead?")
+PICK_WHAT = "Surasura makes Anki cards from your next episodes by itself. This picks which of their new words get one."
+PICK_WHERE = "Settings › Anki & mining › Words to make cards from"
+PICK_WHERE_TIP = "The same setting, in Fine-tune"
+PICK_RECOMMENDED = "RECOMMENDED"
+PICK_IN_USE = "IN USE"
+PICK_HERE = "{n} cards here"
+PICK_HERE_AWAY = "{n} here · {m} from another episode"
+PICK_HERE_UP_TO = "{n} here · up to {m} elsewhere"
+PICK_CHOICE_TIP = "{name}\n• Click: choose it (saved when you press Done)"
+PICK_READY = ((True, "Learn the other word first", "Its card comes right before, so the sentence has one new word "
+               "when you meet it"),
+              (False, "Keep your list's order", "You meet the sentence with two new words"))
+PICK_READY_WITH = "with Card order 順"
+PICK_AHEAD = "Cards for your top"
+PICK_AHEAD_UNIT = "episodes"
+PICK_AHEAD_CHOICES = (5, 10, 20, 40)
+PICK_WAIT = "New cards waiting in Anki, at most"
+PICK_WAIT_CHOICES = (150, 300, 600)
+PICK_NUMBER_TIP = "{n}\n• Click: choose it (saved when you press Done)"
+PICK_NO_LIBRARY = "No library to save it to yet"
+PICK_CHANGES = {0: "Nothing changed yet", 1: "1 change · saved when you press Done"}
+PICK_CHANGES_MORE = "{n} changes · saved when you press Done"
+PICK_CANCEL = "Cancel"
+PICK_CANCEL_TIP = "Close without saving\n• Esc or a click outside does the same"
+PICK_BACK = "‹ Back"
+PICK_BACK_TIP = "The step before"
+PICK_NEXT = "Next ›"
+PICK_NEXT_TIP = "The next question"
+PICK_DONE = "Done"
+PICK_DONE_TIP = "Save your choices\n• A toast offers Undo"
+PICK_SAVED = "✓ Saved: {name}"
+PICK_STEP_NAME = "Step {n} of {total}"
+# --- end Essentials

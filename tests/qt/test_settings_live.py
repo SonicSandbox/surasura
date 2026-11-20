@@ -1,7 +1,7 @@
 """Settings' live rows (W3.3 P4; `app/qt/settings_live.py`; the RUNBOOK's P4 row, the register's S2, S4, S6, N6).
 
 What a wrong answer would cost: a read on the window's thread (a file, SQLite, Anki: the window freezes); a number in
-Your setup that isn't true (a count from another language, a band from a stale read); the level written while only
+Essentials that isn't true (a count from another language, a band from a stale read); the level written while only
 *Automatic* moved it (a full Generate for nothing, S2); a readout that says *% known* (S4); a *Check* that refreshes
 nothing; an *Offer again* for a version that is no newer; a credits card that traps the window (modal) or won't close
 on Esc / Back / a click outside (N6); a text size written twice or never applied; an export that runs twice at once,
@@ -215,71 +215,64 @@ def test_every_read_runs_on_a_worker_never_the_window_thread(qapp, fakes, monkey
     assert store.calls == []                              # nothing written by a read, a look or an export
 
 
-# --- Your setup -------------------------------------------------------------------------------------------------- #
+# --- Essentials (Mado-EZC: the four cards, Your setup's place) --------------------------------------------------- #
 SEEDED = dict(ALL_ON, connect_mine_words="i1", junban_order="content", junban_backfill_fills=["patterns", "sentence"],
               junban_auto_backfill=True, junban_auto_actions=True, junban_replan_deck="日本語::コア2k",
               junban_replan_language="ja", anki_sync_decks={"ja": ["日本語::コア2k", "アニメ"], "zh": ["中文::HSK"]},
               logic={"selection": {"band": "common"}})
 
 
-def test_your_setup_says_what_the_settings_and_the_reads_say(qapp, fakes):
+def cards(page):
+    return page.live.essentials
+
+
+def chips(page, card):
+    return cards(page).card_chips(card)
+
+
+def test_essentials_says_what_the_settings_and_the_reads_say(qapp, fakes):
     fakes.known = (2468, "synced")
     page, store, shell = make(fakes, SEEDED, connect="Mining 3 words from ひとり・で・ぽっぷ！")
-    assert wait_until(lambda: help_of(page, "setup_mining").endswith("ひとり・で・ぽっぷ！"))
-    assert help_of(page, "setup_known") == "2,468 known · from Anki (日本語::コア2k, アニメ)"
-    assert help_of(page, "setup_anki") == "connected"
-    assert help_of(page, "setup_mining") == "Only i+1 · Mining 3 words from ひとり・で・ぽっぷ！"
-    assert help_of(page, "setup_level") == "Common · ≈1,234 words · 91.3% of your content"
-    assert help_of(page, "setup_cards") == "ordered as you’ll meet them · パターン + 例文 filled automatically"
-    # each Change › goes to its section
+    assert wait_until(lambda: cards(page).known_number.text() == "2,468")
+    assert cards(page).known_from.text() == strings.ESS_KNOWN_FROM["anki"]
+    assert chips(page, "known") == ["connected", strings.ESS_SUSPENDED[False]]
+    assert chips(page, "cards")[0] == "Only one-new-word sentences"            # the choice by its one name
+    assert chips(page, "level") == ["Common", "≈1,234 words", "91.3% of your content"]
+    assert chips(page, "sentences")[:2] == ["10–50 characters", "Up to 3 a word"]
+    # each Change › goes to its section; Cards made for you opens the picker
     revealed = []
     page.reveal = revealed.append
-    for row_id in live.SETUP:
-        page.live.parts[row_id]["change"].click()
-    assert revealed == ["known", "anki", "anki", "level", "junban"]
+    for card in ("known", "sentences", "level"):
+        cards(page).cards[card].change.click()
+    assert revealed == ["known", "sentences", "level"]
+    cards(page).cards["cards"].change.click()
+    picker = page.__dict__["_card_picker"]
+    assert picker.isVisible() and picker.step == 1
+    picker.close()
+    assert store.calls == []                                                 # opening and closing writes nothing
 
 
-def test_your_setup_says_less_when_a_fact_cant_be_read(qapp, fakes):
+def test_essentials_says_less_when_a_fact_cant_be_read(qapp, fakes):
     fakes.known = OSError("KnownWord.json is locked")
     fakes.level = (None, True, None)                      # Automatic, and no store to read yet
     page, store, shell = make(fakes, dict(SEEDED, logic={"selection": {"auto": True, "band": "rare"}},
                                           connect_enabled=False, enable_junban=False))
     settle()
-    assert help_of(page, "setup_known") == "from Anki (日本語::コア2k, アニメ)"   # no number: never a wrong one
-    assert help_of(page, "setup_anki") == ""                                  # not looked at yet: nothing said
-    assert help_of(page, "setup_mining") == S.SETUP_CONNECT_OFF
-    assert help_of(page, "setup_level") == "Automatic"                       # not the saved band: Automatic moves it
-    assert help_of(page, "setup_cards") == S.SETUP_NOT_ORDERED
+    assert cards(page).known_number.text() == strings.ESS_KNOWN_UNREAD         # no number: never a wrong one
+    assert cards(page).known_from.text() == strings.ESS_KNOWN_FROM["anki"]
+    assert chips(page, "known") == [strings.ESS_SUSPENDED[False]]              # Anki not looked at yet: nothing said
+    assert chips(page, "cards") == [strings.ESS_CARDS_OFF]
+    assert chips(page, "level") == ["Automatic"]                               # not the saved band: Automatic moves it
     assert help_of(page, "level") == ""                                       # no readout: the band names only
 
 
-def test_setup_lines_count_only_this_languages_words_and_leave_out_unread_parts():
+def test_known_words_count_only_this_languages_decks_and_say_nothing_before_a_count():
+    from app.qt import essentials
     settings = {"anki_sync_decks": {"zh": ["中文::HSK"]}, "connect_enabled": True}
-    lines = live.setup_lines(settings, "ja", {"known": None})
-    assert lines["setup_known"] == "" and lines["setup_anki"] == ""
-    assert lines["setup_mining"] == "Your list"
-    lines = live.setup_lines(settings, "ja", {"known": 30})
-    assert lines["setup_known"] == "30 known · from an imported list"
-    assert live.setup_lines(settings, "zh", {"known": 0})["setup_known"] == "0 known · from Anki (中文::HSK)"
-
-
-def test_cards_in_anki_says_off_while_junban_doesnt_keep_them_in_order_by_itself():
-    # Fresh-U row 2: setup's switch turned off (junban_auto_actions False) still read "ordered as you'll meet them" —
-    # the order's mode is only what a by-hand Reorder uses; the line says off, and the fills still follow
-    base = {"enable_junban": True, "junban_order": "content", "junban_backfill_fills": ["patterns"],
-            "junban_auto_backfill": True}
-    for off in ({}, {"junban_auto_actions": False}, {"junban_auto_actions": "yes"}):
-        assert live.setup_lines(dict(base, **off), "ja", {})["setup_cards"] ==             S.SETUP_ORDER_OFF + " · パターン filled automatically"
-    given = dict(base, junban_auto_actions=True, junban_replan_deck="日本語::コア2k", junban_replan_language="ja")
-    assert live.setup_lines(given, "ja", {})["setup_cards"] == "ordered as you’ll meet them · パターン filled automatically"
-    assert live.setup_lines(dict(given, junban_order="priority", junban_backfill_fills=[]),
-                            "ja", {})["setup_cards"] == "ordered by leverage · " + S.SETUP_NOTHING_FILLED
-    # the wizard's one rule (`setup_wizard.kept_in_order`): a consent given for Japanese is off for Chinese, and one
-    # whose pair isn't recorded (順's deck moved since: it stands aside) is off too
-    assert live.setup_lines(given, "zh", {})["setup_cards"].startswith(S.SETUP_ORDER_OFF)
-    assert live.setup_lines(dict(base, junban_auto_actions=True), "ja", {})["setup_cards"].startswith(S.SETUP_ORDER_OFF)
-    # 順 switched off says so, whatever the consent holds
-    assert live.setup_lines(dict(base, enable_junban=False, junban_auto_actions=True), "ja", {})["setup_cards"] ==         S.SETUP_NOT_ORDERED
+    assert essentials.known_from(settings, "ja", {"known": None}) == ""
+    assert essentials.known_from(settings, "ja", {"known": 30}) == strings.ESS_KNOWN_FROM["import"]
+    assert essentials.known_from(settings, "zh", {"known": 0}) == strings.ESS_KNOWN_FROM["anki"]
+    assert live.level_line({"logic": {"selection": {"band": "rare"}}}, "ja", {}) == "Rare"
 
 
 def test_a_count_for_another_language_never_shows(qapp, fakes):
@@ -287,9 +280,9 @@ def test_a_count_for_another_language_never_shows(qapp, fakes):
     state = automation_module.State("synced", "zh", 0, 999, None, None, 1)
     page.bridge.automation_changed.emit(state)
     settle()
-    assert help_of(page, "setup_known").startswith("2,468 known")
+    assert cards(page).known_number.text() == "2,468"
     page.bridge.automation_changed.emit(state._replace(language="ja", known=2500, seq=2))
-    assert wait_until(lambda: help_of(page, "setup_known").startswith("2,500 known"))
+    assert wait_until(lambda: cards(page).known_number.text() == "2,500")
 
 
 # --- the level (S2, S4) ------------------------------------------------------------------------------------------ #
@@ -300,7 +293,7 @@ def test_automatic_shows_the_levels_band_and_writes_nothing(qapp, fakes):
     assert wait_until(lambda: slider.value() == "rare")
     assert store.calls == []
     assert help_of(page, "level") == "≈850 words · 96.0% of your content · about every 24 minutes"
-    assert help_of(page, "setup_level") == "Automatic · Rare · ≈850 words · 96.0% of your content"
+    assert chips(page, "level") == ["Automatic", "Rare", "≈850 words", "96.0% of your content"]
     # another level key written: the page puts the saved band back, the automatic one is shown again at once
     store.outside({"logic.selection.auto_max_words": 900})
     assert slider.value() == "rare" and store.calls == []
@@ -364,7 +357,7 @@ def test_check_refreshes_the_status_and_shows_ankis_word_beside_the_emerald(qapp
     page.live.parts["anki_connection"]["check"].click()
     assert shell.services.status.refreshes == 1
     assert wait_until(lambda: mark.words() == S.ANKI_WORDS["closed"]) and not mark.value()
-    assert help_of(page, "setup_anki") == "Anki is closed"
+    assert chips(page, "known")[0] == "Anki is closed"
     fakes.probe = {"ok": True, "version": 6, "missing": [], "error": ""}
     page.live.check()
     assert wait_until(lambda: mark.value()) and mark.words() == "connected"
@@ -385,7 +378,7 @@ def test_ankiconnect_missing_shows_copy_code_and_the_steps_and_a_closed_anki_sho
     page.live.check()
     assert wait_until(lambda: mark.words() == A.NO_CONNECT) and not mark.value()
     assert not steps.isHidden() and steps.line.text() == A.steps_line()
-    assert help_of(page, "setup_anki") == A.NO_CONNECT
+    assert chips(page, "known")[0] == A.NO_CONNECT
     fakes.probe = dict(fakes.probe, running=None)
     page.live.check()
     assert wait_until(lambda: mark.words() == A.UNSURE)

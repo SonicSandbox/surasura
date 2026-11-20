@@ -376,6 +376,22 @@ class Choice(_Control):
         self.update()
         return True
 
+    def set_options(self, options, value=None):
+        """Other options (a live set: Essentials' picker's counts, a held number beside the usual ones; Mado-EZC) —
+        no signal, no motion; `value` (default: the one chosen now, else the first) shown as chosen."""
+        value = self.value() if value is None else value
+        self._options = _options(options)
+        try:
+            index = self._find(value)
+        except ValueError:
+            index = 0
+        self._vein.stop()
+        self._index = self._cursor = index
+        self.setMouseTracking(any(t for _v, _l, t in self._options))
+        self._describe()
+        self.updateGeometry()
+        self.update()
+
     def vein(self):
         """The vein's (left, right) as drawn now."""
         return self._vein.span or self._rest(self._index)
@@ -516,6 +532,11 @@ class Cards(Choice):
         self._lines = [opt[2] if len(opt) > 2 else "" for opt in options]
         super().__init__([(o[0], o[1], o[3] if len(o) > 3 else None) for o in options], value, tooltip, name, parent)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def set_options(self, options, value=None):
+        """(value, label, line[, tip]) as at the start (`Choice.set_options`)."""
+        self._lines = [opt[2] if len(opt) > 2 else "" for opt in options]
+        super().set_options([(o[0], o[1], o[3] if len(o) > 3 else None) for o in options], value)
 
     def _rects(self):
         pad_y, pad_x = _px("settings-card-pad-y"), _px("settings-card-pad-x")

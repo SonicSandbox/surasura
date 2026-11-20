@@ -6,7 +6,8 @@ deck Anki Miner is set to put its cards in). After setup it changes only in Junb
 order › *Which cards*' *Junban…* — whose line said only "This deck is chosen in Junban's window", never which deck.
 Now (words PROVISIONAL):
 - *Which cards* names the deck in sight (`catalog.help_line`: a live line, never behind the ?), beside its *Junban…*;
-- Your setup's *Cards in Anki* leads with the deck, so the first page of Settings says it (its *Change ›* goes there);
+- Essentials' *Cards made for you* names the deck (Your setup's *Cards in Anki* did, Mado-EZC), so the first page of
+  Settings says it;
 - setup's own line says which deck it will move, and that the menu below picks another; the menu's hover says where
   it changes later.
 The deck is this language's only (`setup_wizard.junban_deck`: a deck recorded for the other language is no deck here).
@@ -47,13 +48,18 @@ def test_which_cards_names_this_languages_deck_and_says_when_none_is_chosen():
     assert catalog.help_line(row, _base(junban_deck=DECK, junban_scope="all"), "ja") == S.JUNBAN_ALL_DECKS
 
 
-def test_cards_in_anki_leads_with_the_deck():
-    rest = S.SETUP_ORDER_OFF + S.SEP + S.SETUP_NOTHING_FILLED                       # (順 not keeping them in order)
-    lines = live.setup_lines(_base(junban_deck=DECK), "ja", {})
-    assert lines["setup_cards"] == S.SETUP_DECK.format(deck=DECK) + S.SEP + rest
-    assert live.setup_lines(_base(), "ja", {})["setup_cards"] == rest                  # no deck: nothing to name
-    off = live.setup_lines(_base(junban_deck=DECK, enable_junban=False), "ja", {})
-    assert off["setup_cards"] == S.SETUP_NOT_ORDERED                                   # 順 off: as before
+def test_essentials_names_the_deck_on_settings_first_page():
+    # Mado-EZC: Essentials replaced Your setup; its *Cards made for you* card names the deck (this language's only,
+    # while 順 is on), so the first page of Settings still says it
+    from app.qt import essentials, strings
+    on = dict(_base(junban_deck=DECK), connect_enabled=True, logic={"automation": True})
+    words = [w for w, _tone in essentials.chips_of("cards", on, "ja", {})]
+    assert strings.ESS_DECK.format(deck=DECK) in words
+    assert not any(DECK in w for w, _t in essentials.chips_of("cards", _base(), "ja", {}))          # no deck
+    off = _base(junban_deck=DECK, enable_junban=False)
+    assert not any(DECK in w for w, _t in essentials.chips_of("cards", off, "ja", {}))               # 順 off
+    zh = _base(junban_deck=CHINESE, junban_replan_deck=CHINESE, junban_replan_language="zh")
+    assert not any(CHINESE in w for w, _t in essentials.chips_of("cards", zh, "ja", {}))            # another language's
 
 
 def test_setup_says_which_deck_it_moves_and_where_another_is_picked():

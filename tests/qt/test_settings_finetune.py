@@ -35,7 +35,7 @@ def test_the_sections_stand_under_three_heads_cards_library_app_each_once_in_pag
     assert heads == ["cards", "library", "app"]
     order = [s.id for s in catalog.SECTIONS]
     headed = [section for _head, sections in catalog.HEADS for section in sections]
-    assert sorted(headed) == sorted(set(order) - {"setup"})          # every section but Your setup, once
+    assert sorted(headed) == sorted(set(order) - {"setup"})          # every section but Essentials, once
     assert order == ["setup"] + headed                               # the page's order is the heads' order
     assert {S.HEADS[h] for h in heads} == {"Cards", "Library", "App"}
     # the round-1 placing (EZ-4 §2.4): the covers' two rows read with Content

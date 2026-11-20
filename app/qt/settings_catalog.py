@@ -54,7 +54,7 @@ SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Cou
 CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
 
 # Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
-# page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
+# page's order — Essentials above them all (Mado-EZC); Connections under App until Tools takes it
 HEADS = (
     ("cards", ("known", "anki", "junban", "backfill", "sentences", "level")),
     ("library", ("content", "arrivals", "parsing", "reading", "export")),
@@ -81,7 +81,7 @@ PENDING_OPENERS = {
 _LIVE, _CONNECT_ROWS, _RULES = "app.qt.settings_live", "app.qt.settings_connect", "app.qt.settings_rules"
 _STORE = "app.qt.settings_store"
 FILLED_BY = {
-    "setup_known": _LIVE, "setup_anki": _LIVE, "setup_mining": _LIVE, "setup_level": _LIVE, "setup_cards": _LIVE,
+    "essentials": _LIVE,                        # Mado-EZC: the four cards (app/qt/essentials.py)
     "anki_connection": _LIVE, "hato": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
     "connect_needs_miner": _LIVE,               # row 13
     "export_frequency_list": _LIVE, "export_reading_words": _LIVE, "export_sentence_list": _LIVE,
@@ -211,12 +211,8 @@ def _row(id_, section, kind, keys=(), options=None, adv=False, group=None, sub=F
 
 
 ROWS = (
-    # Your setup: five live summaries (P4), each *Change ›* to its section
-    _row("setup_known", "setup", "summary", target="known"),
-    _row("setup_anki", "setup", "summary", target="anki"),
-    _row("setup_mining", "setup", "summary", target="anki"),
-    _row("setup_level", "setup", "summary", target="level"),
-    _row("setup_cards", "setup", "summary", target="junban", when=_JUNBAN),
+    # Essentials (Mado-EZC, SPEC-r2 §0.3; Your setup's place): the four picture cards, one row `settings_live` fills
+    _row("essentials", "setup", "custom"),
 
     # Known words: one road, its rows under it
     _row("known_road", "known", "choice", options=("anki", "import")),
@@ -429,7 +425,7 @@ ROWS = (
 )
 ROW = {row.id: row for row in ROWS}
 # A row that stands stacked always (Sonic 2026-11-05: "One for the term and then a row or 2 for the buttons")
-STACKED = ("open_video", "open_book", "finish_cards")
+STACKED = ("open_video", "open_book", "finish_cards", "essentials")
 # A choice row whose "program" choice opens a program kept in another key: row id -> that key (its path; the page's
 # picker writes it, *Change…* picks again)
 PROGRAM_ROWS = {"open_video": "open_video_program", "open_book": "open_book_program"}

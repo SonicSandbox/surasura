@@ -449,7 +449,7 @@ def timeline(path, language="ja", script="asis"):
     """The timed lines of the file at `path` and the text a Generate reads from it: Timeline. A subtitle (.srt, .ass,
     .ssa): `read` and the text `tokens` reads (`_text`), so a sentence's lines are the cues Connect cuts a card from.
     A video transcript: its sidecar's lines (`_transcript`), searched without what a Generate takes out of it (its
-    timestamps, sound cues, inline readings: `analyzer.strip_text_conventions`). Anything else has none (every `line`
+    timestamps, sound cues, groups in parentheses: `analyzer.strip_text_conventions`). Anything else has none (every `line`
     is None)."""
     if str(path).lower().endswith(SUBTITLES):
         cues = read(path, language)
@@ -463,10 +463,12 @@ _TRANSCRIPT_REMOVED = []
 
 
 def _transcript_removed():
-    """What a Generate takes out of a video transcript's text — its timestamps, the captions' sound cues, what the
-    reader removes inside a line (`analyzer.REMOVED_INLINE`) — as one pattern, made once."""
+    """What a Generate takes out of a video transcript's text — its timestamps, the captions' sound cues, its groups in
+    parentheses (`analyzer._TRANSCRIPT_GROUP_RE`), what the reader removes inside a line (`analyzer.REMOVED_INLINE`)
+    — as one pattern, made once."""
     if not _TRANSCRIPT_REMOVED:
         _TRANSCRIPT_REMOVED.append(re.compile("|".join((analyzer._TRANSCRIPT_TIME_RE.pattern,
-                                                        analyzer._SOUND_CUE_RE.pattern, analyzer.REMOVED_INLINE)),
+                                                        analyzer._SOUND_CUE_RE.pattern,
+                                                        analyzer._TRANSCRIPT_GROUP_RE.pattern, analyzer.REMOVED_INLINE)),
                                               re.M))
     return _TRANSCRIPT_REMOVED[0]

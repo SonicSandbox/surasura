@@ -5,8 +5,9 @@ sorting offered *Needs you*'s *Make cards for your first 20 episodes?* — and b
 logged episodes entering the top 20, Connect queued them, the battery gate held them, and they were mined the moment
 he plugged in. The rule now: while that line is offered and unanswered, and Connect never queued from the placement
 log in this language, nothing that enters the top 20 makes a job (nor a gap's *Make their cards*); *Make cards* logs
-the top 20 itself (and its answer is kept first, so a Connect already looking never passes them by); *Not now* lets
-what comes later in; an ask (*Mine now*) is a yes of its own; a profile that already mined is never held.
+the top 20 itself (and its answer is kept first, so a Connect already looking never passes them by); *Not now* is no
+yes (Kantan-B2b, Sonic 2026-11-19: what comes later waits too); an ask (*Mine now*) is a yes of its own; a profile
+that already finished an episode from the log, with cards, is never held.
 
 What a wrong answer would cost: cards written into the learner's Anki that he never agreed to — or, the other way, a
 learner who said yes and never gets a card. Real subtitles from tests/Test Resources (the suite's library), ja + zh,
@@ -109,18 +110,19 @@ def test_make_cards_whose_log_fails_takes_its_answer_back_and_the_line_asks_agai
     assert needs.FIRST_CARDS in needs.read_offers("ja")
 
 
-def test_not_now_lets_what_comes_later_in_but_never_the_episodes_it_was_asked_about():
-    # why: *Not now* with cards on says "what comes into your top 20 later still gets its cards" — and these not
+def test_not_now_is_no_yes_what_comes_later_waits_too():
+    # why: Kantan-B2b (Sonic 2026-11-19: "Nothing mines until the yes"): *Not now* keeps its own answer, the line
+    # stays unanswered, and an episode entering the top 20 afterwards makes no job either
     _library("ja")
     needs.offer("ja", needs.FIRST_CARDS)
     _consume("ja")
     before = _enter_one("ja")
     _consume("ja")
-    needs.answer("ja", [needs.FIRST_CARDS])                 # *Not now* writes only its answer
+    needs.answer("ja", [needs.FIRST_CARDS_NOT_NOW])         # *Not now*'s own answer, never the line's
     assert _consume("ja")["queued"] == []
     later = _enter_one("ja")
     assert later != before
-    assert _consume("ja")["queued"] == [later]
+    assert _consume("ja")["queued"] == [] and _jobs("ja") == []
 
 
 def test_an_ask_is_a_yes_of_its_own_while_the_line_waits():
@@ -135,15 +137,36 @@ def test_an_ask_is_a_yes_of_its_own_while_the_line_waits():
     assert out["queued"] == [item] and out["asked"] == [item]
 
 
+def _mined(lang, item_id):
+    """The item's log job finished with a card, as Connect's loop records it (its batch's `made` outcome)."""
+    with Ledger() as ledger, ledger.transaction():
+        job = ledger.job(lang, item_id)
+        ledger.conn.execute("INSERT INTO outcomes (job_id, word, reading, outcome, note_id, attempt) VALUES "
+                            "(?, '約束', 'ヤクソク', 'made', 1001, 1)", (job["id"],))
+        ledger.set_state(job["id"], "done")
+
+
 def test_a_profile_that_already_mined_from_the_log_is_never_held_by_an_old_unanswered_line():
     # why: a 3.0 learner who left the line unanswered for weeks while Connect mined must keep getting cards
     _library("ja")
     _consume("ja")
     first = _enter_one("ja")
-    assert _consume("ja")["queued"] == [first]               # mined from the log once (no line offered then)
+    assert _consume("ja")["queued"] == [first]               # queued from the log once (no line offered then) …
+    _mined("ja", first)                                      # … and mined, with a card
     needs.offer("ja", needs.FIRST_CARDS)
     second = _enter_one("ja")
     assert second in _consume("ja")["queued"]
+
+
+def test_a_profile_whose_log_jobs_were_only_queued_is_held_by_its_unanswered_line():
+    # why: Kantan-B2b — the reporter's 3.0.15 install: jobs queued from the log, none finished; that is no yes
+    _library("ja")
+    _consume("ja")
+    first = _enter_one("ja")
+    assert _consume("ja")["queued"] == [first]
+    needs.offer("ja", needs.FIRST_CARDS)
+    _enter_one("ja")
+    assert _consume("ja")["queued"] == []
 
 
 def test_no_line_offered_is_the_rule_as_before():

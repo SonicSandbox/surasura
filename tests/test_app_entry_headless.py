@@ -73,7 +73,7 @@ def test_without_headless_the_crash_still_reaches_for_its_dialog(tmp_path):
     assert code == 1 and "tkinter" in attempted
 
 
-def _run_entry_window_gone(root, argv):
+def _run_entry_window_gone(root, argv, main="cancel"):
     """app_entry.run() with `argv` as Surasura.exe's analyzer child after its window closed: stdout and stderr a real
     pipe whose reading end is already closed (Windows answers a write with OSError 22, elsewhere a broken pipe), the
     real `_reporting_progress` around a run that reaches its first step with its cancel file made, tkinter blocked.
@@ -97,7 +97,10 @@ def _run_entry_window_gone(root, argv):
 
         import app_entry
         from app import analyzer
-        analyzer.main = analyzer._reporting_progress(lambda: analyzer._progress("Reading your files"))
+        if {main!r} == "cancel":
+            analyzer.main = analyzer._reporting_progress(lambda: analyzer._progress("Reading your files"))
+        else:                                           # a child's plain line, no wrapper of its own
+            analyzer.main = lambda: print("Processing 第01話.srt...", flush=True)
 
         read, write = os.pipe()
         os.close(read)                                  # the window has gone
@@ -129,6 +132,14 @@ def test_a_cancelled_generate_whose_window_closed_exits_cancelled_with_no_dialog
     assert code == analyzer.GENERATE_CANCELLED and attempted == []
     assert "CRITICAL ERROR" not in _app_log(tmp_path)
     assert "Ended analyzer after" in _app_log(tmp_path) and f"(exit {analyzer.GENERATE_CANCELLED})" in _app_log(tmp_path)
+
+
+def test_any_childs_plain_line_to_a_window_that_closed_goes_nowhere(tmp_path):
+    # app_entry's own guard, for every command (the arrivals worker, the indexer, a Generate without --progress-json):
+    # a print to the closed pipe ends nothing and opens nothing
+    code, attempted = _run_entry_window_gone(tmp_path, ["analyzer"], main="print")
+    assert code == 0 and attempted == []
+    assert "CRITICAL ERROR" not in _app_log(tmp_path)
 
 
 def test_every_child_the_window_starts_from_the_program_is_headless(monkeypatch):

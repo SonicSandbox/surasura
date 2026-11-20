@@ -27,9 +27,11 @@ def _closed_pipe():
 
 
 def test_a_line_to_a_parent_that_has_gone_goes_nowhere_and_says_so(fresh):
-    stream = child_io.guarded(_closed_pipe())
+    pipe = _closed_pipe()
+    stream = child_io.guarded(pipe)
     print('{"type": "error", "code": "cancelled", "message": "Generate を取り消しました"}', file=stream, flush=True)
     assert child_io.parent_gone()
+    assert pipe.closed, "the dead pipe's handle let go at once (its unsent bytes dropped), never at the exit"
     print("Processing 第01話.srt...", file=stream, flush=True)     # everything after: nowhere, quietly
     stream.flush()
     stream.close()

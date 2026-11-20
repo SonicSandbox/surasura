@@ -112,6 +112,22 @@ def test_a_window_open_throughout_changes_nothing(tmp_path, ledger):
     assert ledger.job_by_id(job_id)["state"] == "done" and "stopped" not in summary
 
 
+def test_the_window_open_again_lets_the_job_its_close_cut_go_on_in_this_run(tmp_path, ledger):
+    # the window reopened before this Connect ended: its start's kick lets the cut job go on now, never parked until
+    # a start that this running Connect absorbed
+    job_id = _queue(ledger, "zh", 1)
+    ledger.set_state(job_id, "waiting", reason=WINDOW_CLOSED, resume="mining")
+    steps = _steps(tmp_path, "zh")
+    steps.kicked = lambda: True
+    steps.window, steps.window_seen = False, True
+    parked = {job_id: None}
+    runner._woken(steps, ledger, parked)
+    assert parked == {job_id: None}, "still closed: it stays parked"
+    steps.window = True
+    runner._woken(steps, ledger, parked)
+    assert parked == {}
+
+
 def test_a_run_stopped_by_the_close_starts_no_connect_again(monkeypatch):
     # `_loop` restarts Connect for a kick or a pending inbox only when the run wasn't stopped: never a start after
     # the window closed (a start would see no window and mine on)

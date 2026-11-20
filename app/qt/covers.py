@@ -26,7 +26,9 @@ and records them) — painted wherever the window shows a cover, the generated c
   titles only (`services.covers.works_for`), on a worker of its own, after the first frame — the same scan, one path.
 - **Change cover…** (`cover_menu_entries(row)` → [(name, label, tip, callable)], for the ⋯ menu): *Choose an image…*
   (a file picker → `services.covers.keep_user_image` on a worker: copied into `User Files/<lang>/covers/`, the image it
-  replaces kept dated — then recorded, locked, with its toast's Undo) and *Use a generated cover* (locked, Undo).
+  replaces kept dated — then recorded, locked, with its toast's Undo) and *Use a plain cover* (the generated one, locked, Undo); a
+  generated cover kept offers *Look for a cover again* in its place (`look_again`: the lock let go, Undo; its files
+  looked at and the title asked online again — Mado-CV). A pick or a paste replaces a generated lock (the newer choice).
 """
 import os
 import sys
@@ -496,7 +498,8 @@ def _scanned(result):
 # --- Change cover… (the ⋯ menu's entries; Q8 draws the menu) -------------------------------------------------------- #
 def cover_menu_entries(row):
     """[(name, label, tip, callable)] for a row's *Change cover…* (`row`: a view row with `work_id`, `cover_title` and
-    its `cover`): *Choose an image…* and *Use a generated cover* — none without a work or a writer that can write."""
+    its `cover`): *Choose an image…* and *Use a plain cover* — or, the generated one kept already, *Look for a
+    cover again* (its way back, Mado-CV) — none without a work or a writer that can write."""
     from app.qt import strings
     writer = _library["writer"]
     work = getattr(row, "work_id", None)
@@ -504,7 +507,9 @@ def cover_menu_entries(row):
         return []
     out = [("cover-choose", *strings.COVER_MENU["choose"], lambda: choose_image(row))]
     ref = getattr(row, "cover", None)
-    if not (ref and tuple(ref)[1] == "generated" and tuple(ref)[4]):         # not already the generated one, kept
+    if ref and tuple(ref)[1] == "generated" and tuple(ref)[4]:              # the generated one, kept: its way back
+        out.append(("cover-again", *strings.COVER_MENU["again"], lambda: look_again(row)))
+    else:
         out.append(("cover-generated", *strings.COVER_MENU["generated"], lambda: use_generated(row)))
     return out
 
@@ -556,7 +561,7 @@ def _mark(row):
 
 
 def use_generated(row):
-    """*Use a generated cover*: the generated cover, locked (a picture found later never replaces it), with Undo."""
+    """*Use a plain cover* (was *Use a generated cover*): the generated cover, locked (a picture found later never replaces it), with Undo."""
     from app.qt import strings
     writer = _library["writer"]
     if writer is None or not writer.can_write():
@@ -565,6 +570,28 @@ def use_generated(row):
     title = getattr(row, "cover_title", None) or getattr(row, "title", "")
     _give(strings.COVER_GENERATED.format(title=title), row,
           lambda label: writer.set_cover(row.work_id, "generated", locked=True, label=label))
+    return True
+
+
+def look_again(row):
+    """*Look for a cover again* (Mado-CV: a generated cover kept by mistake had no way back but its toast's Undo): the
+    lock let go — the generated cover, unlocked — with Undo; once it lands, the title's files are looked at again (a
+    poster beside them) and the title is asked online again at its next paint (while *Download covers* is on)."""
+    from app.qt import strings
+    writer = _library["writer"]
+    if writer is None or not writer.can_write():
+        _say(strings.COVER_CANT)
+        return False
+    work = row.work_id
+    title = getattr(row, "cover_title", None) or getattr(row, "title", "")
+
+    def landed():
+        _online["asked"].discard(work)              # its next paint asks online again (the lock is gone by then)
+        opener = _look["opener"]
+        if opener is not None:
+            look(opener, [work])                    # a poster beside its files, recorded by the scan
+    _give(strings.COVER_AGAIN.format(title=title), row,
+          lambda label: writer.set_cover(work, "generated", unlock=True, label=label), saved=landed)
     return True
 
 
@@ -584,13 +611,18 @@ class _Deferred:
         return 0
 
 
-def _give(text, row, command):
+def _give(text, row, command, saved=None):
+    """The command handed to the writer with its toast and Undo (`moves`), or straight to the writer (no window);
+    `saved()` (GUI thread) once the store wrote it — never when it was refused."""
     moves = _library["moves"]
     if moves is not None:
         from app.qt import drag
-        moves._give(drag.Ticket(text, (getattr(row, "key", None),)), command)
-    else:
-        command(None)
+        ticket = drag.Ticket(text, (getattr(row, "key", None),))
+        if saved is not None:
+            ticket.told = lambda event: saved() if event == "saved" else None
+        moves._give(ticket, command)
+    elif command(None) is not None and saved is not None:
+        saved()
 
 
 def _say(text):
@@ -802,8 +834,8 @@ def pick(row, want, candidate):
 
 
 def paste_link(row, link=None):
-    """*Paste a link*: the link copied (the clipboard's text, or `link`) — AniList, TMDB or YouTube only — fetched on
-    a worker and kept as the user's (locked, Undo)."""
+    """*Paste a link*: the link copied (the clipboard's text, or `link`) — AniList or YouTube (a TMDB link is answered
+    at once: not in 3.0) — fetched on a worker and kept as the user's (locked, Undo)."""
     from app.qt import strings
     from app.services import covers_online
     if link is None:

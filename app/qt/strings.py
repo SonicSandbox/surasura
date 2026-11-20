@@ -1781,26 +1781,28 @@ COVER_MENU = {
     "choose": ("Choose an image…",
     "Use a picture from this computer as its cover. It's copied into your User Files and "
                                   "kept, even when another picture is found"),
-    "generated": ("Use a generated cover", "Show its painted cover from now on, even when a picture is found beside "
-                                           "its files"),
+    # Mado-CV (PROVISIONAL words for Sonic): what it is, said plainly — and its way back once kept
+    "generated": ("Use a plain cover", "A plain card with its name. Surasura stops looking for a picture"),
+    "again": ("Look for a cover again", "Surasura looks for its picture again, as for a new title"),
 }
 COVER_PICK_TITLE = "Choose a cover image"
 COVER_PICK_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp)"
 COVER_CHOSEN = "New cover for {title}"
-COVER_GENERATED = "{title} shows its generated cover"
+COVER_GENERATED = "{title} shows a plain cover"
+COVER_AGAIN = "Looking for a cover for {title} again"
 COVER_NOT_IMAGE = "That file isn't a picture Surasura can use as a cover"
 COVER_CANT = "The library can't be changed right now, so its cover stays as it is"
 # --- end W3.2 Q6
 # --- W3.2 L3: Change cover…'s online entries (only with Download covers on) and its words
 COVER_ONLINE = ("Find it online…", "Look its name up on AniList and choose one of the top five covers")
-COVER_PASTE = ("Paste a link", "Use the cover of the AniList, TMDB or YouTube page whose link you copied")
+COVER_PASTE = ("Paste a link", "Use the cover of the AniList or YouTube page whose link you copied")
 COVER_LOOKING = "Looking {title} up on AniList…"
 COVER_CANDIDATE_TIP = "Use this cover for {title}; it stays even if others are found."
 COVER_NONE_FOUND = "No cover found on AniList for {title}"
 COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
 COVER_FETCHING = "Fetching the cover for {title}…"
 COVER_LOOKUP_BROKE = "The cover lookup for {title} stopped with an error: {why}"
-COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList, TMDB or YouTube link. For a book's cover, save the "
+COVER_PASTE_NOT_A_LINK = ("Paste a link takes an AniList or YouTube link. For a book's cover, save the "
                           "picture, then use Choose an image…")
 COVER_PASTE_WHY = {
     "off": "Download covers is off in Settings › Content: nothing was fetched.",

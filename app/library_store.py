@@ -514,6 +514,7 @@ OUTSIDE_ROLES = ("connect",)     # a writer with no window of its own and a life
 OUTSIDE_IDLE_WAIT = 1.0          # its checkpoint waits this long for the write lock (a writer then has it: skipped)
 OUTSIDE_IDLE_S = 2.0             # its copy trigger fires this long after its last commit (a burst, one export)
 TWIN_HASHES = 8                  # hato's file is checked by its bytes against this many items of its size at most (F12)
+HELD_DROPS = "held_drops"        # meta: hato's drops a paused New arrivals kept waiting (Kantan-G; JSON ids, oldest first)
 
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
@@ -2526,6 +2527,40 @@ class Store:
             if copy_carries:
                 values = dict(values, copy_dirty=self._meta().get("copy_dirty", 0) + 1)
             self._set_meta(values)
+
+    def _held_drops(self):
+        try:
+            got = json.loads(self._meta().get(HELD_DROPS) or "[]")
+        except ValueError:
+            return []
+        return [d for d in got if isinstance(d, dict) and isinstance(d.get("id"), int)] if isinstance(got, list) else []
+
+    def hold_drops(self, drops):
+        """Kantan-G: hato's drops that New arrivals' pause kept waiting — each {"id": item id, "producer", "channel_id"}
+        (what its rule is read by, `connect.rules.rule_for`), one per item, oldest first; a bookkeeping write (no
+        version moves). Placed by their rule at the circle's resume (`connect.rules.place_held`), which forgets each
+        once it is settled (`forget_drops`)."""
+        with self._writing():
+            held = self._held_drops()
+            have = {d["id"] for d in held}
+            held += [dict(d, id=int(d["id"])) for d in drops if int(d["id"]) not in have]
+            self._set_meta({HELD_DROPS: json.dumps(held, ensure_ascii=False, sort_keys=True)})
+
+    def held_drops(self):
+        """The drops `hold_drops` kept, oldest first (a read)."""
+        return self._held_drops()
+
+    def forget_drops(self, ids):
+        """The held drops `ids` settled (placed, or no longer anything a rule places): taken out of the list, the rest
+        kept as they are — one held meanwhile (another program's register) too."""
+        ids = {int(i) for i in ids}
+        if not ids:
+            return
+        with self._writing():
+            held = self._held_drops()
+            left = [d for d in held if d["id"] not in ids]
+            if len(left) != len(held):
+                self._set_meta({HELD_DROPS: json.dumps(left, ensure_ascii=False, sort_keys=True)})
 
     # --- reading -------------------------------------------------------------------------------- #
 

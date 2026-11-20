@@ -247,7 +247,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
-           "move_cards", "leave_cards")                                                  # Michi-DK
+           "move_cards", "leave_cards",                                                  # Michi-DK
+           "put_back_shelf", "leave_shelf")                                              # Kyou-SH
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -2417,6 +2418,28 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_CARDS_LEFT)
             self.refresh()
         self._press("leave_cards", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-SH (PROVISIONAL): Connect's shelf, said — *Put back* is the put-back Connect's switch uses (`switch.put_back`:
+    # each restore point through `undo.act`, waiting for Anki's write lock; on a worker)
+    def _do_put_back_shelf(self, entry, _line):
+        from app.connect import switch
+        data = entry.data or {}
+
+        def done(failed):
+            if failed:
+                self._stays("put_back_shelf", entry)
+                self._say(strings.NEEDS_SHELF_NOT_BACK.format(why=failed[0]))
+            else:
+                self._say(strings.NEEDS_SHELF_BACK)
+            self.refresh()
+        shelved = {self.language: (data.get("cards") or 0, list(data.get("runs") or ()))}
+        self._press("put_back_shelf", entry, switch.put_back, shelved, then=done)
+
+    def _do_leave_shelf(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SHELF_LEFT)
+            self.refresh()
+        self._press("leave_shelf", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

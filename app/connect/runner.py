@@ -2398,8 +2398,9 @@ def _full(steps, lang, asked=False):
 
 def _at_cap(steps, ledger, lang, todo, asked=False):
     """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
-    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go. `asked`: the
-    job carries an ask — never held, nothing shelved for it (`held_by_cap`)."""
+    cap the shelf is asked first (once a run, only on a big gap) — only while Junban's *Suspend them* is on
+    (`Steps.shelf_on`, Kyou-SH PROVISIONAL: off, Connect waits at the cap); what it frees may let this batch go.
+    `asked`: the job carries an ask — never held, nothing shelved for it (`held_by_cap`)."""
     if not held_by_cap(asked):
         return None
     cap = steps.cap(lang)
@@ -2408,7 +2409,7 @@ def _at_cap(steps, ledger, lang, todo, asked=False):
     count = steps.waiting_count(lang)
     if count is None or count < cap:
         return None
-    if steps.shelve(lang, ledger, todo, count, cap):
+    if steps.shelf_on(lang) and steps.shelve(lang, ledger, todo, count, cap):
         count = steps.waiting_count(lang)
         if count is not None and count < cap:
             return None
@@ -3429,6 +3430,18 @@ class Steps:
             raise _anki_wait(self.url, "mining", e) from None
         self._shelved = getattr(self, "_shelved", set()) | {lang}
         return shelved
+
+    def shelf_on(self, lang):
+        """Kyou-SH (a tester's 236 cards suspended with *Suspend them* off; the lead 2026-11-20, PROVISIONAL until
+        Sonic rules): the shelf suspends cards, so it follows Junban's *Suspend them* (`junban_later_suspend`, only an
+        explicit True) — off, nothing goes to the shelf and Connect waits at the cap. Read as settings.json holds it
+        now (`live`), as the cap is. Off counts as the run's one try (as a missing Junban does: `shelve`), so `_full`
+        holds the next job before its pick instead of picking it at every look (the review)."""
+        loaded = self._settings(lang) if self.live else self.loaded
+        if (loaded or {}).get("junban_later_suspend") is True:
+            return True
+        self._shelved = getattr(self, "_shelved", set()) | {lang}
+        return False
 
     def shelf_tried(self, lang):
         """Has this run's shelf had its one try for `lang`?"""

@@ -10,8 +10,8 @@
 - **`SortScreen`**: every title in New arrivals (the reader's `arrival_groups`, followed as the window gets each view —
   `set_groups`), large: the title at the top is the one the keys act on — it looks picked (the window's `row-picked`
   wash, the accent edge) with a gap under it — then as many of the next few as the room holds, then *and N more*. Its
-  five choices **Soon · Current · Goal · Finished · Ignore** are an arrow pad on the top title (Mado-P: Finished ↑,
-  Ignore ←, Goal ↓, Current →, the S key of Soon beside them; each key its button, flashing as its key is pressed),
+  five choices **Soon · Current · Goal · Finished · Remove** (`ignore` in the code; *Remove* on screen since Kotoba-WS2)
+  are an arrow pad on the top title (Mado-P: Finished ↑, Remove ←, Goal ↓, Current →, the S key of Soon beside them; each key its button, flashing as its key is pressed),
   *Put the rest in…*, *Undo* (Ctrl+Z), *Done*. Nothing is cut off at any window size: a long title wraps to
   `TITLE_LINES` (3 lines, 2 with the pad under it) then ends with "…", the just-done line is cut first, and the
   window's minimum makes room for the rest (`first_run._Cover`). A choice takes the title off at once (pending — the

@@ -918,7 +918,7 @@ TRAY_MENU = {
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
 TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
-TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Ignore, by a key each.\n"
+TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Remove, by a key each.\n"
                      "• Anything you don't sort stays here")
 TRAY_PLACED = {
     "top": "{title} is at the top of Current",
@@ -1288,8 +1288,6 @@ ANKI_SENTENCES = ("This field holds sentences: every word in it counts as known.
                   "{field}.")                                       # a9r2: a word field holding sentences (⭐ lead)
 ANKI_SENTENCES_PLAIN = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
                         "the field that holds it.")
-ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = "Studied-then-suspended cards count as known. Off by default."                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "Adds new known words by itself when Anki is open."
 ANKI_GENERATE = "Generate when Anki adds known words"

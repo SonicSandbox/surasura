@@ -963,45 +963,30 @@ def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is
 CONNECT_ON = {"connect_enabled": True}
 
 
-def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
-    """DIAGNOSIS 3 put *Count as known in Anki* beside *Count suspended cards as known* — still two answers to one
-    question (Sonic, a9.1: "anything redundant we don't want"). Now one row shows at a time under *What counts as
-    known*: the sync's switch while Make cards for me is off, Connect's states while it is on; each key keeps its
-    meaning."""
-    ids = [r.id for r in catalog.ROWS]
-    row, suspended = catalog.ROW["known_from_anki"], catalog.ROW["anki_sync_include_suspended"]
+def test_what_counts_as_known_is_one_row_always_shown_and_red_or_green_is_never_a_pick():
+    """Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded into *Count as known in Anki* — one row, one
+    key, shown with Make cards for me on or off (off, the known-words sync reads its picks for the studied cards:
+    `anki_sync.counted_suspended`). Red and green are the review loop's Ignore and Swap (WL-46 / 46b): never a pick."""
+    row = catalog.ROW["known_from_anki"]
     assert (row.section, row.adv, row.kind, row.keys) == ("known", True, "tablets", ("known_from_anki",))
-    assert ids.index("known_from_anki") == ids.index("anki_sync_include_suspended") + 1
-    assert suspended.group == row.group == "counts_as_known"                     # either one under the group name
-    on, off = _shown(CONNECT_ON, "ja"), _shown({}, "ja")
-    assert "known_from_anki" in on and "anki_sync_include_suspended" not in on
-    assert "anki_sync_include_suspended" in off and "known_from_anki" not in off
-    # the "and": in sight whenever two states are picked (`help_line`), and in the tip; the ? line says the default
-    # (Kantan-B3)
-    assert "every state you pick" in row.tip and "Suspended + Marked" in row.help
-    assert "Studied, then suspended" in suspended.tip                          # (EZ-12: the why went for 12 words)
-    # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
-    assert "New cards you suspend never count" in suspended.tip and "New cards count too" in row.tip
-    # neither names the other any more: they never stand together
-    assert "Count as known in Anki" not in suspended.tip and "Count suspended cards as known" not in row.tip
+    assert row.group == "counts_as_known" and "anki_sync_include_suspended" not in catalog.ROW
+    assert "known_from_anki" in _shown(CONNECT_ON, "ja") and "known_from_anki" in _shown({}, "ja")
+    assert row.options == ("suspended", "marked", "flag:2", "flag:4", "flag:5", "flag:6", "flag:7")
+    assert "every state you pick" in row.tip and len(row.tip.split()) <= 12 and "Suspended + Marked" in row.help
+    assert "anki_sync_include_suspended" in catalog.NOT_SHOWN                      # retired, read once on load
 
 
 @pytest.mark.parametrize("held, picks, wanted", [
-    # the sync's switch on (set with Connect off), Suspended alone still picked: it stays, nothing written for it
-    (True, ["suspended"], {}),
-    # Suspended unpicked: the sync stops counting suspended cards too — never a count on an answer no longer shown
-    (True, [], {"known_from_anki": [], "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
-    # Suspended AND Marked ("and"): the sync's every-suspended-card count would break the "and" — off with it
-    (True, ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"],
-                                      "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
-    # off stays off: this row never turns the sync's switch on (that is its own row's, with Connect off)
-    (False, ["suspended"], {}),
-    (False, ["marked"], {"known_from_anki": ["marked"], "known_from_anki_chosen": True}),
+    (["suspended"], ["suspended"], {}),                                           # unchanged: nothing written
+    (["suspended"], [], {"known_from_anki": [], "known_from_anki_chosen": True}),
+    (["suspended"], ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"], "known_from_anki_chosen": True}),
+    (["suspended", "marked"], ["marked"], {"known_from_anki": ["marked"], "known_from_anki_chosen": True}),
 ])
-def test_count_as_known_in_anki_turns_the_syncs_switch_off_when_its_answer_no_longer_holds(held, picks, wanted):
+def test_count_as_known_in_anki_writes_its_own_key_alone_never_the_retired_switch(held, picks, wanted):
     row = catalog.ROW["known_from_anki"]
-    settings = dict(CONNECT_ON, known_from_anki=["suspended"], anki_sync_include_suspended=held)
-    assert catalog.change(row, settings, "ja", picks)[0] == wanted
+    for connect in (CONNECT_ON, {}):
+        settings = dict(connect, known_from_anki=held, anki_sync_include_suspended=True)
+        assert catalog.change(row, settings, "ja", picks)[0] == wanted
 
 
 def test_count_as_known_in_anki_with_the_syncs_switch_unwritten_reads_it_as_off():
@@ -1080,7 +1065,9 @@ JUNBAN_SWITCH_ON = {"enable_junban": True}
     ("restore", "junban_backfill_cards", JUNBAN_SWITCH_ON),
     ("extract", "split_length", {}), ("add from", "enable_youtube_transcripts", {}),
     ("preview a video", "enable_youtube_preview", {}),
-    ("suspended", "anki_sync_include_suspended", {}), ("count as known", "anki_sync_include_suspended", {}),
+    ("suspended", "known_from_anki", {}), ("count as known", "known_from_anki", {}),
+    ("count suspended cards as known", "known_from_anki", {}), ("include suspended", "known_from_anki", {}),
+    ("blacklist", "words_to_leave_out", {}), ("leave out", "words_to_leave_out", {}),
 ])
 def test_a_door_that_closed_is_found_under_its_old_words_where_its_way_still_is(query, row_id, settings):
     """Sonic (a9.1): "as simple to navigate as possible. Anything redundant we don't want" — the duplicate doors went
@@ -1103,31 +1090,23 @@ def test_the_closed_doors_are_gone_and_the_links_block_holds_three_pages_each_in
     assert "extract" not in catalog.doors() and "youtube-downloader" not in catalog.doors()   # + Add has them
 
 
-def test_count_as_known_follows_the_switch_known_from_anki_obeys_make_cards_for_me_and_automation():
-    """Review B1 (a9.1): Known from Anki runs only while Make cards for me AND Automation are on
-    (`settings_manager.connect_on`). With Automation off the tablets would do nothing — the sync's own switch shows
-    instead, and nothing the tablets could write touches it."""
+def test_count_as_known_shows_with_automation_off_too_its_picks_read_by_the_sync():
+    """Review B1 (a9.1) still holds for Connect's signal (it runs only while Make cards for me AND Automation are on);
+    Kotoba-WS2: with Automation off the row stays — the known-words sync reads its picks for the studied cards."""
     off = dict(CONNECT_ON, logic={"automation": False}, anki_sync_include_suspended=True)
-    shown = _shown(off, "ja")
-    assert "anki_sync_include_suspended" in shown and "known_from_anki" not in shown
+    assert "known_from_anki" in _shown(off, "ja")
     row = catalog.ROW["known_from_anki"]
     assert catalog.change(row, off, "ja", ["marked"])[0] == \
-        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}             # the sync's untouched
+        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}
 
 
-def test_count_as_known_says_when_the_syncs_hidden_switch_counts_more_than_its_picks():
-    """Review S2 (a9.1): a settings.json from before (or the Anki window's checkbox) can hold the sync's switch on
-    beside picks that aren't Suspended alone — the screen never claims less than is counted: the line says so."""
+@pytest.mark.parametrize("held", [["suspended", "flag:1"], ["flag:3"], ["marked", "flag:1"]])
+def test_a_pick_saved_with_red_or_green_says_it_counts_no_card(held):
+    """Kotoba-WS2: red (Ignore) and green (Swap) never count as known, so a pick saved before that names one counts no
+    card — the line says so, never silent."""
     row = catalog.ROW["known_from_anki"]
-    marked = dict(CONNECT_ON, known_from_anki=["marked"], anki_sync_include_suspended=True)
-    assert catalog.help_line(row, marked, "ja") == S.KNOWN_SYNC_TOO
-    two = dict(marked, known_from_anki=["suspended", "marked"])
-    assert catalog.help_line(row, two, "ja") == (S.KNOWN_ALL_OF.format(states="Suspended + Marked") + ". "
-                                                 + S.KNOWN_SYNC_TOO)
-    agrees = dict(marked, known_from_anki=["suspended"])
-    assert catalog.help_line(row, agrees, "ja") == row.help                    # the switch agrees: nothing to say
-    for odd in (None, "yes", 1):                                               # only a real True counts as on
-        assert catalog.help_line(row, dict(marked, anki_sync_include_suspended=odd), "ja") == row.help
+    assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=held), "ja") == S.KNOWN_RED_GREEN
+    assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=["suspended"]), "ja") == row.help
 
 
 def _every_string(value):

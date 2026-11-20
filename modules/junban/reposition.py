@@ -903,10 +903,11 @@ def _in_its_sentence(word, sentence, tokenize):
     `(the tokens in its span, the token that is the card's word)`, or None when the sentence doesn't place it.
 
     A token is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い of まいた:
-    撒く, マク), as K56 finds a word (`connect.find_by_forms`). With a bold mark: the token in its span that is the word,
-    else the one the span starts in (泥まみれ for a まみれ marked inside it). With none: the token of the sentence that is
-    the word (まくらを庭にまく: 撒く, never the 枕 the letters start), two different words that each could be — never
-    guessed between; else the one holding the word as written (泥まみれ). One read of the sentence."""
+    撒く, マク), as K56 finds a word (`connect.find_by_forms`). With a bold mark that holds the word: the token in its
+    span that is the word, else the one holding the word as written there (泥まみれ for a まみれ marked inside it). With
+    none, or a mark on another word (<b>庭</b>にまく): the token of the sentence that is the word (まくらを庭にまく: 撒く,
+    never the 枕 the letters start) — two different words that each could be, never guessed between — else the one
+    holding the word as written (泥まみれ). One read of the sentence."""
     bold = _BOLD_RE.search(sentence)
     marked = bool(bold and match.normalize_word(bold.group(1)))
     found = match.sentence_span(sentence, word) if marked else None
@@ -926,17 +927,26 @@ def _in_its_sentence(word, sentence, tokenize):
     def is_the_word(token):
         orth = token[3] if len(token) > 3 else token[2]
         return wanted in {match.fold_kana(name or "") for name in (token[0], orth, token[2], token[1])}
+
+    def holding(start, end):
+        return [token for token, pos, after in placed if pos < end and after > start]
     if found:
         _text, start, end = found
-        inside = [token for token, pos, after in placed if pos < end and after > start]
-        return (inside, next((token for token in inside if is_the_word(token)), inside[0])) if inside else None
+        inside = holding(start, end)
+        named = next((token for token in inside if is_the_word(token)), None)
+        if named is not None:
+            return inside, named
+        written = text.find(word, start, end)
+        if written >= 0:
+            inside = holding(written, written + len(word))
+            return (inside, inside[0]) if inside else None
     named = [token for token, _pos, _after in placed if is_the_word(token)]
     if len({(token[0], token[1]) for token in named}) > 1:
         return None
     if named:
         return [named[0]], named[0]
-    start = text.find(word)
-    inside = [token for token, pos, after in placed if start >= 0 and pos < start + len(word) and after > start]
+    written = text.find(word)
+    inside = holding(written, written + len(word)) if written >= 0 else []
     return (inside, inside[0]) if inside else None
 
 

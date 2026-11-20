@@ -66,6 +66,26 @@ def test_with_no_bold_mark_the_word_is_the_token_that_is_it_never_the_word_its_l
     assert reposition.known_test("ja", _settings())("まく", "<b>庭に水をまく</b>。")
 
 
+def test_a_bold_mark_on_another_word_is_read_as_no_mark(tmp_path):
+    # a mark the learner (or a miner) put on another word says nothing of where this card's word is: 庭 known, the
+    # まく card in <b>庭</b>にまくらをまく is still the 撒く said there — and a second mark, on the word, still finds it
+    _library(tmp_path)
+    _known(tmp_path, ["庭", "水"])
+    is_known = reposition.known_test("ja", _settings())
+    assert not is_known("まく", "<b>庭</b>にまくらをまく。")
+    assert not is_known("まく", "<b>水</b>をまく。")
+    assert not is_known("まく", "<b>庭</b>に<b>まく</b>。")
+
+
+def test_a_bold_mark_says_which_word_where_the_sentence_holds_two(tmp_path):
+    # 鍵をかけて、皿が欠けた holds 掛ける and 欠ける: the mark on かけて says this card is 掛ける (known here)
+    _library(tmp_path)
+    _known(tmp_path, ["掛ける"])
+    is_known = reposition.known_test("ja", _settings())
+    assert is_known("かける", "鍵を<b>かけて</b>、皿が欠けた。")
+    assert not is_known("かける", "鍵をかけて、皿が<b>欠けた</b>。"), "marked: 欠ける, not known"
+
+
 def test_two_words_a_sentence_could_mean_are_never_guessed_between(tmp_path):
     # 鍵をかけて、皿が欠けた: 掛ける and 欠ける both read かける — the sentence can't say which the card is, so the
     # card is read as before (its letters: the learner's かける entry makes it known)

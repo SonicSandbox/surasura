@@ -133,7 +133,10 @@ from operator import itemgetter
 #    _TRANSCRIPT_GROUP_RE, ENGINE_REVISION 44): a v25 blob counts them — users rebuild once.
 # v27 a file's own name clues make its names one word (names § A show's own name clues, ENGINE_REVISION 45; name_data
 #    SHOW_NAMES): a v26 blob holds them in pieces or as common words — users rebuild once.
-SCHEMA_VERSION = 27
+# v28 each file also keeps each sentence's line and its song marks (`lines`: app/song_lines.file_lines, ENGINE_REVISION
+#    46), which a run reads to leave a show's opening and ending songs out of the counts: a v27 row has none — users
+#    rebuild once.
+SCHEMA_VERSION = 28
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -259,7 +262,9 @@ CREATE TABLE IF NOT EXISTS files (
     names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
     bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
     counted INTEGER NOT NULL DEFAULT 1, -- 1 counted, 0 kept: tokenized, never summed (module docstring)
-    aside INTEGER NOT NULL DEFAULT 0    -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
+    aside INTEGER NOT NULL DEFAULT 0,   -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
+    lines BLOB                          -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py);
+                                        -- last, so a row's counted / aside are read without walking past it
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
@@ -333,7 +338,8 @@ def _ensure_schema(conn):
 KEPT, COUNTED, ASIDE = 0, 1, 2
 _STATE = "CASE WHEN counted = 1 THEN 1 WHEN aside = 1 THEN 2 ELSE 0 END"
 _EVIDENCE = "(counted = 1 OR aside = 1)"
-_ADDED = (("counted", "INTEGER NOT NULL DEFAULT 1"), ("aside", "INTEGER NOT NULL DEFAULT 0"))
+_ADDED = (("counted", "INTEGER NOT NULL DEFAULT 1"), ("aside", "INTEGER NOT NULL DEFAULT 0"),
+          ("lines", "BLOB"))      # a row written before it has none: no song marks until the file is read again
 
 
 def _columns(state):
@@ -758,6 +764,51 @@ class Store:
                 if spans:
                     names.apply_spans(sentences, spans, self._names, *switches)
         return sentences
+
+    def file_lines(self, paths):
+        """{path: lines} of the files of `paths` the store holds: each sentence's [line key, marks]
+        (app/song_lines.file_lines), in the order of `file_tokens`' sentences — what a run reads to leave a show's songs
+        out (analyzer.songs_left_out). One query a batch, only the small column: no sentence is decoded."""
+        keys = {_norm(p): p for p in paths}
+        out, wanted = {}, list(keys)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            rows = self.conn.execute(f"SELECT path, lines FROM files WHERE path IN ({','.join('?' * len(batch))})",
+                                     batch).fetchall()
+            for path, blob in rows:
+                if blob is not None:                 # a row written before the column has none: not held
+                    out[keys[path]] = _decode_tokens(blob)
+        return out
+
+    def file_stamps(self, paths):
+        """{path: [mtime, size]} of the files of `paths` the store holds — what a work's kept songs are checked by
+        (`songs_kept`): one query a batch, no blob read."""
+        keys = {_norm(p): p for p in paths}
+        out, wanted = {}, list(keys)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            for path, mtime, size in self.conn.execute(
+                    f"SELECT path, mtime, size FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
+                out[keys[path]] = [mtime, size]
+        return out
+
+    def songs_kept(self):
+        """The songs a run left out, each work's kept until its files change (analyzer.song_sentences): {work:
+        [digest, {path: [sentence number, ...]}]}, or {} (none kept, or unreadable)."""
+        try:
+            kept = json.loads(self.get_meta("songs_left_out") or "{}")
+        except ValueError:
+            return {}
+        return kept if isinstance(kept, dict) else {}
+
+    def keep_songs(self, kept):
+        """Keep `kept` (`songs_kept`'s shape) — rolled back on a failure (a store locked by the indexer), so the run's
+        connection is left with no transaction open."""
+        try:
+            self.set_meta("songs_left_out", json.dumps(kept, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
@@ -1263,12 +1314,14 @@ class Store:
                 if flag == COUNTED or (row is not None and row["counted"] == COUNTED):
                     phrased = True
                 names = result.get("names")
+                lines = result.get("lines")
                 cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, counted, "
-                    "aside) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, lines, "
+                    "counted, aside) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (key, mtime, size, total, _encode_counts(counts),
                      _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
-                     _encode_counts(bound) if bound else None, *_columns(flag)),
+                     _encode_counts(bound) if bound else None, _encode_tokens(lines) if lines else None,
+                     *_columns(flag)),
                 )
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta; a flag that moved moves the counts.
@@ -2198,7 +2251,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     - Japanese, `bound`: Counter('lemma|reading' -> n) of the one-kanji words' uses that are pieces of something
       else as the file reads alone (analyzer.bound_uses) — the bound table the preview reads.
     """
-    from app import analyzer
+    from app import analyzer, song_lines
 
     # ja lemmas carry a gloss suffix the analyzer strips; match it so store lemmas == run lemmas.
     analyzer.SANITIZE_JA = (language == "ja")
@@ -2239,7 +2292,8 @@ def make_tokenizer(language, reinforce=False, script="asis"):
             if record is not None:
                 for i in bound_uses(s_text, s_tokens):
                     bound[make_key(s_tokens[i][0], s_tokens[i][1])] += 1
-        result = {"sentences": sentences, "counts": counts}
+        result = {"sentences": sentences, "counts": counts,
+                  "lines": song_lines.file_lines(sentences, facts.get("song_marks") or ())}
         if record is not None:
             result["names"] = record.data()
             result["bound"] = bound

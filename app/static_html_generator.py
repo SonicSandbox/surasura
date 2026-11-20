@@ -257,11 +257,13 @@ class AnchorFinder:
     def _loose(raw, needle):
         """The file's own wording for `needle`, allowing whitespace the tokenizer dropped — and what the
         reader removed from inside a line (a footnote mark ①, a ruby reading 《かんじ》, a caption's
-        [音楽]: analyzer.REMOVED_INLINE), which the sentence no longer holds. Empty if absent or
+        [音楽]: analyzer.REMOVED_INLINE; a transcript's group in parentheses, （笑）:
+        analyzer._TRANSCRIPT_GROUP_RE), which the sentence no longer holds. Empty if absent or
         ambiguous."""
         if AnchorFinder._GAPS is None:
-            from app.analyzer import REMOVED_INLINE
-            AnchorFinder._GAPS = (re.compile(r"\s"), re.compile(rf"\s|{REMOVED_INLINE}"))
+            from app.analyzer import REMOVED_INLINE, _TRANSCRIPT_GROUP_RE
+            AnchorFinder._GAPS = (re.compile(r"\s"),
+                                  re.compile(rf"\s|{REMOVED_INLINE}|{_TRANSCRIPT_GROUP_RE.pattern}"))
         # Whitespace alone first; the removals too only when that doesn't place the sentence exactly once.
         for gap in AnchorFinder._GAPS:
             found = AnchorFinder._only_match(raw, needle, gap)

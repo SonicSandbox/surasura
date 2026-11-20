@@ -2224,7 +2224,8 @@ def make_tokenizer(language, reinforce=False, script="asis"):
         if record is not None:
             record.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
             record.clues = facts.get("clues")      # the file's own name clues, kept with its record
-            sentences = list(tok.tokenize_sentences(text, names=record, clues=record.clues))
+            sentences = list(tok.tokenize_sentences(text, names=record, clues=record.clues) if record.clues
+                             else tok.tokenize_sentences(text, names=record))
         else:
             sentences = list(tok.tokenize_sentences(text))
         counts, bound = Counter(), Counter()

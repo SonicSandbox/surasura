@@ -1185,6 +1185,13 @@ def _kata(text):
     return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in text)
 
 
+def _common_start(a, b):
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]:
+        n += 1
+    return n
+
+
 def _told(spelling):
     """How the tagger reads `spelling` alone, in hiragana."""
     from app.analyzer import Tagger
@@ -1231,12 +1238,14 @@ def file_clues(raw, readings=None):
         if entry[0] and not (reading and reading in entry[1]):
             continue                    # a common word first (先生, 人形), the file giving it no name's reading
         if not (reading and reading in entry[1]):
-            reading = _told(spelling)       # read alone, as a name is (平野 ひらの: in a line the tagger may say へいや)
-            reading = reading if reading in entry[1] else ""
+            told = _told(spelling)          # read alone, as a name is (平野 ひらの: in a line the tagger may say へいや)
+            # one JMnedict has, else the one of its readings that starts most like the tagger's (柚葉: ゆずよう -> ゆずは)
+            reading = told if told in entry[1] else max(entry[1], key=lambda r: (_common_start(r, told), -len(r)))
         names.setdefault(spelling, _kata(reading))
         if _HIRAGANA.match(_hira(spelling)):
             nick.add(_hira(spelling))
-    candidates = {m.group(1) for m in _NICK_RE.finditer(raw or "")} - nick
+    # what may end a name before ちん / っち: every end of the kana run there (もやの: やの too — the run need not start it)
+    candidates = {m.group(1)[at:] for m in _NICK_RE.finditer(raw or "") for at in range(len(m.group(1)) - 1)} - nick
     if candidates:
         written = set()
         spellings = {run[at:at + size] for run in set(_KANJI_RUN_RE.findall(raw))

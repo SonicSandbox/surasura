@@ -240,6 +240,49 @@ def path():
     return os.path.join(folder(), "ledger.sqlite")
 
 
+def listed_of(language, item_ids, db_path=None):
+    """{item_id: {word: True / False}} — whether each word a job of the item picked was on the list then (`pick`'s
+    `listed`; a later job's pick over an earlier one's), read-only, without the ledger's own open (no schema written,
+    no write lock): the ✓ chip's *at your level* / *below it* (Michi-CK2). Words picked before the pick said so are
+    left out; none at all with no ledger, one from a newer Surasura (never read, as `TooNew` says) or one older than
+    the `picked` column. Raises sqlite3.Error when it can't be read just now (busy, locked)."""
+    db_path = db_path or path()
+    out = {i: {} for i in item_ids}
+    if not out or not os.path.exists(db_path):
+        return out
+    from pathlib import Path
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        try:
+            schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return out                             # a ledger never set up
+            raise
+        if (schema and str(schema[0]).isdigit() and int(schema[0]) > SCHEMA) or "picked" not in cols:
+            return out                                 # (review L-C1, L-C3) newer: never read; older: no marks yet
+        ids = list(out)
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            for item_id, raw in conn.execute(
+                    f"SELECT item_id, picked FROM jobs WHERE language = ? AND picked IS NOT NULL AND item_id IN "
+                    f"({','.join('?' * len(chunk))}) ORDER BY id", [language] + chunk):
+                try:
+                    words = (json.loads(raw) or {}).get("words") or ()
+                except (ValueError, AttributeError):
+                    continue
+                if not isinstance(words, list):
+                    continue                           # (review L-S2) an odd record: no marks, never an error
+                for w in words:
+                    if isinstance(w, dict) and w.get("word") and isinstance(w.get("listed"), bool):
+                        out[item_id][w["word"]] = w["listed"]
+    finally:
+        conn.close()
+    return out
+
+
 class Ledger:
     """One connection to the ledger; `with Ledger() as ledger:` closes it."""
 

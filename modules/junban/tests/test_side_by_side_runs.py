@@ -54,7 +54,8 @@ def test_off_the_order_is_the_journeys(tmp_path, monkeypatch):
 
 def test_on_the_two_titles_take_turns_and_the_run_writes_what_it_previewed(tmp_path, side):
     """A's 冒険 (its best by Score), B's 老婆 (Score 30 beats 眼鏡's 10, though 眼鏡 is met first), A's 散歩, then B
-    alone: 眼鏡 (placed with the list) before 図書館 (i+1); 須藤, no title's, after."""
+    alone: 眼鏡 (placed with the list); B's 図書館 is off the list (i+1), so it is not woven (Kyou-D, choice 2) — it
+    keeps its planned place, before 須藤, no title's."""
     fake = _fake(tmp_path)
     with _patched(fake):
         _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
@@ -62,7 +63,7 @@ def test_on_the_two_titles_take_turns_and_the_run_writes_what_it_previewed(tmp_p
     assert report["ok"], report["problems"]
     want = ["冒険", "老婆", "散歩", "眼鏡", "図書館", "須藤"]
     assert [row.word for row in stats["order"]] == want
-    assert stats["woven"] == 5
+    assert stats["woven"] == 4
     # the window's run also puts away the cards not on your list (図書館, 須藤: suspended, as without the weave)
     assert fake.queue_order() == [w for w in want if fake.card_of(w)["queue"] == 0] == want[:4]
 
@@ -208,12 +209,13 @@ FOUR = ([[1], [2], [3], [4]], {}, {1: {pins.source_of(A_SOURCE)}, 2: {pins.sourc
 
 def test_every_run_counts_each_titles_still_new_cards_for_the_store(tmp_path, monkeypatch):
     """The store hands four titles to study; the fourth has no card in Anki. The 順 window's preview, its Reorder and
-    the fast re-plan's job each count every title's cards the weave could take — the book 1, the channel 2, the show
-    2, the fourth 0 — beside the order, for the host to record (`pins.record_side`)."""
+    the fast re-plan's job each count every title's list words still new (Kyou-D, choice 2: the cards the weave could
+    take) — the book 1, the channel 2, the show 1 (its 図書館 is off the list), the fourth 0 — beside the order, for
+    the host to record (`pins.record_side`)."""
     monkeypatch.setattr(connect, "PINS", True)
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
-    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    want = [[[1], 1], [[2], 2], [[3], 1], [[4], 0]]
     fake = _fake_with(tmp_path, *HIS)
     with _patched(fake):
         _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
@@ -265,6 +267,17 @@ STUDIED = ([("老婆", "老婆が笑った。", 7000), ("眼鏡", "新しい眼�
            [B_SOURCE, B_SOURCE, C_SOURCE, D_SOURCE, None])
 
 
+def studied_list(where, b, loose):
+    """Kyou-D (ruling 3): a card is its word's first title on the journey — `STUDIED`'s list meeting B's words in B's
+    files and the loose file's in its own (numbered as Generate numbers them, side by side's interleave included), so
+    A, whose files hold none of them, has no card. Written over the scene's list at `where`."""
+    from modules.junban import show_tags
+    from modules.junban.tests.test_reposition import _results
+    number = show_tags.file_items("ja").index
+    _results(where, progressive=[(number(b[0]) + 1, "老婆", "老婆", 30, 3), (number(b[1]) + 1, "眼鏡", "眼鏡", 10, 1),
+                                 (number(loose) + 1, "散歩", "散歩", 20, 2)])
+
+
 def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch):
     """End to end on a real store: A (Current's first title, its next file mined) has no new card left in Anki. Junban
     weaves B and the loose file first; its count, recorded by the host, makes the store's top (Connect's top N, the
@@ -274,14 +287,16 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     store, a, b, loose, d = _library("ja")
     store.set_library_options(mine_line=4, side_by_side=True)
     store.receipt(a[0], ls._now())
+    store.record_analysed(store.versions()["order_version"])    # (Kyou-D: the list is a Generate's of this order)
     titles = store.side_by_side()
-    assert titles == [a, b, [loose], d]
+    assert titles == [a, b, [loose]], "Kyou-D: D is below the Soon line, no title Junban weaves"
     side = (titles, {}, {b[0]: {pins.source_of(B_SOURCE)}, loose: {pins.source_of(C_SOURCE)},
                          d[0]: {pins.source_of(D_SOURCE)}})
     monkeypatch.setattr(connect, "PINS", True)
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: side)
     fake = _fake_with(tmp_path, *STUDIED)
+    studied_list(tmp_path, b, loose)
     with _patched(fake):
         report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
@@ -300,7 +315,7 @@ def test_a_title_whose_new_cards_are_all_pinned_is_counted_with_them_through_a_r
     monkeypatch.setattr(connect, "PINS", True)
     monkeypatch.setattr(pins, "read", lambda language: ([], {}, {}, set()))
     monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
-    want = [[[1], 1], [[2], 2], [[3], 2], [[4], 0]]
+    want = [[[1], 1], [[2], 2], [[3], 1], [[4], 0]]       # (Kyou-D, choice 2: the show's 図書館 is off the list)
     for where, job in ((tmp_path, None), (tmp_path / "job", spaced.Job(automatic=True))):
         fake = _fake_with(where, *HIS)
         book = fake.card_of("冒険")["cardId"]

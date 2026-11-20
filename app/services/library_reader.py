@@ -168,10 +168,17 @@ def _hand_playable(ref, answers):
         reader.set_playable(answers)
 
 
+def _hand_elsewhere(ref, answers):
+    """The ✓ chip's answers to the reader, while it is alive (Michi-CK2)."""
+    reader = ref()
+    if reader is not None:
+        reader.set_elsewhere(answers)
+
+
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
                  cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None,
-                 coalesce=False):
+                 coalesce=False, chips=None):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
@@ -189,6 +196,17 @@ class LibraryReader:
             me = weakref.ref(self)
             play.on_change = lambda answers: _hand_playable(me, answers)
         # --- end row 55
+        # --- Michi-CK2: the ✓ chip's counter (`card_chip.Chips`, on its own worker): its answers handed back through a
+        # weak reference (as ▶'s), built into the next view; the mined episodes of each build's new rows asked of it
+        self.chips = chips
+        self._elsewhere = None if chips is None else {}
+        self._elsewhere_new = False
+        self._chip_rows = {}                        # key -> the row the last build asked for
+        if chips is not None:
+            import weakref
+            me_ = weakref.ref(self)
+            chips.on_change = lambda answers: _hand_elsewhere(me_, answers)
+        # --- end Michi-CK2
         self.poll = poll
         self.cache_file = cache_file
         self.cache_rows = cache_rows
@@ -458,6 +476,56 @@ class LibraryReader:
         if asks:
             self.play.want(asks)
 
+    # --- Michi-CK2
+    def set_elsewhere(self, answers):
+        """The ✓ chip's answers ({item_id or a row's item ids: how many of its words have a card not made from it},
+        the counter's), from any thread: built into the next view — only the rows whose answer moved — looked at now."""
+        with self._lock:
+            if answers == self._elsewhere:
+                return                                  # S19: the same answers build nothing
+            self._elsewhere = answers
+            self._elsewhere_new = True
+        self._wake.set()
+
+    def _ask_chips(self, view):
+        """The counter asked of the rows this build made anew (an unchanged row is the same object: nothing asked):
+        each episode in Anki (its file, its date, its cards — new cards read its made words again), None for one not;
+        the rows of several files in Anki by their item ids. Current's and Finished's (the ✓ shows on both); a row
+        gone, its episodes and its key forgotten."""
+        rows = list(view.rows) + [r for m in (view.finished or ()) for r in m.rows]
+        before, now, asks, keys = self._chip_rows, {}, {}, set()
+        for r in rows:
+            now[r.key] = r
+            if before.get(r.key) is r:
+                continue
+            for e in r.episodes:
+                asks[e.id] = (e.rel_path, e.disk, e.cards) if e.cards else None
+            if len(r.episodes) > 1 and r.status is not None and r.status.kind == "in_anki":
+                keys.add(tuple(e.id for e in r.episodes))
+        self._chip_rows = now
+        gone = [r for k, r in before.items() if now.get(k) is not r]
+        if gone:
+            here = {e.id for r in rows for e in r.episodes}
+            ids = {e.id for r in gone for e in r.episodes} - here
+            old = {tuple(e.id for e in r.episodes) for r in gone if len(r.episodes) > 1} - keys
+            old -= {tuple(e.id for e in r.episodes) for r in rows if r.status is not None and r.status.kind == "in_anki"}
+            if ids or old:
+                self.chips.forget(ids, old)
+        if asks or keys:
+            self.chips.want(asks, keys)
+
+    def _seed_chips(self):
+        """The last answers on disk, until the counter answers (the first build after the first screen keeps the
+        count the first screen showed: never its own cards alone, then the whole)."""
+        try:
+            seeded = self.chips.seeded()
+        except Exception:
+            seeded = {}
+        with self._lock:
+            if seeded and not self._elsewhere:
+                self._elsewhere = seeded
+    # --- end Michi-CK2
+
     def _seed_play(self, view):
         """The first screen's cache: last session's answers seed the looker's, until the looks answer — never for an
         episode still being looked for when it was written (R55-A: it says *Looking…* until it is looked at)."""
@@ -577,6 +645,8 @@ class LibraryReader:
                 self._first_screen()
         except Exception:
             pass                                    # a cache that can't be read is no cache
+        if self.chips is not None and not self._stop.is_set():
+            self._seed_chips()                      # Michi-CK2: before the first build
         while not self._stop.is_set():
             window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
             if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
@@ -596,6 +666,8 @@ class LibraryReader:
             _THAWED[0] = True
         if self.play is not None:
             self.play.close()                       # row 55: its worker ends (a look running finishes first)
+        if self.chips is not None:
+            self.chips.close()                      # Michi-CK2: its answers on disk, then its worker ends
         try:
             self._owed_cache()                          # LM11b H-T2: a command still waiting: the store's own view
             self._flush_cache()                         # the last view's cache, as the window closes
@@ -682,6 +754,7 @@ class LibraryReader:
             estimates_new, self._folders_new = estimates_new or self._folders_new, False    # A4B-8: their folders
             numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
+            estimates_new, self._elsewhere_new = estimates_new or self._elsewhere_new, False     # Michi-CK2: ✓'s
             estimates_new, self._airing_new = estimates_new or self._airing_new, False   # 3.0.1 item 5: AniList's
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
@@ -1226,13 +1299,16 @@ class LibraryReader:
                                connect=connect,               # P4.1 L2
                                pieces=self._pieces,           # LM11b G1
                                playable=self._playable,       # row 55
-                               folders=folders)               # A4B-8
+                               folders=folders,               # A4B-8
+                               elsewhere=self._elsewhere)     # Michi-CK2
         view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
         asking, titles = self._ask_airing(view)         # 3.0.1 item 5
         view = view._replace(airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows(),
                                                           asking=asking, titles=titles))
         if self.play is not None:
             self._ask_play(view)                        # row 55
+        if self.chips is not None:
+            self._ask_chips(view)                       # Michi-CK2
         self._ask_folders(view)                         # A4B-8
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes

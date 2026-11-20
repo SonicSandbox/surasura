@@ -621,6 +621,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
+    on_list = listed is not None                   # Michi-CK2: each word says whether it is on the list (None: no list)
     listed = listed or {}
     carded = carded or set()
     # The homograph guard: every way a word of the episode can be named — as written, its dictionary form as written
@@ -767,6 +768,9 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),
             "other_new": others(best),
+            # Michi-CK2 (Sonic's lean A, 2026-11-18): on the list (at your level) or an i+1 word below it — the ✓
+            # chip's hover counts each kind honestly (`card_chip`, from the job's `picked`)
+            "listed": (key in listed) if on_list else None,
         })
     return {"words": words, "not_offered": not_offered}
 

@@ -11,7 +11,8 @@ Through `reposition` itself on the fake collection Junban's suites share; the st
 from modules.junban import connect, pins, reposition, spaced
 from modules.junban.tests.connect_scene import settings
 from modules.junban.tests.test_reposition import _patched
-from modules.junban.tests.test_side_by_side_runs import B_SOURCE, C_SOURCE, D_SOURCE, FOUR, HIS, STUDIED, _fake_with
+from modules.junban.tests.test_side_by_side_runs import (B_SOURCE, C_SOURCE, D_SOURCE, FOUR, HIS, STUDIED, _fake_with,
+                                                         studied_list)
 
 
 def _watch_gather(monkeypatch, during=None):
@@ -68,6 +69,7 @@ def test_a_file_connect_mines_while_junban_reads_anki_never_sets_its_title_aside
     from tests.test_side_by_side import _library
     store, a, b, loose, d = _library("ja")
     store.set_library_options(mine_line=4, side_by_side=True)
+    store.record_analysed(store.versions()["order_version"])    # (Kyou-D: the list is a Generate's of this order)
     titles = store.side_by_side()
     side = (titles, {}, {b[0]: {pins.source_of(B_SOURCE)}, loose: {pins.source_of(C_SOURCE)},
                          d[0]: {pins.source_of(D_SOURCE)}})
@@ -77,7 +79,9 @@ def test_a_file_connect_mines_while_junban_reads_anki_never_sets_its_title_aside
     mined = []
     _watch_gather(monkeypatch, during=lambda: mined or mined.append(store.receipt(a[0], ls._now())))
     for where, stays in ((tmp_path, True), (tmp_path / "again", False)):
-        with _patched(_fake_with(where, *STUDIED)):
+        fake = _fake_with(where, *STUDIED)
+        studied_list(where, b, loose)                           # (Kyou-D: each word met in its own title's files)
+        with _patched(fake):
             report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
         assert report["ok"], report["problems"]
         assert report["stats"]["side_cards"][0] == [a, 0]

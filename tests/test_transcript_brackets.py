@@ -1,7 +1,7 @@
 """A transcript's groups in parentheses are no speech, as a subtitle's are (SUB-PARENS, widened 3.0.17).
 
 A Netflix or Disney+ episode reaches the library as a transcript — the YouTube downloader's header, then a cue a line
-(app/online_receiver.py) — and Netflix's Japanese subtitles name the speaker at the start of about half their lines,
+(the browser extension's items) — and Netflix's Japanese subtitles name the speaker at the start of about half their lines,
 （平野）, write a reading after a name, （風早(かぜはや)）, and describe sounds, （足音）. A subtitle file drops every such
 group (analyzer.clean_subtitle_text); a transcript kept them all, so the speaker's name counted once for every line
 they say and 女子生徒, 足音, 笑い声 became words of the list. Measured on a 25-episode Netflix season: 88 rows of
@@ -71,10 +71,44 @@ def test_a_netflix_transcript_keeps_its_speech_and_drops_labels_readings_and_sou
 
 def test_the_label_and_sound_words_no_longer_count(tmp_path):
     """What the change is for: 女子生徒, 足音 and the speaker's name in the label were counted once per line."""
-    words = _surfaces(_read(tmp_path, _transcript(NETFLIX_BODY)))
+    text = _read(tmp_path, _transcript(NETFLIX_BODY))
+    words = _surfaces(text)
     assert not [w for w in words if "女子" in w or "生徒" in w or "足音" in w or "チャイム" in w or "遠野" in w], words
-    assert sum("佐倉" in w for w in words) == 1, "the one 佐倉 left is the one said (佐倉さん), never the labels'"
-    assert any("転校" in w for w in words) and "早い" in words
+    assert text.count("佐倉") == 1, "the one 佐倉 left is the one said (佐倉さん), never the labels'"
+    assert any("転校" in w for w in words) and any("早" in w for w in words)
+
+
+def test_timestamps_kept_crlf_and_a_bracket_left_open_on_its_line(tmp_path):
+    """The 'keep timestamps' format and Windows line ends read the same; a group never runs across a line break —
+    an opener left open on one line keeps the lines after it, up to a closer two cues later."""
+    body = "\r\n".join(("[00:01:02] （平野）おはよう", "[00:01:05] （遠藤）おはよう 平野さん", "[00:01:09] えっと（ 何だっけ",
+                        "[00:01:12] 宿題 やった？", "[00:01:15] まだ）やってない"))
+    text = _read(tmp_path, _transcript(body).replace("\n", "\r\n"))
+    assert "[00:" not in text and "平野）" not in text and "遠藤" not in text
+    for said in ("おはよう 平野さん", "何だっけ", "宿題 やった？", "やってない"):
+        assert said in text, said
+
+
+def test_a_group_is_short_or_it_is_text(tmp_path):
+    """At most 40 pieces inside (each a character, or a nested reading of at most 40): Netflix's longest group in a
+    season was 15 characters. A 41-character stretch between brackets is speech as written."""
+    inside_40, inside_41 = "あ" * 40, "い" * 41
+    text = _read(tmp_path, _transcript(f"（{inside_40}）一\n（{inside_41}）二\n（({'う' * 41})）三"))
+    assert inside_40 not in text and f"（{inside_41}）二" in text and "う" * 41 in text
+
+
+def test_the_source_link_finds_a_sentence_whose_group_sat_inside_it(tmp_path):
+    """A transcript without a sidecar is linked by the report's source anchor: the sentence lost its （笑）, the
+    file didn't — the anchor steps over the group and hands back the file's own wording, found once."""
+    path = tmp_path / "天気の話 [abcdefghijk].txt"
+    path.write_text(_transcript("今日は（笑）いい天気ですね。 明日は雨（雷鳴）らしいです。", title="天気の話",
+                                channel="天気チャンネル | 2026-01-01 | 1:00", site="youtube"), encoding="utf-8")
+    text = analyzer.extract_text(str(path), "ja")
+    sentences = [s for s, _tokens in analyzer.JapaneseTokenizer().tokenize_sentences(text)]
+    assert sentences == ["今日はいい天気ですね。", "明日は雨らしいです。"]
+    finder = AnchorFinder(language="ja")
+    assert finder.anchor(str(path), sentences[0]) == "今日は（笑）いい天気ですね"
+    assert finder.anchor(str(path), sentences[1]) == "明日は雨（雷鳴）らしいです"
 
 
 def test_a_chinese_transcript_drops_its_groups_too(tmp_path):

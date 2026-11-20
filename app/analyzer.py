@@ -3623,12 +3623,16 @@ _TRANSCRIPT_RULE = "-" * 60
 _TRANSCRIPT_TIME_RE = re.compile(r'^\[(?:\d+:)?\d{2}:\d{2}\] ', re.M)
 # A caption's group in parentheses — a speaker label （平野）, a name's reading （風早(かぜはや)）, a sound （足音） — is no
 # speech: a transcript drops it as a subtitle's cue does (SUB-PARENS; clean_subtitle_text). A Netflix or Disney+
-# episode arrives as a transcript (app/online_receiver.py), its labels on about half its lines. The downloader writes a
-# YouTube transcript as ONE line (its cues joined with spaces), so a group here is one level deep at most and short
-# (_TRANSCRIPT_GROUP_MAX characters inside, a nested one counted whole): a stray bracket is text, never a reason to drop
-# the speech up to some later one. The line player leaves the same groups out of its search (cues._transcript_removed).
+# episode from the browser extension arrives as a transcript, its labels on about half its lines. The downloader writes
+# a YouTube transcript as ONE line (its cues joined with spaces), so a group here is one level deep at most, within one
+# line, and short — at most _TRANSCRIPT_GROUP_MAX pieces inside, each a character or a nested reading of at most as many
+# (a 25-episode Netflix season's longest group: 15 characters). Past that a bracket is text: a stray （ never drops the
+# speech up to a ） far later. A longer group stays as written, and two levels deep leave the outer brackets. The line
+# player and the report's source link leave the same groups out of their search (cues._transcript_removed,
+# static_html_generator.AnchorFinder._loose).
 _TRANSCRIPT_GROUP_MAX = 40
-_TRANSCRIPT_GROUP_RE = re.compile(r'[(（](?:[^()（）\n]|[(（][^()（）\n]*[)）]){0,%d}[)）]' % _TRANSCRIPT_GROUP_MAX)
+_TRANSCRIPT_GROUP_RE = re.compile(r'[(（](?:[^()（）\n]|[(（][^()（）\n]{0,%d}[)）]){0,%d}[)）]'
+                                  % (_TRANSCRIPT_GROUP_MAX, _TRANSCRIPT_GROUP_MAX))
 _CAPTION_KIND_RE = re.compile(r'\(([^()]*)\)$')
 # The header's caption kinds that no person wrote, as the transcript downloader names them: YouTube's own speech
 # recognition, and its machine translation of another language's captions. The recognizer misspells a word the same

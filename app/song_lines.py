@@ -26,6 +26,7 @@ import hashlib
 import math
 import re
 from collections import Counter
+from itertools import repeat
 
 from app.unicode_ranges import HAN, KANA
 
@@ -124,12 +125,13 @@ def left_out(files):
     """{file: {sentence number, …}} of the song lines among one title's `files` — [(file, episode, lines), …], `lines`
     as `file_lines` makes them (None or [] for a file with none). Every file of the title, in any order. Every sentence
     keeps its place: one with no line (♪～, an English line: key 0) never pairs and stands as a gap."""
-    out, keys, pairs = {}, {}, {}                    # pairs: episode -> the pairs of lines it holds
+    out, keys, pairs, marked = {}, {}, {}, {}        # pairs: episode -> the pairs of lines it holds
     for f, ep, lines in files:
         lines = lines or []
-        out[f] = {no for no, v in enumerate(lines) if v & STYLED}
+        at = marked[f] = [no for no, v in enumerate(lines) if v & 3]        # its ♪ and song-styled sentences
+        out[f] = {no for no in at if lines[no] & STYLED}
         k = keys[f] = [v >> 2 for v in lines]
-        pairs.setdefault(ep, set()).update(p for p in zip(k, k[1:]) if p[0] and p[1] and p[0] != p[1])
+        pairs.setdefault(ep, set()).update(zip(k, k[1:]))     # in C; a pair with no line or a line twice: `_runs`
     if len(pairs) >= LOW:
         seen = Counter()                             # a pair -> how many episodes hold it
         for held in pairs.values():
@@ -137,23 +139,26 @@ def left_out(files):
         bar = need(len(pairs))
         for f, ep, lines in files:
             k = keys[f]
-            counts = [seen.get(p, 0) for p in zip(k, k[1:])]    # a pair with no line, or a line twice, is never held
+            counts = list(map(seen.get, zip(k, k[1:]), repeat(0)))
             if counts and max(counts) >= LOW:
-                _runs(counts, lines, bar, out[f])
+                _runs(counts, k, lines, bar, out[f])
     songs = {keys[f][no] for f in out for no in out[f] if keys[f][no]}
     if songs:
         for f, ep, lines in files:
             k = keys[f]
-            out[f].update(no for no, v in enumerate(lines or ()) if v & NOTE and k[no] in songs)
+            out[f].update(no for no in marked[f] if lines[no] & NOTE and k[no] in songs)
     return out
 
 
-def _runs(counts, lines, bar, out):
+def _runs(counts, keys, lines, bar, out):
     """Adds to `out` the sentence numbers of a file's song runs (the module's docstring, 2) — `counts`: the episodes
-    each pair of neighbouring sentences recurs in, `lines` the file's."""
+    each pair of neighbouring sentences recurs in, `keys` / `lines` the file's. A pair with no line (key 0) or a line
+    said twice in a row never counts."""
     n = len(lines)
     count = [0] * n                                  # the most episodes either pair of a sentence recurs in
     for j, e in enumerate(counts):
+        if e < LOW or not keys[j] or not keys[j + 1] or keys[j] == keys[j + 1]:
+            continue
         if e > count[j]:
             count[j] = e
         if e > count[j + 1]:

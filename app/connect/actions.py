@@ -34,6 +34,11 @@
   owed) for the book its line names; the line fixed once there's nothing left to add. Not a short write: Anki's
   cards are written on the worker (the writer's lock; never while you review). Its toast's *Undo* is `add_audio_undo`.
 
+- `first_run_aside(language)` / `first_run_back(language)` (Kantan-B2b; Sonic 2026-11-19: "Nothing mines until the
+  yes"): the first run's *Not now* sets aside every job the placement log queued that hasn't started (an older
+  version's, queued before the update: `Ledger.set_aside_first_run`), their rows the learner's *Mine* again; its
+  *Make cards* queues them again first (`Ledger.back_from_aside`), then logs the top 20. A job part-way stays.
+
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
 """
@@ -208,6 +213,25 @@ def book_ai_audio(language, need_id, path=None):
     as it fills (`runner._mark_ai_audio`). -> `book_audiobook`'s answer."""
     from app.connect import runner
     return book_audiobook(language, need_id, path, answer=runner.AI_AUDIO)
+
+
+def first_run_aside(language, path=None):
+    """Kantan-B2b: the first run's *Not now* -> how many jobs were set aside (0 with no ledger: nothing written)."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return 0
+    with book.Ledger(path) as ledger:
+        return ledger.set_aside_first_run(language)
+
+
+def first_run_back(language, path=None):
+    """Kantan-B2b: the first run's *Make cards* -> how many jobs *Not now* set aside were queued again (0 with no
+    ledger: nothing written)."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return 0
+    with book.Ledger(path) as ledger:
+        return ledger.back_from_aside(language)
 
 
 def make_cards(language, gap_id, path=None, store_id=None):

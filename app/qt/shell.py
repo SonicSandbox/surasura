@@ -3172,11 +3172,21 @@ class ShellWindow(QMainWindow):
         from app.services.title_words import TitleWords
         settings = self.services.settings
         provider = TitleWords(numbers, self.language, settings=settings.get)
+        provider.on_standing = lambda words, lang=self.language: self._studied_words(words, lang)   # Michi-CK2
         if held is not None:
             held[1].close()
         self._title_words = (numbers, provider)
         provider.refresh_anki()
         return provider
+
+    def _studied_words(self, words, language=None):
+        """(The word card's worker.) Anki's studied cards' words, just read for the word card, to the ✓ chip's counter
+        of the library open — its language's only (Michi-CK2: never a second read of Anki)."""
+        library = getattr(self.services, "library", None)
+        chips = getattr(library, "chips", None)
+        if chips is not None and getattr(chips, "language", None) == getattr(library, "language", None) == \
+                (language or self.language):
+            chips.studied(words)
 
     def _words_anki(self, force=False):
         """Anki's standing read again for the word card (never on a hover): as the window comes to the front, after a
@@ -4378,7 +4388,7 @@ def library_for(language, settings, freeze_gc=False):
     The opener's role is "window": it opens a store that is there and never builds, migrates or repairs one — no store
     yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
     mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
-    from app.services import library_reader, moves, play
+    from app.services import card_chip, library_reader, moves, play
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
@@ -4387,6 +4397,7 @@ def library_for(language, settings, freeze_gc=False):
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
         play=play.Looks(language),                          # row 55: ▶ only where its file is found
+        chips=card_chip.Chips(language),                    # Michi-CK2: the ✓ counts every word with a card
         coalesce=True)                                      # a4: a burst of commits is a few views a second
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,

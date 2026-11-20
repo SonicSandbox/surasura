@@ -196,10 +196,15 @@ def open_journal(path):
                        wintypes.DWORD, wintypes.HANDLE)
     create.restype = wintypes.HANDLE
     # GENERIC_READ; share read | write | delete; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    status = ctypes.WinDLL("ntdll").RtlGetLastNtStatus
+    status.restype = ctypes.c_ulong
     handle = create(os.fspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
     if handle in (None, wintypes.HANDLE(-1).value):
+        pending = status() == 0xC0000056                # STATUS_DELETE_PENDING (read first: this call's own answer)
         code = ctypes.get_last_error()
-        if code in (2, 3):                              # not found (the file, its folder)
+        if code in (2, 3) or pending:                   # not found (the file, its folder) — or removed already and
+            # only still listed while another program (a virus scanner) holds it a moment: gone, as the writer left
+            # it (Kura-JR, a --stress-changed red 2026-11-19: such a hold outlasted `read_journal`'s 0.5 s)
             raise FileNotFoundError(2, "the journal is not there", path)
         raise PermissionError(13, f"the journal can't be opened (Windows error {code})", path)   # (delete pending)
     return io.open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8")
@@ -215,6 +220,24 @@ def read_journal(path):
         except PermissionError:                         # Windows: the writer's replace holds it this instant
             time.sleep(0.01)
     raise AssertionError(f"the journal stayed locked: {path}")
+
+
+def left_beside(journal_file):
+    """The journal's files still beside it (itself, its note, a .tmp) — not one that is only still listed because
+    another program holds it a moment after its removal (`open_journal`: delete pending, as good as gone)."""
+    folder, name = os.path.split(journal_file)
+    stem = os.path.splitext(name)[0]
+    out = []
+    for n in os.listdir(folder):
+        if n.startswith(stem):
+            try:
+                open_journal(os.path.join(folder, n)).close()
+                out.append(n)
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                out.append(n)
+    return out
 
 
 def journalled(language):
@@ -833,7 +856,8 @@ def stub_writer(tmp_path):
         return w, heard, store, opener
     yield make
     for w in made:
-        w.finish(time.monotonic() + 5)
+        if not w._abandoned:                            # a crashed writer is gone: nothing to finish
+            w.finish(time.monotonic() + 5)
 
 
 def test_a_store_that_turns_read_only_during_a_write_says_its_reason_and_lets_go_of_its_handle(stub_writer):
@@ -5403,3 +5427,321 @@ def test_the_trash_helper_passes_over_the_copies_it_is_told_are_taken(lib):
     second = M._trash(ls, lib.store, rel, row, taken=trashed.values(), since=None)
     assert first == f".trash/{base}_20000101000000{ext}"
     assert second == f".trash/{base}_20000101000001{ext}", "the second item takes the next copy, never the first's"
+
+
+# --- Kura-JR (3.0.17): a refused journal write retried; a journal whose commands landed cleared at the start -------- #
+held_refuses = pytest.mark.skipif(os.name != "nt", reason="only Windows refuses a replace / remove of a held file")
+
+
+class Scanner:
+    """Another program (a virus scanner, a backup tool) holding the journal open a while: a plain open — no
+    FILE_SHARE_DELETE on Windows — so the writer's replace and remove are refused until `close()`."""
+    made = []
+
+    def __init__(self, path):
+        for _ in range(200):                            # (the writer's own replace may hold it this instant)
+            try:
+                self.f = open(path, encoding="utf-8")
+                break
+            except PermissionError:
+                time.sleep(0.01)
+        else:
+            raise AssertionError(f"the journal stayed locked: {path}")
+        Scanner.made.append(self)
+
+    def close(self):
+        self.f.close()
+
+
+@pytest.fixture
+def scanners():
+    """Every Scanner a test made is let go, whatever the test's end (a failed assert never leaves a handle open)."""
+    yield Scanner
+    while Scanner.made:
+        Scanner.made.pop().close()
+
+
+@held_refuses
+def test_JR_a_last_journal_remove_refused_while_a_scanner_holds_it_is_retried_once_the_file_frees(lib, make_writer,
+                                                                                                   short_lock_wait,
+                                                                                                   scanners):
+    # why (Kura-EO's S2 note): the writer tried a refused write ~0.1 s and, with nothing left queued, gave it up for
+    # good — the journal stayed, and the next start replayed commands that had already landed
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    w.pin([now[1]])
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["move", "pin"])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and len(heard.saved) == 2)
+    time.sleep(0.5)                                     # the scanner holds it past the writer's ~0.1 s of tries
+    w.nudge([now[2]], "up", label="nudged")             # the writer goes on meanwhile: never waits on the journal
+    assert h.until(lambda: len(heard.saved) == 3, seconds=5)
+    assert os.path.exists(M.journal_path(lib.language))
+    scanner.close()
+    assert h.until(lambda: journal(lib.language) is None, seconds=10), "a refused remove was never tried again"
+    assert heard.notes == []
+
+
+@held_refuses
+def test_JR_a_start_that_finds_a_journal_whose_commands_all_landed_clears_it_without_replaying(lib, make_writer,
+                                                                                               short_lock_wait,
+                                                                                               monkeypatch, scanners):
+    # why: a scanner that holds the journal past every retry (or a crash meanwhile) still leaves it behind; the start
+    # must know its commands landed — never replay them (a note *couldn't be applied*, a reread, a write again)
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.05,), raising=False)
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    w.pin([now[1]])
+    w.set_tier([lib.ids("soon")[0]], "goal")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["move", "pin", "set_tier"])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and len(heard.saved) == 3)
+    time.sleep(0.5)                                     # every retry refused
+    w._abandon()                                        # the crash, the scanner still on the file
+    scanner.close()
+    assert [op for op, _i in journalled(lib.language)] == ["move", "pin", "set_tier"]     # left behind, all landed
+    order = {t: lib.ids(t) for t in ("now", "soon", "goal")}
+    pinned = lib.store.item(now[1])["pinned"]
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None, seconds=10)
+    assert h.until(lambda: not w2.pending())
+    assert w2.attempts == 0, "a command that had landed was written again"
+    assert heard2.notes == [] and heard2.saved == [] and heard2.rereads == 0
+    assert {t: lib.ids(t) for t in ("now", "soon", "goal")} == order and lib.store.item(now[1])["pinned"] == pinned
+    # (waited on: the writer removes the journal, then its note — a look between the two is too early)
+    assert h.until(lambda: not left_beside(M.journal_path(lib.language))), "nothing of the journal left beside it"
+
+
+@held_refuses
+def test_JR_the_quit_tries_a_refused_journal_remove_again_until_its_deadline(lib, make_writer, short_lock_wait,
+                                                                             scanners):
+    # why: the quit is the last chance this run has: a scanner that lets go before the deadline leaves no journal
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and heard.saved)
+    closing = threading.Timer(0.4, scanner.close)
+    closing.start()
+    assert w.finish(time.monotonic() + 5)
+    closing.join(5)
+    assert not os.path.exists(M.journal_path(lib.language)), "the quit gave the journal up while it had time left"
+
+
+@held_refuses
+def test_JR_a_start_replays_only_the_commands_still_queued_when_the_rewrite_that_dropped_the_landed_one_was_refused(
+        stub_writer, tmp_path, monkeypatch, scanners):
+    # why: one command landed, the next still waits on a busy store, and the rewrite without the first is refused to
+    # the end (a crash): the next start replays the waiting one only — never the one that landed
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.05,), raising=False)
+    w, heard, store, opener = stub_writer()
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"  # (the store busy: both wait and are journalled)
+    w.set_tier([3], "goal")
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] ==
+                   ["set_tier", "move"])
+    scanner = Scanner(str(path))
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    opener.mode, opener.reason = "store", None
+    assert h.until(lambda: any(c[0] == "set_tier" for c in store.calls) and w.pending() == 1)
+    note = tmp_path / "window_pending_ja.landed.json"
+    assert h.until(lambda: os.path.exists(note))        # the refusal told the note what landed
+    assert read_journal(note)["landed"] == [0]
+    time.sleep(0.4)                                     # every retry of the rewrite refused
+    w._abandon()
+    scanner.close()
+    store2 = StubStore()
+    w2 = M.Writer(StubOpener(store2), "ja", journal_file=str(path), words=WORDS, retry=0.02, **Heard().kw())
+    try:
+        w2.start()
+        assert w2.replay()
+        assert h.until(lambda: store2.calls)
+        assert h.until(lambda: not w2.pending())
+        assert [c[0] for c in store2.calls] == ["move"], "the set_tier that had landed was replayed"
+        assert h.until(lambda: not os.path.exists(path))
+    finally:
+        w2.finish(time.monotonic() + 5)
+
+
+@held_refuses
+def test_JR_a_new_journal_write_refused_after_an_earlier_one_was_given_up_gets_its_own_retries(
+        stub_writer, tmp_path, monkeypatch, scanners):
+    # why: the tries are bounded for each refused write, never for the whole run — a hold met hours later (a drag's
+    # moves, journalled while nothing lands) is tried again too, or a crash then loses those moves
+    monkeypatch.setattr(M, "JOURNAL_RETRY_S", (0.3, 0.6), raising=False)
+    w, heard, store, opener = stub_writer()
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["set_tier"])
+    scanner = Scanner(str(path))
+    opener.mode, opener.reason = "store", None
+    assert h.until(lambda: store.calls and not w.pending())
+    assert h.until(lambda: w._owed is None and w._owed_tries == len(M.JOURNAL_RETRY_S))     # given up
+    w.hold()                                            # a drag: its move is journalled, nothing lands
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: w._owed is not None)         # that write refused: tried again
+    scanner.close()
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] == ["move"])
+    w.release()
+    assert h.until(lambda: not w.pending() and not os.path.exists(path))
+
+
+@held_refuses
+def test_JR_a_quit_whose_deadline_the_hold_outlasts_leaves_the_journal_and_its_note_and_the_start_clears_both(
+        lib, make_writer, short_lock_wait, scanners):
+    # why: the quit never waits past its deadline for a held file (the window is closing); what it leaves behind is
+    # read right at the next start — the landed move never written twice
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[5]], "goal", before_id=goal[0], label="moved")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    holder.release()
+    assert h.until(lambda: not w.pending() and heard.saved)
+    began = time.monotonic()
+    assert w.finish(began + 0.6)
+    assert time.monotonic() - began < 2.0, "the quit waited on the held journal past its deadline"
+    scanner.close()
+    note = M._landed_path(M.journal_path(lib.language))
+    assert journalled(lib.language) == [("move", [goal[5]])] and read_journal(note)["landed"] == [0]
+    order = lib.ids("goal")
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not os.path.exists(note))
+    assert w2.attempts == 0 and heard2.notes == [] and heard2.rereads == 0 and lib.ids("goal") == order
+
+
+def test_JR_a_note_of_another_journal_a_damaged_one_or_none_drops_nothing_and_a_journal_without_a_token_replays_whole(
+        stub_writer, tmp_path):
+    # why: a note is trusted only for the very file it was written about (its token): a note left over from an older
+    # file, a damaged one, or a journal an older version wrote (no token) must never cost a command its replay
+    path = str(tmp_path / "window_pending_ja.json")
+    note = M._landed_path(path)
+    assert note == str(tmp_path / "window_pending_ja.landed.json")
+    assert M._landed_of(path, "abc") == set()                                   # no note
+    for body, token, want in [({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [0, 2]}, "abc", {0, 2}),
+                              ({"version": M.JOURNAL_VERSION, "token": "old", "landed": [0]}, "abc", set()),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [0]}, None, set()),
+                              ({"version": M.JOURNAL_VERSION + 1, "token": "abc", "landed": [0]}, "abc", set()),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": [True, "1", 2.0, 3]}, "abc",
+                               {3}),
+                              ({"version": M.JOURNAL_VERSION, "token": "abc", "landed": None}, "abc", set()),
+                              (["not", "a", "note"], "abc", set())]:
+        with open(note, "w", encoding="utf-8") as f:
+            json.dump(body, f)
+        assert M._landed_of(path, token) == want, body
+    with open(note, "w", encoding="utf-8") as f:
+        f.write("{damaged")
+    assert M._landed_of(path, "abc") == set()
+    # an older version's journal (no token) beside a note that names its entries: every entry replays
+    with open(note, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "token": None, "landed": [0, 1]}, f)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "language": "ja",
+                   "pending": [{"op": "move", "ids": [7], "tier": "goal"},
+                               {"op": "set_tier", "ids": [8], "tier": "now"}]}, f)
+    w, heard, store, opener = stub_writer()
+    assert w.replay()
+    assert h.until(lambda: len(store.calls) == 2 and not w.pending())
+    assert [c[0] for c in store.calls] == ["move", "set_tier"]
+    assert h.until(lambda: not os.path.exists(path) and not os.path.exists(note))
+
+
+def test_JR_the_retries_pause_longer_each_time_and_stop_after_a_few():
+    # why: a held file is tried again soon, then less and less often — never a spin, never forever (bounded: the
+    # start's note covers a hold that outlasts them)
+    pauses = M.JOURNAL_RETRY_S
+    assert 3 <= len(pauses) <= 8 and pauses[0] >= 0.1 and sum(pauses) <= 30
+    assert all(b > a for a, b in zip(pauses, pauses[1:]))
+
+
+@held_refuses
+def test_JR_a_command_queued_during_a_drag_whose_journal_write_was_refused_is_journalled_once_the_file_frees(
+        lib, make_writer, scanners):
+    # why: the refused write was the one that added a new command (a drag holds the queue: nothing lands, nothing
+    # writes the journal again on its own) — the retry must write that command too, or a crash loses it
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.hold()                                            # a drag: the moves queue and are journalled at once
+    w.move([goal[5]], "goal", before_id=goal[0], label="first")
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    scanner = Scanner(M.journal_path(lib.language))
+    w.pin([now[1]])
+    assert h.until(lambda: w._owed is not None)         # its journal write refused
+    scanner.close()
+    assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]]), ("pin", [now[1]])], seconds=10)
+    w._abandon()                                        # the crash, the drag still held
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.ids("goal")[0] == goal[5] and lib.store.item(now[1])["pinned"] is not None
+
+
+@held_refuses
+def test_JR_a_crashed_writer_writes_no_journal_after_its_crash_even_from_a_saving_timer_still_running(
+        stub_writer, tmp_path, scanners):
+    # why (a --stress-changed red, 2026-11-19): while the journal is held, each busy attempt's journal write takes its
+    # ~0.1 s of tries, so the attempt's *saving…* timer fires on a thread of its own; the test's crash (`_abandon`)
+    # stopped the writer's thread but not those, and one rewrote the journal after the next start had removed it.
+    # A crash stops every journal write of the crashed writer — nothing written after `_abandon` returns.
+    w, heard, store, opener = stub_writer(saving_after=0.01)
+    path = tmp_path / "window_pending_ja.json"
+    opener.mode, opener.reason = "unavailable", "busy"
+    w.set_tier([3], "goal")
+    w.move([7], "now", before_id=1)
+    assert h.until(lambda: os.path.exists(path) and [e["op"] for e in read_journal(path)["pending"]] ==
+                   ["set_tier", "move"])
+    scanner = Scanner(str(path))
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    opener.mode, opener.reason = "store", None          # the set_tier lands; the move's attempts stay busy, and
+    assert h.until(lambda: any(c[0] == "set_tier" for c in store.calls))    # each one's journal write is refused
+    time.sleep(0.5)                                     # (~0.1 s each: its timer fires on a thread of its own)
+    w._abandon()                                        # the crash
+    scanner.close()
+    with open(path, "rb") as f:
+        left = f.read()
+    time.sleep(0.5)                                     # a window in which nothing may happen
+    with open(path, "rb") as f:
+        assert f.read() == left, "a timer of the crashed writer rewrote its journal"
+
+
+@held_refuses
+def test_JR_a_journal_the_writer_removed_while_another_program_still_holds_it_reads_as_gone(tmp_path):
+    # why (a --stress-changed red, 2026-11-19): a scanner that looks at the journal just as the writer removes it
+    # keeps it listed, and unopenable, until it lets go ("delete pending"); the tests' look read that as a lock held
+    # and gave up after 0.5 s. The writer left it gone, and so must the look
+    path = str(tmp_path / "window_pending_ja.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "pending": []}, f)
+    looking = open_journal(path)                        # the scanner's look (it shares delete, as scanners do)
+    try:
+        os.remove(path)                                 # the writer's remove: done — the name still listed here
+        #   (delete pending, as on Windows 10 1809), or gone at once (a newer Windows' POSIX delete): gone either way
+        assert read_journal(path) is None and journal_gone(path)
+        assert left_beside(path) == []
+    finally:
+        looking.close()
+    assert os.path.basename(path) not in os.listdir(tmp_path)
+
+
+def journal_gone(path):
+    try:
+        open_journal(path).close()
+        return False
+    except FileNotFoundError:
+        return True

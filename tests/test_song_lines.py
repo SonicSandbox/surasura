@@ -333,3 +333,55 @@ def test_a_books_chapters_never_lose_a_repeated_passage(tmp_path):
     assert analyzer.song_sentences(found, data_dir, None, tokenizer, "ja") == {}
     spoken = [(p, label, weight, "subtitle") for p, label, weight, _t in found]
     assert len(analyzer.song_sentences(spoken, data_dir, None, tokenizer, "ja")) == 4
+
+
+def _indexed_show(tmp_path):
+    """星祭り's episodes in a library's work folder, indexed into a store of their own -> (found files, data dir, db)."""
+    data_dir = tmp_path / "data" / "ja"
+    work = data_dir / "HighPriority" / "Hoshi Matsuri"
+    shutil.copytree(JA_SHOW, work)
+    paths = sorted(str(work / name) for name in os.listdir(work))
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", paths, path=db)
+    return [(p, "high", 10, "subtitle") for p in paths], str(data_dir), db
+
+
+def test_a_works_songs_are_kept_and_read_back_while_its_files_are_unchanged(tmp_path):
+    """The rule runs once a work: a Generate after nothing changed reads the kept answer (only the files' stamps),
+    the same numbers."""
+    found, data_dir, db = _indexed_show(tmp_path)
+    store = ti.open_store("ja", db)
+    try:
+        first = analyzer.song_sentences(found, data_dir, store, None, "ja")
+        assert first and all(first.values())
+        with patch("app.song_lines.left_out", side_effect=AssertionError("ran again")):
+            assert analyzer.song_sentences(found, data_dir, store, None, "ja") == first
+    finally:
+        store.close()
+
+
+def test_a_changed_episode_or_a_new_rule_finds_the_songs_again(tmp_path):
+    """An episode edited (its stamp moves), or the rule's version moved: the work is read again — never a stale
+    sentence number."""
+    found, data_dir, db = _indexed_show(tmp_path)
+    store = ti.open_store("ja", db)
+    try:
+        first = analyzer.song_sentences(found, data_dir, store, None, "ja")
+        with patch.object(song_lines, "RULE", song_lines.RULE + 1):
+            with patch("app.song_lines.left_out", wraps=song_lines.left_out) as rule:
+                assert analyzer.song_sentences(found, data_dir, store, None, "ja") == first
+                assert rule.called
+    finally:
+        store.close()
+    third = found[2][0]
+    with open(third, "a", encoding="utf-8", newline="") as f:
+        f.write("\r\n99\r\n00:23:30,000 --> 00:23:32,500\r\nまた来週。\r\n")
+    ti.reconcile_language("ja", [p for p, *_ in found], path=db)
+    store = ti.open_store("ja", db)
+    try:
+        with patch("app.song_lines.left_out", wraps=song_lines.left_out) as rule:
+            again = analyzer.song_sentences(found, data_dir, store, None, "ja")
+            assert rule.called
+        assert again[third] == first[third], "the new line sits after the ending: the numbers before it hold"
+    finally:
+        store.close()

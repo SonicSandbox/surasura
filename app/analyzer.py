@@ -3055,20 +3055,42 @@ def songs_left_out(files):
 
 def song_sentences(found_files, data_dir, store, tokenizer, language):
     """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
-    source type)]), each work on its own (§ above). Without the store, each file is read and tokenized here."""
+    source type)]), each work on its own (§ above). With the store, a work's answer is kept (`Store.keep_songs`) under
+    a digest of its files' stamps and the rule's version, so a Generate after nothing changed in a work reads only its
+    stamps; without the store, each file is read and tokenized here."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
         if source_type in _SPOKEN:
             works.setdefault(_series_name(file_path, data_dir), []).append(file_path)
+    kept, keep, built = {}, {}, None
+    if store is not None and works:
+        try:
+            kept = store.songs_kept()
+            built = store.get_meta("build_sig")   # a new tokenizer re-reads every file, its stamps unchanged
+        except Exception:
+            kept = {}
     out = {}
-    for paths in works.values():                  # one work's lines held at a time (a 20k library's would be ~1 GB)
-        held = {}
+    for work, paths in works.items():
+        digest = None
+        if store is not None:
+            try:
+                stamps = store.file_stamps(paths)
+                digest = hashlib.sha1(json.dumps([song_lines.RULE, built, sorted((p, stamps.get(p)) for p in paths)],
+                                                 ensure_ascii=False).encode("utf-8")).hexdigest()
+            except Exception:
+                digest = None
+            held = kept.get(work)
+            if digest is not None and held and held[0] == digest:
+                keep[work] = held
+                out.update((path, set(numbers)) for path, numbers in held[1].items())
+                continue
+        held = {}                                 # one work's lines held at a time (a 20k library's would be ~1 GB)
         if store is not None:
             try:
                 held = store.file_lines(paths)
             except Exception as e:
                 print(f"Warning: the token store's lines couldn't be read ({e}); reading the subtitles here.")
-                store = None
+                store, digest = None, None
         files = []
         for path in paths:
             lines = held.get(path)
@@ -3077,7 +3099,15 @@ def song_sentences(found_files, data_dir, store, tokenizer, language):
                 lines = song_lines.file_lines(list(tokenizer.tokenize_sentences(extract_text(path, language, facts))),
                                               facts.get("song_marks") or ())
             files.append((path, lines))
-        out.update((path, numbers) for path, numbers in songs_left_out(files).items() if numbers)
+        found = {path: numbers for path, numbers in songs_left_out(files).items() if numbers}
+        out.update(found)
+        if digest is not None:
+            keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
+    if store is not None and keep != kept:
+        try:
+            store.keep_songs(keep)
+        except Exception as e:                    # computed again next time
+            print(f"Warning: the songs found couldn't be kept in the token store ({e}).")
     return out
 
 

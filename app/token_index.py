@@ -774,6 +774,29 @@ class Store:
                 out[keys[path]] = _decode_tokens(blob)
         return out
 
+    def file_stamps(self, paths):
+        """{path: [mtime, size]} of the files of `paths` the store holds — what a work's kept songs are checked by
+        (`songs_kept`): one query a batch, no blob read."""
+        keys = {_norm(p): p for p in paths}
+        out, wanted = {}, list(keys)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            for path, mtime, size in self.conn.execute(
+                    f"SELECT path, mtime, size FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
+                out[keys[path]] = [mtime, size]
+        return out
+
+    def songs_kept(self):
+        """The songs a run left out, each work's kept until its files change (analyzer.song_sentences): {work:
+        [digest, {path: [sentence number, ...]}]}, or {} (none kept, or unreadable)."""
+        try:
+            return json.loads(self.get_meta("songs_left_out") or "{}")
+        except ValueError:
+            return {}
+
+    def keep_songs(self, kept):
+        self.set_meta("songs_left_out", json.dumps(kept, ensure_ascii=False, separators=(",", ":")))
+
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
         """The name tables the last index computed, or None (none yet, or not a Japanese store)."""

@@ -758,10 +758,11 @@ def _word_in_sentence(word, sentence, tokenize):
 
     A token is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い of まいた:
     撒く, マク), as K56 finds a word (`connect.find_by_forms`). With a bold mark that holds the word: the token in its
-    span that is the word, else the one holding the word as written there (泥まみれ for a まみれ marked inside it). With
+    span that is the word, else the ONE token holding the word as written there (泥まみれ for a まみれ marked inside it;
+    a card of several words — ちょうどいい, という — is no one token: not placed, the card read as itself). With
     none, or a mark on another word (<b>庭</b>にまく): the token of the sentence that is the word (まくらを庭にまく: 撒く,
     never the 枕 the letters start) — two different words that each could be, never guessed between — else the one
-    holding the word as written (泥まみれ). One read of the sentence."""
+    token holding the word as written (泥まみれ; several: not placed). One read of the sentence."""
     bold = _BOLD_RE.search(sentence)
     marked = bool(bold and normalize_word(bold.group(1)))
     found = sentence_span(sentence, word) if marked else None
@@ -793,7 +794,7 @@ def _word_in_sentence(word, sentence, tokenize):
         written = text.find(word, start, end)
         if written >= 0:
             inside = holding(written, written + len(word))
-            return (inside, inside[0]) if inside else None
+            return (inside, inside[0]) if len(inside) == 1 else None
     named = [token for token, _pos, _after in placed if is_the_word(token)]
     if len({(token[0], token[1]) for token in named}) > 1:
         return None
@@ -801,7 +802,7 @@ def _word_in_sentence(word, sentence, tokenize):
         return [named[0]], named[0]
     written = text.find(word)
     inside = holding(written, written + len(word)) if written >= 0 else []
-    return (inside, inside[0]) if inside else None
+    return (inside, inside[0]) if len(inside) == 1 else None
 
 
 def sentence_excerpt(raw, word, width=48, tokenize=None):

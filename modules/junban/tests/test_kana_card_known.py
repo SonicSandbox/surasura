@@ -97,6 +97,17 @@ def test_a_bold_mark_inside_a_longer_word_reads_that_word_even_where_the_card_is
     assert is_known("まみれ", "汗にまみれた手で、泥まみれの靴を拭いた。"), "no mark: the word said as itself"
 
 
+def test_a_kana_card_of_several_words_is_never_known_through_its_first(tmp_path):
+    # the core suite's find (the stone scenarios): ちょうどいい, という, ことになる are several words to the tagger — a
+    # card of them is no one token of its sentence, so it is read as itself, never as the 丁度 / と / 事 it starts with
+    _library(tmp_path)
+    _known(tmp_path, ["丁度", "事", "言う", "と"])
+    is_known = reposition.known_test("ja", _settings())
+    assert not is_known("ちょうどいい", "この靴は<b>ちょうどいい</b>大きさだ。")
+    assert not is_known("ちょうどいい", "この靴はちょうどいい大きさだ。")
+    assert not is_known("ことになる", "来月から東京で働く<b>ことになる</b>。")
+
+
 def test_two_words_a_sentence_could_mean_are_never_guessed_between(tmp_path):
     # 鍵をかけて、皿が欠けた: 掛ける and 欠ける both read かける — the sentence can't say which the card is, so the
     # card is read as before (its letters: the learner's かける entry makes it known)

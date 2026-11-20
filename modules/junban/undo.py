@@ -215,7 +215,8 @@ def normalize_scope(scope):
 
 def save(pairs, scope, language="ja", fields=None, tags=None, tag="", marker_tags=None,
          mode="deck", suspended=None, flags=None, kind="reorder", run_id=None, after=None, unsuspended=None,
-         automatic=False, cut=None, profile=None, later_back=None, tried=None, finished_automatic=False):
+         automatic=False, cut=None, profile=None, later_back=None, tried=None, finished_automatic=False,
+         flags_off=None, later_off=None):
     """Write the snapshot and return its path. Call this BEFORE the first write of a run (I3).
 
     The snapshot is saved INCOMPLETE and only `mark_complete` says the run finished. A run that died
@@ -241,6 +242,11 @@ def save(pairs, scope, language="ja", fields=None, tags=None, tag="", marker_tag
     `later_back` (laptop round 8 #50): `{the ::later tag: [note ids]}` — the tag the run takes off the returning
     words' notes it unsuspends (a card back on your list no longer says "not on your list"); a restore puts it back
     on the notes of the cards it sets aside again, before it suspends them (`restore_later_back`).
+
+    `flags_off` / `later_off` (Kyou-PF): `{card_id: the flag put back}` for the purple flags the run's clean-up takes
+    off, and `{the ::later tag: [note ids]}` for the tags it takes off — a restore puts Junban's purple back on a card
+    still showing that flag, and the tag back on those notes (`restore_flags_off`, `restore_later_off`). Journalled by
+    the caller once they landed, never here.
 
     `automatic` (3.0): an automatic job with actions saves the window's snapshot — `"automatic": true`, so an
     automatic job that finds it unfinished goes on (`reposition._run`). Additive, like the keys above: a snapshot
@@ -304,6 +310,12 @@ def save(pairs, scope, language="ja", fields=None, tags=None, tag="", marker_tag
     saved_later = _clean_marker_tags(later_back)
     if saved_later:
         payload["later_back"] = saved_later
+    saved_off = _clean_flags(flags_off)
+    if saved_off:
+        payload["flags_off"] = saved_off
+    saved_later_off = _clean_marker_tags(later_off)
+    if saved_later_off:
+        payload["later_off"] = saved_later_off
     if automatic:
         payload["automatic"] = True
     if finished_automatic:              # Disc-T1: a run you started took over an automatic one cut short — its Undo
@@ -353,11 +365,15 @@ def _take_over(payload, cut):
     flags = dict(payload.get("flags") or {}, **_clean_flags(cut.get("flags")))
     if flags:
         payload["flags"] = flags
-    later = {name: list(ids) for name, ids in (payload.get("later_back") or {}).items()}
-    for name, ids in _clean_marker_tags(cut.get("later_back")).items():
-        later[name] = sorted(set(later.get(name) or []) | set(ids))
-    if later:
-        payload["later_back"] = later
+    for key in ("later_back", "later_off"):
+        later = {name: list(ids) for name, ids in (payload.get(key) or {}).items()}
+        for name, ids in _clean_marker_tags(cut.get(key)).items():
+            later[name] = sorted(set(later.get(name) or []) | set(ids))
+        if later:
+            payload[key] = later
+    flags_off = dict(payload.get("flags_off") or {}, **_clean_flags(cut.get("flags_off")))
+    if flags_off:
+        payload["flags_off"] = flags_off
     markers = {name: list(ids) for name, ids in (payload.get("marker_tags") or {}).items()}
     for name, ids in _clean_marker_tags(cut.get("marker_tags")).items():
         markers[name] = sorted(set(markers.get(name) or []) | set(ids))
@@ -636,6 +652,31 @@ def restore_flags(snapshot, current, ours):
     return sorted(pairs), skipped
 
 
+def restore_flags_off(snapshot, current, ours):
+    """Kyou-PF: `([(card_id, ours)], skipped)` — Junban's purple `ours` back on each card its clean-up took it off,
+    only while the card still shows the flag the clean-up put back (`flags_off`); one you flagged since keeps yours
+    and is counted. A card whose purple this snapshot also put on (`flags`) is `restore_flags`' alone: its flag from
+    before both runs is the one to put back."""
+    pairs, skipped = [], 0
+    own = _clean_flags((snapshot or {}).get("flags"))
+    for card_id, put in _clean_flags((snapshot or {}).get("flags_off")).items():
+        if card_id in own:
+            continue
+        now = (current or {}).get(int(card_id))
+        if now is None:
+            continue
+        if now == put:
+            pairs.append((int(card_id), ours))
+        elif now != ours:
+            skipped += 1
+    return sorted(pairs), skipped
+
+
+def restore_later_off(snapshot):
+    """Kyou-PF: `{tag: [note ids]}` — the `::later` tag a run's clean-up took off, to put back."""
+    return _clean_marker_tags((snapshot or {}).get("later_off"))
+
+
 def restore_fields(snapshot, current):
     """The note edits that put WP-L's field writes back. Returns `(edits, skipped)`.
 
@@ -750,6 +791,9 @@ def describe(snapshot):
     flagged = len(_clean_flags(snapshot.get("flags")))
     if flagged:
         extras.append(f"{flagged} flagged")
+    unflagged = len(_clean_flags(snapshot.get("flags_off")))
+    if unflagged:                       # Kyou-PF: the clean-up's
+        extras.append(f"{unflagged} purple flag{'' if unflagged == 1 else 's'} taken off")
     return line + (f" ({', '.join(extras)})" if extras else "")
 
 

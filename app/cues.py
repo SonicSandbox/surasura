@@ -12,8 +12,9 @@ and when — to tell Anki Miner the line to cut a card from. This reads them, by
   naming its first copy — a Generate reads the line once, and the cues and their order stay the file's (Anki Miner
   indexes its own). Two units are kept (R05-C12): each Cue is the event Anki Miner cuts a card
   from, and `caption` numbers the caption window a Generate reads it in (an .srt's cue is its own; an .ass file's
-  events on screen together in one colour are one, `analyzer._captions`). A sung line — karaoke timing, a style the
-  subtitler named OP / ED / song, a ♪ — is kept and marked `sung`: a card is never cut from one.
+  events on screen together in one colour are one, `analyzer._captions`). A sung line — karaoke timing, a song
+  style (`song_lines.song_style`: OPJP, EDCN, 歌, Lyrics …, the style a Generate leaves a song out by), a ♪
+  (`song_lines.noted`) — is kept and marked `sung`: a card is never cut from one.
 - `tokens(cues, language)` -> [Token]: each cue's words, keyed as every caller keys them — Japanese through
   `JapaneseTokenizer` (so `join_affixes`, the library's name tables, sanitized lemmas), Chinese through
   `ChineseTokenizer` (`chinese_cut` / `chinese_word`, in the `script` asked for) — each with the index of the cue it
@@ -36,7 +37,7 @@ import re
 import unicodedata
 from collections import namedtuple
 
-from app import analyzer, zh_script
+from app import analyzer, song_lines, zh_script
 from app.path_utils import SIDECAR_SUFFIX, read_text
 
 # One subtitle line: `index` its place among the cues kept (file order), `start` / `end` milliseconds as the file
@@ -67,10 +68,6 @@ SUBTITLES = (".srt", ".ass", ".ssa")
 _SRT_TIMING_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})")
 # ASS / SSA: "0:00:02.42" (hundredths).
 _ASS_TIME_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$")
-# A style the subtitler named for a song (OP_JP, ED-Romaji, Insert Song, Karaoke): sung, though its lines carry no
-# karaoke timing. Only the pick reads this; a Generate still counts the line's words.
-_SONG_STYLE_RE = re.compile(r"(?i)(?:^|[^a-z])(?:op|ed|opening|ending|song|karaoke|insert)(?:[^a-z]|$)")
-_SONG_MARKS = frozenset("♪♫♬〽")
 
 
 def _ms(hours, minutes, seconds, fraction):
@@ -84,7 +81,8 @@ def seconds(ms):
 
 
 def _sung(text):
-    return not _SONG_MARKS.isdisjoint(text)
+    """A line carrying a song's mark (♪ ♫ ♬ …) — song_lines' own test, the one a Generate leaves songs out by."""
+    return song_lines.noted(text)
 
 
 def _srt(content, language):
@@ -171,7 +169,7 @@ def _ass(content, language):
             counted = False
         if text:
             colour = analyzer._ass_colour(raw, colours.get(style, ""), colours)
-            out.append((start, end, text, karaoke or bool(_SONG_STYLE_RE.search(style)) or _sung(text), colour,
+            out.append((start, end, text, karaoke or song_lines.song_style(style) or _sung(text), colour,
                         counted))
     return out
 

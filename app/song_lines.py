@@ -52,6 +52,12 @@ def song_style(style):
     return bool(style) and bool(_SONG_STYLE_RE.search(style))
 
 
+def noted(text):
+    """Whether a text carries a song's mark (♪ ♫ ♬ 🎵 🎶 〽) — the NOTE mark (`file_lines`); Connect's cue reader marks
+    such a line sung by it too (app/cues.py)."""
+    return bool(text) and bool(_NOTE_RE.search(text))
+
+
 def plain(text):
     """A text without spaces, punctuation and marks — what a line is, however the file writes it."""
     return _NOT_KEY_RE.sub("", text or "")
@@ -91,7 +97,7 @@ def file_lines(sentences, song_marks=()):
     styled = _styled([script_len(text) for text, _tokens in sentences], song_marks) if song_marks else ()
     out = []
     for no, (text, _tokens) in enumerate(sentences):
-        marks = NOTE if _NOTE_RE.search(text or "") else 0
+        marks = NOTE if noted(text) else 0
         if no in styled:
             marks |= STYLED
         out.append(_key(plain(text)) << 2 | marks)

@@ -12,6 +12,7 @@ import gzip
 import importlib.util
 import json
 import os
+import zipfile
 
 import pytest
 
@@ -48,8 +49,21 @@ def bnd():
     return module
 
 
+# JMnedict as Yomichan's export carries it (jmnedict.zip's term banks: [spelling, reading, kind, rules, score,
+# glosses, sequence, tags]) — real entries, cut to what these tests need: a name written in kana alone has no reading
+# of its own (くるみ), an organization is no person (国労).
+_JMNEDICT = [
+    ["国労", "こくろう", "organization", "", 0, ["National Railway Workers' Union"], 1657560, ""],
+    ["〆丸", "しめまる", "given", "", 0, ["Shimemaru"], 5000003, ""],
+    ["くるみ", "", "fem", "", 0, ["Kurumi"], 5002312, ""],
+    ["司波", "しば", "surname", "", 0, ["Shiba"], 5325398, ""],
+    ["奏汰", "かなた", "fem", "", 0, ["Kanata"], 5474097, ""],
+    ["冬月", "ふゆつき", "fem", "", 0, ["Fuyutsuki"], 5549978, ""],
+]
+
+
 def _lists(folder):
-    """The build's inputs, in miniature: two frequency lists, JMnedict's name wordsets and JMdict."""
+    """The build's inputs, in miniature: two frequency lists, JMnedict's name wordsets, JMdict and JMnedict."""
     (folder / "anki_miner_wordsets").mkdir(parents=True)
     (folder / "JPDB 2024.json").write_text(json.dumps(["トートバッグ", ["冬月", "トウゲツ"]], ensure_ascii=False),
                                            encoding="utf-8")
@@ -58,7 +72,18 @@ def _lists(folder):
     (folder / "anki_miner_wordsets" / "given-names.txt").write_text("奏汰\n", encoding="utf-8")
     with gzip.open(folder / "JMdict_e.gz", "wt", encoding="utf-8") as handle:
         handle.write(_JMDICT)
+    with zipfile.ZipFile(folder / "jmnedict.zip", "w") as archive:
+        archive.writestr("index.json", json.dumps({"title": "JMnedict", "format": 3}))
+        archive.writestr("term_bank_1.json", json.dumps(_JMNEDICT, ensure_ascii=False))
     return folder
+
+
+def test_show_names_keep_every_person_spelling_with_its_readings_and_whether_it_is_a_common_word(bnd, tmp_path):
+    """SHOW_NAMES: every person's name JMnedict spells, kana ones too (くるみ, read as it is written), sorted, with its
+    readings in hiragana and a mark when the frequency lists rank it among their commonest (冬月 is a JPDB 2024 word
+    too); an organization is no person."""
+    assert bnd.show_names(str(_lists(tmp_path))) == [
+        "〆丸\t\tしめまる", "くるみ\t\tくるみ", "冬月\t1\tふゆつき", "司波\t\tしば", "奏汰\t\tかなた"]
 
 
 def test_jmdict_kanji_forms_keep_every_kanji_spelling_entry_by_entry(bnd, tmp_path):
@@ -102,6 +127,7 @@ def test_the_build_writes_the_tables_and_keeps_one_whose_inputs_did_not_change(b
     assert jmdict.readings().split("\n") == ["ことに\t1", "ばしっと\t7", "ひょいと\t6"]
     assert jmdict.CREATED == "2026-09-28" and "CC BY-SA 4.0" in jmdict.__doc__
     assert load("name_data").surnames() == ["司波"], "冬月 is a word too (JPDB 2024)"
+    assert load("name_data").show_names() == bnd.show_names(lists), "SHOW_NAMES written and read back whole"
     assert "ドキドキ" in load("katakana_data").katakana_headwords()
 
     with open(out["jmdict_data"], encoding="utf-8") as handle:

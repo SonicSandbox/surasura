@@ -42,7 +42,8 @@
 - **A click pauses what a circle runs by itself** (Mado-PZ, 2026-11-18, a tester's ask: it taxes the PC; PROVISIONAL,
   it replaces alpha 3's press-opens-settings, which moved into the right-click with *Show*): `opened(circle)`, the shell
   pauses it (`set_paused`, painted on the press: its ring in `PAUSED_TOKEN` with two bars on it, never amber — amber
-  is a decision's) and a second click resumes it; an amber circle's click still goes to its decision (a7). The hover's
+  is a decision's) and a second click resumes it; an amber circle's click still goes to its decision (a7), paused or
+  not — its hover then says *Paused · right-click to resume* (Mado-PZ3, Sonic 2026-11-20), never a click. The hover's
   line *Paused · click to resume*; the right-click's first item *Pause* / *Resume*. **All five at once** (Mado-PZ2,
   Sonic 2026-11-19: no extra bubble beside the ?): *Pause all* / *Resume all* right under it in every circle's
   right-click, and a Shift-click (or Shift+Enter / Space) on any circle — each does to all five what the click does to
@@ -536,7 +537,7 @@ class PhaseStrip(QWidget):
         elif not now and circle in self._standing:
             now = [self._standing[circle]]
         if circle in self.paused:                       # Mado-PZ: first; a stop under way said after it
-            now.insert(0, strings.PHASE_PAUSED)
+            now.insert(0, self._paused_line(circle))
         why = dict(getattr(st, "why", ()) or ())        # help cards: a line's cause, under it (dim)
         for line in now:
             out.append(esc(line))
@@ -578,6 +579,11 @@ class PhaseStrip(QWidget):
             out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
 
+    def _paused_line(self, circle):
+        """A paused circle's line (Mado-PZ): *a click resumes it* — or, while it is amber, its click opens the decision
+        (a7, Mado-PZ3), so the right-click resumes it."""
+        return strings.PHASE_PAUSED if self.go(circle) is None else strings.PHASE_PAUSED_DECIDE
+
     def why_line(self, cause):
         """A cause as the hover says it (*Why: you moved … · 14:02*), the one time rule."""
         return causes.said(cause, self.now(), strings.PHASE_WHY, strings.PHASE_WHY_AT)
@@ -601,8 +607,9 @@ class PhaseStrip(QWidget):
             said.append(f"{strings.PHASE_NAMES[self._focus]}: {press}")
         for c in phase.CIRCLES:
             st = self.states[c]
-            if c in self.paused:                         # Mado-PZ
-                said.append(f"{strings.PHASE_NAMES[c]}: {strings.PHASE_PAUSED}")
+            if c in self.paused:                         # Mado-PZ (Mado-PZ3: what waits on you first, then the pause)
+                first = (st.needs or st.failed) if self.go(c) is not None else None
+                said.append(f"{strings.PHASE_NAMES[c]}: " + " · ".join(filter(None, (first, self._paused_line(c)))))
             elif st.running or st.waiting or st.needs or st.failed:
                 first = st.needs or st.failed or (st.lines[0] if st.lines else "")
                 said.append(f"{strings.PHASE_NAMES[c]}: {first}" if first else strings.PHASE_NAMES[c])

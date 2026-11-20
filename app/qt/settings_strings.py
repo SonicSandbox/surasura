@@ -276,7 +276,7 @@ ROWS = {
                           "Opens Anki when you open Surasura, so phone reviews come in.",
                           "closed open anki start session"),
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
-                            "Stop making cards when this many new cards wait. 0: no limit.",
+                            "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
@@ -459,6 +459,11 @@ ROWS = {
                        "One-kanji words are listed only when they stand alone (手). Off: all.",
                        "Particles, endings and name pieces stay off; 手, 目, 顔 are listed.",
                        "one kanji single character exclude"),
+    # Kotoba-OP (3.0.17; the name PROVISIONAL for Sonic): off, a show's opening and ending songs are out of the counts
+    "count_song_lyrics": ("Count song lyrics (OP / ED)",
+                          "Opening and ending songs repeat every episode. Off: their lyrics don't count.",
+                          "Off: a show's OP / ED lyrics don't count. Next Generate.",
+                          "songs lyrics op ed opening ending karaoke"),
     "how_parsing_works": ("How parsing works", "", "Every rule, with examples — opens in your browser",
                           "how parsing works guide examples"),
 

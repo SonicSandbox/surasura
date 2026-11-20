@@ -22,6 +22,7 @@ arguments and writes nothing.
 import json
 import math
 import os
+import sys
 from bisect import bisect_left
 from collections import Counter
 
@@ -110,6 +111,11 @@ class View:
         for k, (orths, surfaces) in plan.spell.items():
             spellings[k] = {"orths": orths, "surfaces": surfaces}
 
+        # A show's songs leave an arrival's counts as a Generate leaves them out (analyzer § Songs out of the counts):
+        # each spoken work's files the store holds, an arrival read beside its work's other episodes (`songs_out`).
+        songs, typer = not analyzer.LOGIC.get("count_song_lyrics", False), analyzer._source_typer()
+        works = _spoken_works(store, language, typer) if songs and store is not None else {}
+
         return cls(language=language, plan=plan, store=store, tokenizer=tokenizer, args=args, script=script,
                    known_tuples=known_tuples, known_lemmas=known_lemmas, ignore=ignore, known=known,
                    skip_singles=skip_singles, learning=learning, rare=rare, floor=floor, counts=counts, total=total,
@@ -117,7 +123,8 @@ class View:
                    unsure=unsure, lemmas={key[0] for k, key in enumerate(keys) if not plan.keys[k][2]},
                    listed={k for k, row in enumerate(plan.rows) if row is not None},
                    halved={k for k, key in enumerate(plan.keys) if key[3]},
-                   ties=ties, spellings=spellings, states={}, phrase_bound={}, names_tables=tables)
+                   ties=ties, spellings=spellings, states={}, phrase_bound={}, names_tables=tables,
+                   songs=songs, works=works, typer=typer)
 
     def never(self, lr):
         """A one-character word the list can never offer (main()'s `_never`)."""
@@ -777,13 +784,86 @@ def _added(counts, more):
 RECORD_FIELDS = ("main", "ph", "sp", "prog", "spc", "plan", "keys", "name")     # what `Engine.add` reads
 
 
+def _spoken_works(store, language, typer):
+    """{work: [the store's keys of its spoken files, counted and set aside]} — the episodes an arrival's songs are
+    found beside (`songs_out`), grouped as a Generate groups them (`analyzer._series_name`, its case folded: the store's
+    keys are normcase). A work's folder is named once: every file in it is the same work (a file loose in a tier is
+    its own)."""
+    from app.path_utils import get_data_path
+    data_dir, works, folders = get_data_path(language), {}, {}
+    for path in store.counted_files() + store.aside_files():
+        if typer(path) not in analyzer._SPOKEN:
+            continue
+        folder = os.path.dirname(path)
+        work = folders.get(folder)
+        if work is None:
+            work = os.path.normcase(analyzer._series_name(path, data_dir))
+            other = os.path.join(folder, "~" + os.path.basename(path))       # another file of the folder: the same?
+            if os.path.normcase(analyzer._series_name(other, data_dir)) == work:
+                folders[folder] = work
+        works.setdefault(work, []).append(path)
+    return works
+
+
+HELD_WORKS = 8          # the works whose episodes' lines a view keeps (`songs_out`): a drag brings one show's episodes
+
+
+def songs_out(view, path, sentences, song_marks=()):
+    """`sentences` of the arrival at `path` with its song lines' words out, as the next Generate leaves them out while
+    *Count song lyrics (OP / ED)* is off (`analyzer.songs_left_out`, its `_sentences_of`): each sentence in its place, a
+    song line's with no words — found by the one rule over the arrival (its lines: `song_lines.file_lines`, `song_marks`
+    the .ass captions' `extract_text` gave) and, for a file in the library's data folder, its work's other episodes the
+    store holds (`View.works`; their lines read from the store — opened to read only when the view holds none — and
+    kept for the view's life, the last HELD_WORKS works). A spoken file only; never fatal: a failure reads the songs as
+    counted, as a Generate whose rule fails does."""
+    if not getattr(view, "songs", False):
+        return sentences
+    try:
+        typer = getattr(view, "typer", None) or analyzer._source_typer()
+        if typer(path) not in analyzer._SPOKEN:
+            return sentences
+        from app import song_lines, token_index
+        from app.path_utils import get_data_path
+        me = token_index._norm(path)
+        data_dir = token_index._norm(get_data_path(view.language))
+        work = os.path.normcase(analyzer._series_name(me, data_dir)) if me.startswith(data_dir + os.sep) else None
+        others = [p for p in view.works.get(work, ()) if p != me] if work is not None else []
+        held = {}
+        if others:
+            kept = view.__dict__.setdefault("held", {})
+            held = kept.get(work)
+            if held is None:
+                store = view.store if view.store is not None else token_index.open_reader(view.language)
+                if store is None:
+                    print(f"arrivals: the token store can't be read; {os.path.basename(path)}'s songs found alone",
+                          file=sys.stderr)
+                    held = {}
+                else:
+                    try:
+                        held = store.file_lines(view.works[work])
+                    finally:
+                        if store is not view.store:
+                            store.close()
+                    while len(kept) >= HELD_WORKS:
+                        kept.pop(next(iter(kept)))
+                    kept[work] = held
+        out = analyzer.songs_left_out([(p, held.get(p)) for p in others]
+                                      + [(me, song_lines.file_lines(sentences, song_marks))]).get(me)
+    except Exception as e:                          # the estimate counts the songs, as before
+        print(f"arrivals: the songs of {os.path.basename(path)} couldn't be found ({e}); counted", file=sys.stderr)
+        return sentences
+    return [(s[0], []) if no in out else s for no, s in enumerate(sentences)] if out else sentences
+
+
 def read(view, path):
     """(sentences, name record) of the file at `path`, read here as the token store would read and serve it — the
     store's tokenizer reading the file alone, its name candidates recorded (Japanese), then the library's name tables
     the view was built with applied (`Store.file_tokens`) — so `record` gives what it gives over the store's tokens,
-    and the gates get the record the store would keep. Writes nothing."""
+    and the gates get the record the store would keep — its song lines' words out as a Generate leaves them
+    (`songs_out`). Writes nothing."""
     facts = {}
-    return read_text(view, analyzer.extract_text(path, view.language, facts), facts)
+    sentences, record_ = read_text(view, analyzer.extract_text(path, view.language, facts), facts)
+    return songs_out(view, path, sentences, facts.get("song_marks") or ()), record_
 
 
 def read_text(view, text, facts=None):
@@ -796,9 +876,12 @@ def read_text(view, text, facts=None):
     from app import names, token_index
     record_ = names.Record()
     record_.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
+    record_.clues = facts.get("clues")
     alone = copy.copy(view.tokenizer)               # the same tagger, reading as the token store reads (no tables)
     alone.library = False
-    sentences = [(s_text, list(s_tokens)) for s_text, s_tokens in alone.tokenize_sentences(text, names=record_)]
+    read = (alone.tokenize_sentences(text, names=record_, clues=record_.clues) if record_.clues
+            else alone.tokenize_sentences(text, names=record_))
+    sentences = [(s_text, list(s_tokens)) for s_text, s_tokens in read]
     data = json.loads(json.dumps(record_.data(), ensure_ascii=False))      # as the store keeps it (JSON)
     switches = token_index._library_switches(language)
     spans = data.get("s")

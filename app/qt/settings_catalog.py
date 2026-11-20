@@ -329,6 +329,7 @@ ROWS = (
     _row("pronoun_bases", "parsing", "toggle", ("logic.pronoun_bases",), when=_ja),
     _row("phrase_rows", "parsing", "toggle", ("logic.phrase_rows",), when=_ja),
     _row("exclude_single", "parsing", "toggle", ("exclude_single",), when=_ja),
+    _row("count_song_lyrics", "parsing", "toggle", ("logic.count_song_lyrics",)),       # Kotoba-OP: both languages
     _row("how_parsing_works", "parsing", "link"),
 
     # Content

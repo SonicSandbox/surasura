@@ -143,6 +143,73 @@ def plan(order, marks_of, language, flags_of, notes, opts, parent="", exclude=()
                          "suspend": suspend})
 
 
+# --- Kyou-PF (Sonic 2026-11-20): Junban takes its own marks off ------------------------------------------------- #
+# A card whose word is back on the list, or one you've studied, no longer "not on your list": Junban takes off the
+# purple flag it put on (the flag from before it back, by its record — `first_touch.junbans_flag`; never a flag you
+# set) and its `::later` tag. Only in a run that may act on cards on the 3.0 line (`reposition._plan_scope`).
+
+def plan_clear(order, marks_of, language, flags_of, notes, owner, later=None, parent="", exclude=(), taken_off=(),
+               out=(), studied=(), keep_notes=()):
+    """What the clean-up does, beside `plan`'s actions -> `{}` when nothing, else `{"cards", "flags", "tag",
+    "tag_notes", "studied", "counts"}`:
+
+      * `cards` — the cards it acts on: each row of `order` the list places (`plan` would not put it away: pinned, a
+        tier placed with the list, or its word on the list in any form), never one you clicked to leave alone or off
+        the list, nor a taken-out item's; and every `studied` card (`[{"card_id", "note", "flags"}]`, read apart:
+        no longer new);
+      * `flags` — `{card: the flag to put back}` for those of them showing Junban's purple (`owner(card_id, carries
+        the later tag) -> flag or None`, the record's answer);
+      * `tag_notes` — their notes carrying the `::later` tag, never one `keep_notes` names (another card of it stays
+        put away or parked) nor one `later` puts the tag on.
+
+    `flags_of` `{card: flag}` and `notes` `{note: {"tags": [...]}}` as `plan` takes them; the row's note from
+    `later`'s `note_of` or the card's own."""
+    tag = later_tag(parent)
+    later = later or {}
+    targets = set(later.get("cards") or ())
+    held = set(exclude or ()) | set(taken_off or ()) | set(out or ())
+    note_of = dict(later.get("note_of") or {})
+    picked = []
+    for row in order or []:
+        if row.card_id in targets or row.card_id in held:
+            continue
+        if not (getattr(row, "pinned", None) is not None or row.tier in PLACED_WITH_LIST
+                or match.lookup(row.word or "", marks_of or {}, language)):
+            continue
+        note_of[row.card_id] = row.note_id
+        picked.append(row.card_id)
+    flags_now = dict(flags_of or {})
+    seen = set(picked)
+    studied_ids = []
+    for card in studied or ():
+        card_id = card.get("card_id")
+        if not isinstance(card_id, int) or card_id in seen or card_id in held:
+            continue
+        seen.add(card_id)
+        note_of[card_id] = card.get("note")
+        flags_now[card_id] = card.get("flags") or 0
+        picked.append(card_id)
+        studied_ids.append(card_id)
+
+    def carries(card_id):
+        return touchup.carries_tag(((notes or {}).get(note_of.get(card_id)) or {}).get("tags") or [], tag)
+
+    flags = {}
+    for card_id in picked:
+        if (flags_now.get(card_id) or 0) == FLAG_PURPLE:
+            before = owner(card_id, carries(card_id))
+            if before is not None and before != FLAG_PURPLE:
+                flags[card_id] = before
+    keep = set(keep_notes or ()) | {note_of.get(card_id) for card_id in targets} | set(later.get("tag_notes") or ())
+    tag_notes = sorted({note_of.get(card_id) for card_id in picked if carries(card_id)
+                        and isinstance(note_of.get(card_id), int)} - keep)
+    if not flags and not tag_notes:
+        return {}
+    return {"cards": sorted(picked), "flags": flags, "tag": tag, "tag_notes": tag_notes,
+            "studied": sorted(studied_ids),
+            "counts": {"flag": len(flags), "tag": len(tag_notes)}}
+
+
 def has_work(later):
     """Will the run write anything for the cards not on the list?"""
     counts = (later or {}).get("counts") or {}

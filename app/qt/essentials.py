@@ -23,7 +23,7 @@ from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
 from PyQt6.QtGui import QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from app import settings_manager, theme, word_selection
+from app import scrub, settings_manager, theme, word_selection
 from app.qt import card_picker, strings, style
 from app.qt.card_picker import Chip, _f, _font
 from app.qt.tooltip import AboutMark
@@ -155,9 +155,9 @@ class Ruler(QWidget):
         for n in RULER_MARKS:                       # (the first mark from the ruler's left end: never cut)
             left = n == RULER_MARKS[0]
             p.drawText(QRectF(x(n) if left else x(n) - 20 * f, top, 40 * f, h),
-                       int(Qt.AlignmentFlag.AlignLeft if left else Qt.AlignmentFlag.AlignHCenter), str(n))
+                       int(Qt.AlignmentFlag.AlignLeft if left else Qt.AlignmentFlag.AlignHCenter), scrub.shown(str(n)))
         p.drawText(QRectF(0, top, w + 1, h), int(Qt.AlignmentFlag.AlignRight),
-                   strings.ESS_RULER_END.format(n=RULER_MAX))
+                   scrub.shown(strings.ESS_RULER_END.format(n=RULER_MAX)))
         p.end()
 
 

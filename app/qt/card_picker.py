@@ -34,7 +34,7 @@ from PyQt6.QtGui import QFont, QFontMetricsF, QPainter, QPen
 from PyQt6.QtWidgets import (QApplication, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout,
                              QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.connect import settings_values
 from app.qt import applog, bridge, motion, shadow, strings, style
 from app.qt.confirm import MARGIN, Scrim, _register
@@ -127,7 +127,7 @@ class Chip(QWidget):
         p.drawRoundedRect(r, radius, radius)
         p.setPen(style.qcolor(c[self.INK[self._tone]]))
         p.setFont(_font("chip"))
-        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self._text)
+        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), scrub.shown(self._text))
         p.end()
 
 

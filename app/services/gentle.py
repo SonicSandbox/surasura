@@ -15,7 +15,8 @@ the indexer, the store's helper, Koe; 順's catch-up) and this scheduler holds e
 
 **The order.** The window first → Generate (only when it's needed) → Connect's mining → the rest last, and only while
 the machine is quiet. *The rest* (`BACKGROUND`) is New arrivals' estimates, the indexer's catch-up, 順's re-order
-catch-up (and the one after a Generate), covers from online. A press always goes first: every rule here is asked of
+catch-up (and the one after a Generate), covers from online, the library store's helper (`library-maintain`: the
+window's start and focus checks; one at a time in every program, `library_store.spawn_maintain`). A press always goes first: every rule here is asked of
 automatic work only (the registry's `gate(…, automatic=True)`; a re-order a move asked for — `poke` — is never held),
 and nothing already running is stopped: a held kind waits **between its steps** (a job's start, the next estimate the
 arrivals worker is sent, the next round of covers, the next re-order catch-up).
@@ -47,8 +48,8 @@ import time
 
 from app.services import jobs as jobs_module
 
-BACKGROUND = frozenset({"indexer", "replan", "arrivals-ja", "arrivals-zh", "covers"})
-HEAVY = frozenset({"generate", "mine", "indexer", "replan", "sentence-corpus"})
+BACKGROUND = frozenset({"indexer", "replan", "arrivals-ja", "arrivals-zh", "covers", "library-maintain"})
+HEAVY = frozenset({"generate", "mine", "indexer", "replan", "sentence-corpus", "library-maintain"})
 GENERATE = "generate"
 MINE = jobs_module.CONNECT_KIND
 
@@ -82,6 +83,14 @@ def hold(kind):
         return gentle.hold(kind)
     except Exception:
         return None
+
+
+def press(kind, on):
+    """A press asks for work of `kind` (Finished's *What if* through the arrivals worker): while `on`, nothing holds
+    that kind — its job starts at once. Off when the press's last answer came. Nothing with no scheduler attached."""
+    gentle = _current[0]
+    if gentle is not None:
+        gentle.pressed(kind, on)
 
 
 def wait_turn(kind, stopped, sleep=None):
@@ -141,13 +150,14 @@ class Gentle:
         self._review_looked = float("-inf")
         self._battery_looked = float("-inf")
         self._open = None               # the last state the rules read (a change reschedules)
+        self._late = False              # the boot never told by START_HOLD_MAX_S (the watcher says so once)
+        self._pressing = set()          # kinds a press waits on now (`press`): never held
 
     # --- the window's calls ---------------------------------------------------------------------------------------- #
     def attach(self, watch=True):
         """The registry's gate, the machine read and (`watch`) the watcher's thread; this window's from here on
         (`hold`). -> self."""
         self._started_at = self._clock()
-        self._asked_at = self._started_at   # the start's background work is about to be asked: the first look asks Anki
         self._read_machine(first=True)
         self.registry.gate(self.check, automatic=True)
         _current[0] = self
@@ -163,10 +173,18 @@ class Gentle:
             if self._ready_at is not None:
                 return
             self._ready_at = self._clock()
+            self._asked_at = self._ready_at     # the start's background work comes now: the next look asks Anki
             began = self._started_at
         if began is not None:
             self._log(f"the window booted {self._ready_at - began:.1f} s after its services were made")
         self._reconsider()
+
+    def pressed(self, kind, on):
+        """`press`'s: `kind` let through while a press waits on it (the registry asked again at once)."""
+        with self._lock:
+            (self._pressing.add if on else self._pressing.discard)(kind)
+        if on:
+            self.registry.reschedule()
 
     def close(self):
         self._stop.set()
@@ -187,6 +205,8 @@ class Gentle:
     def _reason(self, kind, live):
         now = self._clock()
         with self._lock:
+            if kind in self._pressing:
+                return None                             # a press goes first
             if kind == GENERATE:
                 if not self._window_up(now, settle=False):
                     return WINDOW_FIRST                 # booted first, on every PC
@@ -220,8 +240,8 @@ class Gentle:
         if self._ready_at is None:
             if self._started_at is None or now - self._started_at < START_HOLD_MAX_S:
                 return False
-            self._ready_at = now        # never seen: the rest goes all the same (logged by the watcher)
-            self._log(f"the window's boot wasn't told in {START_HOLD_MAX_S:.0f} s: background work goes on")
+            self._ready_at = self._asked_at = now   # never told: the rest goes all the same (said by the watcher:
+            self._late = True                       # never a file written under the registry's lock)
         return not settle or now - self._ready_at >= SETTLE_S
 
     # --- the watcher ---------------------------------------------------------------------------------------------- #
@@ -249,8 +269,14 @@ class Gentle:
             busy = mean >= power.BUSY or (self.busy and mean >= power.QUIET)
             if busy != self.busy:
                 self.busy = busy
+                if not busy:
+                    with self._lock:
+                        self._held_since.clear()        # the next busy spell holds from its own start
                 self._log(f"this computer is busy ({mean:.0%} CPU): background work waits" if busy
                           else f"quiet again ({mean:.0%} CPU)")
+        if self._late:
+            self._late = False
+            self._log(f"the window's boot wasn't told in {START_HOLD_MAX_S:.0f} s: background work goes on")
         if now - self._battery_looked >= BATTERY_EVERY_S:
             self._read_machine()
         if self._wanted(now) and now - self._review_looked >= REVIEW_LOOK_S:
@@ -267,7 +293,10 @@ class Gentle:
         self._reconsider()
 
     def _wanted(self, now):
-        """Is background work waiting or running — a live automatic job of a background kind, or a `hold` lately?"""
+        """Is background work waiting or running — a live automatic job of a background kind, or a `hold` lately?
+        Never before the boot (no request to Anki while the window opens: everything waits for the boot anyway)."""
+        if self._ready_at is None:
+            return False
         if self._asked_at is not None and now - self._asked_at < WANTED_FOR_S:
             return True
         return any(j.kind in BACKGROUND and j.automatic for j in self.registry.live())

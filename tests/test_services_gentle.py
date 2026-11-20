@@ -204,7 +204,7 @@ def test_on_a_strong_pc_the_rest_runs_beside_a_generate_as_before():
 def test_on_every_pc_the_rest_waits_while_you_review_in_anki_and_goes_when_you_stop(gentle):
     w = _World(gentle=gentle, reviewing=True)
     w.g.ready()
-    w.later(G.SETTLE_S + 1)                            # the start's first look asks Anki (work is about to be asked)
+    w.later(G.SETTLE_S + 1)                            # the boot's first look asks Anki (the start's work comes now)
     assert w.review_asks == 1
     job, _ = w.submit("arrivals-zh")
     assert (job.state, job.reason) == (jobs.WAITING, G.REVIEWING)
@@ -217,7 +217,16 @@ def test_on_every_pc_the_rest_waits_while_you_review_in_anki_and_goes_when_you_s
 def test_anki_is_never_asked_while_no_background_work_waits():
     # why: the point is a lighter Anki — a request every few seconds for nothing would be the opposite
     w = _World(gentle=True)
-    w.clock.now += G.WANTED_FOR_S                      # past the start's own look
+    w.submit("indexer")
+    w.later(G.REVIEW_LOOK_S)
+    assert w.review_asks == 0, "never asked while the window opens"
+    w.g.ready()
+    w.later(G.TICK_S)
+    assert w.review_asks == 1, "the boot's own look: the start's work comes now"
+    for job in w.registry.live():
+        w.registry.cancel(job.id)
+    w.review_asks = 0
+    w.clock.now += G.WANTED_FOR_S
     for _ in range(5):
         w.later(G.REVIEW_LOOK_S)
     assert w.review_asks == 0
@@ -459,3 +468,163 @@ def test_a_covers_round_waits_for_its_turn(monkeypatch):
         time.sleep(0.01)
     fetcher.stop()
     assert rounds and rounds[0] == 3, "the round ran only once its turn came"
+
+
+def test_a_second_busy_spell_holds_from_its_own_start():
+    # why (review): the first spell's clock, kept, let the next spell hold nothing — it read as 300 s overdue at once
+    w = _World(gentle=False)
+    w.g.ready()
+    w.load.share = 0.95
+    w.later(G.TICK_S)
+    job, _ = w.submit("covers")
+    assert job.reason == G.BUSY_NOW
+    w.load.share = 0.1
+    for _ in range(int(G.LOAD_WINDOW_S) + 1):
+        w.later(G.TICK_S)
+    job.finish()
+    w.clock.now += G.HOLD_MAX_S * 3
+    w.load.share = 0.95
+    for _ in range(int(G.LOAD_WINDOW_S) + 1):
+        w.later(G.TICK_S)
+    again, _ = w.submit("covers")
+    assert again.reason == G.BUSY_NOW
+
+
+def test_a_press_lets_its_kind_through_every_hold_and_the_hold_comes_back_after():
+    w = _World(gentle=True, reviewing=True)
+    job, started = w.submit("arrivals-ja")
+    assert job.reason == G.WINDOW_FIRST
+    G.press("arrivals-ja", True)
+    assert job.state == jobs.RUNNING and started, "Finished's *What if*: its worker starts at once"
+    assert G.hold("arrivals-ja") is None and G.hold("arrivals-zh") == G.WINDOW_FIRST, "that kind alone"
+    G.press("arrivals-ja", False)
+    assert G.hold("arrivals-ja") == G.WINDOW_FIRST
+
+
+def test_a_pressed_estimate_goes_before_the_held_ones_and_a_long_hold_kills_no_healthy_worker(monkeypatch):
+    import queue
+    from app import path_utils
+    from app.services import arrivals as A
+    logged = []
+    monkeypatch.setattr(path_utils, "write_app_log", logged.append)
+    monkeypatch.setattr(A, "STUCK", 0.4)                  # a hold longer than this is no time the worker took
+    monkeypatch.setattr(G, "STEP_LOOK_S", 0.05)
+    w = _World(gentle=False)
+    w.g.ready()
+    client = A.ArrivalsWorker(w.registry, "ja", command=[sys.executable, "-c", _ECHO])
+    got = queue.Queue()
+    try:
+        client.stats(callback=got.put)
+        assert got.get(timeout=30)["op"] == "stats"
+        w.review = True
+        w.g._asked_at = w.clock.now
+        w.later(G.REVIEW_LOOK_S)
+        assert w.g.reviewing
+        held = client.estimate(JA, callback=got.put)
+        time.sleep(0.8)                                   # held past STUCK
+        pressed = client.estimate(ZH, callback=got.put, pressed=True)
+        first = got.get(timeout=15)
+        assert first["id"] == pressed, "your press goes before the estimate waiting for its turn"
+        w.review = False
+        w.later(G.REVIEW_LOOK_S)
+        assert got.get(timeout=15)["id"] == held
+    finally:
+        client.stop()
+        w.registry.quit(timeout=30)
+    deadline = time.monotonic() + 10
+    while not any(line.startswith("arrivals worker") for line in logged) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not any("stuck" in line for line in logged), logged
+
+
+# --- the library store's helper: one at a time (Sonic's report #93EQV7: five within 50 s of a start) -------------- #
+class _Running:
+    def __init__(self):
+        self.code = None
+
+    def poll(self):
+        return self.code
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_no_second_helper_starts_while_one_this_program_started_runs(monkeypatch, tmp_path, language):
+    from app import library_store as LS
+    from app.connect import power as P
+    started = []
+    monkeypatch.setattr(LS, "update_staged", lambda: False)
+    monkeypatch.setattr(LS, "_spawned", {})
+    monkeypatch.setattr(LS, "_owed", set())
+    monkeypatch.setattr(P, "popen_below_normal", lambda args, **k: started.append(args) or _Running())
+    first = LS.spawn_maintain(language)
+    assert first is not None and len(started) == 1
+    assert LS.spawn_maintain(language) is None and LS.spawn_maintain(language) is None, "a burst starts one"
+    assert len(started) == 1 and LS.take_owed(language) and not LS.take_owed(language), "the ask remembered once"
+    other = "zh" if language == "ja" else "ja"
+    assert LS.spawn_maintain(other) is not None, "another language's helper is its own"
+    first.code = 0
+    assert LS.spawn_maintain(language) is not None and len(started) == 3, "after its end, the next one starts"
+
+
+def test_no_helper_starts_while_another_program_holds_the_maintenance_lock(monkeypatch, tmp_path):
+    from app import library_store as LS
+    from app import path_utils
+    from app.connect import power as P
+    monkeypatch.setattr(path_utils, "get_data_path", lambda language: str(tmp_path / "data" / language))
+    monkeypatch.setattr(LS, "update_staged", lambda: False)
+    monkeypatch.setattr(LS, "_spawned", {})
+    monkeypatch.setattr(LS, "_owed", set())
+    started = []
+    monkeypatch.setattr(P, "popen_below_normal", lambda args, **k: started.append(args) or _Running())
+    assert not LS.maintain_running("ja")
+    assert not os.path.exists(LS.library_db_path("ja", str(tmp_path / "data" / "ja")) + ".lock"), \
+        "a look creates nothing"
+    db = LS.library_db_path("ja", str(tmp_path / "data" / "ja"))
+    holder = LS.MaintenanceLock(db)
+    assert holder.try_acquire()                         # an analyzer's in-process steps, the Content Manager's helper
+    try:
+        assert LS.maintain_running("ja") and LS.spawn_maintain("ja") is None and not started
+    finally:
+        holder.close()
+    assert LS.spawn_maintain("ja") is not None and len(started) == 1
+
+
+def test_the_windows_helper_check_waits_for_the_boot_and_asks_again(monkeypatch):
+    from app import library_store as LS
+    from app.services import chores as C
+    held = {"now": G.WINDOW_FIRST}
+    monkeypatch.setattr(G, "hold", lambda kind: held["now"] if kind == "library-maintain" else None)
+    monkeypatch.setattr(LS, "check_mode", lambda language, data_dir, busy_wait=None: ("store", ""))
+    opened = []
+    monkeypatch.setattr(LS, "open_store", lambda *a, **k: opened.append(1))
+    timers = []
+    chores = C.Chores(jobs.JobRegistry(), _NoSettings(), "ja", update_staged=lambda: False,
+                      timer=lambda delay, call: timers.append((delay, call)) or _Timer(), needed=lambda *a: False,
+                      log_folder=None)
+    try:
+        chores.worker.put(chores._maintain)
+        chores.worker.put(chores._maintain)
+        chores.worker.idle(5)
+        assert not opened, "nothing read, nothing started before the boot"
+        assert [d for d, _c in timers] == [C.MAINTAIN_AGAIN], "one check waits, however many asked"
+        held["now"] = None
+        timers[0][1]()
+        chores.worker.idle(5)
+        assert opened, "asked again once its turn came"
+    finally:
+        chores.close(store=False)
+
+
+class _NoSettings:
+    def get(self):
+        return {}
+
+    def set(self, changes):
+        pass
+
+    def flush(self, timeout=None):
+        return True
+
+
+class _Timer:
+    def cancel(self):
+        pass

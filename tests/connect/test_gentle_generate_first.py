@@ -39,6 +39,7 @@ def test_the_next_step_waits_for_a_running_generate_only_on_a_gentle_pc(monkeypa
                                                                          expect):
     monkeypatch.setattr(power, "gentle", lambda *a, **k: gentle)
     monkeypatch.setattr(locks, "in_use", lambda name, *a, **k: generating and name == "results")
+    monkeypatch.setattr(locks, "read_holder", lambda name: {"verb": "Generate", "pid": 1})
     steps = runner.Steps({"connect_enabled": True, "anki_connect_url": "http://127.0.0.1:8765"})
     assert steps.blocked("ja") == expect
 
@@ -93,3 +94,15 @@ def test_the_run_says_how_this_pc_runs_its_heavy_jobs(tmp_path, ledger, monkeypa
     assert "a run begins (ja): one heavy job at a time on this computer (8 logical CPUs)" in text
     assert "the run ends after" in text
     assert "Connect: job" in text and "batch" in text and "made" in text
+
+
+@pytest.mark.parametrize("verb, expect", [("Generate", runner.GENERATE_FIRST), ("Generate (waiting)", runner.GENERATE_FIRST),
+                                          ("Sorting your library again", None), ("Putting your library back", None),
+                                          (None, None)])
+def test_only_a_generates_hold_of_results_makes_connect_wait(monkeypatch, anki_open, verb, expect):
+    # why (review): a sort or a put-back holds `results` too, briefly — "Waiting for Generate" would be untrue
+    monkeypatch.setattr(power, "gentle", lambda *a, **k: (True, "8 logical CPUs"))
+    monkeypatch.setattr(locks, "in_use", lambda name, *a, **k: name == "results")
+    monkeypatch.setattr(locks, "read_holder", lambda name: {"verb": verb, "pid": 1} if verb else None)
+    steps = runner.Steps({"connect_enabled": True, "anki_connect_url": "http://127.0.0.1:8765"})
+    assert steps.blocked("ja") == expect

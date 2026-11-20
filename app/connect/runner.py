@@ -1003,11 +1003,15 @@ def _blocked(steps, lang, resume, asked=False):
 
 
 def _generate_first():
-    """Haya-LD: a gentle PC (`power.gentle`) with a Generate running (its `results` lock held)? Never raises."""
+    """Haya-LD: a gentle PC (`power.gentle`) with a Generate running — `results` held by a holder whose verb is a
+    Generate's (the analyzer's, the window's wait for it); a sort or a put-back of the library holds it too, briefly,
+    and is no Generate. A holder that can't be read is none. Never raises."""
     try:
         from app import locks
         from app.connect import power
-        return power.gentle()[0] and locks.in_use("results")
+        if not (power.gentle()[0] and locks.in_use("results")):
+            return False
+        return str((locks.read_holder("results") or {}).get("verb") or "").startswith("Generate")
     except Exception:
         return False
 

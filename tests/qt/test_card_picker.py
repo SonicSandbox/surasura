@@ -265,3 +265,31 @@ def test_done_tells_its_caller_and_leaving_never_does(qapp):
     picker.go(3)
     picker.done.click()
     assert told == ["yours"] and host.store.calls == []
+
+
+def test_undo_leaves_a_setting_changed_since_done_as_it_is(qapp):
+    # Why: Undo puts back only what Done wrote — a choice changed since (in Fine-tune, another window) stays (the
+    # store's own value check, §6.11).
+    host = Host(dict(JUNBAN_ON, connect_backlog_cap={"ja": 300, "zh": 150}))
+    picker = _open(host)
+    picker.words._choose(2)
+    picker.go(3)
+    picker.wait._choose(picker.wait.values().index(600))
+    picker.done.click()
+    host.store.set({"connect_mine_words": "unknown"})          # changed in Fine-tune since
+    (_message, undo), = host.toasts.shown
+    undo()
+    assert host.store.calls[-1] == ({"connect_backlog_cap": {"ja": 300, "zh": 150}}, None)
+    assert host.store.get()["connect_mine_words"] == "unknown"
+
+
+def test_essentials_showing_never_starts_the_worker_but_asks_one_already_running(qapp):
+    # Why: opening Settings must stay light — the warm worker's process starts only on the picker's open (the press);
+    # a worker already running is asked, so the card shows the learner's own episode as soon as it can.
+    host = Host(JUNBAN_ON)
+    sampler = card_picker.sampler(host, "ja", host)
+    host.worker.running = False
+    assert sampler.ask(start=False) is False and host.worker.asked == 0
+    host.worker.running = True
+    assert sampler.ask(start=False) is True and host.worker.asked == 1
+    assert sampler.ask() is True and host.worker.asked == 2                   # the picker's open: asked either way

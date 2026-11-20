@@ -17,7 +17,7 @@ With no top episode yet (no library, no list, Connect's mine line empty), or one
 picture needs (a word alone on its line and a line holding a second new word), the bundled sample is drawn
 (`FALLBACK`: the shipped 喫茶店の朝, four lines; Chinese: 孔乙己's), marked `sample` so the window names it a sample.
 
-Pure apart from `sample` / `top_paths` (they read the episode files and the library store, write nothing).
+Pure apart from `sample` / `top` (they read the episode files and the library store, write nothing).
 """
 import os
 
@@ -143,7 +143,10 @@ def sample(view, paths, listed, carded=None, send_grammar=True, read=None):
     if not paths:
         return None
     read = read or (lambda path: cues.read(path, view.language))
-    first = read(paths[0])
+    try:
+        first = read(paths[0])
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None                                 # the first episode can't be read: the bundled sample is drawn
     tokens = cues.tokens(first, view.language, view.script, view.tokenizer)        # read once, picked three times
     picks = {mode: arrivals.pick_cues(view, first, listed, send_grammar, mode=mode, carded=carded,
                                       tokens=tokens)["words"] for mode in MODES}
@@ -155,28 +158,34 @@ def sample(view, paths, listed, carded=None, send_grammar=True, read=None):
             break                                   # every word left has its other episode already
         try:
             other = arrivals.pick_cues(view, read(path), listed, send_grammar, mode="i1", carded=carded)["words"]
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue                                # an episode that can't be read: as Connect, it carries nothing
+        except Exception:                           # an episode that can't be read or picked: it carries nothing,
+            continue                                # and the rest of the picture stands
         elsewhere |= {_key(w) for w in other} & wanted
     return picture(picks, elsewhere, source=os.path.splitext(os.path.basename(paths[0]))[0])
 
 
-def top_paths(language):
-    """The subtitle files of Connect's mine line for `language`, in its order (`connect.library.mine_line`: Current's
-    top N available items) — a book, a text or an audiobook left out (Anki Miner mines none of them from a subtitle).
-    [] with no store. Reads the store only (role `reader`)."""
+def top(language):
+    """(the subtitle files of Connect's mine line for `language`, in its order — `connect.library.mine_line`: Current's
+    top N available items, a book, a text or an audiobook left out: Anki Miner mines none of them from a subtitle —,
+    every word Connect has made a card for: `library.made_words_all`, never made again) -> ([], set()) with no store.
+    Reads the store only (role `reader`)."""
+    import sqlite3
     from app import cues, library_store
     from app.connect import library
     from app.path_utils import get_data_path, get_user_files_path
     try:
         store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
                                          role="reader", busy_wait=0.5)
-    except library_store.StoreError:
-        return []
+    except (library_store.StoreError, sqlite3.Error):
+        return [], set()
     if store is None:
-        return []
-    with store:                                     # (closed at its end)
-        items = [store.item(i) for i in library.mine_line(store)]
+        return [], set()
+    try:
+        with store:                                 # (closed at its end)
+            items = [store.item(i) for i in library.mine_line(store)]
+            made = library.made_words_all(store)
+    except (library_store.StoreError, sqlite3.Error):
+        return [], set()                            # a busy or damaged store: no line read (the sample is drawn)
     data = get_data_path(language)
     out = []
     for item in items:
@@ -184,4 +193,4 @@ def top_paths(language):
         if not rel.lower().endswith(cues.SUBTITLES) or library.waits_for(item):
             continue
         out.append(os.path.join(data, *str(rel).replace("\\", "/").split("/")))
-    return out
+    return out, set(made)

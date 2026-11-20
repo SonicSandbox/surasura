@@ -24,6 +24,7 @@ GUI_Design_Guidelines_Qt: a `motion.Overlay` opened as a `dialog` over the scrim
 registered with the window's router; Tab goes round its own controls; every button and control tipped; every word in
 `strings.py`; colours from the theme only.
 """
+import functools
 import html
 
 from PyQt6 import sip
@@ -209,6 +210,7 @@ class LineRow:
 
     def remove(self):
         self.into.removeItem(self.box)
+        self.box.setParent(None)                        # (its own layout goes with it: nothing kept per rebuild)
         for w in [self.sentence, self.badge] + self.chips:
             w.hide()
             w.deleteLater()
@@ -327,7 +329,11 @@ class Sampler(QObject):
         if ask is None or (not start and not getattr(worker, "running", False)):
             return False
         self.asked += 1
-        ask(callback=self._relay.call)
+        try:
+            ask(callback=self._relay.call)
+        except Exception as e:                      # a worker that can't be asked: the picture as it is
+            applog.log("settings", f"Which words get a card: the worker couldn't be asked: {e}")
+            return False
         return True
 
     def _got(self, answer):
@@ -360,20 +366,32 @@ def mine_line(shell):
     return LIBRARY_LINE if value is None else int(value)
 
 
+@functools.lru_cache(maxsize=1)
+def _junban_here():
+    """{"modules.junban"} when 順 is in this Surasura (looked for once a process: a module never comes or goes while
+    it runs), else an empty set."""
+    import importlib.util
+    try:
+        return frozenset({"modules.junban"}) if importlib.util.find_spec("modules.junban") is not None else frozenset()
+    except (ImportError, ValueError):
+        return frozenset()
+
+
 def ready_shown(settings, language, found=None):
     """Step ②: Card order 順 there (`found`: the modules a look found; None: looked for here) and on, and its *i+1
     first* applies (Japanese, the row's own rule: `settings_catalog`'s `junban_ready_first` row)."""
     from app.qt import settings_catalog as catalog
     if found is None:
-        import importlib.util
-        try:
-            found = {"modules.junban"} if importlib.util.find_spec("modules.junban") is not None else set()
-        except (ImportError, ValueError):
-            found = set()
+        found = _junban_here()
     try:
         return bool(catalog.ROW["junban_ready_first"].when(settings, language, frozenset(found)))
     except Exception:
         return False
+
+
+def _thaw(value):
+    from app.services import settings as settings_service
+    return settings_service.thaw(value)
 
 
 def _cap(settings):
@@ -607,8 +625,9 @@ class CardPicker(motion.Overlay):
         self.words.set_options(self._word_options(picture))
         if self.draft is not None:
             self.words.set_value(self.draft["words"])
-        two = next((line for line in picture["lines"] if line["new"] > 1), picture["lines"][0])
-        self.two_line.setText(line_html(two))
+        lines = picture.get("lines") or []
+        two = next((line for line in lines if line["new"] > 1), lines[0] if lines else None)
+        self.two_line.setText(line_html(two) if two is not None else "")
         self.place()
 
     # --- stepping ---------------------------------------------------------------------------------------------- #
@@ -667,12 +686,8 @@ class CardPicker(motion.Overlay):
         before, old_line = dict(self.before), self.before["ahead"]
         self.close()
         done, self.on_done = self.on_done, None
-        if done is not None:
-            try:
-                done()
-            except Exception as e:                  # a caller's tick never stops the save
-                applog.log("settings", f"Which words get a card: Done's callback failed: {e}")
         if not changes and line is None:
+            self._told(done)
             return None
         if changes and store is not None:
             store.set(changes)
@@ -686,8 +701,13 @@ class CardPicker(motion.Overlay):
         undo_changes, _line = changes_of(self.draft, before, settings, self.language)    # each moved key as it was
 
         def undo():
+            """Each key back as it was — only where it still holds what Done wrote (one changed since stays: the
+            store's own value check, §6.11)."""
             if undo_changes and store is not None:
-                store.set(undo_changes)
+                now = store.get()
+                back = {k: v for k, v in undo_changes.items() if _thaw(now.get(k)) == changes.get(k)}
+                if back:
+                    store.set(back)
             if line is not None and old_line is not None:
                 writer = getattr(services, "writer", None)
                 if writer is not None:
@@ -697,7 +717,18 @@ class CardPicker(motion.Overlay):
         toasts = getattr(self.shell, "toasts", None)
         if toasts is not None:
             toasts.show(strings.PICK_SAVED.format(name=name), undo=undo)
+        self._told(done)
         return self.written
+
+    @staticmethod
+    def _told(done):
+        """Done's caller told, after the writes (Your path's step ④: the learner picked); its fault never stops one."""
+        if done is None:
+            return
+        try:
+            done()
+        except Exception as e:
+            applog.log("settings", f"Which words get a card: Done's callback failed: {e}")
 
     # --- the overlay's place, its Tab ring, its close ---------------------------------------------------------- #
     def place(self):
@@ -787,6 +818,7 @@ def open_card_picker(shell, found=None, window=None, language=None, on_done=None
     if picker is None or not _alive(picker) or picker.language != language:
         if picker is not None and _alive(picker):
             picker.close()
+            window.removeEventFilter(picker)
             picker.deleteLater()
         picker = window.__dict__["_card_picker"] = CardPicker(window, shell, language)
     services = getattr(shell, "services", None)

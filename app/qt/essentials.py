@@ -373,11 +373,16 @@ class EssentialsCards(QWidget):
         shell = self.page.shell
         if shell is not None and (self.sampler is None or not _alive(self.sampler) or self.sampler.language != language):
             self.sampler = card_picker.sampler(shell, language, self.page.window())
-            self.sampler.changed.connect(lambda: self._paint_picture(self.page._settings(), self.page.language))
+            self.sampler.changed.connect(self._picture_landed)
         picture = self.sampler.picture if self.sampler is not None else card_picker.card_sample.fallback(language)
         self.picture.set_picture(picture)
         from app.qt import settings_catalog as catalog
         self.picture.set_mode(catalog.value_of(settings, "connect_mine_words") or "list")
+
+    def _picture_landed(self):
+        """The worker's picture came (the sampler outlives a page made again: a gone page's card does nothing)."""
+        if _alive(self) and _alive(self.page):
+            self._paint_picture(self.page._settings(), self.page.language)
 
     @staticmethod
     def _set(label, text):

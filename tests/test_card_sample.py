@@ -247,11 +247,12 @@ def test_the_worker_answers_no_picture_without_a_list_and_reads_nothing_twice(tm
     worker.current = lambda force=False: warm
     calls = []
     monkeypatch.setattr(card_sample, "sample", lambda *a, **k: calls.append(a) or {"lines": []})
-    monkeypatch.setattr(card_sample, "top_paths", lambda language: [EPISODES["ja"]])
+    monkeypatch.setattr(card_sample, "top", lambda language: ([EPISODES["ja"]], {"モカ"}))
     assert worker.answer({"id": 1, "op": "sample"})["picture"] is None and not calls       # no plan: no list
     warm.update(order=object(), listed={("急に", "キュウニ"): 0}, signature="s1")
     first = worker.answer({"id": 2, "op": "sample"})
     assert first["picture"] == {"lines": []} and not first["cached"] and len(calls) == 1
+    assert "モカ" in calls[0][3]                                # a word Connect made counts as carded (never again)
     assert worker.answer({"id": 3, "op": "sample"})["cached"] and len(calls) == 1
     gone = str(tmp_path / "gone.srt")                                     # a file gone since: never read
     assert worker.answer({"id": 4, "op": "sample", "paths": [gone]})["picture"] is None and len(calls) == 1

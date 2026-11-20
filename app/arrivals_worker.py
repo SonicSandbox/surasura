@@ -41,7 +41,7 @@ from collections import OrderedDict
 
 IDLE_SECONDS = 120              # Sonic (E2.2-2): "could even be after 1-2 minutes"
 KEEP = 64                       # answers (and arrivals read) kept, newest last
-SAMPLE_EPISODES = 20            # Mado-EZC's picture: the mine line's episodes read at most (its default, 20)
+SAMPLE_EPISODES = 40            # Mado-EZC's picture: the mine line's episodes read at most (the picker's longest)
 # The run signature's parts a view must share with its plan for an answer to be exact (`plan_rules.part_digests`; the
 # files are the arrivals' own business, the remembered band the band gate's).
 MATCHED = ("known", "lists", "freq", "settings", "args", "engine")
@@ -348,20 +348,22 @@ class Worker:
     def sample(self, request):
         """Mado-EZC, *Which words get a card?*'s picture (`card_sample.sample`): the mine line's first episode counted
         by Connect's picker for each choice, *another episode* from the rest of the line (`paths`, else the store's mine
-        line, at most `SAMPLE_EPISODES`), with the list and the cards the last sync saved. No list yet (no plan, or a
+        line, at most `SAMPLE_EPISODES`), with the list, the cards the last sync saved and the words Connect made. No list yet (no plan, or a
         Generate writing it): no picture (the window draws the bundled one). Kept by the files' stats, the plan and the
         known words: asked again, nothing is read again (S19)."""
         from app import anki_sync
         from app.services import card_sample
         warm = self.current()
-        paths = request.get("paths")
-        paths = list(card_sample.top_paths(self.language) if paths is None else paths)[:SAMPLE_EPISODES]
+        paths, made = request.get("paths"), set()
+        if paths is None:
+            paths, made = card_sample.top(self.language)
+        paths = list(paths)[:SAMPLE_EPISODES]
         listed = self._list_of(warm) if warm["order"] is not None else {}
-        try:
-            carded = set(anki_sync.backlog_keys(self.language))
-        except Exception as e:                      # no backlog read: every word counts as without a card
+        try:                                        # a card: the last sync's backlog, and every word Connect made
+            carded = set(anki_sync.backlog_keys(self.language)) | made
+        except Exception as e:                      # no backlog read: only the words Connect made
             print(f"arrivals worker: the backlog couldn't be read: {e}", file=sys.stderr)
-            carded = set()
+            carded = made
         stats = []
         for path in paths:
             try:
@@ -369,7 +371,9 @@ class Worker:
                 stats.append((os.path.normcase(os.path.abspath(path)), st.st_mtime_ns, st.st_size))
             except OSError:
                 stats.append((path, None, None))
-        key = ("sample", tuple(stats), warm["signature"], self.known_sig, len(listed), len(carded))
+        # (the list is the plan's: its run signature; the cards, the backlog's keys — by their contents, never a count)
+        key = ("sample", tuple(stats), warm["signature"], self.known_sig, hash(frozenset(listed.items())),
+               hash(frozenset(carded)))
         held = self.answers.get(key)
         if held is not None:
             self.answers.move_to_end(key)

@@ -728,12 +728,15 @@ PHASE_SHIFT_PAUSE_ALL = "• Shift-click: pause all five"
 PHASE_SHIFT_RESUME_ALL = "• Shift-click: resume all five"
 # ... and each circle's hover says what its pause holds (the map's model: Mado-PZ's table)
 PHASE_HOLDS_LINE = "Its pause holds {what}"
+# Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself; PROVISIONAL words): Connect's own steps are
+# held by the circle they belong to (its Generate by ス, its Backfill and re-order by 順, its syncs by Anki), hato's new
+# files wait in New arrivals while 届 is paused, and Anki's pause holds the window's own look at Anki too
 PHASE_HOLDS = {
-    "arrivals": "New arrivals' reading, YouTube downloads and hato's look",     # (never the folder looks)
-    "surasura": "the automatic Generate and reading your files",
+    "arrivals": "New arrivals' reading, YouTube downloads, hato's look and placing hato's new files",  # (not folder looks)
+    "surasura": "every automatic Generate (for Cards made for you too) and reading your files",
     "miner": "the cards Anki Miner makes by itself",
-    "junban": "the automatic re-order and Backfill",
-    "anki": "the automatic known-words sync and the count of cards waiting in Anki",
+    "junban": "the automatic re-order and Backfill (for Cards made for you too)",
+    "anki": "the automatic syncs (known words and AnkiWeb), Open Anki for me and the count of cards waiting in Anki",
 }
 # A press held by a pause, said where it was pressed: one shared line naming the circle to click (Mado-PZ's Decision 2,
 # Sonic kept it) — the circle as the strip shows it: its mark, or a logo's name

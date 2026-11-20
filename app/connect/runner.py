@@ -221,6 +221,15 @@ NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Cards made for you was switched off."
 PAUSED = "Paused: click Anki Miner's circle at the bottom left to go on"    # Mado-PZ: the run's stop and a cut job's
 #   wait (never a Stop of yours: it goes on from its step at the next start, `_stopped`)
+# Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself): Connect's own steps that belong to another
+# circle wait on that circle's pause — ス its Generate, 順 its Backfill and re-order, Anki its syncs (the session's, the
+# known-words sync, the pending AnkiWeb sync at its exit). The wait's words are the window's one shared line
+# (`app/qt/strings.PAUSED_WAITS`, a test holds them together); a job parked on one goes on from its step once that
+# circle resumes (`_woken`; the window's resume kicks Connect)
+PAUSED_WAITS = "{what} · {circle} is paused · click it to resume"
+GENERATE_PAUSED = PAUSED_WAITS.format(what="Your list waits for its Generate", circle="ス")
+JUNBAN_PAUSED = PAUSED_WAITS.format(what="Backfill and the re-order wait", circle="順")
+CIRCLE_WAITS = {"surasura": GENERATE_PAUSED, "junban": JUNBAN_PAUSED}     # its circle -> the wait's words (`_woken`)
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
 REPLACED = "Surasura was updated: the new version makes the cards from here."
 MINER_ABSENT = "Anki Miner isn't installed"
@@ -641,6 +650,10 @@ def _woken(steps, ledger, parked):
     if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
         for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
             del parked[job_id]
+    for circle, reason in CIRCLE_WAITS.items():     # Kantan-G: one parked on ス's / 順's pause, that circle resumed
+        if not _circle_paused(steps, circle):
+            for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == reason]:
+                del parked[job_id]
     if woke != kick.VIDEOS:
         return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
@@ -836,6 +849,9 @@ def _after_mining(steps, ledger, lang, out, on_battery=False):
 def _follow_up(steps, lang, ledger):
     """F11's one re-order from the Generate's new plan (a move made meanwhile is served at its time). Anki closed, a
     review, a skip or a failure: the re-sort stays owed."""
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — the re-sort stays owed (the next job's step pays it)
+        log.info("Connect: 順 is paused: the follow-up re-order waits (%s)", lang)
+        return
     try:
         if _blocked(steps, lang, None) is not None:
             return
@@ -2221,6 +2237,19 @@ def _cut_by_pause(steps, jid):
         pass
 
 
+def _circle_paused(steps, circle):
+    """Kantan-G: is `circle` paused at the bar (`Steps.circle_paused`)? A stand-in without the look, or a look that
+    fails: no."""
+    look = getattr(steps, "circle_paused", None)
+    if look is None:
+        return False
+    try:
+        return bool(look(circle))
+    except Exception:
+        log.warning("Connect couldn't look for a pause of %s; it goes on", circle, exc_info=True)
+        return False
+
+
 def _paused_now(steps):
     """Mado-PZ: is Anki Miner's circle paused (`Steps.paused`)? A stand-in without the look, or a look that fails: no."""
     paused = getattr(steps, "paused", None)
@@ -2442,6 +2471,8 @@ def _fill(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering")
         return
     _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — its cards made, Backfill and the re-order wait
+        raise Wait(JUNBAN_PAUSED, look=False, resume="filling")
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2478,6 +2509,8 @@ def _order(steps, ledger, lang, job):
     ledger.set_state(jid, "ordering")
     if not ledger.undo_record(jid) and not ledger.resort_owed(lang):
         return
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — the re-order waits for its resume
+        raise Wait(JUNBAN_PAUSED, look=False, resume="ordering")
     wait = _blocked(steps, lang, "ordering", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2663,6 +2696,12 @@ class Steps:
         job, every second by its watch): the run stops there and a job under way is cut resumably (`_stopped`), its
         jobs kept in the ledger for the next start. The file is read again only when it changed (its size and time);
         one that can't be read is no pause (`enabled` says)."""
+        return self.circle_paused("miner")
+
+    def circle_paused(self, circle):
+        """Kantan-G: is `circle` (a `settings_manager.PAUSABLE` name) paused at the bar, settings.json as it is now —
+        read again only when it changed (its size and time; one read for every circle). A file that can't be read is
+        no pause."""
         from app import path_utils, settings_manager
         from app.cli import verbs
         try:
@@ -2671,16 +2710,17 @@ class Steps:
         except OSError:
             stamp = None
         held = getattr(self, "_paused_seen", None)
-        if stamp is not None and held is not None and held[0] == stamp:
-            return held[1]
-        try:
-            now = settings_manager.paused(verbs.settings(), "miner")
-        except Exception:
-            now = False
-        self._paused_seen = (stamp, now)
-        return now
+        if stamp is None or held is None or held[0] != stamp:
+            try:
+                held = self._paused_seen = (stamp, settings_manager.paused(verbs.settings()))
+            except Exception:                   # unreadable now (held by another program): asked again next time,
+                return circle in (held[1] if held is not None else ())     # the last pause read kept meanwhile
+        return circle in held[1]
 
     def settle(self):
+        if _circle_paused(self, "anki"):    # Kantan-G: Anki's circle paused — the pending sync stays pending (S2:
+            log.info("Connect: Anki's circle is paused: its pending AnkiWeb sync waits")    # Anki's close carries it)
+            return
         from app.cli.verbs import _session
         session = _session(self.loaded)
         if session is not None:
@@ -3200,16 +3240,23 @@ class Steps:
         holds = verbs._results_language()
         if WAIT_FOR_OTHER_LIST and holds and holds != lang:
             raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds)))
-        anki_session.begin(self.url, self.loaded)
         ns = SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False)
-        try:
-            verbs.known_sync(ns)
-        except CliError as e:
-            if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
-                raise (_anki_wait(self.url) if e.code == "anki-closed" else Wait(e.message)) from None
-            raise Needs("known-sync", e.message) from None
+        if _circle_paused(self, "anki"):
+            # Kantan-G: Anki's circle paused — no session sync, no known-words sync (mining's own writes still sync
+            # first, S1: a write never goes over a review made on the phone); the words known so far are the run's
+            log.info("Connect: Anki's circle is paused: no session or known-words sync this run (%s)", lang)
+        else:
+            anki_session.begin(self.url, self.loaded)
+            try:
+                verbs.known_sync(ns)
+            except CliError as e:
+                if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
+                    raise (_anki_wait(self.url) if e.code == "anki-closed" else Wait(e.message)) from None
+                raise Needs("known-sync", e.message) from None
         got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
         if got.generate == "first":
+            if _circle_paused(self, "surasura"):    # Kantan-G: ス paused — the episodes wait for its resume
+                raise Wait(GENERATE_PAUSED, look=False)
             self._generate(ns, "Generate didn't finish, so your cards wait for a current list.", ledger)
             got = self.current(lang, fresh=True)
         if got.generate == "after":
@@ -3289,6 +3336,8 @@ class Steps:
         plan read again from its new list), False when none was owed. Raises Wait / Needs from the Generate (mining
         already done: only the list's refresh waits). The Generate going through is what counts: a plan that can't
         be read again just now (a busy store) is the follow-up's to read (review H5)."""
+        if lang in self._after and _circle_paused(self, "surasura"):
+            raise Wait(GENERATE_PAUSED, look=False)     # Kantan-G: ス paused — owed, as a Generate that waits is
         why = self._after.pop(lang, None)
         if why is None:
             return False

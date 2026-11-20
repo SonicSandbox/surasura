@@ -662,13 +662,17 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         # too (65 kana-only; measured 2026-09-26) took a list slot — だいぶ on the loanword ダイブ's row,
         # 好き in 好く's Forms, ぐっと on a グッ row misread from ぐっちゃぐっちゃ. It leaves the list with
         # its key, so nothing later ("i+1 first", the touch-ups) places it there.
+        # Kyou-KN: a kana card is read in its own sentence (the one `find_unbolded` marked, with Connect's preview)
         word = card.get("word") or ""
+        sentence = connect.sentence_of((notes or {}).get(card.get("note")))
         if answered is None:
-            is_known = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+            is_known = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples, sentence=sentence)
         else:
-            is_known = answered.get(word)
+            memo = _known_key(word, sentence)
+            is_known = answered.get(memo)
             if is_known is None:
-                is_known = answered[word] = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+                is_known = answered[memo] = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples,
+                                                          sentence=sentence)
         if is_known:
             card.update(tier="known", sort=(), why="known", key="")
             continue
@@ -844,7 +848,7 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
 BANNER_MIN = 10
 
 
-def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None):
+def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None, sentence=None):
     """Is a card's word one the learner already knows — 順's "known" tier (Junban_Backlog_Spec §5.5)?
 
     The word itself on the known or ignore lists, or ONE word — an ending written onto it aside
@@ -864,9 +868,19 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
 
     A word the dictionary keeps apart from the one it is read as is never known through it
     (`match.word_of_its_own`: 心する is no 心 + する, 揚げる no 上げる, ことに — 殊に — no 事 + に): only
-    as itself."""
+    as itself.
+
+    `sentence` (Kyou-KN, 2026-11-20): the card's own sentence field. A word written in kana alone (more than
+    one kana) is then read THERE, as Generate reads it (`_in_its_sentence`): known when Generate would count that word
+    known (`known`) — まく in 水をまく is 撒く, never the 膜 it is alone nor the bare まく a known entry wrote, and
+    まみれ in 泥まみれ 泥塗れ, a word of its own. The letters and the lone reading only when no sentence places it."""
     if not word:
         return False
+    if tokenize and sentence and len(word) > 1 and _KANA_ONLY_RE.match(word):
+        placed = _in_its_sentence(word, sentence, tokenize)
+        if placed is not None:
+            tokens, token = placed
+            return not match.word_of_its_own(word, tokens, token) and bool(known(token[0], token[1]))
     if word in known_lemmas or word in ignore:
         return True
     if tokenize:
@@ -880,9 +894,49 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
     return False
 
 
+def _in_its_sentence(word, sentence, tokenize):
+    """Kyou-KN: where a card's kana `word` sits in its `sentence` field, read as Generate reads that sentence ->
+    `(the tokens in its span, the token that is the card's word)`, or None when the sentence doesn't place it.
+
+    The span: the bold mark's, else the word as written (`match.sentence_span`), else the word found by its forms
+    (`connect.find_by_forms`, K56: まいた for まく; two words that could each be it — never guessed). The token: the one
+    in the span that is the word by its forms — its lemma, dictionary spelling, surface or reading, kana as kana (撒い
+    of まいた: 撒く, マク) — else the one the span starts in (泥まみれ for a まみれ marked inside it)."""
+    from modules.junban import connect
+    found = match.sentence_span(sentence, word)
+    if found is None:
+        found = connect.find_by_forms(sentence, word, tokenize)
+        if found is None or found == connect.UNSURE:
+            return None
+    text, start, end = found
+    inside, at = [], 0
+    for token in tokenize(text):
+        surface = token[2]
+        pos = text.find(surface, at) if surface else -1
+        if pos < 0:
+            continue
+        at = pos + len(surface)
+        if pos < end and at > start:
+            inside.append(token)
+    if not inside:
+        return None
+    wanted = match.fold_kana(word)
+    for token in inside:
+        orth = token[3] if len(token) > 3 else token[2]
+        if wanted in {match.fold_kana(name or "") for name in (token[0], orth, token[2], token[1])}:
+            return inside, token
+    return inside, inside[0]
+
+
+def _known_key(word, sentence):
+    """A card's "known?" answer's key in a job's memo: a kana word's answer is its sentence's (`is_known_word`)."""
+    return (word, sentence or "") if _KANA_ONLY_RE.match(word or "") else word
+
+
 def known_test(language, settings, tokenizer=None):
-    """-> `is_known(word)` for a card's word, read the way `_place_the_rest` reads it. `tokenizer`
-    reuses a `JapaneseTokenizer` the caller already holds (one fugashi tagger per window, not two)."""
+    """-> `is_known(word, sentence=None)` for a card's word (and its sentence field), read the way `_place_the_rest`
+    reads it. `tokenizer` reuses a `JapaneseTokenizer` the caller already holds (one fugashi tagger per window, not
+    two)."""
     from app import analyzer
     analyzer.SANITIZE_JA = language == "ja"       # as every run sets it; see `_place_the_rest`
     known_tuples, known_lemmas, ignore = _known_sets(language, settings)
@@ -897,8 +951,10 @@ def known_test(language, settings, tokenizer=None):
         # Simplified list's 学习 (Patterns_Chinese_Spec.md §7, S7). Japanese is never converted.
         from app.zh_script import convert
         script = _script(settings)
-        return lambda word: is_known_word(convert(word or "", script), known, known_lemmas, ignore, tokenize)
-    return lambda word: is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+        return lambda word, sentence=None: is_known_word(convert(word or "", script), known, known_lemmas, ignore,
+                                                         tokenize)
+    return lambda word, sentence=None: is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples,
+                                                     sentence=sentence)
 
 
 def _known_sets(language, settings):

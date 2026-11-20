@@ -141,7 +141,7 @@ def test_an_arrival_outside_the_data_folder_is_read_alone(tmp_path):
     store, data_dir, paths, _arrival = _library(tmp_path, "ja", JA_SHOW, "Hoshi Matsuri - 04.ja.srt")
     try:
         view = _view("ja", store, data_dir)
-        outside = tmp_path / "data" / "Hoshi Matsuri"
+        outside = tmp_path / "data" / os.path.basename(JA_SHOW)        # the work's own folder name
         outside.mkdir()
         copy = shutil.copy(paths[-1], outside / "Hoshi Matsuri - 04.ja.srt")
         read = _read(view, str(copy), data_dir)
@@ -158,6 +158,7 @@ def test_a_works_folder_is_one_work_and_a_loose_file_its_own(tmp_path):
     shutil.copytree(JA_SHOW, show)
     tier.mkdir(parents=True)
     loose = [shutil.copy(show / name, tier / f"loose {n}.ja.srt") for n, name in enumerate(sorted(os.listdir(show))[:2])]
+    (show / "あらすじ.txt").write_text("星祭りの夜、町の人々が集まる。\n", encoding="utf-8")     # a book: never an episode
     db = str(tmp_path / "store.db")
     ti.reconcile_language("ja", [str(show / n) for n in os.listdir(show)] + [str(p) for p in loose], path=db)
     store = ti.open_store("ja", db)
@@ -168,3 +169,63 @@ def test_a_works_folder_is_one_work_and_a_loose_file_its_own(tmp_path):
         store.close()
     assert sorted(len(v) for v in works.values()) == [1, 1, 4]
     assert os.path.normcase("Hoshi Matsuri") in works
+
+
+@pytest.mark.parametrize("count_songs", [False, True])
+def test_the_view_reads_count_song_lyrics_and_groups_the_stores_spoken_files(tmp_path, count_songs):
+    """`View.build` (the worker's): off, the songs rule on and every stored episode of the show in its work; on, no
+    rule and no works held."""
+    from app import plan_engine
+    store, data_dir, paths, arrival = _library(tmp_path, "ja", JA_SHOW, "Hoshi Matsuri - 04.ja.srt")
+    bare = plan_engine.Plan({"floor": 0, "run_signature": None, "phrase_entries": []}, [], [], [], [], [])
+    try:
+        with patch.dict(analyzer.LOGIC, {"count_song_lyrics": count_songs}), \
+             patch("app.path_utils.get_data_path", side_effect=lambda l=None: data_dir):
+            view = arrivals.View.build("ja", bare, store, analyzer.parse_analysis_args(["--language=ja"]))
+    finally:
+        store.close()
+    assert view.songs is not count_songs
+    assert view.works == ({} if count_songs else {os.path.normcase("songs_show"): [
+        ti._norm(p) for p in paths if p != arrival]})
+
+
+def test_a_book_in_a_shows_folder_keeps_every_word(tmp_path):
+    # A text file is never a spoken file: the rule never reads it, even beside the show's episodes
+    store, data_dir, paths, arrival = _library(tmp_path, "ja", JA_SHOW, "Hoshi Matsuri - 04.ja.srt")
+    try:
+        view = _view("ja", store, data_dir)
+        lines = [line for line in open(arrival, encoding="utf-8").read().splitlines()
+                 if line.strip() and not line.strip().isdigit() and "-->" not in line]
+        book = os.path.join(os.path.dirname(arrival), "Hoshi Matsuri - 04.txt")
+        with open(book, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        read = _read(view, book, data_dir)
+        fresh = list(view.tokenizer.tokenize_sentences(analyzer.extract_text(book, "ja")))
+        assert [t for _s, t in read] == [t for _s, t in fresh]
+    finally:
+        store.close()
+
+
+def test_an_episode_the_store_already_holds_is_read_as_it_is_now(tmp_path):
+    """Placed again after an edit (two lines said added at its end): its stored copy is never one of its own
+    neighbours — the rule reads the file as it is now beside the other episodes, as the next Generate will."""
+    store, data_dir, paths, arrival = _library(tmp_path, "ja", JA_SHOW, "Hoshi Matsuri - 04.ja.srt")
+    store.close()
+    ti.reconcile_language("ja", paths, path=str(tmp_path / "store.db"))          # ep04 in the store as it was
+    with open(arrival, "a", encoding="utf-8") as f:
+        f.write("\n99\n00:23:50,000 --> 00:23:52,000\nまた来週、駅で会おう。\n\n"
+                "100\n00:23:53,000 --> 00:23:55,000\n寝坊するなよ。\n")
+    store = ti.open_store("ja", str(tmp_path / "store.db"))
+    try:
+        view = _view("ja", store, data_dir)
+        read = _read(view, arrival, data_dir)
+        fresh = list(view.tokenizer.tokenize_sentences(analyzer.extract_text(arrival, "ja")))
+        others = [p for p in paths if p != arrival]
+        from app import song_lines
+        expected = analyzer.songs_left_out([(p, lines) for p, lines in store.file_lines(others).items()]
+                                           + [(arrival, song_lines.file_lines(fresh))])[arrival]
+        emptied = {no for no, (_s, t) in enumerate(read) if not t} - {no for no, (_s, t) in enumerate(fresh) if not t}
+        assert expected and emptied == expected
+        assert read[-1][1] and read[-2][1], "the lines said at its end stay"
+    finally:
+        store.close()

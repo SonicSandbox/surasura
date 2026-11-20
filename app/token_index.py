@@ -261,9 +261,10 @@ CREATE TABLE IF NOT EXISTS files (
     tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
     names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
     bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
-    lines  BLOB,               -- zlib(json [[line key, marks], ...]) — each sentence's line (app/song_lines.py)
     counted INTEGER NOT NULL DEFAULT 1, -- 1 counted, 0 kept: tokenized, never summed (module docstring)
-    aside INTEGER NOT NULL DEFAULT 0    -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
+    aside INTEGER NOT NULL DEFAULT 0,   -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
+    lines BLOB                          -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py);
+                                        -- last, so a row's counted / aside are read without walking past it
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,

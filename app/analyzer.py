@@ -3087,11 +3087,12 @@ def songs_left_out(files):
     return song_lines.left_out(episodes)
 
 
-def song_sentences(found_files, data_dir, store, tokenizer, language):
+def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
     """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
     source type)]), each work on its own (§ above). With the store, a work's answer is kept (`Store.keep_songs`) under
     a digest of its files' stamps and the rule's version, so a Generate after nothing changed in a work reads only its
-    stamps; without the store, each file is read and tokenized here."""
+    stamps; without the store, each file is read and tokenized here. `stats`, a dict, receives "read" (the works whose
+    lines were read) and "kept" (the works whose kept answer was used)."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
         if source_type in _SPOKEN:
@@ -3103,7 +3104,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language):
             built = store.get_meta("build_sig")   # a new tokenizer re-reads every file, its stamps unchanged
         except Exception:
             kept = {}
-    out = {}
+    out, read, used = {}, 0, 0
     for work, paths in works.items():
         digest = None
         if store is not None:
@@ -3117,7 +3118,9 @@ def song_sentences(found_files, data_dir, store, tokenizer, language):
             if digest is not None and held and held[0] == digest:
                 keep[work] = held
                 out.update((path, set(numbers)) for path, numbers in held[1].items())
+                used += 1
                 continue
+        read += 1
         held = {}                                 # one work's lines held at a time (a 20k library's would be ~1 GB)
         if store is not None:
             try:
@@ -3137,6 +3140,8 @@ def song_sentences(found_files, data_dir, store, tokenizer, language):
         out.update(found)
         if digest is not None:
             keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
+    if stats is not None:
+        stats.update(read=read, kept=used)
     if store is not None and keep != kept:
         try:
             store.keep_songs(keep)
@@ -6204,12 +6209,17 @@ def main():
     # (watched, Finished) are their works' episodes too, and the example sentences read them.
     _songs = {}
     if not LOGIC.get("count_song_lyrics", False):
+        _songs_t0, _songs_stats = time.perf_counter(), {}
         try:
             _songs = song_sentences(list(found_files) + [(a.path, None, None, a.source_type)
                                                          for a in aside_files(language, _library["schedule"])],
-                                    data_dir, _store, tokenizer, language)
+                                    data_dir, _store, tokenizer, language, _songs_stats)
         except Exception as e:                    # never a Generate lost to it: the songs counted, as before
             print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
+        else:
+            print(f"Songs left out: {sum(map(len, _songs.values()))} sentences in {len(_songs)} files "
+                  f"({_songs_stats.get('read', 0)} works read, {_songs_stats.get('kept', 0)} kept; "
+                  f"{time.perf_counter() - _songs_t0:.2f} s)")
 
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed

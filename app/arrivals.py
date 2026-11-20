@@ -796,9 +796,11 @@ def read_text(view, text, facts=None):
     from app import names, token_index
     record_ = names.Record()
     record_.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
+    record_.clues = facts.get("clues")
     alone = copy.copy(view.tokenizer)               # the same tagger, reading as the token store reads (no tables)
     alone.library = False
-    sentences = [(s_text, list(s_tokens)) for s_text, s_tokens in alone.tokenize_sentences(text, names=record_)]
+    sentences = [(s_text, list(s_tokens)) for s_text, s_tokens in alone.tokenize_sentences(text, names=record_,
+                                                                                          clues=record_.clues)]
     data = json.loads(json.dumps(record_.data(), ensure_ascii=False))      # as the store keeps it (JSON)
     switches = token_index._library_switches(language)
     spans = data.get("s")

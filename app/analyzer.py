@@ -198,7 +198,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 44: a transcript's groups in parentheses are no speech (_TRANSCRIPT_GROUP_RE: SUB-PARENS, widened): a Netflix
 #     transcript's speaker labels and sound notes no longer count as words, nor the speakers' names once per line they
 #     speak. SCHEMA_VERSION 26. 3.0.17.
-ENGINE_REVISION = 44
+# 45: a show's own name clues (names § A show's own name clues): in a file, a run its speaker labels or the readings
+#     it gives spell is ONE person's name, keyed by its reading (爽子 サワコ, not 爽 + 子; 平野 ヒラノ, not 'plain'), and
+#     a reading + ちん or っち is a nickname (やのちん); name_data gains SHOW_NAMES. SCHEMA_VERSION 27. 3.0.17.
+ENGINE_REVISION = 45
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -643,6 +646,13 @@ class JoinedWord:
     def __init__(self, surface, feature, parts, white_space=""):
         self.surface, self.feature, self.parts, self.is_unk = surface, feature, parts, False
         self.white_space = white_space
+
+
+class WorkName(JoinedWord):
+    """A person's name the file itself says it holds — a speaker label, a reading it gives (names § A show's own name
+    clues) — made one word in that file: keyed by its reading in katakana, as UniDic keys a person's name; Ignore names
+    ignores it (names.name_lemma)."""
+    __slots__ = ()
 
 
 _MERGED = {}   # name -> (the tables a merged table below was built from, the merged table): built once
@@ -2362,16 +2372,16 @@ class JapaneseTokenizer(Tokenizer):
         # (`tokenize_sentences(names=…)`) and applies the tables to its cached tokens as it reads them.
         self.library = library
 
-    def tokenize(self, text, pieces=None):
+    def tokenize(self, text, pieces=None, clues=None):
         """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples. `pieces`, a
         list, also receives the (lemma, reading) of each piece of every joined word (§ above)."""
         # Simple wrapper around sentences
         all_tokens = []
-        for _, tokens in self.tokenize_sentences(text, pieces):
+        for _, tokens in self.tokenize_sentences(text, pieces, clues=clues):
             all_tokens.extend(tokens)
         return all_tokens
 
-    def tokenize_sentences(self, text, pieces=None, names=None):
+    def tokenize_sentences(self, text, pieces=None, names=None, clues=None):
         """Yields (sentence_string, list_of_filtered_tokens).
 
         Fugashi consumes newlines, so '\\n' in the boundary set never fired and separate lines
@@ -2380,6 +2390,8 @@ class JapaneseTokenizer(Tokenizer):
 
         `names`, an app.names.Record, receives every run the library's name tables could join, with the
         sentence (as yielded) and the counted tokens it covers — how the token store keeps them for later.
+        `clues`, the file's own name clues (extract_text's facts "clues"), makes each name it says it holds one
+        word in this text (names § A show's own name clues); a text without them reads as before.
         """
         # Unidic-lite pos1: '補助記号' (punctuation), '空白' (spaces)
         # A frozenset + isdisjoint keeps the per-token boundary test in C. This runs millions of
@@ -2389,11 +2401,18 @@ class JapaneseTokenizer(Tokenizer):
         joins = affix_joins()
         sanitized = _SANITIZED.get      # a term met before, cleaned (_sanitize_term): looked up for every token
         yielded = 0                  # sentences yielded so far: the index of the one being built
+        if clues:
+            from app import names as _names
+            work = _names.WorkNames(clues)
+        else:
+            work = None
 
         for line in text.split("\n"):
             current_sentence_tokens = []
             current_sentence_surface = []
             words = join_affixes(self.tagger(line), joins, library=self.library)
+            if work is not None:
+                words = work.words(self, line, words, joins)
             surfaces = [word.surface for word in words]
             # Where each token lands — (sentence, counted tokens before it) — for the name candidates' spans.
             cands = names.read_line(words) if names is not None else ()
@@ -3008,13 +3027,28 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
     return known
 
 
+def _text_and_clues(file_path, language):
+    """(text, clues): the file's text as every run reads it, and its own name clues (extract_text's facts)."""
+    facts = {}
+    text = extract_text(file_path, language, facts)
+    return text, facts.get("clues")
+
+
+def _tokenize_file(tokenizer, file_path, language):
+    """A file's sentences tokenized here, as the token store tokenizes it (its own name clues applied)."""
+    text, clues = _text_and_clues(file_path, language)
+    if clues and isinstance(tokenizer, JapaneseTokenizer):
+        return tokenizer.tokenize_sentences(text, clues=clues)
+    return tokenizer.tokenize_sentences(text)
+
+
 def file_sentences(store, tokenizer, file_path, language):
     """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
     tokenized here."""
     if store is None:
         if not os.path.exists(file_path):
             return []                   # a missing item (9b) with no token store to read it from
-        return tokenizer.tokenize_sentences(extract_text(file_path, language))
+        return _tokenize_file(tokenizer, file_path, language)
     sentences = store.file_tokens(file_path)
     # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
     # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
@@ -3022,7 +3056,7 @@ def file_sentences(store, tokenizer, file_path, language):
     if not sentences:
         try:
             if os.path.getsize(file_path) > 0:
-                sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+                sentences = _tokenize_file(tokenizer, file_path, language)
         except OSError:
             pass
     return sentences
@@ -3787,12 +3821,16 @@ def extract_text(file_path, language='ja', facts=None):
     # a UTF-16 or GBK .txt contributed nothing before, silently.
     # `facts`, a dict, receives what the file's own format says about its text — "captions": the kind a downloaded
     # transcript's header names (caption_kind), or None — for the token store (names.Record); the text is the same.
+    # And "clues" (Japanese): the names the file says it holds — its speaker labels, the readings it gives — read from
+    # its text as written, before any of it is taken out (names.file_clues: § A show's own name clues); absent when
+    # it gives none. The tokenizer applies them to this file alone (tokenize_sentences(clues=)).
     ext = os.path.splitext(file_path)[1].lower()
-    text = ""
+    text = raw = ""
     if ext == '.srt':
         try:
             import pysrt   # lazy: only reading a .srt subtitle file pays this import
-            subs = pysrt.from_string(read_text(file_path, language))
+            raw = read_text(file_path, language)
+            subs = pysrt.from_string(raw)
             said = []
             for sub in subs:
                 # Filter out lines without Target characters
@@ -3816,13 +3854,34 @@ def extract_text(file_path, language='ja', facts=None):
     elif ext in ['.ass', '.ssa']:
         text = parse_ass(file_path, language)
     else:
-        text = read_text(file_path, language)
+        text = raw = read_text(file_path, language)
 
     if ext not in SUBTITLE_EXTENSIONS:
         if facts is not None:
             facts["captions"] = caption_kind(text)
         text = strip_text_conventions(text, language, ext)
+    if facts is not None and language == 'ja' and raw:
+        from app import names
+        clues = names.file_clues(raw, _sidecar_readings(file_path) if ext not in SUBTITLE_EXTENSIONS else None)
+        if clues:
+            facts["clues"] = clues
     return text
+
+
+def _sidecar_readings(file_path):
+    """The readings an item's sidecar keeps (<stem>.surasura.json's names.SIDECAR_READINGS: the ruby a streaming
+    site's player showed), or None — no sidecar, none kept, or one that won't read."""
+    from app import names
+    from app.path_utils import SIDECAR_SUFFIX
+    path = os.path.splitext(file_path)[0] + SIDECAR_SUFFIX
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f).get(names.SIDECAR_READINGS)
+    except Exception:
+        return None
+    return kept if isinstance(kept, dict) else None
 
 def find_context_sentence(full_text, target_surface):
     sentences = re.split(r'([。！？\n])', full_text)
@@ -7584,7 +7643,8 @@ def main():
             # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
             file_counter = file_token_cache.get(file_path)
             if file_counter is None:
-                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
+                text, clues = _text_and_clues(file_path, language)
+                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(text, clues=clues))
 
             file_total_tokens = 0
             file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)

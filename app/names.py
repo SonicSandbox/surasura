@@ -449,6 +449,8 @@ def name_lemma(word, sanitize=None):
     or more — unless UniDic lists a common word spelled and said the same (ひかり is 光 'light') or keyed the same
     (麻衣 is keyed マイ, as マイ 'my' is). `sanitize` is the analyzer's lemma cleaning, as the tokenizer applies it."""
     f = word.feature
+    if word.__class__.__name__ == "WorkName":
+        return f.lemma                      # a name the file itself says it holds (§ A show's own name clues)
     if word.is_unk:
         from app.analyzer import JoinedWord
         if not isinstance(word, JoinedWord) or not f.lemma:
@@ -756,6 +758,7 @@ class Record:
         self.spans, self.ks, self.k1, self.p = [], {}, Counter(), Counter()
         self.jc, self.jb, self.q, self.auto = Counter(), {}, Counter(), False
         self.n = Counter()
+        self.clues = None           # the file's own name clues (file_clues), kept with its record ("w")
 
     def read_line(self, words):
         """The candidates of one tagger call's tokens (after the katakana rule), counted."""
@@ -804,6 +807,8 @@ class Record:
                 "n": self.n, "q": self.q}
         if self.auto:
             data["a"] = 1
+        if self.clues:
+            data["w"] = self.clues      # the file's own name clues: a file read back from its sentences reads with them
         return data
 
 
@@ -1119,3 +1124,197 @@ def use_library_tables(tables, pin=False):
 def forget_library_tables():
     """Back to reading the tables from the token store on next use."""
     _library.update(tables=None, at=None, pinned=False)
+
+
+# --- A show's own name clues ---------------------------------------------------------------------------------------- #
+# (Kotoba-NM, 3.0.17.) A subtitle tells who speaks — （平野）, （爽子） at the start of a line — and gives a name its
+# reading (風早(かぜはや); a Netflix item's sidecar keeps the ruby its player showed: SIDECAR_READINGS). Those are names
+# in THAT file, whatever the dictionary says the spelling is elsewhere (平野 'plain', 龍 'dragon', くるみ 'walnut'), and
+# the tagger often cuts them (爽 + 子, あ + やね, 城 + ノ + 内). Per file only, never the library's: `file_clues` reads a
+# file's raw text and its sidecar once, as the file is read (analyzer.extract_text's facts "clues", JSON); `WorkNames`
+# makes ONE word of each run of tokens a clue spells, read as a person's name (WorkName), in that file's lines alone.
+#   - a speaker label names a person only when JMnedict spells a person so and neither JPDB 2024 nor Jiten ranks the
+#     spelling among their commonest (name_data SHOW_NAMES' common mark): a label names a role as often (（先生）,
+#     （母）, （女子生徒）), and every role JMnedict also lists was among those — unless the file gives it a reading
+#     JMnedict has for it; only a label that starts a line someone says (a group alone on its line is a sound); its
+#     parts (（遠藤･平野）), a plural たち off, never one holding の or a number (（爽子の母）, （２人）);
+#   - a reading the file gives a run of 2+ kanji (the sidecar's, or （かな） right after it) is a name's when JMnedict
+#     reads that spelling so as a person and the tagger reads it otherwise (爽子 さわこ, the tagger そうし);
+#   - a name's reading + ちん / っち written in hiragana (やの + ちん) is one name, cut out of the line before the tagger
+#     reads the rest (爽子もやのちんも: the tagger read もや | の | ちん) — the reading a reading the file gives, a label's
+#     own, or one JMnedict has for a kanji spelling the file writes (矢野);
+#   - never right after お / ご: お人形 is a doll, whatever the label said (PROVISIONAL, Sonic's call pending).
+# A name is keyed as UniDic keys a person's name, by its reading in katakana (平野 ヒラノ, as the tagger keys 平野 read as
+# a surname) — never a key a common word has (`_common_word_listed`): Ignore names ignores lemmas, library-wide, and
+# must never hide 平野 'plain' in another show. A file that gives no clue pays one label search and nothing else.
+SIDECAR_READINGS = "readings"   # in an item's <stem>.surasura.json: {spelling: its reading in kana}
+_LABEL_RE = re.compile(r"^[ \t　]*[（(]([^（）()\n]{1,20})[）)](?=[^\s（(])", re.M)
+_LABEL_PARTS = re.compile("[･・]")
+_NOT_A_NAME_LABEL = re.compile(r"[の：:0-9０-９]")
+_GIVEN_READING_RE = re.compile(f"([{HAN}]{{2,8}})[（(]([ぁ-ゖー]{{2,12}})[）)]")
+_NICK_RE = re.compile(r"([ぁ-ゖ]{2,6})(ちん|っち)")
+_KANJI_RUN_RE = re.compile(f"[{HAN}]{{2,8}}")
+_PREFIXES = frozenset(("お", "ご", "御"))
+_show_names = []                # [SHOW_NAMES' sorted lines]; [None] when the table can't be read
+
+
+def _show_entry(spelling):
+    """(common word, readings in hiragana) of a person's name JMnedict spells so (name_data SHOW_NAMES), or None."""
+    if not _show_names:
+        try:
+            from app import name_data
+            _show_names.append(name_data.show_names())
+        except Exception:
+            _show_names.append(None)
+    lines = _show_names[0]
+    if not lines:
+        return None
+    key = spelling + "\t"
+    at = bisect_left(lines, key)
+    if at == len(lines) or not lines[at].startswith(key):
+        return None
+    _spelling, common, readings = lines[at].split("\t")
+    return common == "1", tuple(readings.split())
+
+
+def _hira(text):
+    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
+
+
+def _kata(text):
+    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in text)
+
+
+def _told(spelling):
+    """How the tagger reads `spelling` alone, in hiragana."""
+    from app.analyzer import Tagger
+    if not _tagger:
+        _tagger.append(Tagger())
+    return _hira("".join(w.feature.kana for w in _tagger[0](spelling) if w.feature.kana not in (None, "*")))
+
+
+def file_clues(raw, readings=None):
+    """The names a file says it holds — {"n": {spelling: reading in katakana, "" when it gives none}, "k": [the
+    readings a nickname may start with]} — or None (§ A show's own name clues). `raw`: the file's text as written
+    (its labels and readings still in it); `readings`: its sidecar's {spelling: reading}, if any."""
+    labels = []
+    for group in _LABEL_RE.findall(raw or ""):
+        for part in _LABEL_PARTS.split(group):
+            part = part.strip()
+            if part.endswith("たち"):
+                part = part[:-2]
+            if part and not _NOT_A_NAME_LABEL.search(part):
+                labels.append(part)
+    given = {}
+    if isinstance(readings, dict):
+        given.update((str(k), _hira(str(v))) for k, v in readings.items() if k and v)
+    for kanji, reading in _GIVEN_READING_RE.findall(raw or ""):
+        given.setdefault(kanji, reading)
+    if not labels and not given:
+        return None
+    names, nick = {}, set()
+    for spelling, reading in given.items():
+        entry = _show_entry(spelling)
+        if entry is None or reading not in entry[1]:
+            continue
+        nick.add(reading)
+        if len(spelling) >= 2 and _HAN.search(spelling) and reading != _told(spelling):
+            names[spelling] = _kata(reading)
+    for spelling in dict.fromkeys(labels):
+        entry = _show_entry(spelling)
+        if entry is None:
+            continue
+        reading = given.get(spelling)
+        if entry[0] and not (reading and reading in entry[1]):
+            continue                    # a common word first (先生, 人形), the file giving it no name's reading
+        if not (reading and reading in entry[1]):
+            reading = _told(spelling)       # read alone, as a name is (平野 ひらの: in a line the tagger may say へいや)
+            reading = reading if reading in entry[1] else ""
+        names.setdefault(spelling, _kata(reading))
+        if _HIRAGANA.match(_hira(spelling)):
+            nick.add(_hira(spelling))
+    candidates = {m.group(1) for m in _NICK_RE.finditer(raw or "")} - nick
+    if candidates:
+        written = set()
+        for run in set(_KANJI_RUN_RE.findall(raw)):
+            for end in range(2, len(run) + 1):
+                entry = _show_entry(run[:end])
+                if entry:
+                    written.update(entry[1])
+        nick |= candidates & written
+    if not names and not nick:
+        return None
+    return {"n": names, "k": sorted(nick)}
+
+
+class WorkNames:
+    """A file's clues (`file_clues`) applied to its lines: `words` — one line's tokens after join_affixes — with every
+    run they spell as one name, and a nickname cut out of the line first (`line`)."""
+    __slots__ = ("names", "longest", "gate", "nick")
+
+    def __init__(self, clues):
+        self.names = dict((clues or {}).get("n") or {})
+        self.longest = max(map(len, self.names), default=0)
+        self.gate = re.compile("|".join(map(re.escape, sorted(self.names, key=len, reverse=True)))) \
+            if self.names else None
+        readings = (clues or {}).get("k") or ()
+        self.nick = re.compile("(?:%s)(?:ちん|っち)" % "|".join(map(re.escape, sorted(readings, key=len, reverse=True)))) \
+            if readings else None
+
+    def words(self, tokenizer, line, words, joins):
+        """The line's words with the file's names made one word each (the tagger's words otherwise)."""
+        from app.analyzer import join_affixes
+        nick = self.nick.search(line) if self.nick is not None else None
+        if nick is not None:
+            recut = getattr(tokenizer, "_recut", None)
+            if recut is None:
+                from app.analyzer import Tagger
+                recut = tokenizer._recut = (Tagger(), Tagger())
+            a, b = nick.span()
+            spelled = nick.group()
+            name = self._name(list(recut[1](spelled)), spelled, _kata(spelled))
+            before = list(join_affixes(recut[0](line[:a]), joins, library=tokenizer.library)) if a else []
+            after = list(join_affixes(recut[1](line[b:]), joins, library=tokenizer.library)) if b < len(line) else []
+            return self.apply(before) + ([name] if name is not None else []) + self.apply(after)
+        return self.apply(words)
+
+    def apply(self, words):
+        if self.gate is None or not words or not self.gate.search("".join(w.surface for w in words)):
+            return words
+        out, i, n = [], 0, len(words)
+        while i < n:
+            hit = None
+            for j in range(min(n, i + 6), i, -1):
+                spelled = "".join(w.surface for w in words[i:j])
+                if len(spelled) <= self.longest and spelled in self.names \
+                        and not any(words[k].white_space for k in range(i + 1, j)):
+                    hit = (j, spelled)
+                    break
+            if hit is not None and not (i and words[i - 1].surface in _PREFIXES
+                                        and words[i - 1].feature.pos1 == "接頭辞") \
+                    and not (hit[0] == i + 1 and name_lemma(words[i])):
+                name = self._name(words[i:hit[0]], hit[1], self.names[hit[1]])
+                if name is not None:
+                    out.append(name)
+                    i = hit[0]
+                    continue
+            out.append(words[i])
+            i += 1
+        return out
+
+    @staticmethod
+    def _name(run, spelled, reading):
+        """`run` as ONE person's name spelled `spelled`, keyed by its reading in katakana (the run's own when the file
+        gives none) — or by its spelling when a common word is keyed so; None when both are a common word's."""
+        from app import analyzer
+        from app.analyzer import WorkName, _joined
+        sanitize = analyzer._sanitize_term if analyzer.SANITIZE_JA else None
+        reading = reading or _kata("".join(w.feature.kana if w.feature.kana not in (None, "*") else w.surface
+                                           for w in run))
+        key = next((k for k in (reading, spelled)
+                    if k and not _common_word_listed(k, lemma=k, sanitize=sanitize)), None)
+        if key is None:
+            return None
+        base = _joined(run, spelled, "名詞", (key, reading))
+        return WorkName(base.surface, base.feature._replace(pos2=_PROPER, pos3="人名", pos4="名"), base.parts,
+                        base.white_space)

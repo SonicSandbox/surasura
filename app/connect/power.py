@@ -21,6 +21,16 @@ below-normal priority, so a laptop on battery or in use never pays for it.
   Anki Miner calls start at idle priority instead (`popen_idle`, `anki_miner.LOW_PRIORITY`), and the ffmpeg it starts
   inherits it. Where this sits beside *Run things by themselves* and the bar's pause (Mado-PZ): those say whether
   Surasura works by itself; these, how hard it works while it does.
+ - **Which machines need it more gently** (Haya-LD, 3.0.18, 2026-11-20 — automatic, no setting at first): `gentle()`
+  reads the PC — its logical CPUs, its total memory, on battery or not. Fewer than STRONG_CPUS logical CPUs, less than
+  STRONG_RAM_MB of memory, or on battery → gentle: the window's background work goes one heavy job at a time, in an
+  order (`app/services/gentle.py`), and Connect's next step waits while a Generate runs. A strong desktop (this one:
+  24 logical CPUs, 32 GB) runs them side by side as before. `CpuLoad` is the system's CPU busy share between two
+  samples (every core, every program: Windows' `GetSystemTimes`), the load the window's scheduler watches on every
+  machine (BUSY). Why these numbers: a laptop with 8 logical CPUs (a 3.0.16 problem report) lagged with six jobs at
+  once; a 12-thread PC with 16 GB still has two or three cores free beside a Generate's pool (half the logical CPUs,
+  K5) and Anki; and 70 % busy across every core is the point past which Windows' scheduler starts sharing time slices
+  with the foreground (Anki, the window), so a background step there would be felt.
 
 A machine asleep runs nothing, so there is nothing to check. Never raises: a call that fails leaves things as they were.
 """
@@ -38,6 +48,11 @@ CLIP_CUTS_MAX = 6               # Anki Miner's own default (3.13.0 `config/confi
 CORES_PER_CUT = 4               # one clip at once per 4 logical CPUs: this desktop's 24 -> 6, a laptop's 8 -> 2
 CUT_MB = 200                    # one cut's ffmpeg, with headroom (measured: the register, Michi-LP)
 OWN_RANGE = (1, 20)             # what Anki Miner's settings take (`config.py`: an integer from 1 to 20)
+# Haya-LD: which PCs run their background work one job at a time (the module docstring's *Which machines*)
+STRONG_CPUS = 12                # logical CPUs: a laptop's 8 is gentle, a 12-thread desktop isn't
+STRONG_RAM_MB = 15 * 1024       # total memory: a "16 GB" PC reports ~15.8 GB, an 8 GB one is gentle
+BUSY = 0.70                     # the system's CPU busy share over the scheduler's window: the next background step waits
+QUIET = 0.55                    # ... until it is below this again (no flapping at the line)
 
 
 def _status():
@@ -156,3 +171,102 @@ def clip_cuts(setting=AUTO, own=None, cpus=None, free_mb=None, battery=None):
     if battery if battery is not None else on_battery():
         cuts //= 2
     return max(1, min(cuts, CLIP_CUTS_MAX, _own(own) or CLIP_CUTS_MAX))
+
+
+def total_memory_mb():
+    """Physical memory installed, in MB, or None when it can't be told."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = _Status()
+            status.dwLength = ctypes.sizeof(_Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullTotalPhys // (1024 * 1024)
+            return None
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
+    except Exception:
+        return None
+
+
+def usable_cpus():
+    """The logical CPUs this process may run on (Windows: its affinity mask — a PC's cores held to a few, a VM's share),
+    else `os.cpu_count()`; at least 1."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL("kernel32")
+            k.GetCurrentProcess.restype = wintypes.HANDLE
+            k.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                                 ctypes.POINTER(ctypes.c_size_t)]
+            mine, system = ctypes.c_size_t(), ctypes.c_size_t()
+            if k.GetProcessAffinityMask(k.GetCurrentProcess(), ctypes.byref(mine), ctypes.byref(system)) and mine.value:
+                return bin(mine.value).count("1")
+        elif hasattr(os, "sched_getaffinity"):
+            return len(os.sched_getaffinity(0)) or 1
+    except Exception:
+        pass
+    return os.cpu_count() or 1
+
+
+def gentle(cpus=None, total_mb=None, battery=None):
+    """Does this PC run its background work one heavy job at a time (Haya-LD)? -> (True, why) with why in plain words
+    (*on battery*, *8 logical CPUs*, *8 GB of memory*), or (False, None) on a strong PC. `cpus` / `total_mb` /
+    `battery`: stand-ins for this machine's (tests; None: read here — a memory that can't be read leaves the CPUs and
+    the battery to decide)."""
+    if battery if battery is not None else on_battery():
+        return True, "on battery"
+    cpus = cpus if cpus is not None else usable_cpus()
+    if cpus < STRONG_CPUS:
+        return True, f"{cpus} logical CPUs"
+    total_mb = total_mb if total_mb is not None else total_memory_mb()
+    if total_mb is not None and total_mb < STRONG_RAM_MB:
+        return True, f"{total_mb / 1024:.0f} GB of memory"
+    return False, None
+
+
+class CpuLoad:
+    """The system's CPU busy share (0.0–1.0, every core, every program) between two `sample()` calls — None at the
+    first, and wherever it can't be read. Windows: `GetSystemTimes` (kernel time includes idle); elsewhere
+    `/proc/stat`. `read`: a stand-in returning (idle, total) counters (tests)."""
+
+    def __init__(self, read=None):
+        self._read = read or _cpu_times
+        self._last = None
+
+    def sample(self):
+        try:
+            now = self._read()
+        except Exception:
+            now = None
+        last, self._last = self._last, now
+        if now is None or last is None:
+            return None
+        idle, total = now[0] - last[0], now[1] - last[1]
+        if total <= 0:
+            return None
+        return max(0.0, min(1.0, 1.0 - idle / total))
+
+
+def _cpu_times():
+    """(idle, total) CPU time counters of the whole system, or None."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+        if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+
+        def ticks(ft):
+            return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+        return ticks(idle), ticks(kernel) + ticks(user)
+    with open("/proc/stat", encoding="ascii") as f:
+        fields = [int(x) for x in f.readline().split()[1:]]
+    return fields[3] + (fields[4] if len(fields) > 4 else 0), sum(fields)

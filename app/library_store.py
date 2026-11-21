@@ -1088,7 +1088,7 @@ ADDED_HASH_SQL = (
       BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
 )
 ADDED_HASH = "items_hash_stale"
-# Kura-WD (3.0.18; Sonic 2026-11-21, "4. Yes do it"): when each item was marked watched — the Best sentence ranks a line
+# Kura-WD (3.0.18; Sonic's ruling, the mining-ordering model's step 4): when each item was marked watched — the Best sentence ranks a line
 # by how recently its learner saw it (tracks/logic/work/mining-ordering ADVERSARY.md F7). An added column, as the hash
 # (no row rewritten: NULL for every mark made before it, never a made-up date), written beside `watched` by every
 # command that writes the mark (`_dated`: stamped 0 → 1, cleared 1 → 0, a status value of its own so one Undo takes both

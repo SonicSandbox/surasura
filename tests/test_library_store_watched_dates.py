@@ -1,4 +1,4 @@
-"""Kura-WD (3.0.18; Sonic's "4. Yes do it", the mining-ordering model's step 4): the store dates what the learner saw.
+"""Kura-WD (3.0.18; Sonic's ruling, the mining-ordering model's step 4): the store dates what the learner saw.
 
 Connect's *Best* sentence ranks a line by how recently its learner saw it (tracks/logic/work/mining-ordering MODEL.md,
 ADVERSARY.md F7): a show finished last week beats one finished 8 months ago. Before this, only a show moved to

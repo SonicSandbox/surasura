@@ -1143,7 +1143,7 @@ class RowDelegate(QStyledItemDelegate):
         (`view_rows.growth_line`), where the store has it."""
         tip = strings.ROWS_HERO_PCT_TIP.format(pct=round(ep.pct))
         try:
-            line = view_rows.growth_line(self.growth(ep.id)) if self.growth is not None else None
+            line = view_rows.growth_line(self.growth(ep.id), getattr(ep, "added", None))                 if self.growth is not None else None
         except Exception:
             line = None                                  # (the hover never fails for its extra line)
         return tip if not line else f"{tip}\n{line}"

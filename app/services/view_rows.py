@@ -759,17 +759,20 @@ def day_label(stamp):
         return ""
 
 
-def growth_line(snapshots):
+def growth_line(snapshots, added=None):
     """Kura-GS: the % hover's growth line from an item's snapshots (`Store.growth_of`'s {kind: snapshot}) — its
-    'added' *% known* (known ÷ counted, as the row's own) and day: *When you added it on Nov 3: 81%*, or for an item
-    already in the library when the snapshots began, *On Nov 21: 81%*; None without one (or nothing counted)."""
+    'added' *% known* (known ÷ counted, as the row's own) and the day its first Generate counted it: *When you added it
+    on Nov 3: 81%* when that is the day it came in (`added`, its `added_at`), else *On Nov 21: 81%* — an item already in
+    the library when the snapshots began, or one first counted on a later day (it waited in New arrivals): never a
+    day it wasn't added. None without one (or nothing counted)."""
     snap = (snapshots or {}).get("added")
     if not snap or not snap.get("counted"):
         return None
     day = day_label(snap.get("at"))
     if not day:
         return None
-    return STRINGS["growth_since" if snap.get("prior") else "growth_added"].format(
+    then = not snap.get("prior") and (added is None or day_label(added) == day)
+    return STRINGS["growth_added" if then else "growth_since"].format(
         day=day, pct=round(pct_of(snap["known"], snap["counted"])))
 
 

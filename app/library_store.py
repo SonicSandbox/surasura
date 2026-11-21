@@ -5990,14 +5990,18 @@ class Store:
         """Kura-GS: each of `ids` just marked watched or moved to Finished keeps what the newest Generate counted of it
         then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
         keeps the first, and an Undo leaves it (written once, never by an Undo). An item no Generate counted yet
-        has none. Inside the caller's write."""
-        if not ids or not self._has_table(GROWTH):
-            return
-        for part in _chunks(list(ids), 500):
-            self.conn.execute(
-                "INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, prior) SELECT item_id, "
-                f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
-                f"({','.join('?' * len(part))})", [at] + part)
+        has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
+        the mark's or the move's."""
+        try:
+            if not ids or not self._has_table(GROWTH):
+                return
+            for part in _chunks(list(ids), 500):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, prior) SELECT item_id, "
+                    f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
+                    f"({','.join('?' * len(part))})", [at] + part)
+        except sqlite3.Error:
+            pass
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -15820,7 +15824,8 @@ RESET_WAIT = 2.0                  # s: another writer's commit is waited for thi
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
-RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
+RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works",
+                GROWTH)          # Kura-GS: a fresh library's snapshots begin with it (`_reset_tables`' GROWTH_SINCE)
 # His library options (W-1's `keep_watched` too), and the log's numbering (+ readers)
 RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
@@ -16223,6 +16228,7 @@ def _reset_tables(store):
     for key in ("order_version", "availability_version", "pins_version"):
         meta[key] = int(old.get(key) or 0) + 1
     meta.update({k: v for k, v in old.items() if k in RESET_KEEP_META or k.startswith("reader")})
+    meta[GROWTH_SINCE] = _now()             # Kura-GS: what comes in from here is the fresh library's own
     store._set_meta(meta)
     _seed_schema2(store, meta["state_version"])         # the feed's floor and the search fold, as every build's
     _line_after_build(store)                            # nothing in Current: 25 (Q2-4)
@@ -16522,11 +16528,10 @@ def _put_back_tables(store, name):
             both = have[(item_id, word)] + [n for n in _json_list(notes) if n not in have[(item_id, word)]]
             conn.execute("UPDATE main.made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
                          (_dumps(both), item_id, word))
-    for name in ("made_lines", GROWTH):                         # (Kura-GS: the snapshots, kept as the cards' lines)
-        if conn.execute("SELECT 1 FROM old.sqlite_master WHERE name = ?", (name,)).fetchone():
-            cols = ", ".join(f'"{c}"' for c in _table_columns(conn, "old", name)
-                             if c in set(_table_columns(conn, "main", name)))
-            conn.execute(f"INSERT OR IGNORE INTO main.{name} ({cols}) SELECT {cols} FROM old.{name}")
+    if conn.execute("SELECT 1 FROM old.sqlite_master WHERE name = 'made_lines'").fetchone():
+        cols = ", ".join(f'"{c}"' for c in _table_columns(conn, "old", "made_lines")
+                         if c in set(_table_columns(conn, "main", "made_lines")))
+        conn.execute(f"INSERT OR IGNORE INTO main.made_lines ({cols}) SELECT {cols} FROM old.made_lines")
     for table in set(seq) | set(old_seq):
         top = max(int(seq.get(table) or 0), int(old_seq.get(table) or 0))
         if conn.execute("UPDATE main.sqlite_sequence SET seq = ? WHERE name = ?", (top, table)).rowcount == 0:

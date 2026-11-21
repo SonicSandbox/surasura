@@ -4904,8 +4904,8 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None, growt
     """A Generate that read the store finished (or reused results already current): the store records the
     `order_version` it read, so Junban's "journey pending" clears. Never after a JSON fallback, and never
     across a rebuild (a version means nothing outside its epoch, §6.6). Best-effort. Kura-GS: `growth`, a full
-    Generate's figures per file (`_growth_figures`), kept by the store as the items' snapshots (`record_growth`) —
-    in a write of their own after it, so they can never hold the record back."""
+    Generate's figures per file (`_growth_figures`, a callable: worked out only when they will be kept), kept by the
+    store as the items' snapshots (`record_growth`) — in a write of their own after it, so they never hold it back."""
     if not library or library.get("order_version") is None:
         return
     ls = _library_store()
@@ -4917,9 +4917,9 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None, growt
         with store:
             if store.versions()["epoch"] == library["epoch"]:
                 store.record_analysed(library["order_version"])
-                if growth:
+                if growth is not None:
                     try:
-                        store.record_growth(growth)
+                        store.record_growth(growth())
                     except Exception as e:
                         print(f"Warning: could not keep the growth snapshots ({e}).")
     except Exception:
@@ -8017,8 +8017,8 @@ def main():
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
-    record_analysed(language, _library, data_dir, user_files_dir, growth=_growth_figures(data_dir, found_files,
-                                                                                          file_growth))
+    record_analysed(language, _library, data_dir, user_files_dir,
+                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
     if _store is not None:
         try:
             if _run_sig:

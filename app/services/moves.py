@@ -2746,21 +2746,18 @@ class Numbers:
     def growth(self, item_id):
         """Kura-GS (any thread): an item's growth snapshots as the store last gave them ({kind: snapshot}, the 'added'
         one: `Store.growth_of`), read on this worker after each plan read — a Generate writes them — or None. A dict
-        lookup: the % hover asks it as the pointer moves."""
-        with self._lock:
-            return self._growth.get(item_id)
+        lookup the % hover asks as the pointer moves: never the lock (a renumber holds it), the dict is replaced whole."""
+        return self._growth.get(item_id)
 
     def _read_growth(self):
         """(The worker.) The 'added' snapshots, after a plan read: queued behind it, so the rows' figures never wait."""
-        store = self._store()
-        if store is None or not hasattr(store, "growth_of"):
-            return
         try:
-            growth = store.growth_of(kinds=("added",))
+            store = self._store()
+            if store is None or not hasattr(store, "growth_of"):
+                return
+            self._growth = store.growth_of(kinds=("added",))
         except Exception:
             return                                  # (a busy or older store: the hover goes without its line)
-        with self._lock:
-            self._growth = growth
 
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""

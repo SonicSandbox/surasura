@@ -62,7 +62,9 @@ def test_the_first_generate_is_each_items_added_and_a_later_one_moves_only_its_l
     ids = store.ids("now") + store.ids("soon")
     first = _figures(store, ids)
     first["HighPriority/消えたフォルダ/gone.srt"] = (1, 2, 1)
+    dirty = store._meta().get("copy_dirty", 0)
     assert store.record_growth(first) == len(ids)
+    assert store._meta().get("copy_dirty", 0) > dirty, "a new 'added' goes out in the copy"
     for i in ids:
         assert _snap(store, i, "added") == _snap(store, i, "last") == first[_rel(store, i)]
     later = _figures(store, ids, base=150)
@@ -107,7 +109,8 @@ def test_a_store_that_never_began_the_snapshots_begins_them_at_its_first_generat
     ids = store.ids("now")
     store.record_growth(_figures(store, ids))
     assert ls.GROWTH_SINCE in store._meta()
-    assert all(s["added"]["prior"] for s in store.growth_of(ids).values())
+    got = store.growth_of(ids)
+    assert ids and len(got) == len(ids) and all(s["added"]["prior"] for s in got.values())
     store.close()
 
 
@@ -240,7 +243,8 @@ def test_an_older_store_gains_the_table_at_a_writers_open_with_no_row_or_version
         assert again.conn.execute("PRAGMA user_version").fetchone()[0] == version
         ids = again.ids("now")
         again.record_growth(_figures(again, ids))
-        assert all(s["added"]["prior"] for s in again.growth_of(ids).values())
+        got = again.growth_of(ids)
+        assert ids and len(got) == len(ids) and all(s["added"]["prior"] for s in got.values())
     finally:
         again.close()
 
@@ -341,8 +345,12 @@ def test_a_copy_from_before_the_snapshots_rebuilds_with_every_item_prior(languag
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     ids = store.ids("now")
-    store.record_growth(_figures(store, ids))
-    assert ids and all(s["added"]["prior"] for s in store.growth_of(ids).values())
+    show = _rel(store, ids[0]).split("/")[1]
+    new = store.insert([touch(data_dir, f"HighPriority/{show}/{show}_第09話.srt", f"{show} 9\n")], "now").added[0]
+    store.record_growth(_figures(store, ids + [new]))
+    got = store.growth_of(ids + [new])
+    assert ids and all(got[i]["added"]["prior"] for i in ids), "brought by the copy: from before"
+    assert got[new]["added"]["prior"] is False, "added after the rebuild, before its first Generate: its own"
     store.close()
 
 
@@ -350,3 +358,173 @@ def _write_json(path, doc):
     import json
     with open(path, "w", encoding="utf-8") as f:
         json.dump(ls.finish_doc(doc), f, ensure_ascii=False, indent=2)
+
+
+# --- the edges the review asked for -------------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_prior_is_decided_to_the_microsecond_at_the_day_the_snapshots_began(language):
+    """An item taken in at the very stamp the snapshots began (a build stamps both with one `now`) is from before;
+    one taken in a microsecond after is its own."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    since = store._meta()[ls.GROWTH_SINCE]
+    micro = int(since[-7:-1])
+    assert micro < 999999, "a stamp with room for one more microsecond"
+    later = since[:-7] + "%06dZ" % (micro + 1)
+    with store._writing():
+        store.conn.execute("UPDATE items SET added_at = ? WHERE id = ?", (since, a))
+        store.conn.execute("UPDATE items SET added_at = ? WHERE id = ?", (later, b))
+    store.record_growth(_figures(store, [a, b]))
+    got = store.growth_of([a, b])
+    assert got[a]["added"]["prior"] is True and got[b]["added"]["prior"] is False
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_un_done_of_an_episode_marked_before_any_generate_keeps_no_snapshot(language):
+    """An episode marked watched before a Generate counted it, then counted (*Keep studying watched episodes*), then
+    un-marked: taking a mark back writes no 'done' — only a mark set does."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.set_watched([ep])
+    store.record_growth(_figures(store, [ep]))
+    store.set_watched([ep], False)
+    assert set(store.growth_of([ep], kinds=("added", "done"))[ep]) == {"added"}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reimported_graduate_of_an_older_surasura_keeps_its_figures_as_done(language):
+    """2.4.0's Graduate moved the file into Graduated/ and dropped its row; the store's reimport takes it to Finished
+    — and, as every move to Finished, keeps its newest figures as its 'done'."""
+    from tests.test_library_store_migration import _edit
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    ids = store.ids("now")
+    graduated = ids[2]
+    store.record_growth(_figures(store, ids))
+    want = _snap(store, graduated, "last")
+    old = _rel(store, graduated)
+    new = "Graduated/" + old.split("/", 1)[1]
+    os.makedirs(os.path.dirname(os.path.join(data_dir, new)), exist_ok=True)
+    os.rename(os.path.join(data_dir, old), os.path.join(data_dir, new))
+
+    def change(doc):
+        s = doc["schedule"]
+        s["PHASE_1_NOW"] = [e for e in s["PHASE_1_NOW"] if e["physical_path"] != old]
+
+    _edit(language, change)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert store.item(graduated)["tier"] == "graduated"
+    assert _snap(store, graduated, "done") == want
+    assert all(_snap(store, i, "done") is None for i in ids if i != graduated)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_more_than_one_chunk_of_items_is_written_marked_and_read_whole(language):
+    """A long run of episodes marked at once and a read by ids both go 500 at a time: every one is kept and read."""
+    from tests.test_library_store_support import big_store
+    store = big_store(language, 1200)
+    ids = store.ids("soon") + store.ids("goal")
+    assert len(ids) > 1100
+    store.record_growth(_figures(store, ids))
+    store.set_watched(ids[:1050])
+    got = store.growth_of(ids)
+    assert len(got) == len(ids)
+    assert sum(1 for v in got.values() if "done" in v) == 1050
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_fresh_library_starts_its_own_snapshots_and_put_back_brings_the_old_ones_back(language):
+    """*Start a fresh library*: the snapshots go with the old library into its backup and begin again with the fresh
+    one (a file read in again after it is its own, never `prior`); *Put back…* brings the old ones back exactly."""
+    from tests.test_library_reset import _world
+    from tests.test_sources_scan import _look
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        ids = store.ids("now") + store.ids("soon")
+        store.record_growth(_figures(store, ids))
+        store.set_watched(ids[:1])
+        before, since = store.growth_of(), store._meta()[ls.GROWTH_SINCE]
+        assert before
+        answer = ls.start_fresh(store)
+        assert store.growth_of() == {} and store._meta()[ls.GROWTH_SINCE] > since
+        for row in store.sources():
+            _look(store, language, row["id"], first=True)
+        fresh = store.ids("now") + store.ids("soon") + store.ids("goal") + store.ids("arrivals")
+        assert fresh
+        store.record_growth(_figures(store, fresh))
+        assert all(v["added"]["prior"] is False for v in store.growth_of().values())
+        ls.put_back_library(store, answer["backup"])
+        assert store.growth_of() == before and store._meta()[ls.GROWTH_SINCE] == since
+
+
+def test_the_generates_paths_leave_out_a_file_off_the_librarys_drive():
+    """`_growth_figures`: each counted file by its path in the library (the store's `rel_path`); one with no path from
+    the library's folder (another drive) is left out, never an error at the run's end."""
+    from app import analyzer
+    data_dir = os.path.join(os.environ["SURASURA_TEST_ROOT"], "data", "ja")
+    inside = os.path.join(data_dir, "HighPriority", "喫茶店", "ep01.srt")
+    drive = "R:" if data_dir[:1].upper() == "Q" else "Q:"
+    elsewhere = os.path.join(drive + os.sep, "番組", "ep02.srt")
+    got = analyzer._growth_figures(data_dir, [(inside, "now", 1, "subtitle"), (elsewhere, "now", 1, "subtitle")],
+                                   [(5, 10, 3), (6, 12, 4)])
+    assert got["HighPriority/喫茶店/ep01.srt"] == (5, 10, 3)
+    if os.name == "nt":
+        assert len(got) == 1, "another drive: no path, left out"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_generates_record_keeps_its_figures_after_the_analysed_mark_never_across_a_rebuild(language):
+    """`analyzer.record_analysed`: the figures are kept only when the run read this epoch's store (a version means
+    nothing across a rebuild), after the analysed mark — a failure in them never takes the mark back."""
+    from app import analyzer
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    ids = store.ids("now")
+    v = store.versions()
+    figures = _figures(store, ids)
+    analyzer.record_analysed(language, {"order_version": v["order_version"], "epoch": v["epoch"] + 1}, data_dir,
+                             user_files_dir, growth=lambda: figures)
+    assert store.growth_of() == {}, "another epoch: nothing kept"
+
+    def broken():
+        raise RuntimeError("the figures couldn't be worked out")
+    analyzer.record_analysed(language, {"order_version": v["order_version"], "epoch": v["epoch"]}, data_dir,
+                             user_files_dir, growth=broken)
+    assert store.versions()["analysed_order_version"] == v["order_version"] and store.growth_of() == {}
+    analyzer.record_analysed(language, {"order_version": v["order_version"], "epoch": v["epoch"]}, data_dir,
+                             user_files_dir, growth=lambda: figures)
+    assert set(store.growth_of()) == set(ids)
+    store.close()
+
+
+def test_the_windows_numbers_read_degrades_to_no_line_when_the_store_cant_answer():
+    """`Numbers._read_growth`: a store that can't be opened, one without the read (an older handle) or one whose read
+    fails leaves the hover with no growth line — never an error on the numbers' worker; an answer replaces the last,
+    and a failed read keeps it."""
+    from types import SimpleNamespace as NS
+    from app.services import moves as M
+
+    def opener(handle):
+        return NS(mode="store", check=lambda: None, handle=lambda: handle)
+
+    def fails(**_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    for handle in (None, object(), NS(growth_of=fails)):
+        n = M.Numbers(opener(handle), "ja")
+        n._read_growth()
+        assert n.growth(1) is None
+    n = M.Numbers(opener(NS(growth_of=lambda **_kw: {1: {"added": {"known": 1}}})), "ja")
+    n._read_growth()
+    assert n.growth(1) == {"added": {"known": 1}} and n.growth(2) is None
+
+    def gone():
+        raise OSError("the store went away")
+    n.opener = NS(mode="store", check=gone, handle=lambda: None)
+    n._read_growth()
+    assert n.growth(1) == {"added": {"known": 1}}, "a failed read keeps the last answer"

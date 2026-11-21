@@ -52,6 +52,8 @@ def test_a_generate_keeps_each_files_figures_as_the_window_counts_them_and_a_don
     for item, (known, counted) in counts.items():
         assert added[item][:2] == (known, counted), "the window's own count"
         assert 0 < added[item][2] <= counted - known, "words not known: some, never more than the unknown tokens"
+    assert any(added[i][2] < counted - known for i, (known, counted) in counts.items()), \
+        "a word met twice is one word: not its tokens"
     assert last == added
     assert all(s["added"]["prior"] for s in store.growth_of().values()), "the library came with the store's build"
     # The window's numbers read them after the plan (`Numbers.growth`): the % hover's line says the row's own number

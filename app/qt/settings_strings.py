@@ -401,7 +401,7 @@ ROWS = {
     "level": ("Level", "", "Your level: your list holds the words at least as common as it",
               "level difficulty band rarity automatic"),
     # Kantan-MO (PROVISIONAL words): the list's one study order — Connect, 順 and the journey read it
-    "study_order": ("Study order", "The order Connect makes cards in, 順 orders them in and your journey opens on.",
+    "study_order": ("Study order", "The order your cards are made in, 順 sorts them by, and your journey opens on.",
                     "As you'll meet the words in your content, or by leverage first",
                     "study order leverage meet content priority junban order reorder cards order"),
     "strategy": ("Or aim for a coverage %",

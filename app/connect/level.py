@@ -11,6 +11,11 @@ dropped by the runner (`runner.LEVEL_DROPPED`); one under way finishes, by its o
 Lowering the level mines nothing either (N38: the words that left keep their cards). Either way the deck is re-sorted
 (`resort_due`, paid by the runner's ordering step, P2.4): the list's words moved.
 
+**One exception, not a raise: new files.** A new episode placed on top is mined before its Generate, from the
+re-plan's list (`replan`'s "new-files"); the Generate after mining then lists words only that episode brought. Those
+episodes alone — mined in that run, before Connect's own Generate (`Ledger.mark_new_files`, taken here) — get a
+`level` job for their newly listed words (`NEW_FILES`, its source: the runner keeps it), as P4.1 C5 built it.
+
 - **Newly listed** = the list's keys now (`(Word, Reading)`: the pick's identity) minus the keys of the list Connect
   last looked at (the ledger's `listed`) — counted (`new`), never queued. The first look records the list (✅ G1.1-2:
   from the moment Connect is on, never your history); switched on again, `forget` makes the next look a first look. A
@@ -19,16 +24,22 @@ Lowering the level mines nothing either (N38: the words that left keep their car
 Pure apart from the ledger it is handed; the caller reads the list under `results` (`app/cli/connect_verbs.py`).
 Light: the standard library only.
 """
+import os
+
+from app.connect import library
 from app.connect.ledger import Ledger
 
 
+# A level job for an episode mined before its own Generate (new files): kept by the runner, unlike a raise's
+NEW_FILES = "new-files"
+
+
 def check(store, language, listed, signature, file_words, ledger=None):
-    """One look at the list -> {"queued": [] (never, since Kantan-MO), "new": n newly listed, "first": bool,
-    "waiting": bool}.
+    """One look at the list -> {"queued": [item ids], "new": n newly listed, "first": bool, "waiting": bool}.
 
     `listed`: the list's keys `{(word, reading), …}` (None: no list of this language in `results/`); `signature`: the
-    run that wrote it (`read_run_stamp`); `store` and `file_words` (the last Generate's `file_words.json`) are no
-    longer read (kept for the callers)."""
+    run that wrote it (`read_run_stamp`); `file_words`: `{file name: [lemma, …]}` (the last Generate's
+    `file_words.json`). Queued only for the new-files exception (the module's docstring)."""
     out = {"queued": [], "new": 0, "first": False, "waiting": False}
     if listed is None or not signature:
         return out
@@ -47,13 +58,35 @@ def check(store, language, listed, signature, file_words, ledger=None):
             if ledger.in_flight(language):
                 out["waiting"] = True
                 return out
-            out["new"] = len(now - recorded)     # they join the study order: no episode is mined again (F1)
+            new = now - recorded
+            out["new"] = len(new)                # they join the study order: no episode is mined again (F1) ...
+            since = ledger.take_new_files(language)
+            if new and since:                    # ... but the new files Connect mined before its own Generate
+                out["queued"] = _queue(store, language, ledger, new, file_words or {}, since)
             ledger.record_list(language, signature, now)
             ledger.owe_resort(language)
         return out
     finally:
         if own:
             ledger.close()
+
+
+def _queue(store, language, ledger, new, file_words, since):
+    by_lemma = {}
+    for word, reading in new:
+        by_lemma.setdefault(word, set()).add((word, reading))
+    made = library.made_words_all(store)
+    queued = []
+    for item_id in ledger.mined_since(language, since):
+        item = store.item(item_id)
+        if not wants(item):
+            continue                        # taken out of the learning order (D14), or watched (#49): no level job
+        lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
+        words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
+        if words and ledger.queue_level(language, item_id, words, source=NEW_FILES,
+                                        store_id=library.store_id(store)) is not None:
+            queued.append(item_id)
+    return queued
 
 
 def forget(language, ledger=None):

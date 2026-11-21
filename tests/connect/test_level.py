@@ -207,3 +207,24 @@ def test_a_results_folder_without_its_list_is_no_look():
     assert code == 0 and line["languages"]["ja"]["level"] is None, line
     with Ledger() as ledger:
         assert ledger.recorded_list("ja") == (None, None)
+
+
+def test_new_files_mined_before_connects_own_generate_get_their_new_words_and_nothing_else():
+    # why: the one level job left (P4.1 C5, kept by Kantan-MO): a new episode placed on top is mined before its
+    # Generate from the re-plan's list; the Generate then lists words only it brought. Those episodes alone — mined
+    # since Connect's own Generate after new files marked the run — get them; an episode mined earlier gets nothing
+    (a, fa), (b, fb), (d, fd) = _line()
+    _mine(a, d)
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    with Ledger() as ledger, ledger.transaction():
+        job = ledger.queue("ja", d, "user", None)
+        ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+        ledger.mark_new_files("ja", "2000-01-01T00:00:00Z")
+    out = _check(RAISED, "run-2", files)
+    assert out["queued"] == [d], "only the episode this run mined"
+    (made,) = _level_jobs()
+    assert made["source"] == level.NEW_FILES
+    assert made["words"] == sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ")])
+    out = _check(RAISED | {("約束", "ヤクソク")}, "run-3", dict(files, **{fd: ["約束"]}))
+    assert out["queued"] == [] and out["new"] == 1, "the mark is taken once: a later raise mines nothing"

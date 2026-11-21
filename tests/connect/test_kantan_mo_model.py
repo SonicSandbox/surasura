@@ -317,3 +317,20 @@ def test_past_the_cap_only_the_next_n_cards_make_the_window(monkeypatch):
     steps = _steps(monkeypatch, "ja", [1, 2, 3, 4], made, LIST_JA, ahead=[20, 21, 22, 25, 23], study_order="content")
     assert isinstance(runner._full(steps, "ja", job={"item_id": 25}), runner.Wait)
 
+
+
+@pytest.mark.parametrize("why, marked", [("new-files", True), ("known,new-files", True), ("known", False),
+                                         ("level", False)])
+def test_only_connects_own_generate_after_new_files_marks_the_runs_episodes(tmp_path, why, marked):
+    # why: the level look gives words only to the episodes mined before Connect's own Generate after NEW FILES — a
+    # level raise mined first ("level") never re-mines them (F1)
+    from app.connect.ledger import Ledger
+    steps = runner.Steps({"connect_enabled": True})
+    steps._after = {"ja": why}
+    steps._generate = lambda args, say, ledger: None
+    steps._serves = lambda lang, got: None
+    steps.current = lambda lang, fresh=False: None
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        assert steps.generate_after("ja", ledger) is True
+        with ledger.transaction():
+            assert (ledger.take_new_files("ja") == steps._began) is marked

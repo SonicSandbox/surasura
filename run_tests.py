@@ -603,10 +603,10 @@ def _end_tree(proc):
 # names from), and theirs in turn; its file's own autouse fixtures too. A file that doesn't parse, or can't be read,
 # repeats whole, as before.
 
-TIMING = re.compile(r"\b(?:sleep|qWait|waitUntil|waitSignals?|waitExposed|waitActive|waitCallback|wait_until|wait_for\w*|"
+TIMING = re.compile(r"\b(?:sleep|qWait\w*|waitUntil|waitSignals?|waitExposed|waitActive|waitCallback|wait_until|wait_for\w*|"
                     r"singleShot|QTimer|QThread\w*|processEvents|settle\w*|threading|Thread\w*|Event|Condition|Barrier|"
                     r"Semaphore|Lock|Popen|subprocess|multiprocessing|asyncio|concurrent|\w*Executor|\w*Pool|monotonic|"
-                    r"perf_counter|timeout|deadline|time\.time|exec|acquire|communicate|recv\w*|poll\w*|\w*Queue)\b|"
+                    r"perf_counter|timeout|deadline|time\.time(?:_ns)?|exec|acquire|communicate|recv\w*|poll\w*|\w*Queue)\b|"
                     r"\.wait\(|\.join\(\s*(?:\)|timeout|\d|[A-Za-z_]\w*\s*\))|\.start\(\s*\)")   # (t.join(left), never
 #                                                                                   "/".join([...]) nor os.path.join(a, b))
 
@@ -1218,6 +1218,10 @@ def main():
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
     listing = "--list" in args
+    if listing and not any(a.split("=", 1)[0] in ("--stress-changed", "--touched-callers", "--guards") for a in args):
+        print("run_tests.py: --list goes with --touched-callers, --stress-changed or --guards: nothing was run.\n")
+        print(textwrap.dedent("    " + main.__doc__.strip()))
+        sys.exit(2)                    # (alone, or with --all / --shard, it started the whole core run: train 53's keeper)
     for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev",
                                                                          listing=listing)),
                       ("--touched-callers", lambda v: run_touched_callers(project_root, v or "origin/3.0-dev",

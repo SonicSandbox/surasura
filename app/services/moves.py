@@ -1269,7 +1269,10 @@ class Writer:
         try:
             with store._writing():
                 trashed = {}
-                for item_id in cmd["ids"]:
+                # Kura-AB6: a *Replace* trashes only the parts the store replaces now (`replace_parts`, under this
+                # lock) — never a part read since ⋯ opened (Finished or ✓ Done: kept, its copy where it is)
+                ids = store.replace_parts(cmd["old_epub"])[0] if cmd.get("new_epub") else cmd["ids"]
+                for item_id in ids:
                     row = store.item(item_id)
                     if row is None:
                         continue
@@ -2005,7 +2008,7 @@ class Writer:
                 return "done"                       # W3.2 H (C3): put back before the crash, as this command leaves it
             if any(r["restored_at"] for r in rows):
                 return True
-        if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
+        if cmd["op"] == "remove" and _removed(store, _replace_ids(store, cmd)):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
         if cmd["op"] == "start_over":               # Mado-O: none still where the screen put it (as it leaves them)
             now = store.check(cmd["ids"]).items
@@ -2283,6 +2286,16 @@ def _as_queued(store, cmd):
             row = store.item(held[key]) if held[key] is not None else None
             out.append([key, held[key], row["tier"] if row is not None else None])
         return out
+
+
+def _replace_ids(store, cmd):
+    """A Remove's ids as it leaves them — for a *Replace* (Kura-AB6) without the ones the store keeps now (read since
+    ⋯ opened: `replace_parts`' kept, still live), so a landed Replace replays as landed."""
+    if not cmd.get("new_epub"):
+        return cmd["ids"]
+    with store._reading():
+        kept = set(store.replace_parts(cmd["old_epub"])[1])
+    return [i for i in cmd["ids"] if i not in kept]
 
 
 def _removed(store, ids):

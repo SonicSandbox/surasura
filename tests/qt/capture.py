@@ -451,6 +451,19 @@ def run_integrated(scale, out_dir):
         win._guide_got((win._guide_asked, d.guide_panel.look, path_service.path(f, {}), []))
         settle(20)
         shot(label, [] if d.next_card.isVisible() and d.next_card.card[1] in label else [f"no {label} on Current"])
+    # Mado-TW (Sonic 2026-11-20): ③ done on a new path — ④'s card is hidden (YOURS_CARD off), ④ stays NOW in the panel
+    yours = path_service.path(path_facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False),
+                              {"first_ack": True, "yours_card": True})
+    win._guide_got((win._guide_asked, d.guide_panel.look, yours, []))
+    settle(20)
+    shot("next-card-no-yours", [] if not d.next_card.isVisible() else ["a Next card shows for ④"])
+    d.guide_panel.open()
+    settle(60)                                                    # the open's own fresh look lands first …
+    win._guide_got((win._guide_asked, d.guide_panel.look, yours, []))   # … then ④ NOW is shown in its place
+    until(lambda: not d.guide_panel.building())
+    settle(30)
+    shot("guide-path-yours", [] if d.guide_panel.isVisible() and d.guide_panel.rows else ["the path shows no step"])
+    d.guide_panel.hide()
     win.dock.begin_drag("current")
     settle(30)
     win.dock.hover("goal")

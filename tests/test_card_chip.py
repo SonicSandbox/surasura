@@ -419,3 +419,138 @@ def test_card_chip_a_rows_file_no_longer_counted_leaves_the_rows_count(lib):
         assert answers[(1, 2)] == lib.expected(1, studied), "the row from episode 1's words alone"
     finally:
         chips.close()
+
+
+def _files_out(db):
+    """The token store's per-file counts taken out, as an update's schema bump leaves it: the first writer (the indexer,
+    a Generate) drops every table and builds it again, empty until each file is read again -> the rows, to put back."""
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM files").fetchall()
+        conn.execute("DELETE FROM files")
+        conn.commit()
+    finally:
+        conn.close()
+    return rows
+
+
+def _files_back(db, rows):
+    """The indexer has read every file again: their counts back in the store."""
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany(f"INSERT INTO files VALUES ({','.join('?' * len(rows[0]))})", rows)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_card_chip_a_token_store_rebuilt_by_an_update_keeps_the_last_count_then_counts_the_files_read_again(lib):
+    """The start after an update whose token store is built again (Kura-CC, 3.0.18, a tester's restart): the files'
+    counts are gone until the indexer reads each one again. The chip keeps the last count it showed (on disk) for an
+    episode and a show's row it can't count yet — never its own cards alone, then the whole again at the next start —
+    and once the files are read again, the reader's next build asks the same episodes and they are counted: an episode
+    the counter couldn't read is asked again, never left on the last session's count (or none) all session."""
+    lib.made = {2: set(_pick(lib.words[2], 3, 31))}
+    lib.backlog = set(_pick(lib.words[3], 3, 32))
+    studied = set(_pick(lib.words[1] | lib.words[2], 12, 33))
+    first = lib.chips()
+    first.studied(studied)
+    first.want(lib.ask([1, 2, 3]), [(1, 2)])
+    _settle(first)
+    answers = first.answers()
+    first.close()
+    assert first.idle(10)
+    assert answers[1] > 0 and answers[(1, 2)] > 0
+    rows = _files_out(lib.db)                                  # the update: the store built again, nothing read yet
+    got = []
+    again = lib.chips(got)
+    try:
+        assert again.seeded() == answers
+        again.want(lib.ask([1, 2, 3]), [(1, 2)])
+        _settle(again)
+        assert again.read_files == 0
+        assert again.answers() == answers, "the last count stands while the files aren't read again"
+        assert all(g == answers for g in got), "never handed on without them"
+        _files_back(lib.db, rows)                              # the indexer has read them again
+        studied2 = studied | set(_pick(lib.words[1] - studied - lib.made[2], 2, 34))   # (two more studied meanwhile)
+        again.studied(studied2)
+        again.want(lib.ask([1, 2, 3]), [(1, 2)])               # the next build's asks: the same episodes
+        _settle(again)
+        assert again.read_files == 3, "each file read once it is in the store"
+        now = again.answers()
+        for key in (1, 2, 3, (1, 2)):
+            assert now[key] == lib.expected(key, studied2), key
+        assert now[1] == answers[1] + 2
+    finally:
+        again.close()
+
+
+def test_card_chip_a_file_counted_this_session_then_unread_is_never_given_last_sessions_count(lib):
+    """The last session's count stands only for a file not counted yet this session: one counted, then changed and not
+    read yet (a re-sync's new subtitle), has no count until it is read — never the older session's figure back."""
+    studied = set(_pick(lib.words[1], 6, 35))
+    first = lib.chips()
+    first.studied(studied)
+    first.want(lib.ask([1]))
+    _settle(first)
+    first.close()
+    assert first.idle(10)
+    again = lib.chips()
+    try:
+        assert again.seeded()[1] == 6
+        again.studied(set(_pick(lib.words[1], 3, 36)))
+        again.want(lib.ask([1]))
+        _settle(again)
+        assert again.answers()[1] == 3                         # counted this session
+        lib.rel[1] = "HighPriority/星の工房/編集中.srt"           # its file changed: not counted yet
+        again.want({1: (lib.rel[1], 2, 1)})
+        _settle(again)
+        assert 1 not in again.answers()
+    finally:
+        again.close()
+
+
+def test_card_chip_a_rows_last_count_stands_through_a_card_studied_meanwhile_until_its_files_are_all_read(lib):
+    """A show's row with one episode read again and one not yet: the row keeps its last count (never a part of it);
+    a card studied meanwhile steps the read episode's count, never the row's into a figure of that card alone; the
+    other file read, the row is counted whole."""
+    studied = set(_pick(lib.words[1] | lib.words[2], 10, 37))
+    first = lib.chips()
+    first.studied(studied)
+    first.want(lib.ask([1, 2]), [(1, 2)])
+    _settle(first)
+    answers = first.answers()
+    first.close()
+    assert first.idle(10)
+    import sqlite3
+    path2 = ti._norm(os.path.join(lib.data, *lib.rel[2].split("/")))
+    conn = sqlite3.connect(lib.db)
+    try:
+        row2 = conn.execute("SELECT * FROM files WHERE path=?", (path2,)).fetchone()
+        conn.execute("DELETE FROM files WHERE path=?", (path2,))
+        conn.commit()
+    finally:
+        conn.close()
+    again = lib.chips()
+    try:
+        again.seeded()
+        again.studied(studied)
+        again.want(lib.ask([1, 2]), [(1, 2)])
+        _settle(again)
+        got = again.answers()
+        assert got[1] == lib.expected(1, studied) and got[(1, 2)] == answers[(1, 2)] and got[2] == answers[2]
+        more = studied | {sorted(lib.words[1] - studied)[0]}
+        again.studied(more)
+        _settle(again)
+        got = again.answers()
+        assert got[1] == lib.expected(1, more)
+        assert got[(1, 2)] == answers[(1, 2)], "the row's last count stands, never stepped from nothing"
+        _files_back(lib.db, [row2])
+        again.want(lib.ask([1, 2]), [(1, 2)])
+        _settle(again)
+        got = again.answers()
+        assert got[2] == lib.expected(2, more) and got[(1, 2)] == lib.expected((1, 2), more)
+    finally:
+        again.close()

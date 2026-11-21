@@ -296,6 +296,10 @@ ROWS = (
          when=_JUNBAN_ON),
     _row("backfill_sentence", "backfill", "toggle", ("junban_backfill_fills",), options=("sentence",),
          when=_JUNBAN_ON),
+    _row("backfill_furigana", "backfill", "toggle", ("junban_backfill_fills",), options=("furigana",),
+         when=_JUNBAN_ON),
+    _row("backfill_pitch", "backfill", "toggle", ("junban_backfill_fills",), options=("pitch",),
+         when=_JUNBAN_ON),
     # a9.1: Backfill's window has one door, here (it had three: the deck, Preview, the fields)
     _row("junban_backfill_cards", "backfill", "choice", ("junban_backfill_cards",), options=("all", "new"),
          when=_JUNBAN_ON, door=("backfill",),
@@ -757,7 +761,8 @@ def _per_language(row, settings, language, new):
 
 def change(row, settings, language, new):
     """What a control's new value writes: `(changes, update)` — `changes` {key: value}, only the row's own keys and only
-    those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes);
+    those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes; a
+    *Count as known in Anki* pick carries `CHOSEN` beside it);
     `update` None, or for a per-language key the function that re-applies this language's entry onto the file's value at
     write time. `new` by kind: a bool, a value, a number; `range` a (low, high) pair; `tablets` the picks (a list
     value's values, or several bool keys' keys on — a {key: bool} dict too); `list` the items; the level a band name (a hand
@@ -776,8 +781,10 @@ def change(row, settings, language, new):
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
     out = {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}
-    if row.id == "known_from_anki" and row.keys[0] in out and _one(settings, CHOSEN, language) is not True:
-        out[CHOSEN] = True                      # Kantan-B3: a pick, never read as an old default again
+    if row.id == "known_from_anki" and row.keys[0] in out:
+        # Kantan-B3: a pick, never read as an old default again — written on every pick, even when the loaded settings
+        # already say True: the old switch's fold sets it in memory only (Kotoba-WS2F, the keeper's F1)
+        out[CHOSEN] = True
     return out, None
 
 

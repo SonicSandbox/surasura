@@ -932,9 +932,15 @@ TRAY_MENU = {
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
 # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a new version of a book here (the same folder and title)
-TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook, and "
-                                     "the old one's {n} parts go to Removed for 30 days\n• Undo puts it all back")
-TRAY_REPLACED = "The new version is 「{old}」 now · the old one is in Removed for 30 days"
+#   Kura-AB6 (Sonic 2026-11-20: keep the Finished parts and their dates, replace only the unread; PROVISIONAL words):
+#   the tip is TRAY_REPLACE[1] with {gone} (TRAY_REPLACE_GONE) and {kept} (TRAY_REPLACE_KEPT, "" when none) filled
+TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook"
+                                     "{gone}{kept}\n• Undo puts it all back")
+TRAY_REPLACE_GONE = {1: "\n• The old one's unread part goes to Removed for 30 days",
+                     0: "\n• The old one's {n} unread parts go to Removed for 30 days"}
+TRAY_REPLACE_KEPT = {1: "\n• The part you've read (Finished or ✓ Done) stays as it is, its date too",
+                     0: "\n• The {n} parts you've read (Finished or ✓ Done) stay as they are, their dates too"}
+TRAY_REPLACED = "The new version is 「{old}」 now · the old one's unread parts are in Removed for 30 days"
 TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
 TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Remove, by a key each.\n"
                      "• Anything you don't sort stays here")
@@ -2171,7 +2177,7 @@ HELP_CARDS = {
 }
 HELP_ALSO = {
     "current": "Its cards wait while Anki is closed",
-    "cards": "Stops when: Anki closed · day's limit · Stop · row below line.",
+    "cards": "Stops when: Anki closed · Surasura closed · day's limit · Stop · row below line.",
     "finished": "Finishing never marks a word known",
     "moving": "Undo: the toast's Undo, or Ctrl+Z",
     "arrivals": "A show's next episode joins it by itself",
@@ -2320,7 +2326,7 @@ PATH_STEPS = {           # id -> (title, the line behind its ?)
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
-    "yours": ("Pick which words get a card", "Your list, every new word, or only the lines with one new word."),
+    "yours": ("Pick which words get a card", "Which words Anki Miner makes cards from: its choice in Settings."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
     "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),

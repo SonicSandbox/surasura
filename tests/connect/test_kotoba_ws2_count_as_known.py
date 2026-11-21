@@ -126,3 +126,28 @@ def test_a_learner_who_turned_count_suspended_on_keeps_suspended_alone_and_nothi
 def test_a_pick_made_since_or_the_switch_off_reads_as_it_is(on_disk, wanted):
     _write_settings(on_disk)
     assert settings_manager.load_settings()["known_from_anki"] == wanted
+
+
+# --- a pick survives its own save (Kotoba-WS2F, the keeper's F1) -------------------------------------------------- #
+@pytest.mark.parametrize("stored", [None, ["suspended"], ["suspended", "marked"]])     # the old default, today's
+@pytest.mark.parametrize("old_switch", [True, False, "absent"])
+@pytest.mark.parametrize("pick, wanted", [
+    (["suspended"], ["suspended"]), (["marked", "suspended"], ["suspended", "marked"]), (["marked"], ["marked"]),
+    ([], []), (["flag:2", "suspended"], ["suspended", "flag:2"]),
+])
+def test_a_pick_saved_from_settings_reads_back_as_picked_whatever_the_old_switch_was(stored, old_switch, pick, wanted):
+    # why: the old switch's fold sets the marker in memory only, so a pick that wrote no marker beside it was read as
+    # the old switch again on the next load — Suspended + Marked undid itself to Suspended alone (the rows with the
+    # switch on are the ones the bug reached; the rest pin that nothing else moved). The key isn't per language: one
+    # language's save covers both
+    from app.qt import settings_catalog as catalog
+    from app.services.settings import SettingsService
+    on_disk = {} if old_switch == "absent" else {"anki_sync_include_suspended": old_switch}
+    if stored is not None:
+        on_disk["known_from_anki"] = stored
+    _write_settings(on_disk)
+    service = SettingsService(delay=0)
+    changes, update = catalog.change(catalog.ROW["known_from_anki"], service.get(), "ja", pick)
+    service.set(changes, update=update, now=True)
+    assert service.flush(5)
+    assert settings_manager.load_settings()["known_from_anki"] == wanted, (on_disk, pick, _file())

@@ -847,8 +847,9 @@ def test_import_finished_copies_outside_the_write_lock_and_never_re_adds(languag
 def test_each_rule_target_for_hato_youtube_a_channel_and_another_tool(language):
     """05 §5.12 (Q2-3, G1.2-12): `register` places a drop waiting in New arrivals by the user's rule for its source —
     hato, YouTube, one channel (`youtube:<id>` over `youtube`), another tool by its producer name — in the same command:
-    top (Current's first row), soon (the first slot below the line), goal, finished, after-show; `wait` and no rule
-    leave it in New arrivals."""
+    top (Current's first row), soon, goal, finished, after-show; `wait` and no rule leave it in New arrivals. A drop
+    naming no order (no episode, no list place) goes after what is there: the end of Soon / 6+ Months (Kura-SO, Sonic
+    2026-11-19)."""
     store = migrated(language, shows=2, episodes=3)
     data_dir, _u = roots(language)
     w = names(language)
@@ -856,10 +857,10 @@ def test_each_rule_target_for_hato_youtube_a_channel_and_another_tool(language):
     top = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt"), _record("r1"), rules=rules)
     assert store.ids("now")[0] == top.added[0] and top.rule == "top"
     yt = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[95]}.srt"), _record("r2", producer="youtube"), rules=rules)
-    assert store.ids("goal")[0] == yt.added[0]
+    assert store.ids("goal")[-1] == yt.added[0], "no order: the end of 6+ Months"
     ch = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[96]}.srt"),
                         _record("r3", producer="youtube", channel_id="UC123"), rules=rules)
-    assert store.ids("soon")[0] == ch.added[0], "the channel's line wins; Soon's first row"
+    assert store.ids("soon")[-1] == ch.added[0], "the channel's line wins; no order: the end of Soon"
     done = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[97]}.srt"), _record("r4", producer="my-tool"),
                           rules=rules)
     assert store.item(done.added[0])["tier"] == "graduated"
@@ -1448,7 +1449,7 @@ def test_a_channels_wait_rule_keeps_its_drop_in_new_arrivals_when_its_producer_i
         assert waits.added[0] not in store.ids("goal")
         goes = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[131]}.srt"),
                               _record("w2", producer="youtube", channel_id="UCX"), rules=rules)
-        assert goes.rule == "goal" and store.ids("goal")[0] == goes.added[0]
+        assert goes.rule == "goal" and store.ids("goal")[-1] == goes.added[0]     # (no order: the end, Kura-SO)
     finally:
         store.close()
 

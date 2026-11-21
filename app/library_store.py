@@ -6050,9 +6050,87 @@ class Store:
             anchor, before = spot
             return self.move([item_id], tier, before_id=anchor if before else None,
                              after_id=None if before else anchor, by=by, explicit=explicit, in_order=False) is not None
-        # a rule's target is exactly that (Kura-EO D-1, PROVISIONAL): its *Top of Current* the very top — *After its
-        # show* is the rule that follows the show
+        # Kura-SO (Sonic 2026-11-19; train 44's keeper, D-2): a new episode joins its own show in episode order where
+        # the rule places it, never ahead of an earlier episode (6 lands after 5) — Current read as one order for *Top
+        # of Current*, Soon's own rows for *Soon* (never above the Soon line: a show only in NOW gives Soon's first
+        # slot, below it), 6+ Months for *Goal*. Nothing of its show there to follow: the rule's own place (*Top of
+        # Current* the very top, Kura-EO D-1). An item with no episode order (a channel's video) goes after what is
+        # already there (`_after_all`).
+        if self._names_order(item_id, record):
+            spot = self._after_show(item_id, record, {item_id}, ordered=True,
+                                    zone=CURRENT if tier == "now" else (tier,), named=True)
+            if spot is not None:
+                into, before_id, after_id = spot
+                return self.move([item_id], into, before_id=before_id, after_id=after_id, by=by, explicit=explicit,
+                                 in_order=False) is not None
+        else:
+            spot = self._after_all(item_id, tier)
+            if spot is not None:
+                return self.move([item_id], spot[0], after_id=spot[1], by=by, explicit=explicit,
+                                 in_order=False) is not None
         return self.move([item_id], tier, by=by, explicit=explicit, in_order=False) is not None
+
+    def place_by_rule(self, item_id, where, record, by):
+        """Connect's placing of an arrival by its source's rule (`connect.rules.apply`: hato's register through the
+        command line, a held drop on resume) as `register` places one (`_place_one`), in one command: logged as the
+        source's, explicit (D30). -> True when it moved."""
+        with self._command("place", by):
+            return self._place_one(item_id, where, record, by, 1)
+
+    def _names_order(self, item_id, record):
+        """Does an arrival name its place in an order: an episode (its record's, else its file name's: Kura-SO), a
+        place in a list (Mado-Q), or a folder's file (its show's run, S3)?"""
+        return self._episode_named(item_id, record) is not None or list_place(record) is not None or (
+            isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER)
+
+    def _episode_named(self, item_id, record):
+        """(season, episode) of an item for `after-show`'s reading: its record's (`_episode`), else the number its file
+        name reads (Kura-SO: "it probably says it in the name"; `episode_names.identity`, its season or the first) — a
+        folder's origin record is read by its show's run instead (`_in_run`) — or None."""
+        found = _episode(record)
+        if found is not None or (isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER):
+            return found
+        row = self.conn.execute("SELECT rel_path FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            return None
+        from app.episode_names import identity
+        name = identity(row[0])
+        if isinstance(name.episode, bool) or not isinstance(name.episode, (int, float)):
+            return None
+        return (name.season if isinstance(name.season, int) else 1, name.episode)
+
+    def _numbers_by_name(self, ids, episodes, season):
+        """(Kura-SO) The episode number each of `ids` (a title's rows whose records name none: a 2.x library's, an Add's)
+        reads in its file name, put in `episodes` — when its season is `season` or names none. Stops at the first that
+        reads none (the order is read only when every row has one: a long 2.x title isn't parsed for nothing)."""
+        if not ids:
+            return
+        from app.episode_names import identity
+        for part in _chunks(ids, 500):
+            for item_id, rel in self.conn.execute(
+                    f"SELECT id, rel_path FROM items WHERE id IN ({','.join('?' * len(part))})", part):
+                name = identity(rel)
+                if isinstance(name.episode, bool) or not isinstance(name.episode, (int, float)) or \
+                        name.season not in (None, season):
+                    return
+                episodes[item_id] = name.episode
+
+    def _after_all(self, item_id, tier):
+        """(Kura-SO, Sonic 2026-11-19: "if they are adding it now ... it would come after the content that they have")
+        Where a placing rule puts an item that names no order (a channel's single video): (tier, the row it goes
+        after) — the end of Soon or 6+ Months; for *Top of Current* after its own title's last row in Current
+        (PROVISIONAL: never above its channel's video there) — or None: the rule's own place (an empty Soon or 6+
+        Months, a title with nothing in Current: the very top). Never inside a group (LM11)."""
+        if tier in ("soon", "goal"):
+            row = self.conn.execute("SELECT id, tier FROM items WHERE tier = ? AND id != ? ORDER BY ord DESC, id DESC "
+                                    "LIMIT 1", (tier, item_id)).fetchone()
+        else:
+            work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
+            rows = [] if work is None or work[0] is None else self.conn.execute(
+                "SELECT id, tier, ord FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') AND id != ?",
+                (work[0], item_id)).fetchall()
+            row = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0])) if rows else None
+        return None if row is None else (row[1], self._past_group(row[0]))
 
     def place(self, item_ids, where, by="user", explicit=None, after_id=None):
         """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
@@ -6174,15 +6252,18 @@ class Store:
         other = found[0][0] if found else None
         return (other, anchor) if before else (anchor, other)
 
-    def _after_show(self, item_id, record, excl=(), ordered=False):
+    def _after_show(self, item_id, record, excl=(), ordered=False, zone=CURRENT, named=False):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
         Its title's other items, by the episode numbers their records name (the same season: an item whose record
-        names another season is another show's, as `connect/rules.py` read it before Decision 1); without numbers,
+        names another season is another show's, as `connect/rules.py` read it before Decision 1) — a folder's file's
+        record its K4 number, and one naming none the number its file name reads (Kura-SO) — ; without numbers,
         after the title's last item in Current. LM11 (G4): never inside a group — after it (before it, when the
-        anchor is the row it goes before), in a piece of its own (`_past_group`). `ordered` (`_into_show`): only a
-        place read from the order (episode numbers, a list's places, a folder's run) — never the last item's
-        fallback or Q4-9's top: None then."""
-        spot = self._show_spot(item_id, record, excl, ordered)
+        anchor is the row it goes before), in a piece of its own (`_past_group`). `ordered` (`_into_show`, a placing
+        rule's target): only a place read from the order (episode numbers, a list's places, a folder's run) — never
+        the last item's fallback or Q4-9's top: None then — among the title's items in `zone` (Current, or 6+ Months
+        for a *Goal* rule: `_place_one`). `named` (a placing rule's): an item whose record names no episode is read by
+        its file name's (`_episode_named`)."""
+        spot = self._show_spot(item_id, record, excl, ordered, zone, named)
         if spot is None:
             return None
         tier, before_id, after_id = spot
@@ -6238,12 +6319,12 @@ class Store:
                 out[item_id] = found[1]
         return out
 
-    def _show_spot(self, item_id, record, excl, ordered=False):
-        """`_after_show`'s reading of the title's rows (`ordered`: see there)."""
+    def _show_spot(self, item_id, record, excl, ordered=False, zone=CURRENT, named=False):
+        """`_after_show`'s reading of the title's rows (`ordered`, `zone`, `named`: see there)."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
         if work is None or work[0] is None:
             return None
-        mine = _episode(record)
+        mine = self._episode_named(item_id, record) if named else _episode(record)
         if ordered and mine is None and list_place(record) is None and not (
                 isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER):
             return None              # (`_into_show`: nothing names its place — a channel's video: no title read)
@@ -6254,22 +6335,22 @@ class Store:
         episodes, apart = {}, set()
         # `ordered` reads only the records of the title's items in Current (all it compares with: a long title's
         # Finished and 6+ Months records are never parsed on a move), and none without an episode of its own
-        within = " AND +tier IN ('now', 'soon')" if ordered else ""
+        within = f" AND +tier IN ({', '.join(repr(t) for t in zone)})" if ordered else ""
         for other, text in () if ordered and mine is None else self.conn.execute(
                 f"SELECT item_id, pairing FROM pairings p WHERE item_id IN (SELECT id FROM items WHERE work_id = ?"
                 f"{within}) AND {_PREFERRED_ROW}", (work[0],)):
             try:
-                ep = _episode(json.loads(text))
+                ep = _record_episode(json.loads(text))
             except ValueError:
                 continue
-            if ep is not None and (mine is None or ep[0] == mine[0]):
+            if ep is not None and (mine is None or ep[0] in (None, mine[0])):
                 episodes[other] = ep[1]
             elif ep is not None:
                 apart.add(other)
         others = [r for r in others if r[0] not in apart]
         if not others:
             return None
-        current = [r for r in others if r[1] in CURRENT]
+        current = [r for r in others if r[1] in zone]
         if not current:
             if not ordered and all(r[1] in ("graduated", "goal") for r in others):
                 return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
@@ -6288,6 +6369,8 @@ class Store:
         if found is not None:            # Mado-Q: a playlist's video in its list's order (`_series_spot`'s reading)
             row, before = found
             return (row[1], row[0], None) if before else (row[1], None, row[0])
+        if mine is not None:
+            self._numbers_by_name([r[0] for r in current if r[0] not in episodes], episodes, mine[0])
         if mine is not None and all(r[0] in episodes for r in current):
             earlier = [r for r in current if episodes[r[0]] < mine[1]]
             if earlier:
@@ -8034,6 +8117,18 @@ def _rule_for(record, rules):
         if target in PLACING_TARGETS:
             return source, target
     return None
+
+
+def _record_episode(record):
+    """(season, episode) a record names for `after-show`'s reading: its show's (`_episode`), else a folder's origin
+    record's K4 `episode` (Kura-SO: a show a folder scan brought in, joined by hato's or the browser's next one) with
+    no season (None: it never sets an item apart) — or None."""
+    found = _episode(record)
+    if found is None and isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER:
+        number = record.get("episode")
+        if isinstance(number, (int, float)) and not isinstance(number, bool):
+            return (None, number)
+    return found
 
 
 def _episode(record):

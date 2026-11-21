@@ -5901,7 +5901,7 @@ class Store:
         """Kura-WD: the watched dates that go with the watched marks in `status` ((id, "watched", old, new) among the
         rest), written now and returned as status values of their own, so the Undo's value check puts each back: a mark
         set is dated now, a mark taken back loses its date. Nothing while the store has no column yet."""
-        marks = {i: bool(new) for i, column, old, new in status if column == "watched" and bool(old) != bool(new)}
+        marks = {i: bool(new) for i, column, _old, new in status if column == "watched"}   # (each a change)
         if not marks or not self._dates_column():
             return []
         stamp, held = _now(), {}

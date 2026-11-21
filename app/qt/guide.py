@@ -11,9 +11,11 @@
   the learner's own first (*For you* above them only when others follow), each something to try with **Show me**
   (`show_me`, its `where`: the shell goes there and washes it); the rest folded into *N fixes and small changes*
   (Kantan-X's rule 2). No Done tab (rule 3).
-- **Your path** (PR 2, Kantan-X's model; `app/services/path.py`): a second tab once the learner has a library — *Your
-  first cards* (three steps, folded to one ticked line once done) and *When you're ready* (only the steps useful now,
-  or done), each undone step with **Show me**. The tabs show only with a path; alone, the panel is *What's new*.
+- **Your path** (PR 2, Kantan-X's model; `app/services/path.py`; Mado-EZP, SPEC-r2 EZ2-1 / EZ2-3: the two tabs merged
+  into **one list**, PROVISIONAL): once the learner has a library the panel is *Your path* — the four stages as a string
+  of stones (`_StageRow`), then *Now · <stage>* (its steps, and a later step useful now), *New for you · <version>*
+  (each release's notes, as below), *Later on your path* and *Done* — each step with **its own press** (*Do it*;
+  *Again* on a done one; `act`, the shell runs it). Without a library, the panel is *What's new* alone.
 - **Built when the look changes, never on an open** (R5): `set_look` rebuilds only for a new answer; an open with the
   same answer makes no widget. Nothing here reads a file: the shell asks the service on a worker.
 """
@@ -21,14 +23,13 @@ import collections
 import time
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
-                             QToolButton,
+from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
                              QVBoxLayout, QWidget)
 
-from app import theme
-from app.qt import motion, shadow, strings, style
+from app import scrub, theme
+from app.qt import motion, shadow, stones, strings, style
 from app.qt.frame import _Away, _iris
 from app.qt.tooltip import AboutMark, FitTitle
 
@@ -36,6 +37,7 @@ EDGE = 8                            # px the panel keeps from the window's edges
 FIRST_LOOK_MS = 3000                # the first look, this long after the duties start (never on the start's path)
 RELOOK_MS = 2000                    # the path's look, this long after the view's few numbers moved (one per burst)
 FOCUS_RELOOK_S = 30                 # ... and on the window's activation, at most this often
+STAGE_BAND = 30                     # px the panel's stage stones take (the now stone's ring whole)
 SLICES_KEPT = 256                   # the last pieces' times kept (tests: the largest slice ≤ 4 ms; 64 fell under 3.0.12's 69 cards)
 
 
@@ -138,19 +140,81 @@ class _Card(QWidget):
         self.setAccessibleName(item.text)
 
 
+class _StageRow(QWidget):
+    """The panel's top (EZ2-1): the four stages as the Next card's string of stones, spread across, each named under
+    its stone — the stage to do now in full ink. Painted (no child widgets); `set_states` repaints only on a change."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("pathstages")
+        self.states = ()
+        f = theme.text_factor(style.current()[1])
+        self._label_h = round(18 * f)
+        self.setFixedHeight(STAGE_BAND + self._label_h)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        stones.notifier().ready.connect(self._sheet_ready)
+
+    def _sheet_ready(self, _key):
+        if self.states:
+            self.update()
+
+    def set_states(self, states):
+        from app.services import path as path_service
+        states = tuple(states or ())
+        if states == self.states:
+            return False
+        self.states = states
+        self.setAccessibleName(strings.PATH_STRING_NAME.format(stages=", ".join(
+            strings.PATH_STAGE_NAME.format(stage=strings.PATH_STAGES[s], state=strings.PATH_STAGE_STATES[st])
+            for s, st in zip(path_service.STAGES, states))))
+        self.update()
+        return True
+
+    def paintEvent(self, _event):
+        if not self.states:
+            return
+        from app.qt import next_card, rows
+        from app.services import path as path_service
+        c = style.colours()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        n = len(self.states)
+        step = self.width() / n
+        mid = STAGE_BAND / 2
+        xs = [step * (i + 0.5) for i in range(n)]
+        p.fillRect(QRectF(xs[0], mid - 0.5, xs[-1] - xs[0], 1), rows.c("string"))
+        sheet = stones.get(self.devicePixelRatioF() or 1.0, style.current()[1])
+        font = self.font()
+        for x, stage, state in zip(xs, path_service.STAGES, self.states):
+            at = QPointF(x, mid)
+            if sheet is not None:
+                what = next_card.stone_of(state)
+                if what in sheet:
+                    sheet.draw(p, at, what)
+                if state == path_service.NOW and ("ring", "next") in sheet:
+                    sheet.draw(p, at, ("ring", "next"))
+            font.setWeight(QFont.Weight.DemiBold if state == path_service.NOW else QFont.Weight.Normal)
+            p.setFont(font)
+            p.setPen(style.qcolor(c["ink"] if state == path_service.NOW else c["overlay-ink-faint"]))
+            p.drawText(QRectF(x - step / 2, STAGE_BAND, step, self._label_h), Qt.AlignmentFlag.AlignCenter,
+                       scrub.shown(strings.PATH_STAGES[stage]))
+        p.end()
+
+
 class _StepRow(QWidget):
     """One step of the path: its tick, its title with its line behind a ? (Kantan-S2, Sonic 2026-11-13: no subtitles),
-    and *Show me* while the step applies — done ones too, to try again (Sonic: "they would need to be able to see past
-    ones to try again"). `later`: a step that can't apply yet (*Not for now*): no tick, no *Show me* (never a dead end),
-    its ? says when it will (`strings.PATH_WHEN`)."""
+    and **its own press** while the step applies (§0.2: *Do it*; a done one *Again*, to do it again — Sonic: "they would
+    need to be able to see past ones to try again"). `later`: a step that can't apply yet: no tick, no press (never a
+    dead end), its ? says when it will (`strings.PATH_WHEN`)."""
 
-    def __init__(self, status, on_show, parent=None, later=False):
+    def __init__(self, status, on_act, parent=None):
         super().__init__(parent)
         self.setObjectName("pathrow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.status = status
-        self.later = later
-        done = status.done and not later
+        self.later = later = not (status.useful or status.done)
+        done = status.done
         step_id = status.step.id
         f = theme.text_factor(style.current()[1])
         row = QHBoxLayout(self)
@@ -178,19 +242,19 @@ class _StepRow(QWidget):
         self.about.set_about(strings.PATH_ABOUT_NAME.format(title=title), text)
         row.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
-        self.show_me = None
-        if not later and status.useful:
-            b = QPushButton(strings.GUIDE_SHOW_ME, self)
+        self.press = None
+        if status.useful:
+            words = strings.PATH_AGAIN if done else strings.PATH_DO
+            b = QPushButton(words, self)
             b.setObjectName("guideshow")
-            b.setToolTip(strings.PATH_AGAIN_TIP if done else
-                         strings.PATH_SHOW_ME_TIPS.get(step_id, strings.GUIDE_SHOW_ME_TIP))
-            b.setAccessibleName(strings.GUIDE_SHOW_ME_NAME.format(text=title))
+            b.setToolTip(strings.PATH_DO_TIPS[step_id])
+            b.setAccessibleName(strings.PATH_DO_NAME.format(press=words, title=title))
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.setAutoDefault(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _c=False, w=status.step.where: on_show(w))
+            b.clicked.connect(lambda _c=False, s=step_id: on_act(s))
             row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
-            self.show_me = b
+            self.press = b
         if later:
             self.setAccessibleName(strings.PATH_LATER_NAME.format(title=title, when=text))
         else:
@@ -199,15 +263,17 @@ class _StepRow(QWidget):
 
 
 class GuidePanel(motion.Overlay):
-    """The ✦'s panel. `set_look(look)` paints a `guide.Look`; `show_me` carries a place (`where`) to the shell, which
-    closes nothing itself — the panel closes first. `opened` tells the shell the panel opened (the glow ends, the look
-    is asked again on a worker)."""
+    """The ✦'s panel: *Your path* and what's new, **one list** (EZ2-1 / EZ2-3: its two tabs merged). `set_look(look)`
+    paints a `guide.Look`, `set_path(path)` a `path.Path` (None: no library yet — the panel is *What's new* alone).
+    `show_me` carries a place (`where`) to the shell, `act` a step to do (its own press, §0.2); the panel closes first.
+    `opened` tells the shell the panel opened (the glow ends, the look is asked again on a worker)."""
     how = "pop"
     shadow_name = "menu"
     focus = True
     show_me = pyqtSignal(str)
+    act = pyqtSignal(str)               # a step's own press, from its row (the shell runs it)
     opened = pyqtSignal()
-    path_shown = pyqtSignal()           # the *Your path* tab came into view (its glow is over)
+    path_shown = pyqtSignal()           # the path came into view (its steps' glow is over)
 
     def __init__(self, parent, button):
         super().__init__(parent)
@@ -223,30 +289,9 @@ class GuidePanel(motion.Overlay):
         self.heading = QLabel(strings.GUIDE_HEADING, self)
         self.heading.setObjectName("popheading")
         box.addWidget(self.heading)
-        self.tabs = QWidget(self)                          # *What's new* · *Your path* (only with a path)
-        tabs = QHBoxLayout(self.tabs)
-        tabs.setContentsMargins(0, 0, 0, 0)
-        tabs.setSpacing(round(4 * f))
-        self.tab_group = QButtonGroup(self.tabs)
-        self.tab_group.setExclusive(True)
-        self.tab_buttons = {}
-        for name, text, tip in (("news", strings.GUIDE_TAB_NEWS, strings.GUIDE_TAB_NEWS_TIP),
-                                ("path", strings.GUIDE_TAB_PATH, strings.GUIDE_TAB_PATH_TIP)):
-            b = QPushButton(text, self.tabs)
-            b.setObjectName("guidetab")
-            b.setCheckable(True)
-            b.setToolTip(tip)
-            b.setAccessibleName(text)
-            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            b.setAutoDefault(False)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _c=False, n=name: self.show_tab(n))
-            b.installEventFilter(self)                     # ← → between the two (one Tab stop's way: the guide §3)
-            self.tab_group.addButton(b)
-            self.tab_buttons[name] = b
-            tabs.addWidget(b, 1)
-        self.tabs.hide()
-        box.addWidget(self.tabs)
+        self.stage_row = _StageRow(self)                   # the four stages (only with a path)
+        self.stage_row.hide()
+        box.addWidget(self.stage_row)
         self.scroll = QScrollArea(self)
         self.scroll.setObjectName("guidescroll")
         self.scroll.setWidgetResizable(False)              # (sized here, by its wrapped lines: `place`)
@@ -254,19 +299,16 @@ class GuidePanel(motion.Overlay):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFocusPolicy(Qt.FocusPolicy.TabFocus)     # (its arrows and Page keys read every line)
         box.addWidget(self.scroll, 1)
-        self.body = None                    # the body in view (the tab's)
-        self._bodies = {"news": None, "path": None}
-        self.tab = "news"
+        self.body = None                    # the body in view
         self.look = None                    # the guide.Look shown
-        self.path = None                    # the path.Path shown (None: no path — no tabs)
+        self.path = None                    # the path.Path shown (None: no path)
         self._waiting = None                # a newer look, kept while the panel is open
         self._waiting_path = None           # ... and a newer path
         self.cards = []
         self.folds = []                     # (button, [fix cards], n)
         self.rows = []                      # the path's step rows
-        self.builds = 0                     # the news body made (tests: once per new look, never per open)
-        self.path_builds = 0                # the path body made
-        self._jobs = {"news": [0, collections.deque()], "path": [0, collections.deque()]}   # [token, pieces]
+        self.builds = 0                     # bodies made (tests: once per new answer, never per open)
+        self._job = [0, collections.deque()]   # [token, pieces]
         self.slices = []                    # each piece's time on the GUI thread, ms (the last SLICES_KEPT)
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
@@ -287,8 +329,6 @@ class GuidePanel(motion.Overlay):
         if same:
             return False
         self._build()
-        if self.isVisible():
-            self.place()
         return True
 
     def has_news(self):
@@ -298,42 +338,45 @@ class GuidePanel(motion.Overlay):
         return self.path is not None
 
     def set_path(self, path):
-        """Paint `path` (a `path.Path`, or None: no library yet — no tabs). Held while the panel is open, as a look is;
-        the same steps again change nothing. -> True when rebuilt."""
+        """Paint `path` (a `path.Path`, or None: no library yet). Held while the panel is open, as a look is; the same
+        steps again change nothing. -> True when rebuilt."""
         if self.isVisible() or motion.opening_of(self) is not None:
             self._waiting_path = (path,)
             return False
         self._waiting_path = None
         old = self.path
-        same = old is not None and path is not None and (old.steps, old.first_done) == (path.steps, path.first_done)
+        same = (old is None and path is None) or (old is not None and path is not None and
+                                                  (old.steps, old.stages) == (path.steps, path.stages))
         self.path = path
-        if (old is None) != (path is None):                # the tabs come or go: the news body's version line too
-            self.tabs.setVisible(path is not None)
-            self.heading.setVisible(path is None)
-            if path is None:
-                self.show_tab("news")
-            if self.look is not None:
-                self._build()
-        if same or path is None:
+        if same:
             return False
-        self._build_path()
+        self._build()
         return True
 
     def _build(self):
-        """A new answer's body, **one piece per event-loop turn** (the lead, 2026-11-12: the 4 ms rule strict — a whole
-        release built at once took 3.3–4.8 ms at 100–200 %): the empty body at once, then each line, card and fold
-        piece in a turn of its own (`_step`). A newer answer cancels the pieces still to come; the panel places itself
-        once the last lands. `builds` counts finished bodies."""
+        """The body, **one piece per event-loop turn** (the lead, 2026-11-12: the 4 ms rule strict — a whole release
+        built at once took 3.3–4.8 ms at 100–200 %): the empty body at once, then each line, row, card and fold in a
+        turn of its own (`_step`). A newer answer cancels the pieces still to come; the panel places itself once the
+        last lands. With a path: *Now · <stage>* (its steps and the later steps useful now), *New for you* (each
+        release's notes), *Later on your path* and *Done* (`path.listed`); without one, the notes alone, as before."""
+        from app.services import path as path_service
         f = self._f
         body = QWidget()
         body.setObjectName("guidebody")
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, round(2 * f), 0)
         col.setSpacing(round(6 * f))
-        self.cards, self.folds = [], []
+        self.cards, self.folds, self.rows = [], [], []
         releases = self.look.releases if self.look else ()
-        self.heading.setText(strings.GUIDE_HEADING_ONE.format(version=releases[0].release.version)
-                             if len(releases) == 1 else strings.GUIDE_HEADING)
+        p = self.path
+        if p is not None:
+            self.heading.setText(strings.GUIDE_PATH_HEADING)
+            self.stage_row.set_states(p.stages)
+        else:
+            self.heading.setText(strings.GUIDE_HEADING_ONE.format(version=releases[0].release.version)
+                                 if len(releases) == 1 else strings.GUIDE_HEADING)
+        self.stage_row.setVisible(p is not None)
+        self.setAccessibleName(strings.GUIDE_PATH_NAME if p is not None else strings.GUIDE_PANEL_NAME)
         pieces = []
 
         def label(name, text):
@@ -364,8 +407,26 @@ class GuidePanel(motion.Overlay):
                 b.clicked.connect(lambda _c=False, e=entry: self._fold(e))
             pieces.append(make)
 
+        def row(st):
+            def make():
+                r = _StepRow(st, self._act, body)
+                self.rows.append(r)
+                self._row(col, r)
+            pieces.append(make)
+
+        if p is not None:
+            stage, now, later, done = path_service.listed(p.steps)
+        else:
+            stage, now, later, done = None, [], [], []
+        if now:
+            label("guidegroup", strings.PATH_NOW.format(stage=strings.PATH_STAGES[stage].upper()) if stage
+                  else strings.PATH_NOW_LATER)
+            for st in now:
+                row(st)
         for shown in releases:
-            if len(releases) > 1 or self.path is not None:     # (one release, no tabs: the heading names it)
+            if p is not None:
+                label("guidegroup", strings.PATH_NEWS.format(version=shown.release.version))
+            elif len(releases) > 1:                    # (one release, no path: the heading names it)
                 label("guidever", release_name(shown.release))
             if shown.for_you and shown.others:             # "For you" only where it explains the order
                 label("guidegroup", strings.GUIDE_FOR_YOU)
@@ -379,131 +440,53 @@ class GuidePanel(motion.Overlay):
                 for item in shown.fixes:
                     card(item, folded=True, into=entry)
                 pieces.append(lambda e=entry: self._fold_words(e))
+        for name, sts in ((strings.PATH_LATER, later), (strings.PATH_DONE, done)):
+            if sts:
+                label("guidegroup", name)
+                for st in sts:
+                    row(st)
         pieces.append(lambda: col.addStretch(1))
-        self._start("news", body, pieces)
+        self._start(body, pieces)
 
-    def _build_path(self):
-        """The *Your path* body, in pieces as the news body is (`path.listed`, Kantan-S2): *Your first cards* (its three
-        steps, done ones kept with *Show me* to try again), *When you're ready* (the steps useful now or done, and
-        *n of m*), then *Not for now* (the steps that can't apply yet, each saying when behind its ?)."""
-        from app.services import path as path_service
-        f = self._f
-        body = QWidget()
-        body.setObjectName("guidebody")
-        col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, round(2 * f), 0)
-        col.setSpacing(round(6 * f))
-        self.rows = []
-        pieces = []
-        p = self.path
-
-        def header(chapter, right):
-            pieces.append(lambda: self._row(col, self._chapter(chapter, right, body)))
-
-        def row(st, later=False):
-            def make():
-                r = _StepRow(st, self._show, body, later=later)
-                self.rows.append(r)
-                self._row(col, r)
-            pieces.append(make)
-
-        first, ready, later = path_service.listed(p.steps)
-        header("first", strings.PATH_DONE if p.first_done else "")
-        for st in first:
-            row(st)
-        if ready:
-            header("ready", strings.PATH_COUNT.format(n=sum(st.done for st in ready), total=len(ready)))
-            for st in ready:
-                row(st)
-        if later:
-            pieces.append(lambda: self._row(col, self._label("guidegroup", strings.PATH_LATER, body)))
-            for st in later:
-                row(st, later=True)
-        pieces.append(lambda: col.addStretch(1))
-        self._start("path", body, pieces)
-
-    def _chapter(self, chapter, right, parent):
-        w = QWidget(parent)
-        row = QHBoxLayout(w)
-        row.setContentsMargins(0, round(4 * self._f), 0, 0)
-        row.addWidget(self._label("guidegroup", strings.PATH_CHAPTERS[chapter], w))
-        row.addStretch(1)
-        if right:
-            row.addWidget(self._label("pathright" if right != strings.PATH_DONE else "pathdone", right, w))
-        return w
-
-    # --- the pieces: each body built one piece per event-loop turn ---------------------------------------------- #
-    def _start(self, kind, body, pieces):
-        """Body `kind` ("news" / "path") replaced by `body`, its `pieces` made one a turn (`_step`); a newer start of
-        the same kind cancels the pieces still to come."""
-        job = self._jobs[kind]
+    # --- the pieces: the body built one piece per event-loop turn ------------------------------------------------ #
+    def _start(self, body, pieces):
+        """The body replaced by `body`, its `pieces` made one a turn (`_step`); a newer start cancels the pieces still
+        to come."""
+        job = self._job
         job[0] += 1
         job[1] = collections.deque(pieces)
-        old, self._bodies[kind] = self._bodies[kind], body
-        body.setParent(self)
-        body.hide()
-        if self.tab == kind or self.body is None:
-            self._mount(kind)
-        if old is not None and old is not self.body:
-            old.deleteLater()
-        self._next_piece(kind, job[0])
-
-    def _mount(self, kind):
-        """Body `kind` into the scroll area (the other kept, hidden, for its tab)."""
-        body = self._bodies[kind]
-        if body is None or self.scroll.widget() is body:
-            self.body = body if body is not None else self.body
-            return
         taken = self.scroll.takeWidget()
         if taken is not None:
-            taken.setParent(self)
             taken.hide()
-            if taken not in self._bodies.values():
-                taken.deleteLater()
+            taken.deleteLater()
         self.scroll.setWidget(body)
         body.show()
         self.body = body
+        self._next_piece(job[0])
 
     def building(self):
         """Whether a body's pieces are still on their way."""
-        return any(job[1] for job in self._jobs.values())
+        return bool(self._job[1])
 
-    def _next_piece(self, kind, token):
-        QTimer.singleShot(0, lambda: self._step(kind, token))
+    def _next_piece(self, token):
+        QTimer.singleShot(0, lambda: self._step(token))
 
-    def _step(self, kind, token):
-        """One piece of body `kind`, timed; the next in the next turn."""
-        job = self._jobs[kind] if not sip.isdeleted(self) else None
+    def _step(self, token):
+        """One piece, timed; the next in the next turn."""
+        job = self._job if not sip.isdeleted(self) else None
         if job is None or token != job[0] or not job[1]:
             return
         t0 = time.perf_counter()
         job[1].popleft()()
         done = not job[1]
         if done:
-            if kind == "news":
-                self.builds += 1
-            else:
-                self.path_builds += 1
+            self.builds += 1
             if self.isVisible():
                 self.place()
         self.slices.append((time.perf_counter() - t0) * 1000)
         del self.slices[:-SLICES_KEPT]
         if not done:
-            self._next_piece(kind, token)
-
-    def show_tab(self, name):
-        """*What's new* or *Your path* in view (a path's tab only with a path)."""
-        if name == "path" and self.path is None:
-            name = "news"
-        self.tab = name
-        button = self.tab_buttons[name]
-        if not button.isChecked():
-            button.setChecked(True)
-        self._mount(name)
-        if self.isVisible():
-            self.place()
-            if name == "path":
-                self.path_shown.emit()
+            self._next_piece(token)
 
     def _label(self, name, text, parent):
         label = QLabel(text, parent)
@@ -531,6 +514,10 @@ class GuidePanel(motion.Overlay):
     def _show(self, where):
         self.close()
         self.show_me.emit(where)
+
+    def _act(self, step_id):
+        self.close()
+        self.act.emit(step_id)
 
     # --- opening, closing ------------------------------------------------------------------------------------------ #
     def _widths(self, p):
@@ -566,8 +553,9 @@ class GuidePanel(motion.Overlay):
         b = self.button
         at = b.mapTo(p, b.rect().bottomRight())
         top = at.y() + 6
-        top_row = self.tabs if self.path is not None else self.heading
-        head = top_row.sizeHint().height() + lay.spacing() + m.top() + m.bottom()
+        head = self.heading.sizeHint().height() + lay.spacing() + m.top() + m.bottom()
+        if not self.stage_row.isHidden():
+            head += self.stage_row.height() + lay.spacing()
         room = max(1, p.height() - top - EDGE)
         body_w, want = inner, 0
         if self.body is not None:
@@ -605,13 +593,7 @@ class GuidePanel(motion.Overlay):
                 total += entry.spacerItem().sizeHint().height()
         return total + col.spacing() * max(0, shown - 1)
 
-    def open(self, tab=None):
-        """Open on `tab`, else the one with something new (unseen news first), else the path (it is the living
-        part), else *What's new*."""
-        if tab is None:
-            news_new = self.look is not None and self.look.glow
-            tab = "news" if (news_new or self.path is None) else "path"
-        self.show_tab(tab)
+    def open(self):
         self.place()
         return super().open()
 
@@ -623,7 +605,7 @@ class GuidePanel(motion.Overlay):
 
     def focusNextPrevChild(self, next_):
         """Tab and Shift+Tab go round the panel's own buttons and ?s, in their rows' order (the window behind keeps its
-        order; a not-for-now step's ? is its only control: Kantan-S2 r1 #2)."""
+        order; a not-yet step's ? is its only control: Kantan-S2 r1 #2)."""
         ring = [self.scroll] + [b for b in self.findChildren(QWidget) if isinstance(b, (QPushButton, AboutMark))
                                 and b.isVisible() and b.isEnabled()]
         if not ring:
@@ -639,6 +621,8 @@ class GuidePanel(motion.Overlay):
         super().showEvent(event)
         QApplication.instance().installEventFilter(self._away)
         self.opened.emit()
+        if self.path is not None:
+            self.path_shown.emit()
 
     def hideEvent(self, event):
         held = self.isAncestorOf(QApplication.focusWidget()) if QApplication.focusWidget() is not None else False
@@ -654,12 +638,6 @@ class GuidePanel(motion.Overlay):
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
             self.place()
-        if event.type() == QEvent.Type.KeyPress and obj in self.tab_buttons.values() and \
-                event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
-            other = "path" if self.tab == "news" else "news"
-            self.show_tab(other)
-            self.tab_buttons[self.tab].setFocus(Qt.FocusReason.TabFocusReason)
-            return True
         return False
 
     def sizeHint(self):

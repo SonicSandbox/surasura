@@ -105,10 +105,12 @@ class _Either:
 
 
 def command_line(argv):
-    """The analyzer's process command for `argv` (`['analyzer.py', …]`): the frozen app's own verb, or the script."""
+    """The analyzer's process command for `argv` (`['analyzer.py', …]`): the frozen app's own verb, or the script.
+    Frozen with `--headless` (app_entry strips it), as every child the window starts: a crash is logged and exits 1,
+    never a Critical Error box from a child the learner can't see (Haya-CL 3.0.17)."""
     from app.path_utils import is_frozen
     if is_frozen():
-        return [sys.executable, "analyzer"] + list(argv[1:])
+        return [sys.executable, "analyzer", "--headless"] + list(argv[1:])
     return [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "analyzer.py")] \
         + list(argv[1:])
 

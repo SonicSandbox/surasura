@@ -64,8 +64,11 @@ KEPT_SOURCES = (GRADUATED_SOURCE, MARKED_SOURCE)
 BACKLOG_FILE = "anki_backlog.json"
 # Bump when a note's entry would now be read differently: a backlog saved under another version is
 # read again in full, once. 2: a field is read as its one word (`anki_match.card_word`: 「撒く」 -> 撒く).
-# 3: in NFKC (ﾊﾞｼｯと -> バシッと).
-BACKLOG_VERSION = 3
+# 3: in NFKC (ﾊﾞｼｯと -> バシッと). 4: a Japanese card in kana alone keeps its sentence (`_note_sentence`, Kyou-KN).
+BACKLOG_VERSION = 4
+# The note field a card's sentence is read from — Junban's (`modules/junban/connect.sentence_of`): a card written in
+# kana alone is read in it (`anki_match.card_word_in_sentence`: まく in 水をまく is 撒く).
+SENTENCE_FIELD = "Sentence"
 # The young cards of the same decks (Piyo ぴよ, Sonic 2026-10-29): each studied card not yet mature, its word and its
 # interval, so a practice round ranks the words still being learned first (`app/practice.py`) with Anki closed. Derived
 # data, read-only on Anki; a version change reads every young note again.
@@ -736,6 +739,19 @@ def _note_word(note, fields, language):
     return word
 
 
+def _note_sentence(note, word, language):
+    """A notesInfo note's sentence field, raw (its bold mark kept), for a Japanese card whose word is written in kana
+    alone (two kana or more) — the ✓ chip reads that card's word in it, by Junban's rule
+    (`anki_match.card_word_in_sentence`); "" for any other card, or a note with no sentence."""
+    from app import anki_match
+    if language != "ja" or not isinstance(word, str) or len(word) < 2 or not anki_match._KANA_ONLY_RE.match(word):
+        return ""
+    note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
+    value = note_fields.get(SENTENCE_FIELD)
+    raw = value.get("value", "") if isinstance(value, dict) else ""
+    return raw if isinstance(raw, str) and raw.strip() else ""
+
+
 def _backlog_entry(note, fields, language):
     """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
     word comes from the known sync's WORD field (`word_field`: Auto = the first; never the "Also read"
@@ -759,8 +775,12 @@ def _backlog_entry(note, fields, language):
         return " ".join(clean_field_html(raw).split())
 
     freq = text("FreqSort")
-    return {"word": word, "keys": keys, "source": text("MiscInfo").split(" @ ")[0].strip(),
-            "freqsort": int(freq) if freq.isdigit() else None}
+    entry = {"word": word, "keys": keys, "source": text("MiscInfo").split(" @ ")[0].strip(),
+             "freqsort": int(freq) if freq.isdigit() else None}
+    sentence = _note_sentence(note, word, language)
+    if sentence:
+        entry["sentence"] = sentence            # Kyou-KN: a kana card's word is read in it (the ✓ chip)
+    return entry
 
 
 def sync_all(language, url, decks, fields, settings, include_suspended=False, full=False, progress=None):

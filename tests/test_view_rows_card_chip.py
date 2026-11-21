@@ -260,8 +260,10 @@ def test_the_word_cards_read_of_anki_hands_its_studied_words_on_and_closed_hands
     or no decks: nothing handed (the counter keeps its last)."""
     from app.anki_connect import AnkiError
     from app.services import title_words as TW
-    told = []
-    answers = [{"猫": object(), "走る": object()}, AnkiError("Anki is not running")]
+    from app.anki_words import Standing
+    told, whole = [], []
+    kana = Standing(1, sentence="<b>ねこ</b>が寝ている。")      # Kyou-KN: a kana card's sentence reaches the counter
+    answers = [{"猫": object(), "走る": object(), "ねこ": kana}, AnkiError("Anki is not running")]
 
     def read(_language, _settings):
         a = answers.pop(0)
@@ -269,14 +271,15 @@ def test_the_word_cards_read_of_anki_hands_its_studied_words_on_and_closed_hands
             raise a
         return a
     tw = TW.TitleWords(None, "ja", read_standing=read)
-    tw.on_standing = lambda words: told.append(sorted(words))
+    tw.on_standing = lambda words: (told.append(sorted(words)), whole.append(words))
     try:
         tw.refresh_anki(force=True)
         assert tw.idle(5)
-        assert told == [["猫", "走る"]]
+        assert told == [["ねこ", "猫", "走る"]]
+        assert whole[0]["ねこ"] is kana, "the Standings themselves, each kana card's sentence on it (the ✓ chip's)"
         tw.refresh_anki(force=True)
         assert tw.idle(5)
-        assert tw.standing() == TW.ANKI_CLOSED and told == [["猫", "走る"]]
+        assert tw.standing() == TW.ANKI_CLOSED and told == [["ねこ", "猫", "走る"]]
     finally:
         tw.close()
 

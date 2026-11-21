@@ -704,7 +704,7 @@ def test_a_hold_that_ends_by_itself_is_no_time_the_worker_took_to_answer(monkeyp
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_a_store_still_to_build_is_built_before_the_boot_and_nothing_else_is(monkeypatch, language):
+def test_a_store_still_to_build_is_built_before_the_boot_and_nothing_else_is(monkeypatch, tmp_path, language):
     # why (the bench): a library with no store yet showed its list only once the store was built — by the helper
     # the boot held back: Current waited for the boot's 30 s limit. The build is the opening's own; the rest waits
     from app import library_store as LS
@@ -728,5 +728,12 @@ def test_a_store_still_to_build_is_built_before_the_boot_and_nothing_else_is(mon
         chores.build_store()
         chores.worker.idle(5)
         assert spawned == [], "a store that's there: its upkeep waits for the boot"
+        mode["now"] = "json"                            # a store file there but read as JSON this instant (busy)
+        there = tmp_path / "library.sqlite"
+        there.write_bytes(b"")
+        monkeypatch.setattr(LS, "library_db_path", lambda lang, data_dir: str(there))
+        chores.build_store()
+        chores.worker.idle(5)
+        assert spawned == [], "no build while its file is there (the bench: a helper at 1.0 s, before the boot)"
     finally:
         chores.close(store=False)

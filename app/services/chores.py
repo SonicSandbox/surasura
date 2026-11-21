@@ -406,6 +406,8 @@ class Chores:
             from app import library_store
             from app.path_utils import get_data_path, get_user_files_path
             data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
+            if build_only and os.path.exists(library_store.library_db_path(language, data_dir)):
+                return                              # a store file is there: no build, its upkeep waits for the boot
             mode, _reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
             if mode == "json":
                 proc = library_store.spawn_build_if_waiting(language, data_dir, user_files_dir)

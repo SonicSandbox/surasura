@@ -244,6 +244,17 @@ def test_by_leverage_an_episode_holding_a_better_word_slides_in(monkeypatch):
     assert isinstance(runner._full(steps, "ja", job={"item_id": 41}), runner.Wait), "駐車場 (4): waits; 老婆 carded"
 
 
+def test_by_leverage_a_word_connect_already_carded_never_lifts_its_episode_into_the_window(monkeypatch):
+    # why (mutant M14): an episode's rank is its best word still without a card — 血塗れ (place 1) is carded already,
+    # so the episode holding it and 駐車場 (4) ranks 4 and waits behind the window's 老婆 (3); counting the carded word
+    # would let a show you've mined jump the window for a card it never makes
+    made = {1: (20, "血塗れ"), 2: (21, "眼鏡"), 3: (22, "老婆")}             # list places 1, 2, 3
+    items = {42: {"rel_path": "Show/ep42.srt"}}
+    steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, items=items,
+                   file_words={"ep42.srt": ["血塗れ", "駐車場"]}, study_order="priority")
+    assert isinstance(runner._full(steps, "ja", job={"item_id": 42}), runner.Wait)
+
+
 def test_chinese_slides_in_by_its_own_list(monkeypatch):
     listed = [("学习", "xué xí"), ("电脑", "diàn nǎo"), ("图书馆", "tú shū guǎn"), ("散步", "sàn bù")]
     made = {1: (20, "电脑"), 2: (21, "图书馆"), 3: (22, "散步")}

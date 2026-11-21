@@ -126,7 +126,23 @@ def test_the_card_walks_chapter_one_then_says_made_once_then_shows_a_useful_late
     assert P.path(useful, {"first_ack": True, "not_now": ["hato"]}).card is None   # set aside for good
 
 
-def test_make_it_yours_comes_to_the_card_only_on_a_path_that_was_new_and_after_stage_three():
+def test_make_it_yours_comes_to_no_card_until_the_mining_model_lands_and_stays_in_the_panel():
+    # Sonic 2026-11-20 (train 51's keeper, decision 1): ④ points at *Words to make cards from*, whose *Only i+1* is
+    # being retired (Kantan-MO) — a card pushing a new learner there is the 308 off-list cards' trap. Hidden for every
+    # path, a new one too; the step stays in ✦'s list, the string keeps ④ NOW, and the kept rule is untouched
+    assert P.YOURS_CARD is False
+    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
+    way = P.path(done, {"first_ack": True, "yours_card": True})
+    assert way.card is None and way.stages == (P.DONE, P.DONE, P.DONE, P.NOW)
+    assert P.listed(way.steps)[:2] == (P.YOURS, [st for st in way.steps if st.step.id == "yours"])
+    later = done._replace(video_waiting=True)                                   # a later step still comes to the card
+    assert P.path(later, {"first_ack": True, "yours_card": True}).card == ("step", "hato", ())
+    assert "Only" not in strings.PATH_STEPS["yours"][1] and "one new word" not in strings.PATH_STEPS["yours"][1]
+
+
+def test_make_it_yours_comes_to_the_card_only_on_a_path_that_was_new_and_after_stage_three(monkeypatch):
+    # the kept code path, for when the mining model re-points ④ (YOURS_CARD on again)
+    monkeypatch.setattr(P, "YOURS_CARD", True)
     done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
     new = {"first_ack": True, "yours_card": True}
     assert P.path(done, new).card == ("step", "yours", (P.DONE, P.DONE, P.DONE, P.NOW))

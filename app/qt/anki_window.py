@@ -41,7 +41,7 @@ WAITS_FOR = "waits for "                                 # the registry's reason
 FLASH_MS = 5000                         # the "+N" beside the total, after a sync that added words
 DOORS = (("btn_backfill", "backfill"), ("btn_apkg", "apkg_known"))      # row 5's opener, row 2's (IK-41)
 SWITCHES = (("chk_auto", "anki_sync_auto"), ("chk_generate", "anki_auto_generate"))
-SCOPE_KEYS = ("known_from_anki", "known_from_anki_chosen", "connect_enabled", "automation")   # `anki_sync.counted_suspended`
+SCOPE_KEYS = ("known_from_anki", "known_from_anki_chosen", "connect_enabled", "logic.automation")   # `counted_suspended`
 
 
 class _Keys(QObject):
@@ -407,7 +407,7 @@ class AnkiWindow(windows.SecondaryWindow):
             suspended = AW.saved(settings if settings is not None else self._settings(), self.language)[2]
             if suspended != self.suspended:
                 self.suspended = suspended
-                self._scope_changed()
+                self._read_scope()                       # nothing saved: the learner didn't act here (S16)
 
     def refresh(self):
         """(`windows.follow_doors`) The modules were looked for: the doors asked again."""
@@ -484,9 +484,13 @@ class AnkiWindow(windows.SecondaryWindow):
         self._render()
 
     def _scope_changed(self):
-        """A deck added or removed, a field or *Count as known in Anki* changed: saved, then Anki read for the new
-        scope."""
+        """A deck added or removed, or a field changed here: saved, then Anki read for the new scope."""
         self._save_choices()
+        self._read_scope()
+
+    def _read_scope(self):
+        """Anki read for the scope shown now — also after *Count as known in Anki* or *Automation* changed elsewhere,
+        which saves nothing here (the first open's pick stays unsaved until the learner acts: S16, Kotoba-WS2F)."""
         self._render()
         self._probe_seq += 1                              # a probe under way was read for the old scope (AD3-3)
         if not self._connected or self.busy():

@@ -104,16 +104,19 @@ def _git(*args, stdin=None):
 # What a test may read although the public repo ignores it, because it reads it only when it is there (the survey of
 # 2026-11-20 found these, each tolerated on GitHub's runner): code is never this guard's (a whole-repo scan reads the
 # private modules' sources where they are checked out), nor these. A new entry says why the test passes without it.
+# An entry ending in / is a folder (everything under it); any other is that one file, at that place.
 TOLERATED = (
     ("docs/agent instructions/", "the leak checks read the private docs' never-public list when it is there"),
     ("debug/test_times.json", "the shard packer reads the recorded times, else the files' sizes"),
-    ("tests/parsing/", "the local-only parsing suite: its readers skip without it"),
+    ("tests/parsing/", "a local-only test folder: its readers skip without it"),
+    (".env", "app/telemetry.py's load_dotenv() reads the top folder's .env as it is imported, only when there"),
 )
 
 
 def _tolerated(path):
     p = path.replace("\\", "/").lower()
-    return p.endswith(CODE) or any(p.startswith(prefix.lower()) for prefix, _why in TOLERATED)
+    return p.endswith(CODE) or any(p.startswith(entry.lower()) if entry.endswith("/") else p == entry.lower()
+                                   for entry, _why in TOLERATED)
 
 
 def ignored_reads(reads, written=()):

@@ -167,11 +167,7 @@ def _every_word(settings):
     """*Cards for every new word* (Connect's, Kantan-MO: `settings_manager.connect_every_word`): Surasura's cards past
     your level are placed where you meet them, among the list's (Kyou-MO, F24); off, they go to the back."""
     from app import settings_manager
-    read = getattr(settings_manager, "connect_every_word", None)
-    if read is not None:
-        return bool(read(settings))
-    value = (settings or {}).get("connect_every_word")          # until Kantan-MO's reader is here (merged before READY)
-    return value if isinstance(value, bool) else (settings or {}).get("connect_mine_words") == "unknown"
+    return settings_manager.connect_every_word(settings)
 
 
 def _phrase_rows(settings, language):

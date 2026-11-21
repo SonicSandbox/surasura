@@ -27,7 +27,7 @@ import unicodedata
 from contextlib import contextmanager
 
 from app.anki_sync import YOUNG_FILE
-from app.unicode_ranges import KANA
+from app.unicode_ranges import HAN, KANA
 
 # The practice chat's name as the learner sees it (Sonic 2026-10-29, "for now"): the Settings row, the server's title,
 # the prompt and the copied setup say it; the server's id stays `surasura`, so a copied setup outlives a new name.
@@ -292,11 +292,18 @@ class Checker:
             return {"mode": ANSWER, "text": text, "words": out["words"],
                     "new_words": [{k: w[k] for k in ("word", "lemma", "reading")} for w in out["new_words"]],
                     "lemmas": out["lemmas"], "targets": out["targets"], "avoid": out["avoid"]}
-        shown = [t for t in out["targets"] if t["found"] and t["how"] != "near_reading"]
-        for t in shown:
-            out["reasons"].append(f"The draft gives away the target word {t['word']} (as {t['form']}): never show "
-                                  f"it, its spelling or its reading before the learner has produced it. Rewrite "
-                                  f"without it, with hints about meaning only.")
+        for t in out["targets"]:
+            if t["found"] and t["how"] != "near_reading":
+                out["reasons"].append(f"The draft gives away the target word {t['word']} (as {t['form']}): never "
+                                      f"show it, its spelling or its reading before the learner has produced it. "
+                                      f"Rewrite without it, with hints about meaning only.")
+            elif self.japanese:
+                # a crutch word or a hint written with one of the target's kanji shows part of its spelling (跳ぶ
+                # banned while the word is 跳躍, live testing 2026-11-20)
+                for kanji in dict.fromkeys(c for c in t["word"] if _HAN_ONE.fullmatch(c) and c in text):
+                    out["reasons"].append(f"The draft shows {kanji}, a kanji of the target word {t['word']}: write "
+                                          f"that word in kana (or say it otherwise), so the target's spelling stays "
+                                          f"hidden.")
         out["pass"] = not out["reasons"]
         return out
 
@@ -318,7 +325,7 @@ class Checker:
         return out
 
     def _kana_nodes(self, text):
-        """[(kana, surface)] per tagger node of `text`, the kana folded to hiragana (a symbol, or a node with no
+        """[(kana, surface, pos1)] per tagger node of `text`, the kana folded to hiragana (a symbol, or a node with no
         reading, None: no reading runs across it)."""
         from app.anki_match import fold_kana
         out = []
@@ -327,7 +334,7 @@ class Checker:
             kana = getattr(node.feature, "kana", None) or (surface if _KANA_ONLY.fullmatch(surface or "") else None)
             if getattr(node.feature, "pos1", "") in ("補助記号", "記号", "空白") and not _KANA_ONLY.fullmatch(surface):
                 kana = None
-            out.append((fold_kana(kana) if kana else None, surface))
+            out.append((fold_kana(kana) if kana else None, surface, getattr(node.feature, "pos1", "")))
         return out
 
     def _find(self, word, text, tokens, kana, resolve, near):
@@ -360,19 +367,27 @@ class Checker:
             return out
         want = fold_kana(reading)
         starts, ends, joined, pos = [], set(), "", 0
-        for k, _surface in kana:
+        for k, *_rest in kana:
             starts.append(pos)
             piece = k if k else "\x00"
             joined += piece
             pos += len(piece)
             ends.add(pos)
+        def joins(i, end):
+            """May the span from node `i` to `end` be one word? Never from a particle or an auxiliary (は自由 is no
+            はいゆう, これはしない holds no はし), and over two or more nodes only in kana the tagger cut otherwise
+            (はいゆう read はい + ゆうに, ちょうちゃく ちょう + ちゃく) — never pieces of other words joined."""
+            if kana[i][2] in GRAMMAR:
+                return False
+            covered = [n for n in range(i, len(kana)) if starts[n] < end]
+            return len(covered) == 1 or bool(_KANA_ONLY.fullmatch(_cover(kana, starts, i, end)))
         for i, start in enumerate(starts):
-            # at a word's start; ending at a word's end too, or mid-word only in kana the tagger cut otherwise (はいゆう
-            # read はい + ゆうに) — never inside a kanji word (政治 is no part of 誠実, 今日 none of 教育)
-            if kana[i][0] and joined.startswith(want, start) and (
-                    start + len(want) in ends
-                    or (len(want) >= 3 and _KANA_ONLY.fullmatch(_cover(kana, starts, i, start + len(want))))):
-                out.update(found=True, how="reading", form=_cover(kana, starts, i, start + len(want)),
+            # at a word's start; ending at a word's end too, or mid-word only in kana (`joins`) — never inside a
+            # kanji word (政治 is no part of 誠実, 今日 none of 教育)
+            end = start + len(want)
+            if kana[i][0] and joined.startswith(want, start) and joins(i, end) and (
+                    end in ends or (len(want) >= 3 and _KANA_ONLY.fullmatch(_cover(kana, starts, i, end)))):
+                out.update(found=True, how="reading", form=_cover(kana, starts, i, end),
                            note="the word's reading, written otherwise (kana alone or other kanji): a reading_error "
                                 "candidate")
                 return out
@@ -385,7 +400,8 @@ class Checker:
                 continue
             for end in ends:
                 window = joined[start:end] if start < end else ""
-                if not window or "\x00" in window or abs(len(window) - len(want)) > 1 or window == want:
+                if (not window or "\x00" in window or abs(len(window) - len(want)) > 1 or window == want
+                        or not joins(i, end)):
                     continue
                 d = _distance(window, want)
                 if d <= most and (best is None or (d, abs(len(window) - len(want))) < best[:2]):
@@ -468,6 +484,8 @@ class Checker:
 
 # --- a produce round's words in a text (`Checker._look`) ------------------------------------------------------------ #
 _KANA_ONLY = re.compile(f"[{KANA}]+")
+_HAN_ONE = re.compile(f"[{HAN}]")
+GRAMMAR = ("助詞", "助動詞")          # a reading span never starts on one (`Checker._find`)
 WORDS_MOST = 10                 # targets or banned words one check looks for, at most
 WORD_CHARS = 30                 # one of them, at most
 

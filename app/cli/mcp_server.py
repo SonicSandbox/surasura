@@ -57,13 +57,17 @@ KINDS = {
     "quiz": ("chat", "A quiz on lines from the learner's own content: show one line at a time and ask about its new "
                      "word (meaning, reading, or a fill-in); one question per reply."),
     "produce": ("chat", "An output drill: the learner says the round's words themselves. One word at a time, in the "
-                        "order given: for each, a micro-scenario with a goal only that precise word fits, and the "
-                        "learner answers in a sentence or two."),
+                        "order given: for each, the role's line in the target language and a short brief in the "
+                        "learner's own language with a goal only that precise word fits; the learner answers in a "
+                        "sentence or two."),
 }
 PRODUCE = "produce"
 # A produce round's words come from what the learner knows well (mature in Anki) unless they pick another source: a
 # word they recognise but don't yet say (the output-precision drills, 2026-11-19)
 PRODUCE_SOURCE = "known"
+# Words too weak to say freely at first (live testing, 2026-11-20: struggling 0/3, known 3/3): a produce round of them
+# starts each with an easier step (a cloze or a choice), and the brief says so
+WEAK_SOURCES = ("struggling", "today")
 TRIES = 2                   # a produce word's failed tries before it is shown, and brought back later in the round
 # How an attempt went (the AI judges, the round keeps it: practice_rounds.ERROR_TYPES), as the brief explains them
 ERRORS = (
@@ -493,7 +497,7 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
         "Keep it short yet natural. No translation unless the learner asks.",
     ]
     if kind == PRODUCE:
-        rules = produce_rules(role, recent)
+        rules = produce_rules(role, recent, weak=source in WEAK_SOURCES)
     elif source in ANKI_SOURCES:                        # after the round words' rule: what these words are
         rules.insert(5, ANKI_SOURCES[source]["rule"])
     out = {"language": lang, "round": {"words": words, "role": role, "kind": kind, "source": source},
@@ -527,7 +531,11 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
             out["context"] = kept
             rules.append("`context` holds what the learner kept from earlier rounds, newest first: build on it, never "
                          "repeat it word for word.")
-    if not targets and saved is not None:
+    if kind == PRODUCE and source in WEAK_SOURCES:
+        out["note"] = ("These are words the learner is still weak on, so each starts with an easier step (a cloze or a "
+                       "choice) before free production. For free production of words they know well, source known "
+                       "suits produce best: say so in one line.")
+    elif not targets and saved is not None:
         out["note"] = "This round was kept with no words of its own, so it brings in only easy everyday nouns."
     elif not targets:
         out["note"] = ("Surasura has no list for this language yet (Generate hasn't run), so this round brings in only "
@@ -555,42 +563,58 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     return out
 
 
-def produce_rules(role, recent):
-    """A produce round's rules (the output-precision drills; the trial of 2026-11-19 wrote them): one word at a time, a
-    scenario with a goal and banned crutch words, the target never shown before the learner says it, semantic hints,
-    two tries then the word shown and brought back, a pass on the word with at most two other fixes, and each attempt
-    classified. Fixed here, never left to the AI."""
+def produce_rules(role, recent, weak=False):
+    """A produce round's rules (the output-precision drills; the trial of 2026-11-19 wrote them, the live rounds of
+    2026-11-20 sharpened them): one word at a time, the role's line in the target language and a short brief in the
+    chat's own language (goal, register, banned crutch words, length), the target never shown before the learner says
+    it (a crutch word sharing its kanji written in kana), semantic hints, two tries then the word shown and brought
+    back at the round's end, a weak word (`weak`: source struggling or today, and any word shown) through an easier
+    step first (a cloze or a choice), a pass on the word with at most two other fixes, and each attempt classified.
+    Fixed here, never left to the AI."""
     who, register = ROLES[role]
     types = "; ".join(f"{name} ({about})" for name, about in ERRORS)
+    known = '、'.join(recent) or '(none recorded yet)'
     return [
         KINDS[PRODUCE][1],
-        f"You are {who}; each scenario is a moment with you, in the register of the role: {register}. Start every "
-        f"reply with who is speaking, e.g. 【{role}】.",
-        "For each word: write a micro-scenario of 1-3 short sentences in the learner's language that sets a "
-        "communicative goal (what they must get across to you) that this precise word fits best, and name 2-4 banned "
-        "crutch words: the easy synonyms or paraphrases they would reach for instead. Write it in words the learner "
-        f"knows: {'、'.join(recent) or '(none recorded yet)'}, and easy everyday words.",
-        "Say plainly in each scenario: there is a precise word for this that you know, and only the crutch words are "
+        f"You are {who}; each drill is a moment with you, in the register of the role: {register}. Start the role's "
+        f"line with who is speaking, e.g. 【{role}】.",
+        "Each drill has two parts. First the role's line: 1-2 short sentences in the target language, you speaking "
+        "as the role, a moment the learner must answer. Then a short brief in the language you talk to the learner in "
+        "(never the target language), four short lines: Goal (what they must get across, which this precise word "
+        "fits best), Register (who they talk to, and です・ます or タメ口 / polite or casual), Banned (2-4 crutch "
+        "words: the easy synonyms or paraphrases they would reach for instead), Length (1-3 sentences). Write the "
+        f"line in words the learner knows: {known}, and easy everyday words.",
+        "Say plainly in the brief: there is a precise word for this that they know, and only the banned words are "
         "banned, not the topic.",
         "Never show, spell or hint at the target's kanji, kana or reading before the learner has produced it: not in "
-        "the scenario, a hint, a retry or feedback. Hints are about meaning and use only (what it describes, where "
-        "it is said, its opposite).",
-        "Until the learner has produced the word, check every draft you show (the scenario, a hint, a retry, feedback "
-        "on a miss) with surasura_check_text(draft, mode=\"chat\", targets=[the word]): it fails when the draft gives "
-        "the word away. Rewrite as its reasons say and show only a draft that passed. Once the word is produced or "
-        "shown, check drafts without targets; a scenario that brings it back hides it again: check it with targets.",
-        "Check each answer with surasura_check_text(answer, mode=\"answer\", targets=[the word], avoid=[the crutch "
+        "the line, the brief, a hint, a retry or feedback. Hints are about meaning and use only (what it describes, "
+        "where it is said, its opposite). Write a banned word in kana when it shares a kanji with the target (とぶ, "
+        "not 跳ぶ, for a word written with 跳).",
+        "Until the learner has produced the word, check every draft you show, the line and the brief together (and a "
+        "hint, a retry, feedback on a miss), with surasura_check_text(draft, mode=\"chat\", targets=[the word]): it "
+        "fails when the draft gives the word away or shows one of its kanji. Rewrite as its reasons say and show only "
+        "a draft that passed. Once the word is produced or shown, check drafts without targets; a drill that brings "
+        "it back hides it again: check it with targets.",
+        "Check each answer with surasura_check_text(answer, mode=\"answer\", targets=[the word], avoid=[the banned "
         "words]), and judge by it and the word's patterns (its usual particles, forms, collocations, register; "
         "書き言葉 means it leans written): how lemma is the word itself (its spelling other: other kanji); reading or "
-        "near_reading means the right word may be written or read wrong (a reading_error candidate); a crutch word "
+        "near_reading means the right word may be written or read wrong (a reading_error candidate); a banned word "
         "present is no pass.",
         "The answer passes when the word is there and used correctly for the goal. Point out at most 1-2 other fixes "
         "per answer, the ones that matter most; note anything else in a word, without asking for a rewrite.",
-        f"After {TRIES} failed tries, show the word with its reading and one short example, then bring it back later "
-        "in this round in a new scenario (a new goal, new crutch words).",
+        ("Every word in this round is a weak one (words the learner struggles with, or met only today): free "
+         "production is too hard at first. " if weak else "")
+        + "A weak word (" + ("every word here, and " if weak else "") + "a word you had to show) goes through an "
+        "easier step first: a cloze (the role's line with the word left as ＿＿, its meaning clear from the line) or "
+        "a choice of 2-3 words (the target and plausible distractors the learner knows, from the known words above, "
+        "in random order). Only once that passes, the free drill. A choice shows the word on purpose: check it "
+        "without targets; check a cloze with targets.",
+        f"After {TRIES} failed tries, show the word with its reading and one short example. Bring it back only at "
+        "the end of the round, after every other word: first as the easier step (a cloze or a choice), then, once "
+        "that passes, a new free drill (a new goal, new banned words).",
         f"Classify each attempt as one of: {types}.",
         "Show exactly the text you checked, character for character: never retype or change it after the check.",
-        "Keep it short. No translation unless the learner asks.",
+        "Keep it short. No translation of the role's line unless the learner asks.",
     ]
 
 

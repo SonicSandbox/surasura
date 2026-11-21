@@ -511,3 +511,22 @@ def test_chinese_a_target_is_found_by_its_word_and_no_reading_is_looked_for():
     assert result["targets"][0] == {"word": "电影", "found": True, "how": "lemma", "form": "电影", "spelling": "same"}
     assert result["targets"][1] == {"word": "冒险", "found": False}
     assert result["avoid"] == [{"word": "片子", "present": False}]
+
+
+# --- live testing, 2026-11-20 --------------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("target, text", [("俳優", "話の内容は自由です。"), ("橋", "これはしないでね。")])
+def test_a_reading_never_starts_on_a_particle_or_joins_pieces_of_other_words(target, text):
+    """話の内容は自由です made 俳優 near_reading as は自由 (はじゆう, one kana off はいゆう): は is a particle and 自由
+    another word. これはしない holds no はし for 橋 either."""
+    assert _target(_answer(text, targets=[target])) == {"word": target, "found": False}
+
+
+def test_a_draft_showing_one_of_the_targets_kanji_fails_and_says_to_write_that_word_in_kana():
+    """跳ぶ banned while the word was 跳躍: the crutch word showed 跳. Written とぶ, the draft passes."""
+    checker = _checker("ja", [TALK, "跳ぶのは禁止です。", "とぶのは禁止です。"])
+    shown = checker.check("跳ぶのは禁止です。", "chat", targets=["跳躍"])
+    assert shown["pass"] is False and shown["targets"] == [{"word": "跳躍", "found": False}]
+    assert any("shows 跳, a kanji of the target word 跳躍" in r and "in kana" in r for r in shown["reasons"])
+    assert checker.check("とぶのは禁止です。", "chat", targets=["跳躍"])["pass"] is True
+    # the learner's own answer is never judged for it
+    assert "reasons" not in checker.check("跳ぶのは禁止です。", practice.ANSWER, targets=["跳躍"])

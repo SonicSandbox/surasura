@@ -675,10 +675,18 @@ def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_
     assert brief["round"] == {"words": 2, "role": "coworker", "kind": "produce", "source": "soon"}
     assert brief["mode"] == "chat"
     rules = " ".join(brief["rules"])
-    for words in ("One word at a time", "2-4 banned crutch words", "a precise word for this that you know",
-                  "only the crutch words are banned", "Never show, spell or hint", "about meaning and use only",
-                  "targets=[the word]", 'mode="answer"', "After 2 failed tries", "bring it back later",
-                  "a retry, feedback on a miss", "check drafts without targets", "hides it again",
+    for words in ("One word at a time", "Banned (2-4 crutch words", "a precise word for this that they know",
+                  "only the banned words are banned", "Never show, spell or hint", "about meaning and use only",
+                  "targets=[the word]", 'mode="answer"', "After 2 failed tries", "a retry, feedback on a miss",
+                  "check drafts without targets", "hides it again",
+                  # live testing, 2026-11-20: the line in the target language, the brief in the chat's own; a crutch
+                  # word sharing the target's kanji in kana; a shown word back only at the end, the easier step first
+                  "the role's line: 1-2 short sentences in the target language",
+                  "a short brief in the language you talk to the learner in (never the target language)",
+                  "Goal (", "Register (", "Length (1-3 sentences)", "the line and the brief together",
+                  "Write a banned word in kana when it shares a kanji with the target",
+                  "Bring it back only at the end of the round, after every other word: first as the easier step",
+                  "a cloze (", "a choice of 2-3 words",
                   "at most 1-2 other fixes", "Show exactly the text you checked", "coworker", "丁寧語"):
         assert words in rules, words
     for error_type in _error_types():
@@ -812,3 +820,22 @@ def test_a_chinese_produce_round_starts_and_checks_its_word_by_the_word_alone(mo
     assert answer["targets"][0]["found"] is True and answer["targets"][0]["how"] == "lemma"
     assert answer["targets"][1] == {"word": "冒险", "found": False}
     assert answer["avoid"][0]["present"] is True
+
+
+def test_a_produce_round_of_weak_words_starts_each_with_an_easier_step_and_suggests_known(monkeypatch):
+    """Live testing, 2026-11-20: struggling words 0/3 free, known 3/3. A produce round from struggling (or today)
+    says every word is weak and goes through a cloze or a choice first, and its note suggests known; a known round
+    keeps the easier step for a word it had to show."""
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "受容", "orth": "受容", "reading": "ジュヨウ", "kana": "ジュヨウ", "lines": []}])
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce",
+                                                                   "source": "struggling"}),
+                await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+    weak, known = (_data(r) for r in _run(_state(), calls))
+    weak_rules, known_rules = " ".join(weak["rules"]), " ".join(known["rules"])
+    assert "Every word in this round is a weak one" in weak_rules and "every word here, and" in weak_rules
+    assert "source known" in weak["note"]
+    assert "Every word in this round is a weak one" not in known_rules and "note" not in known
+    assert "a word you had to show) goes through an easier step first" in known_rules

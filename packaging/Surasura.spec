@@ -146,6 +146,8 @@ hiddenimports += ['app.import_2x', 'app.graduated_merge']
 # The 3.0 window's tools (W3.4 row 2): the .apkg known-words import and Extract, each a child of the window that
 # app_entry.py imports inside its branch.
 hiddenimports += ['app.anki_db_import', 'app.extract']
+# Every child's stdout / stderr guard (Haya-CL 3.0.17): app_entry.py imports it at main()'s start.
+hiddenimports += ['app.child_io']
 
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps

@@ -5283,6 +5283,8 @@ def settings_signature(settings, language):
         "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
         # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+        "connect_every_word",           # Cards for every new word (Kantan-MO): what Connect mines, never a run
+        "study_order",                  # the study order (Kantan-MO): the journey's opening list — re-render only
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "subs_with_hato",               # Michi-NS: hato finds the waiting videos' subtitles (NS-2), never a run
@@ -5484,6 +5486,8 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         _s.get("word_search_category", "all"),
         _s.get("words_per_day", 5),
         bool(_s.get("show_words_per_day", True)),
+        # The study order (Kantan-MO): the journey opens on its list — INJECTED (`globalStudyOrder`), so re-render
+        settings_manager.study_order(_s),
         # Speech (optional module) is INJECTED into the report — the helper endpoint, and which
         # sentences already have audio. Toggling it must therefore re-render. Without this, turning
         # speech on while the badge was already visible changed nothing in the signature, so the

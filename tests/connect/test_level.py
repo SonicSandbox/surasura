@@ -1,14 +1,11 @@
-"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23).
+"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23) — since the mining model (Kantan-MO, 3.0.18;
+ADVERSARY.md F1) a raise **mines no episode again**: its newly listed words join the study order, and Connect cards
+them as it meets them in the episodes ahead. Sonic: a move to Rare "must not remine a lot". What each test holds:
 
-Sonic (HC-N38): "If they increase the level that means all of the content that they have would now have more words.
-So it would need to mine more things but exclude what they've already mined." What each test holds still:
-
-  * only the newly listed words, only for episodes already mined, the top 20 first — never an episode not mined yet
-    (its first mining reads the list as it is), never beyond the top 20 in 2.x (E23), never a word Connect already
-    made for any episode (N15, G1.3-4); one card per word is the pick's at each job's turn, the top job first;
-  * the first look and a lowered level mine nothing; a look at the same list does nothing; a batch in flight makes
-    the look wait instead of losing the raise;
-  * a level job's pick sends Anki Miner only its words.
+  * a raise queues no job, whatever was mined; it counts its newly listed words and owes the deck a re-sort;
+  * the first look records the list and mines nothing; a look at the same list does nothing; a batch in flight makes
+    the look wait instead of losing the list's record;
+  * a level job queued before the update keeps its pick's rule while under way: only its words (`restrict`).
 
 The suite's real subtitles in a store built from folders; the words are real Japanese lemmas of those files' kind;
 the list itself is handed in (no Generate), and the CLI test writes a last Generate's files by hand.
@@ -18,7 +15,7 @@ import os
 
 import pytest
 
-from app.connect import level, library
+from app.connect import level
 from app.connect.ledger import LEVEL, Ledger
 from tests import cli_helpers as h
 from tests import connect_helpers as c
@@ -44,9 +41,9 @@ def _mine(*item_ids):
             s.receipt(item_id, "2026-10-07T09:00:00Z")
 
 
-def _check(listed, signature, file_words, mode="list"):
+def _check(listed, signature, file_words):
     with c.store() as s:
-        return level.check(s, "ja", listed, signature, file_words, mode=mode)
+        return level.check(s, "ja", listed, signature, file_words)
 
 
 def _level_jobs():
@@ -54,36 +51,18 @@ def _level_jobs():
         return [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
 
 
-def test_a_raise_mines_only_the_new_words_of_mined_episodes_top_first():
-    (a, fa), (b, fb), (d, fd) = _line()
-    _mine(a, d)                                   # b is in the line but not mined yet: its own first job waits
-    with Ledger() as ledger:
-        ledger.queue("ja", b, "user", None)
-    files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
-    assert _check(BEFORE, "run-1", files)["first"] is True          # the first look records, mines nothing
-    assert _level_jobs() == []
-    out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [a, d]                # the top first; b's first mining reads the list
-    jobs = {j["item_id"]: j for j in _level_jobs()}
-    assert [j["item_id"] for j in _level_jobs()] == [a, d]            # queued, so run, in the line's order
-    assert jobs[a]["words"] == [("眼鏡", "メガネ")]                    # 散歩 was listed before: never again
-    # d names all its new words: 眼鏡 too — a's job runs first, and d's pick skips a word with a card by then, so a
-    # word is never held back from d by a job above it that ends up making no card
-    assert jobs[d]["words"] == sorted([("眼鏡", "メガネ"), ("老婆", "ロウバ"), ("駐車場", "チュウシャジョウ")])
-    assert all(j["state"] == "queued" and j["source"] == "level" for j in jobs.values())
-    with Ledger() as ledger:
-        assert ledger.resort_owed("ja"), "a moved list owes a re-sort"
-
-
-def test_an_unmined_episode_with_no_job_takes_no_word_from_one_below():
-    """An episode in the line that Connect will never mine as it stands (placed before Connect was on: no job) holds
-    no word back: the mined one below it gets the word."""
+def test_a_raise_counts_its_new_words_and_mines_no_episode_again():
+    # why: F1 — before 3.0.18 a raise queued one Anki Miner job per already-mined episode (the top 20, then the rest
+    # of Current and Goal): hundreds on a big library for one move of the slider
     (a, fa), (b, fb), (d, fd) = _line()
     _mine(a, d)
-    files = {fa: [], fb: ["老婆"], fd: ["老婆"]}
-    _check(BEFORE, "run-1", files)
-    assert _check(RAISED, "run-2", files)["queued"] == [d]
-    assert [j["words"] for j in _level_jobs()] == [[("老婆", "ロウバ")]]
+    files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
+    assert _check(BEFORE, "run-1", files)["first"] is True          # the first look records, mines nothing
+    out = _check(RAISED, "run-2", files)
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    with Ledger() as ledger:
+        assert ledger.recorded_list("ja") == ("run-2", RAISED)
+        assert ledger.resort_owed("ja"), "a moved list owes a re-sort"
 
 
 def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():
@@ -97,35 +76,7 @@ def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():
     with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "words that left go to the back: a re-sort is owed"
     out = _check(RAISED, "run-3", files)                            # raised again: those words are new again
-    assert out["queued"] == [a]
-
-
-def test_beyond_the_top_20_nothing_in_2_x(monkeypatch):
-    # P4.1 row 4.1.5: the 2.x line (`BEYOND_LINE` False) keeps the top 20 only; the 3.0 line is test_p41_level_beyond
-    monkeypatch.setattr(level, "BEYOND_LINE", False)
-    items = _line(n=1)
-    with c.store() as s:
-        below = [i for i in s.ids("now") if i != items[0][0]]
-        names = {i: os.path.basename(s.item(i)["rel_path"]) for i in below}
-    _mine(*below)
-    files = {name: ["眼鏡"] for name in names.values()}
-    _check(BEFORE, "run-1", files)
-    assert _check(RAISED, "run-2", files)["queued"] == [], "E23: the already-mined episodes below the line wait for 3.0"
-
-
-def test_a_word_connect_already_made_for_any_episode_is_skipped():
-    (a, fa), (b, _fb), _d = _line()
-    _mine(a)
-    with c.store() as s:
-        from app import library_store
-        with s._writing():                    # as Connect will write it (P2.4; Kura's N15 line: the table, then the row)
-            for sql in library_store.ADDED_TABLES_SQL:
-                s.conn.execute(sql)
-            s.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES (?, ?, ?, ?, ?)",
-                           (b, "眼鏡", "[1789712000001]", "2026-10-06T10:00:00Z", "job-7"))   # made for b, card deleted
-    _check(BEFORE, "run-1", {fa: ["眼鏡", "老婆"]})
-    _check(RAISED, "run-2", {fa: ["眼鏡", "老婆"]})
-    assert [j["words"] for j in _level_jobs()] == [[("老婆", "ロウバ")]], "G1.3-4: a word made once is never made again"
+    assert out["new"] == 2 and out["queued"] == [] and _level_jobs() == []
 
 
 def test_switched_on_again_the_next_look_is_a_first_look():
@@ -150,28 +101,8 @@ def test_a_batch_in_flight_makes_the_look_wait_and_the_raise_is_not_lost():
     assert _level_jobs() == []
     with Ledger() as ledger:
         ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
-    assert _check(RAISED, "run-2", files)["queued"] == [a]
-
-
-def test_a_waiting_level_job_gains_the_next_raises_words():
-    (a, fa), _b, _d = _line()
-    _mine(a)
-    files = {fa: ["眼鏡", "老婆"]}
-    _check(BEFORE, "run-1", files)
-    _check(BEFORE | {("眼鏡", "メガネ")}, "run-2", files)
-    _check(RAISED, "run-3", files)
-    jobs = _level_jobs()
-    assert len(jobs) == 1 and jobs[0]["words"] == [("眼鏡", "メガネ"), ("老婆", "ロウバ")]
-
-
-@pytest.mark.parametrize("mode", ["unknown", "i1"])
-def test_the_other_word_modes_record_the_list_but_mine_nothing_new(mode):
-    (a, fa), _b, _d = _line()
-    _mine(a)
-    _check(BEFORE, "run-1", {fa: ["眼鏡"]}, mode=mode)
-    assert _check(RAISED, "run-2", {fa: ["眼鏡"]}, mode=mode)["queued"] == []
-    with Ledger() as ledger:
-        assert ledger.recorded_list("ja") == ("run-2", RAISED)
+    out = _check(RAISED, "run-2", files)
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
 
 
 def test_no_list_of_this_language_is_no_look():
@@ -253,7 +184,7 @@ def test_a_look_that_fails_never_stops_the_run(monkeypatch):
     assert code == 0 and "the ledger is locked" in line["languages"]["ja"]["level"]["error"], line
 
 
-def test_connect_looks_once_a_run_and_queues_the_level_jobs():
+def test_connect_looks_once_a_run_and_queues_no_level_job():
     (a, fa), _b, _d = _line()
     _mine(a)
     _last_generate(BEFORE, "run-1", {fa: ["眼鏡"]})
@@ -261,37 +192,8 @@ def test_connect_looks_once_a_run_and_queues_the_level_jobs():
     assert code == 0 and line["languages"]["ja"]["level"]["first"] is True, line
     _last_generate(RAISED, "run-2", {fa: ["眼鏡"]})
     code, line = h.call("connect", "--consume-only")
-    assert code == 0 and line["languages"]["ja"]["level"]["queued"] == [a], line
-    assert [j["words"] for j in _level_jobs()] == [[("眼鏡", "メガネ")]]
-
-
-def test_every_level_job_is_queued_with_the_stores_identity():
-    """A level job carries the store it was queued for, so a store set up again can't mine it (P2.1 adversary #12):
-    the job's store_id is the store's own id, never left empty."""
-    (a, fa), (b, fb), (d, fd) = _line()
-    _mine(a, d)
-    files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
-    assert _check(BEFORE, "run-1", files)["first"] is True
-    out = _check(RAISED, "run-2", files)
-    assert out["queued"] == [a, d]
-    with c.store() as s:
-        sid = library.store_id(s)
-    assert sid, "the store has an identity to carry"
-    jobs = _level_jobs()
-    assert len(jobs) == 2 and all(j["store_id"] == sid for j in jobs)
-
-
-def test_with_the_word_mode_never_saved_the_look_mines_in_the_list_mode(monkeypatch):
-    """`connect_mine_words` unset (a settings.json from before the setting) is the `list` mode, the default: the raise
-    is mined. Read as any other mode, a learner who never touched the setting would get no card for a raised level."""
-    from app.cli import connect_verbs
-    seen = []
-    monkeypatch.setattr(connect_verbs, "_read_list", lambda lang: ("run-2", RAISED, {}))
-    monkeypatch.setattr(level, "check", lambda store, lang, listed, signature, file_words, mode="?": seen.append(mode))
-    connect_verbs._level(None, "ja", {})
-    connect_verbs._level(None, "ja", {"connect_mine_words": None})
-    connect_verbs._level(None, "ja", {"connect_mine_words": "unknown"})
-    assert seen == ["list", "list", "unknown"]
+    assert code == 0 and line["languages"]["ja"]["level"]["queued"] == [], line
+    assert line["languages"]["ja"]["level"]["new"] == 3 and _level_jobs() == []
 
 
 def test_a_results_folder_without_its_list_is_no_look():

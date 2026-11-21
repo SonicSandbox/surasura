@@ -1495,7 +1495,9 @@ class SettingsPage(QWidget):
         view = self.rows.get(row.id)
         if view is not None and view.isVisible():
             self._wash(view)
-        if "connect_mine_words" in written:            # *Your path* ④: the learner picked which words get a card
+        # *Your path* ④: the learner picked which words get a card — since the mining model (Kantan-MO) the level, or
+        # *Cards for every new word* (*Words to make cards from* retired)
+        if {"logic.selection.band", "connect_every_word"} & set(written):
             moment = getattr(self.shell, "path_moment", None)
             if moment is not None:
                 moment("yours")

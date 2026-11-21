@@ -1199,6 +1199,8 @@ class _Look:
     def __init__(self, store, language, root, first, progress, stop, full, rules, copying=None, book=None):
         self.store, self.language, self.root_id = store, language, root
         self.book = book             # Kura-AB4: {folder, epub} — the folder the learner picked as that book's audiobook
+        self.dc_titles = {}          # Kura-AB5: {an EPUB's key: its package titles} (`_dc_titles`, once a look)
+        self.book_folders = None     # Kura-AB5: (books, {a folder's key: [(EPUB key, path)]}) (`_older_version`)
         self.first, self.progress, self.stop, self.rules = first, progress, stop, rules
         self.copying, self.copy_said, self.copied, self.to_copy = copying, 0.0, 0, 0   # K5: the take's progress
         self.full = bool(full or first)
@@ -1505,6 +1507,9 @@ class _Look:
             discs = any(audiobooks.disc_number(os.path.basename(s)) is not None for s in subs)
             if any(audiobooks.is_transcript(t[0]) for t in texts):     # a6: an audiobook's transcript, never its own
                 texts = self._transcripts_here(folder, texts, audio, discs)
+            if epubs and texts:                              # Kura-AB5 (11-20 report): a book's own timed text, never a
+                timed = audiobooks.book_timings([t[0] for t in texts], [e[0] for e in epubs], list(vids))   # title
+                texts = [t for t in texts if t[0] not in timed or _key(t[1]) in self.origins]   # (one in: as is)
             if audio or discs:                               # its audiobooks read after the take-in (`_audiobooks`);
                 self.heard.append((folder, None if discs else audio))   # its audio names (None: disc folders too)
             if links:                                        # alpha 4: its links are checked again every look
@@ -1626,7 +1631,8 @@ class _Look:
                 continue
             fresh.append(ab)
         lone = [(r["item_id"], r["audiobook"]) for r in held_in       # a5-2: *It has no book* is never weighed again
-                if not r["audiobook"].get("book") and not r["audiobook"].get("no_book")] if stale else []
+                if (not r["audiobook"].get("book") or r.get("book_gone")) and   # (Kura-AB5: its book removed)
+                not r["audiobook"].get("no_book")] if stale else []
         wanted = fresh + [audiobooks.from_record(rec) for _i, rec in lone]
         books = self._library_books(wanted) if wanted else []
         answers = self.store.audiobook_answers() if books else {}
@@ -1691,6 +1697,8 @@ class _Look:
                 return
             pair = audiobooks.decide(audiobooks.from_record(rec), books, answers) if books else None
             said = audiobooks.set_pair(dict(rec), pair)
+            if rec.get("book") and not (said["book"] or said["ask"]):
+                continue                                     # (Kura-AB5: its removed book's pair kept for Put back)
             if (said["book"], said["ask"]) != (rec.get("book"), rec.get("ask")):
                 self.store.pair_audiobook(item_id, book=said["book"], ask=said["ask"])
         if stale and self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1":
@@ -1710,8 +1718,13 @@ class _Look:
             return {}
         under = self._in_book_folder
         inside = [ab for ab in fresh if under(ab.files)]
-        others = [audiobooks.from_record(r["audiobook"]) for r in held_in
-                  if not isinstance(r["audiobook"].get("book"), dict) and under(r["audiobook"].get("files"))]
+        others = [audiobooks.from_record(r["audiobook"]) for r in held_in      # (Kura-AB5: its book removed: free)
+                  if (not isinstance(r["audiobook"].get("book"), dict) or r.get("book_gone")) and
+                  under(r["audiobook"].get("files"))]
+        if self.book.get("file"):                            # Kura-AB5: an audio file picked — its audiobook only
+            want = ls.path_key(os.path.abspath(self.book["file"]))
+            holds = lambda ab: want in {ls.path_key(os.path.abspath(f)) for f in ab.files}   # noqa: E731
+            inside, others = [ab for ab in inside if holds(ab)], [ab for ab in others if holds(ab)]
         if len(inside) + len(others) > 1:
             epub = self.book["epub"]
             forms, vols = audiobooks._forms([self.book.get("title") or "", os.path.splitext(os.path.basename(epub))[0]])
@@ -3627,16 +3640,58 @@ class _Look:
             self.hashes[rels[i]] = shas[i]
         if todo:
             write_source_marker(os.path.join(self.data_dir, ls.CONTENT_FOLDER, book), "epub", origin=name)
-        found = []
+        found, older = [], self._older_version(path)
         for i, (rel, item) in enumerate(zip(rels, held), 1):
             f = {"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
                  "show": book, "episode": i, "chapter": chapters[i - 1]}
             if item is None:
                 f["rel"], f["copy_sha256"] = rel, shas[i - 1]
+                if book != base:                             # Kura-AB5 (11-20 report): `<base> (n)/` is only where its
+                    f["book_title"] = base                   # parts live: its title is the book's own name
             else:
                 f["item_id"] = item
+            if older:
+                f["new_version_of"] = older                  # Kura-AB5: New arrivals' *Replace 「…」*
             found.append(f)
         self._refresh([f["item_id"] for f in found if "item_id" in f], self._commit(found))
+
+    def _older_version(self, path):
+        """Kura-AB5 (Sonic's yes, 11-20 report: a new version under another name came in as a book apart): the book in
+        the library this new EPUB may be the new version of — another EPUB in its folder, its parts here, whose package
+        names the same `dc:title` (and no volume apart: `audiobooks._volumes`) — its path, or None (none, two, or
+        unread). Only an offer: New arrivals asks (*Replace 「…」*); never switched by itself. Each EPUB's package is
+        read once a look (`audiobooks.epub_meta`)."""
+        here = ls.path_key(os.path.dirname(os.path.abspath(path)))
+        mine = self._dc_titles(path)
+        if not mine:
+            return None
+        books = self._book_origins()
+        if self.book_folders is None or self.book_folders[0] != len(books):  # (one index a look, by folder)
+            index = {}
+            for key, parts in books.items():
+                picks = [o for o in parts.values() if not o.version and o.origin]
+                if picks:
+                    epub = str(picks[0].origin).rpartition("#")[0]
+                    index.setdefault(ls.path_key(os.path.dirname(os.path.abspath(epub))), []).append((key, epub))
+            self.book_folders = (len(books), index)
+        found = []
+        for key, epub in self.book_folders[1].get(here, ()):
+            if key == _key(path) or not os.path.isfile(epub):
+                continue
+            apart = audiobooks._volumes(audiobooks._forms([os.path.splitext(os.path.basename(epub))[0]])[1],
+                                        audiobooks._forms([os.path.splitext(os.path.basename(path))[0]])[1])
+            if mine & self._dc_titles(epub) and apart != audiobooks.DIFFER:
+                found.append(os.path.abspath(epub))
+        return found[0] if len(set(found)) == 1 else None
+
+    def _dc_titles(self, path):
+        """An EPUB's package titles (`dc:title`), NFKC and case-folded, read once a look."""
+        key = _key(path)
+        if key not in self.dc_titles:
+            titles, _creators = audiobooks.epub_meta(path)
+            self.dc_titles[key] = {unicodedata.normalize("NFKC", t).strip().casefold() for t in titles
+                                   if t and t.strip()}
+        return self.dc_titles[key]
 
     def _prepared(self, path, st):
         """K5 C2: this EPUB's work done ahead by a worker (`_Splitter`), when it read the file as listed (its size and

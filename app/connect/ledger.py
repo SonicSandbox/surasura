@@ -62,6 +62,7 @@ STATES = OPEN + FINISHED
 # The steps a job waiting mid-way resumes at (`resume`): before mining it can still be dropped (02 §2: an item that
 # leaves the top 20 before mining; once mining has started, it finishes).
 BEFORE_MINING = (None, "picking", "fit-check")
+BOOK_AUDIO_NEED = "book-audiobook"      # `runner.BOOK_AUDIO_NEED`: a book's one audiobook question (Kura-AB2)
 # A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined; P4.1: one an ask made
 # (*Mine this*, *Mine it too*: C3) — the only kind that makes again a word whose card you deleted (N15, IK S1).
 MINE, LEVEL, ASKED = "mine", "level", "asked"
@@ -580,7 +581,14 @@ class Ledger:
                                 f"(resume IS NULL OR resume IN ({marks}))))",
                                 (reason, _now(), language, item_id) + BEFORE_MINING[1:])
         if cur.rowcount > 0:                # its troubles went with it (03 §4: fixed by itself, IK P2.5 #3)
-            for row in self.fix(language, item_id=item_id):
+            # Kura-AB5 (11-20 report: the card went and came back as the parts left the top 20): a book's question
+            # another waiting part still holds stays — `runner._book_orphans` lets it go once none does
+            held = [r[0] for r in self.conn.execute(
+                "SELECT n.say FROM needs n WHERE n.language = ? AND n.item_id = ? AND n.kind = ? AND "
+                "n.fixed_at IS NULL AND EXISTS (SELECT 1 FROM jobs j WHERE j.language = n.language AND "
+                "j.state = 'waiting' AND "
+                "j.item_id != n.item_id AND j.reason = n.say)", (language, item_id, BOOK_AUDIO_NEED))]
+            for row in self.fix(language, item_id=item_id, keep=held):
                 _log.info("Connect: fixed by itself (%s, %s): %s", language, row["kind"], row["say"])
         return cur.rowcount > 0
 

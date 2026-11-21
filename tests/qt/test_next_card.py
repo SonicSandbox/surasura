@@ -452,13 +452,17 @@ def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monk
     assert r.press is None and r.about.isVisibleTo(r)                           # no press; its line behind its ?
     assert r.accessibleDescription() == strings.PATH_STEPS["yours"][1]
     panel.close()
-    rows = _open_path(panel, f._replace(yours_picked=True))                     # done before: no *Again* either
-    assert rows["yours"].status.done and rows["yours"].press is None
-    panel.close()
+    # the rest row by row: a second open would race the shell's own fresh look (the open asks one on a worker, and its
+    # answer replaces the path set here — --stress-changed, run 1 of 20)
+    from app.qt.guide import _StepRow
+
+    def row(f2):
+        return _StepRow({s.step.id: s for s in P.statuses(f2, {"first_ack": True})}["yours"], lambda _s: None, panel)
+    done = row(f._replace(yours_picked=True))                                   # done before: no *Again* either
+    assert done.status.done and done.status.useful and done.press is None
     monkeypatch.setattr(P, "YOURS_CARD", True)                                  # the model re-points ④: its press back
-    rows = _open_path(panel, f)
-    assert rows["yours"].press is not None and rows["yours"].press.text() == strings.PATH_DO
-    panel.close()
+    on = row(f)
+    assert on.press is not None and on.press.text() == strings.PATH_DO
 
 
 def test_a_step_rows_do_it_runs_its_own_press_and_closes_the_panel(world):

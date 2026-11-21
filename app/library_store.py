@@ -14732,7 +14732,7 @@ def _store_replace_book(self, new_epub, old_epub, trashed_paths=None, by="user")
     `trashed_paths` — the Removed list). The change is that remove's (kind `remove`: the window's writer moves the
     files back on its Undo); `change.replaced` holds the rest, undone by the value check (`_undo_replaced`). -> the
     Change, or None (either book not here, or one title already, or nothing unread).
-    Kura-AB6 (Sonic 2026-11-21: keep the Finished parts and their dates, replace only the unread): only the old book's
+    Kura-AB6 (Sonic 2026-11-20: keep the Finished parts and their dates, replace only the unread): only the old book's
     unread parts go (`replace_parts`); a Finished or ✓ Done part stays as it is — its title, tier, place, date and
     mark — and "the old book's last part" is the last of those that go."""
     with self._command("remove", by) as cmd:
@@ -14789,7 +14789,7 @@ def _store_epub_ids(self, epub):
 
 
 def _store_replace_parts(self, epub):
-    """Kura-AB6 (Sonic 2026-11-21): the live parts of the old version `epub` a *Replace* takes out, and the ones it
+    """Kura-AB6 (Sonic 2026-11-20): the live parts of the old version `epub` a *Replace* takes out, and the ones it
     keeps -> (replaced, kept), each in the parts' order. Kept: a part the learner has read — Finished (its date, the
     Best ranking's) or ✓ Done (PROVISIONAL: read, not yet Finished); the rest — in progress or not begun — is
     replaced. One read (inside the caller's `_reading()` or write)."""

@@ -932,7 +932,7 @@ TRAY_MENU = {
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
 # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a new version of a book here (the same folder and title)
-#   Kura-AB6 (Sonic 2026-11-21: keep the Finished parts and their dates, replace only the unread; PROVISIONAL words):
+#   Kura-AB6 (Sonic 2026-11-20: keep the Finished parts and their dates, replace only the unread; PROVISIONAL words):
 #   the tip is TRAY_REPLACE[1] with {gone} (TRAY_REPLACE_GONE) and {kept} (TRAY_REPLACE_KEPT, "" when none) filled
 TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook"
                                      "{gone}{kept}\n• Undo puts it all back")

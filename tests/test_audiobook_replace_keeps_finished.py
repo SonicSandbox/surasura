@@ -1,4 +1,4 @@
-"""A new version's *Replace* keeps the old one's read parts (Kura-AB6; Sonic 2026-11-21, words PROVISIONAL).
+"""A new version's *Replace* keeps the old one's read parts (Kura-AB6; Sonic 2026-11-20, words PROVISIONAL).
 
 Kura-AB5's *Replace 「…」* (New arrivals' ⋯ on a book's new version) sent every part of the old version to Removed —
 the Finished ones too, and with them their Finished dates (`graduated_at`: the Best ranking's recency). Sonic's ruling:

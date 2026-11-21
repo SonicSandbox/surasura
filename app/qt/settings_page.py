@@ -611,7 +611,7 @@ class RowView(QWidget):
             line.addWidget(self.slot)
             line.addWidget(self.help)
             self.stacked = True
-        elif row.kind == "links" or row.id in catalog.STACKED:
+        elif row.kind == "links" or row.id in catalog.STACKED or row.id in catalog.SPANNING:
             if row.kind not in ("links", "custom"):   # the choices packed from the left at their own size, never
                 #                                        spread (Essentials' cards, a custom row, span the row)
                 slot.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -669,7 +669,7 @@ class RowView(QWidget):
         if self.row.kind == "links":
             self._arrange_links(self.width() if width is None else width)
             return
-        if self.row.kind == "slider" or self.row.id in catalog.STACKED:
+        if self.row.kind == "slider" or self.row.id in catalog.STACKED or self.row.id in catalog.SPANNING:
             return                                      # (stacked always: the words, then the control under them)
         width = self.width() if width is None else width
         stacked = width < self.side_by_side()
@@ -773,7 +773,8 @@ class RowView(QWidget):
             logos.show(self)
         if self.row.kind == "links":                                    # a new size: its buttons measured again
             self._arrange_links(self.width())
-        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.stacked is not None:
+        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.row.id not in catalog.SPANNING \
+                and self.stacked is not None:
             #                                                           a new text size: asked again (a row not
             self.stacked = None                                         # yet laid out is asked at its first resize)
             self.arrange()

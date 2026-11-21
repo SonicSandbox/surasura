@@ -426,7 +426,9 @@ ROWS = (
 )
 ROW = {row.id: row for row in ROWS}
 # A row that stands stacked always (Sonic 2026-11-05: "One for the term and then a row or 2 for the buttons")
-STACKED = ("open_video", "open_book", "finish_cards", "essentials")
+STACKED = ("open_video", "open_book", "finish_cards")
+# A custom row as wide as its section, words above it (Mado-EZC: Essentials' four cards)
+SPANNING = ("essentials",)
 # A choice row whose "program" choice opens a program kept in another key: row id -> that key (its path; the page's
 # picker writes it, *Change…* picks again)
 PROGRAM_ROWS = {"open_video": "open_video_program", "open_book": "open_book_program"}

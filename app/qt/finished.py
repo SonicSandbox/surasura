@@ -548,7 +548,8 @@ class FinishedActions(QObject):
 
     def _worker_estimate(self, path, placed, callback):
         """The window's arrivals worker (one per language, shared with New arrivals: `services.arrivals_worker`)."""
-        return self.win.arrivals_worker().estimate(path, placed=placed, callback=callback)    # IK-L2-2: one slot
+        return self.win.arrivals_worker().estimate(path, placed=placed, callback=callback,    # IK-L2-2: one slot
+                                                   pressed=True)        # Haya-LD: your *What if*: never held
 
     def _answered(self, token, answer):
         asking = self._asking

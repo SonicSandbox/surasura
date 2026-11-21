@@ -112,7 +112,8 @@ def test_undo_takes_a_done_and_its_date_back_and_an_un_done_undone_brings_the_fi
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_old_done_undone_after_a_re_watch_takes_the_new_date_with_its_mark(language):
     """Done, un-Done, Done again (a re-watch: a new date), then the FIRST Done's Undo: the mark goes back to 0 by the
-    value check, and its date must go with it — never a mark 0 left holding the re-watch's date. Counted as one item."""
+    value check, and its date must go with it — never a mark 0 left holding the re-watch's date. A skipped mark is one
+    value skipped: its date goes with it, never counted on its own (the window reads the count: `moves._refused`)."""
     store = migrated(language)
     ep = store.ids("now")[0]
     first = store.set_watched([ep])
@@ -127,7 +128,7 @@ def test_an_old_done_undone_after_a_re_watch_takes_the_new_date_with_its_mark(la
     again = _at(store, ep)
     out = store.undo(undone)
     assert _watched(store, ep) == 1 and _at(store, ep) == again != rewatch, "the mark and its date left as they are"
-    assert out is None or not any("2 items" in n for n in out.notes), "one item, however many of its values"
+    assert out is not None and out.notes == ["1 item changed since and was left as it is"], "its date isn't a skip"
     store.close()
 
 
@@ -265,6 +266,11 @@ def test_a_date_an_older_build_left_behind_is_never_read(language):
     assert store.watched_dates() == {} and store.watched_dates([ep]) == {} and store.seen_dates() == {}
     store.set_watched([ep])
     assert _at(store, ep) > old
+    store.finish([ep])                                          # and in Finished: finished, but not seen on that day
+    with store._writing():
+        store.conn.execute("UPDATE items SET watched = 0 WHERE id = ?", (ep,))
+    assert store.seen_dates()[_show(store, ep)]["watched_at"] is None
+    assert store.seen_dates()[_show(store, ep)]["finished"] is True
     store.close()
 
 
@@ -390,6 +396,42 @@ def test_the_dates_come_back_through_a_rebuild_from_the_copy_and_a_repair(langua
     assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert (store.seen_dates(), store.watched_dates()) == want
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_without_the_column_rebuilt_from_its_own_newer_copy_keeps_every_date(language, monkeypatch):
+    """A database restored from a backup an older build made (no column) meets its own newer copy and is rebuilt from
+    it in place, at an open too busy to add the column first: the rebuild makes the column itself and keeps each date
+    (never a failed rebuild on every run of the helper)."""
+    import shutil
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    ep = store.ids("now")[0]
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)   # the copy written
+    db = store.db_path
+    store.checkpoint()
+    store.close()
+    shutil.copyfile(db, db + ".backup")
+    conn = sqlite3.connect(db + ".backup")                      # the backup as an older build left it
+    conn.execute(f"DROP INDEX {ls.ADDED_DATES}")
+    conn.execute("ALTER TABLE items DROP COLUMN watched_at")
+    conn.commit()
+    conn.close()
+    store = ls.open_store(language, data_dir, user_files_dir)
+    store.set_watched([ep])                                     # the copy moves on past the backup, with a date
+    want = store.watched_dates()
+    assert want and ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store.close()
+    for suffix in ("-wal", "-shm"):
+        if os.path.exists(db + suffix):
+            os.remove(db + suffix)
+    shutil.copyfile(db + ".backup", db)                         # restored
+    with monkeypatch.context() as busy:
+        busy.setattr(ls.Store, "_added_indexes", lambda self: None)
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.watched_dates() == want, "rebuilt from the newer copy, dates and all"
     store.close()
 
 

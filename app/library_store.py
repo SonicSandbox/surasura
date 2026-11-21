@@ -7613,7 +7613,7 @@ class Store:
         marked = {s[0] for s in change.status if s[1] == "watched"}
         for item_id, column, old, new in change.status:
             if column == "watched_at" and item_id in marked:
-                continue                                        # Kura-WD: a date goes back with its mark, below
+                continue        # Kura-WD: a date goes back with its mark, below — never a value skipped of its own
             row = self.conn.execute(f"SELECT {column} FROM items WHERE id = ?", (item_id,)).fetchone()
             if row is None or row[0] != new:
                 skipped.append(item_id)
@@ -7623,7 +7623,6 @@ class Store:
         # left as it is (changed since) keeps its date too
         restored = {i for c, _o, i in back if c == "watched"}
         back += [("watched_at", old, i) for i, c, old, _n in change.status if c == "watched_at" and i in restored]
-        skipped = list(dict.fromkeys(skipped))                  # an item counted once, however many of its values
         for column, old, item_id in back:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
         cmd.feed(i for _c, _o, i in back)

@@ -982,10 +982,12 @@ def test_a_nanosecond_clock_and_a_window_exposed_wait_are_waits(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_clock.py").write_text(
         "import time\n\n\ndef test_ns():\n    assert time.time_ns() > 0\n\n\n"
+        "def test_s():\n    assert time.time() > 0\n\n\n"
         "def test_exposed(qtbot, window):\n    qtbot.qWaitForWindowExposed(window)\n\n\n"
         "def test_still():\n    assert '本'\n", encoding="utf-8")
-    ids = ["tests/test_clock.py::test_ns", "tests/test_clock.py::test_exposed", "tests/test_clock.py::test_still"]
-    assert run_tests._timing_tests(str(tmp_path), ids) == (ids[:2], ids[2:])
+    ids = ["tests/test_clock.py::test_ns", "tests/test_clock.py::test_s", "tests/test_clock.py::test_exposed",
+           "tests/test_clock.py::test_still"]
+    assert run_tests._timing_tests(str(tmp_path), ids) == (ids[:3], ids[3:])
 
 
 # (The 2026-11-20 review's misses, each one a wait or a caller the first cut didn't see.)

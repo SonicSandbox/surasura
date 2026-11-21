@@ -76,13 +76,20 @@ jobs:
           python package_app.py --skip-tests --installer --data-name "$DATA_NAME"
       - name: Smoke-test its command line
         run: python scripts/cli_smoke.py dist/Surasura
-      # Refused, it names the open Explorer windows (the build opened one on dist before it skipped that under CI).
+      # Refused, it names the open Explorer windows (the build opened one on dist before it skipped that under CI) and
+      # what still runs from dist. The smoke waits for the build's own programs to end; a scanner can still hold a file
+      # a moment (2026-11-20: 'Permission denied' 0.4 s after the smoke, 3 of 5 attempts on one PR; tests/FLAKES.md):
+      # five tries, 3 s apart, each refusal saying what held it.
       - name: Keep it aside
         run: |
-          mv dist "$WORK/old" || {
-            powershell -NoProfile -Command '(New-Object -ComObject Shell.Application).Windows() | ForEach-Object { "Explorer window: " + $_.LocationURL }'
-            exit 1
-          }
+          for try in 1 2 3 4 5; do
+            mv dist "$WORK/old" && exit 0
+            echo "move refused (try $try of 5); what runs from dist:"
+            python -c "import sys; sys.path.insert(0, 'scripts'); import cli_smoke; print(cli_smoke.running_from('dist') or 'nothing')"
+            sleep 3
+          done
+          powershell -NoProfile -Command '(New-Object -ComObject Shell.Application).Windows() | ForEach-Object { "Explorer window: " + $_.LocationURL }'
+          exit 1
       - name: Build the update, signed with a throwaway key made on this runner
         run: |
           python packaging/install_proof.py key "$WORK/test-key.hex"

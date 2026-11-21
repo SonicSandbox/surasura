@@ -228,7 +228,8 @@ def test_your_setup_says_what_the_settings_and_the_reads_say(qapp, fakes):
     assert wait_until(lambda: help_of(page, "setup_mining").endswith("ひとり・で・ぽっぷ！"))
     assert help_of(page, "setup_known") == "2,468 known · from Anki (日本語::コア2k, アニメ)"
     assert help_of(page, "setup_anki") == "connected"
-    assert help_of(page, "setup_mining") == "Only i+1 · Mining 3 words from ひとり・で・ぽっぷ！"
+    # Kantan-MO: *Only i+1* retired — read as your list
+    assert help_of(page, "setup_mining") == "Your list · Mining 3 words from ひとり・で・ぽっぷ！"
     assert help_of(page, "setup_level") == "Common · ≈1,234 words · 91.3% of your content"
     assert help_of(page, "setup_cards") == "ordered as you’ll meet them · パターン + 例文 filled automatically"
     # each Change › goes to its section

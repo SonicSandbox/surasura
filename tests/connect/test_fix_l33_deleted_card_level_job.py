@@ -54,14 +54,14 @@ def test_a_deleted_card_is_named_gone_and_its_made_word_row_keeps_no_note_id():
 
 
 def test_a_level_raise_after_a_deleted_card_does_not_make_its_word_again():
-    # The raise lists 眼鏡 as new for the mined episode; with the card deleted, Connect still queues only 老婆.
+    # The raise lists 眼鏡 as new for the mined episode; with the card deleted it is never made again — and since the
+    # mining model (Kantan-MO, F1) a raise queues no job at all: its words join the study order
     a, fa, _gone = _made_then_deleted()
     _check(BEFORE, "run-1", {fa: ["眼鏡", "老婆"]})
     _check(RAISED, "run-2", {fa: ["眼鏡", "老婆"]})
     with Ledger() as ledger:
         jobs = [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
-    assert [j["words"] for j in jobs] == [[("老婆", "ロウバ")]], \
-        "G1.3-4: a word made once is never made again, even when its card was deleted"
+    assert jobs == [], "G1.3-4: a word made once is never made again, even when its card was deleted"
 
 
 def test_a_tier_count_leaves_away_and_gone_items_out():

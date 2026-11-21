@@ -308,3 +308,12 @@ def test_the_order_ahead_is_walked_once_while_the_store_is_the_same(monkeypatch)
     versions["order_version"] = 5                       # a move: walked again, in the new order
     monkeypatch.setattr(library, "ahead", lambda store: walks.append(1) or [20, 21, 22, 30, 5])
     assert isinstance(runner._full(steps, "ja", job={"item_id": 5}), runner.Wait) and walks == [1, 1]
+
+
+def test_past_the_cap_only_the_next_n_cards_make_the_window(monkeypatch):
+    # why: 4 cards wait for a cap of 3 — the window is the 3 soonest; an episode between the 3rd and the 4th (already
+    # overflow) still waits: it would only push the overflow further, never take a place in the window
+    made = {1: (20, "撒く"), 2: (21, "血塗れ"), 3: (22, "眼鏡"), 4: (23, "老婆")}
+    steps = _steps(monkeypatch, "ja", [1, 2, 3, 4], made, LIST_JA, ahead=[20, 21, 22, 25, 23], study_order="content")
+    assert isinstance(runner._full(steps, "ja", job={"item_id": 25}), runner.Wait)
+

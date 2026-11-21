@@ -185,29 +185,36 @@ def test_an_item_with_no_episode_order_goes_after_what_is_already_there(language
     store.close()
 
 
-def _folder_show(store, language, show, numbers, k4=False):
-    """`show`'s episodes taken in from a source folder by setup's scan, real subtitle bytes each: their records name no
+def _source():
+    """The source folder the folder shows are read from (outside Surasura's own folders)."""
+    return os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Shows")
+
+
+def _found(language, show, n, k4=False):
+    """One episode file of `show` in the source folder, as the look finds it (real subtitle bytes): its record names no
     episode number, the file name does (`Show - 01`) — or (`k4`) the record names it (the look's K4 number) and the
-    name holds none (`Show - <a word>`). -> their item ids."""
+    name holds none (`Show - <a word>`)."""
     data_dir, _u = roots(language)
-    src = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", language, "Shows")
     sample = os.path.join(os.path.dirname(__file__), "Test Resources", language, SUBTITLE[language])
-    found = []
-    for n in numbers:
-        origin = os.path.join(src, show, f"{show} - {names(language)[210 + n] if k4 else f'{n:02d}'}.srt")
-        os.makedirs(os.path.dirname(origin), exist_ok=True)
-        with open(sample, "rb") as f, open(origin, "wb") as out:
-            out.write(f.read() + f"\nscan {n}\n".encode("utf-8"))
-        rel = f"{ls.CONTENT_FOLDER}/{show}/{os.path.basename(origin)}"
-        os.makedirs(os.path.join(data_dir, ls.CONTENT_FOLDER, show), exist_ok=True)
-        shutil.copyfile(origin, os.path.join(data_dir, *rel.split("/")))
-        with open(origin, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()
-        st = os.stat(origin)
-        found.append({"origin": origin, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha, "show": show,
-                      "rel": rel, **({"episode": n} if k4 else {})})
-    root = store.add_source(src)
-    return store.take_in(root, found, first=True).added
+    origin = os.path.join(_source(), show, f"{show} - {names(language)[210 + n] if k4 else f'{n:02d}'}.srt")
+    os.makedirs(os.path.dirname(origin), exist_ok=True)
+    with open(sample, "rb") as f, open(origin, "wb") as out:
+        out.write(f.read() + f"\nscan {n}\n".encode("utf-8"))
+    rel = f"{ls.CONTENT_FOLDER}/{show}/{os.path.basename(origin)}"
+    os.makedirs(os.path.join(data_dir, ls.CONTENT_FOLDER, show), exist_ok=True)
+    shutil.copyfile(origin, os.path.join(data_dir, *rel.split("/")))
+    with open(origin, "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    st = os.stat(origin)
+    return {"origin": origin, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha, "show": show,
+            "rel": rel, **({"episode": n} if k4 else {})}
+
+
+def _folder_show(store, language, show, numbers, k4=False):
+    """`show`'s episodes taken in from a source folder by setup's scan (`_found`). -> (their item ids, the root)."""
+    os.makedirs(_source(), exist_ok=True)
+    root = store.add_source(_source())
+    return store.take_in(root, [_found(language, show, n, k4) for n in numbers], first=True).added, root
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -218,7 +225,7 @@ def test_an_episode_joins_a_folder_shows_run_by_the_number_in_its_file_names(lan
     above 1 (a folder record names no season: it never sets the rows apart)."""
     store = migrated(language, shows=2, episodes=3)
     show = names(language)[196]
-    scanned = _folder_show(store, language, show, (1, 2, 3), k4)
+    scanned, _root = _folder_show(store, language, show, (1, 2, 3), k4)
     current = _current(store)
     assert _in(scanned, current) == scanned
     ep4 = _arrive(store, language, show, 4, rules={"browser": "top"})
@@ -318,4 +325,22 @@ def test_a_soon_rule_follows_its_shows_rows_in_soon_even_when_a_later_one_sits_i
     ep6 = _arrive(store, language, show, 6, rules={"browser": "soon"})
     soon = store.ids("soon")
     assert soon.index(ep6) == soon.index(ep4) + 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folders_next_file_placed_by_a_soon_rule_joins_its_shows_run(language):
+    """A folder's file names its place by its show's run (S3): the show's 1, 2, 3 in Soon, a channel's video at Soon's
+    end after them, then the folder's 4 found later and placed by a *Soon* rule for folders — after 3, never at the
+    end of Soon after the video (an item with no order's place)."""
+    store = migrated(language, shows=2, episodes=3)
+    w = names(language)
+    show = w[203]
+    scanned, root = _folder_show(store, language, show, (1, 2, 3))
+    assert all(store.item(i)["tier"] == "soon" for i in scanned), "the setup: the scan put the show in Soon"
+    video = _video(store, language, w[204], "Rt7bKe2mQx0", w[205], {"youtube": "soon"})
+    assert store.ids("soon")[-1] == video
+    four = store.take_in(root, [_found(language, show, 4)], rules={"source": "soon"}).added[0]
+    soon = store.ids("soon")
+    assert soon.index(four) == soon.index(scanned[-1]) + 1 and soon[-1] == video
     store.close()

@@ -76,6 +76,7 @@ from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PR
                                 Ledger)
 
 log = logging.getLogger("surasura-cli")
+_clock = time.monotonic          # Haya-LD: the run's and a batch's lengths (bound here: a test's own `time` stays its own)
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
 OFFER_EVERY = 5                 # Kura-AB3 A2 r2 S4: the paired books looked at for *Add audio* at the first look and
@@ -328,7 +329,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
-    began = time.monotonic()
+    began = _clock()
     _say_machine(languages)                 # Haya-LD: the run's start, and how this PC runs its heavy jobs
     _sweep_online(steps)                    # Michi-YT: a video a killed Connect left goes before anything else
     _release_check(loaded)
@@ -407,7 +408,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
         return summary
     finally:
-        log.info("Connect: the run ends after %.1f s (%d looks)", time.monotonic() - began, summary["looks"])
+        log.info("Connect: the run ends after %.1f s (%d looks)", _clock() - began, summary["looks"])
         if own:
             ledger.close()
         getattr(steps, "end_listening", lambda: None)()     # Michi-T1: a release heard beside the mining ends
@@ -2085,12 +2086,12 @@ def _mine(steps, ledger, lang, job, record=True):
         ran = True
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
-        began = time.monotonic()
+        began = _clock()
         try:
             got = _mine_batch(steps, ledger, lang, job, picked, todo, attempt)
             # Haya-LD: each batch's length in the log (a startup's timeline had Connect's start and nothing after)
             log.info("Connect: job %s batch %s: %d words in %.1f s, %d made", jid, attempt, len(todo),
-                     time.monotonic() - began, sum(o.get("outcome") == "made" for o in got.get("outcomes") or ()))
+                     _clock() - began, sum(o.get("outcome") == "made" for o in got.get("outcomes") or ()))
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None

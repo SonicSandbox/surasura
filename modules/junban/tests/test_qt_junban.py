@@ -422,8 +422,9 @@ def test_a_save_that_failed_is_tried_again_with_the_next_change(main, engine, mo
     win = opened(main)
     win.cb_phrases.click()
     assert any("settings.json is held" in t for t in win.messages.texts())
-    win.cb_list_first.click()                             # (saved as junban_unlisted)
-    assert written and written[-1].get("junban_phrases") is False and "junban_unlisted" in written[-1]
+    win.off_list.setCurrentIndex(win.off_list.findData("back"))    # Kyou-MO: the one switch (saved as junban_off_list)
+    win.off_list.activated.emit(win.off_list.currentIndex())
+    assert written and written[-1].get("junban_phrases") is False and written[-1].get("junban_off_list") == "back"
 
 
 def test_a_key_moved_by_another_window_while_read_never_unlocks_reorder(main, engine):

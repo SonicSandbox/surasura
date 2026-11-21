@@ -338,29 +338,19 @@ ROWS = {
                      "preview order restore undo the last reorder"),
     "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
                      "order leverage meet content priority"),
-    "junban_unlisted": ("Cards too rare for your list go",
-                        "After the list, mixed in, or at the back.",
-                        "After it: every word on your list comes first, the rarer cards after it by their own sentence. "
-                        "Mixed in: each where your journey meets it, among the list's words. At the back: in their "
-                        "own order, behind the list's", "list first rare unlisted mixed back"),
-    # Q31: switches that work together, never one pick-one row
+    # Q31
     "junban_phrases": ("Idioms and set phrases go with your list",
                        "Common phrase cards are ordered like list words.",
                        "On: common set phrases (気がつく) are ordered like list words.",
                        "phrases idioms set phrase list first"),
-    "junban_ready_first": ("i+1 first: bring the word a card's sentence needs right before it",
-                           "A card's new word in its sentence gets its card first",
-                           "On: when a card's own sentence holds a word of your list that comes after it, that word's "
-                           "card is brought right before it when it is i+1 there; otherwise the card waits with the "
-                           "cards of more new words. Off: your list's order alone", "first i+1 ready sentence needs"),
-    "junban_later_tag": ("Tag them Surasura::later", "Placed after your list, and marked. Restore takes it back",
-                         "Off-list cards get the ::later tag. Restore removes it.",
-                         "not on list later tag"),
-    "junban_later_flag": ("Flag them purple", "", "Off-list cards get a purple flag. Restore removes it.",
-                          "not on list later flag purple"),
-    "junban_later_suspend": ("Suspend them", "Tagged too, so you can always find them",
-                             "Off-list cards are suspended and tagged ::later. Restore undoes it.",
-                             "not on list later suspend"),
+    # Kyou-MO (the mining model; PROVISIONAL words): your own cards only — Surasura's are never set aside
+    "junban_off_list": ("Your own cards", "",
+                        "Leave: after your list. Set aside: at the back, tagged ::later.",
+                        "not on list rare unlisted leave back set aside later tag own cards"),
+    "junban_later_flag": ("…and flag them purple", "", "Set-aside cards get a purple flag. Restore removes it.",
+                          "not on list later flag purple set aside"),
+    "junban_later_suspend": ("…and suspend them", "", "Set-aside cards are suspended too. Restore undoes it.",
+                             "not on list later suspend set aside"),
     "junban_auto_reorder": ("Reorder by itself after Generate", "",
                             "Reorders the saved deck by itself after Generate and on return.",
                             "auto reorder automatic generate"),
@@ -681,7 +671,7 @@ OPTIONS = {
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
     "finish_cards": {"ask": "Ask each time", "keep": "Keep its cards", "out": "Leave them out"},
-    "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
+    "junban_off_list": {"leave": "Leave them", "back": "At the back", "aside": "Set aside"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
     "junban_backfill_cards": {"all": "All", "new": "New only"},

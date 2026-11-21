@@ -77,6 +77,10 @@ Placement = namedtuple("Placement", Placement._fields + ("weave",),
 TIERS = {"list": 0, "library": 0, "phrase": 0, "i+1": 2, "multi": 3, "rest": 4, "known": 5}
 # Connect's preview (P1.4, HC-N54): the cards you mined yourself go ahead of every other, in the order you mined them.
 TIERS["yours"] = -1
+# Kyou-MO (the mining model): off the list and sent to the back — a card Surasura made (its word left the list), and
+# your own under *At the back* / *Set aside* — in the order they had (an empty sort: then `due`), behind every card
+# placed by its sentence and still ahead of the words you already know (D3: known last).
+TIERS["back"] = 4.5
 
 
 def _exact_int(value):
@@ -224,8 +228,9 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
         rank = rank_of.get(word) if isinstance(word, str) and word else None
         sort = card.get("sort")
         tier = card.get("tier")
-        # Placed by its tier, not its rank: a list word whose sentence waits ("i+1 first", §17), and
-        # a word the learner already knows, which goes last whatever else matched it (D3).
+        # Placed by its tier, not its rank: a list word whose sentence waits ("i+1 first", §17 — nothing holds one
+        # since Kyou-MO: it keeps its list place; a replanned row may still say so), and a word the learner already
+        # knows, which goes last whatever else matched it (D3).
         if card.get("held") or tier in ("known", "yours"):
             rank = None
         if rank is not None:
@@ -324,7 +329,8 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
                                        card.get("waits"), card.get("impact"), width)
                                       if card["card_id"] in weave_of else None)))
 
-    tiers = {name: 0 for name in TIERS if name != "yours"}     # "yours" only when a card is (Connect's preview)
+    # "yours" only when a card is (Connect's preview), "back" only when one goes there (Kyou-MO)
+    tiers = {name: 0 for name in TIERS if name not in ("yours", "back")}
     for _order, _sort, _rank, tier, _card in matched:
         tiers[tier] = tiers.get(tier, 0) + 1
     stats = {

@@ -28,12 +28,13 @@ def test_settings_defaults_shape():
         "junban_deck": "",
         "junban_word_fields": {},
         "junban_chunk_size": 150,
-        # Junban_Backlog_Spec §11 / §12 — the list's words first, the rest after ("List first").
+        # Junban_Backlog_Spec §11 / §12 — 3.0.17's "List first", read only while the switch below is unset.
         "junban_unlisted": "list_first",
+        # Kyou-MO (the mining model) — your own cards not on the list: "" reads 3.0.17's keys (leave by default).
+        "junban_off_list": "",
         # The panel's "Phrases": a frequent phrase card placed as the list's words are.
         "junban_phrases": True,
-        # §17 — "i+1 first": a list card whose own sentence waits for a later list word. Off.
-        "junban_ready_first": False,
+        # (§17's "i+1 first" is no setting any more: always, Kyou-MO.)
         # WP-M — which of Surasura's two orders to follow.
         "junban_order": "content",
         # WP-N — the report's own markers, as tags and as a filter.
@@ -100,6 +101,10 @@ def test_nothing_happens_to_the_cards_not_on_the_list_by_default():
     assert junban.SETTINGS_DEFAULTS["junban_later_tag"] is False
     assert junban.SETTINGS_DEFAULTS["junban_later_flag"] is False
     assert junban.SETTINGS_DEFAULTS["junban_later_suspend"] is False
+    assert junban.SETTINGS_DEFAULTS["junban_off_list"] == ""          # Kyou-MO: unset reads as *Leave*
+    from modules.junban import unlisted
+    assert unlisted.choice(junban.SETTINGS_DEFAULTS) == "leave"
+    assert not any(unlisted.options(junban.SETTINGS_DEFAULTS).values())
     assert not any("delete" in key for key in junban.SETTINGS_DEFAULTS)
 
 

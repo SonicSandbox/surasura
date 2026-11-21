@@ -176,6 +176,12 @@ def test_with_the_preview_off_every_junban_and_backfill_run_is_2_5s(tmp_path, pr
     with open(_GOLDEN, "r", encoding="utf-8") as handle:
         was = json.loads(handle.read())
     spaced_run, dense_run = record.pop("auto_reorder"), was.pop("auto_reorder")
+    # 3.0.18 (Kyou-MO, the mining model; Sonic 2026-11-21): Junban's order and set-aside follow the model in every run,
+    # the preview on or off — a card Surasura made is never set aside, the unlocking word always comes first, your own
+    # cards off the list as *Your own cards* says — so the window's preview and Reorder are 2.5's no longer (their own
+    # suites pin them: test_kyou_mo_model.py); Backfill's preview, fill and automatic fill still are, byte for byte
+    for name in ("dry_run", "reorder"):
+        record.pop(name, None), was.pop(name, None)
     if _text(record) != _text(was):
         differ = [key for key in sorted(set(record) | set(was)) if record.get(key) != was.get(key)]
         pytest.fail(f"with the preview off, these differ from 2.5.0: {differ}")

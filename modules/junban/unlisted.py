@@ -17,12 +17,13 @@ suspended by a run whose snapshot a later run has replaced can still be found in
 Which cards: a row the planner placed behind the list (`tier` not one of PLACED_WITH_LIST) whose word
 is on the list in NO form — `marks_of` covers every row of the list, filtered or not, so a marker
 filter (WP-N) can never make a listed word look unlisted and get it suspended. A card the user
-deselected in the preview is their choice, and is never acted on.
+deselected in the preview is their choice, and is never acted on. Since the mining model (Kyou-MO, 3.0.18) none
+of this reaches a card Surasura made, and it all waits on one switch, *Set aside* (`choice`).
 
 Pure, like `touchup.py`: plain data in, plain data out, no Anki, no tkinter.
 """
 
-from modules.junban import match, touchup
+from modules.junban import connect, match, touchup
 
 # The leaf under the Junban tag, and the flag: Anki's flags are 1 red … 7 purple (the user's choice).
 LATER_LEAF = "later"
@@ -34,11 +35,34 @@ DEFAULT_PARENT = "Surasura"
 PLACED_WITH_LIST = ("list", "phrase", "library")
 
 
-def options(settings):
-    """`{"tag", "flag", "suspend"}` from `junban_later_tag` / `_flag` / `_suspend` — each on only when
-    explicitly True, so a missing or garbled key is "No action"."""
+# --- Kyou-MO (the mining model, 3.0.18; ADVERSARY F24): one switch for YOUR cards not on the list ---------------- #
+# Surasura's own cards never get any of this (`plan`): past your level they follow *Cards for every new word*
+# (`reposition`). Yours: *Leave* — after your list, by their own sentence (the default) · *At the back* — in their
+# own order behind every card Junban places · *Set aside* — at the back, tagged `::later`, flagged / suspended as
+# ticked. `junban_off_list` "" (unset) reads 3.0.17's keys, never written (settings criteria 11): any of the three
+# ticks → *Set aside*, *At the back* → back, *After it* / *Mixed in* → *Leave*; those keys stay for 2.x.
+OFF_LIST = ("leave", "back", "aside")
+
+
+def choice(settings):
+    """The switch for your own cards not on the list: "leave" · "back" · "aside"."""
     settings = settings or {}
-    return {"tag": settings.get("junban_later_tag") is True,
+    value = str(settings.get("junban_off_list") or "").strip().lower()
+    if value in OFF_LIST:
+        return value
+    if any(settings.get(f"junban_later_{name}") is True for name in ("tag", "flag", "suspend")):
+        return "aside"
+    return "back" if str(settings.get("junban_unlisted") or "").strip().lower() == "back" else "leave"
+
+
+def options(settings):
+    """`{"tag", "flag", "suspend"}`: all off unless the switch says *Set aside* (`choice`); then the tag always (how a
+    set-aside card is found again, and suspend tags too), the purple flag and the suspend each only when its tick is
+    explicitly True, so a missing or garbled key adds nothing."""
+    settings = settings or {}
+    if choice(settings) != "aside":
+        return {"tag": False, "flag": False, "suspend": False}
+    return {"tag": True,
             "flag": settings.get("junban_later_flag") is True,
             "suspend": settings.get("junban_later_suspend") is True}
 
@@ -93,6 +117,11 @@ def plan_out(order, out, notes, parent="", exclude=()):
 # --- end P4.1 L2 ---
 
 
+def surasuras(note_id, notes):
+    """Did Surasura make this note (Connect's job tag, `connect.is_connects`)? `notes` `{note: {"tags": [...]}}`."""
+    return connect.is_connects(((notes or {}).get(note_id) or {}).get("tags"))
+
+
 def plan(order, marks_of, language, flags_of, notes, opts, parent="", exclude=(), taken_off=(), out=()):
     """What the chosen actions will do, for the preview (I5) and the run. `{}` when nothing is on.
 
@@ -115,8 +144,11 @@ def plan(order, marks_of, language, flags_of, notes, opts, parent="", exclude=()
     gone = set(out or ())               # P4.1 L2: a taken-out item's card is `plan_out`'s, never also "later"'s
     # A card of a *Study its cards first* item is never "not on your list" (E1.1 03 §8): a finished
     # show's words leave the list, and without this its cards would be the first a run tags or suspends.
+    # Kyou-MO (the mining model; ROLES.md: Junban only orders): nor is a card Surasura made — whatever the list
+    # says now, its card goes to the back untouched (`surasuras`); only your own cards are set aside.
     cards = [row for row in order or []
              if getattr(row, "pinned", None) is None and row.card_id not in gone
+             and not surasuras(row.note_id, notes)
              and (row.card_id in taken
                   or (row.card_id not in excluded and row.tier not in PLACED_WITH_LIST
                       and not match.lookup(row.word or "", marks_of or {}, language)))]
@@ -154,7 +186,7 @@ def plan_clear(order, marks_of, language, flags_of, notes, owner, later=None, pa
     "tag_notes", "studied", "counts"}`:
 
       * `cards` — the cards it acts on: each row of `order` the list places (`plan` would not put it away: pinned, a
-        tier placed with the list, or its word on the list in any form), never one you clicked to leave alone or off
+        tier placed with the list, its word on the list in any form, or a card Surasura made: Kyou-MO), never one you clicked to leave alone or off
         the list, nor a taken-out item's; and every `studied` card (`[{"card_id", "note", "flags"}]`, read apart:
         no longer new);
       * `flags` — `{card: the flag to put back}` for those of them showing Junban's purple (`owner(card_id, carries
@@ -174,8 +206,8 @@ def plan_clear(order, marks_of, language, flags_of, notes, owner, later=None, pa
         if row.card_id in targets or row.card_id in held:
             continue
         if not (getattr(row, "pinned", None) is not None or row.tier in PLACED_WITH_LIST
-                or match.lookup(row.word or "", marks_of or {}, language)):
-            continue
+                or match.lookup(row.word or "", marks_of or {}, language) or surasuras(row.note_id, notes)):
+            continue                    # Kyou-MO: a card Surasura made is never set aside, so its old marks come off
         note_of[row.card_id] = row.note_id
         picked.append(row.card_id)
     flags_now = dict(flags_of or {})

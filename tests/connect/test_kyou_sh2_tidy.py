@@ -297,6 +297,23 @@ def test_the_backup_comes_before_any_delete_and_a_package_that_doesnt_hold_them_
         assert set(WORDS["ja"]) <= library.made_words_all(s)
 
 
+def test_a_package_that_misses_one_of_the_notes_deletes_none_of_them(ledger):
+    # mutant M4: a package Anki wrote but that doesn't hold every note (one lost on the way) is no backup of it
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    export = anki.export_package
+
+    def one_short(deck, path):
+        anki.cards_[1050]["deckName"] = "elsewhere"          # its card wasn't in the deck Anki exported
+        ok = export(deck, path)
+        anki.cards_[1050]["deckName"] = deck
+        return ok
+    anki.export_package = one_short
+    with pytest.raises(tidy.Refused):
+        tidy.run(anki, ledger, "ja", [104, 105], open_store=_opener("ja"))
+    assert anki.deleted == [] and anki.cards_[1050]["deckName"] == "日本語::Mining"
+
+
 def test_only_connects_untouched_cards_go_studied_edited_suspended_flagged_filtered_untagged_stay(ledger):
     item, tag, done_at = _mined(ledger, "ja")
     anki = _anki("ja", tag, done_at)

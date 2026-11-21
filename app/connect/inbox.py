@@ -44,7 +44,7 @@
   again; the cap holds them as any. Kept below the top 20 while in Current; one placed out of it is dropped.
 """
 from app.connect import library
-from app.connect.ledger import ASKED, NOT_STARTED, SHOW, Ledger, stamp_key
+from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, SHOW, Ledger, stamp_key
 
 ENTERS = ("entered_mine_line",)
 LEAVES = ("left_mine_line", "removed", "finished")
@@ -54,9 +54,13 @@ def keeps(job, event=None, current=None):
     """Does a job not started stay though its item is out of the top 20 (`event`: the item's latest leaving event, or
     None — the runner's look at the line)? A job carrying an ask — unless its item was removed (C3); a show's earlier
     part (Michi-EO) unless its item was finished or removed or left Current (`current`: False once it is elsewhere;
-    None: not read). A level job never (Kantan-MO, F1: a raise mines no episode again)."""
+    None: not read). A level job only for new files, unless its item was finished or removed (Kantan-MO, F1: a
+    raise mines no episode again)."""
     if job.get("asked_at") or job.get("kind") == ASKED:
         return event != "removed"
+    if job.get("kind") == LEVEL:
+        from app.connect import level
+        return job.get("source") == level.NEW_FILES and event not in ("removed", "finished")
     if job.get("kind") == SHOW:
         return event not in ("removed", "finished") and current is not False
     return False

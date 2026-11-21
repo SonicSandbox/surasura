@@ -70,7 +70,7 @@ import time
 from types import SimpleNamespace
 
 from app import youtube_hold
-from app.connect import fit_check, inbox, stopping
+from app.connect import fit_check, inbox, level, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
                                 Ledger)
@@ -1164,7 +1164,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == LEVEL and not job.get("asked_at"):
+    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") != level.NEW_FILES:
         ledger.set_state(jid, "dropped", reason=LEVEL_DROPPED)
         out["dropped"].append(item_id)
         return
@@ -3482,6 +3482,10 @@ class Steps:
         self._generate(SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False),
                        "Generate didn't finish after its cards were made: your list catches up at the next one.",
                        ledger)
+        if "new-files" in str(why).split(","):
+            # Kantan-MO: the episodes this run mined before this Generate get the words it newly lists (`level`)
+            with ledger.transaction():
+                ledger.mark_new_files(lang, self._began)
         try:
             self._serves(lang, self.current(lang, fresh=True))
         except (Wait, Needs) as e:

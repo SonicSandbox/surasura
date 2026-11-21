@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from app.connect import runner
+from app.connect import level, runner
 
 TAG = "surasura::connect::"
 NO_DECK = "Backfill runs for one deck only: choose one in the Backfill window."     # `verbs.BACKFILL_ONE_DECK`
@@ -127,11 +127,14 @@ class FakeSteps:
                 self.queued.add((lang, item))
                 with ledger.transaction():
                     ledger.queue(lang, item, "user", None, store_id=self.plan.get("queued_store", "store-1"))
-        for lang_, item, words in self.plan.get("level") or []:
-            if lang_ == lang and ("level", item) not in self.queued:
-                self.queued.add(("level", item))
-                with ledger.transaction():
-                    ledger.queue_level(lang, item, [tuple(w) for w in words], store_id="store-1")
+        # Kantan-MO: a level job is the new-files kind (`level.NEW_FILES`: an episode mined before its own Generate,
+        # given the words it newly lists) — the one a run still makes; `level_old` is one a raise queued before 3.0.18
+        for key, source in (("level", level.NEW_FILES), ("level_old", "level")):
+            for lang_, item, words in self.plan.get(key) or []:
+                if lang_ == lang and (key, item) not in self.queued:
+                    self.queued.add((key, item))
+                    with ledger.transaction():
+                        ledger.queue_level(lang, item, [tuple(w) for w in words], source=source, store_id="store-1")
 
     def mine_line(self, lang):
         if self.plan.get("store_busy"):

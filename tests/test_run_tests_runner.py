@@ -861,6 +861,7 @@ def _touched_tree(tmp_path):
         "tests/qt/test_page.py": "def test_g():\n    assert '頁'\n",
         "tests/test_report.py": "import os\n\n\ndef test_h():\n    assert os.path.join('templates', 'web_app.html')\n",
         "tests/test_unrelated.py": "def test_i():\n    assert '雪'\n",
+        "tests/test_comment_only.py": "# web_app.html is read by the report's tests\ndef test_k():\n    assert '書'\n",
     }
     for path, text in files.items():
         (t / path).write_text(text, encoding="utf-8")
@@ -893,6 +894,7 @@ def test_touched_callers_picks_the_files_that_name_what_changed(tmp_path, monkey
     assert "web_app.html" in why["tests/test_report.py"]
     assert why["tests/test_unrelated.py"].startswith("the area's guard (templates/")
     assert "tests/connect/test_name_in_a_comment.py" not in why, "a comment is no caller"
+    assert "tests/test_comment_only.py" not in why, "a comment naming a changed file is no reader"
     assert "tests/connect/test_common_name_unimported.py" not in why, "str.replace is not library.replace"
 
 

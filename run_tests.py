@@ -1017,6 +1017,18 @@ def _file_pattern(path):
     return re.compile("|".join(parts))
 
 
+def _strings(node):
+    """A definition's (or a module's) string constants, quoted, in order — never a comment or a docstring: how its
+    code names a file ("docs", "releases", "RELEASE_v3.0.17.md")."""
+    docs = set()
+    for n in ast.walk(node):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body \
+                and isinstance(n.body[0], ast.Expr) and isinstance(getattr(n.body[0], "value", None), ast.Constant):
+            docs.add(id(n.body[0].value))
+    return " ".join(f'"{n.value}"' for n in ast.walk(node)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs)
+
+
 def _namers(project_root, path):
     """{source: its definitions that name the file at `path`} over the app's code and the tests' helper modules (one
     by one, never a whole class)."""
@@ -1033,13 +1045,16 @@ def _namers(project_root, path):
                     text = _text(project_root, source)
                     if not pattern.search(text):
                         continue
-                    defs = _defs(text)
+                    tree = ast.parse(text)
                 except (OSError, SyntaxError, ValueError):
                     continue
-                lines = _lines(text)
-                classes = {p[0] for p, _s, _e, _u in defs if len(p) == 2}
-                names = {p[-1] for p, s, e, _u in defs if not (len(p) == 1 and p[0] in classes)
-                         and pattern.search("\n".join(lines[s - 1:e]))}
+                names = set()
+                for node in tree.body:                        # (a method one by one, never its whole class)
+                    for d in (node.body if isinstance(node, ast.ClassDef) else [node]):
+                        name = getattr(d, "name", None) or next((t.id for t in getattr(d, "targets", [])
+                                                                 if isinstance(t, ast.Name)), None)
+                        if name and pattern.search(_strings(d)):
+                            names.add(name)
                 if names:
                     out[source] = names
     return out
@@ -1062,9 +1077,18 @@ def _touched_callers(project_root, base):
             continue
     idents = {p: _idents(t) for p, t in texts.items()}
     counts = _counts(idents.values())
-    folder_users = {}
+    folder_users, quoted = {}, {}
+
+    def strings(test_path):                                   # a test file's string constants (once each)
+        if test_path not in quoted:
+            try:
+                quoted[test_path] = _strings(ast.parse(texts[test_path]))
+            except (SyntaxError, ValueError):
+                quoted[test_path] = texts[test_path]
+        return quoted[test_path]
     others = sorted(c for c in lines if not _is_test_file(c) and os.path.isfile(os.path.join(project_root, c))
-                    and not (c.endswith(".py") and (c.startswith("tests/") or "/tests/" in c)))   # (a .py read as text too)
+                    and not (c.endswith(".py") and (c.startswith("tests/") or "/tests/" in c))   # (a .py read as text
+                    and not c.rsplit("/", 1)[-1].startswith("__"))    # too; never by a name every package has)
     helpers = sorted(c for c in lines if c.endswith(".py") and (c.startswith("tests/") or "/tests/" in c)
                      and not _is_test_file(c) and os.path.isfile(os.path.join(project_root, c)))
     for other in (o for o in others if not o.endswith(".py")):   # a definition that names a changed data file has
@@ -1091,10 +1115,10 @@ def _touched_callers(project_root, base):
             continue
         for other in others:                                  # a changed data file, template, stylesheet, notes file
             if other not in folder_users:                     # (Surasura.spec, never "Surasura"; "releases" as
-                pattern = _file_pattern(other)                # a path part, never the word)
-                folder_users[other] = {p for p, t in texts.items() if pattern.search(t)}
+                pattern = _file_pattern(other)                # a path part, never the word; in the code's strings,
+                folder_users[other] = {p for p in texts if pattern.search(strings(p))}   # never a comment)
             users = folder_users[other]
-            if path in users and (other.rsplit("/", 1)[-1] in text or len(users) <= RARE_TESTS):
+            if path in users and (other.rsplit("/", 1)[-1] in strings(path) or len(users) <= RARE_TESTS):
                 why[path] = f"names {other.rsplit('/', 1)[-1]} or its folder ({other}, changed)"
                 break
     for node, folders in GUARDS.items():

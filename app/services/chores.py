@@ -389,9 +389,16 @@ class Chores:
         except Exception:
             pass
 
-    def _maintain(self):
+    def build_store(self):
+        """Haya-LD: a language with no store yet (JSON mode: a manifest to build from, or a fresh install's folders) —
+        its build is part of the window's opening, its list comes from it: asked at once, before the boot (the JSON
+        half of `_maintain`; the rest waits for the boot). Returns at once."""
+        self.worker.put(self._maintain, True)
+
+    def _maintain(self, build_only=False):
         """The store's helper when it has something to do (`_maybe_maintain`): no store yet but a manifest to build
-        from, a change since the last export, or a copy someone else rewrote (once per new stat)."""
+        from, a change since the last export, or a copy someone else rewrote (once per new stat). `build_only`: the
+        first part alone (`build_store`)."""
         language = self.language
         if self._closed:
             return                              # a timer that rang as the quit began: no helper for a closing window
@@ -406,7 +413,7 @@ class Chores:
                     proc = library_store.spawn_maintain(language, "--from-folders")
                 self._watch(proc)
                 return
-            if mode != "store":
+            if mode != "store" or build_only:
                 return
             from app.services import gentle       # Haya-LD: never before the boot; on a gentle PC its turn
             if gentle.hold("library-maintain"):

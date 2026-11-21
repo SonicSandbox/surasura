@@ -2912,6 +2912,9 @@ class ShellWindow(QMainWindow):
             wiz = first_run.opened(self)
             if wiz is not None:
                 wiz.raise_()                                  # above the update sheet the duties made
+            build = getattr(self.services.chores, "build_store", None)
+            if build is not None and self.boot_gate and not self.services.boot.is_set():
+                build()                                       # Haya-LD: a store still to build is the opening's own
             self._when_booted(lambda: bridge.run_in_worker(
                 self.services.start, then=lambda started: started and self._duties_started(),
                 failed=lambda info: applog.log("shell", f"duties at start: {info[1]}")))

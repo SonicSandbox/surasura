@@ -701,3 +701,32 @@ def test_a_hold_that_ends_by_itself_is_no_time_the_worker_took_to_answer(monkeyp
         client.stop()
         registry.quit(timeout=30)
     assert not any("stuck" in line for line in logged), logged
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_store_still_to_build_is_built_before_the_boot_and_nothing_else_is(monkeypatch, language):
+    # why (the bench): a library with no store yet showed its list only once the store was built — by the helper
+    # the boot held back: Current waited for the boot's 30 s limit. The build is the opening's own; the rest waits
+    from app import library_store as LS
+    from app.services import chores as C
+    monkeypatch.setattr(G, "hold", lambda kind: G.WINDOW_FIRST)        # not booted yet
+    mode = {"now": "json"}
+    monkeypatch.setattr(LS, "check_mode", lambda lang, data_dir, busy_wait=None: (mode["now"], ""))
+    spawned = []
+    monkeypatch.setattr(LS, "spawn_build_if_waiting", lambda lang, d, u: spawned.append(("build", lang)) or None)
+    monkeypatch.setattr(LS, "spawn_maintain", lambda lang, *extra: spawned.append(("maintain", lang) + extra) or None)
+    monkeypatch.setattr(LS, "open_store", lambda *a, **k: pytest.fail("the store's upkeep before the boot"))
+    chores = C.Chores(jobs.JobRegistry(), _NoSettings(), language, update_staged=lambda: False,
+                      timer=lambda delay, call: _Timer(), needed=lambda *a: False, log_folder=None)
+    try:
+        chores.build_store()
+        chores.worker.idle(5)
+        assert spawned and spawned[0] == ("build", language), "a manifest to build from: built at once"
+        assert ("maintain", language, "--from-folders") in spawned, "a fresh install's folders too"
+        mode["now"] = "store"
+        spawned.clear()
+        chores.build_store()
+        chores.worker.idle(5)
+        assert spawned == [], "a store that's there: its upkeep waits for the boot"
+    finally:
+        chores.close(store=False)

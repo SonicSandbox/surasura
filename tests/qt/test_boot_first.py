@@ -149,3 +149,13 @@ def test_under_the_suites_switch_the_duties_start_as_before(qapp, tmp_path):
         assert wait_until(lambda: "chores.started" in w.log)
     finally:
         w.close()
+
+
+def test_a_store_still_to_build_is_asked_for_before_the_boot(gated, lines):
+    # why (the bench): the store's build is what the list from disk comes from — never held behind the boot
+    asked = []
+    gated.chores.build_store = lambda: asked.append("build_store")
+    gated.services.library = _Reader(_view(loading=True))
+    gated.win.start_duties()
+    assert wait_until(lambda: asked == ["build_store"])
+    assert _started(gated) == [], "only the build: the rest waits for the boot"

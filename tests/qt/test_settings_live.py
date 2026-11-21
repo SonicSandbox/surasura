@@ -517,7 +517,7 @@ def test_hatos_row_says_its_daily_update_beside_its_version(qapp, fakes, word, l
     assert fakes.on_gui() == [] and store.calls == []
 
 
-def test_a_word_read_for_another_version_is_dropped_and_settings_shown_again_reads_it_anew(qapp, fakes):
+def test_a_hato_word_read_for_another_version_is_dropped_and_settings_shown_again_reads_it_anew(qapp, fakes):
     """A read that lands after the row moved to another hato (Find hato…, an update) is never painted beside it; and
     Settings shown again reads the day's word again (a window left open while hato updated)."""
     fakes.hato, fakes.hato_update = "1.4.2", ("updating", "1.5.0")

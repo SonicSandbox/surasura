@@ -561,12 +561,13 @@ class _Occurrence:
 
 
 class _Part:
-    """A piece of a joined word, shaped as the tagger's node is (`surface`, `feature`), for the card front and its
-    reading (`card_front`, `front_reading`, `predicted_class`)."""
-    __slots__ = ("surface", "feature")
+    """A piece of a joined word, shaped as the tagger's node is (`surface`, `feature`, `is_unk`), for the card front,
+    its reading and whether it is a name (`card_front`, `front_reading`, `predicted_class`, `_is_name`). A piece the
+    join made from is a word the tagger's dictionary knows (`JoinedWord` keeps no piece's own `is_unk`)."""
+    __slots__ = ("surface", "feature", "is_unk")
 
     def __init__(self, surface, feature):
-        self.surface, self.feature = surface, feature
+        self.surface, self.feature, self.is_unk = surface, feature, False
 
 
 def _credited(token, credit):

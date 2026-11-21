@@ -156,3 +156,12 @@ def test_the_counts_are_read_once_while_the_file_is_unchanged(verb, monkeypatch)
     _results(verb.results, {DAISHU: 30, DAISHU_SHOKUDOU: 2, SHOKUDOU: 9})
     os.utime(path, ns=(os.stat(path).st_atime_ns, os.stat(path).st_mtime_ns + 10 ** 9))
     assert verbs._counted("ja")[0][SHOKUDOU] == 9 and len(reads) == 2
+
+
+def test_a_part_that_is_a_persons_name_is_still_a_name():
+    # why: Ignore names keeps a name out of the cards; a name met only inside a compound is read through its piece
+    # (`_Part`), which must answer the name check as the tagger's own node does — else it slips past Ignore names
+    tagger = analyzer.JapaneseTokenizer()
+    ((_sentence, _word, node),) = [t for t in cues._read(tagger, "田中", "ja", None)]
+    assert pick._is_name(node), "the test's name must be one, or this proves nothing"
+    assert pick._is_name(pick._Part(node.surface, node.feature))

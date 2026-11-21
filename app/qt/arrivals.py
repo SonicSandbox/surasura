@@ -2355,8 +2355,65 @@ class ArrivalsTray(motion.Overlay):
         from app.qt import item_menu                                # --- Q7: *Never read this folder*, a list row's
         item_menu.offer_skip(self, list(a.item_ids), m, lambda folders: item_menu.skip_menu(
             m, folders, reason, lambda path: self.skip_folder(a, path)))     # own entry, once the looks' worker answers
+        if writable:
+            self.offer_replace(a, m)
         m.popup(at if at is not None else self._menu_at(key))
         return m
+
+    # --- Kura-AB5 (Sonic's yes, 11-20 report: a new version keeps the old one's name and audiobook; PROVISIONAL) - #
+    def offer_replace(self, arrival, m):
+        """A book that is a new version of one in the library (`Store.new_version_of`: the look's mark — the same
+        folder, the same `dc:title`) — read on a plain thread as ⋯ opens, through *Needs you*'s reader — gets ⋯'s first
+        entry *Replace 「…」* while this menu is still open. -> True when it was asked."""
+        read = getattr(getattr(self.win, "needs_you", None), "read_new_version", None)
+        ids = list(arrival.item_ids)
+        if read is None or not ids:
+            return False
+        from app.qt import bridge
+        self._replace_ask = getattr(self, "_replace_ask", 0) + 1
+        ask, relay, fill = self._replace_ask, bridge.Relay(self), getattr(m, "fills", None)
+
+        def found(got):
+            relay.deleteLater()
+            if (got and ask == self._replace_ask and self.last_menu is m and not sip.isdeleted(m) and m.isVisible()
+                    and getattr(m, "fills", None) == fill):
+                self.replace_entry(m, arrival, got)
+        relay.said.connect(found)
+
+        def ask_store():
+            try:
+                relay.call(read(ids[0]))
+            except Exception:
+                relay.call(None)
+        threading.Thread(target=ask_store, name="new-version", daemon=True).start()
+        return True
+
+    def replace_entry(self, m, arrival, got):
+        """*Replace 「…」* first in `m`. -> the action."""
+        from app.qt import drag
+        words, tip = strings.TRAY_REPLACE
+        act = drag.menu_action(m, words.format(old=got["old"]["title"]), lambda: self.replace(arrival, got))
+        act.setToolTip(tip.format(old=got["old"]["title"], n=len(got["old"]["ids"])))
+        first = next(iter(m.actions()), None)
+        if first is not None:
+            m.insertAction(first, act)
+            m.insertSeparator(first)
+        else:
+            m.addAction(act)
+        return act
+
+    def replace(self, arrival, got):
+        """`Writer.replace_book`: the new version takes the old one's name, place and audiobook; the old one goes to
+        Removed — one change, its toast's Undo puts it all back."""
+        from app.qt import drag, removed
+        moves = self._moves()
+        if moves is None or moves.refused() is not None:
+            return None
+        ticket = drag.Ticket(strings.TRAY_REPLACED.format(old=got["old"]["title"]), (arrival.key,),
+                             list(arrival.item_ids))
+        ticket.buttons = removed.door(self.win)
+        return moves._give(ticket, lambda t: moves.writer.replace_book(got["old"]["ids"], got["new"]["epub"],
+                                                                       got["old"]["epub"], label=t))
 
     def skip_folder(self, arrival, path):
         """Q7 *Never read this folder*: `Writer.skip_folder` through the window's writer (`item_menu.give_skip`, a list

@@ -55,7 +55,7 @@ def show(parent, language, url, tooltip, offer=None, marked=None, taken=None, te
     if not marked and not taken and not pending:
         return None
     win = tk.Toplevel(parent)
-    win.title("Known from Anki")
+    win.title("Count as known in Anki")
     win.configure(bg=BG)
     win.bind("<Escape>", lambda _e: win.destroy())
     style = ttk.Style(win)

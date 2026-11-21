@@ -22,7 +22,8 @@ TMDB is skipped in 3.0's first cut (no key in source, CI or tests: the seam is `
   `writer.set_cover(work, "anilist" | "youtube", ref=<id>, path="cache:<name>", auto=True)` — a background cover:
   never on the user's Undo stack — and only over no cover or an unlocked generated one (or its own source's after
   *Remove downloaded covers*): never over a locked, user or disk cover (the S5 rules; the store refuses a lock too).
-  Offline or failed: nothing changes, a quiet retry `RETRY_S` later; never an error, never a dialog.
+  Offline or failed: nothing changes, a quiet retry `RETRY_S` later; never an error, never a dialog. Each round waits
+  for its turn first (Haya-LD, `gentle.wait_turn("covers")`: background work, after the window and its heavier jobs).
 - **`candidates(want)`** (a worker's call): the top `CANDIDATES` for *Change cover…* (`Candidate`: id, cover url,
   title, year, format); **`pick(want, candidate)`** fetches it and keeps it as the user's (`covers.keep_user_bytes`:
   `User Files/<lang>/covers/`, a dated backup of the user image it replaces, locked, on the Undo stack);
@@ -534,6 +535,10 @@ class Fetcher:
                         self._cond.wait(max(0.01, min(WAIT_S * 20, soonest - self.clock())))
                 if self._stop:
                     return
+            from app.services import gentle         # Haya-LD: a round waits for its turn (background work)
+            gentle.wait_turn("covers", lambda: self._stop, self._nap)
+            if self._stop:
+                return
             try:
                 self.run_once()
             except Exception as e:                  # the thread never dies of an error

@@ -40,6 +40,7 @@ from collections.abc import Mapping
 
 from app import settings_manager
 from app.connect import settings_values
+from app.connect.known_signal import NOT_KNOWN_FLAGS
 from app.qt import settings_strings as S
 from app.services import tools_found
 
@@ -50,7 +51,6 @@ Row = namedtuple("Row",
 MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modules.irodori")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
-SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
 CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
 
 # Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
@@ -214,12 +214,6 @@ def _update_check(settings, language, ctx):
     return settings_manager.update_check_on(settings)
 
 
-def _signal(settings, language, ctx):
-    """Whether Known from Anki runs (`settings_manager.connect_on`, the one rule it obeys): *Count as known in Anki*
-    shows, and writes the sync's switch, only then (a9.1)."""
-    return settings_manager.connect_on(settings)
-
-
 def _needs_miner(settings, language, ctx):
     return "looked" in ctx and not _connect_switch(settings, language, ctx)
 
@@ -248,14 +242,12 @@ ROWS = (
     _row("anki_auto_generate", "known", "toggle", ("anki_auto_generate",), sub=True, when=_road("anki")),
     _row("known_import", "known", "door", sub=True, when=_road("import"), door=("migaku", "jiten", "apkg_known")),
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
-    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — the sync's switch while Known from
-    # Anki can't run, Connect's *Count as known in Anki* while it can (`_signal`: Make cards for me and Automation on;
-    # it reads every suspended card, new ones too); each key keeps its meaning — unpicking Suspended there turns the
-    # sync's off too (`_wanted`), and its line says when the sync's still counts more than it shows (`help_line`)
-    _row("anki_sync_include_suspended", "known", "toggle", ("anki_sync_include_suspended",), adv=True,
-         group="counts_as_known", when=lambda settings, language, ctx: not _signal(settings, language, ctx)),
+    # Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded in — one row, one key, always shown: with
+    # Make cards for me and Automation on, Connect's signal reads every card in the picked states (new ones too); off,
+    # the known-words sync reads the studied ones (`anki_sync.counted_suspended`). Red and green are never picks: they
+    # are the review loop's Ignore and Swap (WL-46 / 46b), never Known
     _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
-         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN), when=_signal),
+         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN_PICKS)),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
@@ -465,6 +457,7 @@ NOT_SHOWN = {
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
     "known_from_anki_chosen": "state: written beside *Count as known in Anki*'s pick (Kantan-B3)",
+    "anki_sync_include_suspended": "retired (Kotoba-WS2): folded into *Count as known in Anki*, read once on load",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
@@ -583,8 +576,8 @@ def help_line(row, settings, language):
             line = S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
         elif len(picked) > 1:
             line = S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
-        if _one(settings, SYNC_SUSPENDED, language) is True and picked != ["suspended"]:
-            line = f"{line}. {S.KNOWN_SYNC_TOO}" if line else S.KNOWN_SYNC_TOO
+        if held & set(NOT_KNOWN_FLAGS):                  # Kotoba-WS2: red / green picked before: they count no card
+            line = S.KNOWN_RED_GREEN
         if line:
             return line
     if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
@@ -810,11 +803,7 @@ def change(row, settings, language, new):
     current = value(row, settings, language)
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
-    rides = row.id == "known_from_anki" and _signal(settings, language, None)
-    if rides:                                   # a9.1: the sync's switch rides along (`_wanted`), never shown here
-        current[SYNC_SUSPENDED] = bool(_one(settings, SYNC_SUSPENDED, language))
-    keys = set(row.keys) | ({SYNC_SUSPENDED} if rides else set())
-    out = {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}
+    out = {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}
     if row.id == "known_from_anki" and row.keys[0] in out and _one(settings, CHOSEN, language) is not True:
         out[CHOSEN] = True                      # Kantan-B3: a pick, never read as an old default again
     if row.id in ASIDE_TICKS and out and not _off_list_set(settings) and _off_list(settings) == "aside":
@@ -859,12 +848,7 @@ def _wanted(row, settings, language, new):
         return {key: bool(v) for key, v in picked.items()}
     key = keys[0]
     if row.id == "known_from_anki":
-        # a9.1: one row for both answers — the picks are Connect's; the sync's switch (studied cards, then suspended)
-        # stays on only while Suspended alone is picked, so a card is never counted on an answer the row no longer
-        # shows (it is never turned on from here: that is its own row's, with Make cards for me off)
-        picked = settings_values.known_value(set(new or ()))
-        held = bool(_one(settings, SYNC_SUSPENDED, language))
-        return {key: picked, SYNC_SUSPENDED: held and picked == ["suspended"]}
+        return {key: settings_values.known_value(set(new or ()))}
     if row.kind == "tablets":
         return {key: [v for v in row.options if v in set(new or ())]}
     if row.id == "placing_rules":

@@ -36,6 +36,8 @@ SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start 
 FLAG_COLOURS = ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple")
 KNOWN = (("suspended", "Suspended"), ("marked", "Marked")) + tuple(
     (f"flag:{n}", f"Flag {n} ({colour})") for n, colour in enumerate(FLAG_COLOURS, 1))
+# the terms a learner can pick (Kotoba-WS2): never red or green — the review loop's Ignore and Swap, never Known
+KNOWN_PICKS = tuple(pair for pair in KNOWN if pair[0] not in ("flag:1", "flag:3"))
 
 
 def cap_value(current, language, n):

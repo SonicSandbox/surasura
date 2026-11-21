@@ -313,6 +313,30 @@ def test_a_question_no_waiting_part_holds_any_more_goes_when_a_job_ends(tmp_path
         assert _asks(ledger) == []
 
 
+def test_a_part_leaving_the_top_20_never_takes_the_books_question_while_another_part_waits_on_it(tmp_path):
+    """Kura-AB5 (11-20 report: the card went "fixed by itself" and came back as the book's parts left the
+    top 20 in turns): the asking part's job dropped takes its own troubles — never the book's question another
+    waiting part still holds (the same card, seen, stays seen); once no part waits on it, it goes (`_book_orphans`)."""
+    got = _got(item=11)
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        a = ledger.queue("ja", 11, "mine", None, "store-1")
+        b = ledger.queue("ja", 12, "mine", None, "store-1")
+        steps = _AskSteps(got)
+        _hold(steps, ledger, a, 11)
+        _hold(steps, ledger, b, 12)
+        [need] = _asks(ledger)
+        ledger.mark_seen([need["id"]])
+        ledger.need("ja", "fit-check", "Its subtitles don't match the video", item_id=11)
+        assert ledger.drop("ja", 11, "left the top 20")
+        assert [(n["id"], n["item_id"]) for n in _asks(ledger)] == [(need["id"], 11)], "still the book's one card"
+        assert not [n for n in ledger.needs("ja", listed=False) if n["kind"] == "fit-check"], "its own trouble went"
+        from app.connect import ledger as ledger_module
+        assert ledger_module.BOOK_AUDIO_NEED == runner.BOOK_AUDIO_NEED, "one kind, two names"
+        assert ledger.drop("ja", 12, "left the top 20")
+        runner._book_orphans(ledger, "ja")
+        assert _asks(ledger) == []
+
+
 def test_an_answer_kept_by_the_books_path_holds_once_its_sha256_is_known(tmp_path):
     """Round 2 N4: asked (and answered) while its parts had no sha256 — the path key; a later look knows the EPUB's
     sha256: still answered, never asked once more."""

@@ -17,15 +17,15 @@ from tests.qt.conftest import wait_until
 from tests.qt.test_word_lists_window import _fresh_session, _open, _put, _rows, calls, main   # noqa: F401
 
 
-BLACKLIST = ["毎日", "勉強", "友達", "学校", "電話", "旅行"]
+KNOWN = ["毎日", "勉強", "友達", "学校", "電話", "旅行"]
 
 
-def test_the_blacklist_button_shows_its_words_in_one_layout_pass(main):
-    """Ignore list → Blacklist button: one click lays the word lists window out at most once, and no row is laid out
-    again for each row the blacklist shows. A click on the list already shown changes nothing, so it asks for no
-    layout at all."""
+def test_the_known_button_shows_its_words_in_one_layout_pass(main):
+    """Ignore → Known button: one click lays the word lists window out at most once, and no row is laid out again for
+    each row the Known tab shows. A click on the list already shown changes nothing, so it asks for no layout at all."""
+    from app.services import word_marks
     _put("冒険\n", "ignore")
-    _put("# ja Blacklist\n" + "".join(f"{word}\n" for word in BLACKLIST), "blacklist")
+    assert not word_marks.apply("ja", [(word, "known") for word in KNOWN]).error
     win = _open(main)
     assert win.kind == "ignore"
     unit = wc.one_pass(win, main)
@@ -33,8 +33,8 @@ def test_the_blacklist_button_shows_its_words_in_one_layout_pass(main):
         win.kind_buttons["ignore"].click()
     assert sum(w.layout_requests.values()) == 0, w.report()
     with wc.measure(main) as w:
-        win.kind_buttons["blacklist"].click()
-        assert wait_until(lambda: sorted(_rows(win)) == sorted(BLACKLIST), 3)
+        win.kind_buttons["known"].click()
+        assert wait_until(lambda: sorted(_rows(win)) == sorted(KNOWN), 3)
         wc.rest(150)
     assert w.hints <= unit * wc.PASS_SLACK, w.report()
     assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()

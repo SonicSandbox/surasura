@@ -424,3 +424,23 @@ def test_stop_and_quit_cancels_the_upkeep_alone_through_its_owner_never_connect_
     assert asked == ["library-maintain"] and upkeep.state == J.CANCELLING
     assert J.stop_at_quit(registry) == ()                     # asked once: a second answer asks nothing again
     assert J.stop_at_quit(JobRegistry()) == ()
+
+
+def test_a_job_a_gate_holds_never_holds_back_a_later_conflicting_one():
+    """Haya-LD: an automatic indexer waiting for a quiet machine (the window's scheduler, `services.gentle`) was asked
+    first; a Generate asked after it — the same token store — starts: a held job isn't next in line. Once the gate
+    lets the indexer go it waits for the Generate, as the table says."""
+    registry = JobRegistry()
+    quiet = {"now": False}
+    registry.gate(lambda kind: None if quiet["now"] or kind != "indexer" else "Waits for a quieter moment",
+                  automatic=True)
+    started = []
+    indexer = registry.submit("indexer", "Indexing", start=lambda j: started.append("indexer"), automatic=True)
+    generate = registry.submit("generate", "Generating (automatic)", start=lambda j: started.append("generate"),
+                               automatic=True)
+    assert (indexer.state, generate.state) == (J.WAITING, J.RUNNING) and started == ["generate"]
+    quiet["now"] = True
+    registry.reschedule()
+    assert indexer.state == J.WAITING and indexer.reason == "waits for Generating (automatic)"
+    generate.finish()
+    assert indexer.state == J.RUNNING and started == ["generate", "indexer"]

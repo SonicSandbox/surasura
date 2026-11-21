@@ -244,7 +244,7 @@ class Panel:
 
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(row, text="Known from Anki:", style="CP.TLabel").pack(side=tk.LEFT)
+        ttk.Label(row, text="Count as known in Anki:", style="CP.TLabel").pack(side=tk.LEFT)
         from app import settings_manager
         current = self.settings.get("known_from_anki", settings_manager.DEFAULT_SETTINGS["known_from_anki"])
         current = [current] if isinstance(current, str) else list(current or [])

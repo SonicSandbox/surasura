@@ -704,7 +704,10 @@ class GoalSheet(motion.Overlay):
         if where == "top":                           # Kura-EO: saved in its show's episode order, its toast says so
             shown = (strings.GOAL_UP_SHOW if rest else strings.GOAL_UP_ALL_SHOW).format(title=work.title,
                                                                                         first=piece.line)
-            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        else:                                        # Kura-SO: *Soon* too — its "#n" is wrong once it joined its show
+            shown = (strings.GOAL_SOON_SHOW if rest else strings.GOAL_SOON_ALL_SHOW).format(title=work.title,
+                                                                                            first=piece.line)
+        ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
         seq = moves._give(ticket, command)
         if seq is not None:
             self.seeking = (ids[0], time.monotonic() + SHEET["seek-s"])

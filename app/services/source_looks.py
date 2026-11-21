@@ -80,7 +80,8 @@ def _audiobooks_read(store, folder, book=None):
     """Kura-AB4: what became of the audiobooks under `folder` once it was read -> {"joined": [item ids paired with
     `book`'s EPUB], "alone": [item ids with no book and no question open], "asks": [{item_id, key, book}: H-8's
     question open about `book` (its title) — a title alike, not sure], "elsewhere": [{item_id, book}: paired with
-    another book of `book`'s very title: a copy]} — the window's words: *The audiobook joins
+    another book of `book`'s very title: a copy], "other": [{item_id, book}: paired with another book still in the
+    library, of another title — Kura-AB5: named, never said to be none]} — the window's words: *The audiobook joins
     「…」*; one already in alone, picked for the book (its pick, with Undo); the + Add's lead into the pairing
     (*「…」's audiobook? · Pair it*). One read; never a write."""
     from app import library_store as ls
@@ -90,12 +91,19 @@ def _audiobooks_read(store, folder, book=None):
 
     def same_title(title):                               # a book of this very title (a copy), never another book
         return bool(book) and audiobooks.same_book_title(book.get("title"), title)      # (nor another volume)
-    out = {"joined": [], "alone": [], "asks": [], "elsewhere": []}   # joined: [{item_id, key}] (*Separate them*'s)
+    out = {"joined": [], "alone": [], "asks": [], "elsewhere": [], "other": []}   # joined: [{item_id, key}]
     for r in store.audiobooks():
         ab = r["audiobook"] or {}
         if not any(ls.path_key(os.path.abspath(f)).startswith(top) for f in ab.get("files") or ()):
             continue
+        if book and book.get("file") and ls.path_key(os.path.abspath(book["file"])) not in {
+                ls.path_key(os.path.abspath(f)) for f in ab.get("files") or ()}:
+            continue                                     # Kura-AB5: the file picked — only the audiobook holding it
         paired, ask = ab.get("book"), ab.get("ask")
+        if isinstance(paired, dict) and r.get("book_gone") and not (
+                epub is not None and isinstance(paired.get("epub"), str) and
+                ls.path_key(os.path.abspath(paired["epub"])) == epub):
+            paired = None                                # Kura-AB5 (11-20 report): its book was removed — free
         if isinstance(paired, dict):
             if epub is not None and isinstance(paired.get("epub"), str) and \
                     ls.path_key(os.path.abspath(paired["epub"])) == epub:
@@ -103,6 +111,8 @@ def _audiobooks_read(store, folder, book=None):
             elif epub is not None and same_title(paired.get("title")):   # (#419's diagnosis: paired with another
                 out["elsewhere"].append({"item_id": r["item_id"], "book": paired.get("title") or "",   # copy of it)
                                          "how": paired.get("how")})
+            elif epub is not None:
+                out["other"].append({"item_id": r["item_id"], "book": paired.get("title") or ""})
         elif isinstance(ask, dict) and ask.get("key"):
             out["asks"].append({"item_id": r["item_id"], "key": ask["key"], "book": ask.get("title") or "",
                                 "epub": ask.get("epub")})

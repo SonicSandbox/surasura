@@ -88,7 +88,7 @@ def test_its_press_lists_todays_picker_and_a_pick_pairs_through_needs_yous_own_p
     lst = win.items.audiobook_list
     texts = [a.text() for a in lst.actions() if not a.isSeparator()]
     assert texts == [strings.NEEDS_AUDIOBOOK_LINE.format(title="The Spider's Thread", n=3),
-                     strings.NEEDS_AUDIOBOOK_FOLDER]
+                     strings.NEEDS_AUDIOBOOK_FOLDER, strings.NEEDS_AUDIOBOOK_FILE]     # (Kura-AB5: by its file)
     next(a for a in lst.actions() if a.text() == texts[0]).trigger()
     assert picked == [("pick", None, 77, JOINED, TITLE)]
     lst.hide()
@@ -103,6 +103,22 @@ def test_a_folder_on_your_computer_is_needs_yous_own_door(book_menu):
                       win.items.audiobook_list.actions(), 5)
     next(a for a in win.items.audiobook_list.actions() if a.text() == strings.NEEDS_AUDIOBOOK_FOLDER).trigger()
     assert picked == [("folder", TITLE, JOINED)]               # Kura-AB4: the book named, so its audiobook joins it
+    win.items.audiobook_list.hide()
+
+
+def test_an_audio_file_is_needs_yous_own_door_too(book_menu, monkeypatch):
+    """Kura-AB5 (Sonic's yes): *An audio file on your computer…* after the folder's door, its tip said."""
+    win, _row, _got, _answer, picked, open_menu = book_menu
+    monkeypatch.setattr(win.needs_you, "_audiobook_file", lambda title, epub=None: picked.append(("file", title, epub)))
+    m = open_menu()
+    assert wait_until(lambda: _entry(m) is not None, 5)
+    _entry(m).trigger()
+    assert wait_until(lambda: getattr(win.items, "audiobook_list", None) is not None and
+                      win.items.audiobook_list.actions(), 5)
+    act = next(a for a in win.items.audiobook_list.actions() if a.text() == strings.NEEDS_AUDIOBOOK_FILE)
+    assert act.toolTip() == strings.NEEDS_AUDIOBOOK_FILE_TIP
+    act.trigger()
+    assert picked == [("file", TITLE, JOINED)]
     win.items.audiobook_list.hide()
 
 

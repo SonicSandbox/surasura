@@ -35,6 +35,11 @@ dashboard's preview switch (`app/main.py` `_replan_start` … `_replan_finishing
   while no Generate runs or waits (`_asker`): a move withdraws the keeper's run in flight, and the run going already
   serves the ask (its `on_done` re-orders after it).
 
+**Its turn** (Haya-LD, `services.gentle`): the catch-up and the re-order after a Generate are background work — while
+`gentle.hold("replan")` names a reason (you reviewing in Anki, a busy computer; on a gentle PC the window still opening
+or a heavier job running) the call is put back for TURN_LOOK_S, never waited for on the worker (a move's poke behind
+it goes at once: a press goes first, and its job does what the catch-up owed). One deferred call a kind at a time.
+
 Nothing here waits on the caller's thread but `finish` (the quit's worker): the rest queues on the host's worker, arms
 the keeper's timer, or lets a host go (`stop` never waits).
 """
@@ -50,6 +55,8 @@ WHY_AFTER_GENERATE = "Generate ended: Anki's order follows your new list"
 WHY = {"poke": WHY_MOVED, "catch_up": WHY_CATCH_UP, "after_generate": WHY_AFTER_GENERATE}
 HOLDING = ("downloading", "waiting", "ready")  # the update service's states while it holds the children
 BUSY_LOOK = 0.05                           # at quit, how often the host is asked whether it still works
+TURN_LOOK_S = 5.0                          # Haya-LD: a catch-up held by `gentle.hold` is asked again this much later
+HELD_CALLS = ("catch_up", "after_generate")     # background work; a move's `poke` never waits for a turn
 
 
 def journey_pending(language):
@@ -148,6 +155,8 @@ class ReplanHost:
                                             # *Why:* (help cards), used once by the `replan` job it starts
         self.worker = Worker("replan-host")
         self.opened = 0                     # hosts opened (tests)
+        self._deferred = set()              # Haya-LD: the held calls put back for a later turn (one a kind)
+        self._timer = None                  # its timer (a test's stand-in: `timer(delay, call)`)
 
     # --- the window's calls (any thread; each returns at once) ----------------------------------------------------- #
     def poke(self):
@@ -221,13 +230,17 @@ class ReplanHost:
         self.worker.close()
 
     # --- the worker ---------------------------------------------------------------------------------------------- #
-    def _forward(self, call):
+    def _forward(self, call, again=False):
         with self._lock:
+            if again:
+                self._deferred.discard(call)        # its turn's look (`_defer`'s timer)
             if self._closed or self._closing or self._held:
                 return
             host = self._host
             if host is None and self._quitting:
                 return                      # the quit was asked: no helper is spawned now
+        if call in HELD_CALLS and self._defer(call):
+            return
         settings = self._settings()
         if not _automation_on(settings, self.language):
             # switched off (D29, Junban, the deck): the helper goes; the bar says why where the user can fix it —
@@ -246,6 +259,19 @@ class ReplanHost:
         with self._lock:
             self._trigger = (call, time.time())
         getattr(host, call)()
+
+    def _defer(self, call):
+        """Haya-LD: `call` put back for TURN_LOOK_S while the scheduler says it waits. -> True when put back."""
+        from app.services import gentle
+        if not gentle.hold("replan"):
+            return False
+        with self._lock:
+            if call in self._deferred:
+                return True                 # one already waits for its turn: this one is the same ask
+            self._deferred.add(call)
+        from app.services.automation import start_timer
+        (self._timer or start_timer)(TURN_LOOK_S, lambda: self.worker.put(self._forward, call, True))
+        return True
 
     def _open(self):
         opener = self._opener

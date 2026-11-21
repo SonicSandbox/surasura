@@ -1200,7 +1200,7 @@ class _Look:
         self.store, self.language, self.root_id = store, language, root
         self.book = book             # Kura-AB4: {folder, epub} — the folder the learner picked as that book's audiobook
         self.dc_titles = {}          # Kura-AB5: {an EPUB's key: its package titles} (`_dc_titles`, once a look)
-        self.book_folders = None     # Kura-AB5: (books, {a folder's key: [(EPUB key, path)]}) (`_older_version`)
+        self.book_folders = None     # Kura-AB5: (books, {a folder: [(EPUB key, path, item)]}) (`_older_version`)
         self.first, self.progress, self.stop, self.rules = first, progress, stop, rules
         self.copying, self.copy_said, self.copied, self.to_copy = copying, 0.0, 0, 0   # K5: the take's progress
         self.full = bool(full or first)
@@ -3658,9 +3658,9 @@ class _Look:
     def _older_version(self, path):
         """Kura-AB5 (Sonic's yes, 11-20 report: a new version under another name came in as a book apart): the book in
         the library this new EPUB may be the new version of — another EPUB in its folder, its parts here, whose package
-        names the same `dc:title` (and no volume apart: `audiobooks._volumes`) — its path, or None (none, two, or
-        unread). Only an offer: New arrivals asks (*Replace 「…」*); never switched by itself. Each EPUB's package is
-        read once a look (`audiobooks.epub_meta`)."""
+        names the same `dc:title` (its file deleted for the new one: its title in the library), no volume apart
+        (`audiobooks._volumes`) — its path, or None (none, two, or unread). Only an offer: New arrivals asks
+        (*Replace 「…」*); never switched by itself. Each EPUB's package is read once a look (`audiobooks.epub_meta`)."""
         here = ls.path_key(os.path.dirname(os.path.abspath(path)))
         mine = self._dc_titles(path)
         if not mine:
@@ -3672,17 +3672,27 @@ class _Look:
                 picks = [o for o in parts.values() if not o.version and o.origin]
                 if picks:
                     epub = str(picks[0].origin).rpartition("#")[0]
-                    index.setdefault(ls.path_key(os.path.dirname(os.path.abspath(epub))), []).append((key, epub))
+                    index.setdefault(ls.path_key(os.path.dirname(os.path.abspath(epub))), []).append(
+                        (key, epub, picks[0].item_id))
             self.book_folders = (len(books), index)
         found = []
-        for key, epub in self.book_folders[1].get(here, ()):
-            if key == _key(path) or not os.path.isfile(epub):
+        for key, epub, item in self.book_folders[1].get(here, ()):
+            if key == _key(path):
                 continue
             apart = audiobooks._volumes(audiobooks._forms([os.path.splitext(os.path.basename(epub))[0]])[1],
                                         audiobooks._forms([os.path.splitext(os.path.basename(path))[0]])[1])
-            if mine & self._dc_titles(epub) and apart != audiobooks.DIFFER:
+            # (its file deleted for the new one, the usual way: the title it has in the library stands for its own)
+            theirs = self._dc_titles(epub) if os.path.isfile(epub) else self._library_title(item)
+            if mine & theirs and apart != audiobooks.DIFFER:
                 found.append(os.path.abspath(epub))
         return found[0] if len(set(found)) == 1 else None
+
+    def _library_title(self, item_id):
+        """{the title of the item's work}, NFKC and case-folded (empty for none) — read only."""
+        with self.store._reading():
+            row = self.store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                          (item_id,)).fetchone()
+        return {unicodedata.normalize("NFKC", row[0]).strip().casefold()} if row and row[0] else set()
 
     def _dc_titles(self, path):
         """An EPUB's package titles (`dc:title`), NFKC and case-folded, read once a look."""

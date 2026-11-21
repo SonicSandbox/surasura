@@ -368,6 +368,22 @@ def test_a_new_version_beside_the_old_one_is_offered_and_replace_keeps_name_plac
         assert _record(store, ab)["book"]["epub"] == os.path.abspath(old)
 
 
+def test_a_new_version_dropped_in_for_a_deleted_old_one_is_offered_by_the_old_ones_title():
+    """The usual way: the old EPUB deleted and the new one put in its folder — the old file can't be read any more, so
+    its title in the library stands for its package's; *Replace* then keeps that title and the audiobook."""
+    language = "ja"
+    store, old, ab = _paired(language, NEKO)
+    with store:
+        work = store.item(_parts(store, old)[0])["work_id"]
+        os.remove(old)
+        new = _new_beside(store, language, NEKO, old)
+        offer = store.new_version_of(_parts(store, new)[0])
+        assert offer is not None and offer["old"]["epub"] == os.path.abspath(old)
+        assert store.replace_book(new, old) is not None
+        assert {store.item(p)["work_id"] for p in _parts(store, new)} == {work}
+        assert _record(store, ab)["book"]["epub"] == os.path.abspath(new)
+
+
 def test_a_new_version_with_another_title_or_in_another_folder_is_never_offered():
     """The controls: another `dc:title` beside it (another book), or the same title in another folder (a copy: the
     learner's own two) — no offer."""

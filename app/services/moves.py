@@ -1269,7 +1269,10 @@ class Writer:
         try:
             with store._writing():
                 trashed = {}
-                for item_id in cmd["ids"]:
+                # Kura-AB6: a *Replace* trashes only the parts the store replaces now (`replace_parts`, under this
+                # lock) — never a part read since ⋯ opened (Finished or ✓ Done: kept, its copy where it is)
+                ids = store.replace_parts(cmd["old_epub"])[0] if cmd.get("new_epub") else cmd["ids"]
+                for item_id in ids:
                     row = store.item(item_id)
                     if row is None:
                         continue

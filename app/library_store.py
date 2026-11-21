@@ -14689,7 +14689,9 @@ def _store_new_version_of(self, item_id):
     """Kura-AB5 (Sonic's yes: a new version replaces the old one, keeping its name and audiobook; New arrivals asks
     once): the book in the library the book `item_id` is a part of may replace — the look's mark on its records
     (`new_version_of`: the same folder, the same `dc:title`) — while that book still has a part here and this one is
-    still a title apart from it -> {old: {epub, title, ids}, new: {epub, title, ids}}, else None. Read only."""
+    still a title apart from it -> {old: {epub, title, ids, replaced, kept}, new: {epub, title, ids}}, else None.
+    Kura-AB6: `replaced` / `kept` the old book's parts *Replace* takes out / keeps (`replace_parts`); a book with
+    nothing unread is no replacement (None). Read only."""
     new = self.book_items(item_id)
     if new is None:
         return None
@@ -14714,6 +14716,10 @@ def _store_new_version_of(self, item_id):
             f"SELECT DISTINCT work_id FROM items WHERE id IN ({','.join('?' * len(old['ids']))})", old["ids"])}
     if works & olds:
         return None                                      # (one title already: nothing to replace)
+    with self._reading():
+        old["replaced"], old["kept"] = self.replace_parts(old_epub)
+    if not old["replaced"]:
+        return None                                      # Kura-AB6: every part read — nothing to replace
     return {"old": old, "new": new}
 
 
@@ -14724,10 +14730,14 @@ def _store_replace_book(self, new_epub, old_epub, trashed_paths=None, by="user")
     old book's parts are removed as *Remove…* removes them (`remove`: the trash rows — their files moved by the caller,
     `trashed_paths` — the Removed list). The change is that remove's (kind `remove`: the window's writer moves the
     files back on its Undo); `change.replaced` holds the rest, undone by the value check (`_undo_replaced`). -> the
-    Change, or None (either book not here, or one title already)."""
+    Change, or None (either book not here, or one title already, or nothing unread).
+    Kura-AB6 (Sonic 2026-11-21: keep the Finished parts and their dates, replace only the unread): only the old book's
+    unread parts go (`replace_parts`); a Finished or ✓ Done part stays as it is — its tier, place, date and mark — in
+    the title the new parts join, and "the old book's last part" is the last of those that go."""
     with self._command("remove", by) as cmd:
-        old_ids, new_ids = self._epub_ids(old_epub), self._epub_ids(new_epub)
-        placed = self._audiobook_place({"epub": old_epub})
+        new_ids = self._epub_ids(new_epub)
+        old_ids, _kept = self.replace_parts(old_epub)
+        placed = self._parts_place(old_ids)
         if not old_ids or not new_ids or placed is None or set(old_ids) & set(new_ids):
             return None
         work, tier, last = placed
@@ -14775,6 +14785,33 @@ def _store_epub_ids(self, epub):
         tail = key.rpartition("#")[2]
         return int(tail) if tail.isdigit() else 0
     return list(dict.fromkeys(i for _k, i in sorted(rows, key=lambda r: (number(r[0]), r[1]))))
+
+
+def _store_replace_parts(self, epub):
+    """Kura-AB6 (Sonic 2026-11-21): the live parts of the old version `epub` a *Replace* takes out, and the ones it
+    keeps -> (replaced, kept), each in the parts' order. Kept: a part the learner has read — Finished (its date, the
+    Best ranking's) or ✓ Done (PROVISIONAL: read, not yet Finished); the rest — in progress or not begun — is
+    replaced. One read (inside the caller's `_reading()` or write)."""
+    ids = self._epub_ids(epub)
+    read = set()
+    for chunk in _chunks(ids, 500):
+        read.update(i for (i,) in self.conn.execute(
+            f"SELECT id FROM items WHERE id IN ({','.join('?' * len(chunk))}) AND (tier = 'graduated' OR watched != 0)",
+            chunk))
+    return [i for i in ids if i not in read], [i for i in ids if i in read]
+
+
+def _store_parts_place(self, ids):
+    """(work, tier, the last part's id) of the parts `ids` — the last by tier, then place (`_audiobook_place`'s rule,
+    over these parts alone) — or None (none here, or each waits)."""
+    rows = []
+    for chunk in _chunks(sorted(ids), 500):
+        rows += self.conn.execute(f"SELECT id, tier, ord, work_id FROM items WHERE id IN ({','.join('?' * len(chunk))}) "
+                                  f"AND availability != 'waiting' AND work_id IS NOT NULL", chunk).fetchall()
+    if not rows:
+        return None
+    last = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
+    return last[3], last[1], last[0]
 
 
 def _store_undo_replaced(self, cmd, sub):
@@ -15388,6 +15425,8 @@ Store.new_version_of = _store_new_version_of
 Store.replace_book = _store_replace_book
 Store._epub_ids = _store_epub_ids
 Store._undo_replaced = _store_undo_replaced
+Store.replace_parts = _store_replace_parts
+Store._parts_place = _store_parts_place
 Store.split_book = _store_split_book
 Store.joined_book = _store_joined_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick

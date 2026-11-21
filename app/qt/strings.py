@@ -932,9 +932,15 @@ TRAY_MENU = {
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
 # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a new version of a book here (the same folder and title)
-TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook, and "
-                                     "the old one's {n} parts go to Removed for 30 days\n• Undo puts it all back")
-TRAY_REPLACED = "The new version is 「{old}」 now · the old one is in Removed for 30 days"
+#   Kura-AB6 (Sonic 2026-11-21: keep the Finished parts and their dates, replace only the unread; PROVISIONAL words):
+#   the tip is TRAY_REPLACE[1] with {gone} (TRAY_REPLACE_GONE) and {kept} (TRAY_REPLACE_KEPT, "" when none) filled
+TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook"
+                                     "{gone}{kept}\n• Undo puts it all back")
+TRAY_REPLACE_GONE = {1: "\n• The old one's unread part goes to Removed for 30 days",
+                     0: "\n• The old one's {n} unread parts go to Removed for 30 days"}
+TRAY_REPLACE_KEPT = {1: "\n• The part you've read (Finished or ✓ Done) stays as it is, its date too",
+                     0: "\n• The {n} parts you've read (Finished or ✓ Done) stay as they are, their dates too"}
+TRAY_REPLACED = "The new version is 「{old}」 now · the old one's unread parts are in Removed for 30 days"
 TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
 TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Remove, by a key each.\n"
                      "• Anything you don't sort stays here")

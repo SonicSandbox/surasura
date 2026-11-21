@@ -1,5 +1,6 @@
 
 import ast
+import re
 import sys
 import subprocess
 import os
@@ -352,7 +353,7 @@ def _changed_test_files(project_root, base):
     those changed and not yet committed, in path order."""
     names = set()
     for args in (["diff", "--name-only", f"{base}...HEAD"], ["diff", "--name-only", "HEAD"]):
-        out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        out = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         names.update(line.strip() for line in _decode(out.stdout).splitlines() if line.strip())
     return sorted(n for n in names if _is_test_file(n) and os.path.isfile(os.path.join(project_root, n)))
 
@@ -518,29 +519,26 @@ def run_stress(project_root, times=1):
     return 0
 
 
-def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES):
-    """`--stress-changed [BASE]`: every test changed since BASE, `times` times, beside two core shards. 0 when every
-    run passed (a branch that changed no test passes at once, and says so)."""
+def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES, listing=False):
+    """`--stress-changed [BASE]`: every test changed since BASE beside two core shards — the ones that wait on time or
+    threads `times` times, the others once (see TIMING). 0 when every run passed (a branch that changed no test passes
+    at once, and says so). `listing`: the picks and their counts, nothing run."""
     ids, notes = _changed_tests(project_root, base)
     for note in notes:
         print(f"  ({note})")
     if not ids:
         print(f"No test changed since {base}: nothing to repeat")
         return 0
-    groups, size = {}, {}
-    for node in ids:                                        # each suite's tests, split where a command would be long
-        suite = _suite_of(node.split("::", 1)[0])
-        part = size.get(suite, (1, 0))
-        if part[1] + len(node) > ARGS_MAX:
-            part = (part[0] + 1, 0)
-        size[suite] = (part[0], part[1] + len(node) + 1)
-        label = suite if part[0] == 1 else f"{suite} (part {part[0]})"
-        groups.setdefault(label, []).append(node)
+    timed, steady = _timing_tests(project_root, ids)
     files = len({node.split("::", 1)[0] for node in ids})
-    print(f"{len(ids)} changed test(s) in {files} file(s) since {base}, {times} times each, beside core shards "
-          f"{' and '.join(LOAD_SHARDS)}:", flush=True)
-    for node in ids:
-        print(f"  {node}")
+    print(f"{len(ids)} changed test(s) in {files} file(s) since {base}, beside core shards {' and '.join(LOAD_SHARDS)}: "
+          f"{len(timed)} wait on time or threads, {times} times each; {len(steady)} don't, once:", flush=True)
+    for node in timed:
+        print(f"  x{times}  {node}")
+    for node in steady:
+        print(f"  x1   {node}")
+    if listing:
+        return 0
     def start(spec):
         return subprocess.Popen([sys.executable, os.path.abspath(__file__), "--shard", spec], cwd=project_root,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -555,7 +553,8 @@ def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES):
     keeper = threading.Thread(target=keep_loading, name="stress-load", daemon=True)
     keeper.start()
     try:
-        red = _repeat(project_root, sorted(groups.items()), times, os.environ.copy())
+        red = (_repeat(project_root, sorted(_groups(steady, " (once)").items()), 1, os.environ.copy())
+               or _repeat(project_root, sorted(_groups(timed).items()), times, os.environ.copy()))
     finally:
         stop.set()
         keeper.join(60)
@@ -564,8 +563,22 @@ def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES):
     if red:
         print(f"\n  [FAIL]  {red[0]}, run {red[1]} of {times}: {red[2]}")
         return 1
-    print(f"\n  [PASS]  every changed test file passed {times} times under load")
+    print(f"\n  [PASS]  every changed test passed under load: {len(timed)} of them {times} times, {len(steady)} once")
     return 0
+
+
+def _groups(nodes, suffix=""):
+    """{label: node ids}: each suite's tests, split where one command would be too long (ARGS_MAX)."""
+    groups, size = {}, {}
+    for node in nodes:
+        suite = _suite_of(node.split("::", 1)[0])
+        part = size.get(suite, (1, 0))
+        if part[1] + len(node) > ARGS_MAX:
+            part = (part[0] + 1, 0)
+        size[suite] = (part[0], part[1] + len(node) + 1)
+        label = (suite if part[0] == 1 else f"{suite} (part {part[0]})") + suffix
+        groups.setdefault(label, []).append(node)
+    return groups
 
 
 def _end_tree(proc):
@@ -581,7 +594,589 @@ def _end_tree(proc):
         pass
 
 
-FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--help", "-h")     # main's (a value follows some)
+# --- --stress-changed: only the tests that wait on time repeat (Minato-TS, 2026-11-21) ------------------------------- #
+# A test can flake only where its answer waits on the clock or on another thread: a sleep, a Qt wait or timer, an
+# event / join / thread / process, a deadline. Repeating a test with none of those twenty times under load finds
+# nothing a single run doesn't (Mado-EZC's runs: 12m49s and 56m05s, ~70 % of its 218 picked tests with no wait), so
+# those run ONCE, under the same load, and the rest STRESS_TIMES times. Static: the test's own lines, every helper,
+# fixture or constant it uses (of its file, its folder's conftest.py and those above it, a tests.* module it imports
+# names from), and theirs in turn; its file's own autouse fixtures too. A file that doesn't parse, or can't be read,
+# repeats whole, as before.
+
+TIMING = re.compile(r"\b(?:sleep|qWait|waitUntil|waitSignals?|waitExposed|waitActive|waitCallback|wait_until|wait_for\w*|"
+                    r"singleShot|QTimer|QThread\w*|processEvents|settle\w*|threading|Thread\w*|Event|Condition|Barrier|"
+                    r"Semaphore|Lock|Popen|subprocess|multiprocessing|asyncio|concurrent|\w*Executor|\w*Pool|monotonic|"
+                    r"perf_counter|timeout|deadline|time\.time|exec|acquire|communicate|recv\w*|poll\w*|\w*Queue)\b|"
+                    r"\.wait\(|\.join\(\s*(?:\)|timeout|\d|[A-Za-z_]\w*\s*\))|\.start\(\s*\)")   # (t.join(left), never
+#                                                                                   "/".join([...]) nor os.path.join(a, b))
+
+
+def _text(project_root, path):
+    """A source as text (a byte-order mark dropped: ast refuses one)."""
+    return _read_source(project_root, path).decode("utf-8-sig", "replace")
+
+
+def _lines(text):
+    """A source's lines as ast numbers them (\\r\\n, \\r or \\n: never a form feed or U+2028, as splitlines would)."""
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def _helper_sources(project_root, path, tree):
+    """The other sources a test file's tests can reach by name: its folder's conftest.py and each above it up to tests/
+    (or a module's tests/), and each tests.* module it imports from. -> [(path, source text)]."""
+    out, seen = [], {path}
+    folder = os.path.dirname(path)
+    while folder and folder not in ("", "."):
+        conf = f"{folder}/conftest.py"
+        if conf not in seen and os.path.isfile(os.path.join(project_root, conf)):
+            seen.add(conf)
+            out.append(conf)
+        if folder in ("tests",) or folder.endswith("/tests") and folder.startswith("modules/"):
+            break
+        folder = os.path.dirname(folder)
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "tests":
+            names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]   # (from tests import helpers)
+        elif isinstance(node, ast.Import):
+            names = [a.name for a in node.names if a.name.split(".")[0] == "tests"]
+        for name in names:
+            for candidate in (name.replace(".", "/") + ".py", name.replace(".", "/") + "/__init__.py"):
+                if candidate not in seen and os.path.isfile(os.path.join(project_root, candidate)):
+                    seen.add(candidate)
+                    out.append(candidate)
+    texts = []
+    for p in out:
+        try:
+            texts.append((p, _text(project_root, p)))
+        except OSError:
+            continue
+    return texts
+
+
+def _spans(source):
+    """{name: [(source text of that definition, names it uses)]} for a source's top-level definitions (a class's
+    methods under the class's name too, so a fixture method or helper method is reached through its class), and the
+    functions and classes defined under a top-level `if` / `try` / `with` (a helper per platform)."""
+    lines = _lines(source)
+    out = {}
+    for path, start, end, used in _defs(source):
+        out.setdefault(path[0], []).append(("\n".join(lines[start - 1:end]), used))
+    for top in ast.parse(source).body:
+        if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign)):
+            continue
+        for node in ast.walk(top):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                used |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                used |= {n.arg for n in ast.walk(node) if isinstance(n, ast.arg)}
+                out.setdefault(node.name, []).append(("\n".join(lines[node.lineno - 1:node.end_lineno]), used))
+    return out
+
+
+def _autouse(source):
+    """The names of a source's own autouse fixtures."""
+    names = set()
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for d in node.decorator_list:
+                if any(isinstance(k, ast.keyword) and k.arg == "autouse" and getattr(k.value, "value", None) is True
+                       for k in getattr(d, "keywords", ())):
+                    names.add(node.name)
+    return names
+
+
+def _timing_tests(project_root, ids):
+    """`ids` (node ids) split -> (the ones that wait on time or threads, the ones that don't), each in its order."""
+    by_file, timed, steady = {}, set(), set()
+    for node in ids:
+        by_file.setdefault(node.split("::", 1)[0], []).append(node)
+    for path, nodes in by_file.items():
+        try:
+            source = _text(project_root, path)
+            tree = ast.parse(source)
+        except (OSError, SyntaxError, ValueError):
+            timed.update(nodes)                               # can't tell: as before, every repeat
+            continue
+        own = _spans(source)
+        pool = {}
+        for _p, text in reversed(_helper_sources(project_root, path, tree)):   # nearer conftests win, the file over all
+            try:
+                pool.update(_spans(text))
+            except (SyntaxError, ValueError):
+                continue
+        pool.update(own)
+        start = _autouse(source)
+        for node in nodes:
+            if "::" not in node:                              # a whole file (didn't parse before): every repeat
+                timed.add(node)
+                continue
+            parts = node.split("::")[1:]
+            names, todo, hit = set(), [parts[0]] + sorted(start), False
+            texts = []
+            if len(parts) == 2:                               # a test class's method: the class's own lines and the method
+                texts += [t for t, _u in own.get(parts[0], [])]
+            while todo and not hit:
+                name = todo.pop()
+                if name in names:
+                    continue
+                names.add(name)
+                for text, used in pool.get(name, []):
+                    texts.append(text)
+                    todo.extend(u for u in used if u in pool and u not in names)
+                hit = any(TIMING.search(t) for t in texts)
+            (timed if hit or any(TIMING.search(t) for t in texts) else steady).add(node)
+    return [n for n in ids if n in timed], [n for n in ids if n in steady]
+
+
+# --- --guards: the whole-repo guard tests, before every push (Minato-TS, 2026-11-21) -------------------------------- #
+# Of the four GitHub-only reds on 2026-11-20, three were whole-repo scans that take seconds; 2026-11-21 brought three
+# more (the press rule, the picture-mode scrub again, the stacked-rows pin) and a build-spec read. A lane's touched
+# run never ran them (they read the app's source, not the lane's code), so GitHub found them, a CI cycle each.
+# GUARDS: every test that reads the app's own source as text (an AST or grep scan, a walk of app/ or app/qt/, a pin of
+# a list in the code) — found by what they do, not by name: a read-audit survey of a whole --all
+# (tests/read_audit.py, survey mode, 2026-11-21) listed each test that opened a tracked .py / .qss / .html / .js /
+# .json of the app as a file, not an import. Each row: the test (a file, or a file::test when the file's other tests
+# are no guards), and the folders whose change makes it the area's guard for --touched-callers.
+# A new guard (a test that scans the app's source) is added here in the same pull request.
+
+GUARDS = {
+    ("modules/junban/tests/test_module_contract.py::"
+     "test_every_setting_is_either_honoured_or_declared_inert"): ("app/", "modules/"),
+    ("tests/connect/test_never_opens_anki.py::"
+     "test_only_a_windows_session_start_calls_open_anki_start"): ("app/", "modules/"),
+    "tests/connect/test_no_auto_pins.py::test_no_code_outside_the_store_writes_a_pin": ("app/", "modules/"),
+    "tests/qt/test_bridge.py::test_no_user_string_is_written_inline_under_app_qt": ("app/", "modules/"),
+    ("tests/qt/test_entry.py::"
+     "test_the_window_route_sends_the_heartbeat_once_before_the_window"): ("app/qt/", "app/services/"),
+    "tests/qt/test_motion.py::test_no_literal_spring_constants_under_app_qt": ("app/qt/",),
+    "tests/qt/test_motion.py::test_no_other_animation_engine_and_no_motion_literals_under_app_qt": ("app/", "modules/"),
+    "tests/qt/test_picture_mode.py::test_every_delegate_of_its_own_reads_its_words_through_the_scrub": ("app/qt/",),
+    ("tests/qt/test_picture_mode.py::"
+     "test_every_painter_in_the_window_draws_its_text_through_the_scrub_or_says_why_it_needs_none"): ("app/qt/",),
+    "tests/qt/test_picture_mode.py::test_every_shortened_text_in_the_window_is_scrubbed_before_it_is_cut": ("app/qt/",),
+    "tests/qt/test_press_static.py::test_every_allowed_entry_still_names_a_function_and_says_why": ("app/", "modules/"),
+    "tests/qt/test_press_static.py::test_no_press_hands_its_work_over_except_through_press": ("app/", "modules/"),
+    ("tests/qt/test_reduced_motion.py::"
+     "test_every_motion_entry_point_has_a_sweep_entry_and_every_entry_is_driven"): ("app/qt/",),
+    "tests/qt/test_style.py::test_no_colour_is_spelled_under_app_qt": ("app/qt/",),
+    "tests/qt/test_wiring.py::test_no_modal_dialog_and_no_qprocess_in_the_window": ("app/", "modules/"),
+    "tests/qt/test_wiring.py::test_the_window_never_names_the_2x_folders": ("app/", "modules/"),
+    "tests/test_anki_address.py::test_no_code_reads_either_address_key_but_the_one_function": ("app/", "modules/"),
+    ("tests/test_anki_deck_options.py::"
+     "test_savedeckconfig_is_sent_only_through_the_one_door_by_the_one_caller"): ("app/", "modules/"),
+    "tests/test_cli_imports.py::test_no_cli_source_names_a_dialog_toolkit": ("app/cli/",),
+    ("tests/test_flake_lints.py::"
+     "test_this_tree_has_nothing_the_allowlist_doesnt_explain_and_no_entry_left_over"): ("app/", "modules/"),
+    "tests/test_import_guard.py::test_no_file_outside_the_windows_folders_imports_qt": ("app/", "modules/"),
+    ("tests/test_import_guard.py::"
+     "test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_door"): ("app/", "modules/"),
+    "tests/test_import_guard.py::test_the_window_imports_only_the_qt_modules_the_stack_names": ("app/", "modules/"),
+    "tests/test_list_reader.py::test_no_list_reader_goes_around_the_shared_one": ("app/", "modules/"),
+    "tests/test_packaging_config.py": ("app/", "modules/", "packaging/", "app_entry.py", "package_app.py"),
+    "tests/test_profile_parts.py::test_every_place_the_code_names_a_data_root_is_counted_here": ("app/", "modules/"),
+    ("tests/test_scrub.py::"
+     "test_every_short_hash_in_the_app_is_an_install_key_identity_knows_or_hashes_no_install"): ("app/", "modules/"),
+    ("tests/test_services_phase.py::"
+     "test_every_job_kind_the_window_can_register_names_its_circle_or_none"): ("app/", "modules/"),
+    ("tests/test_settings_catalog.py::"
+     "test_an_empty_slot_row_with_no_filler_fails_the_placement_proof"): ("app/", "modules/"),
+    ("tests/test_settings_catalog.py::"
+     "test_every_installed_placed_setting_is_in_exactly_one_row_or_not_shown"): ("app/", "modules/"),
+    "tests/test_tsubasa_bundle.py::test_nothing_of_surasuras_imports_tsubasa": ("app/", "modules/"),
+    "tests/test_w41_place_names.py": ("app/qt/",),
+}
+
+GUARDS_BUDGET_S = 120
+
+
+def _public_files(project_root):
+    """The files the public repo tracks (what GitHub's runner checks out), as paths from the top, or None."""
+    out = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=project_root,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if out.returncode != 0:
+        return None
+    return {p for p in out.stdout.decode("utf-8", "replace").split("\0") if p}
+
+
+def _audit_env():
+    """The environment for a run under the read audit (tests/read_audit.py): no test may read a file the public repo
+    ignores (2026-11-20: lists/jmnedict.zip, on this PC only, went red on GitHub only)."""
+    env = os.environ.copy()
+    env["SURASURA_READ_AUDIT"] = "ignored"
+    return env
+
+
+def _by_suite(nodes):
+    """Node ids or files grouped by the suite (its own process) they belong to, in order."""
+    groups = {}
+    for node in nodes:
+        groups.setdefault(_suite_of(node.split("::", 1)[0]), []).append(node)
+    return groups
+
+
+def _run_groups(project_root, groups, env, label):
+    """Each suite's tests in one pytest process (the read audit on), side by side. -> (failed suites, outputs)."""
+    def one(suite, nodes):
+        result = subprocess.run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
+                                 "-p", "tests.read_audit"], cwd=project_root, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return suite, result.returncode, _decode(result.stdout)
+    failed, outputs = [], {}
+    if not groups:
+        return failed, outputs
+    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+        for future in as_completed([pool.submit(one, s, n) for s, n in groups.items()]):
+            suite, code, output = future.result()
+            outputs[suite] = output
+            code = 0 if code == 5 else code
+            print(f"  {'PASS' if code == 0 else 'FAIL'}  {label} {suite:<28} {_last_line(output)}", flush=True)
+            if code != 0:
+                failed.append(suite)
+    return failed, outputs
+
+
+def run_guards(project_root, listing=False):
+    """`--guards`: every whole-repo guard test (GUARDS), under the read audit. 0 when all passed."""
+    nodes = [n for n in GUARDS if os.path.isfile(os.path.join(project_root, n.split("::", 1)[0]))]
+    gone = [n for n in GUARDS if n not in nodes]
+    print(f"Guard set: {len(nodes)} whole-repo guard test(s)/file(s), the read audit on"
+          + (f" ({len(gone)} not in this checkout: {', '.join(gone)})" if gone else ""), flush=True)
+    if listing:
+        for n in nodes:
+            print(f"  {n}")
+        return 0
+    started = time.perf_counter()
+    failed, outputs = _run_groups(project_root, _by_suite(nodes), _audit_env(), "guards")
+    wall = time.perf_counter() - started
+    for suite in failed:
+        print("\n" + "=" * 60 + f"\n   FAILED: guards in {suite}\n" + "=" * 60 + "\n" + outputs[suite])
+    over = f" — over its {GUARDS_BUDGET_S} s budget: tell the lead" if wall > GUARDS_BUDGET_S else ""
+    print(f"\n  [{'FAIL' if failed else 'PASS'}]  the guard set, {wall:.1f}s{over}")
+    return 1 if failed else 0
+
+
+# --- --touched-callers [BASE]: a lane's touched run (Minato-TS, 2026-11-21) ------------------------------------------ #
+# A lane tests what it changed, not a glob of its area: 5 of 26 "touched" runs on 2026-11-20 took 19-28 min, and
+# Kura-SO's ran all 29 test_library_store_*.py though 6 reach the changed code. The picks, from the lines changed
+# since BASE's merge-base (committed or not), each with its reason:
+#   - every test file the branch changed (whole: its own tests, its helpers);
+#   - every test file that names a changed definition of the app's code (a function, method, constant, or a class's
+#     own lines), by name in its code (never its comments or strings, but a patch target's): the callers, as
+#     --stress-changed picks tests. A name many test files use (more than RARE_TESTS, or COMMON) counts only in a file
+#     that imports the changed module: `replace` or `record` alone would pick every file. Not its callers' callers
+#     (measured on five lanes' branches, 2026-11-21: one step further doubled the picks, 13 -> 23 min for Kura-SO):
+#     what reaches the change only through another function is the GitHub run's and the train's --all;
+#   - every test file under a changed conftest.py's folder, or that imports a changed test helper;
+#   - every test file that names a changed data file, template or stylesheet (its whole file name, or its folder's when
+#     few test files name it);
+#   - the area's guards: each GUARDS row whose folders hold a changed file.
+# Run under the read audit (no test reads a git-ignored file), one process per suite. `--list` prints the picks only.
+
+RARE_TESTS = 12
+COMMON = {"run", "main", "load", "save", "get", "set", "start", "stop", "close", "open", "read", "write", "update",
+          "add", "remove", "clear", "reset", "show", "hide", "refresh", "build", "make", "apply", "check", "name",
+          "path", "text", "value", "items", "keys", "data", "result", "state", "label", "title", "language", "done",
+          "setup", "teardown", "paint", "paintEvent", "resizeEvent", "showEvent", "closeEvent", "keyPressEvent",
+          "event", "eventFilter", "sizeHint", "changed", "clicked", "toggled", "finished", "started"}
+
+
+def _imports(text, module):
+    """True when a source imports the module at `module` (a path: app/connect/library.py): `import
+    app.connect.library`, `from app.connect.library import ...`, `from app.connect import (..., library, ...)`, or names
+    its dotted path (a patch target, an importlib string). A test helper (tests/connect_helpers.py) the same way."""
+    p = module[:-3] if module.endswith(".py") else module
+    if p.endswith("/__init__"):
+        p = p[:-9]
+    dotted = p.replace("/", ".")
+    if dotted in text:
+        return True
+    package, _sep, stem = dotted.rpartition(".")
+    if not package:
+        return re.search(r"^\s*import\s+" + re.escape(stem) + r"\b", text, re.M) is not None
+    for m in re.finditer(r"from\s+" + re.escape(package) + r"\s+import\s+(\([^)]*\)|[^\n]*)", text):
+        if re.search(r"(?<![\w.])" + re.escape(stem) + r"(?![\w])", m.group(1)):
+            return True
+    return False
+
+
+def _idents(text):
+    """The names a source's code uses (never its comments or the words of its strings): names, attributes, imports,
+    definitions, arguments, keywords, and a string that is a name or a dotted path (a patch target). A source that
+    doesn't parse: every word in it."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return set(re.findall(r"\w+", text))
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.add(n.attr)
+        elif isinstance(n, ast.alias):
+            out.update(n.name.split("."))
+            if n.asname:
+                out.add(n.asname)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(n.name)
+        elif isinstance(n, ast.arg):
+            out.add(n.arg)
+        elif isinstance(n, ast.keyword) and n.arg:
+            out.add(n.arg)
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            out.update(n.module.split("."))
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str) and re.fullmatch(r"[A-Za-z_][\w.]*", n.value):
+            out.update(n.value.split("."))
+    return out
+
+
+def _changed_app_names(project_root, lines):
+    """{module path: the names changed in it} for the app's code (every .py that isn't under a tests/ folder): each
+    changed function, method, constant and class (its own lines); a changed dunder method (__init__) names its class,
+    a dunder constant (__version__) itself."""
+    out = {}
+    for path, changed in lines.items():
+        if (not path.endswith(".py") or path.startswith("tests/") or "/tests/" in path
+                or not os.path.isfile(os.path.join(project_root, path))):
+            continue
+        try:
+            source = _read_source(project_root, path)
+            defs = _defs(source)
+            funcs = {n.name for n in ast.walk(ast.parse(source)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        except (SyntaxError, ValueError):
+            continue
+        text = _lines(source.decode("utf-8-sig", "replace"))
+        changed = {n for n in changed if n <= len(text) and text[n - 1].strip()
+                   and not text[n - 1].strip().startswith("#")}     # (a blank line between two methods is no change)
+        touched = _touched(defs, changed)
+        names = {p[-1] for p in touched if not (p[-1].startswith("__") and p[-1] in funcs)}
+        names |= {p[0] for p in touched if len(p) == 2 and p[1].startswith("__")}
+        if names:
+            out[path] = names
+    return out
+
+
+def _rare(name, counts, limit):
+    """A name few files use (`counts`: {name: how many files hold it}), so naming it is naming the definition."""
+    return name not in COMMON and len(name) >= 4 and counts.get(name, 0) <= limit
+
+
+def _counts(idents):
+    """{name: how many of the files (their identifier sets) hold it}."""
+    out = {}
+    for names in idents:
+        for n in names:
+            out[n] = out.get(n, 0) + 1
+    return out
+
+
+GENERIC_DIRS = {"app", "qt", "tests", "docs", "assets", "modules", "templates", "scripts", "packaging", "data",
+                "Test Resources", "ja", "zh", "services", "connect", "cli", "pages", "static", "images"}
+
+
+def _test_files(project_root):
+    """Every test file of every suite (the stress set's left out), as paths from the top."""
+    tests = [p for p in _core_files(project_root) if not p.startswith(f"tests/{STRESS_DIR}/")]
+    for path in sorted(glob.glob(os.path.join(project_root, "modules", "*", "tests", "**", "test_*.py"), recursive=True)):
+        tests.append(os.path.relpath(path, project_root).replace(os.sep, "/"))
+    return tests
+
+
+def _removed_app_names(project_root, base):
+    """{module path: the definitions the branch removed from it} for the app's code: a function, method, class or
+    constant BASE's merge-base had and the working tree hasn't — a whole module gone too (its tests still import it)."""
+    rev = _git_out(project_root, "merge-base", base, "HEAD").strip() or base
+    out = {}
+    for path in _git_out(project_root, "-c", "core.quotepath=false", "diff", "--name-only", "--no-renames", rev,
+                         "--").splitlines():
+        path = path.strip()
+        if not path.endswith(".py") or path.startswith("tests/") or "/tests/" in path:
+            continue
+        before = _git_out(project_root, "show", f"{rev}:{path}")
+        try:
+            had = {p[-1] for p, _s, _e, _u in _defs(before)} if before else set()
+            now = os.path.join(project_root, path)
+            has = {p[-1] for p, _s, _e, _u in _defs(_read_source(project_root, path))} if os.path.isfile(now) else set()
+        except (OSError, SyntaxError, ValueError):
+            continue
+        gone = {n for n in had - has if not n.startswith("__")}
+        if gone:
+            out[path] = gone
+    return out
+
+
+def _file_pattern(path):
+    """How code names a file: its whole name, or its folder's path ("docs", "releases" — never GitHub's /releases/,
+    nor the word)."""
+    folders = path.split("/")[:-1]
+    parts = [re.escape(path.rsplit("/", 1)[-1])]
+    if folders and len(folders[-1]) >= 6 and folders[-1] not in GENERIC_DIRS:
+        tail = [re.escape(f) for f in folders[-2:]]
+        parts.append(r"[\"'/\\]" + r"[\"'/\\,\s]{1,6}".join(tail) + r"[\"'/\\]")
+    return re.compile("|".join(parts))
+
+
+def _strings(node):
+    """A definition's (or a module's) string constants, quoted, in order — never a comment or a docstring: how its
+    code names a file ("docs", "releases", "RELEASE_v3.0.17.md")."""
+    docs = set()
+    for n in ast.walk(node):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body \
+                and isinstance(n.body[0], ast.Expr) and isinstance(getattr(n.body[0], "value", None), ast.Constant):
+            docs.add(id(n.body[0].value))
+    return " ".join(f'"{n.value}"' for n in ast.walk(node)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs)
+
+
+def _namers(project_root, path):
+    """{source: its definitions that name the file at `path`} over the app's code and the tests' helper modules (one
+    by one, never a whole class)."""
+    pattern, out = _file_pattern(path), {}
+    for top in ("app", "modules", "tests"):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(project_root, top)):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__" and not d.startswith(".")
+                           and not (top == "modules" and d == "tests")]
+            for n in filenames:
+                if not n.endswith(".py") or n.startswith("test_"):
+                    continue
+                source = os.path.relpath(os.path.join(dirpath, n), project_root).replace(os.sep, "/")
+                try:
+                    text = _text(project_root, source)
+                    if not pattern.search(text):
+                        continue
+                    tree = ast.parse(text)
+                except (OSError, SyntaxError, ValueError):
+                    continue
+                names = set()
+                for node in tree.body:                        # (a method one by one, never its whole class)
+                    for d in (node.body if isinstance(node, ast.ClassDef) else [node]):
+                        name = getattr(d, "name", None) or next((t.id for t in getattr(d, "targets", [])
+                                                                 if isinstance(t, ast.Name)), None)
+                        if name and pattern.search(_strings(d)):
+                            names.add(name)
+                if names:
+                    out[source] = names
+    return out
+
+
+def _touched_callers(project_root, base):
+    """-> (the test files and guards picked, in path order; {pick: why}; notes)."""
+    lines = _changed_lines(project_root, base)
+    why, notes = {}, []
+    for path in _changed_test_files(project_root, base):
+        why[path] = "changed on the branch"
+    changed = _changed_app_names(project_root, lines)
+    for module, names in _removed_app_names(project_root, base).items():   # a caller left behind goes red: picked
+        changed.setdefault(module, set()).update(names)
+    texts = {}
+    for path in _test_files(project_root):
+        try:
+            texts[path] = _text(project_root, path)
+        except OSError:
+            continue
+    idents = {p: _idents(t) for p, t in texts.items()}
+    counts = _counts(idents.values())
+    folder_users, quoted = {}, {}
+
+    def strings(test_path):                                   # a test file's string constants (once each)
+        if test_path not in quoted:
+            try:
+                quoted[test_path] = _strings(ast.parse(texts[test_path]))
+            except (SyntaxError, ValueError):
+                quoted[test_path] = texts[test_path]
+        return quoted[test_path]
+    others = sorted(c for c in lines if not _is_test_file(c) and os.path.isfile(os.path.join(project_root, c))
+                    and not (c.endswith(".py") and (c.startswith("tests/") or "/tests/" in c))   # (a .py read as text
+                    and not c.rsplit("/", 1)[-1].startswith("__"))    # too; never by a name every package has)
+    helpers = sorted(c for c in lines if c.endswith(".py") and (c.startswith("tests/") or "/tests/" in c)
+                     and not _is_test_file(c) and os.path.isfile(os.path.join(project_root, c)))
+    for other in (o for o in others if not o.endswith(".py")):   # a definition that names a changed data file has
+        for source, names in _namers(project_root, other).items():   # changed: BASE_HASHES (plan_file_base_hashes.json)
+            changed.setdefault(source, set()).update(names)
+    for path, text in texts.items():
+        if path in why:
+            continue
+        for module, names in sorted(changed.items()):
+            hit = sorted(n for n in names if n in idents[path])
+            if hit and not _imports(text, module):
+                hit = [n for n in hit if _rare(n, counts, RARE_TESTS)]
+            if hit:
+                why[path] = f"names {', '.join(hit[:3])}{' …' if len(hit) > 3 else ''} ({module}, changed)"
+                break
+        if path in why:
+            continue
+        for helper in helpers:                                # a test helper or conftest the branch changed
+            folder = helper.rsplit("/", 1)[0] + "/"
+            if (helper.endswith("/conftest.py") and path.startswith(folder)) or _imports(text, helper):
+                why[path] = f"uses {helper} (changed)"
+                break
+        if path in why:
+            continue
+        for other in others:                                  # a changed data file, template, stylesheet, notes file
+            if other not in folder_users:                     # (Surasura.spec, never "Surasura"; "releases" as
+                pattern = _file_pattern(other)                # a path part, never the word; in the code's strings,
+                folder_users[other] = {p for p in texts if pattern.search(strings(p))}   # never a comment)
+            users = folder_users[other]
+            if path in users and (other.rsplit("/", 1)[-1] in strings(path) or len(users) <= RARE_TESTS):
+                why[path] = f"names {other.rsplit('/', 1)[-1]} or its folder ({other}, changed)"
+                break
+    for node, folders in GUARDS.items():
+        f = node.split("::", 1)[0]
+        if node in why or f in why or not os.path.isfile(os.path.join(project_root, f)):
+            continue
+        hit = sorted(c for c in lines if any(c.startswith(d) for d in folders))
+        if hit:
+            why[node] = f"the area's guard ({', '.join(folders)}: {hit[0]}{' …' if len(hit) > 1 else ''})"
+    if not lines:
+        notes.append(f"nothing changed since {base}")
+    return sorted(why), why, notes
+
+
+def run_touched_callers(project_root, base="origin/3.0-dev", listing=False):
+    """`--touched-callers [BASE]`: the test files that reach what the branch changed (see above), under the read
+    audit. 0 when every one passed (nothing picked passes, and says so)."""
+    picked, why, notes = _touched_callers(project_root, base)
+    for note in notes:
+        print(f"  ({note})")
+    print(f"{len(picked)} test file(s) reach what changed since {base} (the read audit on):", flush=True)
+    for p in picked:
+        print(f"  {p}  <- {why[p]}")
+    if listing or not picked:
+        return 0
+    started = time.perf_counter()
+    groups = _by_suite(picked)
+    core = groups.pop("tests", [])
+    jobs = {}
+    if core:
+        count = max(1, min(4, len(core) // 6, _shard_count(_free_memory_mb(), os.cpu_count())))
+        parts = _shards(project_root, core, count) if count > 1 else [core]
+        for i, part in enumerate(parts, 1):
+            jobs[f"tests [{i}/{len(parts)}]" if len(parts) > 1 else "tests"] = part
+    jobs.update(groups)
+    failed, outputs = [], {}
+    env = _audit_env()
+
+    def one(label, nodes):
+        result = subprocess.run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
+                                 "-p", "tests.read_audit"], cwd=project_root, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return label, (0 if result.returncode == 5 else result.returncode), _decode(result.stdout)
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        for future in as_completed([pool.submit(one, k, v) for k, v in jobs.items()]):
+            label, code, output = future.result()
+            outputs[label] = output
+            print(f"  {'PASS' if code == 0 else 'FAIL'}  {label:<34} {_last_line(output)}", flush=True)
+            if code != 0:
+                failed.append(label)
+    for label in failed:
+        print("\n" + "=" * 60 + f"\n   FAILED: {label}\n" + "=" * 60 + "\n" + outputs[label])
+    print(f"\n  [{'FAIL' if failed else 'PASS'}]  {len(picked)} touched file(s), {time.perf_counter() - started:.1f}s")
+    return 1 if failed else 0
+
+
+FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--guards", "--touched-callers", "--list", "--help",
+         "-h")                                                       # main's (a value follows some)
 
 
 def _value_after(args, flag):
@@ -602,8 +1197,12 @@ def main():
     `python run_tests.py --all`  runs the core suite AND every module suite at the same time.
     `python run_tests.py --shard I/N`  runs shard I of the core suite split N ways (GitHub's PR tests).
     `python run_tests.py --stress [N]`  runs the stress set (tests/stress/) N times (1).
-    `python run_tests.py --stress-changed [BASE]`  runs every test changed since BASE (origin/3.0-dev) 20 times
-        under load (a lane's check before READY): by test function, not whole files.
+    `python run_tests.py --stress-changed [BASE]`  runs every test changed since BASE (origin/3.0-dev) under load (a
+        lane's check before READY), by test function: 20 times each one that waits on time or threads, once the rest.
+    `python run_tests.py --guards`  runs every whole-repo guard test (GUARDS), under the read audit: before every push.
+    `python run_tests.py --touched-callers [BASE]`  a lane's touched run: the test files that reach what the branch
+        changed since BASE (origin/3.0-dev) and the area's guards, under the read audit (no test reads an ignored file).
+    `--list` with any of the three: prints what it would run, and runs nothing.
     `python run_tests.py --help`  prints this and runs nothing; so does a flag it doesn't know (exit 2).
     """
     # 0. --help, or a flag it doesn't know: the usage, nothing run (either used to start the whole core suite — outside
@@ -618,7 +1217,12 @@ def main():
         sys.exit(0 if helping else 2)
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
-    for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev")),
+    listing = "--list" in args
+    for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev",
+                                                                         listing=listing)),
+                      ("--touched-callers", lambda v: run_touched_callers(project_root, v or "origin/3.0-dev",
+                                                                          listing=listing)),
+                      ("--guards", lambda v: run_guards(project_root, listing=listing)),
                       ("--stress", lambda v: run_stress(project_root, int(v) if v and v.isdigit() else 1))):
         if flag in args or any(a.startswith(flag + "=") for a in args):
             try:

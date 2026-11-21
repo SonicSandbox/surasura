@@ -489,7 +489,7 @@ def test_main_with_stress_takes_its_count(monkeypatch, argv, times):
                                         (["run_tests.py", "--stress-changed", "origin/2.x-dev"], "origin/2.x-dev")])
 def test_main_with_stress_changed_takes_its_base(monkeypatch, argv, base):
     seen = []
-    monkeypatch.setattr(run_tests, "run_stress_changed", lambda root, b: seen.append(b) or 0)
+    monkeypatch.setattr(run_tests, "run_stress_changed", lambda root, b, **k: seen.append(b) or 0)
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(SystemExit):
         run_tests.main()
@@ -504,7 +504,7 @@ def test_the_changed_test_files_are_the_branchs_and_the_uncommitted_ones_still_o
                                                          "modules/junban/tests/test_c.py\ntests/helpers.py\n",
                ("diff", "--name-only", "HEAD"): "tests/qt/test_b.py\n"}
     monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
-        cmd, 0, stdout=answers[tuple(cmd[1:])].encode()))
+        cmd, 0, stdout=answers[tuple(cmd[3:] if cmd[1:3] == ["-c", "core.quotepath=false"] else cmd[1:])].encode()))
     assert run_tests._changed_test_files(str(tmp_path), "base") == [
         "modules/junban/tests/test_c.py", "tests/qt/test_b.py", "tests/test_a.py"]
     assert [run_tests._suite_of(p) for p in run_tests._changed_test_files(str(tmp_path), "base")] == [
@@ -534,7 +534,7 @@ def test_stress_changed_repeats_each_suites_tests_in_its_own_process_beside_two_
     assert runs == [["modules/junban/tests/test_c.py::test_one"],
                     ["tests/qt/test_b.py::TestB::test_two", "tests/test_a.py::test_three"]] * 3
     assert sorted(loads) == [["--shard", "1/4"], ["--shard", "3/4"]] and len(ended) == 2, "the load ended with them"
-    assert "passed 3 times under load" in capsys.readouterr().out
+    assert "passed under load: 3 of them 3 times" in capsys.readouterr().out    # (unreadable files: every repeat)
 
 
 def test_stress_changed_with_no_changed_test_passes_and_says_so(monkeypatch, capsys):
@@ -712,3 +712,292 @@ def test_the_changed_tests_come_from_gits_diff_committed_and_not_yet(tmp_path):
                                                       b"    assert 2\r\n\r\n\r\ndef test_f():\r\n    assert 3\r\n")
     ids, notes = run_tests._changed_tests(root, "base")
     assert ids == ["tests/test_crlf.py::test_f", "tests/test_x.py::test_a", "tests/test_x.py::test_b"], (ids, notes)
+
+
+# --- --stress-changed: only the tests that wait on time repeat (Minato-TS, 2026-11-20) ------------------------------- #
+# Mado-EZC's stress runs took 12m49s and 56m05s, ~70 % of their tests with no wait on the clock or a thread: those run
+# once now, the rest 20 times. What the old gate caught must still be caught: a test that waits (a sleep, a Qt wait,
+# a thread, a deadline), whether its own lines wait or a helper's, a fixture's of its conftest, or one imported from
+# a tests.* module does.
+_TIMING_FILE = '''import threading
+import time
+import pytest
+from tests.waits import settle_soon
+
+
+def _poll(box):
+    deadline = time.perf_counter() + 2
+    while not box and time.perf_counter() < deadline:
+        time.sleep(0.01)
+
+
+def _count(words):
+    return len(words)
+
+
+def test_a_sleep_of_its_own():
+    time.sleep(0.01)
+
+
+def test_a_helpers_deadline():
+    _poll(["雨"])
+
+
+def test_a_conftest_fixtures_timer(qt_ticker):
+    assert qt_ticker
+
+
+def test_a_waiting_helper_from_a_tests_module():
+    settle_soon()
+
+
+def test_counts_words_and_nothing_waits():
+    assert _count(["猫", "犬"]) == 2
+
+
+def test_joins_a_path_never_a_thread():
+    assert "/".join(["data", "ja"]) == "data/ja"
+
+
+class TestShelf:
+    def test_plain(self):
+        assert ["本"]
+
+
+class TestWaits:
+    def setup_method(self):
+        self.t = threading.Thread(target=lambda: None)
+
+    def test_with_a_thread_in_its_class(self):
+        assert self.t
+'''
+
+
+def _timing_tree(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "import pytest\n\n\n@pytest.fixture\ndef qt_ticker():\n    from PyQt6.QtCore import QTimer\n    return QTimer()\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "waits.py").write_text("def settle_soon():\n    qWait(10)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mix.py").write_text(_TIMING_FILE, encoding="utf-8")
+    return str(tmp_path)
+
+
+def test_stress_repeats_only_the_tests_that_wait_on_time_or_threads(tmp_path):
+    root = _timing_tree(tmp_path)
+    ids = ["tests/test_mix.py::" + n for n in (
+        "test_a_sleep_of_its_own", "test_a_helpers_deadline", "test_a_conftest_fixtures_timer",
+        "test_a_waiting_helper_from_a_tests_module", "test_counts_words_and_nothing_waits",
+        "test_joins_a_path_never_a_thread", "TestShelf::test_plain", "TestWaits::test_with_a_thread_in_its_class")]
+    timed, steady = run_tests._timing_tests(root, ids)
+    assert timed == ids[:4] + ids[7:], "own sleep, a helper's deadline, a conftest timer, an imported wait, a class's thread"
+    assert steady == ids[4:7], "no wait anywhere it reaches: once ('/'.join is no thread's join)"
+
+
+def test_a_files_own_autouse_fixture_that_waits_makes_every_test_of_it_wait(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_auto.py").write_text(
+        "import time\nimport pytest\n\n\n@pytest.fixture(autouse=True)\ndef _quiet():\n    yield\n    time.sleep(0.01)\n"
+        "\n\ndef test_reads():\n    assert '本'\n", encoding="utf-8")
+    assert run_tests._timing_tests(str(tmp_path), ["tests/test_auto.py::test_reads"]) == (
+        ["tests/test_auto.py::test_reads"], [])
+
+
+def test_a_file_that_cant_be_read_or_parsed_repeats_whole_as_before(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_half.py").write_text("def test_a(:\n", encoding="utf-8")
+    ids = ["tests/test_half.py", "tests/test_gone.py::test_b"]
+    assert run_tests._timing_tests(str(tmp_path), ids) == (ids, [])
+
+
+def test_stress_changed_runs_the_steady_tests_once_and_the_waiting_ones_n_times(tmp_path, monkeypatch, capsys):
+    root = _timing_tree(tmp_path)
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda r, b: ([
+        "tests/test_mix.py::test_a_sleep_of_its_own", "tests/test_mix.py::test_counts_words_and_nothing_waits"], []))
+    monkeypatch.setattr(run_tests.subprocess, "Popen", lambda cmd, **k: type("P", (), {"poll": lambda self: None})())
+    monkeypatch.setattr(run_tests, "_end_tree", lambda proc: None)
+    runs = []
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append(cmd[3:-4]) or
+                        subprocess.CompletedProcess(cmd, 0, stdout=b"1 passed"))
+    assert run_tests.run_stress_changed(root, "base", times=4) == 0
+    assert runs == [["tests/test_mix.py::test_counts_words_and_nothing_waits"]] + \
+        [["tests/test_mix.py::test_a_sleep_of_its_own"]] * 4
+    out = capsys.readouterr().out
+    assert "1 wait on time or threads, 4 times each; 1 don't, once" in out and "1 of them 4 times, 1 once" in out
+
+
+def test_stress_changed_list_prints_the_counts_and_runs_nothing(tmp_path, monkeypatch, capsys):
+    root = _timing_tree(tmp_path)
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda r, b: (["tests/test_mix.py::test_a_sleep_of_its_own"], []))
+    _no_run(monkeypatch)
+    assert run_tests.run_stress_changed(root, "base", listing=True) == 0
+    assert "x20  tests/test_mix.py::test_a_sleep_of_its_own" in capsys.readouterr().out
+
+
+# --- --touched-callers: a lane's touched run is the callers of what it changed (Minato-TS, 2026-11-20) -------------- #
+# Kura-SO's touched run took 25m35s over all 29 test_library_store_*.py; 6 reached the change. The picks are the test
+# files that name a changed definition (the branch's own test files whole), a changed conftest's folder, a changed
+# helper's importers, a changed data file's readers, and the area's guards.
+def _touched_tree(tmp_path):
+    t = tmp_path
+    for d in ("app/connect", "tests/connect", "tests/qt", "templates"):
+        (t / d).mkdir(parents=True)
+    (t / "app" / "connect" / "library.py").write_text(
+        "SHELF = '本棚'\n\n\ndef place_episode(rows):\n    return rows\n\n\ndef replace(rows):\n    return rows[::-1]\n",
+        encoding="utf-8")
+    (t / "templates" / "web_app.html").write_text("<p>読む</p>\n", encoding="utf-8")
+    files = {
+        "tests/connect/test_places.py": "from app.connect import library\n\n\ndef test_a():\n"
+                                        "    assert library.place_episode(['一話'])\n",
+        "tests/connect/test_by_rare_name.py": "from tests.helpers import shelf\n\n\ndef test_b():\n"
+                                              "    assert shelf.place_episode\n",
+        "tests/connect/test_changed.py": "def test_j():\n    assert '変'\n",
+        "tests/connect/test_common_name_unimported.py": "def test_c():\n    assert '猫'.replace('猫', '犬')\n",
+        "tests/connect/test_common_name_imported.py": "from app.connect.library import replace\n\n\ndef test_d():\n"
+                                                     "    assert replace([1, 2]) == [2, 1]\n",
+        "tests/connect/test_name_in_a_comment.py": "# place_episode is mentioned only here\ndef test_e():\n    assert 1\n",
+        "tests/connect/test_patch_target.py": "def test_f(monkeypatch):\n"
+                                              "    monkeypatch.setattr('app.connect.library.place_episode', len)\n",
+        "tests/qt/test_page.py": "def test_g():\n    assert '頁'\n",
+        "tests/test_report.py": "import os\n\n\ndef test_h():\n    assert os.path.join('templates', 'web_app.html')\n",
+        "tests/test_unrelated.py": "def test_i():\n    assert '雪'\n",
+        "tests/test_comment_only.py": "# web_app.html is read by the report's tests\ndef test_k():\n    assert '書'\n",
+    }
+    for path, text in files.items():
+        (t / path).write_text(text, encoding="utf-8")
+    # `replace` is a common name: a dozen and more test files use it (str.replace), so naming it alone picks nothing
+    for n in range(run_tests.RARE_TESTS + 1):
+        (t / "tests" / f"test_filler_{n:02d}.py").write_text(f"def test_{n}():\n    assert 'あ'.replace('あ', 'い')\n",
+                                                            encoding="utf-8")
+    (t / "tests" / "qt" / "conftest.py").write_text("import pytest\n", encoding="utf-8")
+    return str(t)
+
+
+def test_touched_callers_picks_the_files_that_name_what_changed(tmp_path, monkeypatch):
+    root = _touched_tree(tmp_path)
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda r, b: {
+        "app/connect/library.py": {5, 9}, "templates/web_app.html": {1}, "tests/qt/conftest.py": {1},
+        "tests/connect/test_changed.py": {2}})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda r, b: ["tests/connect/test_changed.py"])
+    monkeypatch.setattr(run_tests, "GUARDS", {"tests/test_unrelated.py": ("templates/",),
+                                              "tests/test_report.py::test_h": ("app/qt/",)})
+    picked, why, notes = run_tests._touched_callers(root, "base")
+    assert picked == ["tests/connect/test_by_rare_name.py", "tests/connect/test_changed.py",
+                      "tests/connect/test_common_name_imported.py",
+                      "tests/connect/test_patch_target.py", "tests/connect/test_places.py", "tests/qt/test_page.py",
+                      "tests/test_report.py", "tests/test_unrelated.py"], why
+    assert why["tests/connect/test_changed.py"] == "changed on the branch"
+    assert "place_episode" in why["tests/connect/test_by_rare_name.py"], "a rare name counts unimported (a helper's)"
+    assert "replace" in why["tests/connect/test_common_name_imported.py"], "a common name counts where it is imported"
+    assert "place_episode" in why["tests/connect/test_patch_target.py"], "a patch target names it"
+    assert why["tests/qt/test_page.py"] == "uses tests/qt/conftest.py (changed)"
+    assert "web_app.html" in why["tests/test_report.py"]
+    assert why["tests/test_unrelated.py"].startswith("the area's guard (templates/")
+    assert "tests/connect/test_name_in_a_comment.py" not in why, "a comment is no caller"
+    assert "tests/test_comment_only.py" not in why, "a comment naming a changed file is no reader"
+    assert "tests/connect/test_common_name_unimported.py" not in why, "str.replace is not library.replace"
+
+
+def test_touched_callers_says_so_when_nothing_changed(tmp_path, monkeypatch, capsys):
+    root = _touched_tree(tmp_path)
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda r, b: {})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda r, b: [])
+    monkeypatch.setattr(run_tests, "_removed_app_names", lambda r, b: {})
+    _no_run(monkeypatch)
+    assert run_tests.run_touched_callers(root, "base") == 0
+    out = capsys.readouterr().out
+    assert "nothing changed since base" in out and "0 test file(s)" in out
+
+
+def test_touched_callers_runs_each_suite_under_the_read_audit(tmp_path, monkeypatch, capsys):
+    root = _touched_tree(tmp_path)
+    monkeypatch.setattr(run_tests, "_touched_callers", lambda r, b: (
+        ["modules/junban/tests/test_x.py", "tests/test_a.py"], {"modules/junban/tests/test_x.py": "w",
+                                                                "tests/test_a.py": "w"}, []))
+    runs = []
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append((cmd[3:], k["env"])) or
+                        subprocess.CompletedProcess(cmd, 0, stdout=b"3 passed in 0.1s"))
+    assert run_tests.run_touched_callers(root, "base") == 0
+    assert sorted(r[0][0] for r in runs) == ["modules/junban/tests/test_x.py", "tests/test_a.py"]
+    assert all(r[0][-2:] == ["-p", "tests.read_audit"] and r[1]["SURASURA_READ_AUDIT"] == "ignored" for r in runs)
+
+
+# --- --guards: the whole-repo guard tests before every push (Minato-TS, 2026-11-20) --------------------------------- #
+def test_every_guard_is_a_test_file_of_this_checkout_and_the_set_is_not_empty():
+    """GUARDS names files GitHub runs (the public checkout): a guard renamed or removed without its row would leave a
+    window-wide scan out of every lane's pre-push run, silently."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    assert run_tests.GUARDS
+    for node, folders in run_tests.GUARDS.items():
+        path = node.split("::", 1)[0]
+        assert run_tests._is_test_file(path) and os.path.isfile(os.path.join(root, path)), node
+        assert folders and all(isinstance(f, str) and f for f in folders), node
+
+
+def test_guards_run_each_suite_once_under_the_read_audit_and_name_what_is_missing(tmp_path, monkeypatch, capsys):
+    (tmp_path / "tests" / "qt").mkdir(parents=True)
+    (tmp_path / "tests" / "qt" / "test_scan.py").write_text("def test_a():\n    assert '画'\n", encoding="utf-8")
+    monkeypatch.setattr(run_tests, "GUARDS", {"tests/qt/test_scan.py": ("app/qt/",),
+                                              "tests/test_gone.py::test_b": ("app/",)})
+    runs = []
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **k: runs.append((cmd[3:], k["env"])) or
+                        subprocess.CompletedProcess(cmd, 1, stdout=b"1 failed in 0.1s"))
+    assert run_tests.run_guards(str(tmp_path)) == 1
+    assert [r[0][0] for r in runs] == ["tests/qt/test_scan.py"]
+    assert runs[0][1]["SURASURA_READ_AUDIT"] == "ignored" and runs[0][0][-2:] == ["-p", "tests.read_audit"]
+    out = capsys.readouterr().out
+    assert "tests/test_gone.py::test_b" in out and "[FAIL]  the guard set" in out
+
+
+@pytest.mark.parametrize("argv", [["--guards", "--list"], ["--touched-callers", "--list"],
+                                  ["--touched-callers", "origin/2.x-dev", "--list"], ["--stress-changed", "--list"]])
+def test_list_prints_the_picks_and_starts_nothing(monkeypatch, capsys, argv):
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda r, b: {})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda r, b: [])
+    monkeypatch.setattr(run_tests, "_changed_tests", lambda r, b: ([], []))
+    monkeypatch.setattr(run_tests, "_test_files", lambda r: [])
+    monkeypatch.setattr(run_tests, "_removed_app_names", lambda r, b: {})
+    _no_run(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert exit_info.value.code == 0
+
+
+# (The 2026-11-20 review's misses, each one a wait or a caller the first cut didn't see.)
+def test_waits_reached_through_from_tests_import_a_platform_helper_a_join_and_a_bom_still_repeat(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "helpers.py").write_text("import time\n\n\ndef wait_flag():\n    time.sleep(0.01)\n",
+                                                   encoding="utf-8")
+    (tmp_path / "tests" / "test_more.py").write_text(
+        "import sys\nfrom tests import helpers\n\nif sys.platform == 'win32':\n    def _settle_files():\n"
+        "        return time.sleep(0.05)\nelse:\n    def _settle_files():\n        return None\n\n\n"
+        "def test_through_a_helper_module():\n    helpers.wait_flag()\n\n\n"
+        "def test_through_a_platform_helper():\n    _settle_files()\n\n\n"
+        "def test_a_join_with_what_is_left(t, left):\n    t.join(left)\n\n\n"
+        "def test_a_word_list():\n    assert ', '.join(['雨', '雪']) == '雨, 雪'\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_bom.py").write_bytes("﻿def test_plain():\n    assert '本'\n".encode("utf-8"))
+    ids = ["tests/test_more.py::" + n for n in ("test_through_a_helper_module", "test_through_a_platform_helper",
+                                                "test_a_join_with_what_is_left", "test_a_word_list")]
+    timed, steady = run_tests._timing_tests(str(tmp_path), ids + ["tests/test_bom.py::test_plain"])
+    assert timed == ids[:3] and steady == [ids[3], "tests/test_bom.py::test_plain"], (timed, steady)
+
+
+def test_a_removed_function_picks_the_test_file_that_still_calls_it(tmp_path):
+    """A real repository: the branch deletes app/shelf.py's `old_count`; the test calling it is unchanged, and goes
+    red — the touched run must pick it."""
+    root = str(tmp_path)
+    _git(root, "init", "-q", "-b", "base")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "shelf.py").write_text("def old_count(books):\n    return len(books)\n\n\n"
+                                               "def count(books):\n    return len(books)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_shelf_count.py").write_text(
+        "from app import shelf\n\n\ndef test_counts():\n    assert shelf.old_count(['本']) == 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_other.py").write_text("def test_other():\n    assert '雪'\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "checkout", "-q", "-b", "lane")
+    (tmp_path / "app" / "shelf.py").write_text("def count(books):\n    return len(books)\n", encoding="utf-8")
+    picked, why, _notes = run_tests._touched_callers(root, "base")
+    assert picked == ["tests/test_shelf_count.py"] and "old_count" in why["tests/test_shelf_count.py"], why

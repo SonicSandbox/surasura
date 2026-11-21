@@ -4586,6 +4586,22 @@ class RowsView(QListView):
                         return QRect(part[1])
         return None
 
+    def hero_part(self, name):
+        """Up Next's part `name` (its "journey" ↗, its "done") as a rect in the viewport, or None when it isn't on
+        screen (*Your path*'s Show me lights it, Mado-EZP)."""
+        model = self.model()
+        for i, entry in enumerate(model.entries):
+            if entry[0] != HERO:
+                continue
+            rect = self.visualRect(model.index(i, 0))
+            if not rect.intersects(self.viewport().rect()):
+                return None
+            for part in self.delegate.parts(entry, rect):
+                if part[0] == name:
+                    return QRect(part[1])
+            return None
+        return None
+
     def _words_part(self, idx, part):
         """Hover-W: whether `part` shows a word card — a row's or an opened episode's *N new*, or Up Next's *N new
         words ↗* (its next episode's: its click still opens the journey)."""

@@ -682,7 +682,7 @@ def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_
                   # live testing, 2026-11-20: the line in the target language, the brief in the chat's own; a crutch
                   # word sharing the target's kanji in kana; a shown word back only at the end, the easier step first
                   "the role's line: 1-2 short sentences in the target language",
-                  "a short brief in the language you talk to the learner in (never the target language)",
+                  "a short brief in the language you talk to the learner in (never the target language; its labels too",
                   "Goal (", "Register (", "Length (1-3 sentences)", "the line and the brief together",
                   "Write a banned word in kana when it shares a kanji with the target",
                   "Bring it back only at the end of the round, after every other word: first as the easier step",

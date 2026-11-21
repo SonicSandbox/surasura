@@ -580,7 +580,8 @@ def produce_rules(role, recent, weak=False):
         f"line with who is speaking, e.g. 【{role}】.",
         "Each drill has two parts. First the role's line: 1-2 short sentences in the target language, you speaking "
         "as the role, a moment the learner must answer. Then a short brief in the language you talk to the learner in "
-        "(never the target language), four short lines: Goal (what they must get across, which this precise word "
+        "(never the target language; its labels too, in that language), four short lines: Goal (what they must get "
+        "across, which this precise word "
         "fits best), Register (who they talk to, and です・ます or タメ口 / polite or casual), Banned (2-4 crutch "
         "words: the easy synonyms or paraphrases they would reach for instead), Length (1-3 sentences). Write the "
         f"line in words the learner knows: {known}, and easy everyday words.",

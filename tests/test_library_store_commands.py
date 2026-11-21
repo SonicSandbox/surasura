@@ -506,7 +506,7 @@ def test_status_write_undo_uses_the_value_check(language, command):
     out = store.undo(change)
     assert out.notes == ["1 item changed since and was left as it is"]
     column = "watched" if command == "set_watched" else "pinned"
-    assert sorted(i for i, _c, _n, _o in out.status) == sorted([ids[0], ids[2]])
+    assert sorted(i for i, c, _n, _o in out.status if c == column) == sorted([ids[0], ids[2]])   # (+ dates: Kura-WD)
     assert store.item(ids[0])[column] in (0, None)
     assert store.item(ids[2])[column] in (0, None)
     if command == "pin":

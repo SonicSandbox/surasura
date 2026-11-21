@@ -105,19 +105,39 @@ def test_only_the_files_the_public_repo_ignores_are_named(audited):
 
 def test_code_and_the_tolerated_paths_are_never_named_but_user_data_is(audited):
     """A whole-repo scan reads the private modules' sources where they are checked out (GitHub's runner has none, and
-    the scan has less to read, never a red); the private docs' never-public list, the shard packer's times and the
-    local-only parsing suite are read only when there. A user's own lists are another matter: named (2026-11-20's
+    the scan has less to read, never a red); the private docs' never-public list, the shard packer's times and a
+    local-only test folder are read only when there. A user's own lists are another matter: named (2026-11-20's
     survey found a test reading the tree's User Files/ja lists)."""
-    (audited / ".gitignore").write_text("modules/koe/\ndocs/agent instructions/\ndebug/\ntests/parsing/\nUser Files/\n",
+    local = [folder for folder, _why in read_audit.TOLERATED if folder.startswith("tests/")][0]
+    (audited / ".gitignore").write_text(f"modules/koe/\ndocs/agent instructions/\ndebug/\n{local}\nUser Files/\n",
                                         encoding="utf-8")
     _git(str(audited), "init", "-q")
     _git(str(audited), "add", "-A")
     _git(str(audited), "commit", "-q", "-m", "base")
     reads = {"tests/qt/test_scan.py::test_all": {"modules/koe/server.py", "docs/agent instructions/never-public.txt",
-                                                  "debug/test_times.json", "tests/parsing/data/ja/台本.txt"},
+                                                  "debug/test_times.json", local + "台本.txt"},
              "tests/test_helper.py::test_lists": {"User Files/ja/Blacklist.txt", "modules/koe/voices/声.json"}}
     assert read_audit.ignored_reads(reads) == {"tests/test_helper.py::test_lists": [
         "User Files/ja/Blacklist.txt", "modules/koe/voices/声.json"]}
+
+
+def test_the_top_folders_env_is_tolerated_but_never_a_users_file_or_another_env(audited):
+    """Why: app/telemetry.py calls load_dotenv() as it is imported, which reads the top folder's .env when there is one
+    (every working copy keeps a dev one; GitHub's runner has none, and telemetry then reads nothing): the first test of
+    a run that imported telemetry went red on it, in every copy (2026-11-21). A tolerated file is that one file at that
+    place: a .env in a user's folder, one under another name, or a file beside the shard packer's times is still
+    named, and so is a user's own list."""
+    (audited / ".gitignore").write_text(".env\n.env.*\ndebug/\nUser Files/\n", encoding="utf-8")
+    _git(str(audited), "init", "-q")
+    _git(str(audited), "add", "-A")
+    _git(str(audited), "commit", "-q", "-m", "base")
+    read_audit._hook("open", (str(audited / ".env"), "r", os.O_RDONLY))
+    assert read_audit._STATE["reads"] == {"tests/test_x.py::test_reads": {".env"}}
+    reads = {"tests/test_scrub.py::test_first": {".env", "debug/test_times.json"},
+             "tests/test_send_report.py::test_zip": {".env", "User Files/.env", "User Files/ja/KnownWord.json",
+                                                     ".env.local", "debug/test_times.json.bak"}}
+    assert read_audit.ignored_reads(reads) == {"tests/test_send_report.py::test_zip": [
+        ".env.local", "User Files/.env", "User Files/ja/KnownWord.json", "debug/test_times.json.bak"]}
 
 
 def test_no_repository_means_no_verdict_never_a_pass(audited):

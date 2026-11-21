@@ -28,7 +28,7 @@ from modules.junban import qt_strings as S
 from modules.junban.tests.test_backfill import FIELD, FIRST_NOTE, _fake, _lapis, _Session, _settings
 from modules.junban.tests.test_reposition import _patched
 
-PATTERNS, SENTENCE = backfill.FILLS
+PATTERNS, SENTENCE = backfill.FILLS[:2]
 
 
 def _result(rows=None, edits=None, models=None, by_fill=None):

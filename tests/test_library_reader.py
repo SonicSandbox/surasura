@@ -479,6 +479,58 @@ def test_a_cache_written_by_another_app_version_shows_its_figures_faded(tmp_path
         again.stop()
 
 
+class _SeededNumbers(_LoadingNumbers):
+    """`_LoadingNumbers` with `moves.Numbers.seed`: the figures the reader hands it before its first load (the ones a
+    load that finds the plan out of date keeps, faded)."""
+
+    def __init__(self, table, read, on_disk):
+        super().__init__(table, read, on_disk)
+        self.seeded = None
+
+    def seed(self, table):
+        if self.said == "not read yet":
+            self.seeded = dict(table)
+
+
+def test_a_cache_the_store_wrote_past_still_keeps_its_figures_faded_until_the_numbers_follow(tmp_path):
+    """The store written since the cache (Kura-CC, 3.0.18, a tester's restart: Connect's record of a card made, a move
+    by another program) — its rows aren't shown as the first screen (the order may have moved), but its *N new* are
+    still the last ones shown: handed to the numbers, so a first load that finds the plan out of date (an update, a
+    Generate running) keeps them faded, and the live rows paint them faded until the load answers — never every row's
+    *N new* gone until the journey's Generate ends."""
+    for language in ("ja", "zh"):
+        seed = window_seed.build(language=language)
+        cache = str(tmp_path / f"window_cache_{language}.json")
+        _v, table = seed.numbers()
+        numbers = _SeededNumbers(table, (11, 500), (11, 500))
+        again, views = _cached_start(seed, cache, table, numbers)
+        seed.library.commit()                            # a status write since: the state version moved
+        again._first_screen()
+        assert views == [], language                     # no first screen: the order may have moved
+        assert numbers.seeded and numbers.seeded.items() <= table.items(), language
+        again._look()                                    # the first live look, the numbers' load not answered yet
+        live = views[-1][1]
+        assert not live.cached and _shown_faded(live) and all(_shown_faded(live)), language
+
+
+def test_a_cache_of_a_library_built_again_hands_no_figures_on(tmp_path):
+    """Another library (a new store id or epoch: its item ids aren't these) — its figures are never handed on."""
+    seed = window_seed.build(language="ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    _v, table = seed.numbers()
+    numbers = _SeededNumbers(table, (11, 500), (11, 500))
+    again, views = _cached_start(seed, cache, table, numbers)
+    with open(cache, encoding="utf-8") as f:
+        data = json.load(f)
+    data["key"][1] += 1                                  # the epoch it was written at: not this one
+    with open(cache, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    again._first_screen()
+    assert views == [] and numbers.seeded is None
+    again._look()
+    assert all(r.n_new is None for r in views[-1][1].rows)
+
+
 def test_a_damaged_cache_is_no_cache(tmp_path):
     seed = window_seed.build()
     cache = tmp_path / "window_cache_ja.json"

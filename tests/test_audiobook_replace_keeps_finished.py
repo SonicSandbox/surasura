@@ -32,10 +32,11 @@ from tests.test_sources_scan import _drive, _empty, _look
 TIERS = ("arrivals", "now", "soon", "goal", "graduated")
 
 
-def _book(language, title):
+def _book(language, title, unread="goal"):
     """(store, old epub, audiobook item) — a four-part book read where it is (setup's first look: Current), its
     audiobook paired by the book's own *A folder on your computer…*; then the learner's reading: part 1 Finished,
-    part 2 ✓ Done in Current, part 3 in Current (in progress), part 4 moved to 6+ Months (unread)."""
+    part 2 ✓ Done in Current, part 3 in Current (in progress), part 4 moved to 6+ Months (unread; `unread` None:
+    left in Current)."""
     store, _data = _empty(language)
     books = _drive("books")
     epub = _epub(os.path.join(books, f"{title}.epub"), title, language, repeat=15, chapters=4)
@@ -48,7 +49,8 @@ def _book(language, title):
     assert len(parts) == 4, parts
     store.finish([parts[0]])
     store.set_watched([parts[1]])
-    store.set_tier([parts[3]], "goal")
+    if unread:
+        store.set_tier([parts[3]], unread)
     return store, epub, item["id"]
 
 
@@ -88,6 +90,7 @@ def test_replace_keeps_the_finished_and_done_parts_and_replaces_only_the_unread(
         assert before[p2][0] == "now" and before[p2][3] == 1, "part 2 ✓ Done in Current"
         new = _new_beside(store, language, title, old)
         new_parts = _parts(store, new)
+        goal = store.ids("goal")
         offer = store.new_version_of(new_parts[0])
         assert offer["old"]["ids"] == [p1, p2, p3, p4], "the whole book still named"
         change = store.replace_book(new, old)
@@ -97,6 +100,8 @@ def test_replace_keeps_the_finished_and_done_parts_and_replaces_only_the_unread(
         assert [e["count"] for e in store.removed()] == [2]
         assert {store.item(p)["work_id"] for p in new_parts} == {work}, "the new version in the book's title"
         assert {store.item(p)["tier"] for p in new_parts} == {"goal"}, "where the last replaced part stood"
+        k = goal.index(p4)
+        assert store.ids("goal") == goal[:k] + new_parts + [ab] + goal[k + 1:],             "in its place, in their own order, then its audiobook (AB5's rule)"
         assert store.conn.execute("SELECT title FROM works WHERE id = ?", (work,)).fetchone()[0] == title
         assert _record(store, ab)["book"]["epub"] == os.path.abspath(new), "its audiobook follows"
         assert store.new_version_of(new_parts[0]) is None, "replaced: nothing more to offer"
@@ -114,9 +119,11 @@ def test_one_undo_of_a_replace_that_kept_parts_puts_everything_back_exactly(lang
         new = _new_beside(store, language, title, old)
         new_parts = _parts(store, new)
         orders, states = _orders(store), _state(store, [p1, p2, p3, p4] + new_parts)
+        assert store.removed() == []
         change = store.replace_book(new, old)
         assert change is not None
         store.undo(change)
+        assert store.removed() == [], "nothing left in Removed"
         assert _orders(store) == orders
         assert _state(store, [p1, p2, p3, p4] + new_parts) == states
         assert _record(store, ab)["book"]["epub"] == os.path.abspath(old)
@@ -137,7 +144,42 @@ def test_a_book_with_nothing_unread_is_no_replacement():
         assert store.new_version_of(new_parts[0]) is None
         assert store.replace_book(new, old) is None
         assert _orders(store) == orders and _state(store, [p1, p2, p3, p4] + new_parts) == states
-        assert _record(store, ab)["book"]["epub"] == os.path.abspath(old)
+        assert _record(store, ab)["book"]["epub"] == os.path.abspath(old) and store.removed() == []
+
+
+def test_two_unread_parts_in_one_tier_the_new_version_takes_the_later_ones_place():
+    """Parts 3 and 4 both in Current, unread: the new parts stand where the later one (part 4) stood — after the last
+    part that goes, as before the change — and the read parts stay where they were."""
+    language = "ja"
+    store, old, _ab = _book(language, NEKO, unread=None)
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        new = _new_beside(store, language, NEKO, old)
+        new_parts = _parts(store, new)
+        now = store.ids("now")
+        assert now.index(p3) < now.index(p4)
+        assert store.replace_book(new, old) is not None
+        k = now.index(p4)
+        assert [i for i in store.ids("now") if i != _ab] == [i for i in now[:k] if i != p3] + new_parts + [
+            i for i in now[k + 1:] if i != _ab]
+        assert store.item(p1)["tier"] == "graduated" and store.item(p2)["tier"] == "now"
+
+
+def test_unread_parts_that_all_wait_are_no_replacement():
+    """The unread parts' copies gone outside the app (each `waiting`): nowhere to put the new version — no *Replace*
+    offered, and a press writes nothing (it never fails on the press)."""
+    language = "ja"
+    store, old, _ab = _book(language, NEKO)
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        with store._writing():
+            store.conn.execute("UPDATE items SET availability = 'waiting' WHERE id IN (?, ?)", (p3, p4))
+        new = _new_beside(store, language, NEKO, old)
+        new_parts = _parts(store, new)
+        orders = _orders(store)
+        assert store.new_version_of(new_parts[0]) is None
+        assert store.replace_book(new, old) is None
+        assert _orders(store) == orders and store.removed() == []
 
 
 @pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
@@ -165,6 +207,9 @@ def test_the_writers_replace_trashes_only_the_replaced_parts_copies(language, ti
         assert heard.notes == [] and len(heard.saved) == 1
         assert all(os.path.exists(files[p]) for p in (p1, p2, p3)), "kept parts' copies stay"
         assert not os.path.exists(files[p4]), "the replaced part's copy in the trash"
+        cmd = {"op": "remove", "ids": list(offer["old"]["replaced"]), "new_epub": new, "old_epub": old}
+        with ls.open_store(language, data_dir, store.user_files_dir) as now:
+            assert w._changed_since(now, cmd) == "done", "a replay after a crash: landed (part 3 kept, not missing)"
         w.undo()
         assert h.until(lambda: heard.undone)
         assert all(os.path.exists(f) for f in files.values())
@@ -172,3 +217,5 @@ def test_the_writers_replace_trashes_only_the_replaced_parts_copies(language, ti
         w.finish(time.monotonic() + 5)
     with ls.open_store(language, data_dir, store.user_files_dir) as again:
         assert again.item(p3)["tier"] == "graduated" and again.item(p4)["tier"] == "goal"
+        assert {again.item(p)["tier"] for p in _parts(again, new)} == {"arrivals"}, "the new version back on its own"
+        assert _record(again, _ab)["book"]["epub"] == os.path.abspath(old)

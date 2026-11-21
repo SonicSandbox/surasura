@@ -14718,8 +14718,9 @@ def _store_new_version_of(self, item_id):
         return None                                      # (one title already: nothing to replace)
     with self._reading():
         old["replaced"], old["kept"] = self.replace_parts(old_epub)
-    if not old["replaced"]:
-        return None                                      # Kura-AB6: every part read — nothing to replace
+        placed = self._parts_place(old["replaced"])
+    if placed is None:
+        return None                                      # Kura-AB6: every part read (or each unread one waits)
     return {"old": old, "new": new}
 
 
@@ -14732,8 +14733,8 @@ def _store_replace_book(self, new_epub, old_epub, trashed_paths=None, by="user")
     files back on its Undo); `change.replaced` holds the rest, undone by the value check (`_undo_replaced`). -> the
     Change, or None (either book not here, or one title already, or nothing unread).
     Kura-AB6 (Sonic 2026-11-21: keep the Finished parts and their dates, replace only the unread): only the old book's
-    unread parts go (`replace_parts`); a Finished or ✓ Done part stays as it is — its tier, place, date and mark — in
-    the title the new parts join, and "the old book's last part" is the last of those that go."""
+    unread parts go (`replace_parts`); a Finished or ✓ Done part stays as it is — its title, tier, place, date and
+    mark — and "the old book's last part" is the last of those that go."""
     with self._command("remove", by) as cmd:
         new_ids = self._epub_ids(new_epub)
         old_ids, _kept = self.replace_parts(old_epub)

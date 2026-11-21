@@ -86,12 +86,12 @@ def test_one_list_settings_switches_sit_together_or_the_one_place_rule_fails(mon
     them, they are two places a person has to find — the check says so."""
     assert _switches_apart() == {}
     rows = list(catalog.ROWS)
-    i = next(n for n, row in enumerate(rows) if row.id == "backfill_sentence")
+    i = next(n for n, row in enumerate(rows) if row.id == "backfill_pitch")
     moved = rows.pop(i)
     monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i + 1] + [moved] + rows[i + 1:]))      # a row between them
     assert "junban_backfill_fills" in _switches_apart()
     monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i] + [moved._replace(section="junban")] + rows[i:]))
-    assert _switches_apart()["junban_backfill_fills"][-1] == ("backfill_sentence", "junban")
+    assert _switches_apart()["junban_backfill_fills"][-1] == ("backfill_pitch", "junban")
 
 
 def _owner(key):
@@ -431,7 +431,7 @@ def test_no_multi_pick_reads_as_a_pick_one():
     assert all(len(row.keys) == 1 and row.options for row in tablets), [row.id for row in tablets]
     assert {row.id for row in tablets} == {"known_from_anki", "junban_only_markers"}
     member = [row for row in catalog.ROWS if catalog._member(row)]
-    assert {row.id for row in member} == {"backfill_patterns", "backfill_sentence"}
+    assert {row.id for row in member} == {"backfill_patterns", "backfill_sentence", "backfill_furigana", "backfill_pitch"}
     assert all(len(row.options) == 1 for row in member)
 
 

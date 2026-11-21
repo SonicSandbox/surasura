@@ -530,7 +530,8 @@ def test_picking_a_second_state_names_both_under_count_as_known_and_taking_it_of
         [{"known_from_anki": ["suspended", "marked"], "known_from_anki_chosen": True}]    # + Kantan-B3's marker: a pick
     store.land()
     assert view.help.text() == S.KNOWN_ALL_OF.format(states="Suspended + Marked")
-    assert _written(store, view.controls[0], ["marked"]) == [{"known_from_anki": ["marked"]}]
+    assert _written(store, view.controls[0], ["marked"]) == \
+        [{"known_from_anki": ["marked"], "known_from_anki_chosen": True}]     # beside every pick (Kotoba-WS2F)
     store.land()
     assert view.help.text() == catalog.ROW["known_from_anki"].help
     built, _store = make_page(dict(ALL_ON, connect_enabled=True, known_from_anki=["marked", "flag:2"]), "ja")

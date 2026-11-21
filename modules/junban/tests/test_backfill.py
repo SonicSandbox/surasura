@@ -181,7 +181,8 @@ def test_a_note_type_with_no_field_mapped_is_counted_but_never_read():
     with _patched(fake):
         scope = backfill.gather(URL, _settings())
     assert scope["models"]["Migaku Japanese"]["count"] == 2
-    assert scope["models"]["Migaku Japanese"]["mapped"] == {"patterns": None, "sentence": None}
+    assert scope["models"]["Migaku Japanese"]["mapped"] == {"patterns": None, "sentence": None, "furigana": None,
+                                                          "pitch": None}
     read = [i for r in fake.requests if r["action"] == "notesInfo" for i in r["params"]["notes"]]
     assert read == [FIRST_NOTE]
 
@@ -294,7 +295,8 @@ def test_an_unticked_fill_still_knows_its_field_but_reads_no_note():
     fake = _fake(_lapis(0, "探検", "たんけん"))
     with _patched(fake):
         scope = backfill.gather(URL, _settings(junban_backfill_fills=[]))
-    assert scope["models"]["Lapis"]["mapped"] == {"patterns": "Patterns", "sentence": None}
+    assert scope["models"]["Lapis"]["mapped"] == {"patterns": "Patterns", "sentence": None, "furigana": None,
+                                                "pitch": None}
     assert scope["notes"] == []
     assert not [r for r in fake.requests if r["action"] == "notesInfo"]
 

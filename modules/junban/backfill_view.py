@@ -111,8 +111,9 @@ def fill_tip(fill, language):
 
 def needs_build(choices, language, data_ready):
     """`_needs_build`: nothing to fill from yet (a library never built) — Preview builds it first. `data_ready` is the
-    worker's answer (`read_readiness`), never read here."""
-    return any(language in f.languages for f in backfill.FILLS if f.key in choices.fills) and not data_ready
+    worker's answer (`read_readiness`), never read here. ふりがな and アクセント read the card alone: nothing to build."""
+    return any(language in f.languages for f in backfill.FILLS
+               if f.key in choices.fills and f.key not in backfill.MAKING) and not data_ready
 
 
 def fill_ready(busy, preview_key, key, preview):

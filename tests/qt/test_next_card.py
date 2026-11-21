@@ -440,7 +440,7 @@ def test_the_panel_is_one_list_your_path_its_stages_now_new_for_you_later_and_do
 
 
 def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monkeypatch):
-    # Sonic 2026-11-20 ("hide"): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
+    # Sonic 2026-11-20 (hide ④'s press): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
     # off-list cards' trap) — its row stays to do (the stage reads right) with its ? line, but no *Do it*, no *Again*
     panel = world.d.guide_panel
     panel.set_look(guide.Look("3.0.5", (), False))

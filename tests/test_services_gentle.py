@@ -547,7 +547,8 @@ class _Running:
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_no_second_helper_starts_while_one_this_program_started_runs(monkeypatch, tmp_path, language):
+def test_no_second_helper_starts_while_one_this_program_started_runs(monkeypatch, tmp_path, language,
+                                                                    real_store_helper):
     from app import library_store as LS
     from app.connect import power as P
     started = []
@@ -565,7 +566,7 @@ def test_no_second_helper_starts_while_one_this_program_started_runs(monkeypatch
     assert LS.spawn_maintain(language) is not None and len(started) == 3, "after its end, the next one starts"
 
 
-def test_no_helper_starts_while_another_program_holds_the_maintenance_lock(monkeypatch, tmp_path):
+def test_no_helper_starts_while_another_program_holds_the_maintenance_lock(monkeypatch, tmp_path, real_store_helper):
     from app import library_store as LS
     from app import path_utils
     from app.connect import power as P

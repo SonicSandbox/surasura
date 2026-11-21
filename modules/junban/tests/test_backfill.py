@@ -129,7 +129,7 @@ class _Session:
     def __init__(self, known=()):
         self.known = set(known)
 
-    def is_known(self, word):
+    def is_known(self, word, sentence=None):
         return word in self.known
 
     def prepare(self, fill, notes, status=None, young=()):
@@ -623,7 +623,7 @@ def test_a_real_library_build_fills_a_real_note(tmp_path):
 def test_the_rebuild_runs_through_the_packaged_app_or_as_a_module(monkeypatch):
     monkeypatch.setattr("sys.frozen", True, raising=False)
     argv, _env, _cwd = backfill.rebuild_command()
-    assert argv[1:] == ["junban_patterns"]
+    assert argv[1:] == ["junban_patterns", "--headless"]     # a crash logged, never a Critical Error box (3.0.17)
     monkeypatch.delattr("sys.frozen")
     argv, env, cwd = backfill.rebuild_command()
     assert argv[1:] == ["-m", "modules.junban.patterns_build"]

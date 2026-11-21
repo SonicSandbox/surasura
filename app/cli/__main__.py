@@ -226,6 +226,7 @@ def main(argv=None, out=None):
 
 
 if __name__ == "__main__":
-    from app import build_info
+    from app import build_info, child_io
+    child_io.guard_std_streams()        # Haya-CL 3.0.17: a caller that has gone never makes a JSON line raise
     build_info.hold_running_mutex()     # frozen: <data name>.Running while it runs (the installer waits for it)
     sys.exit(main())

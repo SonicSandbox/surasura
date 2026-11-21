@@ -180,3 +180,14 @@ def test_a_one_character_part_the_list_never_offers_is_never_credited(tmp_path, 
     view = analyzer.LearningView({("出版社", "シュッパンシャ"): 1}, 5, known=known)
     out = pick.pick(read, tokens, "ja", known, mode="unknown", view=view, skip_single=skip_single)
     assert {w["word"] for w in out["words"]} == offered
+
+
+def test_a_piece_read_otherwise_never_lends_its_reading_to_the_part():
+    # why: a word is its lemma AND its reading; a part keyed by another reading than the piece the line holds is
+    # another word — the piece's own reading (its card's front_reading) must never go to it (mutant M10)
+    tagger = analyzer.JapaneseTokenizer()
+    ((_sentence, word, node),) = [t for t in cues._read(tagger, "大衆食堂", "ja", None)]
+    token = cues.Token(*word, 0, "s", node, "大衆食堂")
+    assert isinstance(pick._credited(token, DAISHU).node, pick._Part), "the piece read タイシュウ is the part"
+    other = pick._credited(token, ("大衆", "ダイシュウ"))
+    assert other is not None and other.node is None and other.reading == "ダイシュウ"

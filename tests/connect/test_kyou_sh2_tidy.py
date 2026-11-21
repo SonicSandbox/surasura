@@ -237,6 +237,13 @@ def test_yours_and_a_pinned_shows_never_go_even_when_they_are_the_overflow():
     assert {c.note for c in chosen} <= {1000, 1001, 1002, 1003} and len(chosen) == 4
 
 
+def test_the_windows_last_card_is_never_taken_even_when_the_overflow_holds_none_of_connects():
+    # mutant M2: the window is exactly the first `cap` — the cap-th card is in it, whatever lies past it
+    pile = [tidy.Card(1000, "a", 1, place=0, mine=True), tidy.Card(1001, "b", 1, place=1, mine=True),
+            tidy.Card(5000, "y0", None, place=2), tidy.Card(5001, "y1", None, place=3)]
+    assert tidy.choose(pile, cap=2) == [], "past the window only your own cards wait: nothing of Connect's goes"
+
+
 def test_a_set_aside_card_goes_before_one_at_the_same_place_and_off_list_before_listed():
     pile = _pile(10) + [tidy.Card(3000, "off", 1, place=shelf.NOT_LISTED, mine=True),
                         tidy.Card(3001, "off2", 1, place=shelf.NOT_LISTED, mine=True, shelved=True)] + \

@@ -41,6 +41,7 @@ WAITS_FOR = "waits for "                                 # the registry's reason
 FLASH_MS = 5000                         # the "+N" beside the total, after a sync that added words
 DOORS = (("btn_backfill", "backfill"), ("btn_apkg", "apkg_known"))      # row 5's opener, row 2's (IK-41)
 SWITCHES = (("chk_auto", "anki_sync_auto"), ("chk_generate", "anki_auto_generate"))
+SCOPE_KEYS = ("known_from_anki", "known_from_anki_chosen", "connect_enabled", "automation")   # `anki_sync.counted_suspended`
 
 
 class _Keys(QObject):
@@ -132,7 +133,7 @@ class AnkiWindow(windows.SecondaryWindow):
 
     def _snapshot(self):
         return {"language": self.language, "url": anki_connect.address(self._settings()), "decks": list(self.decks),
-                "fields": self.chosen(), "suspended": bool(self.suspended)}
+                "fields": self.chosen(), "suspended": self.suspended}
 
     # --- building ----------------------------------------------------------------------------------------------- #
     def _button(self, text, tip, slot, parent=None, kind=None, name=None):
@@ -226,15 +227,14 @@ class AnkiWindow(windows.SecondaryWindow):
         self.skipped.setWordWrap(True)
         self.body.addWidget(self.skipped)
 
-        # the switches
-        self.chk_suspended = self._toggle(strings.ANKI_SUSPENDED, strings.ANKI_SUSPENDED_TIP, self.suspended,
-                                          self._suspended_changed)
+        # the switches (Kotoba-WS2: *Include suspended cards* folded into Settings' *Count as known in Anki*, its one
+        # home — the suspended cards the sync counts are its picks, `anki_sync.counted_suspended`)
         self.chk_auto = self._toggle(strings.ANKI_AUTO, strings.ANKI_AUTO_TIP, settings.get("anki_sync_auto"),
                                      lambda on: self._toggled("anki_sync_auto", on))
         self.chk_generate = self._toggle(strings.ANKI_GENERATE, strings.ANKI_GENERATE_TIP,
                                          settings.get("anki_auto_generate"),
                                          lambda on: self._toggled("anki_auto_generate", on))
-        for c in (self.chk_suspended, self.chk_auto, self.chk_generate):
+        for c in (self.chk_auto, self.chk_generate):
             self.body.addWidget(c)
 
         # the numbers
@@ -380,7 +380,7 @@ class AnkiWindow(windows.SecondaryWindow):
         on["recheck"] = on["recheck"] and not self._probing
         for widget, key in ((self.btn_sync, "sync"), (self.btn_replace, "replace"), (self.add_box, "add"),
                             (self.box_field1, "field1"), (self.box_field2, "field2"), (self.btn_recheck, "recheck"),
-                            (self.chk_suspended, "suspended"), (self.btn_restore, "restore")):
+                            (self.btn_restore, "restore")):
             self._enable(widget, on[key])
         for remove in self.deck_list.findChildren(QToolButton):
             self._enable(remove, on["remove"])
@@ -403,6 +403,11 @@ class AnkiWindow(windows.SecondaryWindow):
                     box.blockSignals(False)
         if any(str(k).startswith("enable_") for k in keys):
             self._doors_again()
+        if any(k in SCOPE_KEYS for k in keys):               # Count as known in Anki's picks: the sync's scope
+            suspended = AW.saved(settings if settings is not None else self._settings(), self.language)[2]
+            if suspended != self.suspended:
+                self.suspended = suspended
+                self._scope_changed()
 
     def refresh(self):
         """(`windows.follow_doors`) The modules were looked for: the doors asked again."""
@@ -479,7 +484,8 @@ class AnkiWindow(windows.SecondaryWindow):
         self._render()
 
     def _scope_changed(self):
-        """A deck added or removed, a field or *Include suspended* changed: saved, then Anki read for the new scope."""
+        """A deck added or removed, a field or *Count as known in Anki* changed: saved, then Anki read for the new
+        scope."""
         self._save_choices()
         self._render()
         self._probe_seq += 1                              # a probe under way was read for the old scope (AD3-3)
@@ -540,11 +546,6 @@ class AnkiWindow(windows.SecondaryWindow):
         if self.box_field2.itemData(index) == self.second:
             return
         self.second = self.box_field2.itemData(index)
-        self._scope_changed()
-
-    def _suspended_changed(self, on):
-        self.suspended = bool(on)
-        self.services.settings.set({"anki_sync_include_suspended": self.suspended})
         self._scope_changed()
 
     def _toggled(self, key, on):
@@ -785,9 +786,6 @@ class AnkiWindow(windows.SecondaryWindow):
         self._counts, self._models, self._sentences = {}, {}, []
         self._unsaved_pick = False
         self._load_choices()
-        self.chk_suspended.blockSignals(True)
-        self.chk_suspended.setChecked(bool(self.suspended))
-        self.chk_suspended.blockSignals(False)
         self.heading.setToolTip(strings.ANKI_HEADING_TIP.format(language=strings.ANKI_LANGUAGES.get(language)))
         self.say("")
         self._set_label(self.delta, "")

@@ -104,7 +104,7 @@ DEFAULT_SETTINGS = {
     "anki_sync_auto": False,
     "anki_sync_decks": {},
     "anki_sync_fields": {},
-    "anki_sync_include_suspended": False,
+    "anki_sync_include_suspended": False,   # retired (Kotoba-WS2): folded into known_from_anki; read once, on load
     # "Label backlogged Anki words" (Settings -> Experience & UI; Junban_Backlog_Spec WP-B8): Generate
     # reads the new-card backlog of those decks, in the background, when Anki is running
     # (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json), and the report marks each word
@@ -399,6 +399,15 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                 settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
             if "connect_every_word" not in user_settings:
                 settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
+            # Kotoba-WS2: *Count suspended cards as known* folded into *Count as known in Anki* (Sonic 2026-11-19) — a
+            # learner who turned it on, and never picked the states, picked "a card I suspend counts": read as
+            # Suspended alone (their pick kept; nothing written: `anki_sync.counted_suspended` reads it). Only over a
+            # default the file holds (none, the old or today's): states picked before Kantan-B3's marker are kept
+            if (user_settings.get("anki_sync_include_suspended") is True
+                    and not user_settings.get("known_from_anki_chosen")
+                    and user_settings.get("known_from_anki", ["suspended"]) in (["suspended"], ["suspended", "marked"])):
+                settings["known_from_anki"] = ["suspended"]
+                settings["known_from_anki_chosen"] = True
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e

@@ -672,9 +672,12 @@ class _release_flag:
 
 
 DEFAULT_LISTS = {   # a new library's starting lists, from this tree's User Files/<lang>/ (2.x shipped the same files)
-    "ja": ["frequency_list_ja_global50k.csv", "IgnoreList.txt", "Blacklist.txt"],
-    "zh": ["IgnoreList.txt", "Blacklist.txt"],
+    "ja": ["frequency_list_ja_global50k.csv", "IgnoreList.txt"],
+    "zh": ["IgnoreList.txt"],
 }
+# Kotoba-WS2 (one Ignore list): the tree's Blacklist.txt is folded into the bundled IgnoreList.txt, never bundled itself
+# (a library missing it would be given it again at every start, and merge it again)
+BLACKLIST = "Blacklist.txt"
 LEGACY_JITEN_ZIPS = [   # Yomitan frequency lists from User Files/, bundled when present (Japanese)
     "jiten_freq_Anime.zip", "jiten_freq_Drama.zip", "jiten_freq_global.zip", "jiten_freq_Manga.zip",
     "jiten_freq_Movie.zip", "jiten_freq_NonFiction.zip", "jiten_freq_Novel.zip", "jiten_freq_VideoGame.zip",
@@ -695,7 +698,13 @@ def copy_default_lists(final_dist):
             if os.path.isfile(src):
                 folder = os.path.join(final_dist, "_internal", "defaults", lang)
                 os.makedirs(folder, exist_ok=True)
-                shutil.copy2(src, os.path.join(folder, os.path.basename(src)))
+                dst = os.path.join(folder, os.path.basename(src))
+                shutil.copy2(src, dst)
+                black = os.path.join("User Files", lang, BLACKLIST)
+                if os.path.basename(src) == "IgnoreList.txt" and os.path.isfile(black):
+                    from app.services import word_lists
+                    with open(dst, "wb") as f:
+                        f.write(word_lists.merged_default(src, black, lang))
                 written.append(f"_internal/defaults/{lang}/{os.path.basename(src)}")
     return written
 

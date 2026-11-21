@@ -549,7 +549,7 @@ def known_sync(args):
         # the one sync order (`anki_sync.sync_all`): the studied words, the new cards, then Known from Anki (P2.4:
         # only with Connect on)
         result, signal = anki_sync.sync_all(lang, url, decks, fields, loaded,
-                                            include_suspended=bool(loaded.get("anki_sync_include_suspended", False)),
+                                            include_suspended=anki_sync.counted_suspended(loaded),
                                             full=args.full, progress=contract.emit_progress)
         if result.error:
             raise CliError("failed", result.error)

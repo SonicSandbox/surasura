@@ -539,6 +539,13 @@ class Adder(QObject):
                 ny._pick_audiobook(None, free[0], book["epub"], book["title"])
                 return "picked"
             taken = said.get("elsewhere") or ()
+            other = said.get("other") or ()
+            if book.get("file") and not free and len(taken) + len(other) == 1 and ny is not None:
+                # Kura-AB5 (11-20 report): the file you picked is this book's audiobook — taken from its other book
+                # (with Undo), whatever its names
+                ny._pick_audiobook(None, (list(taken) + list(other))[0]["item_id"], book["epub"], book["title"],
+                                   replace=True)
+                return "picked"
             if not free and len(taken) == 1 and taken[0].get("how") == "sure" and ny is not None:
                 # (#419's diagnosis: a look paired it, by itself, with a copy of this book; you said it is this book's:
                 # taken from it, with Undo — never a pair you made yourself, r2 S2)
@@ -549,11 +556,17 @@ class Adder(QObject):
                 line = strings.NEEDS_AUDIOBOOK_WITH.format(name=name, other=taken[0]["book"], book=book["title"])
             elif n:
                 line = strings.NEEDS_AUDIOBOOK_SEVERAL_IN.format(n=n, name=name, book=book["title"])
+            elif len(other) == 1:                                # Kura-AB5: with another book — said, never "none"
+                line = strings.NEEDS_AUDIOBOOK_OTHER.format(name=name, other=other[0]["book"], book=book["title"])
+            elif other:
+                line = strings.NEEDS_AUDIOBOOK_OTHERS.format(n=len(other), name=name, book=book["title"])
+            elif book.get("file"):
+                line = strings.NEEDS_AUDIOBOOK_FILE_NONE.format(name=os.path.basename(book["file"]))
             else:
                 line = strings.NEEDS_AUDIOBOOK_NONE_IN.format(name=name, book=book["title"])
             say = getattr(self.shell, "say", None)
             (say or (lambda t: windows.say_in_bar(self.shell, t)))(line)
-            return "several" if n > 1 else "with" if n else "none"
+            return "several" if n > 1 else "with" if n else "other" if other else "none"
         asks = said.get("asks") or ()
         if len(asks) != 1 or toasts is None or moves is None or not asks[0].get("book"):
             return None

@@ -162,7 +162,7 @@ def test_a_drop_on_the_soon_well_beside_its_show_stays_below_the_soon_line(langu
 def test_a_programs_named_place_is_kept_and_its_rule_target_takes_the_order(language):
     """`surasura-cli place --position` names an exact place (Connect's `library.place` with an anchor): kept, even
     at the edge of the show's row. Without one (`--to current` with no position), the episode order. (A placing
-    rule's target is exact since 3.0.16: `test_a_placing_rules_top_of_current_means_the_very_top`.)"""
+    rule's target: `test_a_placing_rules_top_of_current_means_the_very_top_unless_an_earlier_episode_is_there`.)"""
     from app.connect import library
     store = migrated(language, shows=2, episodes=3)
     w = names(language)
@@ -536,24 +536,26 @@ def test_inside_current_seasons_stay_apart_a_block_of_two_seasons_keeps_its_orde
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_placing_rules_top_of_current_means_the_very_top(language):
-    """(Train 40's intent keeper, D-1: PROVISIONAL lean) A placing rule set to *Top of Current* is the learner's
-    standing choice of the very top: the browser's episode 9 placed by it goes to the top of NOW, above its show's 8 —
-    the store's own rule at register and Connect's (`connect.rules.apply`) alike; *After its show* is the rule that
-    follows the show."""
+def test_a_placing_rules_top_of_current_means_the_very_top_unless_an_earlier_episode_is_there(language):
+    """(Train 40's intent keeper, D-1; Kura-SO, Sonic 2026-11-19) A placing rule set to *Top of Current* is the
+    learner's standing choice of the very top — for an episode with nothing earlier of its show in Current (another
+    title's row stays below it); never ahead of an earlier episode: the browser's 9 placed by it goes right after its
+    show's 8, and 10 after 9 — the store's own rule at register and Connect's (`connect.rules.apply`) alike."""
     from app.connect import rules
     store = migrated(language, shows=2, episodes=3)
     data_dir, _u = roots(language)
     show = names(language)[175]
-    ep8 = _episode(store, language, show, 8)
-    store.place([ep8], "top")
+    top = store.ids("now")[0]
+    rel8, record8 = _record(language, show, 8)
+    ep8 = store.register(touch(data_dir, rel8, f"{show} 8\n"), record8, rules={"browser": "top"}).added[0]
+    assert store.ids("now")[:2] == [ep8, top], "nothing of its show in Current: the very top"
     rel, record = _record(language, show, 9)
     ep9 = store.register(touch(data_dir, rel, f"{show} 9\n"), record, rules={"browser": "top"}).added[0]
-    assert store.ids("now")[:2] == [ep9, ep8], "the store's rule: the very top"
+    assert store.ids("now")[:3] == [ep8, ep9, top], "the store's rule: after its show's 8"
     ep10 = _episode(store, language, show, 10)
     _rel, record10 = _record(language, show, 10)
     assert rules.apply(store, ep10, record10, {"placing_rules": {"browser": "top"}}) == "top"
-    assert store.ids("now")[:3] == [ep10, ep9, ep8], "Connect's rule: the very top"
+    assert store.ids("now")[:4] == [ep8, ep9, ep10, top], "Connect's rule: after 9"
     store.close()
 
 

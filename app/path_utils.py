@@ -617,19 +617,16 @@ def ensure_data_setup(language=None):
     if language:
         copy_default_lists(language)
 
-    # 6. Create Blacklist/IgnoreList if they don't exist. GraduatedList.txt is no longer made: 3.0 merges it into the
-    #    known words once (app/graduated_merge.py, S3.1 D13).
-    for list_name in ["Blacklist.txt", "IgnoreList.txt"]:
-        list_path = os.path.join(user_files_dir, list_name)
-        if not os.path.exists(list_path):
-            try:
-                with open(list_path, "w", encoding="utf-8") as f:
-                    if list_name == "Blacklist.txt":
-                        f.write("# Global Blacklist\n" if not language else f"# {language} Blacklist\n")
-                    else:
-                        f.write("# Add words to ignore here (one per line)\n")
-            except Exception as e:
-                print(f"Warning: Could not create {list_name}: {e}")
+    # 6. Create the IgnoreList if it doesn't exist. GraduatedList.txt is no longer made (3.0 merges it into the known
+    #    words once: app/graduated_merge.py, S3.1 D13), nor Blacklist.txt (merged into the Ignore list once,
+    #    Kotoba-WS2: services/word_lists.merge_blacklist).
+    list_path = os.path.join(user_files_dir, "IgnoreList.txt")
+    if not os.path.exists(list_path):
+        try:
+            with open(list_path, "w", encoding="utf-8") as f:
+                f.write("# Add words to ignore here (one per line)\n")
+        except Exception as e:
+            print(f"Warning: Could not create IgnoreList.txt: {e}")
                 
     # 7. Async Trash Cleanup
     trash_dir = os.path.join(data_path, ".trash")

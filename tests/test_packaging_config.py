@@ -873,6 +873,25 @@ def test_default_lists_go_to_internal_defaults_never_a_library(tmp_path, monkeyp
     assert not (final / "User Files").exists()
 
 
+def test_the_bundled_ignore_list_carries_the_trees_blacklist_and_no_blacklist_is_bundled(tmp_path, monkeypatch):
+    """Kotoba-WS2 (one Ignore list): a new library starts with the default Blacklist's words on its Ignore list, and no
+    Blacklist.txt a library missing it would be given again at every start (and merged again)."""
+    ja = tmp_path / "User Files" / "ja"
+    ja.mkdir(parents=True)
+    (ja / "IgnoreList.txt").write_bytes("﻿# Add words to ignore here (one per line)\n彼の\n一人\n".encode("utf-8"))
+    (ja / "Blacklist.txt").write_bytes("﻿# ja Blacklist\n一人\n為る\nそう-様態5\n".encode("utf-8"))
+    final = tmp_path / "dist" / "Surasura"
+    (final / "_internal").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    written = package_app.copy_default_lists(str(final))
+    assert "_internal/defaults/ja/IgnoreList.txt" in written
+    assert not any(path.endswith("Blacklist.txt") for path in written)
+    lines = (final / "_internal" / "defaults" / "ja" / "IgnoreList.txt").read_text(encoding="utf-8-sig").splitlines()
+    assert lines[:3] == ["# Add words to ignore here (one per line)", "彼の", "一人"]
+    assert lines[3].startswith("# from Blacklist.txt") and lines[4:] == ["為る", "そう-様態5"]
+    assert (ja / "Blacklist.txt").exists()                  # the tree's own list is only read
+
+
 # --- the install shape (S3.1 D7): what only the installer can change ------------------------------------------------------
 
 ISS = os.path.join(PROJECT, "packaging", "surasura.iss")

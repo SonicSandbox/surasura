@@ -21,7 +21,7 @@ words from tests/Test Resources/.
 """
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -65,7 +65,9 @@ def test_a_done_stamps_its_date_and_an_un_done_clears_it(language):
     before = datetime.now(timezone.utc)
     store.set_watched([ep])
     first = _at(store, ep)
-    assert first and before <= _when(first) <= datetime.now(timezone.utc)
+    # (`_now` gives every stamp a microsecond of its own, a few past the clock inside one of Windows' ~15.6 ms ticks:
+    # the upper bound has a second's room — the stress run met one past `datetime.now()`)
+    assert first and before <= _when(first) <= datetime.now(timezone.utc) + timedelta(seconds=1)
     assert _at(store, other) is None, "only the marked episode is dated"
     store.set_watched([ep], False)
     assert _watched(store, ep) == 0 and _at(store, ep) is None

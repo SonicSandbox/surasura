@@ -209,6 +209,7 @@ class _StepRow(QWidget):
     dead end), its ? says when it will (`strings.PATH_WHEN`)."""
 
     def __init__(self, status, on_act, parent=None):
+        from app.services import path as path_service
         super().__init__(parent)
         self.setObjectName("pathrow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -243,7 +244,7 @@ class _StepRow(QWidget):
         row.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
         self.press = None
-        if status.useful:
+        if status.useful and path_service.has_press(step_id):     # (④: none until the mining model, Sonic 11-20)
             words = strings.PATH_AGAIN if done else strings.PATH_DO
             b = QPushButton(words, self)
             b.setObjectName("guideshow")

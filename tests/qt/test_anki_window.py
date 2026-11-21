@@ -875,6 +875,33 @@ def test_the_suspended_cards_counted_are_count_as_known_in_ankis_and_follow_its_
     assert wait_until(lambda: w.suspended is False), "nothing picked: no suspended card counts"
 
 
+def test_automation_flipped_in_settings_moves_the_open_windows_suspended_scope(main, anki):
+    """Kotoba-WS2F (the keeper's F2): with *Make cards for me* on, D29's *Automation* (`logic.automation`) decides
+    whether Connect's signal reads the suspended cards or the window's sync counts them — an open window follows the
+    flip, never syncing with the scope it opened with."""
+    from app import anki_sync
+    _choose(main, connect_enabled=True, **{"logic.automation": False})
+    w = _open(main)
+    assert w.suspended is not False and "is:suspended" in w.suspended       # Connect's signal off: the sync counts
+    main.services.settings.set({"logic.automation": True})
+    assert wait_until(lambda: w.suspended is False), "the signal reads them now: the sync counts none"
+    assert w._snapshot()["suspended"] == anki_sync.counted_suspended(main.services.settings.get())
+
+
+def test_a_settings_change_to_the_scope_never_saves_the_first_opens_deck_pick(main, anki):
+    """Kotoba-WS2F (the keeper's F3, S16): a pick made in Settings re-reads the window's scope, but the decks the first
+    open preselected stay unsaved until the learner acts in the window."""
+    w = _open(main)
+    assert w._unsaved_pick and w.decks == ["TheBank"]
+    main.services.settings.set({"known_from_anki": ["suspended"], "known_from_anki_chosen": True})     # Settings' pick
+    assert wait_until(lambda: w.suspended is not False and "tag:marked" not in w.suspended)
+    assert (_saved(main).get("anki_sync_decks") or {}).get("ja") is None, "the window's pick was never the learner's"
+    assert w._unsaved_pick
+    w.btn_sync.click()                                    # the learner's first action here: now it is saved
+    _idle(main, w)
+    assert _saved(main)["anki_sync_decks"]["ja"] == ["TheBank"]
+
+
 def test_while_its_job_waits_its_turn_the_line_says_so(main, anki):
     """IK-58: the window's job waits behind another known-words job (an import, the automatic sync): the line says
     what it waits for, then that it syncs once it runs."""

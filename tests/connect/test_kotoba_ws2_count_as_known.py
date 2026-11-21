@@ -126,3 +126,22 @@ def test_a_learner_who_turned_count_suspended_on_keeps_suspended_alone_and_nothi
 def test_a_pick_made_since_or_the_switch_off_reads_as_it_is(on_disk, wanted):
     _write_settings(on_disk)
     assert settings_manager.load_settings()["known_from_anki"] == wanted
+
+
+# --- a pick survives its own save (Kotoba-WS2F, the keeper's F1) -------------------------------------------------- #
+@pytest.mark.parametrize("old_switch", [True, False, "absent"])
+@pytest.mark.parametrize("pick", [["suspended"], ["suspended", "marked"], ["marked"], [], ["suspended", "flag:2"]])
+def test_a_pick_saved_from_settings_reads_back_as_picked_whatever_the_old_switch_was(old_switch, pick):
+    # why: the old switch's fold sets the marker in memory only, so a pick that wrote no marker beside it was read as
+    # the old switch again on the next load — Suspended + Marked undid itself to Suspended alone
+    from app.connect.settings_values import known_value
+    from app.qt import settings_catalog as catalog
+    from app.services.settings import SettingsService
+    _write_settings({} if old_switch == "absent" else {"anki_sync_include_suspended": old_switch})
+    service = SettingsService(delay=0)
+    changes, update = catalog.change(catalog.ROW["known_from_anki"], service.get(), "ja", pick)
+    service.set(changes, update=update, now=True)
+    assert service.flush(5)
+    wanted = known_value(set(pick))
+    assert settings_manager.load_settings()["known_from_anki"] == wanted, (old_switch, pick, _file())
+    assert list(SettingsService(delay=0).get()["known_from_anki"]) == wanted        # a new window's first read

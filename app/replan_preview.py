@@ -1360,6 +1360,7 @@ class Remote:
         import subprocess
         from multiprocessing.connection import Client, Listener
         from app import library_store
+        from app.connect.power import popen_below_normal
         if library_store.update_staged():
             raise RuntimeError("an update is staged")
         key = secrets.token_bytes(32)
@@ -1367,10 +1368,12 @@ class Remote:
         answered = threading.Event()
         try:
             flags = 0x08000000 if sys.platform == "win32" else 0            # CREATE_NO_WINDOW
-            self._proc = subprocess.Popen(_helper_args(self.language, self._generate is not None),
-                                          env=_helper_env(listener.address, key), creationflags=flags,
-                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
+            # below normal, as every background child of the window (Haya-CL 3.0.17: at normal it ran its minutes of
+            # re-order beside the window's start on Sonic's laptop, #8158GX); Anki's writes are Anki's own
+            self._proc = popen_below_normal(_helper_args(self.language, self._generate is not None),
+                                            env=_helper_env(listener.address, key), creationflags=flags,
+                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
             with _HELPERS_LOCK:
                 _HELPERS.append(self._proc)
 

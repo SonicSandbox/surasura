@@ -1495,6 +1495,10 @@ class SettingsPage(QWidget):
         view = self.rows.get(row.id)
         if view is not None and view.isVisible():
             self._wash(view)
+        if "connect_mine_words" in written:            # *Your path* ④: the learner picked which words get a card
+            moment = getattr(self.shell, "path_moment", None)
+            if moment is not None:
+                moment("yours")
         if row.keys[0] in catalog.PER_LANGUAGE:
             old_value, language = catalog.control_value(row, before, self.language), self.language
 

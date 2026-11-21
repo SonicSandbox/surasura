@@ -146,6 +146,10 @@ def main():
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
         except Exception:
             pass
+    # Haya-CL 3.0.17: a child whose window has closed (its pipe gone) writes nowhere, never an OSError — before, a
+    # cancelled Generate's last line raised one into the Critical Error box below (Sonic's laptop, 3.0.16)
+    from app import child_io
+    child_io.guard_std_streams()
 
     multiprocessing.freeze_support()
     # --headless: another program started this subcommand (surasura-cli's generate, P0.3 02-contract §1). A crash is

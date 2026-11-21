@@ -842,9 +842,6 @@ PRACTICE_HELP = "?"
 PRACTICE_HELP_NAME = "About Piyo"
 PRACTICE_HELP_CLICK = "<br>• Click: its help card"
 HELP_MARK_CARD = "{text}\n• Click: its help card"         # a row's ? whose area has a help card
-# help cards (§6.6): the tour's door under *Run things by themselves*
-HELP_TOUR_DOOR = "Show me what runs by itself"
-HELP_TOUR_DOOR_TIP = "A short tour of what runs by itself, with Try it."
 PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
                    "words, your next words, lines from your library, what you kept from past rounds) goes to "
                    "that AI's company, as anything you type there does. Nothing else leaves.")

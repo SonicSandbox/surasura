@@ -472,6 +472,7 @@ ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = '
 SHOW_IN_CURRENT_SQL = "SELECT id FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT ?"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 HATO_FOLDERS_JOINED = "hato_folders_joined"   # meta: 1 once 3.0.16's `Hato/<series>` titles joined their shows (Kura-HJ)
+BOOK_TITLES_UNTAGGED = "book_titles_untagged"   # meta: 1 once books' `<name> (n)` titles were named <name> (Kura-AB5)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
@@ -522,7 +523,7 @@ INT_META = ("epoch", "state_version", "order_version", "availability_version", "
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
             "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side",
-            "processed_split", "hato_folders_joined")
+            "processed_split", "hato_folders_joined", "book_titles_untagged")
 
 
 class StoreError(Exception):
@@ -2090,6 +2091,7 @@ class _Command:
         self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
         self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
+        self.book_titles = {}  # Kura-AB5: {rel key: the book's name} of an EPUB's parts written to `<name> (n)/`
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
         self.fed_inline = set()  # … already written with their placement
@@ -3283,6 +3285,44 @@ class Store:
                           if t != name and not path_key(t).startswith(old)]
                 self._set_work_fields(cmd, change, wid, {"title": name, "titles": _dumps(list(dict.fromkeys(titles))),
                                                          "folder_key": key if self._key_free(key, wid) else None})
+            return change
+
+    def untag_book_titles(self):
+        """Kura-AB5 (11-20 report; Sonic's ruling), ONE time a library: a book's title that is its
+        parts' folder's free name `<name> (n)` (`book_title`: `<name>` its EPUB's own) becomes `<name>` — only a title
+        nobody named (`title_by_user`), all of whose items' records are that EPUB's parts, and only when no other
+        book of the library is called `<name>` (a subtitle's or a show's title of that name may stand beside it: its
+        kind tells them apart); the old name stays among its titles (search finds it). No item,
+        order or file touched. ONE command, its Change undone by `undo` (the works' value check); the mark set in it.
+        -> the Change, or None."""
+        if self._meta().get(BOOK_TITLES_UNTAGGED):
+            return None
+        with self._command("untag_book_titles", "sync") as cmd:
+            if self._meta().get(BOOK_TITLES_UNTAGGED):
+                return None
+            self._set_meta({BOOK_TITLES_UNTAGGED: 1})
+            change = None
+            for wid, title in self.conn.execute("SELECT id, title FROM works WHERE title_by_user = 0 AND title LIKE "
+                                                "'% (%)' ORDER BY id").fetchall():
+                epubs = {str((_json_dict(raw) or {}).get("origin") or "").rpartition("#")[0] for (raw,) in self.conn.execute(
+                    f"SELECT p.pairing FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND "
+                    f"{_LIVE_ORIGIN}", (wid,))}
+                plain = {e for e in epubs if e and e.lower().endswith(".epub")}
+                if len(epubs) != 1 or len(plain) != 1:
+                    continue                             # (another kind of item, or two books in it: as it stands)
+                name = book_title(title, plain.pop())
+                if name == title or self.conn.execute(
+                        f"SELECT 1 FROM works w JOIN items i ON i.work_id = w.id JOIN pairings p ON p.item_id = i.id "
+                        f"WHERE w.title = ? AND w.id != ? AND {_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%' "
+                        f"LIMIT 1", (name, wid)).fetchone():
+                    continue                             # (another book of that name: as it stands)
+                if change is None:
+                    change = self._change(cmd, "untag_book_titles")
+                    change.works = {"rows": [], "items": [], "fields": [], "created": []}
+                w = self._work_row(wid)
+                titles = [t for t in json.loads(w["titles"] or "[]") if t != name]
+                self._set_work_fields(cmd, change, wid, {"title": name,
+                                                         "titles": _dumps(list(dict.fromkeys(titles + [title])))})
             return change
 
     def _key_free(self, key, wid):
@@ -4556,7 +4596,10 @@ class Store:
             wid = self._same_show_folder(fk, rel, cmd, show=full)
         if wid is None:
             below = _below_tier(rel)
-            wid = self._new_work(full or folder_title(below), fk, cmd, titles=(below,))
+            # (Kura-AB5, 11-20 report: a book's title is its own name, never its folder's ` (n)` — the folder kept,
+            # names, so a search still finds it)
+            wid = self._new_work(full or cmd.book_titles.get(path_key(rel)) or folder_title(below), fk, cmd,
+                                 titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -7515,6 +7558,8 @@ class Store:
                                    explicit_of=lambda i: explicit.get(i, 1))
                 out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
+                if getattr(change, "replaced", None) is not None:      # Kura-AB5: a new version's Replace
+                    skipped += self._undo_replaced(cmd, change.replaced)
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
             elif kind in ("finish", "put_back_finished"):
@@ -9448,6 +9493,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.join_hato_folders()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"join_hato_folders failed: {type(exc).__name__}: {exc}")
+        try:
+            did = bool(store.untag_book_titles()) or did
+        except Exception as exc:                # as above: the next run tries again
+            _log(db_path, f"untag_book_titles failed: {type(exc).__name__}: {exc}")
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
@@ -10863,7 +10912,8 @@ def _origin_record(root_id, origin, f):
               "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
               "show": {"title": str(f.get("show") or "")}}
     for key in ("video_path", "video_size", "video_key", "episode", "chapter",    # chapter: a book's part's place
-                "audiobook"):                                   # (`extract.book_split`, Hon); an audiobook's (H-7)
+                "audiobook",                                    # (`extract.book_split`, Hon); an audiobook's (H-7)
+                "new_version_of"):                              # Kura-AB5: the book this EPUB may replace (B3 3)
         if f.get(key) is not None:                              # files, length and pairing: `audiobooks.record`
             record[key] = f[key]
     return record
@@ -12014,6 +12064,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
             if rel is not None and f.get("show_name"):   # Kura-NA: its title goes by the show uncut (`_folder_work`)
                 cmd.show_names[path_key(rel)] = str(f["show_name"])
+            if rel is not None and f.get("book_title"):  # Kura-AB5: an EPUB's parts in `<name> (n)/`: named <name>
+                cmd.book_titles[path_key(rel)] = str(f["book_title"])
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
                 self._let_audiobook_back(key, f.get("let_back_from"), out)
@@ -14256,13 +14308,19 @@ def _store_audiobook_rows(self, item_id=None):
 
 
 def _store_audiobooks(self, every=False):
-    """[{item_id, key, audiobook}] of every audiobook item, one each (its first live record: an item holding the same
-    audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read); `every`: each
-    live record (a6: an item's files in each source, its transcript's claim found by any of them)."""
+    """[{item_id, key, audiobook, book_gone}] of every audiobook item, one each (its first live record: an item holding
+    the same audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read);
+    `every`: each live record (a6: an item's files in each source, its transcript's claim found by any of them).
+    `book_gone` (Kura-AB5): its record names a book no longer in the library (`book_gone`) — free, as one alone."""
     with self._reading():
-        out = {}
+        out, gone = {}, {}
         for k, i, r in self._audiobook_rows():
-            out.setdefault(k if every else i, {"item_id": i, "key": k, "audiobook": r["audiobook"]})
+            if (k if every else i) in out:
+                continue
+            book = r["audiobook"].get("book")
+            if i not in gone:                    # Kura-AB5: its book removed — free (`book_gone`), one read an item
+                gone[i] = self._book_gone(book)
+            out[k if every else i] = {"item_id": i, "key": k, "audiobook": r["audiobook"], "book_gone": gone[i]}
         return list(out.values())
 
 
@@ -14328,6 +14386,34 @@ def _store_audiobook_place(self, book):
     rows = [r for r in rows if r[1] != "graduated"] or rows     # beside the parts still read, never into Finished
     last = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
     return last[3], last[1], last[0]
+
+
+def _store_book_gone(self, book):
+    """Kura-AB5 (11-20 report): has the book an audiobook's record names left the library — no part of it is an item any
+    more (removed: its rows went, the record's `book` stayed)? Such an audiobook is free: offered to any book, taken by
+    a pick or a folder's look with no *now with 「…」* (read side, so a library from before is covered; Put back pairs
+    them again by itself). False for no `book`. Read only."""
+    if not isinstance(book, dict):
+        return False
+    ids = sorted(self._audiobook_parts(book))
+    for chunk in _chunks(ids, 500):
+        if self.conn.execute(f"SELECT 1 FROM items WHERE id IN ({','.join('?' * len(chunk))}) LIMIT 1",
+                             chunk).fetchone():
+            return False
+    return True
+
+
+def book_title(title, epub):
+    """Kura-AB5 (11-20 report; Sonic's ruling: never the `(2)`): a book's title without the library's folder suffix
+    — `<name> (n)`, the free folder name its parts were written to when `Library/<name>/` held other bytes
+    (`sources`' extraction) — when `<name>` is its EPUB's own (clean) name; any other title as it is (`<book> (2)` a
+    learner or a shop named so: a second volume, never cut)."""
+    from app import extract
+    m = re.fullmatch(r"(.+) \((\d+)\)", title or "")
+    if m is None or not isinstance(epub, str) or not epub:
+        return title
+    stem = os.path.splitext(os.path.basename(epub))[0]
+    return m.group(1) if m.group(1) in (stem, extract.clean_name(stem)) else title
 
 
 def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale=False, by=SOURCE_PRODUCER,
@@ -14527,7 +14613,7 @@ def _store_book_audiobooks(self, item_id):
                     f"AND instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND p.content_key < ?) AND "
                     f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
                 title = None                             # two books in one title: this one named by its file
-            title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
+            title = book_title((title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0], epub)
         lone, seen, paired, elsewhere = [], set(), False, []
         for _k, ab_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
@@ -14537,12 +14623,14 @@ def _store_book_audiobooks(self, item_id):
             paired = paired or here
             asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
                 path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
-            if isinstance(book, dict) and not here and ab_id not in seen and \
+            gone = isinstance(book, dict) and not here and ab_id not in seen and self._book_gone(book)
+            if isinstance(book, dict) and not here and not gone and ab_id not in seen and \
                     self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
                 seen.add(ab_id)                          # Kura-AB4 (#419's diagnosis): with another book —
                 elsewhere.append((ab_id, ab, str(book.get("title") or "")))     # listed only for this very title
                 continue
-            if ab_id in seen or ab.get("book") or (ask and not asked_here):
+            # (Kura-AB5, 11-20 report: one whose book was removed is free — offered as one alone)
+            if ab_id in seen or (ab.get("book") and not gone) or (ask and not asked_here):
                 continue
             seen.add(ab_id)
             if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
@@ -14558,13 +14646,170 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere if audiobooks.same_book_title(title, other)]
+    mine = list(dict.fromkeys([title, os.path.splitext(os.path.basename(epub))[0]]))
+
+    def alike(ab, other):                    # Kura-AB5: by every name of this book, against its book's and its own
+        theirs = [other] + list(ab.get("titles") or ()) + ([ab["title"]] if ab.get("title") else [])
+        return any(audiobooks.same_book_title(m, t) for m in mine for t in theirs if m and t)
+    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere if alike(ab, other)]
     return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
                             "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)] +
             [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
               "seconds": ab.get("seconds"), "elsewhere": other}
              for ab_id, ab, other in sorted(others, key=lambda e: (search_fold(e[1].get("title") or ""), e[0]))]}
+
+
+def _store_book_items(self, item_id):
+    """Kura-AB5 (Sonic's yes, 11-20 report: the old version took three Removes — its parts were three rows): the
+    whole book the item `item_id` is a part of -> {epub, title, ids: [every item of it still in the library — its
+    EPUB's parts (`<epub>#<n>`), whatever their tier or row; a split book's `all`]}, or None (no part of a book).
+    Read only, one read."""
+    with self._reading():
+        origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN} AND "
+            f"instr(p.content_key, '#') > 0 ORDER BY p.content_key LIMIT 1", (item_id,))), None)
+        if origin is None or not _EPUB_PART.search(origin.get("origin") or ""):
+            split = self.split_book(item_id)
+            if split is None:
+                return None
+            return {"epub": split["path"], "title": split["title"], "ids": list(split["all"])}
+        epub = origin["origin"].rsplit("#", 1)[0]
+        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+        ids = sorted({i for (i,) in self.conn.execute(
+            f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND {_LIVE_ORIGIN}",
+            (lo, lo[:-1] + "$"))})
+        row = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                (item_id,)).fetchone()
+    title = book_title((row[0] if row else None) or os.path.splitext(os.path.basename(epub))[0], epub)
+    return {"epub": os.path.abspath(epub), "title": title, "ids": ids}
+
+
+def _store_new_version_of(self, item_id):
+    """Kura-AB5 (Sonic's yes: a new version replaces the old one, keeping its name and audiobook; New arrivals asks
+    once): the book in the library the book `item_id` is a part of may replace — the look's mark on its records
+    (`new_version_of`: the same folder, the same `dc:title`) — while that book still has a part here and this one is
+    still a title apart from it -> {old: {epub, title, ids}, new: {epub, title, ids}}, else None. Read only."""
+    new = self.book_items(item_id)
+    if new is None:
+        return None
+    with self._reading():
+        marks = {(_json_dict(raw) or {}).get("new_version_of") for (raw,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN}", (item_id,))}
+    marks = {m for m in marks if isinstance(m, str) and m and not _same_epub(m, new["epub"])}
+    if len(marks) != 1:
+        return None
+    old_epub = marks.pop()
+    lo = SOURCE_KEY + path_key(os.path.abspath(old_epub)) + "#"
+    with self._reading():
+        part = self.conn.execute(f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND "
+                                 f"{_LIVE_ORIGIN} ORDER BY p.content_key LIMIT 1", (lo, lo[:-1] + "$")).fetchone()
+    old = self.book_items(part[0]) if part else None
+    if old is None or set(old["ids"]) & set(new["ids"]):
+        return None
+    with self._reading():
+        works = {r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT work_id FROM items WHERE id IN ({','.join('?' * len(new['ids']))})", new["ids"])}
+        olds = {r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT work_id FROM items WHERE id IN ({','.join('?' * len(old['ids']))})", old["ids"])}
+    if works & olds:
+        return None                                      # (one title already: nothing to replace)
+    return {"old": old, "new": new}
+
+
+def _store_replace_book(self, new_epub, old_epub, trashed_paths=None, by="user"):
+    """Kura-AB5 (Sonic's yes, B3 3): the new version `new_epub` replaces the old `old_epub` — ONE command, ONE Undo:
+    its parts join the old book's title (the old one's name kept) where the old book's last part stands, in that tier,
+    in their own order; the old book's audiobook is the new one's (`_picked_book`: its key, parts and place); then the
+    old book's parts are removed as *Remove…* removes them (`remove`: the trash rows — their files moved by the caller,
+    `trashed_paths` — the Removed list). The change is that remove's (kind `remove`: the window's writer moves the
+    files back on its Undo); `change.replaced` holds the rest, undone by the value check (`_undo_replaced`). -> the
+    Change, or None (either book not here, or one title already)."""
+    with self._command("remove", by) as cmd:
+        old_ids, new_ids = self._epub_ids(old_epub), self._epub_ids(new_epub)
+        placed = self._audiobook_place({"epub": old_epub})
+        if not old_ids or not new_ids or placed is None or set(old_ids) & set(new_ids):
+            return None
+        work, tier, last = placed
+        marks = ",".join("?" * len(new_ids))
+        moved = [(i, w, work) for i, w in self.conn.execute(
+            f"SELECT id, work_id FROM items WHERE id IN ({marks}) ORDER BY id", new_ids).fetchall()]
+        if any(w == work for _i, w, _n in moved):
+            return None
+        heard = next(((ab_id, rec["audiobook"]) for _k, ab_id, rec in self._audiobook_rows()
+                      if isinstance((rec.get("audiobook") or {}).get("book"), dict) and
+                      _same_epub(rec["audiobook"]["book"].get("epub"), old_epub)), None)    # (one audiobook a book)
+        sub = self._change(cmd, "audiobook_pick")
+        # every row it moves recorded where it stands now, before anything moves (its Undo walks them back from there)
+        self._before(sub, list(self._rows(new_ids + ([heard[0]] if heard else [])).values()))
+        emptied = sorted({w for _i, w, _n in moved if w is not None})
+        sub.works = {"rows": [self._work_row(w) for w in emptied], "items": moved, "fields": [], "created": []}
+        self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(work, i) for i, _w, _n in moved])
+        cmd.reworked.update(i for i, _w, _n in moved)
+        cmd.fed_works.update(emptied + [work])
+        cmd.feed(new_ids)
+        self._put(tier, new_ids, ("after", last), cmd.version)
+        sub.audiobook = None
+        picked = self._picked_book(new_epub, heard[1]) if heard else None
+        if picked is not None:
+            ab_id, book = heard[0], picked[0]
+            said = self.audiobook_answers()
+            sub.audiobook = {"records": [(k, json.dumps(r, sort_keys=True, ensure_ascii=False))
+                                         for k, _i, r in self._audiobook_rows(ab_id)],
+                             "answer": (book["key"], said.get(book["key"])), "item": ab_id}
+            self.pair_audiobook(ab_id, book=book, answer=(book["key"], True), by=by)
+        change = self.remove(old_ids, trashed_paths, by=by)
+        if change is None:
+            raise StoreConflict("the old version left meanwhile")
+        change.replaced = sub
+        return change
+
+
+def _store_epub_ids(self, epub):
+    """The live items of the EPUB `epub` (its `<epub>#<n>` origins), in its parts' order (part 1 first)."""
+    lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+    rows = self.conn.execute(f"SELECT p.content_key, p.item_id FROM pairings p WHERE p.content_key >= ? AND "
+                             f"p.content_key < ? AND {_LIVE_ORIGIN}", (lo, lo[:-1] + "$")).fetchall()
+
+    def number(key):
+        tail = key.rpartition("#")[2]
+        return int(tail) if tail.isdigit() else 0
+    return list(dict.fromkeys(i for _k, i in sorted(rows, key=lambda r: (number(r[0]), r[1]))))
+
+
+def _store_undo_replaced(self, cmd, sub):
+    """`replace_book`'s rest undone, after its Remove's rows are back (the remove's own Undo): the audiobook's records
+    and answer as they were (on each live record still paired with the new version), the new version's parts back in
+    their own title (the title the move emptied, back) and their places. By the value check: what changed since
+    stays. -> the item ids skipped."""
+    skipped = []
+    said = sub.audiobook
+    if said:
+        key = said["answer"][0]
+        before = {k: (json.loads(v).get("audiobook") or {}) for k, v in said["records"]}
+        back = []
+        for content_key, _i, rec in self._audiobook_rows(said["item"]):
+            now = rec.get("audiobook") or {}
+            if not (isinstance(now.get("book"), dict) and now["book"].get("key") == key):
+                continue
+            was = before.get(content_key) or next(iter(before.values()), {})
+            back.append((json.dumps(dict(rec, audiobook=dict(now, book=was.get("book"), ask=was.get("ask"))),
+                                    sort_keys=True, ensure_ascii=False), content_key))
+        if back:
+            self.conn.executemany("UPDATE pairings SET pairing = ? WHERE content_key = ?", back)
+            row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+            answers = (_json_dict(row[0]) if row else None) or {}
+            if said["answer"][1] is None:
+                answers.pop(key, None)
+            else:
+                answers[key] = said["answer"][1]
+            self._set_meta({AUDIOBOOK_ANSWERS: _dumps(answers), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+            cmd.feed([said["item"]])
+        else:
+            skipped.append(said["item"])
+    _o, more = self._undo_works(cmd, sub)
+    _o, again = self._replace(cmd, sub)
+    return skipped + [i for i in list(more) + list(again) if i not in skipped]
 
 
 # Kura-TX (B1; PROVISIONAL, the lead 2026-11-12 — Mattias's migrated books): a book 2.x split into `.txt` parts
@@ -14674,6 +14919,8 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user", replace=False):
     with self._command("audiobook_pick", by) as cmd:
         rows = self._audiobook_rows(item_id)
         paired = (rows[0][2].get("audiobook") or {}).get("book") if rows else None
+        if isinstance(paired, dict) and not _same_epub(paired.get("epub"), epub) and self._book_gone(paired):
+            replace = True                       # Kura-AB5 (11-20 report): its book was removed — free, no *now with*
         if not rows or (isinstance(paired, dict) and (not replace or _same_epub(paired.get("epub"), epub))):
             return None
         picked = self._picked_book(epub, rows[0][2]["audiobook"], joined)
@@ -15124,6 +15371,7 @@ Store.audiobook_answers = _store_audiobook_answers
 Store.audiobook_asks = _store_audiobook_asks
 Store._audiobook_parts = _store_audiobook_parts
 Store._audiobook_place = _store_audiobook_place
+Store._book_gone = _store_book_gone
 Store.pair_audiobook = _store_pair_audiobook
 Store.answer_audiobook = _store_answer_audiobook
 Store.audiobooks_weighed = _store_audiobooks_weighed
@@ -15135,6 +15383,11 @@ Store.pick_audiobook_book = _store_pick_audiobook_book
 Store._picked_book = _store_picked_book
 Store.picked_for = _store_picked_for
 Store.book_audiobooks = _store_book_audiobooks
+Store.book_items = _store_book_items
+Store.new_version_of = _store_new_version_of
+Store.replace_book = _store_replace_book
+Store._epub_ids = _store_epub_ids
+Store._undo_replaced = _store_undo_replaced
 Store.split_book = _store_split_book
 Store.joined_book = _store_joined_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick

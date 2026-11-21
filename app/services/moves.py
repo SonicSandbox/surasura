@@ -122,6 +122,8 @@ KEPT += ("unlock",)                             # Mado-CV: *Look for a cover aga
 KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 KEPT += ("replace",)                            # Kura-AB4: a pick that takes an audiobook from another book
+KEPT += ("new_epub", "old_epub")                # Kura-AB5: a Remove that is a new version's *Replace* (`replace_book`)
+JOURNALLED += ("rename_work",)                  # Kura-AB5: a book's own name (`Store.rename_work`; a replay: the same)
 # --- LM11: user-made groups (Sonic's G1–G4) — the one piece rule's commands; a join's `how` ("titles": P-LF-4's
 # `titles`, which a journal the window's first build wrote still replays as)
 JOURNALLED += ("group", "add_to_group", "ungroup", "rename_piece")
@@ -530,6 +532,18 @@ class Writer:
         the files back if anything fails. Undo puts the files back (never over a
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
         return self._put({"op": "remove", "ids": list(ids), "label": label, "at": _queued_at()})
+
+    def replace_book(self, old_ids, new_epub, old_epub, label=None):
+        """Kura-AB5 (Sonic's yes): a new version *Replace* — `Store.replace_book` under the store's write lock, the old
+        version's files to the trash first as *Remove…* moves them (`_remove`): its parts join the old book's title
+        and place, its audiobook follows, the old version goes to Removed. ONE change; Undo puts it all back."""
+        return self._put({"op": "remove", "ids": list(old_ids), "label": label, "at": _queued_at(),
+                          "new_epub": os.fspath(new_epub), "old_epub": os.fspath(old_epub)})
+
+    def rename_work(self, work_id, title, label=None):
+        """Kura-AB5 (Sonic's yes): a book's *Rename…* — `Store.rename_work` (the learner's name: no record or match
+        renames it again; the old name stays searchable). Undo by the value check."""
+        return self._put({"op": "rename_work", "ids": [], "work_id": int(work_id), "title": title, "label": label})
 
     def skip_folder(self, path, label=None):
         """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
@@ -1224,6 +1238,8 @@ class Writer:
             return store.ungroup(cmd["piece_id"])
         if op == "rename_piece":
             return store.rename_piece(cmd["piece_id"], cmd["title"])  # --- end LM11
+        if op == "rename_work":                             # Kura-AB5: a book's own name
+            return store.rename_work(cmd["work_id"], cmd["title"])
         if op == "merge_works":                             # LM11b fix round: the titles alone
             return store.merge_works(cmd["work_id"], cmd["work_ids"])
         if op == "set_media_type":
@@ -1262,6 +1278,11 @@ class Writer:
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
+                if cmd.get("new_epub"):                     # Kura-AB5: a new version's *Replace*
+                    change = store.replace_book(cmd["new_epub"], cmd["old_epub"], trashed)
+                    if change is None:
+                        raise _ls().StoreConflict("the books changed since")     # (the files go back)
+                    return change
                 return store.remove(cmd["ids"], trashed)
         except BaseException:
             if own:
@@ -2080,7 +2101,7 @@ PLACED_TOP = {"top": "now", "goal": "goal"}
 #   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
 #   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source", "allow_again")
+             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source", "allow_again", "rename_work")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)

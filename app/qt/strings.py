@@ -119,6 +119,9 @@ ITEM_MENU = {
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
     # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
     "rename": ("Rename…", "Give this group a name of its own (left empty, it is named after its shows again)"),
+    # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a book's own name
+    "rename-book": ("Rename…", "Give this book a name of your own: search still finds it by its old one\n"
+                               "• Undo gives its old name back"),
     "ungroup": ("Ungroup", "Put each show back in a row of its own, where it is: nothing is lost\n"
                            "• Undo groups them again"),
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
@@ -143,6 +146,9 @@ ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
 ITEM_RENAME_YES = "Rename"
 ITEM_RENAME_YES_TIP = "Give the group this name"
 ITEM_RENAMED = "Renamed {title} to {name}"
+ITEM_RENAME_BOOK_ASK = "Rename this book"                       # Kura-AB5 (PROVISIONAL)
+ITEM_RENAME_BOOK_BODY = "Search still finds it by its old name."
+ITEM_RENAME_BOOK_YES_TIP = "Give the book this name"
 ITEM_RENAME_CLEARED = "{title} is named after its shows again"
 ITEM_SAME_SHOW_PICK = "{title} · {where}"
 ITEM_SAME_SHOW_PICK_TIP = "Make this part of {title} (asks first)"
@@ -181,6 +187,13 @@ ITEM_REMOVE_YES = "Remove {n} files"
 ITEM_REMOVE_YES_ONE = "Remove 1 file"
 ITEM_REMOVE_YES_TIP = "Remove it; files go to the trash for 30 days."
 ITEM_REMOVED = "{title} is in Removed for 30 days"     # Kantan-B4: + the toast's *Removed…*
+# Kura-AB5 (Sonic's yes, 11-20 report: a book in three rows took three Removes; PROVISIONAL words): the whole book
+ITEM_REMOVE_BOOK_ASK = "Remove 「{title}」?"
+ITEM_REMOVE_BOOK_BODY = "All its {n} parts go to the trash for 30 days. Undo puts them back where they were."
+ITEM_REMOVE_BOOK_YES = "Remove the whole book"
+ITEM_REMOVE_BOOK_YES_TIP = "Remove every part of it, in every row, as one: one Undo puts it all back"
+ITEM_REMOVE_BOOK_ONLY = "Only this row's {k} parts"
+ITEM_REMOVE_BOOK_ONLY_TIP = "Remove just the parts in this row; the rest of the book stays"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
@@ -918,6 +931,10 @@ TRAY_MENU = {
     "folder": ("Open its folder", "Show its files in Explorer"),
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
+# Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a new version of a book here (the same folder and title)
+TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook, and "
+                                     "the old one's {n} parts go to Removed for 30 days\n• Undo puts it all back")
+TRAY_REPLACED = "The new version is 「{old}」 now · the old one is in Removed for 30 days"
 TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
 TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Remove, by a key each.\n"
                      "• Anything you don't sort stays here")
@@ -1737,11 +1754,21 @@ NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
 NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the audiobook in it joins this book "
                               "(of several, the one named like it)")         # Kura-AB4 (PROVISIONAL)
 NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
+NEEDS_AUDIOBOOK_FILE = "An audio file on your computer…"       # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words)
+NEEDS_AUDIOBOOK_FILE_TIP = ("The audiobook that file belongs to joins this book — the one exact pick when a folder "
+                            "holds several audiobooks")
+NEEDS_AUDIOBOOK_FILE_TITLE = "An audio file of 「{book}」's audiobook"
 NEEDS_AUDIOBOOK_READING = "Reading {name} for 「{book}」's audiobook…"
 # Kura-AB4 (PROVISIONAL): what the folder picked for a book's audiobook held, once it was read
 NEEDS_AUDIOBOOK_WITH = ("The audiobook in {name} is with 「{other}」: pick it for 「{book}」 under Pick its "
                         "audiobook…")
 NEEDS_AUDIOBOOK_NONE_IN = "No audiobook in {name} yet: once one is there, it joins 「{book}」"
+# Kura-AB5 (11-20 report; PROVISIONAL): the folder's audiobooks are with books of other titles — named, never "none"
+NEEDS_AUDIOBOOK_OTHER = ("The audiobook in {name} is with 「{other}」: to give it to 「{book}」, pick one of its files "
+                         "under Pick its audiobook… → An audio file…")
+NEEDS_AUDIOBOOK_OTHERS = ("{n} audiobooks in {name} are with other books: pick one of 「{book}」's files under Pick its "
+                          "audiobook… → An audio file…")
+NEEDS_AUDIOBOOK_FILE_NONE = "{name} isn't part of an audiobook Surasura can read (20 minutes of audio or more)"
 NEEDS_AUDIOBOOK_SEVERAL_IN = ("{n} audiobooks in {name}: pick 「{book}」's under Pick its audiobook… (or the book's "
                               "⋯ → Its audiobook…)")
 # Kura-AB4 (PROVISIONAL): + Add → A folder…, an audiobook in it whose names are like a book's (H-8's question open)

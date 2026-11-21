@@ -384,6 +384,11 @@ class ItemActions(QObject):
         self.read_audiobook = self._read_audiobook
         self._book_ask = 0
         self._book_relay = None                      # made at the first ask, kept (C4)
+        # Kura-AB5 (Sonic's yes, 11-20 report): a book's *Remove…* takes the whole book — every part, read on a worker
+        # as the press asks (tests replace the reader)
+        self.read_book = self._read_book
+        self._remove_ask = 0
+        self._remove_relay = None                    # made at the first ask, kept (C4)
         self.audiobook_list = None
         # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
         self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
@@ -512,6 +517,8 @@ class ItemActions(QObject):
             out.append(entry("cover", children=[
                 Entry("cover-to", label, tip if ok else reason, ok and writable, payload=cb)
                 for label, tip, ok, cb in covers]))
+        if row.work_id is not None and book_row(row):           # Kura-AB5 (Sonic's yes): a book's own name
+            out.append(entry("rename-book"))
         out.append(entry("folder", writes=False))
         out.append(entry("remove"))
         return out
@@ -712,6 +719,8 @@ class ItemActions(QObject):
             self.ask_remove(row)
         elif name == "rename":                           # --- LM11b G3
             self.ask_rename(row)
+        elif name == "rename-book":                      # Kura-AB5
+            self.ask_rename_book(row)
         elif name == "ungroup":
             self.ungroup(row)
         elif name == "same-show" and payload is not None:
@@ -927,6 +936,9 @@ class ItemActions(QObject):
                                                                                                  got["epub"]))
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         m.addAction(act)
+        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FILE, lambda: ny._audiobook_file(got["title"], got["epub"]))
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FILE_TIP)                 # Kura-AB5: by one of its files
+        m.addAction(act)
         self.audiobook_list = self.last_menu = m
         m.popup(QCursor.pos())
         return m
@@ -1029,30 +1041,104 @@ class ItemActions(QObject):
         return give_skip(self.moves, path, drag.ids_of(row), (row.key,))
 
     def ask_remove(self, row):
-        """*Remove…*: the confirmation naming its files (Esc, Back, a click outside: No; Cancel the default)."""
+        """*Remove…*: the confirmation naming its files (Esc, Back, a click outside: No; Cancel the default). Kura-AB5
+        (Sonic's yes, 11-20 report): a book's row reads its whole book on a worker first (`Store.book_items`);
+        a book with parts in other rows is asked about whole — *Remove the whole book* (its every part, one change, one
+        Undo), or only this row's parts (the card's box). -> the card, or True while its book is read."""
         if self.moves.refused() is not None:
             return None
+        ids = drag.ids_of(row)
+        if not book_row(row) or not ids or self.read_book is None:
+            return self._ask_remove(row, None)
+        self._remove_ask += 1
+        ask, read = self._remove_ask, self.read_book
+        if self._remove_relay is None:
+            self._remove_relay = bridge.Relay(self)
+            self._remove_relay.said.connect(self._book_read)
+        relay = self._remove_relay
+
+        def ask_store():
+            try:
+                got = read(ids[0])
+            except Exception:
+                got = None                           # (asked as its row's parts alone)
+            relay.call((ask, row, got))
+        threading.Thread(target=ask_store, name="book-remove", daemon=True).start()
+        return True
+
+    def _book_read(self, said):
+        ask, row, got = said
+        if ask == self._remove_ask and self.moves.refused() is None:
+            self._ask_remove(row, got)
+
+    def _ask_remove(self, row, book):
         n = len(row.episodes)
-        body = strings.ITEM_REMOVE_BODY_ONE if n == 1 else strings.ITEM_REMOVE_BODY.format(n=f"{n:,}")
-        yes = strings.ITEM_REMOVE_YES_ONE if n == 1 else strings.ITEM_REMOVE_YES.format(n=f"{n:,}")
+        ids = drag.ids_of(row)
+        every = list(dict.fromkeys(list(book["ids"]) + list(ids))) if book and book.get("ids") else list(ids)
+        if len(every) > len(set(ids)):                   # Kura-AB5: the whole book, its other rows' parts too
+            title = strings.ITEM_REMOVE_BOOK_ASK.format(title=book.get("title") or row.title)
+            body = strings.ITEM_REMOVE_BOOK_BODY.format(n=f"{len(every):,}")
+            yes, yes_tip = strings.ITEM_REMOVE_BOOK_YES, strings.ITEM_REMOVE_BOOK_YES_TIP
+            check = strings.ITEM_REMOVE_BOOK_ONLY.format(k=f"{len(set(ids)):,}")
+            check_tip = strings.ITEM_REMOVE_BOOK_ONLY_TIP
+        else:
+            title = strings.ITEM_REMOVE_ASK.format(title=row.title)
+            body = strings.ITEM_REMOVE_BODY_ONE if n == 1 else strings.ITEM_REMOVE_BODY.format(n=f"{n:,}")
+            yes = strings.ITEM_REMOVE_YES_ONE if n == 1 else strings.ITEM_REMOVE_YES.format(n=f"{n:,}")
+            yes_tip, check, check_tip, every = strings.ITEM_REMOVE_YES_TIP, None, None, None
 
         def answered(said_yes):
             self.question = None
             if said_yes:
-                self.remove(row)
-        self.question = confirm.ask(self.win, strings.ITEM_REMOVE_ASK.format(title=row.title), body, yes,
-                                    strings.ITEM_REMOVE_YES_TIP, default_no=True, danger=True, on_answer=answered)
-        return self.question
+                self.remove(row, None if every is None or card.checked else every,
+                            title=book.get("title") if every is not None and not card.checked else None)
+        card = confirm.ask(self.win, title, body, yes, yes_tip, default_no=True, danger=True, on_answer=answered,
+                           check=check, check_tip=check_tip)
+        self.question = card
+        return card
 
-    def remove(self, row):
-        """`Writer.remove`: its files to the trash (30 days), its toast with Undo."""
+    def _read_book(self, item_id):
+        """(A worker.) The whole book the part `item_id` is of (`Store.book_items`, through *Needs you*'s reader), or
+        None."""
+        read = getattr(getattr(self.win, "needs_you", None), "read_book", None)
+        return read(item_id) if read is not None else None
+
+    def remove(self, row, ids=None, title=None):
+        """`Writer.remove`: its files to the trash (30 days), its toast with Undo. `ids` (Kura-AB5): the whole book's
+        parts, its other rows' too (`title` the book's)."""
         if self.moves.refused() is not None:
             return None
         from app.qt import removed
-        ids = drag.ids_of(row)
-        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids)
+        ids = list(ids) if ids else drag.ids_of(row)
+        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=title or row.title), (row.key,), ids)
         ticket.buttons = removed.door(self.win)                 # Kantan-B4: the way to Put back, at the Remove
         return self.moves._give(ticket, lambda t: self.writer.remove(ids, label=t))
+
+    # --- Kura-AB5 (Sonic's yes, 11-20 report): a book's own *Rename…* --------------------------- #
+    def ask_rename_book(self, row):
+        """*Rename…* on a book's row: the card with its name in a field (Esc / Back / Cancel: nothing written)."""
+        if row.work_id is None or self.moves.refused() is not None:
+            return None
+
+        def answered(said_yes):
+            self.question = None
+            if said_yes:
+                self.rename_book(row, card.text)
+        card = confirm.ask(self.win, strings.ITEM_RENAME_BOOK_ASK, strings.ITEM_RENAME_BOOK_BODY,
+                           strings.ITEM_RENAME_YES, strings.ITEM_RENAME_BOOK_YES_TIP, field=row.title,
+                           on_answer=answered)
+        self.question = card
+        return card
+
+    def rename_book(self, row, text):
+        """The book's own name (`Writer.rename_work`: the learner's, never renamed by a look; its old name still found
+        by search): `text` stripped; empty or its name as shown → nothing written. Its toast with Undo."""
+        name = (text or "").strip()
+        if row.work_id is None or not name or name == row.title or self.moves.refused() is not None:
+            return None
+        work = row.work_id
+        return self.moves._give(drag.Ticket(strings.ITEM_RENAMED.format(title=row.title, name=name), (row.key,),
+                                            drag.ids_of(row)), lambda t: self.writer.rename_work(work, name, label=t))
 
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):

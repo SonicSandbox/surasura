@@ -250,6 +250,7 @@ LEFT_WHY = {"not_found": "Anki Miner couldn't find it in its line",
             "media_failed": "its sound or picture couldn't be cut",
             "refused": "Anki refused its card",
             "skipped": "you skipped it"}
+LEFT_OTHER = "Anki Miner made no card for it"      # any other answer it gave
 
 
 def left_of(language, item_ids, db_path=None):
@@ -278,10 +279,11 @@ def left_of(language, item_ids, db_path=None):
         newest, ids = {}, list(out)
         for k in range(0, len(ids), 500):
             chunk = ids[k:k + 500]
-            for job_id, item_id, raw in conn.execute(
-                    f"SELECT id, item_id, picked FROM jobs WHERE language = ? AND picked IS NOT NULL AND item_id IN "
-                    f"({','.join('?' * len(chunk))}) ORDER BY id", [language] + chunk):
-                newest[item_id] = (job_id, raw)         # the newest pick of each item
+            for job_id, item_id, raw in conn.execute(     # only the newest pick of each item is read
+                    f"SELECT id, item_id, picked FROM jobs WHERE id IN (SELECT MAX(id) FROM jobs WHERE language = ? "
+                    f"AND picked IS NOT NULL AND item_id IN ({','.join('?' * len(chunk))}) GROUP BY item_id)",
+                    [language] + chunk):
+                newest[item_id] = (job_id, raw)
         for item_id, (job_id, raw) in newest.items():
             try:
                 left = (json.loads(raw) or {}).get("left") or ()

@@ -1729,13 +1729,13 @@ def _left_out(got, declined, outcomes, skipped):
     with why, in plain words — the pick's own reason (`pick.REASONS`: a name, a grammar word, only sung, only near a
     cut), or Anki Miner's earlier answer for it (`ledger.LEFT_WHY`: not found, no definition, skipped …). A word with
     a card already is no such word. -> [{"word", "reading", "why"}]"""
-    from app.connect.ledger import LEFT_WHY
+    from app.connect.ledger import LEFT_OTHER, LEFT_WHY
     out = []
     for w in got.get("words") or ():
         key = (w.get("word"), w.get("reading"))
         if key in declined:
             outcome = outcomes.get(key) or ("skipped" if key in skipped else "no_definition")
-            out.append({"word": key[0], "reading": key[1], "why": LEFT_WHY.get(outcome, LEFT_WHY["not_found"])})
+            out.append({"word": key[0], "reading": key[1], "why": LEFT_WHY.get(outcome, LEFT_OTHER)})
     for w in got.get("not_offered") or ():
         if isinstance(w, dict) and w.get("reason") not in CARDED_REASONS and w.get("why"):
             out.append({"word": w.get("word"), "reading": w.get("reading"), "why": w["why"]})

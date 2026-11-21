@@ -62,3 +62,22 @@ def test_connects_record_unreadable_just_now_shows_no_part_and_no_error(monkeypa
         raise sqlite3.OperationalError("database is locked")
     monkeypatch.setattr(ledger, "left_of", busy)
     assert unmined_words.left_out("ja", (1,)) == []
+
+
+def test_a_word_with_a_card_from_connect_now_is_not_named_and_a_failed_read_says_unreadable(real, monkeypatch):
+    # why: a word made since from another episode has its card: "not made" would send the learner looking for nothing;
+    # and a read that failed (the store busy) is the window's unreadable line, never a crash on its thread (review W1)
+    from app.connect import library
+    monkeypatch.setattr(ledger, "left_of", lambda language, ids, db_path=None: {i: list(LEFT) for i in ids})
+    deleted = _deleted_cards("ja")
+
+    def before(store):
+        deleted(store)
+        library.record_batch(store, deleted.ids[1], {"大衆": [301]}, "2026-11-21T18:00:00Z", batch="t-3")
+    before.ids = None
+    _store, win, _writer = real("ja", before=before)
+    a, _b = deleted.ids
+    w = _open(win, item_ids=(a,), label="第1話")
+    assert w.left_lines.text().splitlines() == ["魔物 · said only in a song line"]
+    w._landed(("ja", None))
+    assert w.none.text() == strings.UNMINED_UNREADABLE and w.left_lines.isHidden() and w.left_title.isHidden()

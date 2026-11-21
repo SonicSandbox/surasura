@@ -64,16 +64,19 @@ def read(store, item_ids=None, shown=SHOWN):
     return entries
 
 
-def left_out(language, item_ids):
+def left_out(language, item_ids, store=None):
     """(A pool thread's.) The words of the episode Connect couldn't make a card for, each with why
-    (`ledger.left_of`): [{"word", "why"}], none when Connect's records can't be read just now."""
-    import sqlite3
-    from app.connect import ledger
+    (`ledger.left_of`): [{"word", "why"}] — never one with a card from Connect now (made since, from another
+    episode: `store`'s made words), none when Connect's records can't be read just now (never the window's whole list
+    unreadable for it)."""
+    from app.connect import ledger, library
     try:
         found = ledger.left_of(language, tuple(item_ids))
-    except sqlite3.Error:
+        carded = library.made_words_for(store, {"kind": ledger.ASKED}) if store is not None else set()
+    except Exception as e:
+        print(f"Unmined words: Connect's record couldn't be read: {e!r}")
         return []
-    return [w for item_id in item_ids for w in found.get(item_id) or ()]
+    return [w for item_id in item_ids for w in found.get(item_id) or () if w["word"] not in carded]
 
 
 def from_words(entry):
@@ -185,11 +188,13 @@ class UnminedWindow(windows.SecondaryWindow):
         self._reading = True
         self.reads += 1
         if removed.read_store(self.shell, language,
-                              lambda store: (read(store, ids), left_out(language, ids) if ids is not None else []),
+                              lambda store: (read(store, ids), left_out(language, ids, store) if ids is not None
+                                             else []),
                               lambda found: self._landed((language, found))):
             return True
         self._reading = False
         self._show(None)                                  # no library of this language open to read
+        self._show_left(())
         return False
 
     def _landed(self, said):
@@ -202,7 +207,7 @@ class UnminedWindow(windows.SecondaryWindow):
             self.read()
             return
         if language == self.language:
-            entries, left = found
+            entries, left = found if found is not None else (None, ())
             self._show(entries)
             self._show_left(left)
 

@@ -126,3 +126,11 @@ def test_left_out_names_each_declined_word_by_its_own_answer():
                                                     ("鱗", L.LEFT_WHY["no_definition"]),
                                                     ("装備", L.LEFT_WHY["skipped"]),
                                                     ("魔物", pick.REASONS["sung"])]
+
+
+def test_an_answer_it_has_no_words_for_is_said_plainly():
+    # why: an outcome the list of reasons doesn't name (a dry run's `ready`, a newer Anki Miner's) is never called
+    # "not found": it says no card was made
+    got = {"words": [{"word": "鱗", "reading": "ウロコ"}]}
+    out = runner._left_out(got, {("鱗", "ウロコ")}, {("鱗", "ウロコ"): "ready"}, set())
+    assert out == [{"word": "鱗", "reading": "ウロコ", "why": L.LEFT_OTHER}]

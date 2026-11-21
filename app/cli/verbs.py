@@ -1190,11 +1190,11 @@ def _counted(lang):
     except OSError:
         return None, 0
     stamp = (lang, path, st.st_mtime_ns, st.st_size)
-    if _COUNTED.get("stamp") != stamp:
+    held = _COUNTED.get("now")                          # one (stamp, answer) pair, replaced whole: two threads safe
+    if held is None or held[0] != stamp:
         counts, floor = analyzer.library_counts(path, lang)
-        _COUNTED.clear()
-        _COUNTED.update(stamp=stamp, got=(counts, floor or 0) if counts is not None else (None, 0))
-    return _COUNTED["got"]
+        held = _COUNTED["now"] = (stamp, (counts, floor or 0) if counts is not None else (None, 0))
+    return held[1]
 
 
 def _known_test(lang, tokenizer, script):

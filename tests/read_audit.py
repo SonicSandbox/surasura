@@ -125,7 +125,7 @@ def _module_data():
     tests pass without it. The private repo is the top folder's <name>.priv.git, as `git priv` finds it; none, or git
     can't read it: nothing (the read stays a red). Never a file outside modules/, whatever the private repo tracks."""
     out = _git("--git-dir=" + ROOT + ".priv.git", "--work-tree=" + ROOT, "ls-files", "-z", "--", "modules/")
-    return [p for p in (out or "").split("\0") if p.startswith("modules/")]
+    return (out or "").split("\0")
 
 
 def ignored_reads(reads, written=()):

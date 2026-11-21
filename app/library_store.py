@@ -796,6 +796,12 @@ _NOW_LAST = [0]                  # the last stamp `_now` gave, in microseconds
 _NOW_LOCK = threading.Lock()
 
 
+def _show_of(item_id, work_id, folder):
+    """Which show or book an item is of, as the window's rows read it (`view_rows._show_key`): its work, else its
+    folder, else itself — `w<id>` / `f<folder>` / `i<id>` (the journey's stones, `seen_dates`)."""
+    return f"w{work_id}" if work_id is not None else f"f{folder}" if folder else f"i{item_id}"
+
+
 def _now():
     """A sortable UTC time stamp with microseconds (`added_at`, `removed_at`, the log's `at`), never one this process
     gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5)."""
@@ -1083,6 +1089,20 @@ ADDED_HASH_SQL = (
       BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
 )
 ADDED_HASH = "items_hash_stale"
+# Kura-WD (3.0.18; Sonic's ruling, the mining-ordering model's step 4): when each item was marked watched — the Best sentence ranks a line
+# by how recently its learner saw it (tracks/logic/work/mining-ordering ADVERSARY.md F7). An added column, as the hash
+# (no row rewritten: NULL for every mark made before it, never a made-up date), written beside `watched` by every
+# command that writes the mark (`_dated`: stamped 0 → 1, cleared 1 → 0, a status value of its own so one Undo takes both
+# back, and the Undo puts a date back only with its mark: `_undo_status`), carried by the copy (ITEM_FIELDS), a Remove's
+# trash row and Repair. Its index, on the dated rows only, is the column's sign in the open's one schema read (as
+# ADDED_HASH is the hash's) — on the column alone: a 2.x store gets it before its upgrade adds `work_id`. An older
+# Surasura never reads it; a mark it writes leaves the date as it was, and every read goes through `watched != 0`.
+# Dropped as easily: DROP INDEX items_watched_at, then the column.
+ADDED_DATES_SQL = (
+    "ALTER TABLE items ADD COLUMN watched_at TEXT",
+    "CREATE INDEX IF NOT EXISTS items_watched_at ON items (watched_at) WHERE watched_at IS NOT NULL",
+)
+ADDED_DATES = "items_watched_at"
 # F13b (3.0.1): which items' origins changed, logged by SQLite itself — whoever writes, an older Surasura too — so a
 # look reads only what changed since the origins it kept (`origins_kept`; reading every origin cost a look ~0.25–0.45 s
 # at 20k). One row an item an origin row (`pairings`, "src:") or an item's copy (`rel_path`, `availability`) changed:
@@ -1212,7 +1232,7 @@ COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_g
                   "side_by_side")                                                          # Kyou-A
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
-               "mine_asked")
+               "mine_asked", "watched_at")     # watched_at: Kura-WD (None where the store has no column yet)
 
 # Forward-only upgrades: {from_version: function(store)}, each run inside one transaction after a .bak; filled
 # below, where the functions are (`_upgrade_1_to_2`)
@@ -2335,8 +2355,9 @@ class Store:
         read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
         process inside a write already) is left as it is: a later open makes them. Never a version or data change.
         A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet.
-        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark."""
-        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
+        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark. Kura-WD: the watched
+        date's column and its index (ADDED_DATES_SQL), as the hash's."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH, ADDED_DATES) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * (len(names) + len(REPLACED)))})",
@@ -2353,6 +2374,10 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
+                for sql in ADDED_DATES_SQL:
+                    if sql.startswith("ALTER") and self._dates_column():   # another open made it meanwhile
+                        continue
+                    self.conn.execute(sql)
                 if not have.issuperset(ORIGIN_LOG) or stale:     # (its reset mark only with a trigger made)
                     for sql in ORIGIN_LOG_SQL:
                         self.conn.execute(sql)
@@ -2364,6 +2389,12 @@ class Store:
         if not getattr(self, "_hashes", False):              # a reader made with `Store.__new__` has none
             self._hashes = any(r[1] == "content_sha256" for r in self.conn.execute("PRAGMA table_info(items)"))
         return self._hashes
+
+    def _dates_column(self):
+        """Kura-WD: whether this store has `items.watched_at` yet (a busy first open leaves it to a later one)."""
+        if not getattr(self, "_dated_items", False):           # a reader made with `Store.__new__` has none
+            self._dated_items = any(r[1] == "watched_at" for r in self.conn.execute("PRAGMA table_info(items)"))
+        return self._dated_items
 
     def close(self):
         """Close the handle, never checkpointing outside the write lock (`_close`, §6.12). Inside `held()`, nothing
@@ -3722,6 +3753,7 @@ class Store:
         for column, value in (("in_learning_order", 1), ("watched", 0)):
             self.conn.executemany(f"UPDATE items SET {column} = ? WHERE id = ?",
                                   [(value, i) for i, c, *_r in status if c == column])
+        status += self._dated(status)                           # Kura-WD: the stones' dates go with them
         cmd.feed(i for i, *_r in status)
         cmd.touch(pins=any(c == "in_learning_order" for _i, c, *_r in status))
         change.status = list(change.status) + status
@@ -3950,6 +3982,7 @@ class Store:
                         if old != 1]
                     self.conn.executemany("UPDATE items SET watched = 1 WHERE id = ?",
                                           [(i,) for i, *_r in change.status])
+                    change.status += self._dated(change.status)     # Kura-WD: dated as watched, now
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
                 cmd.event(item_id, "finished" if tier == "graduated" else "placed",
@@ -4454,6 +4487,8 @@ class Store:
                      cols.get("graduated_at"), self._piece_or_none(cols.get("piece_id")), cols.get("watched", 0),
                      cols.get("mined_at"), cols.get("pinned"), cols.get("in_learning_order", 1), work,
                      search_fold(title, self.language), cols.get("mine_asked")))
+                if cols.get("watched_at") is not None and self._dates_column():   # Kura-WD: seen on its own day
+                    self.conn.execute("UPDATE items SET watched_at = ? WHERE id = ?", (cols["watched_at"], r["item_id"]))
                 cmd.back.add(r["item_id"])
                 self._put(r["tier"], [r["item_id"]], self._restore_where(r), changed_in)
                 self.conn.executemany("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
@@ -5900,8 +5935,26 @@ class Store:
             cmd.feed(i for i, _ in changes)
             change = self._change(cmd, kind)
             change.status = [(i, column, old, value) for i, old in changes]
+            if column == "watched":
+                change.status += self._dated(change.status)     # Kura-WD: the marks' dates, on the same change
             cmd.touch(pins=pins, order=column == "watched" and self._moves_counted([i for i, _ in changes]))
             return change
+
+    def _dated(self, status):
+        """Kura-WD: the watched dates that go with the watched marks in `status` ((id, "watched", old, new) among the
+        rest), written now and returned as status values of their own, so the Undo's value check puts each back: a mark
+        set is dated now, a mark taken back loses its date. Nothing while the store has no column yet."""
+        marks = {i: bool(new) for i, column, _old, new in status if column == "watched"}   # (each a change)
+        if not marks or not self._dates_column():
+            return []
+        stamp, held = _now(), {}
+        for part in _chunks(list(marks), 500):
+            held.update(self.conn.execute(f"SELECT id, watched_at FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                          part))
+        dated = [(i, "watched_at", held[i], stamp if on else None) for i, on in marks.items()
+                 if i in held and held[i] != (stamp if on else None)]
+        self.conn.executemany("UPDATE items SET watched_at = ? WHERE id = ?", [(new, i) for i, _c, _o, new in dated])
+        return dated
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -5933,13 +5986,50 @@ class Store:
             if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []
             keep = self._keep_watched()
-            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep),
-                     f"w{work}" if work is not None else f"f{folder}" if folder else f"i{item}", media)
+            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep), _show_of(item, work, folder), media)
                     for tier in ANALYSED
                     for item, rel, watched, work, folder, media in self.conn.execute(
                         "SELECT i.id, i.rel_path, i.watched, i.work_id, i.parent_folder, w.media_type FROM items i "
                         "LEFT JOIN works w ON w.id = i.work_id WHERE i.tier = ? AND i.availability != 'waiting' "
                         "ORDER BY i.ord, i.id", (tier,))]
+
+    def seen_dates(self):
+        """Kura-WD (Sonic 2026-11-21; the Best sentence's recency, ADVERSARY.md F7): when the learner last saw each
+        show — {show: {"watched_at", "finished", "finished_at"}} for every show with a watched item or an item in
+        Finished, any tier. `show` as `watched_marks`' (`_show_of`); `watched_at`: the newest date among its watched
+        items (None: marks made before the dates); `finished`: some of it is in Finished; `finished_at`: the newest
+        `graduated_at` among those (None: *Earlier*, or nothing in Finished). The store's UTC stamps (`_now`), which
+        sort as text. One read transaction."""
+        with self._reading():
+            at = "watched_at" if self._dates_column() else "NULL"
+            out = {}
+            for item, work, folder, tier, watched, seen, done in self.conn.execute(
+                    f"SELECT id, work_id, parent_folder, tier, watched, {at}, graduated_at FROM items "
+                    "WHERE watched != 0 OR tier = 'graduated'"):
+                row = out.setdefault(_show_of(item, work, folder),
+                                     {"watched_at": None, "finished": False, "finished_at": None})
+                if watched and seen is not None and (row["watched_at"] is None or seen > row["watched_at"]):
+                    row["watched_at"] = seen
+                if tier == "graduated":
+                    row["finished"] = True
+                    if done is not None and (row["finished_at"] is None or done > row["finished_at"]):
+                        row["finished_at"] = done
+            return out
+
+    def watched_dates(self, ids=None):
+        """Kura-WD: {item id: the date it was marked watched} of every watched item with a date (of `ids` only, when
+        given) — a file's own sighting, beside its show's (`seen_dates`). A mark made before the dates is not in it.
+        One read transaction."""
+        with self._reading():
+            if not self._dates_column():
+                return {}
+            sql = "SELECT id, watched_at FROM items WHERE watched != 0 AND watched_at IS NOT NULL"
+            if ids is None:
+                return dict(self.conn.execute(sql))
+            out = {}
+            for part in _chunks(list(dict.fromkeys(ids)), 500):
+                out.update(self.conn.execute(f"{sql} AND id IN ({','.join('?' * len(part))})", part))
+            return out
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 
@@ -7648,20 +7738,27 @@ class Store:
         the value the change set."""
         out = self._change(cmd, "undo")
         skipped, back = [], []
+        marked = {s[0] for s in change.status if s[1] == "watched"}
         for item_id, column, old, new in change.status:
+            if column == "watched_at" and item_id in marked:
+                continue        # Kura-WD: a date goes back with its mark, below — never a value skipped of its own
             row = self.conn.execute(f"SELECT {column} FROM items WHERE id = ?", (item_id,)).fetchone()
             if row is None or row[0] != new:
                 skipped.append(item_id)
             else:
                 back.append((column, old, item_id))
+        # Kura-WD: a mark put back puts its date back with it (never a mark 0 left with a later Done's date); a mark
+        # left as it is (changed since) keeps its date too
+        restored = {i for c, _o, i in back if c == "watched"}
+        back += [("watched_at", old, i) for i, c, old, _n in change.status if c == "watched_at" and i in restored]
         for column, old, item_id in back:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
         cmd.feed(i for _c, _o, i in back)
         if back:
             cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back),   # P4.1 L2 (T-4)
                       order=self._moves_counted([i for c, _o, i in back if c == "watched"]))   # W-1
-            news = {s[0]: s[3] for s in change.status}
-            out.status = [(i, c, news[i], o) for c, o, i in back]
+            news = {(s[0], s[1]): s[3] for s in change.status}  # (an item may hold several: watched + its date)
+            out.status = [(i, c, news[(i, c)], o) for c, o, i in back]
         return out, skipped
 
     def _undo_pieces(self, cmd, change):
@@ -7779,7 +7876,7 @@ class Store:
             "format": COPY_FORMAT, "store_schema": STORE_SCHEMA, "store_id": meta["store_id"],
             "version": meta["state_version"], "content_sha": None,
             "graduated": by_tier["graduated"], "arrivals": by_tier["arrivals"], "meta": lib_meta,
-            "items": {"fields": list(ITEM_FIELDS), "rows": [[r[f] for f in ITEM_FIELDS] for r in rows]},
+            "items": {"fields": list(ITEM_FIELDS), "rows": [[r.get(f) for f in ITEM_FIELDS] for r in rows]},
             "tables": tables}
         if waiting:
             doc["surasura_library"]["waiting"] = waiting
@@ -8038,7 +8135,7 @@ def _ensure_schema(store):
                                           "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
             if existing:
                 raise StoreError("a library database without a schema version; left alone")
-            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b: at once
+            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ADDED_DATES_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b, WD
                 store.conn.execute(sql)
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
@@ -8462,6 +8559,9 @@ def _write_image(store, image, meta):
     now = _now()
     for sql in ADDED_TABLES_SQL:
         conn.execute(sql)
+    if not store._dates_column():               # Kura-WD: a rebuild in place of a store a busy open left without it
+        for sql in ADDED_DATES_SQL:
+            conn.execute(sql)
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -8499,12 +8599,13 @@ def _write_image(store, image, meta):
                      item["added_at"] or now, item["graduated_at"],
                      item["piece_id"] if item["piece_id"] in piece_ids else None, item["watched"] or 0,
                      item["mined_at"], item["pinned"], 1 if item["in_learning_order"] is None else item["in_learning_order"],
-                     item.get("work_id") if item.get("work_id") in work_ids else None, item.get("mine_asked")))
+                     item.get("work_id") if item.get("work_id") in work_ids else None, item.get("mine_asked"),
+                     item.get("watched_at")))
     conn.executemany(
         "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, source_type, "
         "availability, size, mtime_ns, changed_in, added_at, graduated_at, piece_id, watched, mined_at, pinned, "
-        "in_learning_order, work_id, mine_asked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-        "?, ?)", rows)
+        "in_learning_order, work_id, mine_asked, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?, ?)", rows)
     have = {r[0] for r in rows}
     for name in ("anki_links", "pairings"):
         t = tables.get(name)
@@ -15544,7 +15645,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             item = {k: r.get(k) for k in ("id", "root_id", "rel_path", "rel_key", "tier", "size", "mtime_ns",
                                           "availability", "added_at", "graduated_at", "piece_id", "watched",
                                           "mined_at", "pinned", "in_learning_order", "changed_in", "work_id",
-                                          "mine_asked")}
+                                          "mine_asked", "watched_at")}
             item["entry"] = json.loads(r["entry"])
             image["items"].append(item)
     else:

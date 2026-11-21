@@ -12,6 +12,10 @@ card for (the store's `made_words`, G1.3-4) and never makes it again by itself �
   the list again. Greyed with the store's reason while it can't be written (IK2-10).
 - **The doors:** Settings › Anki & mining's *Words it won't mine again* row (`windows.OPENERS` "unmined-words") and
   an episode's ⋯ (`mine_actions.episode_entries`, beside *Mine again*: that episode's words only).
+- **Not made from this episode** (an episode's own window; Kantan-MA, a tester's report 2026-11-21: *Mine again* made
+  no card and said nothing; PROVISIONAL words): below its deleted cards, the words of its newest pick that got no card
+  and why — a name, only sung, Anki Miner couldn't find it … (`ledger.left_of`, read with the list, read-only). Hidden
+  when there are none.
 
 GUI_Design_Guidelines_Qt: the window's base (Esc closes it, its status line), the Settings doors' button style, a
 tooltip on every button.
@@ -58,6 +62,18 @@ def read(store, item_ids=None, shown=SHOWN):
         item = store.item(entry["items"][0]) or {}
         entry["from"] = os.path.splitext(os.path.basename(str(item.get("rel_path") or "")))[0]
     return entries
+
+
+def left_out(language, item_ids):
+    """(A pool thread's.) The words of the episode Connect couldn't make a card for, each with why
+    (`ledger.left_of`): [{"word", "why"}], none when Connect's records can't be read just now."""
+    import sqlite3
+    from app.connect import ledger
+    try:
+        found = ledger.left_of(language, tuple(item_ids))
+    except sqlite3.Error:
+        return []
+    return [w for item_id in item_ids for w in found.get(item_id) or ()]
 
 
 def from_words(entry):
@@ -143,6 +159,17 @@ class UnminedWindow(windows.SecondaryWindow):
         self.more.setVisible(False)
         column.addWidget(self.more)
         self.body.addWidget(self.box)
+        # Kantan-MA: an episode's words with no card from it and why (`left_out`); hidden while there are none
+        self.left_title = QLabel(strings.UNMINED_LEFT, self)
+        self.left_title.setObjectName("settingsvalue")
+        self.left_lines = QLabel("", self)
+        self.left_lines.setObjectName("windowline")
+        self.left_lines.setTextFormat(Qt.TextFormat.PlainText)
+        self.left_lines.setWordWrap(True)
+        self.left = []
+        for label in (self.left_title, self.left_lines):
+            label.setVisible(False)
+            self.body.addWidget(label)
         self.body.addStretch(1)
         self.read()
 
@@ -157,7 +184,8 @@ class UnminedWindow(windows.SecondaryWindow):
         language, ids = self.language, self.item_ids
         self._reading = True
         self.reads += 1
-        if removed.read_store(self.shell, language, lambda store: read(store, ids),
+        if removed.read_store(self.shell, language,
+                              lambda store: (read(store, ids), left_out(language, ids) if ids is not None else []),
                               lambda found: self._landed((language, found))):
             return True
         self._reading = False
@@ -174,10 +202,13 @@ class UnminedWindow(windows.SecondaryWindow):
             self.read()
             return
         if language == self.language:
-            self._show(found)
+            entries, left = found
+            self._show(entries)
+            self._show_left(left)
 
     def language_changed(self, language):
         self._show_lines(())
+        self._show_left(())
         self._words(strings.UNMINED_LOOKING)
         self.read()
 
@@ -204,6 +235,16 @@ class UnminedWindow(windows.SecondaryWindow):
         self._show_lines(shown)
         none = strings.UNMINED_NONE_OF if self.item_ids is not None else strings.UNMINED_NONE
         self._words("" if shown else none)
+
+    def _show_left(self, left):
+        """Kantan-MA: the episode's words with no card from it, one line each with why (`UNMINED_LEFT_LINE`)."""
+        self.left = list(left or ())
+        text = "\n".join(strings.UNMINED_LEFT_LINE.format(word=w["word"], why=w["why"]) for w in self.left[:SHOWN])
+        if self.left_lines.text() != text:
+            self.left_lines.setText(text)
+        for label in (self.left_title, self.left_lines):
+            if label.isHidden() == bool(text):
+                label.setVisible(bool(text))
 
     def _show_lines(self, entries):
         keep, order, made = {}, [], []

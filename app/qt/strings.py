@@ -552,7 +552,11 @@ MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you de
                   "\n• Undo takes the ask back")
 MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
 UNMINED_ENTRY = "Words it won't mine again…"
-UNMINED_ENTRY_TIP = "The words of this episode whose cards you deleted in Anki: allow one again"
+UNMINED_ENTRY_TIP = "This episode's words with no card: deleted, or ones it couldn't make"
+# Kantan-MA (a tester's report 2026-11-21: *Mine again* made no card and said nothing; PROVISIONAL words): the words of
+# an episode Connect couldn't make a card for, each with why (`ledger.left_of`)
+UNMINED_LEFT = "Not made from this episode"
+UNMINED_LEFT_LINE = "{word} · {why}"
 UNMINED_NAME = "Words Surasura won't mine again"
 UNMINED_LINE = "Cards you deleted in Anki. Surasura never makes these words again, unless you allow one."
 UNMINED_LINE_OF = "Cards of {label} you deleted in Anki. Surasura never makes these words again, unless you allow one."

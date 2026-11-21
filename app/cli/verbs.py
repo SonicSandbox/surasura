@@ -1173,6 +1173,30 @@ def _listed(args, lang):
     return out
 
 
+_COUNTED = {}      # the last Generate's counts, kept while its library_frequency.json is the same file (`_counted`)
+
+
+def _counted(lang):
+    """(uses per word, the list's cut-off) the last Generate counted (`analyzer.library_counts`), so Connect's pick
+    reads a rare compound as the list did (Kantan-MA: 大衆 counted only in 大衆食堂) — (None, 0) for Chinese, before
+    the first Generate, for another language's results, or a file that can't be read now (each word is then itself).
+    Read once while the file is unchanged: a run's every episode asks."""
+    if lang != "ja":
+        return None, 0
+    from app import analyzer
+    path = os.path.join(_results_dir(), "library_frequency.json")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, 0
+    stamp = (lang, path, st.st_mtime_ns, st.st_size)
+    if _COUNTED.get("stamp") != stamp:
+        counts, floor = analyzer.library_counts(path, lang)
+        _COUNTED.clear()
+        _COUNTED.update(stamp=stamp, got=(counts, floor or 0) if counts is not None else (None, 0))
+    return _COUNTED["got"]
+
+
 def _known_test(lang, tokenizer, script):
     """`is_known((lemma, reading))` by the analyzer's rule (the YouTube preview's): known, or on an ignore list."""
     from app import analyzer
@@ -1397,7 +1421,8 @@ def pick(args):
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
-    view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
+    # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
+    view = analyzer.LearningView(*_counted(lang), known=is_known)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
@@ -1406,7 +1431,8 @@ def pick(args):
                           # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
                           # parts (never on the command line): no card from a line inside one
                           unsure=getattr(args, "unsure", None) or (),
-                          sentence_length=_sentence_length(loaded) if book else None)
+                          sentence_length=_sentence_length(loaded) if book else None,
+                          view=view if lang == "ja" else None)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

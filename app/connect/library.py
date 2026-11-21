@@ -295,6 +295,22 @@ def media_of(store, item):
     return row[0] if row else None
 
 
+def ahead(store):
+    """[item ids] still ahead of you, in the order you'll meet them: the top 20 (`mine_line`), then the rest of
+    Current (NOW, then Soon) and Goal in the store's order, each available on disk and counting (`counting`) — never
+    Finished, never New arrivals (not placed). The study order's *As I'll meet it* for Connect's cap (Kantan-MO; the
+    walk the level raise used before 3.0.18)."""
+    line = mine_line(store)
+    seen, out = set(line), list(line)
+    with store._reading():
+        for tier in ("now", "soon", "goal"):
+            for item_id in counting(store, tier):
+                if item_id not in seen:
+                    seen.add(item_id)
+                    out.append(item_id)
+    return out
+
+
 def counting(store, tier):
     """[item ids] of `tier` in the store's order, available on disk, that count — W-1's one rule
     (`library_store.counts_sql` with the library's `keep_watched`): a watched one while it's off has nothing left to

@@ -47,8 +47,8 @@ def test_a_watched_mined_episode_gets_no_level_job_and_its_new_word_goes_to_the_
     with c.store() as s:
         level.check(s, "ja", BEFORE, "run-1", files)
         out = level.check(s, "ja", RAISED, "run-2", files)
-    assert out["queued"] == [b], "the watched episode is passed over; the one ahead of you takes the new word"
-    assert [(j["item_id"], j["words"]) for j in _level_jobs()] == [(b, [("眼鏡", "メガネ")])]
+    # Kantan-MO (F1): a raise mines no episode again — watched or not, the new words join the study order
+    assert out["queued"] == [] and _level_jobs() == []
 
 
 def test_wants_is_the_one_rule_for_watched_and_taken_out_items():
@@ -70,17 +70,14 @@ def _run(tmp_path, ledger, plan):
     return steps, summary
 
 
-def test_a_level_job_whose_video_is_gone_waits_quietly_never_asking_for_it(tmp_path, ledger):
+def test_a_level_job_whose_video_is_gone_is_dropped_never_asking_for_it(tmp_path, ledger):
+    # Kantan-MO (F1): a level job queued before the update is dropped at its start — it never asks for its video
     plan = {"line": {"ja": [13]}, "level": [("ja", 13, [("血族", "ケツゾク")])], "videos": {"13": None}}
     steps, summary = _run(tmp_path, ledger, plan)
     job = ledger.jobs("ja")[0]
-    assert (job["state"], job["reason"]) == ("waiting", runner.LEVEL_NO_VIDEO)
+    assert (job["state"], job["reason"]) == ("dropped", runner.LEVEL_DROPPED)
     assert runner.LEVEL_NO_VIDEO != runner.NO_VIDEO, "Needs you's *No video* lists NO_VIDEO's waits only"
-    assert not any(e[0] == "mine" for e in steps.log)
-    # review A8: the video back on this computer at a later start, its new words' cards are made
-    plan.pop("videos")
-    steps, summary = _run(tmp_path, ledger, plan)
-    assert ledger.jobs("ja")[0]["state"] == "done" and [e[3] for e in steps.log if e[0] == "mine"] == [["血族"]]
+    assert not any(e[0] in ("pick", "mine") for e in steps.log)
 
 
 def test_your_ask_on_a_level_job_is_a_yes_watched_or_without_its_video(tmp_path, ledger):
@@ -117,7 +114,7 @@ def test_a_level_job_queued_before_its_episode_was_watched_is_dropped_when_it_st
     plan = {"line": {"ja": [15]}, "level": [("ja", 15, [("好く", "スク")])], "watched": [15]}
     steps, summary = _run(tmp_path, ledger, plan)
     job = ledger.jobs("ja")[0]
-    assert (job["state"], job["reason"]) == ("dropped", runner.WATCHED)
+    assert (job["state"], job["reason"]) == ("dropped", runner.LEVEL_DROPPED)    # Kantan-MO: every level job
     assert summary["languages"]["ja"]["dropped"] == [15]
     assert not any(e[0] in ("pick", "mine") for e in steps.log)
 

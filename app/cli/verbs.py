@@ -802,7 +802,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if planned:
         # the re-plan IS the list for the store's order (parity with a full Generate on the plan columns, 05 §1)
         from modules.junban import spaced
-        mode = str(junban_settings.get("junban_order") or "content").strip().lower()
+        from app import settings_manager
+        mode = settings_manager.study_order(junban_settings)       # the list's study order (Kantan-MO)
         job = spaced.Job(automatic=True, rows=current.rows(mode), places=current.places)
         list_current = True
     else:
@@ -1339,10 +1340,12 @@ def pick(args):
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
-    mode = args.words or loaded.get("connect_mine_words") or "list"
+    # Kantan-MO: the list (Level) decides, and *Cards for every new word* (`connect_every_word`) adds the rest;
+    # `--words` still names any of pick's modes
+    from app import settings_manager
+    mode = args.words or settings_manager.mine_mode(loaded)
     if mode not in MINE_WORDS:
-        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or "
-                                   "i1.", need="mine-words-setting")
+        raise CliError("bad-data", f"--words is {mode!r}: it must be list, unknown or i1.", need="mine-words-setting")
     if not os.path.isfile(args.file):
         raise CliError("bad-data", f"There's no subtitle at {args.file}.")
     if args.video is not None and not os.path.isfile(args.video):

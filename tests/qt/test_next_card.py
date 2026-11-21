@@ -299,7 +299,7 @@ def test_a_watched_mark_on_its_way_is_what_marking_reads():
 @pytest.mark.parametrize("key, target", [
     ("words", "_open_journey"), ("words-any", "_open_journey"), ("mine", "mine_row"), ("miner", "install"),
     ("junban", "_open_junban"), ("junban-again", "_open_junban"), ("backfill", "launch"),
-    ("automation", "settings:automation"), ("yours", "settings:connect_mine_words"),
+    ("automation", "settings:automation"), ("yours", "settings:level"),
     ("audiobook", "tab:current@audiobook"), ("hato", "settings:hato"), ("piyo", "settings:practice_ai"),
 ])
 def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key, target):

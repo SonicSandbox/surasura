@@ -319,7 +319,7 @@ def test_the_quick_look_below_the_line_asks_nothing_more(ledger, monkeypatch):
     steps.cap = lambda _l: 10
     _seen(steps, "ja", list(range(1, 16)), {n: (1, f"w{n}") for n in range(1, 16)})
     steps._open = lambda _l: pytest.fail("no store read below the line")
-    steps._list_order = lambda _l: pytest.fail("no list read below the line")
+    steps._places = lambda *a: pytest.fail("no list read below the line")
     assert steps.tidy("ja", ledger) is None
 
 
@@ -469,8 +469,19 @@ def test_a_tidy_that_cant_go_never_holds_mining_and_isnt_tried_again_this_run(le
 
 
 def _seen(steps, lang, notes, made, pinned=(), counted=None):
+    """What `waiting_count` keeps for Tidy: the counted notes with the item their place is read by."""
+    counted = notes if counted is None else counted
     steps._waiting_seen = {lang: (frozenset(notes), dict(made), frozenset(pinned),
-                                  frozenset(notes if counted is None else counted))}
+                                  {n: (made[n][1], runner.PINNED if made[n][0] in pinned else made[n][0])
+                                   if n in made else (None, runner.YOURS) for n in counted})}
+
+
+def _by_list(words):
+    """The window's order (`Steps._places`, Kantan-MO's) as *By leverage* gives it: a word's place on the list."""
+    def places(lang, loaded, keys):
+        return lambda word, item, ahead_only=False: (runner.FRONT if item in (runner.YOURS, runner.PINNED)
+                                                     else words.index(word) if word in words else runner.OFF_LIST)
+    return places
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -481,7 +492,8 @@ def test_steps_tidy_takes_connects_lowest_and_never_yours_a_pinned_shows_or_an_a
     steps.cap = lambda _l: 2
     steps._open = lambda _l: contextlib.nullcontext(object())
     monkeypatch.setattr(shelf, "finished_items", lambda store, made: set())
-    steps._list_order = lambda _l: {(w, ""): i for i, w in enumerate(words)}
+    steps._places = _by_list(words)
+    steps._listed_keys = lambda _l: {w: True for w in words}
     made = {101: (1, words[0]), 102: (1, words[1]), 103: (2, words[2]), 104: (3, words[3]), 105: (1, words[5])}
     # 101..105 Connect's (item 2 pinned, item 3 asked); 900, 901 yours; 105's word listed last
     _seen(steps, lang, [101, 102, 103, 104, 105, 900, 901], made, pinned={2})
@@ -501,7 +513,8 @@ def test_steps_tidy_counts_the_old_shelf_and_connects_off_list_cards_without_ask
     steps.cap = lambda _l: 2
     steps._open = lambda _l: contextlib.nullcontext(object())
     monkeypatch.setattr(shelf, "finished_items", lambda store, made: set())
-    steps._list_order = lambda _l: {(w, ""): i for i, w in enumerate(words[:2])}
+    steps._places = _by_list(words[:2])
+    steps._listed_keys = lambda _l: {w: True for w in words[:2]}
     made = {101: (1, words[0]), 102: (1, words[1]), 103: (1, words[2]), 104: (1, words[3]), 105: (1, words[4])}
     _seen(steps, "ja", [101, 102, 103], made, counted=[101, 102])          # 103 off the list
     with ledger.transaction():

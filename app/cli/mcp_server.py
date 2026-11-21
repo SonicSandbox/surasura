@@ -652,12 +652,15 @@ def produce_rules(role, recent, weak=False):
          "production is too hard at first. " if weak else "")
         + "A weak word (" + ("every word here, and " if weak else "") + "a word you had to show) goes through an "
         "easier step first: a cloze (the role's line with the word left as ＿＿, its meaning clear from the line) or "
-        "a choice of 2-3 words (the target and plausible distractors the learner knows, from the known words above, "
-        "in random order). Only once that passes, the free drill. A choice shows the word on purpose: check it "
+        "a choice of 2-3 words (the target and distractors the learner knows, from the known words above, in random "
+        "order). A distractor must be clearly wrong in the gap, by grammar or by meaning, never a word that fits it "
+        "too (反省 fits ＿＿した as well as 受容 does), and best of another part of speech. Do the easier step for "
+        "every weak word first, in order; then their free drills, in the same order, at the end of the round, so no "
+        "word is fresh from its choice when the learner must say it. A choice shows the word on purpose: check it "
         "without targets; check a cloze with targets.",
         f"After {TRIES} failed tries, show the word with its reading and one short example. Bring it back only at "
-        "the end of the round, after every other word: first as the easier step (a cloze or a choice), then, once "
-        "that passes, a new free drill (a new goal, new banned words).",
+        "the end of the round, after every other word: first as the easier step (a cloze or a choice), then a new "
+        "free drill (a new goal, new banned words) as the round's last.",
         f"Classify each attempt as one of: {types}.",
         "Show exactly the text you checked, character for character: never retype or change it after the check.",
         "Keep it short. No translation of the role's line unless the learner asks.",

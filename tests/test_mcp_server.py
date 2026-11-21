@@ -839,6 +839,14 @@ def test_a_produce_round_of_weak_words_starts_each_with_an_easier_step_and_sugge
     assert "source known" in weak["note"]
     assert "Every word in this round is a weak one" not in known_rules and "note" not in known
     assert "a word you had to show) goes through an easier step first" in known_rules
+    # live round 20261121-203357: a free drill right after its choice was too easy (受容 passed trivially), and 反省
+    # fit ＿＿した as well as the target — the free drills come at the round's end, the distractors clearly wrong
+    for rules in (weak_rules, known_rules):
+        assert ("Do the easier step for every weak word first, in order; then their free drills, in the same order, "
+                "at the end of the round") in rules
+        assert "A distractor must be clearly wrong in the gap" in rules and "never a word that fits it too" in rules
+        assert "best of another part of speech" in rules
+        assert "then a new free drill (a new goal, new banned words) as the round's last" in rules
 
 
 # --- produce: fresh words each round (live testing, 2026-11-21: the same three known words three rounds running) ---- #

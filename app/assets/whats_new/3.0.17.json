@@ -1,0 +1,100 @@
+{
+  "version": "3.0.17",
+  "date": "2026-11-20",
+  "items": [
+    {
+      "id": "faster-start",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "A faster start: the first screen shows at once, and Settings opens in seconds."
+    },
+    {
+      "id": "pause-a-circle",
+      "kind": "new",
+      "for": [
+        "everyone"
+      ],
+      "text": "Click a circle at the bottom left to pause what it runs by itself; click again to resume."
+    },
+    {
+      "id": "connect-asks-first",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "shows"
+      ],
+      "text": "Connect makes no cards until you say yes, on a new install and after an update too."
+    },
+    {
+      "id": "connect-only-makes-cards",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "shows"
+      ],
+      "text": "Connect no longer suspends cards by itself; only cards on your list count toward its limit."
+    },
+    {
+      "id": "mine-again-allow-again",
+      "kind": "new",
+      "for": [
+        "anki",
+        "shows"
+      ],
+      "text": "An episode's ⋯ has Mine again; words whose cards you deleted are listed, with Allow again."
+    },
+    {
+      "id": "known-suspended-and-marked",
+      "kind": "tweak",
+      "for": [
+        "anki"
+      ],
+      "text": "Count as known starts as Suspended + Marked: a card you only suspend no longer counts."
+    },
+    {
+      "id": "settings-fine-tune",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Settings: sections under Cards, Library and App, a dot on what you changed, Reset with Undo."
+    },
+    {
+      "id": "lighter-mining",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Anki Miner cuts as many clips at once as your PC can carry, fewer on battery."
+    },
+    {
+      "id": "sounds-are-no-words",
+      "kind": "fix",
+      "for": [
+        "ja",
+        "zh"
+      ],
+      "text": "Sighs, laughs, fillers and song lyrics no longer count as words or become cards; names read surer."
+    },
+    {
+      "id": "episodes-in-order",
+      "kind": "fix",
+      "for": [
+        "shows"
+      ],
+      "text": "A show's episodes always keep episode order, in Current too."
+    },
+    {
+      "id": "new-arrivals-steadier",
+      "kind": "fix",
+      "for": [
+        "shows",
+        "hato"
+      ],
+      "text": "New arrivals: one row per show, skips clear at once, and hato's folders join their show."
+    }
+  ]
+}

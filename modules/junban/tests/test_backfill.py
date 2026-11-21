@@ -129,7 +129,7 @@ class _Session:
     def __init__(self, known=()):
         self.known = set(known)
 
-    def is_known(self, word):
+    def is_known(self, word, sentence=None):
         return word in self.known
 
     def prepare(self, fill, notes, status=None, young=()):

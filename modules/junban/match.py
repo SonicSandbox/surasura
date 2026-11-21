@@ -10,7 +10,8 @@ every test keeps working unchanged — the precedent is `ankiconnect.py`, which 
 
 from app.anki_match import (AFFIX_SPELLINGS, CONTEXT_COLUMNS, MARKER_DEFAULTS, MARKERS,  # noqa: F401
                             NOMINALIZERS, PLURALS, POLITE_PREFIXES, TOTAL_COLUMNS, ZH_ASPECTS, ZH_CARD_ENDINGS,
-                            Index, affixes_off, another_word, build_index, card_key, connect_row, find_phrases,
+                            Index, affixes_off, another_word, build_index, card_key, card_word_in_sentence,
+                            connect_row, find_phrases,
                             fold_kana,
                             one_word, two_words, word_of_its_own,
                             library_floor, load_index,

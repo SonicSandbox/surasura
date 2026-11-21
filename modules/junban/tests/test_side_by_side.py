@@ -71,7 +71,7 @@ class _Session:
     def __init__(self, language):
         self.language = language
 
-    def is_known(self, word):
+    def is_known(self, word, sentence=None):
         return False
 
     def prepare(self, fill, notes, status=None, young=()):

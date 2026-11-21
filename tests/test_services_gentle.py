@@ -772,6 +772,8 @@ def test_held_estimates_wait_quietly_while_a_press_waits_for_its_answer(monkeypa
         assert answer["id"] == pressed, "the press goes first"
         requeued = len(puts) - before - 1                              # (the press's own put)
         assert requeued <= 10, f"the held estimates were put back {requeued} times while the press waited"
+        with pytest.raises(queue.Empty):
+            got.get(timeout=1.5)                                       # still held: none sent behind the press
     finally:
         client.stop()
         registry.quit(timeout=30)

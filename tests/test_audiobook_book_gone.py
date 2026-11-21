@@ -196,22 +196,23 @@ def test_an_audio_file_picked_joins_only_its_own_audiobook_from_a_folder_of_seve
 
 
 def test_an_audio_file_of_an_audiobook_already_in_names_only_that_one():
-    """Both audiobooks of the folder read before (alone): the file's pick names only the one holding it — the window
-    then picks it, with Undo."""
+    """Two audiobooks loose in one folder (each `.m4b` one of its own), read before (alone): the file's pick names only
+    the one holding it — the window then picks it, with Undo — never the other beside it."""
+    from tests.test_audiobook_items import _settle
+    from tests.test_audiobooks import _m4b
     language = "ja"
     store, epub = _book_in(language, NEKO, "source")
     store.close()
     shelf = _drive("Audiobook")
-    first = _audio_folder(os.path.join(shelf, "rip one"), "Untitled A", _fit(language))
-    _audio_folder(os.path.join(shelf, "rip two"), "Untitled B", _fit(language) * 1.1)
-    for rip in ("rip one", "rip two"):
-        _add(language, os.path.join(shelf, rip))
+    first = _m4b(os.path.join(shelf, "Untitled A.m4b"), _fit(language))
+    _settle(first, _m4b(os.path.join(shelf, "Untitled B.m4b"), _fit(language) * 1.1))
+    _add(language, shelf)
     store = ls.open_store(language, *roots(language))
     with store:
         held = {r["item_id"]: r["audiobook"]["files"] for r in store.audiobooks()}
-    assert len(held) == 2
-    said = _add(language, os.path.dirname(first[0]), {"epub": epub, "title": NEKO, "file": first[0]})["audiobooks"]
-    assert said["alone"] == [i for i, files in held.items() if os.path.abspath(first[0]) in files]
+    assert len(held) == 2, held
+    said = _add(language, shelf, {"epub": epub, "title": NEKO, "file": first})["audiobooks"]
+    assert said["alone"] == [i for i, files in held.items() if os.path.abspath(first) in files]
 
 
 # --- B2: a book's title is never its folder's ` (n)` ---------------------------------------------------------------- #
@@ -276,7 +277,10 @@ def test_an_srt_named_like_the_epub_beside_it_is_no_title_of_its_own(language, t
     with store:
         folder = _drive("Drop")
         epub = _epub(os.path.join(folder, f"{title}.epub"), title, language, repeat=23)   # (its own text: other bytes)
-        shutil.copy(os.path.join(RESOURCES, language, SRT[language]), os.path.join(folder, f"{title}.srt"))
+        srt = os.path.join(folder, f"{title}.srt")
+        shutil.copy(os.path.join(RESOURCES, language, SRT[language]), srt)
+        from tests.test_audiobook_items import _settle
+        _settle(srt, epub)                                   # (settled: a file still being written waits a look)
         _look(store, language, store.add_source(folder), full=True)
         parts = _parts(store, epub)
         assert parts and store.item(parts[0])["rel_path"].split("/")[1] == title

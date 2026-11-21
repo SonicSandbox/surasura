@@ -41,11 +41,12 @@ RestorePoint = namedtuple("RestorePoint", "name when now then")
 
 # --- what is synced ------------------------------------------------------------------------------------------------- #
 def saved(settings, language):
-    """The window's choices for `language` as settings hold them -> (decks, fields, include_suspended)."""
+    """The window's choices for `language` as settings hold them -> (decks, fields, include_suspended): the studied
+    suspended cards counted are *Count as known in Anki*'s (`anki_sync.counted_suspended`, Kotoba-WS2)."""
     settings = settings or {}
     decks = [str(d) for d in ((settings.get("anki_sync_decks") or {}).get(language) or [])]
     chosen = [str(f) for f in ((settings.get("anki_sync_fields") or {}).get(language) or [])][:2]
-    return decks, chosen, bool(settings.get("anki_sync_include_suspended", False))
+    return decks, chosen, anki_sync.counted_suspended(settings)
 
 
 def fields(first, second=None):

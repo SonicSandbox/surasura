@@ -344,10 +344,33 @@ def _clean_decks(decks):
 
 
 def scope_query(decks, include_suspended=False):
-    """'(deck:"A" OR deck:"B") -is:new [-is:suspended]'. `deck:"A"` includes A's subdecks."""
+    """'(deck:"A" OR deck:"B") -is:new [-is:suspended]'. `deck:"A"` includes A's subdecks. `include_suspended`: False
+    (no suspended card), True (every studied one), or the search terms a suspended card must carry to count
+    (`counted_suspended`: *Count as known in Anki*'s picks)."""
     terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
     query = f"({terms}) -is:new"
+    if isinstance(include_suspended, str):
+        return f"{query} (-is:suspended OR (is:suspended {include_suspended}))"
     return query if include_suspended else query + " -is:suspended"
+
+
+def counted_suspended(settings):
+    """Which studied cards you suspended the known-words sync counts (Kotoba-WS2: *Count suspended cards as known*
+    folded into *Count as known in Anki*; Sonic 2026-11-19) -> `scope_query`'s `include_suspended`: the search terms
+    of a card in every state *Count as known in Anki* picks (default Suspended + Marked; never a card Surasura
+    suspended, a leech, or one flagged red or green: `known_signal.carries`), or False — while Connect's signal reads
+    every suspended card itself (`settings_manager.connect_on`: new ones too, with its offer and undo), or with
+    nothing picked. One rule for the window's sync, the automatic one and `surasura-cli known-sync`."""
+    from app import settings_manager
+    if settings_manager.connect_on(settings):
+        return False
+    try:
+        from app.connect import known_signal
+        terms = known_signal.terms(settings)
+        return known_signal.carries(terms, settings) if terms else False
+    except Exception as e:                   # never a wider count than the picks: no suspended card, this time
+        print(f"Anki sync: Count as known in Anki couldn't be read ({e}); suspended cards aren't counted.")
+        return False
 
 
 def _multi_ids(url, queries):
@@ -574,7 +597,7 @@ def sync(language, url, decks, fields, include_suspended=False, full=False):
             return refused
         try:
             return _sync(language, url or anki_connect.DEFAULT_URL, _clean_decks(decks),
-                         [str(f) for f in (fields or [])], bool(include_suspended), full)
+                         [str(f) for f in (fields or [])], _suspended_value(include_suspended), full)
         except AnkiError as e:
             return SyncResult(mode="full" if full else "delta", error=str(e),
                               total_known=count_known(language))
@@ -598,7 +621,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
                or state.get("url") != url
                or sorted(state.get("decks") or []) != sorted(decks)
                or list(state.get("fields") or []) != fields
-               or bool(state.get("include_suspended")) != include_suspended
+               or _suspended_value(state.get("include_suspended")) != include_suspended
                or (language == "ja" and state.get("reading", 1) != READING_VERSION)
                or state.get("known_sig") != known_signature(known_path))
     full = bool(full or changed)
@@ -650,6 +673,11 @@ def _sync(language, url, decks, fields, include_suspended, full):
         "last_backup": state.get("last_backup"),
     })
     return result
+
+
+def _suspended_value(value):
+    """`include_suspended` as the sync keeps it: the search terms (a str, `counted_suspended`), else a bool."""
+    return value if isinstance(value, str) else bool(value)
 
 
 def _int_list(values):
@@ -834,7 +862,7 @@ def read_known_signal(language, url, decks, fields, settings):
         from app.connect import known_signal
         return known_signal.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
     except Exception as e:
-        print(f"Known from Anki skipped: {e}")
+        print(f"Count as known in Anki skipped: {e}")
         return None
 
 
@@ -1085,7 +1113,7 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
         url = url or anki_connect.DEFAULT_URL
         decks = _clean_decks(decks)
         fields = [str(f) for f in (fields or [])]
-        include_suspended = bool(include_suspended)
+        include_suspended = _suspended_value(include_suspended)
         result = SyncResult(mode=mode)
         if not decks:
             result.error = "Choose at least one deck first."

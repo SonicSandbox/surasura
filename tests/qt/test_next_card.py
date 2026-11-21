@@ -442,9 +442,10 @@ def test_the_panel_is_one_list_your_path_its_stages_now_new_for_you_later_and_do
     panel.close()
 
 
-def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monkeypatch):
+def test_make_it_yours_row_presses_only_while_it_opens_level(world, monkeypatch):
     # Sonic 2026-11-20 ("hide"): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
-    # off-list cards' trap) — its row stays to do (the stage reads right) with its ? line, but no *Do it*, no *Again*
+    # off-list cards' trap). The mining model (Kantan-MO) re-points ④'s press to Level, the one knob: its row is to do
+    # (the stage reads right) with its ? line and a *Do it* / *Again* — and none if it pointed anywhere else
     panel = world.d.guide_panel
     panel.set_look(guide.Look("3.0.5", (), False))
     f = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
@@ -452,7 +453,8 @@ def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monk
     assert panel.stage_row.states == (P.DONE, P.DONE, P.DONE, P.NOW)
     r = rows["yours"]
     assert r.status.useful and not r.later and r.tick.text() == ""               # to do, never "can't apply yet"
-    assert r.press is None and r.about.isVisibleTo(r)                           # no press; its line behind its ?
+    assert P.YOURS_PRESS == "settings:level"
+    assert r.press is not None and r.press.text() == strings.PATH_DO and r.about.isVisibleTo(r)   # its line behind ?
     assert r.accessibleDescription() == strings.PATH_STEPS["yours"][1]
     panel.close()
     # the rest row by row: a second open would race the shell's own fresh look (the open asks one on a worker, and its
@@ -461,11 +463,10 @@ def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monk
 
     def row(f2):
         return _StepRow({s.step.id: s for s in P.statuses(f2, {"first_ack": True})}["yours"], lambda _s: None, panel)
-    done = row(f._replace(yours_picked=True))                                   # done before: no *Again* either
-    assert done.status.done and done.status.useful and done.press is None
-    monkeypatch.setattr(P, "YOURS_CARD", True)                                  # the model re-points ④: its press back
-    on = row(f)
-    assert on.press is not None and on.press.text() == strings.PATH_DO
+    done = row(f._replace(yours_picked=True))                                   # done before: *Again*
+    assert done.status.done and done.status.useful and done.press.text() == strings.PATH_AGAIN
+    monkeypatch.setattr(P, "YOURS_PRESS", "settings:connect_mine_words")        # never a press to the retired choice
+    assert row(f).press is None and row(f._replace(yours_picked=True)).press is None
 
 
 def test_a_step_rows_do_it_runs_its_own_press_and_closes_the_panel(world):

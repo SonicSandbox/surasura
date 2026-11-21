@@ -472,6 +472,9 @@ STRINGS = {
     "subline": "{lang} · {rows} in Current · {files} files", "subline_empty": "{lang} · nothing added yet",
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
     "pct_hero": "{pct}% of its words you won't need to learn",     # Kantan-B1: as Up next paints it (strings.py)
+    # Kura-GS (PROVISIONAL): the % hover's one growth line — what it was when added (`growth_line`); an item already
+    # in the library when the snapshots began says the day they began, never "when you added it"
+    "growth_added": "When you added it on {day}: {pct}%", "growth_since": "On {day}: {pct}%",
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
     "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
@@ -754,6 +757,20 @@ def day_label(stamp):
         return f"{MONTHS[int(stamp[5:7]) - 1][:3]} {int(stamp[8:10])}"
     except (ValueError, IndexError):
         return ""
+
+
+def growth_line(snapshots):
+    """Kura-GS: the % hover's growth line from an item's snapshots (`Store.growth_of`'s {kind: snapshot}) — its
+    'added' *% known* (known ÷ counted, as the row's own) and day: *When you added it on Nov 3: 81%*, or for an item
+    already in the library when the snapshots began, *On Nov 21: 81%*; None without one (or nothing counted)."""
+    snap = (snapshots or {}).get("added")
+    if not snap or not snap.get("counted"):
+        return None
+    day = day_label(snap.get("at"))
+    if not day:
+        return None
+    return STRINGS["growth_since" if snap.get("prior") else "growth_added"].format(
+        day=day, pct=round(pct_of(snap["known"], snap["counted"])))
 
 
 def media_type_guess(counts, anilist_id=None, tmdb_id=None):

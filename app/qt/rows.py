@@ -1135,6 +1135,18 @@ class RowDelegate(QStyledItemDelegate):
         self._stat_ws = {}                           # what shows right of a string -> its width, this look (`_info`)
         self._tw = None                              # (the reader's needs or the entries, width, look, the one title
         #                                              width) (`title_w`)
+        self.growth = None                           # Kura-GS: (item id) -> its growth snapshots or None (the window's
+        #                                              numbers, `Numbers.growth`): the % hover's one line
+
+    def _pct_tip(self, ep):
+        """Up next's % hover (Kantan-B1), and Kura-GS's one line under it: what it was when added
+        (`view_rows.growth_line`), where the store has it."""
+        tip = strings.ROWS_HERO_PCT_TIP.format(pct=round(ep.pct))
+        try:
+            line = view_rows.growth_line(self.growth(ep.id)) if self.growth is not None else None
+        except Exception:
+            line = None                                  # (the hover never fails for its extra line)
+        return tip if not line else f"{tip}\n{line}"
 
     def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None, spare=False,
                 extra=None):
@@ -1572,7 +1584,7 @@ class RowDelegate(QStyledItemDelegate):
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             if g["pct"] is not None:                       # Kantan-B1: what the % counts
-                out.append(("pct", g["pct"], strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct)), None))
+                out.append(("pct", g["pct"], self._pct_tip(nxt), None))
             is_open = self.view.model().open_key == payload.key
             if not is_open and self._sheet_there() and not view_rows.audio_only(payload):    # G16 / L4; a5-2
                 s = g["string"]

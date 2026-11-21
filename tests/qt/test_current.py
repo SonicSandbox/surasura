@@ -152,6 +152,40 @@ def test_up_nexts_percent_says_what_it_counts_and_a_click_on_it_still_opens_the_
     assert wait_until(lambda: lst.model().open_key == hero.key)
 
 
+def test_up_nexts_percent_hover_says_what_it_was_when_added_in_one_line(seeded):
+    """Kura-GS (Sonic, the journey's round 8: growth on the % hover, "it can't get cluttered over there"): Up next's
+    % hover keeps Kantan-B1's words and adds one line, what the store kept of it when it was added — *When you added
+    it on Nov 3: 81%*, or, for an episode already in the library when the snapshots began, the day they began. No
+    snapshot (no Generate counted it yet, no numbers, a read that fails): the hover as before, never an error."""
+    seed, win = seeded()
+    lst = current(win)
+    assert lst.delegate.growth == win._growth_of, "the window's numbers answer it"
+    _kind, hero, _lines = lst.model().entries[0]
+    nxt = hero.episodes[hero.next_index]
+    tip = strings.ROWS_HERO_PCT_TIP.format(pct=round(nxt.pct))
+    assert part(lst, 0, "pct")[0][2] == tip, "the seed's window has no numbers' snapshots: as before"
+    snap = {"known": 81, "counted": 100, "unknown": 240, "at": "2026-11-03T09:15:00.000000Z", "prior": False}
+    asked = []
+    lst.delegate.growth = lambda item: asked.append(item) or {"added": snap}
+    assert part(lst, 0, "pct")[0][2] == tip + "\nWhen you added it on Nov 3: 81%"
+    assert asked and set(asked) == {nxt.id}, "Up next's own episode"
+    snap["prior"] = True
+    assert part(lst, 0, "pct")[0][2] == tip + "\nOn Nov 3: 81%"
+    for answer in (None, {}, {"done": snap}, {"added": dict(snap, counted=0)}):
+        lst.delegate.growth = lambda item, a=answer: a
+        assert part(lst, 0, "pct")[0][2] == tip
+
+    def broken(item):
+        raise RuntimeError("a store gone mid-read")
+    lst.delegate.growth = broken
+    assert part(lst, 0, "pct")[0][2] == tip
+    from types import SimpleNamespace as NS                     # the shell's source: the writer's numbers, or none
+    host = NS(services=NS(writer=NS(numbers=NS(growth={7: {"added": snap}}.get))))
+    assert shell.ShellWindow._growth_of(host, 7) == {"added": snap}
+    assert shell.ShellWindow._growth_of(NS(services=NS(writer=None)), 7) is None
+    assert shell.ShellWindow._growth_of(NS(services=NS(writer=NS(numbers=object()))), 7) is None
+
+
 def test_a_click_on_a_row_opens_its_episodes_and_a_second_closes_it(seeded):
     """A2 #4: a click on a row opens its episodes (8)."""
     seed, win = seeded()

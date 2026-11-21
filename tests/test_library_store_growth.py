@@ -413,6 +413,23 @@ def test_a_done_before_any_generate_taken_back_and_marked_again_keeps_the_figure
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_snapshot_the_database_refuses_never_takes_back_the_learners_done(language):
+    """The snapshot is the store's own bookkeeping: when SQLite refuses its write (a full disk, a constraint), the
+    learner's ✓ Done still holds — only the snapshot is missing."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, [ep]))
+    with store._writing():
+        store.conn.execute("CREATE TEMP TRIGGER refuse_done BEFORE INSERT ON growth WHEN NEW.kind = 'done' "
+                           "BEGIN SELECT RAISE(ABORT, 'refused'); END")
+    store.set_watched([ep])
+    watched, at = store.conn.execute("SELECT watched, watched_at FROM items WHERE id = ?", (ep,)).fetchone()
+    assert watched and at is not None
+    assert _snap(store, ep, "done") is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_reimported_graduate_of_an_older_surasura_keeps_its_figures_as_done(language):
     """2.4.0's Graduate moved the file into Graduated/ and dropped its row; the store's reimport takes it to Finished
     — and, as every move to Finished, keeps its newest figures as its 'done'."""

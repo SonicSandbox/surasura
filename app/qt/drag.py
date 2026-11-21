@@ -2905,6 +2905,11 @@ class DragController(QObject):
             self.cancel(strings.DRAG_GONE)
 
     # --- a Done ----------------------------------------------------------------------------------------------------- #
+    def marking(self, key):
+        """Whether a watched mark of the row `key` is still on its way to the writer (its ticket not saved yet): the
+        path card's *✓ Done* is Up Next's press, so it does nothing meanwhile (Mado-EZP, SPEC-r2 §0.2)."""
+        return any(t.marks and any(t.marks.values()) and key in t.keys for t in self.tickets)
+
     def done(self, row, ep):
         """A stone or ✓ Done (the one path, S12): watched (its toast and Undo) — a stone already watched turns back —
         and, when no file of the row is left unwatched, L6.3's rule (`when_done`): it finishes by itself or joins its

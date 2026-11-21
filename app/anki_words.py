@@ -69,6 +69,7 @@ class Standing:
     young: bool = False     # a studied card under MATURE_DAYS
     mature: bool = False    # every studied card mature
     today: bool = False     # learned today: a card first studied today (Anki's `introduced:1`), none before it
+    sentence: str = ""      # a kana card's sentence, its word read there (`anki_sync._note_sentence`; the ✓ chip)
 
 
 def _terms(decks):
@@ -244,7 +245,8 @@ def word_states(language, settings, url=None):
         s = reading.notes[note_id]
         have = out.get(word)
         if have is None:
-            out[word] = Standing(note_id, s.leech, s.lapses, s.hard, s.young, s.mature, s.today)
+            out[word] = Standing(note_id, s.leech, s.lapses, s.hard, s.young, s.mature, s.today,
+                                 anki_sync._note_sentence(info, word, language))
         else:
             have.leech, have.lapses, have.hard = have.leech or s.leech, max(have.lapses, s.lapses), max(have.hard, s.hard)
             have.young, have.mature, have.today = have.young or s.young, have.mature and s.mature, have.today or s.today

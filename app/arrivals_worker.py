@@ -11,6 +11,8 @@ JSON lines on stdin, one answer line each on stdout (UTF-8):
            with no plan for this language yet: {"exact": false, "reason": "no-plan", "known_pct", …} (the numbers a
            plan isn't needed for)
     {"id": 2, "op": "reload"}  -> the view built again          {"op": "stats"} -> what it has worked out, its memory
+    {"id": 3, "op": "sample", "paths": [<file>, …] (optional: else the store's mine line)}
+        -> {"id": 3, "op": "sample", "picture": <card_sample.picture's, or None>, "episodes", "cached"} (Mado-EZC)
     {"op": "quit"}             -> it answers, then ends
 
 `placed`: the files placed since the plan, in the order placed — each counted in with this one by the gates, and in
@@ -39,6 +41,7 @@ from collections import OrderedDict
 
 IDLE_SECONDS = 120              # Sonic (E2.2-2): "could even be after 1-2 minutes"
 KEEP = 64                       # answers (and arrivals read) kept, newest last
+SAMPLE_EPISODES = 40            # Mado-EZC's picture: the mine line's episodes read at most (the picker's longest)
 # The run signature's parts a view must share with its plan for an answer to be exact (`plan_rules.part_digests`; the
 # files are the arrivals' own business, the remembered band the band gate's).
 MATCHED = ("known", "lists", "freq", "settings", "args", "engine")
@@ -342,12 +345,56 @@ class Worker:
             self.answers.popitem(last=False)
         return dict(out, cached=False)
 
+    def sample(self, request):
+        """Mado-EZC, *Which words get a card?*'s picture (`card_sample.sample`): the mine line's first episode counted
+        by Connect's picker for each choice, *a later episode* from the rest of the line (`paths`, else the store's mine
+        line, at most `SAMPLE_EPISODES`), with the list, the cards the last sync saved and the words Connect made. No
+        list yet (no plan, or a Generate writing it): no picture (the window draws the bundled one). Kept by the files'
+        stats, the plan, the known words, the list and the cards: asked again, nothing is read again (S19)."""
+        from app import anki_sync
+        from app.services import card_sample
+        warm = self.current()
+        paths, made = request.get("paths"), set()
+        if paths is None:
+            paths, made = card_sample.top(self.language)
+        paths = list(paths)[:SAMPLE_EPISODES]
+        listed = self._list_of(warm) if warm["order"] is not None else {}
+        try:                                        # a card: the last sync's backlog, and every word Connect made
+            carded = set(anki_sync.backlog_keys(self.language)) | made
+        except Exception as e:                      # no backlog read: only the words Connect made
+            print(f"arrivals worker: the backlog couldn't be read: {e}", file=sys.stderr)
+            carded = made
+        stats = []
+        for path in paths:
+            try:
+                st = os.stat(path)
+                stats.append((os.path.normcase(os.path.abspath(path)), st.st_mtime_ns, st.st_size))
+            except OSError:
+                stats.append((path, None, None))
+        # (the list is the plan's: its run signature; the cards, the backlog's keys — by their contents, never a count)
+        key = ("sample", tuple(stats), warm["signature"], self.known_sig, hash(frozenset(listed.items())),
+               hash(frozenset(carded)))
+        held = self.answers.get(key)
+        if held is not None:
+            self.answers.move_to_end(key)
+            return dict(held, cached=True)
+        found = [p for p, (_n, m, _s) in zip(paths, stats) if m is not None]     # (a file gone since: never read)
+        picture = card_sample.sample(warm["view"], found, listed, carded, self.send_grammar) if listed and found else None
+        out = {"picture": picture, "episodes": len(paths)}
+        if warm["listed"] is not None:              # a list read whole: kept (never one read while a Generate wrote)
+            self.answers[key] = out
+            while len(self.answers) > KEEP:
+                self.answers.popitem(last=False)
+        return dict(out, cached=False)
+
     def answer(self, request):
         op = request.get("op")
         out = {"id": request.get("id"), "op": op}
         if op == "estimate":
             out["path"] = request.get("path")
             out.update(self.estimate(request))
+        elif op == "sample":
+            out.update(self.sample(request))
         elif op == "reload":
             warm = self.current(force=True)
             out["plan"] = warm["signature"] is not None

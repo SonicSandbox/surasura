@@ -112,7 +112,7 @@ TOGGLE_STATE = {True: "On", False: "Off"}        # a switch's state, for screen 
 
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
 SECTIONS = {
-    "setup": "Your setup", "known": "Known words", "anki": "Anki & mining", "junban": "Card order",
+    "setup": "Essentials", "known": "Known words", "anki": "Anki & mining", "junban": "Card order",
     "backfill": "Fill your cards", "level": "Level", "parsing": "Language & Parsing",
     "content": "Content", "arrivals": "New arrivals", "connect": "Connections", "reading": "Journey",
     "sentences": "Sentences", "export": "Export", "app": "App",
@@ -190,12 +190,9 @@ ROW_DOORS = {}
 
 # --- the rows: row id -> (label, one-line help, tooltip, search words) --------------------------------------------- #
 ROWS = {
-    # Your setup (five live summaries; each line is P4's)
-    "setup_known": ("Known words", "", "Go to Known words", "known words sync anki import"),
-    "setup_anki": ("Anki", "", "Go to Anki & mining", "anki connected deck waiting"),
-    "setup_mining": ("Cards made for you", "", "Go to Anki & mining", "cards made for you mining mine cards top"),
-    "setup_level": ("Level", "", "Go to Level", "level band automatic"),
-    "setup_cards": ("Cards in Anki", "", "Go to Card order", "cards in anki ordered filled junban backfill"),
+    # Mado-EZC: the Essentials cards' row (no title of its own: each card has its own; found by its cards' words)
+    "essentials": ("", "", "Your four main choices, each a picture\n• Change ›: pick again",
+                   "essentials known words cards made for you which words get a card mining example sentences level"),
 
     # Known words
     "known_road": ("Your known words come from",
@@ -250,10 +247,9 @@ ROWS = {
                             "connect make cards mine automatically anki miner needs "
                             + NEEDS_MINER),
     "connect_mine_words": ("Words to make cards from",
-                           "Your list: i+1 first, then the rest. Only i+1: skip the rest.",
-                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
-                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
-                           "line, on your list or not",
+                           "Your list (recommended): i+1 first, then the rest. Only i+1 sentences: list or not; a "
+                           "word without one is skipped, even an important one.",
+                           "Which new words become cards: your list in the list's order, or only i+1",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name
@@ -662,7 +658,7 @@ KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           
 # a9.1: the sync's *Count suspended cards as known* on, beside picks that aren't Suspended alone (`help_line`)
 KNOWN_SYNC_TOO = "Studied cards you suspended count too, from before: change a pick here to stop it"
 
-# Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
+# Backfill's fills by name (`junban_backfill_fills`' values): its two switches
 FILLS = {"patterns": "パターン", "sentence": "例文"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
@@ -720,24 +716,12 @@ OPTION_TIPS = {
                      "out": "Its new cards leave your order: suspended and tagged, never deleted."},
 }
 
-# --- P4: the live rows (settings_live.py): Your setup, the level readout, the statuses, App's rows, the credits, Export
+# --- P4: the live rows (settings_live.py): Essentials' level line, the level readout, the statuses, App's rows, the credits, Export
 SEP = " · "
-# Your setup's lines (each says less when a fact can't be read: never a wrong number)
-SETUP_KNOWN = "{n:,} known"
-SETUP_FROM_ANKI = "from Anki ({decks})"
-SETUP_IMPORTED = "from an imported list"
-SETUP_CONNECT_OFF = "Off: you make your cards yourself"
+# The Level card's line (Essentials; it says less when a fact can't be read: never a wrong number)
 SETUP_AUTOMATIC = "Automatic"
 SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
-SETUP_ORDER = {"content": "ordered as you’ll meet them", "priority": "ordered by leverage"}
-SETUP_NOT_ORDERED = "not reordered"
-SETUP_ORDER_OFF = "kept in order by itself: off"                # Fresh-U row 2: 順 on, its automatic order off
-SETUP_FILLED = "{fills} filled {how}"
-SETUP_FILLED_AUTO = "automatically"
-SETUP_FILLED_HAND = "by hand"
-SETUP_NOTHING_FILLED = "nothing filled"
-SETUP_DECK = "“{deck}”"                 # Kantan-T (PROVISIONAL): *Cards in Anki* leads with Junban's deck
 # Kantan-T (PROVISIONAL): *Which cards* names Junban's deck in sight (the deck setup picked; *Junban…* beside it changes it)
 JUNBAN_DECK_LINE = "Deck: “{deck}”"
 JUNBAN_NO_DECK = "No deck chosen yet"

@@ -96,6 +96,14 @@ class ArrivalsWorker:
         placed = [os.fspath(p) if not isinstance(p, dict) else dict(p, path=os.fspath(p["path"])) for p in placed]
         return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed}, callback)
 
+    def sample(self, paths=None, callback=None):
+        """Mado-EZC: *Which words get a card?*'s picture of the mine line (`paths`: its subtitle files in order; None:
+        the worker reads the store's line) — `arrivals_worker.Worker.sample`."""
+        request = {"op": "sample"}
+        if paths is not None:
+            request["paths"] = [os.fspath(p) for p in paths]
+        return self._ask(request, callback)
+
     def reload(self, callback=None):
         """Build the view again (it does so by itself when the plan or the known words change)."""
         return self._ask({"op": "reload"}, callback)

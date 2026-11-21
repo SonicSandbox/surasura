@@ -392,8 +392,9 @@ def run_integrated(scale, out_dir):
                 problems.append(f"{what} is hidden or outside the window")
         if win.anki_mark.text() != "Anki · 3 waiting":
             problems.append(f"the emerald says {win.anki_mark.text()!r}, not 'Anki · 3 waiting'")
-        if win.dock is None or not win.dock.isVisibleTo(win):
-            problems.append("the Goal dock is not shown")
+        if (win.dock is None or not win.dock.isVisibleTo(win)) and not label.startswith(("essentials", "picker-w",
+                                                                                          "picker-a")):
+            problems.append("the Goal dock is not shown")              # (Current's: Settings' shots have none)
         results.append({"scale": scale, "integrated": label, "dpr": dpr, "file": name, "level": d.level.text(),
                         "level_mark": d.level.mark, "problems": problems})
 
@@ -447,6 +448,29 @@ def run_integrated(scale, out_dir):
     shot("wells", () if win.dock.wells else ["the wells did not rise"])
     win.dock.hover(None)
     win.dock.end_drag()
+    # Mado-EZC: Settings opens on Essentials' four cards; the picker over it (step ①, its third choice, step ③), then
+    # over Current (Your path's step ④). The worker stands in answering no picture: the bundled sample is drawn.
+    from types import SimpleNamespace
+    from app.qt import card_picker
+    services.arrivals = SimpleNamespace(sample=lambda paths=None, callback=None: callback({"picture": None}))
+    win.show_tab("settings")
+    settings_page = win.mount_settings()
+    until(lambda: settings_page.built and settings_page.live.essentials is not None, 20)
+    cards = settings_page.live.essentials
+    shot("essentials", [] if cards.isVisibleTo(win) and len(cards.cards) == 4 else ["Essentials' cards aren't shown"])
+    picker = card_picker.open_card_picker(win)
+    inside = lambda: [] if win.rect().contains(picker.geometry()) else [f"the picker {picker.geometry()} leaves"]   # noqa: E731
+    shot("picker-words", inside())
+    picker.words._choose(picker.words.values().index("i1"))
+    shot("picker-words-i1", inside())
+    picker.go(3)
+    shot("picker-ahead", inside())
+    picker.close()
+    win.show_tab("current")
+    settle(20)
+    picker = card_picker.open_card_picker(win)
+    shot("picker-over-current", inside())
+    picker.close()
     win.close()
     services.shutdown(1.0)
     return results

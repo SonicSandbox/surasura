@@ -514,7 +514,9 @@ def test_a_change_settles_through_the_deepest_widget_in_the_same_turn(qapp):
             widget, levels = widget.parentWidget(), levels + 1
         return levels
     deepest = max(depth(w) for w in page.body.findChildren(QWidget))
-    assert depth(page.rows["setup_cards"].help) <= deepest < sp.SETTLE_PASSES
+    from app.qt.card_picker import Chip
+    chip = page.live.essentials.cards["cards"].chips[0]                 # Essentials' card chips sit deepest
+    assert isinstance(chip, Chip) and depth(chip) <= deepest < sp.SETTLE_PASSES
 
 
 # --- a7 (DIAGNOSIS 3): *Count as known in Anki*'s line says the "and" as it is picked ------------------------------ #

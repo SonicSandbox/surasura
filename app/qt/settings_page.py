@@ -69,10 +69,10 @@ FALLBACK = {"mine_line": "connect_enabled", "soon_line": "content", "connect_ena
 PLACEHOLDER_KINDS = ("summary", "status", "custom", "action")
 LINE_ROWS = ("known_from_anki", "connect_needs_miner", "junban_scope")   # rows whose line `catalog.help_line` writes
 SETTLE_MORE = 4                 # `hold`: layout passes after the first settle while the held row still moves
-# `_settle`'s passes: one per level a size change climbs, from the deepest widget under the body (a field's edit, 8
-# down) to the body the scroll area resizes. Fewer and a line re-flowed deep in a row (Your setup's, 5 down) reached
-# the body a turn late: the page squeezed a row to fit, then slid once it grew (AD-1). Each empty pass costs nothing.
-SETTLE_PASSES = 10
+# `_settle`'s passes: one per level a size change climbs, from the deepest widget under the body (Essentials' chips, 10
+# down; a field's edit, 8) to the body the scroll area resizes. Fewer and a line re-flowed deep in a row reached the
+# body a turn late: the page squeezed a row to fit, then slid once it grew (AD-1). Each empty pass costs nothing.
+SETTLE_PASSES = 12
 
 # The sections' icons: the old mock's line icons (mock-g16 `<symbol id="i-…">`, 16 × 16), drawn in a text colour.
 ICONS = {
@@ -611,8 +611,9 @@ class RowView(QWidget):
             line.addWidget(self.slot)
             line.addWidget(self.help)
             self.stacked = True
-        elif row.kind == "links" or row.id in catalog.STACKED:
-            if row.kind != "links":               # the choices packed from the left at their own size, never spread
+        elif row.kind == "links" or row.id in catalog.STACKED or row.id in catalog.SPANNING:
+            if row.kind not in ("links", "custom"):   # the choices packed from the left at their own size, never
+                #                                        spread (Essentials' cards, a custom row, span the row)
                 slot.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             line = QVBoxLayout(self)
             self.words = QVBoxLayout()
@@ -668,7 +669,7 @@ class RowView(QWidget):
         if self.row.kind == "links":
             self._arrange_links(self.width() if width is None else width)
             return
-        if self.row.kind == "slider" or self.row.id in catalog.STACKED:
+        if self.row.kind == "slider" or self.row.id in catalog.STACKED or self.row.id in catalog.SPANNING:
             return                                      # (stacked always: the words, then the control under them)
         width = self.width() if width is None else width
         stacked = width < self.side_by_side()
@@ -772,7 +773,8 @@ class RowView(QWidget):
             logos.show(self)
         if self.row.kind == "links":                                    # a new size: its buttons measured again
             self._arrange_links(self.width())
-        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.stacked is not None:
+        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.row.id not in catalog.SPANNING \
+                and self.stacked is not None:
             #                                                           a new text size: asked again (a row not
             self.stacked = None                                         # yet laid out is asked at its first resize)
             self.arrange()

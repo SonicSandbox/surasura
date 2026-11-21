@@ -1012,14 +1012,16 @@ def pick_words(view, path, listed, send_grammar=True):
     return pick_cues(view, cues.read(path, view.language), listed, send_grammar)
 
 
-def pick_cues(view, read_, listed, send_grammar=True):
-    """`pick_words` for a subtitle's cues (`cues.read`'s)."""
+def pick_cues(view, read_, listed, send_grammar=True, mode="list", carded=None, tokens=None):
+    """`pick_words` for a subtitle's cues (`cues.read`'s). Mado-EZC's picture (`card_sample.sample`) asks each
+    `mode` too, with the cards the last sync saved (`carded`), the cues' `tokens` read once for every mode."""
     from app import cues
     from app.connect import pick
     language = view.language
-    tokens = cues.tokens(read_, language, view.script, view.tokenizer)
+    if tokens is None:
+        tokens = cues.tokens(read_, language, view.script, view.tokenizer)
     readable = analyzer.LearningView(known=view.known).readable if language == "ja" else None
-    return pick.pick(read_, tokens, language, view.known, mode="list", listed=listed, carded=None,
+    return pick.pick(read_, tokens, language, view.known, mode=mode, listed=listed, carded=carded,
                      readable=readable, ignore_names=bool(analyzer.LOGIC.get("ignore_names", False)),
                      send_grammar=send_grammar, skip_single=not view.args.include_single_chars,
                      phrase_set=view.phrase_set)

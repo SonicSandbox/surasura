@@ -179,6 +179,8 @@ def test_an_item_with_no_episode_order_goes_after_what_is_already_there(language
     assert store.ids("now")[0] == t1, "nothing of its channel in Current: the very top"
     t2 = _video(store, language, top_channel, "Lr8mC2xJd6w", w[195], {"youtube": "top"})
     assert store.ids("now")[:2] == [t1, t2], "after its channel's video, never above it"
+    t3 = _video(store, language, top_channel, "Hc5yN0aWe9T", w[202], {"youtube": "top"})
+    assert store.ids("now")[:3] == [t1, t2, t3], "after its channel's LAST video there"
     assert pieces_ok(store) is None
     store.close()
 

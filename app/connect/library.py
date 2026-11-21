@@ -725,6 +725,77 @@ def unmake(store, item_id, note_ids, words=()):
     return sorted(w for w, left in changed.items() if not left)
 
 
+def made_rows(store, note_ids):
+    """Tidy's backup of the library's record of `note_ids` (Kyou-SH2), read only -> {"words": [[item, word, note ids,
+    made_at, batch], …] (every made-words row holding one of them, whole), "receipts": {item: mined_at} (those rows'
+    items), "lines": [[note id, item, start_ms, end_ms, line_fp, made_at], …]} — what `remake` puts back."""
+    wanted = {int(n) for n in note_ids or ()}
+    out = {"words": [], "receipts": {}, "lines": []}
+    if not wanted or not store._has_table("made_words"):
+        return out
+    with store._reading():
+        for item_id, word, ids, made_at, batch in store.conn.execute(
+                "SELECT item_id, word, note_ids, made_at, batch FROM made_words"):
+            try:
+                held = [int(n) for n in json.loads(ids)]
+            except (ValueError, TypeError):
+                continue
+            if wanted & set(held):
+                out["words"].append([item_id, word, held, made_at, batch])
+        for item_id in sorted({r[0] for r in out["words"]}):
+            row = store.conn.execute("SELECT mined_at FROM items WHERE id = ?", (item_id,)).fetchone()
+            out["receipts"][str(item_id)] = row[0] if row else None
+        if store._has_table("made_lines"):
+            marks = sorted(wanted)
+            for at in range(0, len(marks), 500):
+                chunk = marks[at:at + 500]
+                out["lines"] += [list(r) for r in store.conn.execute(
+                    "SELECT note_id, item_id, start_ms, end_ms, line_fp, made_at FROM made_lines WHERE note_id IN "
+                    f"({','.join('?' * len(chunk))})", chunk)]
+    return out
+
+
+def remake(store, made, id_map):
+    """Tidy's Undo (Kyou-SH2): `made_rows`' record put back for the notes in Anki again (`id_map` {old note id: its id
+    now}), in one short write as role `connect`'s command — each made-words row gains those notes again (a row gone is
+    written back as it was, made again meanwhile it keeps its own notes too), a receipt the tidy cleared comes back,
+    the notes' lines too. Nothing to change → nothing written (S19)."""
+    from app import library_store
+    back = {int(k): int(v) for k, v in (id_map or {}).items()}
+    if not back:
+        return
+    with store._command("receipt", by=READER) as cmd:
+        for sql in library_store.ADDED_TABLES_SQL:
+            store.conn.execute(sql)
+        for item_id, word, ids, made_at, batch in made.get("words") or ():
+            mine = [back[int(n)] for n in ids if int(n) in back]
+            if not mine:
+                continue
+            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                     (item_id, word)).fetchone()
+            if row is None:
+                store.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                                   "(?, ?, ?, ?, ?)", (item_id, word, json.dumps(mine), made_at, batch))
+            else:
+                had = [int(n) for n in json.loads(row[0] or "[]")]
+                ids_now = had + [n for n in mine if n not in had]
+                if ids_now == had:
+                    continue
+                store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                   (json.dumps(ids_now), item_id, word))
+            cmd.touch()
+        for item_id, mined_at in (made.get("receipts") or {}).items():
+            row = store.conn.execute("SELECT mined_at FROM items WHERE id = ?", (int(item_id),)).fetchone()
+            if mined_at and row is not None and row[0] is None:
+                store.receipt(int(item_id), mined_at)
+        if store._has_table("made_lines"):
+            for note_id, item_id, start_ms, end_ms, line_fp, made_at in made.get("lines") or ():
+                if int(note_id) in back:
+                    store.conn.execute("INSERT OR IGNORE INTO made_lines (note_id, item_id, start_ms, end_ms, line_fp, "
+                                       "made_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                       (back[int(note_id)], item_id, start_ms, end_ms, line_fp, made_at))
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None, exact=False):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op. A place named exactly (`exact`: a program's

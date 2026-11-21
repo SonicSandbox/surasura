@@ -248,7 +248,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
            "move_cards", "leave_cards",                                                  # Michi-DK
-           "put_back_shelf", "leave_shelf")                                              # Kyou-SH
+           "put_back_shelf", "leave_shelf",                                              # Kyou-SH
+           "undo_tidy", "leave_tidy")                                                    # Kyou-SH2
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -2440,6 +2441,37 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_SHELF_LEFT)
             self.refresh()
         self._press("leave_shelf", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-SH2 (PROVISIONAL): Tidy, said — *Undo* puts the tidy's backup back (`tidy.act_undo`: Anki's write lock,
+    # waiting up to its 10 s; on a worker)
+    def _do_undo_tidy(self, entry, _line):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        lang, read_settings = self.language, self.read_settings
+        tidy_id = (entry.data or {}).get("id")
+
+        def undo_it():
+            try:
+                return tidy.act_undo(read_settings() or {}, lang, tidy_id)
+            except CliError as e:
+                return {"why": e.message}
+
+        def done(got):
+            got = got or {}
+            if got.get("why") or got.get("say"):
+                self._stays("undo_tidy", entry)
+                self._say(strings.NEEDS_TIDY_NOT_BACK.format(why=got.get("why") or got.get("say")))
+            else:
+                n = int(got.get("back") or 0)
+                self._say(strings.NEEDS_TIDY_BACK_ONE if n == 1 else strings.NEEDS_TIDY_BACK.format(n=n))
+            self.refresh()
+        self._press("undo_tidy", entry, undo_it, then=done)
+
+    def _do_leave_tidy(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_TIDY_LEFT)
+            self.refresh()
+        self._press("leave_tidy", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

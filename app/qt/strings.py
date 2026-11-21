@@ -1583,6 +1583,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "put_back_shelf": ("Put back", "Unsuspend them in Anki and take the surasura::shelf tag off: they wait with your "
                                    "new cards again"),
     "leave_shelf": ("Leave them", "They stay set aside, and this stops asking until more are set aside"),
+    # Kyou-SH2 (PROVISIONAL): Tidy, said
+    "undo_tidy": ("Undo", "Put those cards back in Anki from the copy Surasura kept, each in its own deck"),
+    "leave_tidy": ("OK", "They stay deleted; this goes until the next tidy"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1701,6 +1704,10 @@ NEEDS_CARDS_LEFT = "Left where they are · Surasura's new cards still go to its 
 NEEDS_SHELF_BACK = "Put back · they wait with your new cards again"        # Kyou-SH (PROVISIONAL)
 NEEDS_SHELF_NOT_BACK = "Not put back: {why}"
 NEEDS_SHELF_LEFT = "Left set aside · one comes back by itself when its word comes up"
+NEEDS_TIDY_BACK = "Put back · {n} cards are in Anki again"                    # Kyou-SH2 (PROVISIONAL)
+NEEDS_TIDY_BACK_ONE = "Put back · the card is in Anki again"
+NEEDS_TIDY_NOT_BACK = "Not put back: {why}"
+NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

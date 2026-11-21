@@ -976,12 +976,17 @@ def _finish_undos(steps, ledger, lang):
     """`steps.finish_undos` once a run per language, before anything else; Anki not answering leaves them for the
     next run (logged, never a reason not to go on)."""
     finish = getattr(steps, "finish_undos", None)
-    if finish is None or not ledger.pending_undos(lang):
-        return
-    try:
-        finish(lang, ledger)
-    except Exception:
-        log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
+    if finish is not None and ledger.pending_undos(lang):
+        try:
+            finish(lang, ledger)
+        except Exception:
+            log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
+    tidies = getattr(steps, "finish_tidies", None)     # Kyou-SH2: a tidy or its Undo a kill left half-way
+    if tidies is not None:
+        try:
+            tidies(lang, ledger)
+        except Exception:
+            log.exception("Connect couldn't finish a tidy left half-way; it tries again next run")
 
 
 def _gone_look(steps, lang):
@@ -1137,7 +1142,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
         # at the cap: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
-        full = _full(steps, lang, asked=bool(job.get("asked_at")))
+        full = _full(steps, lang, asked=bool(job.get("asked_at")), ledger=ledger)
         if full is not None:
             raise full
     try:
@@ -2437,17 +2442,22 @@ def held_by_cap(asked):
     return not asked
 
 
-def _full(steps, lang, asked=False):
+def _full(steps, lang, asked=False, ledger=None):
     """Before a job's pick: a Wait when the cards waiting on your list are at the cap, else None — one request, so a
     job waiting at the cap is never picked again at every look. Kyou-SH (a tester's 236 cards suspended with *Suspend
     them* off; Sonic 2026-11-20: ranking and suspending are Junban's, Connect only makes cards): nothing is shelved
-    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`)."""
+    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`).
+
+    Kyou-SH2 (Sonic 2026-11-21): with the count read, Tidy looks (`_tidy_over`: past 1.5 × the cap, the lowest of
+    Connect's own never-studied cards past the window go, backed up first); a tidy that deleted cards counts again."""
     if not held_by_cap(asked):
         return None
     cap = steps.cap(lang)
     if not cap:
         return None
     count = steps.waiting_count(lang)
+    if count is not None and ledger is not None and _tidy_over(steps, ledger, lang):
+        count = steps.waiting_count(lang)
     if count is None or count < cap:
         return None
     return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
@@ -2458,7 +2468,26 @@ def _at_cap(steps, ledger, lang, todo, asked=False):
     job's first batch, never mid-episode. Connect never suspends a card by itself (Kyou-SH, Sonic 2026-11-20): the
     shelf is no longer asked at the cap; *Suspend them* is Junban's. `asked`: the job carries an ask — never held
     (`held_by_cap`)."""
-    return _full(steps, lang, asked)
+    return _full(steps, lang, asked, ledger)
+
+
+def _tidy_over(steps, ledger, lang):
+    """Kyou-SH2: Tidy's look after the cap's count (`Steps.tidy`: no Anki call unless it tidies) -> did it delete
+    cards? A tidy that can't go now (you review, another writer, Anki gone, its copy not saved) is logged and not
+    tried again this run: never a reason for mining to wait."""
+    tidy_ = getattr(steps, "tidy", None)
+    if tidy_ is None or lang in getattr(steps, "_tidy_off", ()):
+        return False
+    try:
+        done = tidy_(lang, ledger)
+    except Exception:
+        log.warning("Connect's tidy didn't go this run (%s)", lang, exc_info=True)
+        try:
+            steps._tidy_off = set(getattr(steps, "_tidy_off", ())) | {lang}
+        except AttributeError:
+            pass
+        return False
+    return bool(done and done.get("cards"))
 
 
 def _outcome(ledger, jid, word):
@@ -3443,6 +3472,7 @@ class Steps:
             raise _anki_wait(self.url, "mining", e) from None
         keys = self._listed_keys(lang)
         if not keys:
+            self._seen_waiting(lang, notes, made, pinned, notes)
             return len(notes)
         from app import anki_match
         words = {n: made[n][1] for n in notes if n in made}
@@ -3451,8 +3481,76 @@ class Steps:
             words.update(self._note_words(lang, theirs, loaded))
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
-        return sum(1 for n in notes if (n in made and made[n][0] in pinned)
-                   or anki_match.lookup(words.get(n) or "", keys, lang))
+        counted = {n for n in notes if (n in made and made[n][0] in pinned)
+                   or anki_match.lookup(words.get(n) or "", keys, lang)}
+        self._seen_waiting(lang, notes, made, pinned, counted)
+        return len(counted)
+
+    def _seen_waiting(self, lang, notes, made, pinned, counted):
+        """What the cap's count just read, kept for Tidy's look (Kyou-SH2: a quick check, no Anki call of its own)."""
+        self._waiting_seen = dict(getattr(self, "_waiting_seen", {}),
+                                  **{lang: (frozenset(notes), dict(made), frozenset(pinned), frozenset(counted))})
+
+    def tidy(self, lang, ledger, now=False):
+        """Kyou-SH2 (Sonic 2026-11-21): Tidy's look over what the cap's count read (`_seen_waiting`; `now`, your *Tidy
+        now*: the count read again first) -> {"cards", "id"} when it tidied, else None. The pile: every card the count
+        counted (the window and its overflow) + Connect's own waiting off your list + its cards on the old shelf;
+        `tidy.choose` takes the lowest of Connect's own past the window — never yours, a pinned show's or an episode
+        you asked for — past 1.5 × the cap (your press: past the cap). The study order's place: the word's on the list
+        (`_tidy_place`). Raises what `tidy.run` raises."""
+        from app.connect import library, shelf, tidy
+        cap = self.cap(lang)
+        if not cap:
+            return None
+        if now or lang not in getattr(self, "_waiting_seen", {}):
+            self.waiting_count(lang)
+        notes, made, pinned, counted = self._waiting_seen[lang]
+        tidy.ensure(ledger)
+        aside = set()
+        if ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shelf'").fetchone():
+            aside = {int(n) for (n,) in ledger.conn.execute(
+                "SELECT DISTINCT note_id FROM shelf WHERE language = ? AND back_at IS NULL", (lang,)) if int(n) in made}
+        asked = {j["item_id"] for j in ledger.jobs(lang) if j.get("asked_at") and (
+            j["state"] not in ENDED or (j.get("updated_at") or "") >= self._began)}
+        with self._open(lang) as store:
+            finished = shelf.finished_items(store, made)
+        place = self._tidy_place(lang)
+        cards = []
+        for n in set(counted) | {n for n in notes if n in made} | aside:
+            item, word = made.get(n, (None, None))
+            mine = n in made and item not in pinned and item not in asked
+            cards.append(tidy.Card(n, word, item, place(word) if mine else -1, mine=mine, shelved=n in aside,
+                                   finished=item in finished))
+        chosen = tidy.choose(cards, cap, now=now)
+        if not chosen:
+            return None
+        done = tidy.run(tidy.AnkiConnectTidy(self.url), ledger, lang, [c.note for c in chosen],
+                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang))
+        if done["deleted"]:
+            self._say(lang, f"{len(done['deleted'])} waiting cards made for you were tidied away (copy kept: tidy "
+                            f"{done['id']}).")
+            self.after_write(lang)
+        return {"cards": len(done["deleted"]), "id": done["id"]}
+
+    def _tidy_place(self, lang):
+        """A word's place in the study order for Tidy (lower: sooner): its place on the list (the kana fold too), a
+        word off it after every listed one (`shelf.NOT_LISTED`)."""
+        from app import anki_match
+        from app.connect import shelf
+        ranks = shelf.ranks(self._list_order(lang) or {})
+        if lang == "ja":
+            for word, n in list(ranks.items()):
+                ranks.setdefault(anki_match.fold_kana(word), n)
+        return lambda word: ranks.get(anki_match.lookup(word or "", ranks, lang) or "", shelf.NOT_LISTED)
+
+    def finish_tidies(self, lang, ledger):
+        """Kyou-SH2: a tidy (or its Undo) a kill left half-way, finished now: its cards home or its words freed."""
+        from app.connect import library, tidy
+        tidy.ensure(ledger)
+        if not ledger.conn.execute("SELECT 1 FROM tidies WHERE language = ? AND state IN (?, ?) LIMIT 1",
+                                   (lang, tidy.WRITING, tidy.RESTORING)).fetchone():
+            return 0
+        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url), ledger, lang, lambda: library.open_store(lang))
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each

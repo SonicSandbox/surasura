@@ -3052,6 +3052,14 @@ class Steps:
             raise _miner_wait_or_needs(e, self.url) from None
         self._fetched = dict(getattr(self, "_fetched", {}), **{str(job["id"]): got})
         self.fetched_with = dict(getattr(self, "fetched_with", {}), **{str(job["id"]): source})
+        if source == online.TRANSCRIBE and web.get("rel"):
+            # Mattias's ask (3.0.10): the library's transcript, made from YouTube's speech recognition, becomes the
+            # transcription the cards are cut from — the next Generate counts the words the video really holds
+            try:
+                if online.keep_transcript(lang, web["rel"], got[1]):
+                    log.info("Connect: job %s: its transcript is now Anki Miner's transcription", job["id"])
+            except Exception:
+                log.warning("Connect: job %s: its transcript couldn't take the transcription", job["id"], exc_info=True)
         return got
 
     def _subtitle_source(self, lang, web, miner, profile, job_id):

@@ -3785,7 +3785,10 @@ _CAPTION_KIND_RE = re.compile(r'\(([^()]*)\)$')
 # The header's caption kinds that no person wrote, as the transcript downloader names them: YouTube's own speech
 # recognition, and its machine translation of another language's captions. The recognizer misspells a word the same
 # way every time, so its text never tells the library what a story's own words are (names.Record).
-AUTO_CAPTIONS = frozenset(("native auto", "auto-translated"))
+# "transcribed": Connect's own, a video's captions written over by Anki Miner's whisper transcription of its audio
+# (`connect.online.keep_transcript`, Mattias's ask 3.0.10) — machine-made too, and asked for again at the next mining
+TRANSCRIBED = "transcribed"
+AUTO_CAPTIONS = frozenset(("native auto", "auto-translated", TRANSCRIBED))
 
 # Markdown (CommonMark) marks structure and emphasis with ASCII punctuation — # headings, > quotes, - / 1. list
 # items, **strong** / *emphasis* / _emphasis_ (not inside a word), `code`, ~~strike~~, [text](url) links and

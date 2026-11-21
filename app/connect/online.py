@@ -96,7 +96,9 @@ NO_SPEECH = "Anki Miner has no speech model to make this video's subtitles from 
 NOT_HEARD = "Anki Miner couldn't make this video's subtitles from its audio."     # (no speech heard, or its sound)
 # The caption kinds whose video is heard instead (`subtitle_source`): YouTube's own speech recognition, in the video's
 # own language — one of `analyzer.AUTO_CAPTIONS`, never its machine translation
-HEARD = frozenset(("native auto",))
+# … and Connect's own: a transcript the transcription was written over (`keep_transcript`), heard again at its
+# next mining — never YouTube's captions for it after all
+HEARD = frozenset(("native auto", "transcribed"))
 # Michi-YT5: the languages heard only with a large speech model (Japanese: measured against a person's captions —
 # small about level with YouTube's, large-v3's family clearly better); Chinese is heard with any model, as in 3.0.11
 # (PROVISIONAL: unmeasured)
@@ -160,7 +162,7 @@ def of(language, item, pairing=None):
     url, _why = play.online_link(language, rel, pairing)
     folder, name = os.path.basename(os.path.dirname(rel)), os.path.splitext(os.path.basename(rel))[0]
     return {"site": item["source_type"], "url": url, "names": [folder or name, name],
-            "captions": _caption_kind(language, rel)}
+            "captions": _caption_kind(language, rel), "rel": rel}
 
 
 HEAD = 4096                             # bytes of a transcript read for its header (six short lines)
@@ -177,6 +179,71 @@ def _caption_kind(language, rel):
     except (OSError, ValueError):
         return None
     return analyzer.caption_kind(decode_text(raw, language, head=len(raw) == HEAD))
+
+
+def keep_transcript(language, rel, subtitle):
+    """Mattias's ask (3.0.10: "the subtitles in New Arrivals may be wrong — then it wants words that aren't even in
+    the video"): the library's transcript of a video at `rel`, made from captions no person wrote, written over with
+    Anki Miner's whisper transcription of its audio (`subtitle`, the fetch's SRT) -> True; else False, the transcript
+    as it was. Its header kept, its caption kind now `analyzer.TRANSCRIBED`; its body in its own form (a cue a line
+    with its time, else one paragraph); its cue sidecar's times from the transcription too (each sentence opens its
+    own moment). Never a person's captions, never a file outside the language's data folder, never one already
+    transcribed. The old transcript copied into the data folder's `.trash` first (`sources.put_copy`)."""
+    from app import analyzer, sources
+    from app.connect import lineup
+    from app.path_utils import SIDECAR_SUFFIX, get_data_path
+    data_dir = get_data_path(language)
+    parts = str(rel or "").replace("\\", "/").split("/")
+    if not rel or ".." in parts or not parts[-1].lower().endswith(".txt"):
+        return False
+    full = os.path.join(data_dir, *parts)
+    home = os.path.normcase(os.path.realpath(data_dir)).rstrip("\\/") + os.sep
+    if not os.path.normcase(os.path.realpath(full)).startswith(home):
+        return False
+    try:
+        with open(full, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    kind = analyzer.caption_kind(text)
+    if kind not in HEARD or kind == analyzer.TRANSCRIBED:     # YouTube's own speech recognition only
+        return False
+    cues = []
+    for start, _end, line in lineup.srt_cues(subtitle):
+        line = re.sub(r"<[^>]+>", "", " ".join(str(line).split())).strip()
+        if line and start is not None:
+            cues.append((int(start), line))
+    if not cues:
+        return False
+    lines = text.split("\n", 6)
+    timed = bool(analyzer._TRANSCRIPT_TIME_RE.search(lines[6] if len(lines) == 7 else ""))
+    shown = [(f"[{s // 3600:02}:{s // 60 % 60:02}:{s % 60:02}] {t}" if timed else t, s) for s, t in cues]
+    head = lines[:6]
+    head[2] = re.sub(r"\([^()]*\)\s*$", f"({analyzer.TRANSCRIBED})", head[2].rstrip())
+    body = ("\n" if timed else " ").join(t for t, _s in shown)
+    part = full + ".transcribed.part"
+    try:
+        with open(part, "w", encoding="utf-8", newline="") as f:
+            f.write("\n".join(head) + "\n" + body + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        sources._drop(part)
+        return False
+    if not sources.put_copy(data_dir, full, part):
+        return False
+    side = os.path.splitext(full)[0] + SIDECAR_SUFFIX
+    try:                                    # best-effort, as the downloader's own: the transcript is what counts
+        with open(side, encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            payload["cues"] = [[t, s] for t, s in shown]
+            with open(side + ".part", "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(side + ".part", side)
+    except (OSError, ValueError):
+        log.info("Connect: %s's cue times couldn't be written; its transcript is the transcription's", rel)
+    return True
 
 
 def subtitle_source(web):

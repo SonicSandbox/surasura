@@ -31,6 +31,7 @@ rule's header says what 3.0 does).
 import threading
 from collections import namedtuple
 
+from app import settings_manager
 from modules.junban import match, reposition, spaced, touchup, undo, unlisted
 
 # The report's glyphs — text, never emoji (gui.py's reasons) — and the preview's own marks.
@@ -86,7 +87,8 @@ def controls_from(saved, connect_row):
     controls = {
         "scope": "all" if saved.get("junban_scope") == "all" else "deck",
         "deck": str(saved.get("junban_deck") or ""),
-        "order": "priority" if saved.get("junban_order") == "priority" else "content",
+        # the study order is the list's (Settings › Level, Kantan-MO): read here, never a control of this window
+        "order": settings_manager.study_order(saved),
         "list_first": str(saved.get("junban_unlisted") or "").strip().lower() != "journey",
         "phrases": saved.get("junban_phrases", True) is not False,
         "ready_first": saved.get("junban_ready_first") is True,
@@ -158,6 +160,7 @@ def engine_settings(saved, controls, language, deselected=(), unlisted_saved=Non
                 junban_deck=str(controls.get("deck") or "").strip(),
                 junban_word_fields=dict(overrides) if isinstance(overrides, dict) else {},
                 junban_order="priority" if controls.get("order") == "priority" else "content",
+                study_order="priority" if controls.get("order") == "priority" else "content",
                 junban_unlisted=unlisted_value(controls, unlisted_saved),
                 junban_phrases=bool(controls.get("phrases")),
                 junban_ready_first=bool(controls.get("ready_first")),
@@ -186,7 +189,6 @@ def window_keys(controls, unlisted_saved=None):
     keys = {
         "junban_scope": controls.get("scope"),
         "junban_deck": str(controls.get("deck") or "").strip(),
-        "junban_order": "priority" if controls.get("order") == "priority" else "content",
         "junban_unlisted": unlisted_value(controls, unlisted_saved),
         "junban_phrases": bool(controls.get("phrases")),
         "junban_ready_first": bool(controls.get("ready_first")),
@@ -744,7 +746,7 @@ def backlog_picture(stats, settings=None):
         return None
     tiers = stats.get("tiers") or {}
     unlisted_as = stats.get("unlisted") or (settings or {}).get("junban_unlisted") or "list_first"
-    by_leverage = (settings or {}).get("junban_order") == "priority"
+    by_leverage = settings_manager.study_order(settings) == "priority"
     yours = tiers.get("yours", 0)
     placed = tiers.get("list", 0) + tiers.get("phrase", 0)
     library = tiers.get("library", 0)

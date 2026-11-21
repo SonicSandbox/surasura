@@ -201,9 +201,10 @@ def test_i_make_my_own_cards_is_kept_and_the_next_look_says_your_first_cards_are
 
 # --- the gate (SPEC-r2 §0.11 row 2): every step acts from its own card ------------------------------------------- #
 def _up(win):
-    got = win._up_next()
-    assert got is not None, "the seed's Current has an Up Next"
-    return got
+    # FLAKES (Kantan-MO's #568, GitHub core 3/4): the fixture waits for the duties only; Current's rows come from the
+    # library reader a poll later — under load they weren't drawn yet. Up Next is read once they are
+    assert wait_until(lambda: win._up_next() is not None, 10), "the seed's Current has an Up Next"
+    return win._up_next()
 
 
 def test_step_ones_press_opens_the_journey_on_up_nexts_episode_and_ticks_once_it_opened(lib_world, monkeypatch):
@@ -299,7 +300,7 @@ def test_a_watched_mark_on_its_way_is_what_marking_reads():
 @pytest.mark.parametrize("key, target", [
     ("words", "_open_journey"), ("words-any", "_open_journey"), ("mine", "mine_row"), ("miner", "install"),
     ("junban", "_open_junban"), ("junban-again", "_open_junban"), ("backfill", "launch"),
-    ("automation", "settings:automation"), ("yours", "settings:connect_mine_words"),
+    ("automation", "settings:automation"), ("yours", "settings:level"),
     ("audiobook", "tab:current@audiobook"), ("hato", "settings:hato"), ("piyo", "settings:practice_ai"),
 ])
 def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key, target):
@@ -313,6 +314,8 @@ def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key
     monkeypatch.setattr(windows, "launch", lambda shell, op: ran.append(("launch", op.name)))
     monkeypatch.setattr(win, "_top_to_mine", lambda: ("row", [1]))
     win.mine = type("Mine", (), {"mine_row": lambda self, row, ids: ran.append(("mine_row", row, ids))})()
+    if key == "words":
+        _up(win)                                    # Current's rows drawn (FLAKES: #568), so the press names Up Next
     win.path_press(key)
     assert ran and ran[0][0] == target, ran
     if key == "words":
@@ -390,7 +393,7 @@ def test_picking_which_words_get_a_card_in_settings_ticks_make_it_yours(lib_worl
     from app.qt import settings_catalog as catalog
     win = lib_world
     page = win.mount_settings()
-    page._saved(catalog.ROW["connect_mine_words"], dict(win.services.settings.get()), ["connect_mine_words"])
+    page._saved(catalog.ROW["connect_every_word"], dict(win.services.settings.get()), ["connect_every_word"])
     assert wait_until(lambda: "yours" in (guide.read_state().get("moments") or {}))
 
 

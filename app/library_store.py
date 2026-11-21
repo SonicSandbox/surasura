@@ -9604,20 +9604,61 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
         store.close()
 
 
+_spawned = {}                   # language -> the helper this process started last (its Popen)
+_owed = set()                   # languages a spawn was skipped for while one ran: `take_owed` (the window's watch)
+
+
+def maintain_running(language, data_dir=None):
+    """Is a helper (or any holder of the maintenance lock: an analyzer's in-process steps, the Content Manager's)
+    at work on `language` now — one this process started that hasn't ended, or the lock held? A look: a missing lock
+    file is free, nothing is created. Never raises."""
+    proc = _spawned.get(language)
+    try:
+        if proc is not None and proc.poll() is None:
+            return True
+        from app.path_utils import get_data_path
+        db_path = library_db_path(language, data_dir or get_data_path(language))
+        if not os.path.exists(db_path + ".lock"):
+            return False
+        probe = MaintenanceLock(db_path)
+        try:
+            return not probe.try_acquire()
+        finally:
+            probe.close()
+    except Exception:
+        return False
+
+
+def take_owed(language):
+    """Was a spawn for `language` skipped while one ran (`spawn_maintain`)? -> True once, then forgotten."""
+    if language in _owed:
+        _owed.discard(language)
+        return True
+    return False
+
+
 def spawn_maintain(language, *extra):
     """Start the helper detached and untracked (§6.7: not in `active_processes`, so closing the dashboard
     doesn't kill it), with the same arguments frozen and from source. Spawns nothing while an update is
-    staged. Returns the Popen, or None."""
+    staged, nor while one is at work already (Haya-LD, a 3.0.16 problem report: five started within 50 s of a start —
+    the window's start and focus, the analyzer's read, the idle trigger — each a program's start, then a 10 s wait
+    for the lock and exit 5): the ask is remembered (`take_owed`), and what it would have done the running one, or
+    the next trigger, does. Returns the Popen, or None."""
     import subprocess
     if update_staged():
+        return None
+    if maintain_running(language):
+        _owed.add(language)
         return None
     flags = 0
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
     from app.connect.power import popen_below_normal          # a7: background work, below the window
-    return popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
+    proc = popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               start_new_session=(sys.platform != "win32"))
+    _spawned[language] = proc
+    return proc
 
 
 def _helper_args(language, command, *extra):

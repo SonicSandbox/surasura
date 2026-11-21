@@ -228,3 +228,69 @@ def test_new_files_mined_before_connects_own_generate_get_their_new_words_and_no
     assert made["words"] == sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ")])
     out = _check(RAISED | {("約束", "ヤクソク")}, "run-3", dict(files, **{fd: ["約束"]}))
     assert out["queued"] == [] and out["new"] == 1, "the mark is taken once: a later raise mines nothing"
+
+
+def _mined_this_run(*item_ids):
+    """Each item's first mining done in this run, before Connect's own Generate after new files (the mark)."""
+    with Ledger() as ledger, ledger.transaction():
+        for item_id in item_ids:
+            job = ledger.queue("ja", item_id, "user", None)
+            ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+        ledger.mark_new_files("ja", "2000-01-01T00:00:00Z")
+
+
+def test_a_new_files_job_skips_a_word_connect_already_made_for_any_episode():
+    # was test_a_word_connect_already_made_for_any_episode_is_skipped (a raise's job): G1.3-4 holds for the one level
+    # job left — a word made once, its card deleted since, is never made again automatically
+    (a, fa), (b, _fb), _d = _line()
+    _mine(a)
+    with c.store() as s:
+        from app import library_store
+        with s._writing():
+            for sql in library_store.ADDED_TABLES_SQL:
+                s.conn.execute(sql)
+            s.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES (?, ?, ?, ?, ?)",
+                           (b, "眼鏡", "[1789712000001]", "2026-10-06T10:00:00Z", "job-7"))
+    _check(BEFORE, "run-1", {fa: ["眼鏡", "老婆"]})
+    _mined_this_run(a)
+    _check(RAISED, "run-2", {fa: ["眼鏡", "老婆"]})
+    assert [j["words"] for j in _level_jobs()] == [[("老婆", "ロウバ")]], "G1.3-4: a word made once is never made again"
+
+
+def test_a_waiting_new_files_job_gains_the_next_looks_words_and_carries_the_stores_identity():
+    # was test_a_waiting_level_job_gains_the_next_raises_words + test_every_level_job_is_queued_with_the_stores_identity
+    (a, fa), _b, _d = _line()
+    _mine(a)
+    files = {fa: ["眼鏡", "老婆"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(a)
+    _check(BEFORE | {("眼鏡", "メガネ")}, "run-2", files)
+    _mined_this_run(a)
+    _check(RAISED, "run-3", files)
+    jobs = _level_jobs()
+    assert len(jobs) == 1 and jobs[0]["words"] == [("眼鏡", "メガネ"), ("老婆", "ロウバ")]
+    with c.store() as s:
+        assert jobs[0]["store_id"] == library.store_id(s) and jobs[0]["store_id"]
+
+
+def test_a_new_files_job_never_goes_to_a_watched_episode_or_one_taken_out_of_the_learning_order():
+    # was test_p41_level_beyond's Finished / taken-out rows and test_mw1_counts' stone rows (D14, LF4-1): `wants`
+    (a, fa), (b, fb), (d, fd) = _line()
+    _mine(a, b, d)
+    with c.store() as s:
+        s.set_watched([a])
+        with s._writing():
+            s.conn.execute("UPDATE items SET in_learning_order = 0 WHERE id = ?", (b,))
+    files = {fa: ["眼鏡"], fb: ["眼鏡"], fd: ["眼鏡"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(a, b, d)
+    assert _check(RAISED, "run-2", files)["queued"] == [d]
+
+
+def test_the_inbox_keeps_a_new_files_job_out_of_the_line_but_never_a_raises():
+    # was test_p41_level_beyond's "kept out of the line; a finished / removed event drops one not started" (C4)
+    from app.connect import inbox
+    new = {"kind": LEVEL, "source": level.NEW_FILES}
+    assert inbox.keeps(new) and inbox.keeps(new, "left_mine_line")
+    assert not inbox.keeps(new, "finished") and not inbox.keeps(new, "removed")
+    assert not inbox.keeps({"kind": LEVEL, "source": "level"}), "a raise's job from 3.0.17: never kept"

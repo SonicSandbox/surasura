@@ -335,7 +335,7 @@ class JobRegistry:
             if other.state in (RUNNING, CANCELLING):
                 return other
             if other.state in (QUEUED, WAITING):
-                if other.automatic and other in self._gate_held:
+                if other in self._gate_held:
                     continue                      # Haya-LD: an automatic job a gate holds isn't next in line — it
                     #                               never holds a later one back (a user's held job keeps its turn)
                 if job.automatic and not other.automatic:

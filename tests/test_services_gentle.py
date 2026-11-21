@@ -478,10 +478,10 @@ def test_a_second_busy_spell_holds_from_its_own_start():
     w.later(G.TICK_S)
     job, _ = w.submit("covers")
     assert job.reason == G.BUSY_NOW
+    w.registry.cancel(job.id)                           # gone mid-spell: nothing asks for its kind when it's quiet
     w.load.share = 0.1
     for _ in range(int(G.LOAD_WINDOW_S) + 1):
         w.later(G.TICK_S)
-    job.finish()
     w.clock.now += G.HOLD_MAX_S * 3
     w.load.share = 0.95
     for _ in range(int(G.LOAD_WINDOW_S) + 1):
@@ -663,3 +663,41 @@ def _wait_for(predicate, timeout=5.0):
             return True
         time.sleep(0.01)
     return predicate()
+
+
+_SLOW = r"""
+import json, sys, time
+for line in sys.stdin.buffer:   # answers each request half a second after it came
+    request = json.loads(line)
+    time.sleep(0.5)
+    sys.stdout.buffer.write((json.dumps({"id": request["id"], "op": request["op"]}) + "\n").encode())
+    sys.stdout.buffer.flush()
+"""
+
+
+def test_a_hold_that_ends_by_itself_is_no_time_the_worker_took_to_answer(monkeypatch):
+    # why (review): the request's clock was read before its wait — a 2 s hold read as 2 s without an answer, and a
+    # healthy worker was killed as stuck (STUCK here 1 s; the worker answers in 0.5 s)
+    import queue
+    from app import path_utils
+    from app.services import arrivals as A
+    logged = []
+    monkeypatch.setattr(path_utils, "write_app_log", logged.append)
+    monkeypatch.setattr(A, "STUCK", 1.0)
+    monkeypatch.setattr(G, "STEP_LOOK_S", 0.05)
+    held = {"until": 0.0}
+    monkeypatch.setattr(G, "hold", lambda kind: G.REVIEWING if time.monotonic() < held["until"] else None)
+    registry = jobs.JobRegistry()
+    client = A.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _SLOW])
+    got = queue.Queue()
+    try:
+        client.stats(callback=got.put)
+        assert got.get(timeout=30)["op"] == "stats"
+        held["until"] = time.monotonic() + 2.0
+        client.estimate(JA, callback=got.put)
+        answer = got.get(timeout=15)
+        assert answer["op"] == "estimate" and "error" not in answer, answer
+    finally:
+        client.stop()
+        registry.quit(timeout=30)
+    assert not any("stuck" in line for line in logged), logged

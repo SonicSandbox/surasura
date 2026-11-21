@@ -476,7 +476,9 @@ def finish(anki, ledger, row, open_store=None, home=True):
                 stored = True
         except Exception:
             log.exception("Connect's tidy: the library couldn't free the words just now; tried again next time")
-    kept = json.loads(row["kept"] or "[]") + [[n, "Anki didn't delete it"] for n in sorted(still)]
+    kept = json.loads(row["kept"] or "[]")
+    said = {int(k[0]) for k in kept}
+    kept += [[n, "Anki didn't delete it"] for n in sorted(still) if n not in said]     # never twice (the last read's)
     with ledger.transaction():
         if stored:
             ledger.conn.execute("UPDATE tidies SET state = ?, deleted = ?, kept = ?, finished_at = ? WHERE id = ?",

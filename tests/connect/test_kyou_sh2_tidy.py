@@ -618,7 +618,7 @@ def test_a_card_you_answer_while_anki_exports_stays_and_goes_home(ledger):
     done = tidy.run(anki, ledger, "ja", [104, 105, 106], open_store=_opener("ja"))
     assert sorted(done["deleted"]) == [104, 106] and 105 in anki.notes_
     assert anki.cards_[1050]["deckName"] == "日本語::Mining"
-    assert [105, "you've studied it"] in done["kept"]
+    assert [k for k in done["kept"] if k[0] == 105] == [[105, "you've studied it"]], "said once, with its own why"
     with c.store("ja") as s:
         assert WORDS["ja"][4] in library.made_words_all(s), "its word stays made: its card is in Anki"
 

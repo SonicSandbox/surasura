@@ -393,3 +393,21 @@ def test_a_struggling_round_done_again_keeps_its_words_without_asking_anki(monke
     assert again["round"]["source"] == "struggling"
     assert [w["word"] for w in again["round_words"]] == [w["word"] for w in first["round_words"]] == ["危険", "準備"]
     assert closed.requests == []
+
+
+def test_a_produce_round_of_known_cards_skips_a_word_passed_in_a_produce_round_this_week():
+    """Live testing, 2026-11-21: known gave the same words round after round though each was passed. 出かける (the
+    newest mature card) passed this week, so a one-word round takes 価値; a chat round keeps Anki's order."""
+    from app import practice_rounds
+    from tests.test_mcp_server import _set_up
+    _library("ja", JA_LINES, [JA_DECK])
+    _set_up("ja")
+    kept = practice_rounds.new_id()
+    practice_rounds.save("ja", kept, start={"round": {"kind": "produce", "source": "known"}, "words": []})
+    practice_rounds.save("ja", kept, results=[{"word": "出かける", "error_type": "ok", "attempt": 1, "ok": True}])
+    state = _state(known_texts=JA_LINES)
+    state.keep_rounds = lambda: True
+    produce = _data(_call(_deck(), state, "surasura_practice_start", {"words": 1, "kind": "produce"}))
+    chat = _data(_call(_deck(), state, "surasura_practice_start", {"words": 1, "source": "known"}))
+    assert [w["word"] for w in produce["round_words"]] == ["価値"]
+    assert [w["word"] for w in chat["round_words"]] == ["出かける"]

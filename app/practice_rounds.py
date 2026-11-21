@@ -39,6 +39,9 @@ LAST_SCAN = 5                   # round files `last_round` reads at most, newest
 ERROR_TYPES = ("retrieval_miss", "reading_error", "morphological_error", "collocation_mismatch", "register_drift", "ok")
 WORD_CHARS = 30
 TRIES_MOST = 20
+# A word passed (ok) in a produce round is left out of the next produce rounds for this long (live testing,
+# 2026-11-21: known gave 俳優, 跳躍, トロール three rounds running, all ok the first time): `recent_results`
+FRESH_DAYS = 7
 # A round file's shape: `round` is there and every key that is there holds this type, else the file "isn't a round" and is left alone (a save
 # never writes over it, a listing and a read-back pass it over).
 _SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list), ("results", list))
@@ -200,6 +203,35 @@ def _newest(language):
     except OSError:
         return []
     return sorted(entries, reverse=True)
+
+
+def recent_results(language, days=None, now=None):
+    """What the produce rounds of the last `days` (FRESH_DAYS) logged -> (passed, missed): the words with an ok
+    attempt, and the words with only misses. Read from the round files saved in that time (a file that can't be read
+    is passed over); a result's own `at` must be in it too. Words as the AI logged them, NFKC."""
+    import unicodedata
+    from datetime import timedelta
+    cutoff = (now or datetime.now()) - timedelta(days=FRESH_DAYS if days is None else days)
+    passed, tried = set(), set()
+    for mtime, path in _newest(language):
+        if datetime.fromtimestamp(mtime) < cutoff:
+            break                           # newest first: every file after it is older still
+        try:
+            data = _read(path, language)
+        except ValueError:
+            continue
+        for item in (data or {}).get("results") or []:
+            if not isinstance(item, dict) or not isinstance(item.get("word"), str):
+                continue
+            try:
+                when = datetime.fromisoformat(str(item.get("at") or ""))
+            except ValueError:
+                continue
+            if when < cutoff:
+                continue
+            word = unicodedata.normalize("NFKC", item["word"]).strip()
+            (passed if item.get("ok") is True else tried).add(word)
+    return passed, tried - passed
 
 
 def last_round(language):

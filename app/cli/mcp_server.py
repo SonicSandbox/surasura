@@ -68,6 +68,10 @@ PRODUCE_SOURCE = "known"
 # Words too weak to say freely at first (live testing, 2026-11-20: struggling 0/3, known 3/3): a produce round of them
 # starts each with an easier step (a cloze or a choice), and the brief says so
 WEAK_SOURCES = ("struggling", "today")
+# A produce round draws its words from this many times as many of its source's first (`fresh_order`): two rounds in a
+# row never give the very same set. Only produce: a chat, a reading or a quiz keeps its source's order (the journey's,
+# the list's, Anki's), the order those rounds are built on.
+POOL = 3
 TRIES = 2                   # a produce word's failed tries before it is shown, and brought back later in the round
 # How an attempt went (the AI judges, the round keeps it: practice_rounds.ERROR_TYPES), as the brief explains them
 ERRORS = (
@@ -248,12 +252,13 @@ def next_words(language, source="soon", limit=NEXT_WORDS):
     return words
 
 
-def anki_words(state, language, source, limit):
+def anki_words(state, language, source, limit, order=None):
     """`source`'s words from Anki (app/anki_words.py: struggling, today, known), read live, as `next_words` gives the
     list's: each with its reading and its lines from the learner's own library (`_library_lines`), each word once. []
     when Anki has none; Anki closed or busy, no deck chosen, no studied card in the decks, no word in the cards, or an
     Anki too old to say: a ToolError in one sentence that offers soon or top — never a round from an older read. Anki
-    closed: that ToolError carries `anki = "closed"` (the words tool answers `today` with it, `words_tool`)."""
+    closed: that ToolError carries `anki = "closed"` (the words tool answers `today` with it, `words_tool`). `order`
+    (a produce round's `fresh_order`): POOL times the words are read, put in its order, and the first `limit` taken."""
     from mcp.server.mcpserver.exceptions import ToolError
     from app import anki_connect
     from app import anki_words as aw
@@ -261,7 +266,7 @@ def anki_words(state, language, source, limit):
     what = ANKI_SOURCES[source]["what"]
     try:
         # twice the words asked: two cards of one word (わかる, 分かる) are one word here (`_library_lines`)
-        found = aw.practise(language, source, limit * 2, verbs.settings())
+        found = aw.practise(language, source, limit * (POOL if order else 1) * 2, verbs.settings())
     except aw.NoDecks:
         raise ToolError(f"Surasura reads no Anki decks for this language yet, so it can't see {what}: the learner "
                         f"chooses them in Surasura (Settings → Known words); for now, {INSTEAD}.") from None
@@ -284,7 +289,34 @@ def anki_words(state, language, source, limit):
                         f"in a moment, or {INSTEAD}.") from None
     if found is None:
         raise ToolError(f"This Anki is too old to say which cards were learned today: {INSTEAD}.")
+    if order:
+        found = order(found)
     return _library_lines(state, language, found, limit)
+
+
+def fresh_order(rows, n, passed, missed, rng=random):
+    """A produce round's words in the order it takes them (live testing, 2026-11-21: known gave the same three words
+    three rounds running, all passed the first time): first the words the learner missed in the last FRESH_DAYS, in
+    the source's order; then n more drawn from the next POOL × n, the source's order as their weight (a leech still
+    comes first most often) and kept in that order; then the rest of the source; and last the words passed in that
+    time, so a round is never short of words. `rows`: dicts with "word" (and "orth"), the source's order."""
+    import unicodedata
+
+    def names(row):
+        return {unicodedata.normalize("NFKC", str(row.get(k) or "")).strip() for k in ("word", "orth")} - {""}
+    done = [r for r in rows if names(r) & passed]
+    left = [r for r in rows if not names(r) & passed]
+    first = [r for r in left if names(r) & missed]
+    rest = [r for r in left if not names(r) & missed]
+    head, tail = rest[:n * POOL], rest[n * POOL:]
+    want = max(0, n - len(first))
+    drawn, pool = [], list(range(len(head)))
+    while pool and len(drawn) < want:
+        at = rng.choices(pool, weights=[len(head) - i for i in pool])[0]
+        pool.remove(at)
+        drawn.append(at)
+    picked = [head[i] for i in sorted(drawn)]
+    return first + picked + [head[i] for i in pool] + tail + done
 
 
 def _card_reading(tokenizer, language, word):
@@ -429,6 +461,18 @@ def patterns_of(state, language, word, reading):
     return out or None
 
 
+def fresh(language, n, keep=True):
+    """The produce round's `fresh_order` for `n` words, from the results its rounds logged lately (nothing logged, or
+    rounds not kept — then no saved round is read: the source's order with its variety)."""
+    from app import practice_rounds
+    try:
+        passed, missed = practice_rounds.recent_results(language) if keep else (set(), set())
+    except Exception:
+        contract.log.exception("mcp: the recent produce results weren't read")
+        passed, missed = set(), set()
+    return lambda rows: fresh_order(rows, n, passed, missed)
+
+
 def practice_start(state, words=5, role="friend", kind="chat", source="soon", language=None, again=None):
     """The round's brief (the tool and the prompt's target). `again`: a saved round's id — its role, kind, source and
     words exactly as they were, and what it kept read back first."""
@@ -469,12 +513,13 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     if saved is not None:
         targets = practice_rounds.words(saved)[:words]
     elif source in ANKI_SOURCES:
-        targets = anki_words(state, lang, source, words)
+        targets = anki_words(state, lang, source, words, fresh(lang, words, keep) if kind == PRODUCE else None)
         if not targets:
             raise ToolError(f"{ANKI_SOURCES[source]['none']}, so there is no round from them: {INSTEAD}.")
         words = len(targets)                            # fewer such cards than asked: the round says how many
     else:
-        targets = next_words(lang, source, words)
+        order = fresh(lang, words, keep) if kind == PRODUCE else None
+        targets = order(next_words(lang, source, words * POOL))[:words] if order else next_words(lang, source, words)
     if kind == PRODUCE and not targets:
         raise ToolError(f"A produce round needs words to say, and source {source} has none yet (Generate hasn't run "
                         f"for this language): practise with source known (the words they know well in Anki) instead.")

@@ -357,3 +357,23 @@ def test_a_round_kept_before_results_still_loads_lists_and_reads_back():
     (listed,) = pr.rounds("ja")
     assert "results_kept" not in listed and listed["lines_kept"] == 1
     assert pr.context("ja")[0]["lines"] == ["冒険に行こう。"]
+
+
+def test_recent_results_name_the_words_passed_and_those_only_missed_in_the_last_days():
+    """A word passed lately (even after a miss) is passed; a word only missed is missed; a result older than
+    FRESH_DAYS counts for nothing."""
+    from datetime import datetime, timedelta
+    round_id = pr.new_id()
+    pr.save("ja", round_id, start=PRODUCE_START)
+    pr.save("ja", round_id, results=[
+        {"word": "跳躍", "error_type": "reading_error", "attempt": 1, "ok": False},
+        {"word": "跳躍", "error_type": "ok", "attempt": 2, "ok": True},
+        {"word": "受容", "error_type": "retrieval_miss", "attempt": 1, "ok": False},
+        {"word": "俳優", "error_type": "ok", "attempt": 1, "ok": True}])
+    data = pr.load("ja", round_id)
+    old = (datetime.now() - timedelta(days=pr.FRESH_DAYS + 1)).isoformat(timespec="seconds")
+    data["results"][-1]["at"] = old                     # 俳優 passed too long ago
+    with open(_round_file("ja", round_id), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    assert pr.recent_results("ja") == ({"跳躍"}, {"受容"})
+    assert pr.recent_results("ja", now=datetime.now() + timedelta(days=pr.FRESH_DAYS + 2)) == (set(), set())

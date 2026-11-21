@@ -667,12 +667,12 @@ def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_
     _write_list()
 
     async def calls(client):
-        return await client.call_tool("surasura_practice_start", {"words": 2, "role": "coworker", "kind": "produce",
+        return await client.call_tool("surasura_practice_start", {"words": 3, "role": "coworker", "kind": "produce",
                                                                    "source": "soon"})
     state = _state()
     state.keep_rounds = lambda: True
     brief = _data(_run(state, calls))
-    assert brief["round"] == {"words": 2, "role": "coworker", "kind": "produce", "source": "soon"}
+    assert brief["round"] == {"words": 3, "role": "coworker", "kind": "produce", "source": "soon"}
     assert brief["mode"] == "chat"
     rules = " ".join(brief["rules"])
     for words in ("One word at a time", "Banned (2-4 crutch words", "a precise word for this that they know",
@@ -696,13 +696,13 @@ def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_
     assert all("patterns" not in w for w in brief["round_words"])       # no patterns database in the test root
     assert "never shown before the learner has produced the word" in brief["about_the_lines"]
     assert brief["next"].startswith("Write the first word's scenario now")
-    assert state.readings["ja"] == {"散歩": "サンポ", "議事録": "ギジロク"}
+    assert state.readings["ja"] == {"散歩": "サンポ", "議事録": "ギジロク", "冒険": "ボウケン"}
 
 
 def test_a_produce_round_takes_the_words_the_learner_knows_well_unless_they_pick_a_source(monkeypatch):
     asked = []
 
-    def known(state, language, source, limit):
+    def known(state, language, source, limit, order=None):
         asked.append(source)
         return [{"word": "跳躍", "orth": "跳躍", "reading": "チョウヤク", "kana": "チョウヤク", "lines": []}]
     monkeypatch.setattr(mcp_server, "anki_words", known)
@@ -839,3 +839,40 @@ def test_a_produce_round_of_weak_words_starts_each_with_an_easier_step_and_sugge
     assert "source known" in weak["note"]
     assert "Every word in this round is a weak one" not in known_rules and "note" not in known
     assert "a word you had to show) goes through an easier step first" in known_rules
+
+
+# --- produce: fresh words each round (live testing, 2026-11-21: the same three known words three rounds running) ---- #
+def _rows(*words):
+    return [{"word": w, "orth": w} for w in words]
+
+
+def _names(rows):
+    return [r["word"] for r in rows]
+
+
+def test_a_produce_round_leaves_out_words_passed_lately_puts_missed_ones_first_and_fills_from_the_rest():
+    import random
+    rows = _rows("俳優", "跳躍", "トロール", "受容", "従属", "冒険")
+    order = mcp_server.fresh_order(rows, 3, passed={"俳優", "跳躍", "トロール"}, missed={"従属"},
+                                   rng=random.Random(1))
+    assert order[0]["word"] == "従属"                                   # missed: first
+    assert set(_names(order[:3])) == {"従属", "受容", "冒険"}
+    assert _names(order[3:]) == ["俳優", "跳躍", "トロール"]             # passed: last, so never short of words
+    # every word passed: the round still gets its words, in the source's order
+    assert _names(mcp_server.fresh_order(rows[:3], 2, passed={"俳優", "跳躍", "トロール"}, missed=set()))[:2] == [
+        "俳優", "跳躍"]
+
+
+def test_two_produce_rounds_in_a_row_differ_and_keep_the_sources_order_as_weight():
+    """Drawn from the first POOL × n by the source's order as weight: rounds vary, each set keeps the source's order,
+    and the first word (a leech, in struggling) is drawn most often."""
+    import random
+    rows = _rows(*[f"語{i}" for i in range(20)])
+    rng = random.Random(7)
+    sets = [tuple(_names(mcp_server.fresh_order(rows, 3, set(), set(), rng=rng)[:3])) for _ in range(300)]
+    assert len(set(sets)) > 10
+    position = {r["word"]: i for i, r in enumerate(rows)}
+    assert all(list(s) == sorted(s, key=position.get) for s in sets)
+    assert all(position[w] < 3 * mcp_server.POOL for s in sets for w in s)
+    counts = {w: sum(w in s for s in sets) for w in position}
+    assert counts["語0"] == max(counts.values()) and counts["語0"] > counts["語8"]

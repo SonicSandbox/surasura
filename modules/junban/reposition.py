@@ -188,13 +188,15 @@ def _phrases(settings):
 
 
 def _order(settings):
-    """`junban_order`, lowercased and trimmed — **not** validated. Preflight owns that.
+    """The study order — the list's `study_order` (Settings › Level; Kantan-MO, ROLES.md), else 順's old `junban_order`
+    — lowercased and trimmed — **not** validated. Preflight owns that.
 
     An unrecognised value reaches preflight as a problem rather than being quietly repaired here,
     for the same reason an unrecognised scope does: silently picking an order on the strength of a
     typo writes a real reordering the user never asked for.
     """
-    return str((settings or {}).get("junban_order") or DEFAULT_ORDER).strip().lower()
+    settings = settings or {}
+    return str(settings.get("study_order") or settings.get("junban_order") or DEFAULT_ORDER).strip().lower()
 
 
 def _only_markers(settings):

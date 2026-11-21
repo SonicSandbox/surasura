@@ -25,6 +25,8 @@ PLACED = {
     "journey_settle_s": "neither", "journey_settle_battery_s": "neither",
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
+    "connect_every_word": "neither",         # Cards for every new word (Kantan-MO): what Connect mines, never a run
+    "study_order": "report",                 # the study order (Kantan-MO): which list the journey opens on
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_spot_every_episode": "neither",     # Michi-T1: when Connect hears a video's audio, never a run

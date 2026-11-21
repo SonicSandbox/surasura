@@ -327,17 +327,8 @@ class JunbanWindow(windows.SecondaryWindow):
         self.counts = _label(self)
         self.body.addWidget(self.counts)
 
-        # Order, the three switches, the markers.
+        # The three switches, the markers (the order is the list's study order, Settings › Level: Kantan-MO).
         row = QHBoxLayout()
-        row.addWidget(_label(self, qs.JUNBAN_ORDER))
-        self.order_group = QButtonGroup(self)
-        self.rb_met = _box(self, QRadioButton, qs.JUNBAN_AS_MET, qs.JUNBAN_AS_MET_TIP,
-                           lambda: self._set("order", "content"))
-        self.rb_leverage = _box(self, QRadioButton, qs.JUNBAN_LEVERAGE, qs.JUNBAN_LEVERAGE_TIP,
-                                lambda: self._set("order", "priority"))
-        for b in (self.rb_met, self.rb_leverage):
-            self.order_group.addButton(b)
-            row.addWidget(b)
         # Kyou-MO: *List first* and *i+1 first* are gone (the unlocking word always comes first)
         self.cb_phrases = _box(self, QCheckBox, qs.JUNBAN_PHRASES, qs.JUNBAN_PHRASES_TIP,
                                lambda: self._set("phrases", self.cb_phrases.isChecked()))
@@ -587,7 +578,7 @@ class JunbanWindow(windows.SecondaryWindow):
     def _paint_controls(self):
         """The controls as `self.controls` says them, signals blocked (a restored control is not a click)."""
         c = self.controls
-        widgets = [self.rb_deck, self.rb_all, self.rb_met, self.rb_leverage, self.cb_phrases,
+        widgets = [self.rb_deck, self.rb_all, self.cb_phrases,
                    self.cb_tag, self.tag_name, self.cb_tag_markers, self.cb_freq, self.freq_box,
                    self.cb_freqsort, self.deck_box, self.off_list] + list(self.cb_markers.values()) + list(
             self.cb_later.values())
@@ -595,7 +586,6 @@ class JunbanWindow(windows.SecondaryWindow):
             w.blockSignals(True)
         try:
             (self.rb_all if c["scope"] == "all" else self.rb_deck).setChecked(True)
-            (self.rb_leverage if c["order"] == "priority" else self.rb_met).setChecked(True)
             self.cb_phrases.setChecked(bool(c["phrases"]))
             for name, b in self.cb_markers.items():
                 b.setChecked(name in c["only_markers"])

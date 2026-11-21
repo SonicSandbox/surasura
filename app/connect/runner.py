@@ -204,6 +204,14 @@ STOPPED_BY_YOU = STOPPED_REASON
 TURN = "Waiting its turn: Surasura is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
+# Kantan-MO (the mining model, F1): a level raise mines no episode again — a level job queued before the update and not
+# started yet is dropped (one under way finishes, by its own words)
+LEVEL_DROPPED = "a level raise mines no episode again: its new words join your study order"
+# The cap's window (Kantan-MO): a card's place in the study order — yours and a pinned show's first, a word off the
+# list after every word on it
+FRONT = -1
+OFF_LIST = 10 ** 9
+YOURS, PINNED = "yours", "pinned"       # a counted card that isn't an episode's: yours first, a pinned show's first
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
 # Alpha 4 M1 (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): until Anki Miner reads
 # books (`anki_miner.mines`: round 2's Z-9), a book's or a text's job — Connect's own, an ask, a gap's — is set
@@ -1151,6 +1159,10 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
+    if droppable and job.get("kind") == LEVEL and not job.get("asked_at"):
+        ledger.set_state(jid, "dropped", reason=LEVEL_DROPPED)
+        out["dropped"].append(item_id)
+        return
     current = getattr(steps, "in_current", None) if job.get("kind") == SHOW and not job.get("asked_at") else None
     if droppable and item_id not in line and not inbox.keeps(job, current=current(lang, item_id) if current else None):
         # an ask, a level raise beyond the line (P4.1), a show's earlier part while in Current (Michi-EO)
@@ -1174,7 +1186,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
         # at the cap: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
-        full = _full(steps, lang, asked=bool(job.get("asked_at")))
+        full = _full(steps, lang, asked=bool(job.get("asked_at")), job=job)
         if full is not None:
             raise full
     try:
@@ -2112,7 +2124,7 @@ def _mine(steps, ledger, lang, job, record=True):
         if wait is not None:
             raise wait
         if not _started(ledger, jid):       # P2.4 Part B: the cap before a job's first batch, never mid-episode
-            wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")))
+            wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")), job=job)
             if wait is not None:
                 raise wait
         _stop_here(steps, ledger, lang, job, "mining", record)     # #47: between two batches too
@@ -2478,11 +2490,15 @@ def held_by_cap(asked):
     return not asked
 
 
-def _full(steps, lang, asked=False):
+def _full(steps, lang, asked=False, job=None):
     """Before a job's pick: a Wait when the cards waiting on your list are at the cap, else None — one request, so a
     job waiting at the cap is never picked again at every look. Kyou-SH (a tester's 236 cards suspended with *Suspend
     them* off; Sonic 2026-11-20: ranking and suspending are Junban's, Connect only makes cards): nothing is shelved
-    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`)."""
+    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`).
+
+    Kantan-MO (the mining model, Sonic 2026-11-21): **the cap is a window over the study order** — the next `cap`
+    cards count; `job`'s episode ranking above the window's last card (`Steps.slides_in`) still goes, and the lowest
+    slide out of the window — nothing suspended, nothing deleted (Tidy keeps the overflow, Kyou-SH2)."""
     if not held_by_cap(asked):
         return None
     cap = steps.cap(lang)
@@ -2491,15 +2507,18 @@ def _full(steps, lang, asked=False):
     count = steps.waiting_count(lang)
     if count is None or count < cap:
         return None
+    slides_in = getattr(steps, "slides_in", None)
+    if job is not None and slides_in is not None and slides_in(lang, job, cap):
+        return None
     return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
 
 
-def _at_cap(steps, ledger, lang, todo, asked=False):
+def _at_cap(steps, ledger, lang, todo, asked=False, job=None):
     """P2.4 Part B (the cap): a Wait when the cards waiting on your list are at the learner's cap, else None — before a
     job's first batch, never mid-episode. Connect never suspends a card by itself (Kyou-SH, Sonic 2026-11-20): the
     shelf is no longer asked at the cap; *Suspend them* is Junban's. `asked`: the job carries an ask — never held
-    (`held_by_cap`)."""
-    return _full(steps, lang, asked)
+    (`held_by_cap`); `job`: its episode may slide into the window (`_full`)."""
+    return _full(steps, lang, asked, job)
 
 
 def _outcome(ledger, jid, word):
@@ -3464,18 +3483,24 @@ class Steps:
         return cap_of(loaded.get("connect_backlog_cap", 300), lang)
 
     def waiting_count(self, lang):
-        """The cards waiting in Anki for `lang` that count toward the cap: every new, unsuspended note in the decks you
-        chose for it plus Connect's own, wherever they are (`anki_sync.backlog_query(decks, connect=True)`, laptop
-        round 7 #41, Sonic's B3-2 A) — **only those whose word is still on your list** (Kyou-SH, Sonic 2026-11-20:
-        Junban's own off-list test, `match.lookup` over the list's keys, `_listed_keys`; a card set aside off the list
-        never blocks mining). No list to read → every waiting note counts, as before. A suspended card isn't waiting.
-        One cap per language (D31): Connect's notes count only those this language's store made (the tag spans every
-        language; review r2 #2); a pinned show's Connect cards always count (Junban puts them first). Decks read as
-        settings.json holds them now (`live`). Notes, as the bottom bar counts them (its count stays every note)."""
-        from app import anki_connect, anki_sync
+        """The cards waiting in Anki for `lang` that count toward the cap (the bottom bar's count stays every note):
+        every new, unsuspended note in the decks you chose for it plus Connect's own, wherever they are
+        (`anki_sync.backlog_query(decks, connect=True)`, laptop round 7 #41, Sonic's B3-2 A), of which count (Kantan-MO,
+        the mining model — ADVERSARY.md F3, F22; Sonic 2026-11-21):
+        - **Connect's own** whose word is on your list (Kyou-SH: Junban's own off-list test, `anki_match.lookup` over
+          the list's keys, `_listed_keys`) — any of them with *Cards for every new word* on — and a pinned show's always;
+        - **yours** made since Connect's first card (a note id is its creation time) or carrying your own tag
+          (`junban_own_tag`, Junban's *yours*, P1.4-1) whose word is on your list: your backlog from before Connect
+          never blocks it.
+        No list to read -> every waiting note counts, as before. A suspended card isn't waiting. One cap per language
+        (D31): Connect's notes count only those this language's store made (the tag spans every language; review r2
+        #2). Decks read as settings.json holds them now (`live`). Each counted card's place in the study order is kept
+        for `slides_in` (the cap's window)."""
+        from app import anki_connect, anki_match, anki_sync, settings_manager
         from app.connect import shelf
         loaded = self._settings(lang) if self.live else self.loaded
         decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
+        self._window = dict(getattr(self, "_window", {}), **{lang: None})
         with self._open(lang) as store:
             made = shelf.made_notes(store)
             pinned = shelf.pinned_items(store)
@@ -3487,15 +3512,145 @@ class Steps:
         keys = self._listed_keys(lang)
         if not keys:
             return len(notes)
-        from app import anki_match
-        words = {n: made[n][1] for n in notes if n in made}
+        first = min(made) if made else None             # Connect's first card (F22): yours count from it
         theirs = sorted(n for n in notes if n not in made)
         try:
-            words.update(self._note_words(lang, theirs, loaded))
+            read = self._note_words(lang, theirs, loaded, tags=True)
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
-        return sum(1 for n in notes if (n in made and made[n][0] in pinned)
-                   or anki_match.lookup(words.get(n) or "", keys, lang))
+        own = str(loaded.get("junban_own_tag") or "").strip().lower()
+        every = settings_manager.connect_every_word(loaded)
+        counted = []                    # (word, its episode | YOURS | PINNED): placed only at the cap (`slides_in`)
+        for n in notes:
+            if n in made:
+                item, word = made[n]
+                if item in pinned:
+                    counted.append((word, PINNED))
+                elif every or anki_match.lookup(word or "", keys, lang):
+                    counted.append((word, item))
+                continue
+            word, tags = read.get(n, ("", ()))
+            yours = (first is not None and n > first) or (bool(own) and any(
+                str(t).lower() == own or str(t).lower().startswith(own + "::") for t in tags or ()))
+            if yours and anki_match.lookup(word or "", keys, lang):
+                counted.append((word, None if loaded.get("junban_order_all") is True else YOURS))
+        self._window[lang] = counted
+        return len(counted)
+
+    def slides_in(self, lang, job, cap):
+        """The cap's window (Kantan-MO, Sonic 2026-11-21: "the next N cards count; a higher word slides the lowest
+        out"): does `job`'s episode rank above the cap-th counted card in the study order (`waiting_count` read them
+        just now)? Its rank (`_job_rank`): *As I'll meet it* — the episode's own place ahead of you; *By leverage* —
+        the best place on the list of its episode's words Connect has no card for. Nothing to tell (no list, no
+        episode file, a busy store) -> False: it waits, as before."""
+        counted = (getattr(self, "_window", {}) or {}).get(lang)
+        if not counted or len(counted) < cap:
+            return False
+        loaded = self._settings(lang) if self.live else self.loaded
+        try:
+            place = self._places(lang, loaded, self._listed_keys(lang))
+            rank = self._job_rank(lang, job, loaded, place)
+        except Exception as e:          # a busy store, an unreadable list: it waits, as before (never a failed run)
+            log.info("Connect's cap: the window couldn't place job %s (%s): %s", job.get("id"), lang, e)
+            return False
+        if rank is None:
+            return False
+        floor = sorted(place(word, item) for word, item in counted)[cap - 1]
+        return rank < floor
+
+    def _job_rank(self, lang, job, loaded, place):
+        """`job`'s place in the study order for the cap's window (`slides_in`), or None (nothing to tell)."""
+        from app.connect import library
+        if getattr(place, "by_item", False):            # As I'll meet it: the episode's own place ahead of you
+            rank = place(None, job["item_id"], ahead_only=True)
+            return None if rank >= OFF_LIST else rank
+        file_words = self._file_words(lang)
+        with self._open(lang) as store:
+            item = store.item(job["item_id"]) or {}
+            made = library.made_words_all(store)
+        lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
+        best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
+        return None if best >= OFF_LIST else best
+
+    def _places(self, lang, loaded, keys):
+        """The study order as `place(word, item)` -> a number (lower: sooner) for the cap's window (Kantan-MO).
+        *As I'll meet it* (`content`): a Connect card at its episode's place among the items still ahead of you
+        (`library.ahead`); one from an episode behind you (watched, finished: its context already seen) first while its
+        word is on your list (`keys`), last when it isn't — a finished show's rare words slide out first. *By leverage*
+        (`priority`): the word's place on the list (`_list_order`, the pick's ranks), a word off it last. Either way
+        yours (YOURS) and a pinned show's (PINNED) first; yours with *Your own cards: in your list's order* (`item`
+        None) by the word's place on the list."""
+        from app import anki_match, settings_manager
+        if settings_manager.study_order(loaded) == "content":
+            from app.connect import library
+            with self._open(lang) as store:
+                versions = getattr(store, "versions", None)
+                tag = ("content", tuple(sorted((versions() or {}).items()))) if versions else None
+                cached = getattr(self, "_ahead_of", {}).get(lang)
+                if tag is not None and cached is not None and cached[0] == tag:
+                    ahead = cached[1]           # S19: the order and pins as they were — walked once
+                else:
+                    ahead = {item: n for n, item in enumerate(library.ahead(store))}
+                    if tag is not None:
+                        self._ahead_of = dict(getattr(self, "_ahead_of", {}), **{lang: (tag, ahead)})
+
+            def place(word, item, ahead_only=False):
+                if item in (YOURS, PINNED):
+                    return FRONT
+                if item is None:
+                    return FRONT
+                if item in ahead:
+                    return ahead[item]
+                if ahead_only:
+                    return OFF_LIST
+                return FRONT if anki_match.lookup(word or "", keys, lang) else OFF_LIST
+            place.by_item = True
+            return place
+        tag = (getattr(self, "_keys_of", {}).get(lang) or (None,))[0]
+        cached = getattr(self, "_ranks_of", {}).get(lang)
+        if tag is not None and cached is not None and cached[0] == tag:
+            ranks = cached[1]                   # S19: the list `_listed_keys` keeps, ranked once
+        else:
+            ranks = {}
+            for (word, _reading), n in sorted((self._list_order(lang) or {}).items(), key=lambda kv: kv[1]):
+                if word:
+                    ranks.setdefault(word, n)
+                    if lang == "ja":
+                        ranks.setdefault(anki_match.fold_kana(word), n)
+            if tag is not None:
+                self._ranks_of = dict(getattr(self, "_ranks_of", {}), **{lang: (tag, ranks)})
+
+        def place(word, item, ahead_only=False):
+            if item in (YOURS, PINNED):
+                return FRONT
+            hit = anki_match.lookup(word or "", ranks, lang)
+            return ranks[hit] if hit else OFF_LIST
+        return place
+
+    def _file_words(self, lang):
+        """The last Generate's `file_words.json` ({file name: [lemma]}) when results/ hold this language, else {} —
+        read again only when the file changed (S19: `slides_in` asks at every job at the cap). Written atomically by
+        the Generate (`analyzer._write_sidecars`), so read without the results lock."""
+        from app.cli import verbs
+        try:
+            if verbs._results_language() != lang:
+                return {}
+            path = os.path.join(verbs._results_dir(), "file_words.json")
+            st = os.stat(path)
+        except (OSError, Exception):
+            return {}
+        stamp = (path, st.st_mtime_ns, st.st_size)
+        cached = getattr(self, "_file_words_of", {}).get(lang)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                words = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        words = words if isinstance(words, dict) else {}
+        self._file_words_of = dict(getattr(self, "_file_words_of", {}), **{lang: (stamp, words)})
+        return words
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each
@@ -3538,9 +3693,10 @@ class Steps:
             self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
         return keys
 
-    def _note_words(self, lang, note_ids, loaded):
+    def _note_words(self, lang, note_ids, loaded, tags=False):
         """{note id: its word} for your own waiting notes (Junban's own reading, `anki_match.target_word` with
-        Junban's word fields), each read from Anki once a run (S19: a note's word is kept by its id)."""
+        Junban's word fields) — {note id: (word, its tags)} with `tags` — each read from Anki once a run (S19: a
+        note's word is kept by its id)."""
         cache = getattr(self, "_words_of", {}).setdefault(lang, {})
         self._words_of = dict(getattr(self, "_words_of", {}), **{lang: cache})
         unread = [n for n in note_ids if n not in cache]
@@ -3551,10 +3707,13 @@ class Steps:
             for at in range(0, len(unread), 500):
                 for note in anki_connect.notes_info(self.url, unread[at:at + 500]):
                     if isinstance(note, dict) and isinstance(note.get("noteId"), int):
-                        cache[note["noteId"]] = anki_match.target_word(note, overrides, lang)
+                        cache[note["noteId"]] = (anki_match.target_word(note, overrides, lang),
+                                                 tuple(note.get("tags") or ()))
             for n in unread:
-                cache.setdefault(n, "")
-        return {n: cache.get(n, "") for n in note_ids}
+                cache.setdefault(n, ("", ()))
+        if tags:
+            return {n: cache.get(n, ("", ())) for n in note_ids}
+        return {n: cache.get(n, ("", ()))[0] for n in note_ids}
 
     def _list_order(self, lang):
         """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan

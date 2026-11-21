@@ -31,6 +31,7 @@ rule's header says what 3.0 does).
 import threading
 from collections import namedtuple
 
+from app import settings_manager
 from modules.junban import match, reposition, spaced, touchup, undo, unlisted
 
 # The report's glyphs — text, never emoji (gui.py's reasons) — and the preview's own marks.
@@ -88,7 +89,8 @@ def controls_from(saved, connect_row):
     controls = {
         "scope": "all" if saved.get("junban_scope") == "all" else "deck",
         "deck": str(saved.get("junban_deck") or ""),
-        "order": "priority" if saved.get("junban_order") == "priority" else "content",
+        # the study order is the list's (Settings › Level, Kantan-MO): read here, never a control of this window
+        "order": settings_manager.study_order(saved),
         "phrases": saved.get("junban_phrases", True) is not False,
         "off_list": unlisted.choice(saved),           # Kyou-MO: leave · back · aside (3.0.17's keys while unset)
         "only_markers": tuple(name for name in match.MARKERS if name in chosen),
@@ -157,6 +159,7 @@ def engine_settings(saved, controls, language, deselected=()):
                 junban_deck=str(controls.get("deck") or "").strip(),
                 junban_word_fields=dict(overrides) if isinstance(overrides, dict) else {},
                 junban_order="priority" if controls.get("order") == "priority" else "content",
+                study_order="priority" if controls.get("order") == "priority" else "content",
                 junban_phrases=bool(controls.get("phrases")),
                 junban_only_markers=list(controls.get("only_markers") or ()),
                 junban_replan_preview=replan_on(saved, language),
@@ -183,7 +186,6 @@ def window_keys(controls):
     keys = {
         "junban_scope": controls.get("scope"),
         "junban_deck": str(controls.get("deck") or "").strip(),
-        "junban_order": "priority" if controls.get("order") == "priority" else "content",
         "junban_phrases": bool(controls.get("phrases")),
         "junban_only_markers": list(controls.get("only_markers") or ()),
     }
@@ -739,7 +741,7 @@ def backlog_picture(stats, settings=None):
     if not considered:
         return None
     tiers = stats.get("tiers") or {}
-    by_leverage = (settings or {}).get("junban_order") == "priority"
+    by_leverage = settings_manager.study_order(settings) == "priority"
     yours = tiers.get("yours", 0)
     placed = tiers.get("list", 0) + tiers.get("phrase", 0)
     library = tiers.get("library", 0)

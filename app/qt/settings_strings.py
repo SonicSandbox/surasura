@@ -7,7 +7,6 @@ voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
 from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
-from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 from app.anki_words import SOURCES as ANKI_SOURCES  # Piyo's sources from Anki (Piyo-AK): one table, app/anki_words.py
 
@@ -244,12 +243,12 @@ ROWS = {
                             "Needs Anki Miner. This switch appears once it's installed.",
                             "connect make cards mine automatically anki miner needs "
                             + NEEDS_MINER),
-    "connect_mine_words": ("Words to make cards from",
-                           "Your list: i+1 first, then the rest. Only i+1: skip the rest.",
-                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
-                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
-                           "line, on your list or not",
-                           "words to make cards from mine mode which words all unknown i+1 list"),
+    # Kantan-MO (PROVISIONAL words): *Words to make cards from* retired — Level decides, this adds the rest
+    "connect_every_word": ("Cards for every new word",
+                           "Words past your level get cards too; they count toward Keep up to.",
+                           "Also make cards for words rarer than your level.",
+                           "every new word all unknown words past my level rare words mine all words to make cards "
+                           "from which words i+1"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name
     "new_cards_from": ("Learn two shows at once",
@@ -331,8 +330,6 @@ ROWS = {
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
                      "scope deck all decks choose the deck change the deck which deck mining deck new cards deck "
                      "preview order restore undo the last reorder"),
-    "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
-                     "order leverage meet content priority"),
     # Q31
     "junban_phrases": ("Idioms and set phrases go with your list",
                        "Common phrase cards are ordered like list words.",
@@ -393,6 +390,10 @@ ROWS = {
     # Level
     "level": ("Level", "", "Your level: your list holds the words at least as common as it",
               "level difficulty band rarity automatic"),
+    # Kantan-MO (PROVISIONAL words): the list's one study order — Connect, 順 and the journey read it
+    "study_order": ("Study order", "The order Connect makes cards in, 順 orders them in and your journey opens on.",
+                    "As you'll meet the words in your content, or by leverage first",
+                    "study order leverage meet content priority junban order reorder cards order"),
     "strategy": ("Or aim for a coverage %",
                  "Instead of a level: include words until your content reaches this share",
                  "Level, or a target coverage of your content", "coverage mode strategy"),
@@ -654,14 +655,13 @@ FILLS = {"patterns": "パターン", "sentence": "例文"}
 OPTIONS = {
     "surasura": {name: label for name, (label, _tip, _url) in LINKS.items()},      # its buttons (searched as choices)
     "known_road": {"anki": "Anki", "import": "Import a list"},
-    "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
     "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
                         "flag:2": "Flag 2 (Orange)", "flag:3": "Flag 3 (Green)", "flag:4": "Flag 4 (Blue)",
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
-    "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
@@ -686,9 +686,7 @@ OPTIONS = {
 }
 CLIP_CUTS_AUTO = "Automatic · {n} here"         # Michi-LP: the number Automatic picks on this PC now
 # The line under each choice card (Connect's own words, P3.1)
-OPTION_LINES = {
-    "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},
-}
+OPTION_LINES = {}
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
     "junban_only_markers": {"star": "High leverage: the words your journey stars",
@@ -712,6 +710,7 @@ SETUP_KNOWN = "{n:,} known"
 SETUP_FROM_ANKI = "from Anki ({decks})"
 SETUP_IMPORTED = "from an imported list"
 SETUP_CONNECT_OFF = "Off: you make your cards yourself"
+SETUP_MINE_WORDS = {False: "Your list", True: "Every new word"}     # Kantan-MO: *Cards for every new word* off / on
 SETUP_AUTOMATIC = "Automatic"
 SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"

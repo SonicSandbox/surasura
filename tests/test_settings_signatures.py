@@ -882,7 +882,8 @@ FLIPS = {"theme": "Modern Light", "strategy": "coverage", "target_language": "zh
          "logic.selection.band": "rare", "logic.selection.bands_ppm": {"very_rare": 3},
          "logic.sentence_boundaries.ja": "。｡．！？!?\n…",
          "logic.sentence_boundaries.zh": "。｡！？!?\n；",
-         "anki_sync_decks": {"ja": ["日本語::Mining"]}, "anki_sync_fields": {"ja": ["Expression"]}}
+         "anki_sync_decks": {"ja": ["日本語::Mining"]}, "anki_sync_fields": {"ja": ["Expression"]},
+         "study_order": "priority"}
 
 
 def _flip(path, value):

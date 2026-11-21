@@ -70,7 +70,8 @@ class Current:
             self.places = replan_preview.places(plan, ids, result)
 
     def rows(self, mode="content"):
-        """Junban's rows from the re-plan (`Result.rows`), in 順's order (`junban_order`: content · priority)."""
+        """Junban's rows from the re-plan (`Result.rows`), in the study order (`settings_manager.study_order`: content ·
+        priority)."""
         mode = str(mode or "content").strip().lower()
         return self.result.rows(mode if mode in ("content", "priority") else "content")
 

@@ -2,8 +2,9 @@
 `keep_watched`).
 
 A stone (an episode marked watched) in an analysed tier stops counting while *Keep studying watched episodes* is off:
-the store's own mine line (`Store._mine_ids`) already passes it; Connect's level raise beyond the line
-(`level._walk` → `library.counting`) and a gap's reconcile (`inbox._gone` → `library.counts`) now read the same rule,
+the store's own mine line (`Store._mine_ids`) already passes it; Connect's walk of what is ahead of you
+(`library.ahead` → `library.counting`: the cap's study order since Kantan-MO, the level raise's walk before it, which
+mines no episode again now) and a gap's reconcile (`inbox._gone` → `library.counts`) now read the same rule,
 never a second copy of it. LF4-1 stays stricter: Connect never mines a watched episode on its own, even with the
 option on (`level.wants`); your ask always does.
 
@@ -18,7 +19,7 @@ import os
 
 from app import library_store
 from app.connect import inbox, level, library
-from app.connect.ledger import ASKED, LEVEL, Ledger
+from app.connect.ledger import ASKED, Ledger
 from tests import connect_helpers as c
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 
@@ -69,57 +70,11 @@ def test_the_walk_beyond_the_line_passes_a_stone_while_keep_studying_is_off_and_
     beyond = order[3]
     with c.store() as s:
         s.set_watched([beyond])
-        assert beyond not in level._walk(s), "a stone has nothing left to mine: the store's own rule says so"
+        assert beyond not in library.ahead(s), "a stone has nothing left to mine: the store's own rule says so"
         assert library.counting(s, "now") == [i for i in s.ids("now") if i != beyond]
     _keep_watched(True)
     with c.store() as s:
-        assert beyond in level._walk(s), "with Keep studying on it counts again, in its place"
-
-
-def test_a_stone_beyond_the_line_gets_no_level_job_whether_keep_studying_is_on_or_off():
-    order, names = _small()
-    beyond = order[3]
-    with c.store() as s:
-        s.set_watched([beyond])
-    files = {names[i]: ["眼鏡"] for i in order}
-    _check(BEFORE, "run-1", files)
-    out = _check(RAISED, "run-2", files)
-    assert beyond not in out["queued"] and beyond not in _jobs(LEVEL)
-    assert out["queued"], "the others still get the raise's word"
-    _keep_watched(True)
-    _check(RAISED | {("約束", "ヤクソク")}, "run-3", {names[i]: ["約束"] for i in order})
-    assert beyond not in _jobs(LEVEL), "LF4-1 (YET): Connect never mines a watched episode on its own, option on or off"
-
-
-def test_a_gap_drops_a_not_started_level_job_whose_episode_was_stoned_as_a_finished_ones():
-    order, names = _small()
-    beyond = order[3]
-    files = {names[i]: ["眼鏡"] for i in order}
-    _check(BEFORE, "run-1", files)
-    _check(RAISED, "run-2", files)
-    assert _jobs(LEVEL)[beyond] == ("queued", None)
-    with c.store() as s:
-        s.set_watched([beyond])                         # stoned after its level job was queued
-        assert library.counts(s, s.item(beyond)) is False
-    got = _look(gap=True)
-    assert got["reconciled"] and beyond in got["dropped"]
-    assert _jobs(LEVEL)[beyond] == ("dropped", "left the top 20")
-    assert all(state == "queued" for i, (state, _r) in _jobs(LEVEL).items() if i != beyond), \
-        "the counting ones beyond the line stay (C4)"
-
-
-def test_with_keep_studying_on_a_gap_keeps_a_stoned_episodes_level_job_for_the_runner_to_drop():
-    order, names = _small()
-    beyond = order[3]
-    files = {names[i]: ["眼鏡"] for i in order}
-    _check(BEFORE, "run-1", files)
-    _check(RAISED, "run-2", files)
-    _keep_watched(True)
-    with c.store() as s:
-        s.set_watched([beyond])
-        assert library.counts(s, s.item(beyond)) is True
-    _look(gap=True)
-    assert _jobs(LEVEL)[beyond] == ("queued", None), "it counts: the runner's WATCHED drop at its start decides (LF4-1)"
+        assert beyond in library.ahead(s), "with Keep studying on it counts again, in its place"
 
 
 def test_an_ask_on_a_stoned_episode_is_kept_through_a_gap():

@@ -33,6 +33,54 @@ def _subsystem(exe):
         return struct.unpack("<H", f.read(2))[0]
 
 
+def running_from(folder):
+    """{pid: program path} of every process whose program lies under `folder` (Windows; {} elsewhere or when the
+    process list can't be read)."""
+    if sys.platform != "win32":
+        return {}
+    import ctypes
+    from ctypes import wintypes
+    psapi, kernel32 = ctypes.WinDLL("psapi"), ctypes.WinDLL("kernel32")
+    pids = (wintypes.DWORD * 4096)()
+    got = wintypes.DWORD()
+    if not psapi.EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(got)):
+        return {}
+    top = os.path.normcase(os.path.abspath(folder)) + os.sep
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    out = {}
+    for pid in pids[:got.value // ctypes.sizeof(wintypes.DWORD)]:
+        handle = kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            continue
+        try:
+            size = wintypes.DWORD(1024)
+            name = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(wintypes.HANDLE(handle), 0, name, ctypes.byref(size)):
+                if os.path.normcase(name.value).startswith(top):
+                    out[pid] = name.value
+        finally:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+    return out
+
+
+SETTLE_S = 60     # how long the smoke waits, at its end, for the build's own processes to end
+
+
+def wait_for_build_processes(install_dir, timeout=SETTLE_S, clock=None, look=None):
+    """Wait until no process runs from the build folder: `generate` starts the build's Surasura.exe headless, and a
+    program of the build still exiting holds its files, so the job's next step — moving dist aside — was refused
+    (2026-11-20, Package, 3 of 5 attempts on one PR: 'Permission denied' 0.4 s after the smoke). -> (seconds waited,
+    the programs seen still running at the start, the ones still running at the end)."""
+    import time
+    clock, look = clock or time.monotonic, look or running_from
+    started = clock()
+    first = last = look(install_dir)
+    while last and clock() - started < timeout:
+        time.sleep(0.2)
+        last = look(install_dir)
+    return round(clock() - started, 1), sorted(set(first.values())), sorted(set(last.values()))
+
+
 def _folder_files(folder):
     found = []
     for dirpath, _dirs, names in os.walk(folder):
@@ -136,6 +184,11 @@ def smoke(command, install_dir, frozen):
         check(code == 0 and lines is not None and lines[-1].get("journey_current") is True,
               f"status after generate: the list is current ({raw[:200]!r}, exit {code})")
 
+        if frozen:
+            waited, lingered, left = wait_for_build_processes(install_dir)
+            check(not left, f"no program of the build still running ({waited} s waited"
+                            f"{'; lingered: ' + ', '.join(os.path.basename(p) for p in lingered) if lingered else ''}"
+                            f"{'; still running: ' + ', '.join(left) if left else ''})")
         check(os.listdir(work) == [], "nothing written in the working folder")
         real_after = _folder_files(real_local) if os.path.isdir(real_local) else None
         check(real_after == real_before, f"the real local data folder untouched ({real_local})")

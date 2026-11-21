@@ -118,7 +118,7 @@ RAN = ("app.services.chores", "app.qt.duties", "app.one_kanji_data")
 
 def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     """The start-light fix (2026-10-14): the real start — `app_entry.py`, the window, its first frame, the duties made
-    and started on their workers, the start's timers up to the Rarity warm-up, a few seconds idle — imports neither pandas nor numpy (asking
+    and started on their workers, the start's timers up to the Rarity warm-up (from the boot), a few seconds idle — imports neither pandas nor numpy (asking
     whether a journey exists imported the report's generator for its file name: pandas → numpy, whose OpenBLAS reserves
     a buffer per CPU thread — idle went from 65 MB to ~890 MB on a 24-thread desktop, ~360 MB on the laptop, budget
     ≤ ~250), nor requests (the heartbeat's module imported it at every start, ~0.1 s before the first frame: only a
@@ -129,7 +129,7 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     probe = tmp_path / "probe.json"
     entry = os.path.join(ROOT, "app_entry.py")
     env = dict(os.environ, PYTHONPATH=ROOT, SURASURA_TEST_ROOT=str(root), SURASURA_SHELL_PROBE=str(probe),
-               SURASURA_SHELL_PROBE_IDLE="4.5", TELEMETRY_ENV="dev", TELEMETRY_URL="",
+               SURASURA_SHELL_PROBE_IDLE="8", TELEMETRY_ENV="dev", TELEMETRY_URL="",
                APPDATA=str(tmp_path / "appdata"), LOCALAPPDATA=str(tmp_path / "localappdata"),
                PYTHONUSERBASE=site.getuserbase())     # the packages installed for this user stay importable
     env.pop("SURASURA_NO_UI_TIMERS", None)            # the start's timers run (a chore at 1.5 s is the start's too)
@@ -153,6 +153,9 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     log_file = root / "local" / "logs" / "app_debug_log.txt"
     log = log_file.read_text(encoding="utf-8")
     assert "Launching the window" in log
+    # booted first (Haya-LD): the duties start once the list from disk is drawn — an empty root's store is built
+    # first (~2 s here) — and the start's timers count from then, so the probe's idle is 8 s (it was 4.5)
+    assert "window (shell): booted" in log
     assert "duties not made" not in log and "duties at start" not in log
     heavy, ran = json.loads(proc.stdout.strip().splitlines()[-1])
     assert ran == sorted(RAN), "the duties were made, attached and started, and the warm-up rang"

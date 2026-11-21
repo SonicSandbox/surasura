@@ -1186,7 +1186,8 @@ class Remote:
         self._stopped = False
         self._last = ""
         self._web = ""
-        threading.Thread(target=self._run, name="replan-remote", daemon=True).start()
+        self._thread = threading.Thread(target=self._run, name="replan-remote", daemon=True)
+        self._thread.start()
 
     # --- Host's calls ---------------------------------------------------------------------------------------- #
 
@@ -1439,6 +1440,11 @@ def helper_main(argv=None):
     parser.add_argument("--language", default="ja")
     parser.add_argument("--generate", action="store_true")
     args = parser.parse_args(argv)
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("SURASURA_TEST_ROOT"):
+        # A test's helper with no test root would resolve the checkout's own library (`path_utils.get_user_data_path`:
+        # the source run's fallback) — its User Files are the user's: refused before anything is read
+        print("replan_helper: started by a test with no test root (SURASURA_TEST_ROOT): refused", file=sys.stderr)
+        return 3
     try:
         conn = Client(os.environ[ADDRESS_ENV], authkey=bytes.fromhex(os.environ[KEY_ENV]))
     except (KeyError, ValueError, OSError, EOFError) as e:

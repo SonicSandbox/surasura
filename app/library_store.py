@@ -7653,9 +7653,11 @@ class Store:
                     out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
                 if replaced is not None:
-                    back = self._undo_replaced(cmd, replaced)
-                    out.replaced_back = any(it["id"] not in back for it in replaced.items)   # (the writer's `_refused`)
-                    skipped += back
+                    left = self._undo_replaced(cmd, replaced)            # (the ids it skipped: changed since)
+                    undone = [i for i, _w, _n in replaced.works["items"]] + (
+                        [replaced.audiobook["item"]] if replaced.audiobook else [])
+                    out.replaced_back = any(i not in left for i in undone)   # a new part or the pair back (`_refused`)
+                    skipped += left
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
             elif kind in ("finish", "put_back_finished"):

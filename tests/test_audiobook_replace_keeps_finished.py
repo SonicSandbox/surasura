@@ -170,6 +170,33 @@ def test_the_undo_of_a_replace_whose_parts_were_put_back_first_puts_everything_b
         assert store.new_version_of(new_parts[0]) is not None, "offered again after the Undo"
 
 
+@pytest.mark.parametrize("audiobook_too", (False, True), ids=("parts moved", "parts moved, audiobook removed"))
+def test_the_undo_after_every_part_was_put_back_lands_only_when_something_of_the_rest_comes_back(audiobook_too):
+    """Every replaced part put back, then the new parts moved by the learner (changed since: the value check keeps
+    them where they are). The audiobook still paired with the new version: its pair goes back to the old one — the
+    Undo landed. The audiobook removed too: nothing of the Replace's rest comes back — the window's writer calls it
+    refused ("can't undo"), never a landed Undo that did nothing."""
+    language = "ja"
+    store, old, ab = _book(language, NEKO)
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        new = _new_beside(store, language, NEKO, old)
+        new_parts = _parts(store, new)
+        change = store.replace_book(new, old)
+        _put_back(store, [[p3, p4]])
+        store.set_tier(new_parts, "soon")
+        if audiobook_too:
+            store.remove([ab])
+        soon = store.ids("soon")
+        out = store.undo(change)
+        assert [i for i in store.ids("soon") if i in new_parts] == [i for i in soon if i in new_parts], \
+            "the moved parts stay where the learner put them"
+        assert out.replaced_back is (not audiobook_too)
+        assert M._refused(change, out) is audiobook_too
+        if not audiobook_too:
+            assert _record(store, ab)["book"]["epub"] == os.path.abspath(old), "its pair back with the old version"
+
+
 @pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
 def test_the_toasts_undo_after_a_put_back_of_every_replaced_part_is_not_refused(language, title):
     """The window's writer: *Replace*, then Removed's *Put back* of its parts, then the Replace's toast Undo — the Undo

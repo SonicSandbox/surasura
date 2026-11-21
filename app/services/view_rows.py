@@ -40,7 +40,7 @@ from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
-from app.path_utils import infer_source_type
+from app.path_utils import ONLINE_TYPES, infer_source_type
 from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
 from app import no_subs                           # Michi-NS: a waiting video's subtitle, found or made (std library)
 from app.services import stone_plan
@@ -242,7 +242,7 @@ Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
 Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
-# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
+# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` (`path_utils.ONLINE_TYPES`): ▶ opens its page in the
 # browser (`play.online_link`); None for a file on disk and in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 # --- Michi-NS (PROVISIONAL): `subs`, what `no_subs.note` says of its subtitle — a waiting video's "making", "looking",
@@ -334,6 +334,7 @@ STRINGS = {
     # folder you pick as one Surasura reads, and the show finds its episodes there
     "tip_connect_moved": "{tip}\n• Find its folder or link its video",
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
+    "record_browser": "Record in browser",     # a Netflix / Disney+ episode waiting for the extension's clips
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
@@ -1237,7 +1238,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     verb = VERB[word]
     # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
     # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
-    online = item.get("source_type") in ("youtube", "bilibili")
+    online = item.get("source_type") in ONLINE_TYPES       # (Netflix and Disney+: the browser extension's)
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
@@ -1358,6 +1359,8 @@ def _connected(st, item, word, online=None):
         return Status("no_media", STRINGS["no_media"].format(word=word),
                       STRINGS["tip_connect_moved" if moved else "tip_connect_no_media"].format(tip=item.tip), "warn",
                       moved=moved)
+    if item.kind == connect_feed.WAITING and item.tip == _browser_wait():      # Netflix / Disney+ (`connect.browser`)
+        return Status("waiting", STRINGS["record_browser"], item.tip, "dim")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
     if item.kind == connect_feed.SKIPPED:   # T2: refused, its entry dismissed — quiet, never a *Waiting* to mine
@@ -1376,6 +1379,11 @@ def _connected(st, item, word, online=None):
     if item.kind in (connect_feed.ANKI, connect_feed.ANKI_WAIT, connect_feed.BATTERY):
         tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=tip)
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
+
+
+def _browser_wait():
+    from app.connect import runner
+    return runner.BROWSER_WAIT
 
 
 def _nothing(n):

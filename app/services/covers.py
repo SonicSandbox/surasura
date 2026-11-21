@@ -609,9 +609,11 @@ def keep_user_image(language, work_id, source_path, writer, current=None):
     return keep_user_bytes(language, work_id, data, writer, current)
 
 
-def keep_user_bytes(language, work_id, data, writer, current=None, source="user", ref=None):
+def keep_user_bytes(language, work_id, data, writer, current=None, source="user", ref=None, locked=True, auto=False):
     """`keep_user_image` for an image already in hand (W3.2 Q7: a candidate picked, a pasted link's image): recorded
-    `set_cover(work_id, source, ref=ref, path="user:<name>", locked=True)` — the user's pick, on the Undo stack."""
+    `set_cover(work_id, source, ref=ref, path="user:<name>", locked=True)` — the user's pick, on the Undo stack.
+    `locked` False and `auto` (the browser extension's artwork, `online_receiver.keep_cover`): nobody's choice, off the
+    Undo stack, and *Change cover…* still replaces it."""
     ext = image_ext(data) if len(data) <= MAX_IMAGE else None
     if ext is None:
         return None
@@ -626,6 +628,7 @@ def keep_user_bytes(language, work_id, data, writer, current=None, source="user"
             return None
     if not os.path.isfile(target) and not _write_whole(target, data):
         return None
-    if writer.set_cover(work_id, source, ref=ref, path="user:" + name, locked=True) is None:
+    if writer.set_cover(work_id, source, ref=ref, path="user:" + name, locked=locked,
+                        **({"auto": True} if auto else {})) is None:
         return None
     return "user:" + name

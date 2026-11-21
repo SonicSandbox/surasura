@@ -1686,6 +1686,18 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     assert anime.status.kind != "books" and not anime.episodes[0].text
 
 
+def test_a_netflix_episodes_play_opens_its_page_and_it_is_mined_as_any_episode():
+    """The browser extension's subtitles (`app/online_receiver.py`): a Netflix or Disney+ episode is an online item
+    (▶ opens its page, `online`), never *No video*: Connect picks its words and the extension records their lines
+    (`connect.browser`), so its row offers *Mine* as any episode's does."""
+    work(8, "雲の上の郵便屋さん", media="drama")
+    names = ["雲の上の郵便屋さん S01E01 [netflix-81234567].txt", "雲の上の郵便屋さん S01E02 [netflix-81234568].txt"]
+    items = items_of([("now", 8, 80, names, {0: {"source_type": "netflix"}, 1: {"source_type": "netflix"}})])
+    show = vr.build(items, dict(WORKS), {"mine_line": 20}).rows[0]
+    assert all(e.online == "netflix" and not e.text for e in show.episodes)
+    assert show.status.kind in ("waiting", "mine")
+
+
 # --- a8: a stone's Done painted ahead of the store (`marked`, the window's `drag.DragController`) ----------------------- #
 def _a8_items():
     """A row of each kind a stone sits on: a show part-watched with more files than its chips, a light novel's parts, a

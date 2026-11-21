@@ -3374,6 +3374,13 @@ class Store:
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel_path),)).fetchone()
         return row[0] if row else None
 
+    def paired_item(self, content_key):
+        """The item a pairing record with `content_key` is on (the browser extension's `netflix:<id>`: never a second
+        item for one video), or None."""
+        with self._reading():
+            row = self.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?", (content_key,)).fetchone()
+        return row[0] if row else None
+
     def item_ids(self, rel_paths):
         """`[item_id(p) for p in rel_paths]` in one read a 500 (the re-plan's every file of its plan: one query a file
         was the job's longest stretch under the interpreter lock, R6). The lowest id where two rows share a key, as

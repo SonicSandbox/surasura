@@ -554,7 +554,7 @@ def _video_link(rel_path, stype, meta=None):
     moment."""
     if stype == "youtube":
         return _video_id(rel_path, meta)
-    if stype == "bilibili":
+    if stype in ("bilibili", "netflix", "disneyplus"):      # (Netflix and Disney+: the extension's page too)
         url = str((meta or {}).get("url") or "").split("#", 1)[0]
         return url if url.startswith(("https://", "http://")) else ""
     return ""
@@ -729,7 +729,7 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                 # one that opens the video (at the sentence's moment when the site allows it).
                 vid = ""
                 stype = meta.get("type") or ""
-                if stype in ("youtube", "bilibili"):
+                if stype in ("youtube", "bilibili", "netflix", "disneyplus"):
                     side = finder.sidecar(abs_path) if finder is not None else None
                     vid = _video_link(val, stype, side)
                 table.append([meta.get("name") or os.path.basename(val),

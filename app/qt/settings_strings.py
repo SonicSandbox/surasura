@@ -528,6 +528,15 @@ ROWS = {
                     "Your AI quizzes you. What it's told goes to that AI's company.",
                     "Copy the setup, paste it to your AI. Try a short story.",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
+    "browser_extension": ("Browser extension",
+                          "Netflix and Disney+ subtitles from Surasura's browser extension come into your library. "
+                          "Only programs on this computer can reach it",
+                          "Listen for the browser extension on this computer (127.0.0.1)",
+                          "browser extension netflix disney subtitles online chrome firefox"),
+    "browser_extension_token": ("Extension token",
+                                "Paste it into the extension's options once",
+                                "Copy the token the browser extension needs",
+                                "browser extension token key copy netflix disney"),
     "practice_keep_rounds": ("Keep practice rounds",
                              "Rounds stay on this PC to redo. Off: nothing is kept.",
                              "Keep each practice round in User Files, to redo and build on.",
@@ -826,6 +835,13 @@ PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop
 PRACTICE_COPY_TIP = "Copy the setup for {app}: paste it there, or follow it yourself."
 PRACTICE_COPIED = "Copied"
 PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
+# The browser extension's token row (Connections; app/online_receiver.py): its Copy, and whether Surasura listens now
+EXTENSION_COPY = "Copy token"
+EXTENSION_COPIED_LINE = "The token is copied: paste it into the browser extension's options."
+EXTENSION_NO_TOKEN = "Turn on Browser extension first: its token is made then."
+EXTENSION_LISTENING = "Listening on 127.0.0.1:{port}"
+EXTENSION_OFF = "Not listening"
+EXTENSION_TAKEN = "Not listening: port {port} is used by another program"
 # A7 (Sonic's first try, 2026-10-30: "How do i start piyo conversation?"): under the Copy buttons, both ways to start a
 # round (the slash form, its words and example: app/cli/mcp_server.SLASH_EXAMPLE and the prompt's arguments, a test keeps
 # them equal; the sources from Anki from their one table; the plain request: app/practice.STARTER)

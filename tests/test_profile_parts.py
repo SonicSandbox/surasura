@@ -66,6 +66,7 @@ CALL_SITES = {
     "app/services/settings_io.py": 1,
     "app/telemetry.py": 3,
     "app/youtube_hold.py": 1,         # Yt-B: YouTube's hold, the persistent folder
+    "app/online_receiver.py": 1,      # the browser extension's token (PARTS: roaming, stays with Start over)
     "app/token_index.py": 1,
     "app/updater.py": 3,
     "modules/irodori/make.py": 1,     # Iro-AA: the runs' Undo list (install: irodori-runs-*.json)

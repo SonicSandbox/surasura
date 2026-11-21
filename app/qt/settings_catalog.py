@@ -95,6 +95,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
+    "browser_extension_token": _LIVE,           # the browser extension's token: Copy, and whether it listens
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
@@ -366,6 +367,10 @@ ROWS = (
     _row("anki_miner", "connect", "custom", ("connect_anki_miner_path",)),                   # P8: Anki Miner's card
     _row("practice_ai", "connect", "custom"),                  # A6 (H9): Copy, per AI app, for the practice server
     _row("practice_keep_rounds", "connect", "toggle", ("practice_keep_rounds",), sub=True),   # A6: saved rounds
+    # Netflix and Disney+ (app/online_receiver.py): the browser extension's listener, off until the learner's yes;
+    # under it its token's *Copy* and whether it listens
+    _row("browser_extension", "connect", "toggle", ("browser_extension",)),
+    _row("browser_extension_token", "connect", "custom", sub=True),     # its token: kept outside settings.json
     _row("hato", "connect", "status", group="houseki"),
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built

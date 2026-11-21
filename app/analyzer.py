@@ -5309,6 +5309,7 @@ def settings_signature(settings, language):
         # library_frequency.json it used to switch on.)
         "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
         "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels", "enable_irodori",
+        "browser_extension",            # the browser extension's listener: never what a run reads
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
         # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
         # reads them.
@@ -6642,7 +6643,7 @@ def main():
         file_phrase_firsts = {}     # phrase index -> its first sentence here, likewise
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
-        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
+        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")
         file_series = _series_name(file_path, data_dir)
         library_series.add(file_series)
         if file_is_spoken:

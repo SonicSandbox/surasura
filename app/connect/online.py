@@ -37,6 +37,10 @@ A YouTube title in the library is only its transcript (the downloader's `.txt` a
   computer, the downloader's too, a little apart — and none is asked for while a hold runs; the first refusal ("not a
   bot", HTTP 429) holds every YouTube call for a day, said with when it ends.
 
+Netflix and Disney+ (`BROWSER_SITES`, the browser extension's subtitles) are never fetched nor tried: their words are
+picked from the transcript's own cues and their lines recorded in the learner's browser (`connect.browser`,
+`runner._browser_clips`), never *No video*.
+
 bilibili.tv (`SITES`) is told plainly, never fetched: Anki Miner's `fetch` takes YouTube links only (`files.py`
 `_fetch_episode`), and bilibili.tv's picture and sound come apart, which only an ffmpeg joins — Surasura ships none
 (PROVISIONAL, asked of the lead). ▶ keeps opening the page online (`play.online_link`).
@@ -57,7 +61,10 @@ from app.connect import stopping
 
 log = logging.getLogger("surasura-cli")
 
-SITES = ("youtube", "bilibili")         # the online items' `source_type`s (`view_rows`' ▶ reads the same two)
+SITES = ("youtube", "bilibili", "netflix", "disneyplus")    # the online items' `source_type`s (`ONLINE_TYPES`)
+# Netflix and Disney+ (the browser extension's, `app/online_receiver.py`): never fetched — their video is DRM'd, and
+# nothing here ever tries — their lines are recorded in the browser instead (`connect.browser`)
+BROWSER_SITES = ("netflix", "disneyplus")
 KIND = "online-video"                   # Connect's *Needs you* kind for all of it (the language's, or a video's)
 FOLDER = "online"                       # <connect>/online: every fetched video, and nothing else
 FLOOR = 3 * 1024 ** 3                   # free bytes before a fetch: a 2-hour 720p video (Anki Miner's longest) fits

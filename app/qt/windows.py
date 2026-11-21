@@ -37,6 +37,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import weakref
 from collections import namedtuple
 
@@ -740,6 +742,149 @@ def _arrived(shell, relay, counts, then=None, quiet=False):
     if win is not None and not win.gone and getattr(win, "running", None) is None:
         win.say(line)                                     # its done line names the tray (no link: the tray is Q1's)
 # --- end W3.2 B
+
+
+def youtube_refused(values):
+    """Why the browser extension's YouTube links aren't taken (the 409's words), or None: the downloader is here, on
+    (`enable_youtube_transcripts`) and its risk tick given (`youtube_risk_acknowledged`) — never past the tick."""
+    if importlib.util.find_spec("modules.youtube_downloader") is None:
+        return strings.EXT_YT_ABSENT
+    if not values.get("enable_youtube_transcripts"):
+        return strings.EXT_YT_OFF
+    if values.get("youtube_risk_acknowledged") is not True:
+        return strings.EXT_YT_TICK
+    return None
+
+
+class LinkRuns:
+    """The browser extension's YouTube links being downloaded now: a link sent again while its run goes on starts no
+    second yt-dlp run (`claim` False: the 409's *already*). Any thread."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running = set()
+
+    def claim(self, urls):
+        """True, and the links held till `release`, when none of them is running; else False (nothing held)."""
+        with self._lock:
+            if self._running & set(urls):
+                return False
+            self._running |= set(urls)
+            return True
+
+    def release(self, urls):
+        with self._lock:
+            self._running -= set(urls)
+
+
+class BarLines:
+    """A run's progress lines in the window's bar, one at most every `every` seconds (yt-dlp says one a video and
+    more): `say(line)` -> whether it was said."""
+
+    def __init__(self, say, every=2.0, clock=time.monotonic):
+        self.say, self.every, self.clock, self._last = say, every, clock, None
+
+    def __call__(self, line):
+        now = self.clock()
+        if not line or (self._last is not None and now - self._last < self.every):
+            return False
+        self._last = now
+        self.say(strings.EXT_YT_PROGRESS.format(line=line))
+        return True
+
+
+def _youtube_links(shell, urls, runs=None):
+    """(The window's thread.) The browser extension's YouTube links run as the downloader's window runs pasted ones
+    (`fetch_links`), the transcripts into New arrivals as its own do (`youtube_arrivals`, which says how many arrived).
+    Its progress in the bar as it goes (`BarLines`), and said when it ends with none new; `runs` (a `LinkRuns`) lets
+    the links go once it ends."""
+    def release():
+        if runs is not None:
+            runs.release(urls)
+    try:
+        from modules.youtube_downloader import fetch_links
+        writer = shell.services.writer
+        arrived = youtube_arrivals(shell)
+        say_in_bar(shell, strings.EXT_YT_STARTED.format(n=len(urls)))
+
+        def ended(created, problems):
+            release()
+            if problems:
+                say_in_bar(shell, problems[0])
+            if created:
+                try:
+                    arrived(created)
+                except RuntimeError as e:                 # (the library switched meanwhile: they wait in Processed)
+                    say_in_bar(shell, str(e))
+            elif not problems:
+                say_in_bar(shell, strings.EXT_YT_NONE_NEW)
+        fetch_links(shell, urls, writer.language, BarLines(lambda line: say_in_bar(shell, line)), ended)
+    except Exception as e:                                # the module gone or broken: said, the app goes on
+        release()
+        applog.log("windows", f"browser extension's YouTube links: {e!r}")
+
+
+# --- the browser extension's subtitles (Netflix, Disney+; app/online_receiver.py) ----------------------------------- #
+def start_receiver(shell):
+    """(At the window's start.) The extension's listener on 127.0.0.1 while the window is open and Settings' *Browser
+    extension* is on (`browser_extension`, off by default: a new door into Surasura is the learner's yes); its token
+    made once when it is first turned on (`online_receiver.kept_token`: outside settings.json). A switch in Settings
+    starts or stops it at once;
+    the window's close stops it. A subtitle sent goes in through the open library's writer (`online_receiver.take_in`,
+    on the listener's thread: never this one), as the YouTube downloader's transcripts do."""
+    if getattr(shell, "_receiver", None) is not None:
+        return                                            # one listener for the window's life
+    from app import __version__, online_receiver
+    services = shell.services
+
+    def settings():
+        try:
+            return services.settings.get()
+        except Exception:
+            return {}
+
+    def deliver(sub):
+        rules = settings().get("placing_rules")
+        rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
+        return online_receiver.take_in(getattr(services, "writer", None), sub, rules)
+
+    relay = bridge.Relay(parent=shell)                     # v3: the links run from this thread (the job's own)
+    runs = LinkRuns()
+    relay.said.connect(lambda urls: _youtube_links(shell, urls, runs))
+
+    def youtube(urls):
+        """(The listener's thread.) The links queued for the downloader, as if pasted in its window: only while it is
+        here, on, and its risk tick given — never past the tick."""
+        refused = youtube_refused(settings())
+        if refused:
+            raise online_receiver.Refused(refused)
+        if getattr(services, "writer", None) is None:
+            raise online_receiver.Busy(strings.YT_NO_LIBRARY)
+        if not runs.claim(urls):                           # sent again while it runs: no second yt-dlp run
+            raise online_receiver.Refused(strings.EXT_YT_RUNNING)
+        relay.call(list(urls))
+        return len(urls)
+
+    receiver = online_receiver.Receiver(online_receiver.read_token, deliver, youtube=youtube,
+                                        version=__version__)
+    shell._receiver = receiver
+
+    def apply(keys=None):
+        if keys is not None and "browser_extension" not in keys:
+            return
+        values = settings()
+        if online_receiver.adopt_token(values):            # a build before 8e1d45e7 kept it in settings.json
+            services.settings.set({}, update=lambda s: s.pop(online_receiver.OLD_SETTING, None))
+        on = values.get("browser_extension") is True
+        if on:
+            online_receiver.kept_token()                  # made once, the first time it is turned on
+        if on and not receiver.on and not receiver.start():
+            applog.log("windows", f"browser extension: port {online_receiver.PORT} is taken; not listening")
+        elif not on and receiver.on:
+            receiver.stop(timeout=0.5)
+    shell.bridge.settings_written.connect(apply)
+    shell.closing.connect(lambda: receiver.stop(timeout=0.5))
+    apply()
 
 
 def _open_preview(shell):

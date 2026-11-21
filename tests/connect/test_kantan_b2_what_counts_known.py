@@ -48,8 +48,9 @@ class SearchingAnki:
         monkeypatch.setattr(anki_connect, "invoke", lambda action, url, **kwargs: "DevTest")
         monkeypatch.setattr(anki_connect, "writer", lambda *a, **k: contextlib.nullcontext())
 
-    def add(self, card, word, new=True, suspended=False, tags=()):
-        self.cards[card] = {"word": word, "new": new, "suspended": suspended, "tags": list(tags), "note": card + 1000}
+    def add(self, card, word, new=True, suspended=False, tags=(), flag=0):
+        self.cards[card] = {"word": word, "new": new, "suspended": suspended, "tags": list(tags), "note": card + 1000,
+                            "flag": flag}
 
     def _note(self, note):
         card = next(c for c in self.cards.values() if c["note"] == note)
@@ -68,6 +69,8 @@ class SearchingAnki:
                     hit = card["suspended"] if value == "suspended" else card["new"] if value == "new" else False
                 elif key == "tag":
                     hit = _tag_hit(card["tags"], value)
+                elif key == "flag":                    # Anki's flag:n (Kotoba-WS2: -flag:1 / -flag:3 on every search)
+                    hit = card["flag"] == int(value)
                 else:
                     raise AssertionError(f"a term this stand-in doesn't know: {term}")
                 ok = ok and (hit != neg)

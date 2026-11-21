@@ -36,7 +36,9 @@ def own_logic(monkeypatch):
 
 
 def _put(text, kind="ignore", language="ja"):
-    path = word_lists.list_path(kind, language)
+    # "blacklist": a Blacklist.txt the start hasn't merged yet (Kotoba-WS2) — still ignored, never a list of its own
+    path = (os.path.join(os.path.dirname(word_lists.list_path("ignore", language)), word_lists.BLACKLIST)
+            if kind == "blacklist" else word_lists.list_path(kind, language))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(text.encode("utf-8"))
@@ -73,9 +75,9 @@ def test_the_childs_japanese_words_and_marks_equal_the_in_process_read(ja_resour
 
 def test_the_childs_chinese_words_equal_the_in_process_read(zh_resources_dir, own_logic):
     text = _lines(zh_resources_dir, "chinese_text_1.txt", 12)
-    _put("台湾\n", "blacklist", "zh")
-    child = word_lists.find_words(text, "zh", "blacklist")
-    assert child == word_lists.words_in(text, "zh", "blacklist")
+    _put("台湾\n", "ignore", "zh")
+    child = word_lists.find_words(text, "zh", "ignore")
+    assert child == word_lists.words_in(text, "zh", "ignore")
     marks = {c.word: c.status for c in child}
     assert marks["台湾"] == "listed" and "孙中山" in marks
 

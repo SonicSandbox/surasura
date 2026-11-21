@@ -202,8 +202,7 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
     page, store = make_page(ALL_ON, language)
     open_all_folds(page)
     walked = set()
-    # (a9.1: Automation's switch, walked, brings *Count suspended cards as known* in for *Count as known in Anki* —
-    # one row each way — after the walk passed its place)
+    # (Kotoba-WS2: *Count as known in Anki* is one row either way: no walked switch brings one in)
     shown_at_start = {v.row.id for v in shown_views(page) if v.controls}
     # backwards: a row's switch comes before the rows it shows, so the rows are walked while they show
     for view in reversed(shown_views(page)):
@@ -234,12 +233,14 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert catalog.value(row, on_file, language) == control.value(), row.id
             else:
                 assert given_update is None
-                assert set(changes) == set(expected) and set(changes) <= set(row.keys), (row.id, changes)
+                # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
+                beside = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+                assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()
     shown_at_end = {v.row.id for v in shown_views(page) if v.controls}
     late = shown_at_end - shown_at_start - walked
-    assert late <= {"anki_sync_include_suspended"}, late                  # the one row a walked switch brings in
+    assert late == set(), late                                             # no row a walked switch brings in
     assert walked >= shown_at_end - late - {"target_language"}
     assert len(walked) > 60, walked
     # the language last: one key, and the page follows it once it lands
@@ -555,8 +556,8 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
     assert page.rows["backfill_sentence"].isVisibleTo(page)
     page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
-    assert page.rows["known_from_anki"].isVisibleTo(page)    # (Connect on: the one *What counts as known* row)
-    assert not page.rows["anki_sync_include_suspended"].isVisibleTo(page)
+    assert page.rows["known_from_anki"].isVisibleTo(page)    # the one *What counts as known* row (Kotoba-WS2)
+    assert "anki_sync_include_suspended" not in page.rows
     assert page.slabs["known"].adv.isVisibleTo(page)
     page.search.edit.setText("")
     assert not page.slabs["known"].adv.isVisibleTo(page)  # closed again: as the user left it

@@ -79,12 +79,16 @@ def test_fields_auto_is_each_note_types_first_field_and_a_second_needs_a_named_f
 
 
 def test_saved_reads_this_languages_choices_alone():
+    # Kotoba-WS2: the studied suspended cards counted are Count as known in Anki's picks (the retired switch unread)
+    from app import anki_sync
     settings = {"anki_sync_decks": {"ja": ["TheBank"], "zh": ["中文"]},
                 "anki_sync_fields": {"ja": ["Expression", "Sentence", "Meaning"]},
                 "anki_sync_include_suspended": True}
-    assert AW.saved(settings, "ja") == (["TheBank"], ["Expression", "Sentence"], True)
-    assert AW.saved(settings, "zh") == (["中文"], [], True)
-    assert AW.saved({}, "ja") == ([], [], False)
+    clause = anki_sync.counted_suspended(settings)
+    assert "is:suspended" in clause and "tag:marked" in clause
+    assert AW.saved(settings, "ja") == (["TheBank"], ["Expression", "Sentence"], clause)
+    assert AW.saved(settings, "zh") == (["中文"], [], clause)
+    assert AW.saved({"known_from_anki": []}, "ja") == ([], [], False)
 
 
 def test_merge_writes_one_languages_decks_and_fields_and_keeps_the_others():

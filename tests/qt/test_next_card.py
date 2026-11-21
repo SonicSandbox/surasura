@@ -390,7 +390,7 @@ def test_picking_which_words_get_a_card_in_settings_ticks_make_it_yours(lib_worl
     from app.qt import settings_catalog as catalog
     win = lib_world
     page = win.mount_settings()
-    page._saved(catalog.ROW["connect_mine_words"], dict(win.services.settings.get()), ["connect_mine_words"])
+    page._saved(catalog.ROW["connect_every_word"], dict(win.services.settings.get()), ["connect_every_word"])
     assert wait_until(lambda: "yours" in (guide.read_state().get("moments") or {}))
 
 

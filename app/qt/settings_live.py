@@ -287,7 +287,7 @@ def setup_lines(settings, language, facts):
     if not settings_manager.connect_on(settings):       # B2-8: "is Connect on" is one rule (the switch and D29)
         lines["setup_mining"] = S.SETUP_CONNECT_OFF
     else:
-        mine = S.SETUP_MINE_WORDS[bool(value("connect_every_word"))]       # Kantan-MO: your list, or every new word
+        mine = S.SETUP_MINE_WORDS[settings_manager.connect_every_word(settings)]    # Kantan-MO: your list or every word
         lines["setup_mining"] = S.SEP.join(p for p in (mine, facts.get("connect") or "") if p)
     auto = bool(value("logic.selection.auto"))
     band = facts.get("band") if auto and facts.get("auto") else (None if auto else value("logic.selection.band"))
@@ -307,7 +307,8 @@ def setup_lines(settings, language, facts):
             "junban_auto_backfill") else S.SETUP_FILLED_HAND) if fills else S.SETUP_NOTHING_FILLED)
         # Fresh-U row 2: the order's words only while 順 keeps the cards in order by itself — else it says off
         from app.services import setup_wizard
-        order = (S.SETUP_ORDER.get(value("study_order"), "") if setup_wizard.kept_in_order(settings, language)
+        order = (S.SETUP_ORDER.get(settings_manager.study_order(settings), "") if setup_wizard.kept_in_order(
+            settings, language)
                  else S.SETUP_ORDER_OFF)
         deck = setup_wizard.junban_deck(settings, language)      # Kantan-T (PROVISIONAL): the deck, first
         lines["setup_cards"] = S.SEP.join(([S.SETUP_DECK.format(deck=deck)] if deck else []) + [order, filled]

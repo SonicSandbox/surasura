@@ -392,13 +392,6 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             # default), reads as today's default; a learner's own pick carries `known_from_anki_chosen`
             if user_settings.get("known_from_anki") == ["suspended"] and not user_settings.get("known_from_anki_chosen"):
                 settings["known_from_anki"] = copy.deepcopy(DEFAULT_SETTINGS["known_from_anki"])
-            # Kantan-MO (the mining model): a learner's picks carry over, read here and never written (settings
-            # criteria 11) — 順's *Order* is the study order; *Every new word* is *Cards for every new word* (*Your
-            # list* and *Only i+1* read as off: your list)
-            if "study_order" not in user_settings:
-                settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
-            if "connect_every_word" not in user_settings:
-                settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
             # Kotoba-WS2: *Count suspended cards as known* folded into *Count as known in Anki* (Sonic 2026-11-19) — a
             # learner who turned it on, and never picked the states, picked "a card I suspend counts": read as
             # Suspended alone (their pick kept; nothing written: `anki_sync.counted_suspended` reads it). Only over a
@@ -408,6 +401,13 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                     and user_settings.get("known_from_anki", ["suspended"]) in (["suspended"], ["suspended", "marked"])):
                 settings["known_from_anki"] = ["suspended"]
                 settings["known_from_anki_chosen"] = True
+            # Kantan-MO (the mining model): a learner's picks carry over, read here and never written (settings
+            # criteria 11) — 順's *Order* is the study order; *Every new word* is *Cards for every new word* (*Your
+            # list* and *Only i+1* read as off: your list)
+            if "study_order" not in user_settings:
+                settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
+            if "connect_every_word" not in user_settings:
+                settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e

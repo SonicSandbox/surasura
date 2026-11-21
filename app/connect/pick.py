@@ -5,7 +5,8 @@ Surasura chooses the words, Anki Miner makes the cards: every word is named, wit
 Anki Miner's own selection. Word identity is Surasura's: a word is its (lemma, reading), keyed by the analyzer's own
 tokenizers (`app/cues.py`), and a word only Surasura joins is sent whole (IS-R2).
 
-Which words (`connect_mine_words`, Mado's *Words to make cards from*):
+Which words (`settings_manager.mine_mode`: `list`, or `unknown` with *Cards for every new word* — Kantan-MO; `i1` only
+by `surasura-cli pick --words`):
 - `list`    — the episode's words on your Surasura list (the last Generate's), not known, with no card yet
 - `unknown` — every word Surasura reads in the episode that you don't know (Surasura's reading, ✅ G0.3-6)
 - `i1`      — only words with a line whose other words you all know

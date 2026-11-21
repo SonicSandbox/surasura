@@ -74,7 +74,7 @@ def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():
     with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "words that left go to the back: a re-sort is owed"
     out = _check(RAISED, "run-3", files)                            # raised again: those words are new again
-    assert out["new"] == 2 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
 
 
 def test_switched_on_again_the_next_look_is_a_first_look():

@@ -173,9 +173,11 @@ def test_up_nexts_percent_hover_says_what_it_was_when_added_in_one_line(seeded):
     assert asked and set(asked) == {nxt.id}, "Up next's own episode"
     snap["prior"] = True
     assert part(lst, 0, "pct")[0][2] == tip + f"\nOn {day}: 81%", "in the library before the snapshots began"
-    later = "2026-12-25T10:00:00.000000Z"                           # first counted on another day (it waited)
+    later = time.strftime("%Y-%m-%dT10:00:00.000000Z",            # first counted two days on (it waited)
+                          time.gmtime(time.mktime(time.strptime(added[:10], "%Y-%m-%d")) + 2 * 86400))
     lst.delegate.growth = lambda item: {"added": dict(snap, prior=False, at=later)}
-    assert part(lst, 0, "pct")[0][2] == tip + "\nOn Dec 25: 81%", "never a day it wasn't added"
+    assert part(lst, 0, "pct")[0][2] == tip + f"\nOn {view_rows.day_label(later)}: 81%", "never a day it wasn't added"
+    assert view_rows.day_label(later) != day
     assert view_rows.growth_line({"added": dict(snap, prior=False)}) == f"When you added it on {day}: 81%"
     for answer in (None, {}, {"done": snap}, {"added": dict(snap, counted=0)}):
         lst.delegate.growth = lambda item, a=answer: a

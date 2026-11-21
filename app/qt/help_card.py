@@ -371,7 +371,6 @@ class HelpCard(motion.Overlay):
         foot = QHBoxLayout()
         foot.setSpacing(round(4 * f))
         self.all = self._button(strings.HELP_ALL, strings.HELP_ALL_TIP, self.show_all, foot, kind="link")
-        self.tour_button = self._button(strings.HELP_TOUR, strings.HELP_TOUR_TIP, self.show_tour, foot, kind="link")
         self.guide = self._button(strings.HELP_GUIDE, strings.HELP_GUIDE_TIP, self._guide, foot, kind="link")
         foot.addStretch(1)
         self.close_button = self._button(strings.HELP_CLOSE, strings.HELP_CLOSE_TIP, self.close, foot)
@@ -499,7 +498,6 @@ class HelpCard(motion.Overlay):
             self.tour_foot.setVisible(last)
         else:
             self.tour_foot.hide()
-        self.tour_button.setVisible(not on)
 
     def _lines(self, card_id):
         """The list under a card: the automation card's seven, or every lit circle and why (the strip's card)."""

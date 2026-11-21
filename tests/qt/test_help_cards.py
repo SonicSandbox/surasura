@@ -123,7 +123,7 @@ def test_the_main_question_mark_opens_this_screens_card_and_its_foot_holds_the_r
     card = world.win._help_card
     assert card.isVisible() and card.card_id == "current"
     assert card.title.text() == strings.HELP_CARDS["current"][0]
-    for b in (card.all, card.tour_button, card.guide, card.close_button):
+    for b in (card.all, card.guide, card.close_button):         # (the tour's link retired: Mado-EZP, HG-4)
         assert b.isVisibleTo(card) and b.toolTip()
     card.close()
     world.win.show_tab("finished")
@@ -380,19 +380,6 @@ def test_an_hc3_hint_held_back_is_never_shown_after_its_moment_and_never_behind_
     assert h.blocked()
     del win._help_card
     assert h.once("first_amber", lambda: shown.append("amber"), owe=False) and shown == ["amber"]
-
-
-def test_the_setup_doors_tour_opens_only_once_setup_has_ended(world):
-    # review #1: never on top of the wizard's later pages
-    win = world.win
-    win.__dict__["_tour_after_setup"] = True
-    win.setup_held(True)
-    QApplication.processEvents()
-    assert getattr(win, "_help_card", None) is None or not win._help_card.isVisible()
-    win.setup_held(False)
-    assert wait_until(lambda: getattr(win, "_help_card", None) is not None and win._help_card.isVisible())
-    assert win._help_card.tour is not None and "_tour_after_setup" not in win.__dict__
-    win._help_card.close()
 
 
 def test_update_my_journey_now_says_already_running_while_a_generate_is_on_its_way(world):

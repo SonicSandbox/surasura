@@ -35,6 +35,7 @@ from app import zh_script   # cheap: its tables decode only on the first convers
 from app import names       # cheap: its tables decode only when a Japanese word is first read
 from app import song_lines  # pure: the songs left out of the counts (§ Songs out of the counts)
 from app.batch_gc import without_cycle_collection
+from app import child_io
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 from app import plan_rules  # the rules a Generate and the fast re-plan share (Orth / Forms, the progressive pass)
 
@@ -5787,8 +5788,11 @@ def _progress_line(record):
 
 
 def _cancel_point():
-    """Stop here if the window asked, and nothing is being written yet."""
-    if _PROGRESS["cancel_file"] and not _PROGRESS["writing"] and os.path.exists(_PROGRESS["cancel_file"]):
+    """Stop here if the window asked, or has gone (its pipe closed: `child_io.parent_gone`, Haya-CL 3.0.17), and
+    nothing is being written yet."""
+    if _PROGRESS["writing"]:
+        return
+    if child_io.parent_gone() or (_PROGRESS["cancel_file"] and os.path.exists(_PROGRESS["cancel_file"])):
         raise _GenerateCancelled()
 
 
@@ -5830,6 +5834,10 @@ def _reporting_progress(run):
         on = "--progress-json" in sys.argv[1:]
         _PROGRESS.update(on=on, ran=False, writing=False,
                          cancel_file=(os.environ.get("SURASURA_CANCEL_FILE") or None) if on else None)
+        if on:
+            # Haya-CL 3.0.17: a window's child — a line to a window that has closed goes nowhere, never an OSError (from
+            # source too: app_entry.py guards Surasura.exe's)
+            child_io.guard_std_streams()
         try:
             code = run(*args, **kwargs)
         except _GenerateCancelled:

@@ -80,10 +80,11 @@ def index_needed(language, script):
 
 
 def indexer_command(language):
-    """The indexer's process command: the frozen app's `index` verb, or the script (`run_command_async`'s map)."""
+    """The indexer's process command: the frozen app's `index` verb (headless: never a Critical Error box from an
+    unseen child, Haya-CL 3.0.17), or the script (`run_command_async`'s map)."""
     from app.path_utils import is_frozen
     if is_frozen():
-        return [sys.executable, "index", "--language", language]
+        return [sys.executable, "index", "--headless", "--language", language]
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [sys.executable, os.path.join(app_dir, "indexer.py"), "--language", language]
 

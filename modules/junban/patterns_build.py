@@ -1086,4 +1086,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    from app import child_io
+    child_io.guard_std_streams()        # the Backfill window's child: a window that closed never makes a line raise
     sys.exit(main())

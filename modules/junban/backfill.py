@@ -48,7 +48,7 @@ from app import anki_connect
 from app.anki_connect import AnkiError
 from app.path_utils import list_reader
 from app.unicode_ranges import KANA_LETTERS
-from modules.junban import ankiconnect, first_touch, match, pairs, reposition, touchup, undo
+from modules.junban import ankiconnect, connect, first_touch, match, pairs, reposition, touchup, undo
 
 # One fill: what it writes, and how the window offers it — `tip` on its tick box, and `help` behind its
 # "?": a title and short sections (a header, one plain line, an example), written for a 12-year-old
@@ -224,7 +224,7 @@ class Session:
         promote(self.language)          # a library set rebuilt in the background goes in before it is opened
         self.stores = []
         self.tokenize = None
-        self.is_known = lambda word: False
+        self.is_known = lambda word, sentence=None: False
         self.sentences = {}             # 例文: target -> [(others, text, surface, file)], best first
         self._looked_up = set()         # the targets already asked for, found or not
         self._words = None              # the analyzer's own tokenizer: a phrase as the store holds it
@@ -652,7 +652,7 @@ def plan(scope, session, settings, auto=False, status=None):
                 action = "language"                     # S4: a word with kana is never Chinese
             elif (auto or cards == "new") and not note["new"]:
                 action = "studied"
-            elif note["new"] and session.is_known(note["word"]):
+            elif note["new"] and session.is_known(note["word"], connect.sentence_of(note)):
                 action = "known"
             elif (note["fields"].get(field) or "").strip() and not replace:
                 action = "filled"
@@ -1240,8 +1240,8 @@ def rebuild_command(language="ja", reinforce=False, db=None):
     extra = [] if language == "ja" else ["--language", language] + (["--reinforce"] if reinforce else [])
     if db:
         extra += ["--db", db]
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "junban_patterns"] + extra, env, None
+    if getattr(sys, "frozen", False):           # headless: never a Critical Error box from an unseen child (3.0.17)
+        return [sys.executable, "junban_patterns", "--headless"] + extra, env, None
     env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     return [sys.executable, "-m", "modules.junban.patterns_build"] + extra, env, root
 

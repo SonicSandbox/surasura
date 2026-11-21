@@ -2177,7 +2177,7 @@ HELP_CARDS = {
 }
 HELP_ALSO = {
     "current": "Its cards wait while Anki is closed",
-    "cards": "Stops when: Anki closed · day's limit · Stop · row below line.",
+    "cards": "Stops when: Anki closed · Surasura closed · day's limit · Stop · row below line.",
     "finished": "Finishing never marks a word known",
     "moving": "Undo: the toast's Undo, or Ctrl+Z",
     "arrivals": "A show's next episode joins it by itself",
@@ -2326,7 +2326,7 @@ PATH_STEPS = {           # id -> (title, the line behind its ?)
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
-    "yours": ("Pick which words get a card", "Your list, every new word, or only the lines with one new word."),
+    "yours": ("Pick which words get a card", "Which words Anki Miner makes cards from: its choice in Settings."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
     "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),

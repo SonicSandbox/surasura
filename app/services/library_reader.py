@@ -1459,12 +1459,12 @@ class LibraryReader:
         self._seed = (_Kept(seed[0]), seed[1], seed[2])
         return self._seed[0]
 
-    def _seed_figures(self, data):
+    def _seed_figures(self, data, faded=False):
         """The cached rows' figures kept for the looks until the numbers' first load answers — only from a provider that
         says it hasn't (`why`), and only when the cache holds them (a cache from before: none, as before) — and handed
         to the numbers as the last ones shown (`moves.Numbers.seed`): a load that finds the plan out of date keeps them,
-        faded. Another version of the app wrote them (an update: its plan is out of date): faded from the start.
-        -> whether the figures kept are faded."""
+        faded. Another version of the app wrote them (an update: its plan is out of date), or `faded` (the store written
+        since: the order may have moved): faded from the start. -> whether the figures kept are faded."""
         why = getattr(self.numbers, "why", None)
         if why is None or why() != NOT_READ:
             return False
@@ -1474,7 +1474,7 @@ class LibraryReader:
             return False
         if not table:
             return False
-        faded = bool(data.get("faded")) or data.get("app") != APP_VERSION
+        faded = faded or bool(data.get("faded")) or data.get("app") != APP_VERSION
         self._seed = (_Kept(table) if faded else table, data["key"][3], data["key"][2])
         hand = getattr(self.numbers, "seed", None)
         if hand is not None:
@@ -1489,7 +1489,16 @@ class LibraryReader:
             return
         with open(self.cache_file, encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict) or data.get("version") != CACHE_VERSION or data.get("key") != self._key_now(h):
+        if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+            return
+        key = self._key_now(h)
+        if data.get("key") != key:
+            # the store written since (Connect's record of a card, a move) or another plan: its rows aren't the first
+            # screen (the order may have moved), but its *N new* are the last shown — kept, faded, until the numbers
+            # follow, never blank (Kura-CC, 3.0.18); the same library's only (its store id and epoch: these item ids)
+            cached = data.get("key")
+            if isinstance(cached, list) and len(cached) == len(key) and cached[:2] == key[:2]:
+                self._seed_figures(data, faded=True)
             return
         view = view_rows.from_cache(data.get("view"), language=self.language)
         if view is not None:

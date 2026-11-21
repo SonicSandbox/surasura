@@ -21,7 +21,10 @@ its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows s
 - **On disk** (`card_chip_<lang>.json`, the local data folder): the studied words Anki last said and the last
   answers — Anki closed at the window's open, the chip keeps its count (PROVISIONAL: never jumps to 0), and the
   reader's first build after the first screen reads the last answers until this one answers. Written only when the
-  studied words changed, else at most every `SAVE_S` while answers move, and at the close.
+  studied words changed, else at most every `SAVE_S` while answers move, and at the close. An episode (or a row) this
+  session can't count yet — its file's counts not in the token store, as after an update builds the store again —
+  keeps its last answer until it is read, never its own cards alone, and is asked again at the reader's next build
+  (Kura-CC, 3.0.18: the count changed meaning across a restart).
 - **Answers:** {item_id: other} for an episode and {(item ids…): other} for a row of several — *other* is how many of
   its words have a card not made from it (its own cards are the row's count already). Beside them, {("level", key):
   (at, below)}: of the cards Connect made from it, how many words were on the list (*at your level*) and how many
@@ -108,7 +111,8 @@ class Chips:
       An ask unlike the last one is looked at: a new file read, its made words read again when its cards moved.
     - `studied(words)` (any thread): the studied cards' words Anki just said (the word card's read); an empty answer
       where there were words keeps them (another profile, renamed decks — as the backlog keeps its last).
-    - `seeded()`: the last answers on disk (the reader's, before its first build); `answers()`; `close()`."""
+    - `seeded()`: the last answers on disk (the reader's, before its first build) — and this counter's, for each episode
+      or row it hasn't counted yet this session (Kura-CC); `answers()`; `close()`."""
 
     def __init__(self, language, on_change=None, worker=None, open_tokens=None, data_dir=None, read_made=None,
                  read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None, tokenize=None):
@@ -156,6 +160,10 @@ class Chips:
         self._dirty_at = None              # when the answers on disk fell behind
         self._handed = {}
         self._counted = False              # a round with asks ran: its answers are this session's (never the seed's)
+        self._seed = {}                    # the last answers on disk (`seeded`): an episode's or a row's stands until
+        #                                    this session counts it (Kura-CC: an update's token store built again)
+        self._unread = frozenset()         # the asked episodes whose file the token store held no count of: asked again
+        self._kept = {}                    # of `_seed`, what this session's answers carry (asked, not counted yet)
         self._failed = False               # this round's token store read failed (not a file it holds no count of)
         self._retry = None                 # the timer that tries a failed round again
         self.rounds = 0                    # (tests, the register's counts)
@@ -189,6 +197,7 @@ class Chips:
         with self._lock:
             if not self._handed:
                 self._handed = dict(out)
+            self._seed = {k: n for k, n in out.items() if not (type(k) is tuple and k[:1] == ("level",))}
         return out
 
     def want(self, asks, rows=()):
@@ -197,8 +206,8 @@ class Chips:
                 if ask is None:
                     if self._asks.pop(item_id, None) is not None:
                         self._owed = True
-                elif self._asks.get(item_id) != ask:
-                    self._asks[item_id] = ask
+                elif self._asks.get(item_id) != ask or item_id in self._unread:
+                    self._asks[item_id] = ask           # (Kura-CC) a file the token store hadn't counted: read again
                     self._owed = True
             fresh = set(rows) - self._row_asks
             if fresh:
@@ -453,6 +462,8 @@ class Chips:
             full_rows |= self._rows_of.get(i, set())
         # the cards that came or went: one step each through the index (never a full recount)
         out = self._out
+        with self._lock:
+            seed = self._seed
         for w, d in flips.items():
             if not d:
                 continue
@@ -472,6 +483,7 @@ class Chips:
                 continue
             mine = self._made.get(i, frozenset())
             out[i] = sum(1 for w in words if w in on and w not in mine)
+            seed.pop(i, None)                                  # counted this session: the last session's let go
         for key in full_rows:
             if key not in rows:
                 continue
@@ -479,11 +491,18 @@ class Chips:
             have = [self._files[i] for i in key if i in self._files]
             mine = frozenset().union(*(self._made.get(i, frozenset()) for i in key))
             self._rows[key] = mine
-            if not have:
-                out.pop(key, None)
+            if not have or (len(have) < len(key) and key in seed):
+                out.pop(key, None)                             # (a file not read yet: the last count stands)
                 continue
             words = set().union(*have)
             out[key] = sum(1 for w in words if w in on and w not in mine)
+            seed.pop(key, None)
+        with self._lock:
+            self._unread = frozenset(i for i in asks if i not in self._files)
+            # the last session's count for what this one hasn't counted yet (asked, no count): never its own cards
+            # alone until its file is read again, then the whole (Kura-CC)
+            self._kept = {k: n for k, n in seed.items()
+                          if k not in out and (k in rows if type(k) is tuple else k in asks)}
         if asks or self._counted:
             self._counted = True
             self._hand()
@@ -583,7 +602,8 @@ class Chips:
     def _answers(self):
         """The answers handed on: each count, and each split (lean A) — a row's the sum of its files', only while every
         file of it says one."""
-        out = dict(self._out)
+        out = dict(self._kept)
+        out.update(self._out)
         level = self._level
         for i, v in level.items():
             out[("level", i)] = v

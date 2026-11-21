@@ -195,9 +195,9 @@ class Chips:
             except (TypeError, ValueError, IndexError, KeyError):
                 continue
         with self._lock:
-            if not self._handed:
+            if not self._handed:                       # (review) only before an answer: never over a count
                 self._handed = dict(out)
-            self._seed = {k: n for k, n in out.items() if not (type(k) is tuple and k[:1] == ("level",))}
+                self._seed = {k: n for k, n in out.items() if not (type(k) is tuple and k[:1] == ("level",))}
         return out
 
     def want(self, asks, rows=()):
@@ -464,6 +464,7 @@ class Chips:
         out = self._out
         with self._lock:
             seed = self._seed
+        counted = []                                           # let go of their seed once the round is through
         for w, d in flips.items():
             if not d:
                 continue
@@ -483,7 +484,7 @@ class Chips:
                 continue
             mine = self._made.get(i, frozenset())
             out[i] = sum(1 for w in words if w in on and w not in mine)
-            seed.pop(i, None)                                  # counted this session: the last session's let go
+            counted.append(i)                                  # counted this session: the last session's let go
         for key in full_rows:
             if key not in rows:
                 continue
@@ -496,8 +497,10 @@ class Chips:
                 continue
             words = set().union(*have)
             out[key] = sum(1 for w in words if w in on and w not in mine)
-            seed.pop(key, None)
+            counted.append(key)
         with self._lock:
+            for k in counted:                                  # (review: a round that fails before here keeps them)
+                seed.pop(k, None)
             self._unread = frozenset(i for i in asks if i not in self._files)
             # the last session's count for what this one hasn't counted yet (asked, no count): never its own cards
             # alone until its file is read again, then the whole (Kura-CC)

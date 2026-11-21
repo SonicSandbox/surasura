@@ -7637,19 +7637,25 @@ class Store:
                         return self._skipped(cmd, max(1, len(change.trash_ids)))
                 rows = self.trash_rows(change.trash_ids)
                 waiting = [r["id"] for r in rows if not r["restored_at"]]
+                replaced = getattr(change, "replaced", None)            # Kura-AB5: a new version's Replace
                 if not waiting:
                     if folder is not None:
                         out = self._change(cmd, "undo")
                         out.folder_dropped = True
                         return out
-                    return self._skipped(cmd, len(change.trash_ids))
-                explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
-                out = self.restore(waiting, rel_paths, by="undo", kind="undo",
-                                   explicit_of=lambda i: explicit.get(i, 1))
-                out.folder_dropped = folder is not None
+                    if replaced is None:
+                        return self._skipped(cmd, len(change.trash_ids))
+                    out = self._change(cmd, "undo")     # Kura-AB7 (R8): every old part put back first — its rest still
+                else:                                   # undone below (the new parts' title and place, the audiobook)
+                    explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
+                    out = self.restore(waiting, rel_paths, by="undo", kind="undo",
+                                       explicit_of=lambda i: explicit.get(i, 1))
+                    out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
-                if getattr(change, "replaced", None) is not None:      # Kura-AB5: a new version's Replace
-                    skipped += self._undo_replaced(cmd, change.replaced)
+                if replaced is not None:
+                    back = self._undo_replaced(cmd, replaced)
+                    out.replaced_back = any(it["id"] not in back for it in replaced.items)   # (the writer's `_refused`)
+                    skipped += back
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
             elif kind in ("finish", "put_back_finished"):

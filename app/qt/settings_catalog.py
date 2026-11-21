@@ -296,6 +296,10 @@ ROWS = (
          when=_JUNBAN_ON),
     _row("backfill_sentence", "backfill", "toggle", ("junban_backfill_fills",), options=("sentence",),
          when=_JUNBAN_ON),
+    _row("backfill_furigana", "backfill", "toggle", ("junban_backfill_fills",), options=("furigana",),
+         when=_JUNBAN_ON),
+    _row("backfill_pitch", "backfill", "toggle", ("junban_backfill_fills",), options=("pitch",),
+         when=_JUNBAN_ON),
     # a9.1: Backfill's window has one door, here (it had three: the deck, Preview, the fields)
     _row("junban_backfill_cards", "backfill", "choice", ("junban_backfill_cards",), options=("all", "new"),
          when=_JUNBAN_ON, door=("backfill",),

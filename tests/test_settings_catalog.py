@@ -647,12 +647,14 @@ def test_junban_rows_follow_its_switch_but_put_anki_back_stays_and_backfill_leav
 
 def test_connects_rows_show_only_with_its_switch_on():
     connect_rows = {"connect_mine_words", "mine_line", "connect_send_grammar", "connect_open_anki",
-                    "connect_backlog_cap", "known_from_anki", "connect_video_folders", "connect_trust_timing",
+                    "connect_backlog_cap", "connect_video_folders", "connect_trust_timing",
                     "junban_own_tag", "junban_order_all", "connect_anki_miner_profile"}
     assert not connect_rows & _shown({}, "ja")
     assert connect_rows <= _shown({"connect_enabled": True}, "ja")
-    # the switch itself, the sync minute, the automation switch and the address show either way
-    assert {"connect_enabled", "anki_sync_delay_min", "automation", "anki_connect_url"} <= _shown({}, "ja")
+    # the switch itself, the sync minute, the automation switch, the address and (Kotoba-WS2) *Count as known in
+    # Anki* show either way
+    assert {"connect_enabled", "anki_sync_delay_min", "automation", "anki_connect_url", "known_from_anki"} <= \
+        _shown({}, "ja")
     assert "junban_own_tag" not in _shown({"connect_enabled": True}, "ja", frozenset({"koe_revealed"}))
 
 
@@ -1005,9 +1007,11 @@ def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_neve
     flagged = dict(CONNECT_ON, known_from_anki=["flag:4", "marked", "suspended"])
     assert catalog.help_line(row, flagged, "zh") == ("Counts only cards that are Suspended + Marked + Flag 4 (Blue), "
                                                      "all at once")                # in the setting's order
-    two_flags = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
-    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 1 (Red) + Flag 3 (Green) "
+    two_flags = dict(CONNECT_ON, known_from_anki=["flag:4", "suspended", "flag:2"])
+    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 2 (Orange) + Flag 4 (Blue) "
                                                        "counts no card")           # A7S-7: never a match
+    red_green = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
+    assert catalog.help_line(row, red_green, "ja") == S.KNOWN_RED_GREEN          # Kotoba-WS2: they win
     for one in (["suspended"], [], "marked", ["suspended", "flag:33"]):        # a term it doesn't know is no state
         assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=one), "ja") == row.help, one
     assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help

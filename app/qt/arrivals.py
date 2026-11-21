@@ -108,6 +108,15 @@ def number_text(arrival):
 MENU = ("top", "after-show", "soon", "goal", "finished", "folder", "remove")
 
 
+def replace_tip(got):
+    """*Replace 「…」*'s tip for `Store.new_version_of`'s answer `got` (Kura-AB6): how many of the old book's parts go to
+    Removed (the unread ones) and how many stay (the read ones; that line only when there are some)."""
+    gone, kept = len(got["old"]["replaced"]), len(got["old"]["kept"])
+    return strings.TRAY_REPLACE[1].format(
+        old=got["old"]["title"], gone=strings.TRAY_REPLACE_GONE[1 if gone == 1 else 0].format(n=gone),
+        kept=strings.TRAY_REPLACE_KEPT[1 if kept == 1 else 0].format(n=kept) if kept else "")
+
+
 def menu_entries(arrival, writable=True, reason=None, has_show=True):
     """⋯'s entries: [(name, label, tip, enabled)], in order; the moves disabled with the store's reason while it can't
     be written (E4) — *Open its folder* never; *After its show* greyed while no part of its title is in Current
@@ -2391,9 +2400,9 @@ class ArrivalsTray(motion.Overlay):
     def replace_entry(self, m, arrival, got):
         """*Replace 「…」* first in `m`. -> the action."""
         from app.qt import drag
-        words, tip = strings.TRAY_REPLACE
+        words = strings.TRAY_REPLACE[0]
         act = drag.menu_action(m, words.format(old=got["old"]["title"]), lambda: self.replace(arrival, got))
-        act.setToolTip(tip.format(old=got["old"]["title"], n=len(got["old"]["ids"])))
+        act.setToolTip(replace_tip(got))
         first = next(iter(m.actions()), None)
         if first is not None:
             m.insertAction(first, act)
@@ -2403,8 +2412,9 @@ class ArrivalsTray(motion.Overlay):
         return act
 
     def replace(self, arrival, got):
-        """`Writer.replace_book`: the new version takes the old one's name, place and audiobook; the old one goes to
-        Removed — one change, its toast's Undo puts it all back."""
+        """`Writer.replace_book`: the new version takes the old one's name, place and audiobook; the old one's unread
+        parts go to Removed (Kura-AB6: its read ones stay; the writer takes the store's own answer under its lock) —
+        one change, its toast's Undo puts it all back."""
         from app.qt import drag, removed
         moves = self._moves()
         if moves is None or moves.refused() is not None:
@@ -2412,7 +2422,7 @@ class ArrivalsTray(motion.Overlay):
         ticket = drag.Ticket(strings.TRAY_REPLACED.format(old=got["old"]["title"]), (arrival.key,),
                              list(arrival.item_ids))
         ticket.buttons = removed.door(self.win)
-        return moves._give(ticket, lambda t: moves.writer.replace_book(got["old"]["ids"], got["new"]["epub"],
+        return moves._give(ticket, lambda t: moves.writer.replace_book(got["old"]["replaced"], got["new"]["epub"],
                                                                        got["old"]["epub"], label=t))
 
     def skip_folder(self, arrival, path):

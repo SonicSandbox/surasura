@@ -443,7 +443,7 @@ def test_the_panel_is_one_list_your_path_its_stages_now_new_for_you_later_and_do
 
 
 def test_make_it_yours_row_presses_only_while_it_opens_level(world, monkeypatch):
-    # Sonic 2026-11-20 ("hide"): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
+    # Sonic 2026-11-20 (hide ④'s press): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
     # off-list cards' trap). The mining model (Kantan-MO) re-points ④'s press to Level, the one knob: its row is to do
     # (the stage reads right) with its ? line and a *Do it* / *Again* — and none if it pointed anywhere else
     panel = world.d.guide_panel

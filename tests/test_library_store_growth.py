@@ -395,6 +395,24 @@ def test_an_un_done_of_an_episode_marked_before_any_generate_keeps_no_snapshot(l
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_done_before_any_generate_taken_back_and_marked_again_keeps_the_figures_counted_in_between(language):
+    """The first mark had no figures to keep (nothing invented); taken back, counted, marked again: that mark is the
+    first with figures, so its 'done' is the count just before it, dated at that mark — not the first mark's day."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.set_watched([ep])
+    first = store.growth_of([ep], kinds=("done",)).get(ep, {})
+    store.set_watched([ep], False)
+    store.record_growth(_figures(store, [ep], base=120))
+    store.set_watched([ep])
+    assert first == {}
+    assert _snap(store, ep, "done") == _snap(store, ep, "last")
+    got = store.growth_of([ep], kinds=("added", "done"))[ep]
+    assert got["done"]["at"] >= got["added"]["at"]                # the second mark's day, after the count
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_reimported_graduate_of_an_older_surasura_keeps_its_figures_as_done(language):
     """2.4.0's Graduate moved the file into Graduated/ and dropped its row; the store's reimport takes it to Finished
     — and, as every move to Finished, keeps its newest figures as its 'done'."""

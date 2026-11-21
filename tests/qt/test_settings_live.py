@@ -57,9 +57,10 @@ class Fakes:
         self.logs = "C:\\logs"
         self.data = "C:\\data\\ja"
         self.piyo = None                             # Kantan-B2: Piyo's last round (None: none yet)
+        self.hato_update = (None, None)              # Hato-UP: hato's daily update, nothing to say yet
         for name in ("read_known", "read_level", "read_hato", "read_licence", "read_credits", "probe_anki",
                      "read_skipped", "read_status", "logs_folder", "data_folder", "ready_to_export", "run_export",
-                     "read_piyo"):
+                     "read_piyo", "read_hato_update"):
             monkeypatch.setattr(live, name, self._fake(name))
 
     def _fake(self, name):
@@ -87,6 +88,8 @@ class Fakes:
                 return self.logs
             if name == "data_folder":
                 return self.data
+            if name == "read_hato_update":
+                return self.hato_update
             if name == "read_piyo":
                 return self.piyo
             if name == "ready_to_export":
@@ -493,6 +496,55 @@ class Hato:
     def hato_seen(self, place):
         self.seen.append((place, threading.current_thread() is threading.main_thread()))
         return self.looks.pop(0) if len(self.looks) > 1 else self.looks[0]
+
+
+@pytest.mark.parametrize("word, latest, words", [
+    ("up-to-date", None, "1.4.2 · up to date"),
+    ("updating", "1.5.0", "1.4.2 · updating…"),
+    ("couldnt-check", None, "1.4.2 · couldn't check"),
+    ("out", "1.5.0", "1.4.2 · 1.5.0 is out"),
+])
+def test_hatos_row_says_its_daily_update_beside_its_version(qapp, fakes, word, latest, words):
+    """Hato-UP: the row's words say hato's version and its daily update's state; the line behind it is the mark's
+    hover (no subtitle). The state is read on a worker, for the version shown, and nothing is written."""
+    fakes.hato, fakes.hato_update = "1.4.2", (word, latest)
+    page, store, _shell = make(fakes)
+    mark = page.live.parts["hato"]["mark"]
+    assert wait_until(lambda: mark.words() == words) and mark.value()
+    assert mark.toolTip() == S.HATO_UPDATE_TIPS[word].format(latest=latest)
+    assert len(mark.toolTip().split()) <= 12                       # the settings criteria's tooltip rule
+    assert {args for name, _gui, args in fakes.calls if name == "read_hato_update"} == {("1.4.2",)}
+    assert fakes.on_gui() == [] and store.calls == []
+
+
+def test_a_word_read_for_another_version_is_dropped_and_settings_shown_again_reads_it_anew(qapp, fakes):
+    """A read that lands after the row moved to another hato (Find hato…, an update) is never painted beside it; and
+    Settings shown again reads the day's word again (a window left open while hato updated)."""
+    fakes.hato, fakes.hato_update = "1.4.2", ("updating", "1.5.0")
+    page, _store, _shell = make(fakes)
+    mark = page.live.parts["hato"]["mark"]
+    assert wait_until(lambda: mark.words() == "1.4.2 · updating…")
+    page.live._hato_update("1.4.0", ("out", "9.9.9"))               # an old read, for a version no longer shown
+    assert mark.words() == "1.4.2 · updating…"
+    fakes.hato_update = ("up-to-date", None)
+    page.hide()
+    page.show()
+    assert wait_until(lambda: mark.words() == "1.4.2 · up to date")
+
+
+def test_hatos_row_with_nothing_to_say_keeps_installed_and_its_tip_and_asks_nothing_without_hato(qapp, fakes):
+    fakes.hato = "1.4.2"
+    page, _store, _shell = make(fakes)
+    mark = page.live.parts["hato"]["mark"]
+    assert wait_until(lambda: "read_hato_update" in fakes.names())
+    settle()
+    assert mark.words() == "installed · 1.4.2" and mark.toolTip() == page.live.parts["hato"]["tip"]
+    fakes.calls.clear()
+    fakes.hato = None
+    page2, _s, _sh = make(fakes)
+    assert wait_until(lambda: page2.live.parts["hato"]["mark"].words() == S.HATO_NOT_FOUND)
+    settle()
+    assert "read_hato_update" not in fakes.names()                 # no hato: nothing to read
 
 
 def _not_found(fakes, **kw):

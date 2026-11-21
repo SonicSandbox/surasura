@@ -45,6 +45,21 @@ HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_s
     "another-hato": "Another copy of hato was open already, so Surasura uses that one",
 }
 HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
+# Hato-UP (3.0.18; Sonic 2026-11-21): hato's own daily update, started by Surasura (`services.hato_update.status`) —
+# the row's words, its version first, and each one's line behind the mark (its hover; ≤ 12 words). PROVISIONAL: the
+# words, and OUT (a newer hato this copy can't install itself)
+HATO_UPDATE_WORDS = {
+    "up-to-date": "{version} · up to date",
+    "updating": "{version} · updating…",
+    "couldnt-check": "{version} · couldn't check",
+    "out": "{version} · {latest} is out",
+}
+HATO_UPDATE_TIPS = {
+    "up-to-date": "Surasura has hato check for its updates once a day.",
+    "updating": "hato is getting {latest}. It installs itself while hato is closed.",
+    "couldnt-check": "hato couldn't reach its updates. Surasura tries again tomorrow.",
+    "out": "hato can't update this copy itself: download {latest} from hato's page.",
+}
 OPEN = "Open"
 LEVEL_AUTOMATIC = "Automatic"
 LEVEL_AUTOMATIC_TIP = "Picks your level: the commonest one holding at least {n} words."

@@ -127,6 +127,13 @@ def read_hato():
     return tools_found.hato_version()
 
 
+def read_hato_update(version):
+    """Hato-UP: hato's own daily update as the row says it, for the hato installed (`hato_update.status`: one small
+    file read) -> (word, latest) or (None, None)."""
+    from app.services import hato_update
+    return hato_update.status(version)
+
+
 def read_piyo(language):
     """Kantan-B2 (AUDIT A4, finding 10): Piyo's newest kept round, (when, how many words) or None
     (`practice_rounds.last_round`: one folder listing and a small read)."""
@@ -655,7 +662,7 @@ class Live(QObject):
             slot = self._slot(row_id).layout()
             slot.addWidget(mark)
             slot.addWidget(find)
-            self.parts[row_id] = {"mark": mark, "find": find}
+            self.parts[row_id] = {"mark": mark, "find": find, "tip": row.tip}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
         elif row_id in COMING:
@@ -838,6 +845,7 @@ class Live(QObject):
         kind = event.type()
         if kind == QEvent.Type.Show and obj is self.page:
             self._read_piyo()
+            self._read_hato_update()
         elif kind == QEvent.Type.WindowActivate and self._alive() and self.page.isVisible():
             self._read_piyo()
         return False
@@ -990,17 +998,43 @@ class Live(QObject):
         self._paint_setup()
 
     def _hato(self, version):
+        changed = self.facts.get("hato") != version
         self.facts["hato"] = version
+        if changed:
+            self.facts.pop("hato_update", None)     # Hato-UP: a word read for another version is never shown
+            self._read_hato_update()
         mark = self.parts.get("hato", {}).get("mark")
         if mark is None:
             return
-        words = S.HATO_NOT_FOUND if version is None else (S.INSTALLED.format(version=version) if version
-                                                           else S.INSTALLED_PLAIN)
+        word, latest = (self.facts.get("hato_update") or (None, None)) if version else (None, None)
+        if word in S.HATO_UPDATE_WORDS:
+            words = S.HATO_UPDATE_WORDS[word].format(version=version, latest=latest)
+            tip = S.HATO_UPDATE_TIPS[word].format(latest=latest)
+        else:
+            words = S.HATO_NOT_FOUND if version is None else (S.INSTALLED.format(version=version) if version
+                                                               else S.INSTALLED_PLAIN)
+            tip = self.parts["hato"]["tip"]
+        if mark.toolTip() != tip:
+            mark.setToolTip(tip)
         if mark.value() != (version is not None) or mark.words() != words:
             mark.set_value(version is not None, words)
         find = self.parts["hato"]["find"]
         if find.isHidden() == (version is None):
             find.setVisible(version is None)
+
+    def _read_hato_update(self):
+        """Hato-UP: the daily update's word for the hato shown, read on a worker — as its version arrives and each time
+        Settings shows (a window left open for days: hato updated meanwhile)."""
+        version = self.facts.get("hato")
+        if version:
+            self._run(read_hato_update, version, then=lambda answer, shown=version: self._hato_update(shown, answer))
+
+    def _hato_update(self, version, answer):
+        """The word read for `version`, painted beside it — dropped when the row shows another version by now."""
+        if version != self.facts.get("hato"):
+            return
+        self.facts["hato_update"] = tuple(answer) if answer else (None, None)
+        self._hato(version)
 
     def find_hato(self):
         """*Find hato…*: hato's folder picked (the system's dialog; never while a press of it is live), `open_hato` on a

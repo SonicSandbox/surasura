@@ -1497,7 +1497,7 @@ class SettingsPage(QWidget):
             self._wash(view)
         # *Your path* ④: the learner picked which words get a card — since the mining model (Kantan-MO) the level, or
         # *Cards for every new word* (*Words to make cards from* retired)
-        if {"logic.selection.band", "connect_every_word"} & set(written):
+        if {"logic.selection.band", "logic.selection.auto", "connect_every_word"} & set(written):
             moment = getattr(self.shell, "path_moment", None)
             if moment is not None:
                 moment("yours")

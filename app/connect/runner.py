@@ -3507,7 +3507,8 @@ class Steps:
         try:
             place = self._places(lang, loaded, self._listed_keys(lang))
             rank = self._job_rank(lang, job, loaded, place)
-        except (Wait, Needs):
+        except Exception as e:          # a busy store, an unreadable list: it waits, as before (never a failed run)
+            log.info("Connect's cap: the window couldn't place job %s (%s): %s", job.get("id"), lang, e)
             return False
         if rank is None:
             return False
@@ -3520,9 +3521,7 @@ class Steps:
         if getattr(place, "by_item", False):            # As I'll meet it: the episode's own place ahead of you
             rank = place(None, job["item_id"], ahead_only=True)
             return None if rank >= OFF_LIST else rank
-        from app.cli import connect_verbs
-        read = connect_verbs._read_list(lang)
-        file_words = (read[2] if read else {}) or {}
+        file_words = self._file_words(lang)
         with self._open(lang) as store:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
@@ -3542,7 +3541,15 @@ class Steps:
         if settings_manager.study_order(loaded) == "content":
             from app.connect import library
             with self._open(lang) as store:
-                ahead = {item: n for n, item in enumerate(library.ahead(store))}
+                versions = getattr(store, "versions", None)
+                tag = ("content", tuple(sorted((versions() or {}).items()))) if versions else None
+                cached = getattr(self, "_ahead_of", {}).get(lang)
+                if tag is not None and cached is not None and cached[0] == tag:
+                    ahead = cached[1]           # S19: the order and pins as they were — walked once
+                else:
+                    ahead = {item: n for n, item in enumerate(library.ahead(store))}
+                    if tag is not None:
+                        self._ahead_of = dict(getattr(self, "_ahead_of", {}), **{lang: (tag, ahead)})
 
             def place(word, item, ahead_only=False):
                 if item in (YOURS, PINNED):
@@ -3556,12 +3563,19 @@ class Steps:
                 return FRONT if anki_match.lookup(word or "", keys, lang) else OFF_LIST
             place.by_item = True
             return place
-        ranks = {}
-        for (word, _reading), n in sorted((self._list_order(lang) or {}).items(), key=lambda kv: kv[1]):
-            if word:
-                ranks.setdefault(word, n)
-                if lang == "ja":
-                    ranks.setdefault(anki_match.fold_kana(word), n)
+        tag = (getattr(self, "_keys_of", {}).get(lang) or (None,))[0]
+        cached = getattr(self, "_ranks_of", {}).get(lang)
+        if tag is not None and cached is not None and cached[0] == tag:
+            ranks = cached[1]                   # S19: the list `_listed_keys` keeps, ranked once
+        else:
+            ranks = {}
+            for (word, _reading), n in sorted((self._list_order(lang) or {}).items(), key=lambda kv: kv[1]):
+                if word:
+                    ranks.setdefault(word, n)
+                    if lang == "ja":
+                        ranks.setdefault(anki_match.fold_kana(word), n)
+            if tag is not None:
+                self._ranks_of = dict(getattr(self, "_ranks_of", {}), **{lang: (tag, ranks)})
 
         def place(word, item, ahead_only=False):
             if item in (YOURS, PINNED):
@@ -3569,6 +3583,31 @@ class Steps:
             hit = anki_match.lookup(word or "", ranks, lang)
             return ranks[hit] if hit else OFF_LIST
         return place
+
+    def _file_words(self, lang):
+        """The last Generate's `file_words.json` ({file name: [lemma]}) when results/ hold this language, else {} —
+        read again only when the file changed (S19: `slides_in` asks at every job at the cap). Written atomically by
+        the Generate (`analyzer._write_sidecars`), so read without the results lock."""
+        from app.cli import verbs
+        try:
+            if verbs._results_language() != lang:
+                return {}
+            path = os.path.join(verbs._results_dir(), "file_words.json")
+            st = os.stat(path)
+        except (OSError, Exception):
+            return {}
+        stamp = (path, st.st_mtime_ns, st.st_size)
+        cached = getattr(self, "_file_words_of", {}).get(lang)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                words = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        words = words if isinstance(words, dict) else {}
+        self._file_words_of = dict(getattr(self, "_file_words_of", {}), **{lang: (stamp, words)})
+        return words
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each

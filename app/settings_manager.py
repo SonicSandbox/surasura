@@ -395,8 +395,8 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             # Kantan-MO (the mining model): a learner's picks carry over, read here and never written (settings
             # criteria 11) — 順's *Order* is the study order; *Every new word* is *Cards for every new word* (*Your
             # list* and *Only i+1* read as off: your list)
-            if "study_order" not in user_settings and user_settings.get("junban_order") in STUDY_ORDERS:
-                settings["study_order"] = user_settings["junban_order"]
+            if "study_order" not in user_settings:
+                settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
             if "connect_every_word" not in user_settings:
                 settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
         except Exception as e:

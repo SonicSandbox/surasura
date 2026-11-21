@@ -46,6 +46,7 @@ def _write_settings(saved):
     ({}, "content"),                                   # never picked: the default, as I'll meet it
     ({"junban_order": "priority", "study_order": "content"}, "content"),     # the study order, once saved, wins
     ({"junban_order": "Leverage?"}, "content"),        # a hand-edited value no choice names: the default
+    ({"junban_order": " Priority "}, "priority"),      # hand-edited: read as 順 read it (lowercased, trimmed)
 ])
 def test_the_study_order_carries_junbans_pick_over_and_nothing_is_written(saved, order):
     # why: the update must not reset the order a learner chose in 順 (it becomes the list's study order) — and
@@ -173,9 +174,9 @@ def _steps(monkeypatch, lang, notes, made, listed, theirs=None, pinned=(), ahead
     monkeypatch.setattr(anki_connect, "notes_info", notes_info)
     steps._plan_now = lambda _lang: None
     steps._list_order = lambda _lang: {k: i for i, k in enumerate(listed)}
-    from app.cli import connect_verbs, verbs
+    from app.cli import verbs
     monkeypatch.setattr(verbs, "_results_language", lambda: "none")
-    monkeypatch.setattr(connect_verbs, "_read_list", lambda _lang: ("run-1", set(listed), dict(file_words or {})))
+    steps._file_words = lambda _lang: dict(file_words or {})
     steps.cap = lambda _lang: 3
     return steps
 
@@ -260,3 +261,50 @@ def test_nothing_to_tell_waits_as_before(monkeypatch):
     steps = _steps(monkeypatch, "ja", [1, 2, 3], made, [], ahead=[5], study_order="content")
     steps._listed_keys = lambda _lang: {}
     assert isinstance(runner._full(steps, "ja", job={"item_id": 5}), runner.Wait)
+
+
+def test_a_listed_card_from_content_behind_you_stays_in_the_window(monkeypatch):
+    # why: a card for a word on your list cut from a show you've finished keeps its place at the front (its context
+    # is fresh: Sonic's "context the learner remembers is the lever") — it never slides out for a later episode
+    made = {1: (91, "血塗れ"), 2: (20, "撒く"), 3: (21, "眼鏡")}           # 91: finished (behind you)
+    steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, ahead=[20, 21, 25], study_order="content")
+    assert isinstance(runner._full(steps, "ja", job={"item_id": 25}), runner.Wait)
+
+
+def test_the_episodes_words_are_read_once_while_the_file_is_the_same(monkeypatch, tmp_path):
+    # why (S19, the review): at the cap every job of every look asks for its episode's words — the last Generate's
+    # file_words.json is read again only when it changed, and never another language's
+    from app.cli import verbs
+    path = tmp_path / "file_words.json"
+    path.write_text(json.dumps({"第1話.srt": ["眼鏡", "老婆"]}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(verbs, "_results_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(verbs, "_results_language", lambda: "ja")
+    steps = runner.Steps({"connect_enabled": True})
+    reads = []
+    real = json.load
+    monkeypatch.setattr(json, "load", lambda f: reads.append(1) or real(f))
+    assert steps._file_words("ja") == {"第1話.srt": ["眼鏡", "老婆"]}
+    assert steps._file_words("ja") == {"第1話.srt": ["眼鏡", "老婆"]} and reads == [1]
+    path.write_text(json.dumps({"第2話.srt": ["駐車場"]}, ensure_ascii=False), encoding="utf-8")
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert steps._file_words("ja") == {"第2話.srt": ["駐車場"]} and reads == [1, 1]
+    assert steps._file_words("zh") == {}, "results/ hold Japanese: never read as Chinese"
+
+
+def test_the_order_ahead_is_walked_once_while_the_store_is_the_same(monkeypatch):
+    # why (S19): at the cap each job of each look places the window; the walk of what's ahead (the whole library's
+    # order) runs again only when the store's order or pins moved
+    made = {1: (20, "撒く"), 2: (21, "血塗れ"), 3: (22, "眼鏡")}
+    steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, study_order="content")
+    versions = {"order_version": 4, "pins_version": 1, "epoch": "e1"}
+    store = _Store({})
+    store.versions = lambda: dict(versions)
+    steps._open = lambda _lang: contextlib.nullcontext(store)
+    walks = []
+    monkeypatch.setattr(library, "ahead", lambda store: walks.append(1) or [5, 20, 21, 22, 30])
+    assert runner._full(steps, "ja", job={"item_id": 5}) is None
+    assert isinstance(runner._full(steps, "ja", job={"item_id": 30}), runner.Wait) and walks == [1]
+    versions["order_version"] = 5                       # a move: walked again, in the new order
+    monkeypatch.setattr(library, "ahead", lambda store: walks.append(1) or [20, 21, 22, 30, 5])
+    assert isinstance(runner._full(steps, "ja", job={"item_id": 5}), runner.Wait) and walks == [1, 1]

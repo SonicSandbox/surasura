@@ -13,9 +13,7 @@ the list itself is handed in (no Generate), and the CLI test writes a last Gener
 import json
 import os
 
-import pytest
-
-from app.connect import level
+from app.connect import level, library
 from app.connect.ledger import LEVEL, Ledger
 from tests import cli_helpers as h
 from tests import connect_helpers as c

@@ -204,8 +204,9 @@ def test_an_audio_file_of_an_audiobook_already_in_names_only_that_one():
     store, epub = _book_in(language, NEKO, "source")
     store.close()
     shelf = _drive("Audiobook")
-    first = _m4b(os.path.join(shelf, "Untitled A.m4b"), _fit(language))
-    _settle(first, _m4b(os.path.join(shelf, "Untitled B.m4b"), _fit(language) * 1.1))
+    # (sizes apart: two audiobooks of the very same file sizes are one moved audiobook to the look, D5)
+    first = _m4b(os.path.join(shelf, "Untitled A.m4b"), _fit(language), {"title": "Untitled A"})
+    _settle(first, _m4b(os.path.join(shelf, "Untitled B.m4b"), _fit(language) * 1.1, {"title": "Untitled Bee Two"}))
     _add(language, shelf)
     store = ls.open_store(language, *roots(language))
     with store:
@@ -394,7 +395,7 @@ def test_a_new_version_with_another_title_or_in_another_folder_is_never_offered(
     language = "ja"
     store, old, _ab = _paired(language, NEKO)
     with store:
-        other = _epub(os.path.join(os.path.dirname(old), f"{GINGA}.epub"), GINGA, language)
+        other = _epub(os.path.join(os.path.dirname(old), f"{GINGA}.epub"), GINGA, language, repeat=24)   # (own text)
         elsewhere = _new_version(store, language, NEKO, dc_title=NEKO)
         _look(store, language, store.add_source(os.path.dirname(old)), full=True)
         assert store.new_version_of(_parts(store, other)[0]) is None

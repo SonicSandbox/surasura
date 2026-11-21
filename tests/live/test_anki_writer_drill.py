@@ -71,7 +71,7 @@ else:
         language = "ja"
         def __init__(self):
             self.given = 0
-        def is_known(self, word):
+        def is_known(self, word, sentence=None):
             return False
         def prepare(self, *args, **kwargs):
             pass

@@ -73,6 +73,92 @@ def test_without_headless_the_crash_still_reaches_for_its_dialog(tmp_path):
     assert code == 1 and "tkinter" in attempted
 
 
+def _run_entry_window_gone(root, argv, main="cancel"):
+    """app_entry.run() with `argv` as Surasura.exe's analyzer child after its window closed: stdout and stderr a real
+    pipe whose reading end is already closed (Windows answers a write with OSError 22, elsewhere a broken pipe), the
+    real `_reporting_progress` around a run that reaches its first step with its cancel file made, tkinter blocked.
+    Returns (exit code, the GUI imports it attempted), through a file (stdout is the broken pipe)."""
+    answer = os.path.join(str(root), "answer.json")
+    flag = os.path.join(str(root), "cancel.flag")
+    with open(flag, "w", encoding="utf-8") as f:
+        f.write("cancel")
+    script = textwrap.dedent(f"""
+        import json, os, sys
+
+        class Block:
+            attempted = []
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] in ("tkinter", "_tkinter") or name == "app.main":
+                    self.attempted.append(name)
+                    raise ImportError("blocked by the test: " + name)
+                return None
+        block = Block()
+        sys.meta_path.insert(0, block)
+
+        import app_entry
+        from app import analyzer
+        if {main!r} == "cancel":
+            analyzer.main = analyzer._reporting_progress(lambda: analyzer._progress("Reading your files"))
+        else:                                           # a child's plain line, no wrapper of its own
+            analyzer.main = lambda: print("Processing 第01話.srt...", flush=True)
+
+        read, write = os.pipe()
+        os.close(read)                                  # the window has gone
+        sys.stdout = open(write, "w", encoding="utf-8")
+        sys.stderr = open(os.dup(write), "w", encoding="utf-8")
+        sys.argv = ["Surasura.exe"] + {argv!r}
+        try:
+            app_entry.run()
+            code = 0
+        except SystemExit as e:
+            code = e.code
+        with open({answer!r}, "w", encoding="utf-8") as f:
+            json.dump([code, block.attempted], f)
+    """)
+    environment = dict(os.environ, PYTHONPATH=PROJECT_ROOT, SURASURA_TEST_ROOT=str(root), SURASURA_CANCEL_FILE=flag)
+    proc = subprocess.run([sys.executable, "-c", script], cwd=str(root), env=environment,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    assert os.path.exists(answer), proc.stderr.decode("utf-8", "replace")
+    with open(answer, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_a_cancelled_generate_whose_window_closed_exits_cancelled_with_no_dialog(tmp_path):
+    # Haya-CL 3.0.17 (Sonic's laptop, 3.0.16): the window closed mid-Generate; the cancel's last line to the closed
+    # pipe raised OSError 22 into the Critical Error box, which then held the child ~57 s until he closed it. Started
+    # as 3.0.16's window started it (no --headless): no exception, the cancel's exit code, no dialog.
+    from app import analyzer
+    code, attempted = _run_entry_window_gone(tmp_path, ["analyzer", "--progress-json"])
+    assert code == analyzer.GENERATE_CANCELLED and attempted == []
+    assert "CRITICAL ERROR" not in _app_log(tmp_path)
+    assert "Ended analyzer after" in _app_log(tmp_path) and f"(exit {analyzer.GENERATE_CANCELLED})" in _app_log(tmp_path)
+
+
+def test_any_childs_plain_line_to_a_window_that_closed_goes_nowhere(tmp_path):
+    # app_entry's own guard, for every command (the arrivals worker, the indexer, a Generate without --progress-json):
+    # a print to the closed pipe ends nothing and opens nothing
+    code, attempted = _run_entry_window_gone(tmp_path, ["analyzer"], main="print")
+    assert code == 0 and attempted == []
+    assert "CRITICAL ERROR" not in _app_log(tmp_path)
+
+
+def test_every_child_the_window_starts_from_the_program_is_headless(monkeypatch):
+    # Haya-CL 3.0.17: a crash of a child the learner can't see is logged and ends it (the window shows its own
+    # failure), never a Critical Error box from Surasura.exe — as tools.command, the arrivals worker and the paste's
+    # child already were. Generate, the indexer and Junban's library build weren't.
+    from app import path_utils
+    from app.services import chores, generate
+    monkeypatch.setattr(path_utils, "is_frozen", lambda: True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert generate.command_line(["analyzer.py", "--language=ja", "--progress-json"])[1:3] == ["analyzer", "--headless"]
+    assert chores.indexer_command("zh")[1:3] == ["index", "--headless"]
+    try:
+        from modules.junban import backfill
+    except ImportError:
+        return
+    assert backfill.rebuild_command("zh")[0][1:3] == ["junban_patterns", "--headless"]
+
+
 def test_headless_success_exits_cleanly(tmp_path):
     code, attempted, seen = _run_entry(tmp_path, ["--headless", "analyzer", "--lang", "ja"], analyzer_main="ok")
     assert code is None or code == 0

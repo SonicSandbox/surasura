@@ -39,12 +39,36 @@ def facts(**kw):
 
 
 # --- the table --------------------------------------------------------------------------------------------------- #
-def test_two_chapters_three_and_five_steps_each_with_its_words_and_a_real_place():
+def test_two_chapters_three_and_six_steps_each_with_its_words_and_a_real_place():
     assert [s.id for s in P.STEPS if s.chapter == P.FIRST] == ["words", "watch", "cards"]
-    assert [s.id for s in P.STEPS if s.chapter == P.READY] == ["junban", "backfill", "audiobook", "hato", "piyo"]
+    assert [s.id for s in P.STEPS if s.chapter == P.READY] == ["junban", "backfill", "yours", "audiobook", "hato",
+                                                                "piyo"]
     for step in P.STEPS:
         assert step.id in strings.PATH_STEPS and all(strings.PATH_STEPS[step.id])
         assert guide.anchor_ok(step.where, has_card=help_cards.available, locate=catalog.locate), step.id
+
+
+def test_the_steps_regroup_into_four_stages_and_the_later_steps_stay_outside_them():
+    # Mado-EZP (EZ2-1 / §0.9): ② First episode = words, watch; ③ Automate = cards, 順, Backfill (the review loop's step
+    # will go last there, WL-9); ④ Make it yours = yours; the chapters keep their card rules underneath
+    by_stage = {stage: [s.id for s in P.STEPS if s.stage == stage] for stage in P.STAGES}
+    assert by_stage == {P.BOARD: [], P.EPISODE: ["words", "watch"], P.AUTOMATE: ["cards", "junban", "backfill"],
+                        P.YOURS: ["yours"]}
+    assert [s.id for s in P.STEPS if s.stage is None] == ["audiobook", "hato", "piyo"]
+    assert BY("cards").chapter == P.FIRST                                       # comes back at the next start
+
+
+def test_the_four_stones_say_done_now_and_later_from_the_real_ticks():
+    assert P.path(facts(), {}).stages == (P.DONE, P.NOW, P.LATER, P.LATER)     # ① done: a path needs a library
+    two = facts(journey_opened=True, episodes_done=1)
+    assert P.path(two, {}).stages == (P.DONE, P.DONE, P.NOW, P.LATER)
+    three = two._replace(cards_made=True, junban_ordered=True, backfilled=True)
+    assert P.path(three, {}).stages == (P.DONE, P.DONE, P.DONE, P.NOW)
+    assert P.path(three._replace(yours_picked=True), {}).stages == (P.DONE,) * 4
+    # 順 absent or off: its two steps aren't offered, so ③ is done with the cards alone
+    assert P.path(two._replace(cards_made=True, junban=False), {}).stages == (P.DONE, P.DONE, P.DONE, P.NOW)
+    # a stage done ahead of the one to do now stays done (nothing is locked: ✦ lets any step be done)
+    assert P.path(facts(yours_picked=True), {}).stages == (P.DONE, P.NOW, P.LATER, P.DONE)
 
 
 @pytest.mark.parametrize("step, before, after", [
@@ -57,6 +81,7 @@ def test_two_chapters_three_and_five_steps_each_with_its_words_and_a_real_place(
     ("audiobook", {}, {"lined_up": True}),
     ("hato", {}, {"hato_paired": True}),
     ("piyo", {}, {"piyo_round": True}),
+    ("yours", {}, {"yours_picked": True}),                  # ④: the learner's own pick of which words get a card
 ])
 def test_a_step_is_done_only_by_its_own_record(step, before, after):
     st = {s.step.id: s for s in P.statuses(facts(**before), {})}
@@ -85,21 +110,36 @@ def test_a_tick_once_seen_is_kept_when_its_record_goes():
 
 
 # --- the Next card ----------------------------------------------------------------------------------------------- #
+EP2 = (P.DONE, P.NOW, P.LATER, P.LATER)                # ② First episode now
+EP3 = (P.DONE, P.DONE, P.NOW, P.LATER)                 # ③ Automate now
+
+
 def test_the_card_walks_chapter_one_then_says_made_once_then_shows_a_useful_later_step():
-    assert P.path(facts(), {}).card == ("step", "words", 1, 3)
-    assert P.path(facts(journey_opened=True), {}).card == ("step", "watch", 2, 3)
-    assert P.path(facts(journey_opened=True, episodes_done=1), {}).card == ("step", "cards", 3, 3)
-    done = facts(journey_opened=True, episodes_done=1, own_cards=True)
+    assert P.path(facts(), {}).card == ("step", "words", EP2)
+    assert P.path(facts(journey_opened=True), {}).card == ("step", "watch", EP2)
+    assert P.path(facts(journey_opened=True, episodes_done=1), {}).card == ("step", "cards", EP3)
+    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
     assert P.path(done, {}).card == ("made",)
-    assert P.path(done, {"first_ack": True}).card is None                       # nothing useful yet: no card
+    assert P.path(done, {"first_ack": True}).card is None                       # ④ not on an old path: no card
     useful = done._replace(video_waiting=True)
-    assert P.path(useful, {"first_ack": True}).card == ("step", "hato", 0, 0)
+    assert P.path(useful, {"first_ack": True}).card == ("step", "hato", ())     # a later step: no stages
     assert P.path(useful, {"first_ack": True, "not_now": ["hato"]}).card is None   # set aside for good
+
+
+def test_make_it_yours_comes_to_the_card_only_on_a_path_that_was_new_and_after_stage_three():
+    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
+    new = {"first_ack": True, "yours_card": True}
+    assert P.path(done, new).card == ("step", "yours", (P.DONE, P.DONE, P.DONE, P.NOW))
+    assert P.path(done, {"first_ack": True, "yours_card": False}).card is None   # past chapter 1 then: ✦ only
+    assert P.path(done, dict(new, not_now=["yours"])).card is None              # a later step's Not now: for good
+    with_junban = done._replace(junban=True, anki_synced=True)                  # ③'s 順 first, in the table's order
+    assert P.path(with_junban, new).card[1] == "junban"
+    assert not {s.step.id: s for s in P.statuses(facts(), {})}["yours"].useful   # before any card: not yet
 
 
 def test_not_now_on_chapter_one_waits_for_the_next_start_and_never_skips_ahead():
     assert P.path(facts(), {}, later=("words",)).card is None
-    assert P.path(facts(), {}).card == ("step", "words", 1, 3)                    # the next start: back
+    assert P.path(facts(), {}).card == ("step", "words", EP2)                     # the next start: back
 
 
 def test_no_library_no_card():
@@ -199,7 +239,7 @@ def test_no_library_no_path_and_a_done_step_is_kept_with_its_day():
     assert P.look("ja", {}, EMPTY) is None
     P.note_moment("journey")
     way = P.look("ja", {}, SHOWS)
-    assert way.card == ("step", "watch", 2, 3)
+    assert way.card == ("step", "watch", EP2)
     assert set(guide.read_state()["done"]) == {"words"}
 
 
@@ -254,9 +294,12 @@ def test_junban_and_backfill_tick_by_junbans_own_answer_and_connects_runs():
     assert P._junban("zh", "backfill") and not P._junban("zh", "reorder")
 
 
-def test_step_one_waits_for_a_journey_on_disk_and_step_three_points_at_anki_miners_card():
+def test_step_one_waits_for_a_journey_on_disk_and_each_show_me_lights_where_its_press_also_lives():
     assert P.path(facts(journey_ready=False), {}).card is None                  # no journey yet: nothing to show
-    assert BY("cards").where == "settings:anki_miner"
+    # §0.2: Up Next's *N new words ↗* · Up Next's Done · the footer's ⛏ · 順 · Settings' Backfill · Your setup
+    assert [BY(i).where for i in ("words", "watch", "cards", "junban", "backfill", "yours")] == [
+        "hero:journey", "hero:done", "circle:miner", "circle:junban", "settings:backfill_patterns",
+        "settings:setup_mining"]
 
 
 def BY(step_id):
@@ -266,15 +309,16 @@ def BY(step_id):
 def test_one_later_card_a_run_after_not_now():
     done = facts(journey_opened=True, episodes_done=3, own_cards=True, video_waiting=True, book_in_current=True)
     state = {"first_ack": True, "not_now": ["audiobook"]}
-    assert P.path(done, state).card == ("step", "hato", 0, 0)
+    assert P.path(done, state).card == ("step", "hato", ())
     assert P.path(done, state, later=(P.READY,)).card is None
 
 
 def test_an_update_from_before_the_path_is_no_beginner():
     _ledger_made("ja")
     way = P.look("ja", {}, SHOWS)
-    assert way.first_done and (way.card is None or way.card[0] == "step" and way.card[3] == 0)   # never chapter 1
+    assert way.first_done and (way.card is None or way.card[0] == "step" and BY(way.card[1]).chapter == P.READY)
     assert guide.read_state()["first_ack"] is True
+    assert guide.read_state()["yours_card"] is False                            # past chapter 1: ④ in ✦ only
     guide.write_state({})
     way = P.look("ja", {}, View((Row("anime", 2),), Counts(0, 0), ()))           # ja's ledger has cards: done again
     assert way.first_done
@@ -282,7 +326,31 @@ def test_an_update_from_before_the_path_is_no_beginner():
 
 def test_an_update_with_episodes_but_no_cards_starts_at_step_three():
     way = P.look("zh", {}, View((Row("anime", 2),), Counts(0, 0), ()))
-    assert way.card == ("step", "cards", 3, 3)
+    assert way.card == ("step", "cards", EP3)
+    assert guide.read_state()["yours_card"] is True                             # still before its first cards: ④ too
+
+
+def test_an_upgraders_ticks_and_answers_are_unchanged_by_the_stages():
+    # a guide.json written before the stages: every key kept as it was, ticks never undone; ④'s rule decided once
+    old = {"version": 1, "path_started": "2026-11-13", "done": {"words": "2026-11-13", "watch": "2026-11-13",
+                                                                 "cards": "2026-11-14", "hato": "2026-11-15"},
+           "first_ack": True, "not_now": ["piyo"], "own_cards": False, "moments": {"journey": "2026-11-13"},
+           "useful_seen": ["hato"]}
+    guide.write_state(dict(old))
+    way = P.look("ja", {}, SHOWS)
+    state = guide.read_state()
+    for key, value in old.items():
+        assert state[key] == value, key
+    assert state["yours_card"] is False and way.first_done
+    assert {st.step.id for st in way.steps if st.done} >= {"words", "watch", "cards", "hato"}
+    P.look("ja", {}, SHOWS)
+    assert guide.read_state() == state                                          # a second look writes nothing new
+
+
+def test_a_test_run_never_looks_for_the_developers_own_anki_miner(monkeypatch):
+    monkeypatch.delenv("ANKI_MINER_HOME", raising=False)
+    assert not P._miner_found({})                                               # (under SURASURA_TEST_ROOT: never ~)
+    assert P.facts("ja", {}, SHOWS, {"done": {"cards": "2026-11-14"}}).miner_found   # ticked: never looked for
 
 
 def test_a_malformed_pairing_never_hides_hatos_and_youtube_isnt_hato():
@@ -345,7 +413,7 @@ def test_cards_made_with_anki_miner_before_the_guide_count_as_done(tmp_path, mon
     _mining_session(home, "ja", 8)
     assert P.facts("ja", {}, SHOWS, {}).cards_made and P.facts("zh", {}, SHOWS, {}).cards_made
     way = P.look("ja", {}, View((Row("anime", 0),), Counts(0, 0), ()))
-    assert way.first_done and way.card != ("step", "words", 1, 3)               # no beginner's step 1
+    assert way.first_done and way.card != ("step", "words", EP2)               # no beginner's step 1
 
 
 def test_an_old_anki_miner_stats_db_without_a_language_column_counts_for_japanese(tmp_path, monkeypatch):
@@ -386,22 +454,25 @@ def test_a_later_step_done_before_it_applies_now_counts_by_its_record():
     assert P.newly_useful(P.statuses(f, {}), {}) == []                          # nothing to light the ✦ for
 
 
-def test_the_panels_lists_keep_past_steps_and_say_not_for_now_for_steps_that_cant_apply():
+def ids(sts):
+    return [st.step.id for st in sts]
+
+
+def test_the_panels_one_list_is_now_then_later_then_done():
     f = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, lined_up=True)
-    first, ready, later = P.listed(P.statuses(f, {}))
-    assert [st.step.id for st in first] == ["words", "watch", "cards"] and all(st.done for st in first)
-    assert [st.step.id for st in ready] == ["audiobook", "hato"]                # done by its record · useful now
-    assert [st.step.id for st in later] == ["junban", "backfill", "piyo"]       # can't apply yet: no Anki, 1 episode
-    assert not any(st.useful or st.done for st in later)
-    _first, ready, later = P.listed(P.statuses(f._replace(junban=False), {}))   # 順 absent or off: never offered
-    assert not {"junban", "backfill"} & {st.step.id for st in ready + later}
+    stage, now, later, done = P.listed(P.statuses(f, {}))
+    assert stage == P.AUTOMATE
+    assert ids(now) == ["cards", "junban", "backfill", "hato"]                  # ③'s steps, then a useful later step
+    assert ids(later) == ["yours", "piyo"]                                      # ④'s, and one that can't apply yet
+    assert ids(done) == ["words", "watch", "audiobook"]                         # ②'s, and a line-up done before
+    _stage, now, later, done = P.listed(P.statuses(f._replace(junban=False), {}))   # 順 absent or off: never listed
+    assert not {"junban", "backfill"} & set(ids(now + later + done))
 
 
-def test_every_later_step_says_in_one_short_line_when_it_applies():
-    for step in P.STEPS:
-        if step.chapter == P.READY:
-            line = strings.PATH_WHEN[step.id]
-            assert line and "\n" not in line and len(line) <= 60, step.id
+def test_every_step_says_in_one_short_line_when_it_applies():
+    for step in P.STEPS:                        # (the panel lists a later stage's steps before they apply, too)
+        line = strings.PATH_WHEN[step.id]
+        assert line and "\n" not in line and len(line) <= 60, step.id
 
 
 def test_manga_and_plain_text_are_not_books_an_audiobook_lines_up_with():

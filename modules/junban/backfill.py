@@ -1124,7 +1124,8 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
     settings = dict(settings, junban_backfill_cards="new", junban_backfill_replace=False)
     # Kantan-PF: the card's furigana and pitch whatever the ticks say, and in any deck (MAKING)
     making = dict(settings, junban_backfill_fills=list(MAKING))
-    settings = dict(settings, junban_backfill_fills=_fills(settings) + list(MAKING))
+    ticked = _fills(settings)
+    settings = dict(settings, junban_backfill_fills=ticked + list(MAKING))
     skipped = Counter()
     try:
         scope = gather_notes(url, settings, note_ids)
@@ -1155,7 +1156,8 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
         for note_id, changes in source_edits(scope, text, note_type, field).items():
             edits.setdefault(note_id, {}).update(changes)
         for row in planned["rows"]:
-            if row[3] not in ("fill", "replace"):
+            # an always-fill you didn't tick says nothing of what it skipped (a note type without the field)
+            if row[3] not in ("fill", "replace") and (row[5] in ticked or row[5] not in MAKING):
                 skipped[reason(row[3])] += 1
     except AnkiError as e:
         return _named_report(False, "Nothing was filled.", problems=[str(e)],

@@ -21,12 +21,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # test has to pass the flag itself. Such a child would write to its windowless console, so it gets this process's own
 # stdin, stdout and stderr unless the call names its own. A parent IN a console (a terminal) changes nothing: its
 # children share that console, as they always did.
+def _has_console():
+    """Has this process a console (a terminal)? Always, off Windows: there no child opens a window of its own."""
+    if os.name != "nt":
+        return True
+    import ctypes
+    return bool(ctypes.windll.kernel32.GetConsoleWindow())
+
+
 def _quiet(kwargs):
     """`kwargs` for a child, without a console window of its own when this process has none (`_run`, `_popen`)."""
-    if os.name != "nt":
-        return kwargs
-    import ctypes
-    if ctypes.windll.kernel32.GetConsoleWindow():
+    if _has_console():
         return kwargs
     kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     for name, stream in (("stdin", sys.stdin), ("stdout", sys.stdout), ("stderr", sys.stderr)):

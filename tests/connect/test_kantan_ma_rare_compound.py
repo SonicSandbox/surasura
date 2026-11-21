@@ -165,3 +165,18 @@ def test_a_part_that_is_a_persons_name_is_still_a_name():
     ((_sentence, _word, node),) = [t for t in cues._read(tagger, "田中", "ja", None)]
     assert pick._is_name(node), "the test's name must be one, or this proves nothing"
     assert pick._is_name(pick._Part(node.surface, node.feature))
+
+
+@pytest.mark.parametrize("skip_single, offered", [(True, {"出版社", "出版"}), (False, {"出版社", "出版", "社"})])
+def test_a_one_character_part_the_list_never_offers_is_never_credited(tmp_path, skip_single, offered):
+    # why: Generate gives a rare compound's use to a part only where the list can offer it (`_never`: 社 alone, with
+    # "List one-kanji words only when they're dictionary words" on); every new word mode sends nothing more than that
+    path = tmp_path / "episode.ja.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:03,000\n姉は出版社に勤めている。\n", encoding="utf-8")
+    read = cues.read(str(path), "ja")
+    tokens = cues.tokens(read, "ja")
+    new = {("出版社", "シュッパンシャ"), ("出版", "シュッパン"), ("社", "シャ")}
+    known = lambda key: key not in new                                          # noqa: E731
+    view = analyzer.LearningView({("出版社", "シュッパンシャ"): 1}, 5, known=known)
+    out = pick.pick(read, tokens, "ja", known, mode="unknown", view=view, skip_single=skip_single)
+    assert {w["word"] for w in out["words"]} == offered

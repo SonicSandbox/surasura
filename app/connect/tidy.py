@@ -7,7 +7,7 @@ quickly evaluated"; ROLES.md: Tidy keeps Anki uncluttered and never deletes with
   pass **1.5 × the cap** (`THRESHOLD`); and on your press (*Tidy now*, Settings), whenever more than the cap wait. A
   quick check: the count Connect already read and the ledger, no Anki call (`choose`). No cap (0): never.
 - **What goes:** only **Connect's own cards you never studied** past the window, the lowest in the study order first
-  (off your list and set aside first, then a finished show's), until no more than the cap wait. Never yours (no
+  (off your list and set aside first, then a finished show's), as many as wait past the cap (yours past it stay). Never yours (no
   `surasura::connect::` tag, or not in Connect's made words), never a pinned show's or an episode you asked for,
   never a card studied, suspended by you, buried, flagged, in a filtered deck or changed after it was made — each
   read again under Anki's write lock, as *Undo this batch* reads them (`undo._why_kept`).
@@ -44,6 +44,7 @@ THRESHOLD = 1.5                 # Sonic 2026-11-21: Tidy goes by itself past 1.5
 CONNECT_TAG = "surasura::connect::"
 TEMP_DECK = "Surasura Tidy {id}"            # a top-level deck of its own: no parent deck made, deleted once empty
 VERB = "Connect's tidy"
+CHUNK = 250                                 # notes read again under the lock at a time; card ids per search
 AUTO, NOW = "auto", "now"                   # why a tidy ran: by itself, or your press
 FILTERED = "it's in a filtered deck"
 
@@ -59,6 +60,7 @@ class Refused(Exception):
 
 
 NOTHING = "Nothing to tidy: no more cards wait than your limit."
+ALL_KEPT = "the cards past your limit are yours to keep: studied, changed or set aside by you."
 NOT_UNDOABLE = "That tidy can't be undone now."
 NOT_SAVED = "Anki didn't save a copy of the cards, so nothing was deleted."
 
@@ -113,25 +115,40 @@ def over(total, cap, now=False):
     return total > cap if now else total > THRESHOLD * cap
 
 
-def choose(cards, cap, now=False):
-    """Which of `cards` (every card that waits: the window, its overflow, Connect's off the list and set aside) Tidy
-    takes -> [Card], lowest first; [] when the pile isn't past the line (`over`). The window is the first `cap` in
-    the study order (a tie: kept before a card set aside, before a finished show's, before an older one); of the rest,
-    Connect's own (`mine`) go, the lowest first, until no more than the cap wait — yours and a pinned show's never."""
+def candidates(cards, cap, now=False):
+    """Tidy's candidates among `cards` (every card that waits: the window, its overflow, Connect's off the list and set
+    aside) -> ([Card], how many should go): Connect's own (`mine`) past the window, the lowest first, and how many are
+    past the cap; ([], 0) when the pile isn't past the line (`over`). The window is the first `cap` in the study order
+    (a tie: kept before a card set aside, before a finished show's, before an older one) — yours and a pinned show's
+    are never candidates. `run` takes the first `need` of them that may go (a candidate you studied or changed stays,
+    and the next one is read instead)."""
     cards = list(cards)
     if not over(len(cards), cap, now):
-        return []
+        return [], 0
     ranked = sorted(cards, key=lambda c: (c.place, c.shelved, c.finished, -int(c.note)))
-    overflow = ranked[int(cap):]
-    need = len(cards) - int(cap)
-    return [c for c in reversed(overflow) if c.mine][:need]
+    return [c for c in reversed(ranked[int(cap):]) if c.mine], len(cards) - int(cap)
+
+
+def choose(cards, cap, now=False):
+    """The candidates Tidy would take if every one may go -> [Card], lowest first (`candidates`)."""
+    out, need = candidates(cards, cap, now)
+    return out[:need]
 
 
 # --------------------------------------------------------------------------- #
 # Anki
 # --------------------------------------------------------------------------- #
 class AnkiConnectTidy(undo.AnkiConnectUndo):
-    """Tidy's Anki: AnkiConnect, loopback (undo's reads and deletes, plus decks, packages and media bytes)."""
+    """Tidy's Anki: AnkiConnect, loopback (undo's reads and deletes, plus decks, packages and media bytes). `wait`: how
+    long the write lock is waited for (the window's press: 10 s; Connect's own look: 0, never holding mining)."""
+
+    def __init__(self, url, wait=10.0):
+        super().__init__(url)
+        self.wait = wait
+
+    def writer(self, verb):
+        from app import anki_connect
+        return anki_connect.writer(verb, wait=self.wait)
 
     def find_cards(self, query):
         from app import anki_connect
@@ -189,12 +206,12 @@ def check(anki, ledger, note_ids):
     cards = {int(c["cardId"]): c for c in (anki.cards(card_ids) if card_ids else []) if isinstance(c, dict)
              and c.get("cardId")}
     filtered = set()
-    if card_ids:
-        found = getattr(anki, "find_cards", None)
-        filtered = set(found("deck:filtered cid:" + ",".join(map(str, card_ids))) or ()) if found else set()
+    found = getattr(anki, "find_cards", None)
+    for at in range(0, len(card_ids), CHUNK) if found else ():
+        filtered |= set(found("deck:filtered cid:" + ",".join(map(str, card_ids[at:at + CHUNK]))) or ())
     shelf = undo._shelf_rows(ledger)
     go, kept = [], []
-    for note_id in sorted(infos):
+    for note_id in [int(n) for n in dict.fromkeys(note_ids) if int(n) in infos]:     # in the order asked: lowest first
         info = infos[note_id]
         tag = _connect_tag(info)
         why = undo.NOT_ITS_TAG if tag is None else undo._why_kept(info, cards, tag, _done_at(ledger, note_id) or 0,
@@ -253,20 +270,32 @@ def _folder(ledger):
 # --------------------------------------------------------------------------- #
 # Tidy
 # --------------------------------------------------------------------------- #
-def run(anki, ledger, language, note_ids, why=AUTO, open_store=None):
-    """Tidy `note_ids` (what `choose` took): under Anki's write lock, read again (`check`), recorded in the ledger
-    (with the library's made-words rows of those notes) before Anki is written, backed up (`_backup`: refused →
-    nothing deleted), deleted, then finished (`finish`: the words freed) -> {"id", "deleted", "kept", "freed",
-    "pending"}. Raises Reviewing, Refused (nothing to tidy; `NOT_SAVED`), the lock's Busy, AnkiConnect's errors."""
+def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None):
+    """Tidy `note_ids` (`candidates`, lowest first): under Anki's write lock, read again (`check`, a chunk at a time
+    until `limit` may go), recorded in the ledger (with the library's made-words rows of those notes) before Anki is
+    written, backed up (`_backup`: refused → nothing deleted), deleted, then finished (`finish`: the words freed) ->
+    {"id", "deleted", "kept", "freed", "pending"}. Raises Reviewing, Refused (none may go: `ALL_KEPT`; `NOT_SAVED`),
+    the lock's Busy, AnkiConnect's errors."""
     ensure(ledger)
-    for pending in pending_tidies(ledger, language):
-        finish(anki, ledger, pending, open_store)
+    ids = [int(n) for n in dict.fromkeys(note_ids)]
+    limit = len(ids) if limit is None else int(limit)
     with anki.writer(VERB):
         if anki.reviewing():
             raise Reviewing()
-        go, kept, infos, cards = check(anki, ledger, note_ids)
+        for pending in pending_tidies(ledger, language):      # a kill's half-way tidy first, under this lock
+            finish(anki, ledger, pending, open_store)
+        go, kept, infos, cards = [], [], {}, {}
+        for at in range(0, len(ids), CHUNK):
+            if len(go) >= limit:
+                break
+            g, k, i, c = check(anki, ledger, ids[at:at + CHUNK])
+            go += g
+            kept += k
+            infos.update(i)
+            cards.update(c)
+        go = go[:limit]
         if not go:
-            raise Refused(NOTHING)
+            raise Refused(ALL_KEPT)
         notes = {}
         for n in go:
             info = infos[n]
@@ -290,16 +319,29 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None):
         except Exception:
             _fail(anki, ledger, tidy_id, notes)
             raise
+        # read once more just before the delete: a card you answered or changed while Anki exported stays (its card
+        # back home); the package may hold it too, and Undo leaves a note Anki still has as it is
+        still, late, _i, _c = check(anki, ledger, go)
+        if late:
+            _cards_home(anki, tidy_id, {k: v for k, v in notes.items() if int(k) in {int(n) for n, _w in late}})
+            kept += late
+            with ledger.transaction():
+                ledger.conn.execute("UPDATE tidies SET kept = ? WHERE id = ?",
+                                    (json.dumps(kept, ensure_ascii=False), tidy_id))
+        if anki.reviewing():
+            _fail(anki, ledger, tidy_id, notes)
+            raise Reviewing()
         media = set()
-        for n in go:
+        for n in still:
             media |= set(notes[str(n)]["media"])
-        anki.delete_notes(go)
+        if still:
+            anki.delete_notes(still)
         _drop_temp(anki, tidy_id)
         for name in sorted(media):
             if not anki.users(name):
                 anki.delete_media(name)
-    row = tidy_row(ledger, tidy_id)
-    return dict(finish(anki, ledger, row, open_store), id=tidy_id)
+        row = tidy_row(ledger, tidy_id)
+        return dict(finish(anki, ledger, row, open_store, home=False), id=tidy_id)
 
 
 def _backup(anki, infos, cards, go, tidy_id, folder):
@@ -329,13 +371,16 @@ def _backup(anki, infos, cards, go, tidy_id, folder):
 
 
 def _fail(anki, ledger, tidy_id, notes):
-    """The backup didn't hold: every card back in its deck, nothing deleted, the tidy `failed`."""
+    """The backup didn't hold (or you started reviewing): every card back in its deck, nothing deleted, the tidy
+    `failed`. A move home that fails leaves it `writing`: the next look (`finish`) puts the cards home."""
     try:
         _cards_home(anki, tidy_id, notes)
-    finally:
-        with ledger.transaction():
-            ledger.conn.execute("UPDATE tidies SET state = ?, deleted = '[]', finished_at = ? WHERE id = ?",
-                                (FAILED, _now(), tidy_id))
+    except Exception:
+        log.exception("Connect's tidy: its cards couldn't go back to their decks now; the next look does it")
+        return
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE tidies SET state = ?, deleted = '[]', finished_at = ? WHERE id = ?",
+                            (FAILED, _now(), tidy_id))
 
 
 def _cards_home(anki, tidy_id, notes, id_map=None):
@@ -388,19 +433,15 @@ def _store_rows(open_store, note_ids):
     "receipts": {item: mined_at}, "lines": [[note_id, item, start_ms, end_ms, line_fp, made_at]]} ({} with no store)."""
     if open_store is None:
         return {}
-    try:
-        store = open_store()
-        if store is None:
-            return {}
-        from app.connect import library
-        with store:
-            return library.made_rows(store, note_ids)
-    except Exception:
-        log.exception("Connect's tidy: the library's record of the cards couldn't be read")
+    store = open_store()            # a store that can't be read now raises: nothing is written to Anki (no Undo
+    if store is None:               # could put the words back) — JSON mode has no made words at all
         return {}
+    from app.connect import library
+    with store:
+        return library.made_rows(store, note_ids)
 
 
-def finish(anki, ledger, row, open_store=None):
+def finish(anki, ledger, row, open_store=None, home=True):
     """A tidy recorded before Anki was written, finished: which notes are gone now (Anki read), any card left in its
     own deck back home, those words freed in the store (`library.unmake`: Surasura's delete), the shelf's rows
     closed, the tidy `done` -> {"deleted", "kept", "freed", "pending"} (`pending`: the store couldn't be written just
@@ -408,7 +449,7 @@ def finish(anki, ledger, row, open_store=None):
     planned = [int(n) for n in json.loads(row["notes"])]
     notes = json.loads(row["notes"])
     still = {int(n["noteId"]) for n in (anki.notes(planned) if planned else []) if isinstance(n, dict) and n.get("noteId")}
-    if still:
+    if home:                        # a kill's tidy: cards left in its own deck go home, the deck goes once empty
         _cards_home(anki, row["id"], {k: v for k, v in notes.items() if int(k) in still})
     gone = [n for n in planned if n not in still]
     made = json.loads(row["made"] or "{}")
@@ -420,7 +461,7 @@ def finish(anki, ledger, row, open_store=None):
                 by_item[item][0].add(int(n))
                 by_item[item][1].add(word)
     freed, stored = [], True
-    if open_store is not None and by_item:
+    if open_store is not None and gone:
         stored = False
         try:
             store = open_store()
@@ -472,15 +513,22 @@ def pending_tidies(ledger, language):
 
 
 def finish_pending(anki, ledger, language, open_store=None):
-    """Every tidy and Undo a kill left half-way, finished (a Connect run's first look) -> how many."""
+    """Every tidy and Undo a kill left half-way, finished (a Connect run's first look), holding Anki's write lock ->
+    how many. While you review: none (Reviewing; the next look)."""
+    ensure(ledger)
     rows = pending_tidies(ledger, language)
-    for row in rows:
-        finish(anki, ledger, row, open_store)
     cur = ledger.conn.execute("SELECT * FROM tidies WHERE language = ? AND state = ? ORDER BY id", (language, RESTORING))
     names = [d[0] for d in cur.description]
     restoring = [dict(zip(names, r)) for r in cur.fetchall()]
-    for row in restoring:
-        _restored(anki, ledger, row, open_store)
+    if not rows and not restoring:
+        return 0
+    with anki.writer(VERB):
+        if anki.reviewing():
+            raise Reviewing()
+        for row in rows:
+            finish(anki, ledger, row, open_store)
+        for row in restoring:
+            _restored(anki, ledger, row, open_store)
     return len(rows) + len(restoring)
 
 
@@ -504,21 +552,25 @@ def restore(anki, ledger, tidy_id, open_store=None, language=None):
         with ledger.transaction():
             ledger.conn.execute("UPDATE tidies SET state = ? WHERE id = ?", (RESTORING, row["id"]))
         try:
-            record = json.load(open(os.path.join(row["folder"], "notes.json"), encoding="utf-8"))
+            with open(os.path.join(row["folder"], "notes.json"), encoding="utf-8") as f:
+                record = json.load(f)
         except (OSError, ValueError):
             record = {"media": {}}
-        for name, sha in sorted((record.get("media") or {}).items()):
-            if not sha or anki.media_bytes(name) is not None:
-                continue
-            path = os.path.join(row["folder"], "media", os.path.basename(name))
-            try:
-                with open(path, "rb") as f:
-                    data = f.read()
-            except OSError:
-                continue
-            if _sha1(data) == sha:
-                anki.store_media(name, data)
+        lost = []                           # files the backup can't give back as they were (said in the answer)
         try:
+            for name, sha in sorted((record.get("media") or {}).items()):
+                if not sha or anki.media_bytes(name) is not None:
+                    continue
+                try:
+                    with open(os.path.join(row["folder"], "media", os.path.basename(name)), "rb") as f:
+                        data = f.read()
+                except OSError:
+                    lost.append(name)
+                    continue
+                if _sha1(data) != sha:
+                    lost.append(name)
+                    continue
+                anki.store_media(name, data)
             imported = anki.import_package(package)
         except Exception:
             _not_back(ledger, row["id"])
@@ -527,7 +579,7 @@ def restore(anki, ledger, tidy_id, open_store=None, language=None):
             _not_back(ledger, row["id"])
             raise Refused(NOT_UNDOABLE)
         row["state"] = RESTORING
-        return _restored(anki, ledger, row, open_store)
+        return dict(_restored(anki, ledger, row, open_store), media_missing=lost)
 
 
 def _not_back(ledger, tidy_id):
@@ -545,16 +597,18 @@ def _match(anki, row, notes):
     left = [n for n in deleted if n not in id_map]
     if left:
         found = anki.find_notes(f'"deck:{TEMP_DECK.format(id=row["id"])}"')
-        candidates = [n for n in anki.notes(sorted(set(found))) if isinstance(n, dict) and n.get("noteId")
-                      and int(n["noteId"]) not in id_map.values()]
+        taken = set(id_map.values())
+        by_content = {}                     # (note type, fields) -> the notes in the tidy's own deck holding them
+        for info in anki.notes(sorted(set(found))):
+            if isinstance(info, dict) and info.get("noteId") and int(info["noteId"]) not in taken:
+                fields = {k: (v.get("value") if isinstance(v, dict) else v) for k, v in (info.get("fields") or {}).items()}
+                key = (info.get("modelName"), json.dumps(fields, sort_keys=True, ensure_ascii=False))
+                by_content.setdefault(key, []).append(int(info["noteId"]))
         for old in left:
             rec = notes.get(str(old)) or {}
-            for info in candidates:
-                fields = {k: (v.get("value") if isinstance(v, dict) else v) for k, v in (info.get("fields") or {}).items()}
-                if info.get("modelName") == rec.get("model") and fields == rec.get("fields"):
-                    id_map[old] = int(info["noteId"])
-                    candidates.remove(info)
-                    break
+            key = (rec.get("model"), json.dumps(rec.get("fields") or {}, sort_keys=True, ensure_ascii=False))
+            if by_content.get(key):
+                id_map[old] = by_content[key].pop(0)
     return id_map
 
 

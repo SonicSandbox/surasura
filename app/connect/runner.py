@@ -3505,27 +3505,30 @@ class Steps:
         if now or lang not in getattr(self, "_waiting_seen", {}):
             self.waiting_count(lang)
         notes, made, pinned, counted = self._waiting_seen[lang]
-        tidy.ensure(ledger)
         aside = set()
         if ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shelf'").fetchone():
             aside = {int(n) for (n,) in ledger.conn.execute(
                 "SELECT DISTINCT note_id FROM shelf WHERE language = ? AND back_at IS NULL", (lang,)) if int(n) in made}
+        pile = set(counted) | {n for n in notes if n in made} | aside
+        if not tidy.over(len(pile), cap, now):
+            return None                     # the quick look: what the count read and the ledger, nothing more (S19)
         asked = {j["item_id"] for j in ledger.jobs(lang) if j.get("asked_at") and (
             j["state"] not in ENDED or (j.get("updated_at") or "") >= self._began)}
         with self._open(lang) as store:
             finished = shelf.finished_items(store, made)
         place = self._tidy_place(lang)
         cards = []
-        for n in set(counted) | {n for n in notes if n in made} | aside:
+        for n in pile:
             item, word = made.get(n, (None, None))
             mine = n in made and item not in pinned and item not in asked
             cards.append(tidy.Card(n, word, item, place(word) if mine else -1, mine=mine, shelved=n in aside,
                                    finished=item in finished))
-        chosen = tidy.choose(cards, cap, now=now)
+        chosen, need = tidy.candidates(cards, cap, now=now)
         if not chosen:
             return None
-        done = tidy.run(tidy.AnkiConnectTidy(self.url), ledger, lang, [c.note for c in chosen],
-                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang))
+        done = tidy.run(tidy.AnkiConnectTidy(self.url, wait=0.0 if not now else 10.0), ledger, lang,
+                        [c.note for c in chosen],
+                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need)
         if done["deleted"]:
             self._say(lang, f"{len(done['deleted'])} waiting cards made for you were tidied away (copy kept: tidy "
                             f"{done['id']}).")
@@ -3550,7 +3553,8 @@ class Steps:
         if not ledger.conn.execute("SELECT 1 FROM tidies WHERE language = ? AND state IN (?, ?) LIMIT 1",
                                    (lang, tidy.WRITING, tidy.RESTORING)).fetchone():
             return 0
-        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url), ledger, lang, lambda: library.open_store(lang))
+        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url, wait=0.0), ledger, lang,
+                                   lambda: library.open_store(lang))
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each

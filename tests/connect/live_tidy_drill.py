@@ -8,7 +8,7 @@ under `with-lock.sh anki`, Anki open — the drill loads DevTest and puts the pr
 - One card studied (`answerCards`): Tidy keeps it (*you've studied it*).
 - `tidy.run` (holding `anki-writer`): the other three go — the package Anki exported holds exactly them (its note ids
   read back), notes.json and the clip's bytes in the backup, the clip gone from Anki's media, the tidy's own deck gone.
-- `tidy.restore`: the package imported, the three notes back — the drill reports whether Anki kept their ids — with
+- `tidy.restore`: the package imported (and once more: no second copy), the three notes back — the drill reports whether Anki kept their ids — with
   the same fields and tags, every card in DevTest again, the clip back byte for byte, the tidy's own deck gone.
 
 `getActiveProfile == "DevTest"` before anything and before teardown. Teardown: every note with the drill's tag deleted
@@ -138,6 +138,12 @@ def main():
             out["clip_back_same"] = bool(got) and base64.b64decode(got) == clip_bytes
             out["temp_deck_after_undo"] = tidy.TEMP_DECK.format(id=done["id"]) in ask("deckNames")
             out["state_after_undo"] = tidy.tidy_row(ledger, done["id"])["state"]
+            # the review's S7: a second import of the same package (an Undo pressed again after a half-way one) adds
+            # no second copy of a note Anki has (the importer matches by its guid)
+            with anki_connect.writer("Kyou-SH2 tidy drill", wait=60):
+                anki.import_package(os.path.join(row["folder"], "cards.apkg"))
+                tidy._drop_temp(anki, done["id"])
+            out["notes_after_second_import"] = len(ask("findNotes", query=f"tag:{drill_tag}"))
         finally:
             ledger.close()
             if ask("getActiveProfile") == "DevTest":

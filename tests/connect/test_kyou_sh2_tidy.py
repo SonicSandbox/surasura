@@ -304,6 +304,25 @@ def test_only_connects_untouched_cards_go_studied_edited_suspended_flagged_filte
     assert anki.deleted == [], "every one of them is yours in some way"
 
 
+def test_a_lowest_card_you_studied_stays_and_the_next_one_goes_in_its_place(ledger):
+    # why: the lowest candidates being yours to keep (studied, edited) must never stop every tidy for good
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    anki.cards_[1060].update(reps=1, type=1, queue=1)          # the lowest: studied
+    done = tidy.run(anki, ledger, "ja", [106, 105, 104, 103], open_store=_opener("ja"), limit=2)
+    assert sorted(anki.deleted) == [104, 105] and done["kept"][0][0] == 106
+
+
+def test_the_quick_look_below_the_line_asks_nothing_more(ledger, monkeypatch):
+    # why: Steps.tidy runs before every job's pick — below the line it reads no list, no store, no job
+    steps = runner.Steps({"connect_enabled": True})
+    steps.cap = lambda _l: 10
+    _seen(steps, "ja", list(range(1, 16)), {n: (1, f"w{n}") for n in range(1, 16)})
+    steps._open = lambda _l: pytest.fail("no store read below the line")
+    steps._list_order = lambda _l: pytest.fail("no list read below the line")
+    assert steps.tidy("ja", ledger) is None
+
+
 def test_while_you_review_nothing_is_written(ledger):
     item, tag, done_at = _mined(ledger, "ja")
     anki = _anki("ja", tag, done_at)
@@ -469,8 +488,8 @@ def test_steps_tidy_takes_connects_lowest_and_never_yours_a_pinned_shows_or_an_a
     asked = ledger.queue(lang, 3, "user", None, store_id="s1")
     ledger.conn.execute("UPDATE jobs SET asked_at = '2026-11-21T00:00:00Z' WHERE id = ?", (asked,))
     took = []
-    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store: took.append(
-        (sorted(notes), why)) or {"deleted": notes, "id": 7})
+    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit: took.append(
+        (sorted(notes[:limit]), why)) or {"deleted": notes[:limit], "id": 7})
     steps.after_write = lambda _l: None
     assert steps.tidy(lang, ledger) == {"cards": 3, "id": 7}, "7 waiting > 1.5 × 2"
     assert took == [([101, 102, 105], tidy.AUTO)], "Connect's own, past the window, lowest first"
@@ -493,8 +512,8 @@ def test_steps_tidy_counts_the_old_shelf_and_connects_off_list_cards_without_ask
                                 (n * 10, n, made[n][1]))
     monkeypatch.setattr("app.anki_connect.invoke", lambda *a, **k: pytest.fail("no Anki call for the look"))
     took = []
-    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store: took.append(
-        sorted(notes)) or {"deleted": notes, "id": 1})
+    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit: took.append(
+        sorted(notes[:limit])) or {"deleted": notes[:limit], "id": 1})
     steps.after_write = lambda _l: None
     steps.tidy("ja", ledger)
     assert took == [[103, 104, 105]], "5 > 3: the set-aside and off-list ones go, the window stays"
@@ -516,3 +535,109 @@ def test_the_status_record_and_needs_you_say_it_with_undo_and_ok(ledger, tmp_pat
     tidy.restore(anki, ledger, done["id"], _opener("ja"))
     rec = status.read(["ja"], path=str(tmp_path / "connect" / "ledger.sqlite"))["languages"]["ja"]
     assert rec["tidied"] is None and needs._tidy_entry(rec, frozenset()) is None
+
+
+# --------------------------------------------------------------------------- #
+# The review's fixes (register rows F1–F8, S2)
+# --------------------------------------------------------------------------- #
+def test_a_backup_that_failed_and_cards_that_couldnt_go_home_are_put_home_by_the_next_look(ledger):
+    # F1: a failed tidy is never revisited, so one whose cards are still in its own deck stays `writing`
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    anki.export_ok = False
+    moves = anki.change_deck
+
+    def first_ok_then_fail(ids, deck):
+        if deck != "日本語::Mining":
+            return moves(ids, deck)
+        raise OSError("Anki stopped answering")
+    anki.change_deck = first_ok_then_fail
+    with pytest.raises(tidy.Refused):
+        tidy.run(anki, ledger, "ja", [104], open_store=_opener("ja"))
+    assert ledger.conn.execute("SELECT state FROM tidies").fetchone()[0] == tidy.WRITING
+    anki.change_deck = moves
+    tidy.finish_pending(anki, ledger, "ja", _opener("ja"))
+    assert anki.cards_[1040]["deckName"] == "日本語::Mining" and anki.deleted == []
+    assert ledger.conn.execute("SELECT state FROM tidies").fetchone()[0] == tidy.FAILED
+
+
+def test_a_library_that_cant_be_read_now_writes_nothing_to_anki(ledger):
+    # F2: without the made-words record no Undo could put the words back, and N15 would hold them: nothing goes
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+
+    def busy():
+        raise sqlite3.OperationalError("database is locked")
+    with pytest.raises(sqlite3.OperationalError):
+        tidy.run(anki, ledger, "ja", [104, 105], open_store=busy)
+    assert anki.deleted == [] and not any(e[0] == "change_deck" for e in anki.log)
+    assert ledger.conn.execute("SELECT COUNT(*) FROM tidies").fetchone()[0] == 0
+
+
+def test_a_kills_tidy_is_finished_under_the_lock_and_never_while_you_review(ledger):
+    # F3: finishing moves cards (Anki writes): the one writer, and never during your reviews
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    anki.export_package = lambda deck, path: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        tidy.run(anki, ledger, "ja", [104], open_store=_opener("ja"))
+    anki.busy = True
+    anki.log.clear()
+    with pytest.raises(tidy.Reviewing):
+        tidy.finish_pending(anki, ledger, "ja", _opener("ja"))
+    assert [e for e in anki.log if e[0] == "change_deck"] == []
+    anki.busy = False
+    assert tidy.finish_pending(anki, ledger, "ja", _opener("ja")) == 1
+    assert anki.log[0] == ("writer", tidy.VERB) and anki.cards_[1040]["deckName"] == "日本語::Mining"
+
+
+def test_a_card_you_answer_while_anki_exports_stays_and_goes_home(ledger):
+    # F6: the lock doesn't stop Anki's own reviewer: read once more just before the delete
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    export = anki.export_package
+
+    def answered_meanwhile(deck, path):
+        ok = export(deck, path)
+        anki.cards_[1050].update(reps=1, type=1, queue=1)
+        return ok
+    anki.export_package = answered_meanwhile
+    done = tidy.run(anki, ledger, "ja", [104, 105, 106], open_store=_opener("ja"))
+    assert sorted(done["deleted"]) == [104, 106] and 105 in anki.notes_
+    assert anki.cards_[1050]["deckName"] == "日本語::Mining"
+    assert [105, "you've studied it"] in done["kept"]
+    with c.store("ja") as s:
+        assert WORDS["ja"][4] in library.made_words_all(s), "its word stays made: its card is in Anki"
+
+
+def test_an_undo_whose_media_put_back_failed_stays_offered(ledger):
+    # S2: the card went away until the next run though nothing came back
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    done = tidy.run(anki, ledger, "ja", [104], open_store=_opener("ja"))
+    anki.store_media = lambda name, data: (_ for _ in ()).throw(OSError("Anki stopped answering"))
+    with pytest.raises(OSError):
+        tidy.restore(anki, ledger, done["id"], _opener("ja"))
+    assert tidy.tidy_row(ledger, done["id"])["state"] == tidy.DONE
+
+
+def test_an_undo_says_which_clips_the_backup_couldnt_give_back(ledger):
+    # F5: a damaged backup file is never put into Anki, and the answer names it
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    done = tidy.run(anki, ledger, "ja", [104], open_store=_opener("ja"))
+    row = tidy.tidy_row(ledger, done["id"])
+    with open(os.path.join(row["folder"], "media", f"sl-{3:016x}.mp3"), "wb") as f:
+        f.write(b"damaged")
+    back = tidy.restore(anki, ledger, done["id"], _opener("ja"))
+    assert back["media_missing"] == [f"sl-{3:016x}.mp3"] and f"sl-{3:016x}.mp3" not in anki.media
+
+
+def test_connects_own_look_never_waits_for_another_writer(monkeypatch):
+    # F8: the window's press waits up to 10 s for the lock; Connect's look takes it only if it's free
+    from app import anki_connect
+    asked = []
+    monkeypatch.setattr(anki_connect, "writer", lambda verb, wait=0.0: asked.append(wait) or contextlib.nullcontext())
+    tidy.AnkiConnectTidy("http://127.0.0.1:8765", wait=0.0).writer(tidy.VERB)
+    tidy.AnkiConnectTidy("http://127.0.0.1:8765").writer(tidy.VERB)
+    assert asked == [0.0, 10.0]

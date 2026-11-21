@@ -1,4 +1,4 @@
-"""tests/read_audit.py: the guard that no test reads a file the public repo ignores (Minato-TS, 2026-11-21).
+"""tests/read_audit.py: the guard that no test reads a file the public repo ignores (Minato-TS, 2026-11-20).
 
 Why: 2026-11-20, a lane's test leaned on this PC's lists/jmnedict.zip (git-ignored, so absent on GitHub's runner) and
 went red on GitHub only, one CI cycle later. run_tests.py --guards and --touched-callers load the audit
@@ -106,7 +106,7 @@ def test_only_the_files_the_public_repo_ignores_are_named(audited):
 def test_code_and_the_tolerated_paths_are_never_named_but_user_data_is(audited):
     """A whole-repo scan reads the private modules' sources where they are checked out (GitHub's runner has none, and
     the scan has less to read, never a red); the private docs' never-public list, the shard packer's times and the
-    local-only parsing suite are read only when there. A user's own lists are another matter: named (2026-11-21's
+    local-only parsing suite are read only when there. A user's own lists are another matter: named (2026-11-20's
     survey found a test reading the tree's User Files/ja lists)."""
     (audited / ".gitignore").write_text("modules/koe/\ndocs/agent instructions/\ndebug/\ntests/parsing/\nUser Files/\n",
                                         encoding="utf-8")

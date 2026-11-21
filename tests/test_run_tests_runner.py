@@ -714,7 +714,7 @@ def test_the_changed_tests_come_from_gits_diff_committed_and_not_yet(tmp_path):
     assert ids == ["tests/test_crlf.py::test_f", "tests/test_x.py::test_a", "tests/test_x.py::test_b"], (ids, notes)
 
 
-# --- --stress-changed: only the tests that wait on time repeat (Minato-TS, 2026-11-21) ------------------------------- #
+# --- --stress-changed: only the tests that wait on time repeat (Minato-TS, 2026-11-20) ------------------------------- #
 # Mado-EZC's stress runs took 12m49s and 56m05s, ~70 % of their tests with no wait on the clock or a thread: those run
 # once now, the rest 20 times. What the old gate caught must still be caught: a test that waits (a sleep, a Qt wait,
 # a thread, a deadline), whether its own lines wait or a helper's, a fixture's of its conftest, or one imported from
@@ -834,7 +834,7 @@ def test_stress_changed_list_prints_the_counts_and_runs_nothing(tmp_path, monkey
     assert "x20  tests/test_mix.py::test_a_sleep_of_its_own" in capsys.readouterr().out
 
 
-# --- --touched-callers: a lane's touched run is the callers of what it changed (Minato-TS, 2026-11-21) -------------- #
+# --- --touched-callers: a lane's touched run is the callers of what it changed (Minato-TS, 2026-11-20) -------------- #
 # Kura-SO's touched run took 25m35s over all 29 test_library_store_*.py; 6 reached the change. The picks are the test
 # files that name a changed definition (the branch's own test files whole), a changed conftest's folder, a changed
 # helper's importers, a changed data file's readers, and the area's guards.
@@ -922,7 +922,7 @@ def test_touched_callers_runs_each_suite_under_the_read_audit(tmp_path, monkeypa
     assert all(r[0][-2:] == ["-p", "tests.read_audit"] and r[1]["SURASURA_READ_AUDIT"] == "ignored" for r in runs)
 
 
-# --- --guards: the whole-repo guard tests before every push (Minato-TS, 2026-11-21) --------------------------------- #
+# --- --guards: the whole-repo guard tests before every push (Minato-TS, 2026-11-20) --------------------------------- #
 def test_every_guard_is_a_test_file_of_this_checkout_and_the_set_is_not_empty():
     """GUARDS names files GitHub runs (the public checkout): a guard renamed or removed without its row would leave a
     window-wide scan out of every lane's pre-push run, silently."""
@@ -964,7 +964,7 @@ def test_list_prints_the_picks_and_starts_nothing(monkeypatch, capsys, argv):
     assert exit_info.value.code == 0
 
 
-# (The 2026-11-21 review's misses, each one a wait or a caller the first cut didn't see.)
+# (The 2026-11-20 review's misses, each one a wait or a caller the first cut didn't see.)
 def test_waits_reached_through_from_tests_import_a_platform_helper_a_join_and_a_bom_still_repeat(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "helpers.py").write_text("import time\n\n\ndef wait_flag():\n    time.sleep(0.01)\n",

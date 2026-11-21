@@ -1,9 +1,9 @@
-"""Which files of the repo a test reads (run_tests.py --guards; Minato-TS, 2026-11-21).
+"""Which files of the repo a test reads (run_tests.py --guards; Minato-TS, 2026-11-20).
 
 Loaded only by `-p tests.read_audit` (run_tests.py --guards sets it), never by conftest: a normal run never pays for it.
 An audit hook sees every file opened for reading while a test runs (setup, call, teardown) or its file is collected;
 importing code doesn't count (a data file opened during an import does). It sees this process only: a child process's
-reads, and SQLite's own opens, are not seen (known limits, 2026-11-21 review).
+reads, and SQLite's own opens, are not seen (known limits, 2026-11-20 review).
 
     SURASURA_READ_AUDIT=ignored          the run fails, naming each test and file, when a test read a file of the repo
                                          that the public repo ignores (git check-ignore): GitHub's runner has no such
@@ -102,7 +102,7 @@ def _git(*args, stdin=None):
 
 
 # What a test may read although the public repo ignores it, because it reads it only when it is there (the survey of
-# 2026-11-21 found these, each tolerated on GitHub's runner): code is never this guard's (a whole-repo scan reads the
+# 2026-11-20 found these, each tolerated on GitHub's runner): code is never this guard's (a whole-repo scan reads the
 # private modules' sources where they are checked out), nor these. A new entry says why the test passes without it.
 TOLERATED = (
     ("docs/agent instructions/", "the leak checks read the private docs' never-public list when it is there"),

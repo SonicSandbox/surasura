@@ -886,6 +886,9 @@ def test_automation_flipped_in_settings_moves_the_open_windows_suspended_scope(m
     main.services.settings.set({"logic.automation": True})
     assert wait_until(lambda: w.suspended is False), "the signal reads them now: the sync counts none"
     assert w._snapshot()["suspended"] == anki_sync.counted_suspended(main.services.settings.get())
+    main.services.settings.set({"logic.automation": False})              # and back: the sync counts them again
+    assert wait_until(lambda: w.suspended is not False and "is:suspended" in w.suspended)
+    assert w._unsaved_pick is False                                       # a returning learner's decks: nothing new
 
 
 def test_a_settings_change_to_the_scope_never_saves_the_first_opens_deck_pick(main, anki):
@@ -893,8 +896,10 @@ def test_a_settings_change_to_the_scope_never_saves_the_first_opens_deck_pick(ma
     open preselected stay unsaved until the learner acts in the window."""
     w = _open(main)
     assert w._unsaved_pick and w.decks == ["TheBank"]
+    asked = w._probe_seq
     main.services.settings.set({"known_from_anki": ["suspended"], "known_from_anki_chosen": True})     # Settings' pick
     assert wait_until(lambda: w.suspended is not False and "tag:marked" not in w.suspended)
+    assert wait_until(lambda: w._scope_asked > asked and w._scope_press is None), "Anki read for the new scope"
     assert (_saved(main).get("anki_sync_decks") or {}).get("ja") is None, "the window's pick was never the learner's"
     assert w._unsaved_pick
     w.btn_sync.click()                                    # the learner's first action here: now it is saved

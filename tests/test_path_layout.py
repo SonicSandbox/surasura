@@ -545,7 +545,7 @@ def test_setup_no_longer_makes_a_graduated_list(language):
     path_utils.ensure_data_setup(language)
     names = os.listdir(_user_files(language))
     assert "GraduatedList.txt" not in names
-    assert {"Blacklist.txt", "IgnoreList.txt"} <= set(names)
+    assert "Blacklist.txt" not in names and "IgnoreList.txt" in names       # Kotoba-WS2: one Ignore list
 
 
 def test_setup_leaves_an_existing_graduated_list_alone(ja_resources_dir):
@@ -598,4 +598,4 @@ def test_setup_copies_a_default_again_only_once_it_is_missing():
 def test_setup_without_a_defaults_folder_copies_nothing():
     assert not os.path.isdir(os.path.join(path_utils.get_base_path(), "defaults"))
     path_utils.ensure_data_setup("ja")
-    assert sorted(os.listdir(_user_files("ja"))) == ["Blacklist.txt", "IgnoreList.txt"]
+    assert sorted(os.listdir(_user_files("ja"))) == ["IgnoreList.txt"]

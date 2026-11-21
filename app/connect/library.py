@@ -113,11 +113,32 @@ def audiobook_files(store):
             for f in (r.get("audiobook") or {}).get("files") or () if isinstance(f, str) and f}
 
 
+def book_timing(epub):
+    """Kura-AB5 (11-20 report): the timed text beside the book `epub` (`audiobooks.book_timings`' rule: `<book>.srt` or
+    `<book>.ja.srt` beside it, no video of that name) — its path on this computer — or None (none there, the folder
+    unread). The paired audiobook's own timing when Hon found none (`audiobook_of_book`'s `book_timing`); read where
+    it is, never copied. Read only."""
+    from app import audiobooks
+    from app.connect import runner
+    if not isinstance(epub, str) or not epub:
+        return None
+    folder = os.path.dirname(os.path.abspath(epub))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    videos = [n for n in names if n.lower().endswith(runner.VIDEO_EXTENSIONS) and not runner.mac_copy(n)]
+    got = audiobooks.book_timings(sorted(n for n in names if n.lower().endswith(".srt")), [os.path.basename(epub)],
+                                  videos)
+    return os.path.join(folder, sorted(got)[0]) if got else None
+
+
 def audiobook_of_book(store, epub):
     """Michi-AB Stage B: the audiobook Hon paired with the book `epub` (its record's `book`, sure or answered, naming
     that EPUB) -> {item_id, key (the pair's answer key: the line-up's), files (in order), title (the book's, as the
     pairing named it), lineup (the store's mark: `none` / `kept`, or None), timing (Kura-AB3: its transcript's copy,
-    `rel` in the library's data folder, while Hon found it this book's — `audiobooks.TIMING` — else None), seconds
+    `rel` in the library's data folder, while Hon found it this book's — `audiobooks.TIMING` — else None), book_timing
+    (Kura-AB5: with no `timing`, the book's own `.srt` beside its EPUB, `book_timing` — its path, else None), seconds
     (its length, as its tags or frames said, or None)}; None when
     no audiobook reads it (or its record holds no file). The first such item when two do. One read of the records."""
     from app import audiobooks, library_store
@@ -139,7 +160,8 @@ def audiobook_of_book(store, epub):
         return {"item_id": item_id, "key": key if isinstance(key, str) and key else None, "files": files,
                 "title": book.get("title") or ab.get("title") or os.path.splitext(os.path.basename(epub))[0],
                 "lineup": mark.get("status") if mark.get("key") == key else None,
-                "timing": rel if isinstance(rel, str) and rel else None, "seconds": ab.get("seconds")}
+                "timing": rel if isinstance(rel, str) and rel else None, "seconds": ab.get("seconds"),
+                "book_timing": None if isinstance(rel, str) and rel else book_timing(epub)}
     return None
 
 
@@ -744,9 +766,9 @@ def unmake(store, item_id, note_ids, words=()):
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None, exact=False):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op. A place named exactly (`exact`: a program's
-    `place --position`, `--position 1` the very top; a placing rule's target — its *Top of Current* is the very top,
-    D-1, PROVISIONAL) or by an anchor is exactly that place; else (`place --to current` with no position) an episode
-    joins its show in episode order (`Store._into_show`, Kura-EO)."""
+    `place --position`, `--position 1` the very top) or by an anchor is exactly that place; else (`place --to current`
+    with no position) an episode joins its show in episode order (`Store._into_show`, Kura-EO). A placing rule's
+    target is the store's `place_by_rule` (Kura-SO)."""
     return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit,
                       in_order=not exact and before_id is None and after_id is None)
 

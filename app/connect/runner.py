@@ -4277,7 +4277,8 @@ class Steps:
 
     def _own_timing(self, lang, job, ab, look_only=False):
         """Kura-AB3 (Mattias's 3.0.2 report; PROVISIONAL): the paired audiobook `ab` (`library.audiobook_of_book`) whose
-        own timed subtitle Hon found this book's (`timing`: its copy in the library) — one audio file, an `.srt`, both
+        own timed subtitle Hon found this book's (`timing`: its copy in the library; Kura-AB5: else the book's own `.srt`
+        beside its EPUB, `book_timing`) — one audio file, an `.srt`, both
         on this computer, its last cue inside the audio's length — is the book's line-up as it is (`lineup.own`: no
         sync) -> {"lineup", "line": None, "item_id"}; else None (lined up as before). Its timing to that audio is
         checked or trusted, the one rule an audiobook's own subtitle has alone (`fit_check.fit`, review S1): heard in
@@ -4288,10 +4289,10 @@ class Steps:
         (*Add audio to these cards*' plan, `lined_up`): never a listen, never a stop, nothing written."""
         from app.connect import lineup
         from app.path_utils import get_data_path
-        rel = ab.get("timing")
-        if not rel or len(ab["files"]) != 1 or not rel.lower().endswith(".srt"):
+        rel, own = ab.get("timing"), ab.get("book_timing")      # Kura-AB5: else the book's own `.srt` beside its EPUB
+        if not (rel or own) or len(ab["files"]) != 1 or not (rel or own).lower().endswith(".srt"):
             return None
-        audio, srt = ab["files"][0], os.path.join(get_data_path(lang), *rel.split("/"))
+        audio, srt = ab["files"][0], os.path.join(get_data_path(lang), *rel.split("/")) if rel else own
         if not _on_disk(audio) or not os.path.isfile(srt):
             return None
         found = lineup.srt_cues(srt)

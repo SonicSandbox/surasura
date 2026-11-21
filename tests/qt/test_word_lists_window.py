@@ -1,4 +1,5 @@
-"""*Words to leave out* (W3.3 P10, n16: `app/qt/word_lists_window.py`) — the Ignore list and the Blacklist.
+"""*Your words* (W3.3 P10, n16: `app/qt/word_lists_window.py`) — the Ignore list and the words marked known (the
+Blacklist merged into the Ignore list, Kotoba-WS2).
 
 What a wrong answer would cost: the window's thread reading or writing a list (a freeze); ✕ taking off the wrong word,
 or more than one; a dropped chip added anyway, or a word already on the list added again; the other language's list
@@ -107,9 +108,9 @@ def _chips(w):
 # --- the window, its controls --------------------------------------------------------------------------------------- #
 def test_every_control_is_wired_tipped_and_named(main):
     w = _open(main)
-    assert w.windowTitle() == "Words to leave out — Surasura"
-    assert [b.text() for b in w.kind_buttons.values()] == ["Ignore list", "Blacklist", "Marked known"]
-    assert w.kind_buttons["ignore"].isChecked() and not w.kind_buttons["blacklist"].isChecked()
+    assert w.windowTitle() == "Your words — Surasura"
+    assert [b.text() for b in w.kind_buttons.values()] == ["Ignore", "Known"]      # Kotoba-WS2: Known · Ignore
+    assert w.kind_buttons["ignore"].isChecked() and not w.kind_buttons["known"].isChecked()
     for field in (w.search, w.add_field, w.text, w.list, w.chips, w.kinds):
         assert field.accessibleName()
     for tipped in (w.list, w.chips, w.add_field):
@@ -159,18 +160,14 @@ def test_the_search_shows_the_matching_words_and_says_how_many(main):
     assert len(_rows(w)) == 3 and w.list_paints == paints          # a search rebuilds nothing
 
 
-def test_the_blacklist_tab_shows_the_blacklist(main):
+def test_there_is_no_blacklist_tab_and_a_blacklist_not_merged_yet_is_never_shown_as_a_list(main):
+    # Kotoba-WS2: one Ignore list — the start merges a Blacklist.txt into it; until then the window shows none.
     _put("冒険\n", "ignore")
-    _put("# ja Blacklist\n毎日\n", "blacklist")
+    with open(os.path.join(os.path.dirname(word_lists.list_path("ignore", "ja")), "Blacklist.txt"), "wb") as f:
+        f.write("# ja Blacklist\n毎日\n".encode("utf-8"))
     w = _open(main)
-    w.kind_buttons["blacklist"].click()
-    assert wait_until(lambda: _rows(w) == ["毎日"])
-    assert w.kind == "blacklist" and not w.kind_buttons["ignore"].isChecked()
-    w.add_field.setText("準備")
-    w.add_typed()
-    assert wait_until(lambda: _rows(w) == ["毎日", "準備"])
-    assert _text(word_lists.list_path("blacklist", "ja")) == "# ja Blacklist\n毎日\n準備\n"
-    assert _text(word_lists.list_path("ignore", "ja")) == "冒険\n"  # the other list untouched
+    assert "blacklist" not in w.kind_buttons
+    assert wait_until(lambda: _rows(w) == ["冒険"])
 
 
 def test_reading_the_same_words_again_repaints_nothing(main):
@@ -297,12 +294,12 @@ def test_no_on_the_known_words_question_changes_nothing(main, calls, known_file)
 
 
 def test_a_switch_with_the_known_words_question_open_drops_it(main, calls, known_file):
-    # The question named a ja entry: once the window shows the Blacklist it is dropped, never answered.
+    # The question named a ja entry: once the window shows the Known tab it is dropped, never answered.
     w = _open(main)
     _click_mark(w, _known_row(w, "良い"))
     card = _card(w)
     yes = card.yes
-    w.show_kind("blacklist")
+    w.show_kind("known")
     assert _card(w) is None and w.question is None
     try:
         yes.click()

@@ -3978,7 +3978,8 @@ class MasterDashboardApp:
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now
         fields = list((s.get("anki_sync_fields") or {}).get(lang) or [])
-        suspended = bool(s.get("anki_sync_include_suspended", False))
+        from app import anki_sync as _known_sync
+        suspended = _known_sync.counted_suspended(s)            # Kotoba-WS2: Count as known in Anki's picks
 
         def work():
             result = None
@@ -4021,7 +4022,7 @@ class MasterDashboardApp:
                                      offer=seen["offer"], marked=seen["marked"], taken=seen["taken"],
                                      terms=seen["terms"])
         except Exception as e:
-            print(f"Known from Anki's window wasn't shown: {e}")
+            print(f"Count as known in Anki's window wasn't shown: {e}")
 
     def _maybe_backlog_sync(self):
         """Generate's own read of the Anki backlog (Junban_Backlog_Spec WP-B7): the new cards waiting

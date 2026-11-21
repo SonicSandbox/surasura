@@ -166,7 +166,7 @@ DOORS = {
     "migaku": ("Migaku", "Import from Migaku"),
     "jiten": ("Jiten", "Import from Jiten"),
     "apkg_known": (".apkg", "Import an Anki deck file"),
-    "word-lists": ("Ignore list · Blacklist", "Opens your Ignore list and Blacklist"),
+    "word-lists": ("Known · Ignore…", "Opens the words you know and the words you ignore"),
     "junban": ("Junban…", "Opens Junban’s window: choose the deck, preview the new order and why before anything "
                           "moves, undo the last reorder"),
     "put-back": ("Put Anki back…", "Puts Anki's new cards back the way they were before Surasura first changed them"),
@@ -209,25 +209,20 @@ ROWS = {
                            "generate automatically new known words"),
     "known_import": ("Import from", "Replaces your known words — a backup is kept",
                      "Import your known words from Migaku, Jiten or an Anki deck file", "import migaku jiten apkg"),
-    "words_to_leave_out": ("Words to leave out", "Never suggested: your Ignore list and Blacklist",
-                           "Opens your Ignore list and Blacklist", "ignore blacklist leave out never suggested"),
+    # Kotoba-WS2 (Sonic 2026-11-19, one word standard: Known · Ignore; the Blacklist merged into the Ignore list) — the
+    # old names stay search words (criteria 10)
+    "words_to_leave_out": ("Your words", "",
+                           "Opens the words you know and the words you ignore",
+                           "your words ignore ignored ignore list blacklist leave out never suggested known marked"),
     "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
                        "Off: half your cores, stays quick. On: all cores, faster.", "cores speed faster cpu"),
-    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — this one while Make cards for me is
-    # off (the sync's own answer), *Count as known in Anki* while it is on (A7S-1: the sync reads studied cards only —
-    # `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
-    "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
-                                    "Studied, then suspended: counts as known. New cards you suspend never count.",
-                                    "suspended known count as known in anki"),
     # Kantan-B3 (Sonic 2026-11-18): the default is Suspended + Marked — a plain suspend often means "a bad sentence,
     # I still want the word" (the ? line, ≤ 12 words: PROVISIONAL)
     "known_from_anki": ("Count as known in Anki",
                         "Default: Suspended + Marked. A plain suspend (a bad sentence) never counts",
-                        "Suspend and mark a card in Anki to say “I know this”: its word turns known at the next "
-                        "sync, and you can undo it. A card counts only when it is in every state you pick, so a "
-                        "card you only suspend (a bad sentence) never counts by default. Cards already suspended and "
-                        "marked are asked about once. New cards count too. None picked: off",
-                        "known from anki suspended marked flag count suspended cards as known"),
+                        "A card in every state you pick turns its word known.",     # Kotoba-WS2: ≤ 12 words (rule 8)
+                        "known from anki suspended marked flag count suspended cards as known include suspended "
+                        "studied then suspended"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -660,8 +655,8 @@ ROWS = {
 # *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
 KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
 KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
-# a9.1: the sync's *Count suspended cards as known* on, beside picks that aren't Suspended alone (`help_line`)
-KNOWN_SYNC_TOO = "Studied cards you suspended count too, from before: change a pick here to stop it"
+# Kotoba-WS2: a pick saved before holds red or green, which never count (the review loop's Ignore and Swap)
+KNOWN_RED_GREEN = "A red or green flag never counts as known: pick again"          # Kotoba-WS2 (PROVISIONAL)
 
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}

@@ -285,7 +285,7 @@ class AutoSync:
         self._last = now
         decks = list((settings.get("anki_sync_decks") or {}).get(language) or [])
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
-        suspended = bool(settings.get("anki_sync_include_suspended", False))
+        suspended = anki_sync.counted_suspended(settings)      # Kotoba-WS2: Count as known in Anki's picks
         o.registry.submit("anki-sync", SYNC_LABEL, automatic=not asked, on_quit="detach",
                           start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended),
                           cause=None if asked else (cause or causes.Cause(WHY_BACK, time.time(), "known")))

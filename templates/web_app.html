@@ -1699,7 +1699,7 @@
                 <b>Left</b> : Previous Word<br>
                 <b>Up / Down</b> : Toggle Sentences<br>
                 <b>v</b> : Play Context Audio<br>
-                <b>z</b> : Ignore Word<br>
+                <b>z</b> : Hide Word Here<br>
                 <b>w</b> : Mark File Complete<br>
                 <b>s</b> : Cycle Show Filter<br>
                 <b>/</b> : Search This Report
@@ -1854,7 +1854,7 @@
         }
 
         function clearIgnoredWords() {
-            if (confirm(`Are you sure you want to un-hide all ignored words for ${langSuffix}?`)) {
+            if (confirm(`Are you sure you want to un-hide all hidden words for ${langSuffix}?`)) {
                 ignoredWords.clear();
                 localStorage.removeItem(storageKey);
                 location.reload();
@@ -1928,8 +1928,8 @@
             if (!btnCopy) {
                 btnCopy = document.createElement('button');
                 btnCopy.id = 'btn-copy-ignore';
-                btnCopy.textContent = "Copy Ignored Words";
-                btnCopy.title = "Paste these into your ignored List";
+                btnCopy.textContent = "Copy Hidden Words";
+                btnCopy.title = "Paste these into Your words › Ignore in Surasura to ignore them everywhere";
                 btnCopy.onclick = copyIgnoredWords;
                 styleIgnoreButton(btnCopy);
                 container.appendChild(btnCopy);
@@ -3255,7 +3255,7 @@
                 `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>` +
                 `</button>`;
             footer.innerHTML = `<div></div><div class="actions">` + searchBtnHtml +
-                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Ignore</button></div>`;
+                `<button class="btn btn-ignore" title="Hide here: this page only (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Hide</button></div>`;
             el.appendChild(footer);
 
             // Sources (DOM Pruned)
@@ -3323,7 +3323,7 @@
 
                 // 3. Update Button State
                 const originalText = btnElement.textContent;
-                btnElement.textContent = "Ignored & Copied";
+                btnElement.textContent = "Hidden & Copied";
                 btnElement.classList.add('ignored');
                 btnElement.disabled = true;
 

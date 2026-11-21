@@ -754,19 +754,10 @@ class SortScreen(QWidget):
                                 lambda: self.finish("done"), self)
         self.btn_done.setProperty("kind", "primary")
         foot.addWidget(self.btn_done)
-        self.btn_tour = None                    # help cards (§6.6): setup's last page — Done, then the tour
-        if self.door == "setup":
-            self.btn_tour = _button(S.SORT_TOUR, S.SORT_TOUR_TIP, self.done_then_tour, self)
-            self.btn_tour.setProperty("kind", "link")
-        for b in self.findChildren(QPushButton):
-            b.installEventFilter(self)
+        for b in self.findChildren(QPushButton):            # (the tour's link retired: *Your path*'s stage ③ teaches
+            b.installEventFilter(self)                      # what runs by itself by doing it — Mado-EZP, HG-4)
         box.addSpacing(_px(12))
         box.addLayout(foot)
-        if self.btn_tour is not None:
-            under = QHBoxLayout()
-            under.addStretch(1)
-            under.addWidget(self.btn_tour)
-            box.addLayout(under)
 
     # --- room (Mado-P: nothing cut off at any window size) ------------------------------------------------------- #
     def resizeEvent(self, event):
@@ -1233,14 +1224,6 @@ class SortScreen(QWidget):
         else:
             self._flash(what)
             self.choose(what)
-
-    def done_then_tour(self):
-        """*See what Surasura does by itself* (help cards §6.6): Done, and the tour opens once the window is up — when
-        setup has ended (`ShellWindow.setup_held(False)`), never over the wizard's later pages."""
-        win = self.win
-        if win is not None and hasattr(win, "__dict__"):
-            win.__dict__["_tour_after_setup"] = True
-        self.finish("done")
 
     def finish(self, how="done"):
         win = self.win

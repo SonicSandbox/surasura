@@ -10,5 +10,7 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     if sys.path and os.path.abspath(sys.path[0] or ".") == here:
         sys.path.pop(0)                                   # the module's own folder never shadows a top-level import
+    from app import child_io
+    child_io.guard_std_streams()                          # a window that closed never makes its answer raise
     from modules.youtube_downloader import preview
     sys.exit(preview.child_main(sys.argv[1:]))

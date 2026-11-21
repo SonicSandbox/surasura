@@ -95,6 +95,7 @@ WRITER_JOIN_MARGIN = 1.0
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
 ANKI_LOOK_EVERY = 10.0                 # Kantan-B1 (B3): s between two looks at Anki while 順's deck to pick waits for it
+PATH_LABEL_ROWS = 64                  # Mado-EZP: the cards step's label names the first row to mine among these
 REFRESH_CAP_S = 120.0                 # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
 # W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
 # closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
@@ -2800,6 +2801,8 @@ class ShellWindow(QMainWindow):
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")
+        if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
+            self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:
@@ -2954,6 +2957,7 @@ class ShellWindow(QMainWindow):
         d.guide.clicked.connect(lambda _c=False: d.guide_panel.toggle())
         d.guide_panel.opened.connect(self._guide_opened)
         d.guide_panel.show_me.connect(self.guide_show_me)
+        d.guide_panel.act.connect(self.path_act)
         d.guide_panel.path_shown.connect(lambda: self._guide_answer(None))
         self.register_overlay(d.guide_panel)
         header_row.insertWidget(header_row.indexOf(d.help), d.guide)
@@ -2974,11 +2978,14 @@ class ShellWindow(QMainWindow):
             d.next_card = next_card_ui.NextCard(page)
             box = page.layout().itemAt(0).layout()
             box.insertWidget(box.indexOf(page.state_bar) + 1, d.next_card)
-            d.next_card.show_me.connect(self.guide_show_me)
+            d.next_card.act.connect(self.path_press)
+            d.next_card.show_me.connect(self.path_show_me)
             d.next_card.not_now.connect(self._path_not_now)
             d.next_card.own_cards.connect(lambda: self._guide_answer("own_cards"))
             d.next_card.made_ok.connect(lambda: self._guide_answer("first_ack"))
-            QWidget.setTabOrder(d.next_card.primary, d.next_card.secondary)
+            QWidget.setTabOrder(d.next_card.primary, d.next_card.primary2)
+            QWidget.setTabOrder(d.next_card.primary2, d.next_card.show_button)
+            QWidget.setTabOrder(d.next_card.show_button, d.next_card.secondary)
             QWidget.setTabOrder(d.next_card.secondary, d.next_card.later)
         # --- end the feature guide
         self._paint_level()
@@ -3041,8 +3048,6 @@ class ShellWindow(QMainWindow):
             guided = self.duties is not None and self.duties.guide_panel is not None
             bridge.run_in_worker(self.services.setup_ended,       # the path's look once setup has truly ended
                                  then=(lambda _r: self._guide_look(notes=False)) if guided else None)
-        if not up and self.__dict__.pop("_tour_after_setup", False):
-            QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
     def _session_said(self, line):
         from app.qt import windows
@@ -3134,6 +3139,7 @@ class ShellWindow(QMainWindow):
             self._guide_key = key
             if not first and self.duties is not None and self.duties.guide_panel is not None:
                 self._guide_soon.start()
+        self._path_repaint()                        # the card's press names Up Next's episode (S19: only on a change)
 
     def _guide_got(self, answer):
         asked, look, way, lines = answer
@@ -3147,6 +3153,7 @@ class ShellWindow(QMainWindow):
         else:
             d.guide_panel.set_look(look)
         d.guide_panel.set_path(way)
+        self._path_way = way
         d.guide.setVisible(d.guide_panel.has_news() or way is not None)
         d.guide.setToolTip(strings.GUIDE_TIP_PATH if way is not None else strings.GUIDE_TIP)
         news = look is not None and look.glow
@@ -3156,7 +3163,7 @@ class ShellWindow(QMainWindow):
             if card != d.next_card.card and card is not None and self.hints.blocked(toast_ok=True):
                 self._guide_soon.start()                    # never mid-drag or under a help card: the rows would jump
             else:                                           # (Kantan-X §7, the hints' wait rule)
-                d.next_card.set_card(card)
+                d.next_card.set_card(card, self._path_presses(card))
 
     def _guide_opened(self):
         """The panel opened: the glow ends at once; the seen mark and a fresh look go to a worker."""
@@ -3201,6 +3208,161 @@ class ShellWindow(QMainWindow):
         motion.wash(widget, theme.RADII["icon-button"])
         if step in strings.PATH_THEN:
             self.say(strings.PATH_THEN[step])
+
+    # --- Your path: every step acts from its own card (Mado-EZP, SPEC-r2 §0.2; every word PROVISIONAL) ---------- #
+    def _up_next(self):
+        """(row, episode) of Up Next — Current's first row and its next episode — or None."""
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        rows = getattr(view, "rows", None) or ()
+        if not rows:
+            return None
+        row = rows[0]
+        episodes, i = getattr(row, "episodes", None) or (), getattr(row, "next_index", None)
+        if not episodes or not isinstance(i, int) or not 0 <= i < len(episodes):
+            return None
+        return row, episodes[i]
+
+    def _step_presses(self, step_id):
+        """Step `step_id`'s own presses, named by what they act on now -> ((key, words, hover), ...): GUI-only reads
+        (Current's view, the settings, the path's last facts)."""
+        words = strings.PATH_PRESS
+
+        def one(key, **names):
+            text, tip = words[key]
+            return key, text.format(**names) if names else text, tip
+        up = self._up_next()
+        if step_id == "words":
+            return (one("words", ep=up[1].label),) if up else (one("words-any"),)
+        if step_id == "watch":
+            return (("watch", words["watch"][0].format(ep=up[1].label if up else "").strip(), words["watch"][1]),
+                    one("done"))
+        if step_id == "cards":
+            from app import settings_manager
+            facts = getattr(getattr(self, "_path_way", None), "facts", None)
+            settings = self.services.settings.get()
+            if facts is not None and not facts.miner_found:
+                return (one("miner"),)
+            if not settings.get("connect_enabled"):
+                return (one("cards-on"),)                # EZ2-5: the consent itself (Mine now needs it, D29)
+            if not settings_manager.connect_on(settings):
+                return (one("automation"),)              # D29: never turned on for you — its switch, in Settings
+            got = self._top_to_mine(first=PATH_LABEL_ROWS)
+            return (one("mine", title=got[0].title) if got else one("mine-any"),)
+        if step_id == "junban":
+            way = getattr(self, "_path_way", None)
+            done = any(st.done for st in (way.steps if way else ()) if st.step.id == "junban")
+            return (one("junban-again" if done else "junban"),)
+        return (one(step_id),) if step_id in words else ()
+
+    def _path_presses(self, card):
+        return self._step_presses(card[1]) if card is not None and card[0] == "step" else ()
+
+    def _path_repaint(self):
+        """The Next card's presses named again (Up Next's episode moved, a switch changed); repainted only when they
+        changed (S19)."""
+        d = self.duties
+        card = getattr(getattr(d, "next_card", None), "card", None)
+        if card is not None and card[0] == "step" and not sip.isdeleted(d.next_card):
+            d.next_card.set_card(card, self._path_presses(card))
+
+    def path_act(self, step_id):
+        """A step's *Do it* in ✦'s panel (closed already): its first press, marked in the bar."""
+        presses = self._step_presses(step_id)
+        if presses:
+            self.path_press(presses[0][0])
+
+    def path_press(self, key, control=None):
+        """A step's own press `key` (§0.2: it does the step, or opens what it acts on in place), from the Next card
+        (`control`: its button turns) or ✦'s panel (None: the bar's arc). Each is the press the window already has —
+        the same press key, so a click on either while one runs does nothing. -> the press, or None."""
+        from app.qt import settings_connect
+        up = self._up_next()
+        if key in ("words", "words-any"):            # the journey on Up Next's episode; it ticks once it opened
+            episode = view_rows.journey_episode(up[0]) if key == "words" and up else None
+            return self._open_journey(control=control, asked=True, episode=episode)
+        if key in ("watch", "done"):
+            current = self.page_widgets.get("current")
+            if up is None or current is None:
+                self.say(strings.PATH_NO_EPISODE)
+                return None
+            row, ep = up
+            if key == "watch":
+                return current._play(ep, control=control)
+            moves = getattr(self, "moves", None)
+            if moves is not None and moves.marking(row.key):
+                return None                              # Up Next's Done on its way: one press at a time
+            current.done(row, None if ep.watched else ep)
+            return None
+        if key in ("mine", "mine-any"):
+            got = self._top_to_mine()
+            if got is None or getattr(self, "mine", None) is None:
+                self.say(strings.HELP_TRY_MISSING["mine_top"])
+                return None
+            return self.mine.mine_row(*got)
+        if key == "cards-on":                            # Connect's switch, as Settings' runs it (one run at a time)
+            def done(answer):
+                ok, why = answer
+                if ok:
+                    self.bridge.settings_written.emit(("connect_enabled",))
+                else:
+                    self.say(settings_connect.S.SWITCH_NOT_ON.format(why))
+            return qpress.run(control, "settings:connect_switch", settings_connect._switch_on, self.services.settings,
+                              lambda line: applog.log("path", line), then=done,
+                              failed=lambda info: self.say(str(info[0])), win=self)
+        if key == "miner":                               # setup at its Anki Miner page, in Surasura (W3.5 part 3)
+            return settings_connect.install_anki_miner(self)
+        if key in ("junban", "junban-again"):
+            return self._open_junban()
+        if key == "backfill":
+            from app.qt import windows
+            opener = next((op for op in windows.OPENERS if op.name == "backfill"), None)
+            return windows.launch(self, opener) if opener is not None else self.say(strings.GUIDE_NOT_HERE)
+        if key == "yours":
+            return self.pick_your_cards(control)
+        places = {"automation": "settings:automation",
+                  "audiobook": "tab:current@audiobook", "hato": "settings:hato", "piyo": "settings:practice_ai"}
+        if key in places:
+            return self.guide_show_me(places[key])
+        return None
+
+    def pick_your_cards(self, control=None):
+        """Step ④'s press, *Pick your cards* — **the one entry point** the Essentials picker over Current fills
+        (Mado-EZC, SPEC-r2 lane 3: §0.3's picker; its Done writes the `yours` moment through `path_moment`). Until
+        it lands: Settings' *Words to make cards from*, revealed (the learner's save there ticks ④)."""
+        return self.guide_show_me("settings:connect_mine_words")
+
+    def path_show_me(self, where):
+        """The Next card's *Show me*: only a look at where the same press lives, for next time — Up Next's part or a
+        footer circle lit in place (`motion.wash` over it), a Settings place revealed as Settings does. It never
+        presses anything and writes nothing."""
+        kind, _sep, name = str(where).partition(":")
+        rect, owner = None, None
+        if kind == "hero":
+            current = self.page_widgets.get("current")
+            lst = getattr(current, "list", None)
+            rect = lst.hero_part(name) if lst is not None else None
+            owner = lst.viewport() if lst is not None else None
+        elif kind == "circle":
+            phase_strip = getattr(self, "phase", None)
+            if phase_strip is not None and phase_strip.isVisible():
+                rect, owner = phase_strip.rect_of(name).toAlignedRect(), phase_strip
+        else:
+            self.guide_show_me(where)
+            return
+        if rect is None or owner is None:
+            self.say(strings.GUIDE_NOT_HERE)
+            return
+        spot = QWidget(owner)                        # the place's own rect, washed once, gone with its wash
+        spot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        spot.setGeometry(rect.adjusted(-3, -3, 3, 3))
+        spot.show()
+        motion.wash(spot, theme.RADII["icon-button"]).destroyed.connect(spot.deleteLater)
+        self.path_spot = spot
+
+    def path_moment(self, name):
+        """A path moment the window keeps no other record of (④: the learner picked which words get a card)."""
+        if self.duties is not None and self.duties.guide_panel is not None:
+            self._guide_moment(name)
     # --- end the feature guide -------------------------------------------------------------------------------- #
 
     def changeEvent(self, event):
@@ -3459,11 +3621,12 @@ class ShellWindow(QMainWindow):
                 qpress.run(control, "generate", self.services.generate,
                            failed=lambda info: self.say(str(info[0])), win=self)
 
-    def _top_to_mine(self):
-        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None."""
+    def _top_to_mine(self, first=None):
+        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None.
+        `first`: look only at the first rows (a label's guess on every view: never a 20,000-row walk)."""
         from app.qt import rows as rows_module
         view = getattr(self.page_widgets.get("current"), "view_model", None)
-        for row in getattr(view, "rows", None) or ():
+        for row in (getattr(view, "rows", None) or ())[:first]:
             episodes = getattr(row, "episodes", None) or ()
             if not any(getattr(e, "in_top", False) for e in episodes):
                 continue

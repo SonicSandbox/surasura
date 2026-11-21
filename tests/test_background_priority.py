@@ -120,6 +120,19 @@ def test_new_arrivals_worker_goes_below_normal(monkeypatch):
     worker.stop()
 
 
+def test_the_reorder_helper_goes_below_normal(monkeypatch):
+    # Haya-CL 3.0.17 (Sonic's laptop, #8158GX): Junban's re-order helper started at normal priority and ran its
+    # minutes of re-order beside the window's start — the first suspect for the lag
+    seen = _recording(monkeypatch)
+    from app import library_store, replan_preview
+    monkeypatch.setattr(library_store, "update_staged", lambda *a, **k: False)
+    remote = object.__new__(replan_preview.Remote)          # its own thread never started: `_connect` alone
+    remote.language, remote._generate, remote._proc, remote._stopped = "zh", None, None, False
+    with pytest.raises(OSError):
+        remote._connect()
+    assert seen == [replan_preview._helper_args("zh", False)]
+
+
 def test_the_stores_helper_goes_below_normal(monkeypatch, real_store_helper):
     seen = _recording(monkeypatch)
     from app import library_store

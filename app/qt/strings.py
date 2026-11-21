@@ -2196,8 +2196,6 @@ HELP_SETTINGS = "Open its settings"
 HELP_SETTINGS_TIP = "Settings, at this part"
 HELP_ALL = "All help"
 HELP_ALL_TIP = "Every help card, by area"
-HELP_TOUR = "What runs by itself"
-HELP_TOUR_TIP = "A short tour: each thing Surasura does by itself, one card each"
 HELP_GUIDE = "Online guide"
 HELP_GUIDE_TIP = "The guide on GitHub, in your browser"
 HELP_CLOSE = "Close"
@@ -2267,33 +2265,40 @@ GUIDE_SHOW_ME_TIP = "Where to try it\n• Click: go there, lit up"
 GUIDE_SHOW_ME_NAME = "Show me: {text}"
 GUIDE_NOT_HERE = "That isn't on this screen right now."
 # --- end the feature guide
-# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; app/qt/next_card.py, app/qt/guide.py — PROVISIONAL)
-GUIDE_TIP_PATH = "What's new, and your path\n• Click: open them"
-GUIDE_TAB_NEWS = "What's new"
-GUIDE_TAB_NEWS_TIP = "This update's changes, yours first"
-GUIDE_TAB_PATH = "Your path"
-GUIDE_TAB_PATH_TIP = "The steps to your first cards, and what's worth trying next"
-PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
-PATH_DONE = "✓ DONE"
+# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; Mado-EZP's four stages, SPEC-r2 EZ2-1 / §0.2: every
+# step acts from its own card; app/qt/next_card.py, app/qt/guide.py — every word PROVISIONAL)
+GUIDE_TIP_PATH = "Your path, and what's new\n• Click: open them"
+GUIDE_PATH_HEADING = "Your path"
+GUIDE_PATH_NAME = "Your path, and what's new"
+PATH_STAGES = {"board": "On board", "episode": "First episode", "automate": "Automate", "yours": "Make it yours"}
+PATH_STAGE_NAME = "{stage}: {state}"                # a stone of the string, for screen readers
+PATH_STAGE_STATES = {"done": "done", "now": "now", "later": "later"}
+PATH_STRING_NAME = "Your path: {stages}"
+PATH_NOW = "TO DO · {stage}"                         # the panel's one list: the stage to do now (never "NOW":
+PATH_NOW_LATER = "TO DO"                             # 2.x's tier word) … (every stage done: later steps useful now)
+PATH_NEWS = "NEW FOR YOU · {version}"                # … this update's notes …
+PATH_LATER = "LATER ON YOUR PATH"                    # … the later stages, and steps that can't apply yet …
+PATH_DONE = "DONE"                                   # … and what's done, to do again
 PATH_TICK = "✓"
-PATH_COUNT = "{n} OF {total}"
 PATH_TICK_NAME = "{title}: done"
 PATH_OPEN_NAME = "{title}: not done yet"
+PATH_DO = "Do it"                                    # a step's own press, in the panel
+PATH_DO_NAME = "{press}: {title}"                    # … for screen readers
+PATH_AGAIN = "Again"                                 # … a done step's, to do it again
 # Kantan-S2 (Sonic 2026-11-13: past steps to try again, steps that can't apply now; no subtitles — a step's line is
 # behind its ?; every word PROVISIONAL)
 PATH_ABOUT_NAME = "About {title}"                    # a step's ? (its line), for screen readers
-PATH_AGAIN_TIP = "Done. Do it again any time\n• Click: go there, lit up"
-PATH_SHOW_ME_TIPS = {    # a step whose own press is elsewhere than where Show me lands: its tip names it (S2 r1 #4)
-    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there.",
-}
-PATH_THEN = {            # said in the bar once Show me lands, where the step's own press is elsewhere (S2 r2 #1)
+PATH_THEN = {            # said in the bar once a press lands where the step's own press is elsewhere (S2 r2 #1)
     "audiobook": "Open the book's ⋯ → Its audiobook… to line it up",
 }
-PATH_LATER = "NOT YET"                               # chapter 2's steps that can't apply yet
 PATH_LATER_NAME = "{title}: not yet. {when}"
-PATH_WHEN = {            # id -> when a later step applies (its ? while it can't yet)
+PATH_WHEN = {            # id -> when a step applies (its ? while it can't yet)
+    "words": "Once your journey is made",
+    "watch": "Once a show is in your library",
+    "cards": "Once a show is in your library",
     "junban": "Once Anki is connected and has your cards",
     "backfill": "Once you have cards in Anki",
+    "yours": "Once your first cards are made",
     "audiobook": "Once a book is in Current",
     "hato": "Once a new episode waits for its subtitles",
     "piyo": "Once three episodes are Done",
@@ -2301,26 +2306,59 @@ PATH_WHEN = {            # id -> when a later step applies (its ? while it can't
 PATH_STEPS = {           # id -> (title, the line behind its ?)
     "words": ("See the words before you watch", "Open them, each with a line from the episode."),
     "watch": ("Watch it, then press Done", "Its words count as seen, and the next episode moves up."),
-    "cards": ("Get cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
+    "cards": ("Cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
               "It's free and needs Anki open."),
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    "yours": ("Pick which words get a card", "Your list, every new word, or only the lines with one new word."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
     "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),
     "piyo": ("Practise your words with your AI", "Piyo ぴよ chats with you using the words you're learning."),
 }
+# each step's own press (§0.2: it does the step, from the card or the panel) -> (words, its hover)
+PATH_PRESS = {
+    "words": ("Open {ep}'s words ↗", "Your journey, in the browser, on this episode\n• Click: open it"),
+    "words-any": ("Open your words ↗", "Your journey, in the browser\n• Click: open it"),
+    "watch": ("▶ Watch {ep}", "Plays it, as Up Next's ▶ does\n• Click: play it"),
+    "done": ("✓ Done", "Watched it: its words count as seen\n• Click: mark it Done, as Up Next's Done does"),
+    "mine": ("Make {title}'s cards", "Anki Miner makes this episode's cards now (Undo in its toast)\n• Click: start"),
+    "mine-any": ("Make your top episode's cards", "Anki Miner makes the top episode's cards now (Undo in its toast)\n"
+                                                   "• Click: start"),
+    "cards-on": ("Turn on cards made for you", "Anki Miner makes cards for your top episodes, by itself\n"
+                                               "• Click: turn it on"),
+    "automation": ("Let things run by themselves", "Cards are made only while Run things by themselves is on\n"
+                                                   "• Click: its switch in Settings"),
+    "miner": ("Set up Anki Miner", "Anki Miner makes your cards. It's free\n• Click: set it up, here"),
+    "junban": ("Preview my deck", "順's window: today's order beside yours, before anything moves\n• Click: open it"),
+    "junban-again": ("See what it did", "順's window: its last run, with Undo\n• Click: open it"),
+    "backfill": ("Preview", "Backfill's window: what it would fill, before anything is written\n• Click: open it"),
+    "yours": ("Pick your cards", "Which words get a card\n• Click: its choice in Settings"),
+    "audiobook": ("Go to your book", "On Current: the book's ⋯ → Its audiobook…\n• Click: go there"),
+    "hato": ("Set up hato", "hato finds subtitles on your yes\n• Click: its place in Settings"),
+    "piyo": ("Set up Piyo", "Piyo chats with your AI using your words\n• Click: its place in Settings"),
+}
+PATH_DO_TIPS = {         # a step's *Do it* in the panel -> what its press does
+    "words": "Opens your journey on Up Next's episode\n• Click: open it",
+    "watch": "Plays Up Next's episode\n• Click: play it",
+    "cards": "Makes the top episode's cards (or sets Anki Miner up first)\n• Click: do it",
+    "junban": "Opens 順's window: your deck's order, before anything moves\n• Click: open it",
+    "backfill": "Opens Backfill's window: what it would fill, before anything is written\n• Click: open it",
+    "yours": "Which words get a card\n• Click: its choice in Settings",
+    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there",
+    "hato": "hato finds subtitles on your yes\n• Click: its place in Settings",
+    "piyo": "Piyo chats with your AI using your words\n• Click: its place in Settings",
+}
+PATH_NO_EPISODE = "No episode is up next yet."       # the bar, when a step's press needs Up Next's episode
 NEXT_NAME = "Your next step"
 NEXT_ABOUT_NAME = "About this step"                  # the card's ? (its line), for screen readers
-NEXT_FIRST = "NEXT · {n} of {total} to your first cards"
+NEXT_STAGE = "NEXT · {stage}"                        # the eyebrow over the four stones
 NEXT_READY = "NEW FOR YOU"
 NEXT_SHOW_ME = "Show me"
-NEXT_SHOW_ME_TIP = "Where to do it\n• Click: go there, lit up"
+NEXT_SHOW_ME_TIP = "Where this press also lives, for next time\n• Click: light it up (nothing is pressed)"
 NEXT_NOT_NOW = "Not now"
 NEXT_NOT_NOW_TIP = "Set this step aside\n• It stays in ✦ → Your path"
-NEXT_SET_UP_MINER = "Set up Anki Miner"
-NEXT_SET_UP_MINER_TIP = "Anki Miner makes your cards\n• Click: its place in Settings"
 NEXT_OWN_CARDS = "I make my own cards"
 NEXT_OWN_CARDS_TIP = "You mine cards by hand\n• Click: this step counts as done"
 NEXT_MADE = "✓ YOUR FIRST CARDS ARE MADE"

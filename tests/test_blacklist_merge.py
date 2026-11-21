@@ -172,8 +172,10 @@ def test_a_second_start_changes_nothing():
 
 
 def test_a_start_cut_off_between_the_write_and_the_move_adds_nothing_the_next_time(monkeypatch):
+    # why: the words would be skipped as present anyway; the learner's own comment is what the marker keeps from
+    # being written twice
     _put("IgnoreList.txt", JA_IGNORE)
-    black = _put("Blacklist.txt", JA_BLACKLIST)
+    black = _put("Blacklist.txt", JA_BLACKLIST + "# 分け方の間違い\n")
     real = path_utils.backup_to_trash
 
     def no_move(path, move=False):
@@ -189,6 +191,7 @@ def test_a_start_cut_off_between_the_write_and_the_move_adds_nothing_the_next_ti
     again = word_lists.merge_blacklist("ja")
     assert again["error"] is None and again["added"] == 0
     assert _bytes(_path("IgnoreList.txt")) == written                 # the marker named this very file: nothing again
+    assert written.decode("utf-8-sig").splitlines().count("# 分け方の間違い") == 1
     assert not os.path.exists(black)
 
 

@@ -2746,7 +2746,8 @@ class Numbers:
     def growth(self, item_id):
         """Kura-GS (any thread): an item's growth snapshots as the store last gave them ({kind: snapshot}, the 'added'
         one: `Store.growth_of`), read on this worker after each plan read — a Generate writes them — or None. A dict
-        lookup the % hover asks as the pointer moves: never the lock (a renumber holds it), the dict is replaced whole."""
+        lookup the % hover asks as the pointer moves: never the lock (a renumber holds it); the dict is replaced
+        whole."""
         return self._growth.get(item_id)
 
     def _read_growth(self):

@@ -3490,7 +3490,8 @@ class ShellWindow(QMainWindow):
             self._words_anki()                              # Hover-W: Anki's standing for the word card (throttled)
 
     def _growth_of(self, item_id):
-        """Kura-GS: an item's growth snapshots from the numbers the rows show (a language switch's new ones), or None."""
+        """Kura-GS: an item's growth snapshots from the numbers the rows show (a language switch's new ones), or
+        None."""
         numbers = getattr(getattr(self.services, "writer", None), "numbers", None)
         growth = getattr(numbers, "growth", None)
         return growth(item_id) if growth is not None else None

@@ -65,14 +65,18 @@ def wait_until(predicate, timeout=5.0):
     `processEvents` alone never blocks) until `predicate()` is true or the time is up."""
     import time
     from PyQt6.QtCore import QEventLoop, QTimer
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        loop = QEventLoop()
-        QTimer.singleShot(20, loop.quit)
-        loop.exec()
-    return _processed_until(predicate, 0)
+    from PyQt6.QtWidgets import QApplication
+    loop = QEventLoop(QApplication.instance())         # parented (FLAKES.md: never a bare Qt object), one per wait
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            QTimer.singleShot(20, loop.quit)
+            loop.exec()
+        return _processed_until(predicate, 0)
+    finally:
+        loop.deleteLater()
 
 
 def _started(world):

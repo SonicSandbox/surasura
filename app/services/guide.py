@@ -8,8 +8,9 @@ paints what this says.
   "where", "step"}]}`. Sonic (2026-11-12): "everything earns its place" — **an item is one plain line** (`text`, at
   most `TEXT_MAX`), and (Kantan-X's rule 2, EXPERIENCE.md §6, PROVISIONAL) **it leads somewhere or it folds**: a
   `where` gives it *Show me* — one anchor of `anchor_ok`'s: `tab:<tab>`, `settings:<row or section>`, `help:<card>`,
-  `control:<control>`; a `step` joins it to the path (one of `STEPS`: the path's step ids, empty until the path lands —
-  PR 2); everything else (every fix, every line that leads nowhere) folds into *N fixes and small changes*. A fix never
+  `control:<control>`, `hero:<Up Next's part>`, `circle:<footer circle>` (Mado-EZP); a `step` joins it to the path
+  (one of `STEPS`: the path's step ids, empty until the path lands — PR 2); everything else (every fix, every line
+  that leads nowhere) folds into *N fixes and small changes*. A fix never
   takes a `where`. `kind` one of `KINDS` (it orders them); `for` tags from `TAGS`.
   `problems()` names what's wrong with one; the tests hold every shipped file to it, and refuse a version without its
   file (`tests/test_services_guide.py`): the release PR's version bump stays red until the file is there.
@@ -37,7 +38,8 @@ TEXT_MAX = 100                                  # an item's one line, in charact
 TAGS = ("everyone", "ja", "zh", "shows", "books", "audiobooks", "anki", "miner", "hato", "piyo", "junban")
 TABS = ("current", "finished", "needs", "settings")
 CONTROLS = ("search", "add", "level", "journey", "arrivals", "known", "circles", "report", "help")
-ANCHOR_KINDS = ("tab", "settings", "help", "control")
+HERO = ("journey", "done")                      # Up Next's parts a place may name (*Your path*'s Show me, Mado-EZP)
+ANCHOR_KINDS = ("tab", "settings", "help", "control", "hero", "circle")
 
 FOLDER = os.path.join("app", "assets", "whats_new")
 STATE_FILE = "guide.json"
@@ -90,6 +92,11 @@ def anchor_ok(where, has_card=None, locate=None):
         return name in TABS
     if kind == "control":
         return name in CONTROLS
+    if kind == "hero":
+        return name in HERO
+    if kind == "circle":
+        from app.services import phase
+        return name in phase.CIRCLES
     if kind == "help":
         return has_card(name) if has_card else True
     return locate(name) is not None if locate else True

@@ -10,7 +10,8 @@ from app.connect import known_signal
 
 
 # P4.1 L2 (TF fix 1): *Take its new cards out*'s suspends (`Surasura::out`) never count either.
-NEVER_TERMS = "-tag:Surasura::later -tag:Surasura::out -tag:surasura::shelf -tag:leech"
+# Kotoba-WS2: red and green (the review loop's Ignore and Swap) are never Known, on every search
+NEVER_TERMS = "-tag:Surasura::later -tag:Surasura::out -tag:surasura::shelf -tag:leech -flag:1 -flag:3"
 
 
 def _on(**extra):
@@ -20,9 +21,10 @@ def _on(**extra):
     return settings
 
 
-def test_default_signal_is_suspended_when_preview_on_and_no_list_saved():
-    # The default term is "suspended" (Sonic: "Default to suspend"), used when settings.json has no list yet.
-    assert known_signal.signal(_on()) == ["suspended"]
+def test_default_signal_is_suspended_and_marked_when_preview_on_and_no_list_saved():
+    # The default terms are "suspended" AND "marked" (Kantan-B3, Sonic 2026-11-18: a plain suspend is often a bad
+    # sentence), used when settings.json has no list yet.
+    assert known_signal.signal(_on()) == ["suspended", "marked"]
 
 
 def test_signal_keeps_the_picked_terms_in_the_order_the_user_picked_them():
@@ -72,8 +74,8 @@ def test_a_single_term_saved_as_text_is_read_as_a_one_term_list():
 
 def test_query_ands_the_terms_inside_the_decks_and_excludes_surasura_and_leeches():
     # Both terms must hold (AND), the deck scope is a single OR-group, and the three exclusions are always appended.
-    text = known_signal.query(["suspended", "flag:3"], ["日本語::読書"])
-    assert text == f'(deck:"日本語::読書") is:suspended flag:3 {NEVER_TERMS}'
+    text = known_signal.query(["suspended", "flag:4"], ["日本語::読書"])
+    assert text == f'(deck:"日本語::読書") is:suspended flag:4 {NEVER_TERMS}'
 
 
 def test_query_maps_marked_to_its_tag_and_passes_flags_through():

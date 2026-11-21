@@ -7,7 +7,12 @@
   `place`, a hato drop its rule places there, or — New arrivals off, 2.x's way — one landing at the top of NOW) and
   is still there, not mined (no receipt) and with no job yet → a `queued` job, recording who placed it (the event's
   `by`, ✅ G1.3-5). On 3.0 (New arrivals on, the default, D30) a hato drop waits in New arrivals until its rule or a
-  person places it: landing there pushes nothing. A back-fill registration logs no event for the item it registers
+  person places it: landing there pushes nothing. **A first run waits for your yes** (Kantan-B2, a new tester
+  2026-11-18: cards were made while setup's *Make cards for your first 20 episodes?* still asked): while that line
+  is offered and unanswered and Connect never finished an episode from the log here (`first_run_waits`), an entry
+  makes no job and no gap, and the loop mines none of the log's jobs (Kantan-B2b: an older version's, queued before
+  the update) — the line's *Make cards* logs the top 20 itself; *Not now* is no yes (Sonic, 2026-11-19): it sets
+  the log's jobs not started aside and the line stays until a yes. A back-fill registration logs no event for the item it registers
   (`register --backfill`), so it never makes one; with New arrivals off, items it pushes out of the top 20 log
   `left_mine_line`.
 - **What drops one:** an item that left the top 20 (or was removed or finished) before its mining started. A job
@@ -108,6 +113,29 @@ def _drop(ledger, language, item_id, event=None, store=None):
     return ledger.drop(language, item_id, "left the top 20")
 
 
+def first_run_waits(language, ledger):
+    """Kantan-B2 (a new tester, 2026-11-18): is a first run still waiting for the learner's yes? Setup's line *Make
+    cards for your first 20 episodes?* (`needs.FIRST_CARDS`) offered and not answered with a yes — its *Not now* is no
+    yes (Kantan-B2b; Sonic 2026-11-19: "Nothing mines until the yes") — and Connect never finished an episode from the
+    placement log in this language with cards (`Ledger.mined_from_log`: an install that already mined is never held
+    by an old unanswered line; one whose jobs were only queued, or part-way, is). Then an episode entering the top 20
+    (the learner arranging Current, a changed line) makes no job, and the loop mines no job the log queued
+    (`runner._open_jobs`, `first_run_held`): the line's *Make cards* logs the top 20 itself. An ask (*Mine now*) is
+    a yes of its own and is never held. The seen file held by a write: read again, and still unreadable the look fails
+    (its transaction rolls back, the reader stays: the runner looks again), never read as no line."""
+    from app.services import needs
+    if not needs.first_cards_waiting(language):
+        return False
+    return not ledger.mined_from_log(language)
+
+
+def first_run_held(job):
+    """Kantan-B2b: is `job` one the first run's hold keeps from mining (`first_run_waits`)? One the placement log
+    queued (its event) that carries no ask — an older version's, queued before the update. Your *Mine now* (an ask),
+    a gap's *Make their cards* and a level raise carry no event, or an ask: never held."""
+    return job.get("event_id") is not None and not job.get("asked_at") and job.get("kind") != ASKED
+
+
 def consume(store, language, ledger=None):
     """Read the placement log once -> {"queued": [item ids], "dropped": [item ids], "reconciled": bool, "read": n}."""
     library.ensure_reader(store)
@@ -132,6 +160,8 @@ def consume(store, language, ledger=None):
                         dropped.append(job["item_id"])
                 missed = [i for i in line if library.mined_at(store, i) is None and not ledger.has_work(language, i)
                           and not _waits_for_books(store, i)]       # alpha 4 M1: never in the gap's card
+                if missed and first_run_waits(language, ledger):
+                    missed = []                 # Kantan-B2: setup's own line asks about them already
                 waiting = ledger.gaps(language, unnoticed=True)
                 if missed and not (waiting and waiting[-1]["items"] == missed):   # a re-read after a kill: once
                     ledger.add_gap(language, missed)
@@ -143,13 +173,16 @@ def consume(store, language, ledger=None):
                     if kind in ENTERS or kind in LEAVES:
                         latest[item_id] = (event_id, kind, by)
                 entered = []
+                hold = None                     # Kantan-B2: read once, only when an entry could queue
                 for item_id, (event_id, kind, by) in latest.items():
                     if item_id in in_line:
-                        if kind in ENTERS and library.mined_at(store, item_id) is None \
-                                and ledger.queue(language, item_id, by, event_id,
-                                                 store_id=library.store_id(store)) is not None:
-                            queued.append(item_id)
-                            entered.append((item_id, by, event_id))
+                        if kind in ENTERS and library.mined_at(store, item_id) is None:
+                            if hold is None:
+                                hold = first_run_waits(language, ledger)
+                            if not hold and ledger.queue(language, item_id, by, event_id,
+                                                         store_id=library.store_id(store)) is not None:
+                                queued.append(item_id)
+                                entered.append((item_id, by, event_id))
                     elif _drop(ledger, language, item_id, kind, store):
                         dropped.append(item_id)
                 for item_id, by, event_id in entered:   # Michi-EO: then their shows' earlier parts no event queued

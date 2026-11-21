@@ -25,15 +25,19 @@ STAR_FILE = "star.json"
 # on its i+1 line when it has one (A7S-2: i+1 picks the line, never the order);
 # *Only i+1* is another set (`pick.py`: any word with an i+1 line, on the list or not), never a stricter *Your list*
 # (one line each: a choice card is one line high, never wider than `settings-card-w`)
+# Kyou-UL (words PROVISIONAL, 2026-11-19): *Only i+1*'s line says it makes cards for words not on your list too — 順
+# then calls them "not on your list" (a tester read that as Connect's mistake); where they go is 順's placement's
 WORDS = (("list", "Your list", "i+1 and more: every unknown word on your list, on an i+1 line if it has one."),
          ("unknown", "Every unknown word", "Every word of the episode you don't know yet."),
-         ("i1", "Only i+1", "Only words with an i+1 line, on your list or not. The rest get no card."))
+         ("i1", "Only i+1", "Only words with an i+1 line, list or not: some won't be on your list."))
 # anki_sync_delay_min (E1.1 04 §3)
 SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start and Anki close", "off"))
 # known_from_anki's terms, in the setting's order (known_signal.TERMS) with Anki's flag colours
 FLAG_COLOURS = ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple")
 KNOWN = (("suspended", "Suspended"), ("marked", "Marked")) + tuple(
     (f"flag:{n}", f"Flag {n} ({colour})") for n, colour in enumerate(FLAG_COLOURS, 1))
+# the terms a learner can pick (Kotoba-WS2): never red or green — the review loop's Ignore and Swap, never Known
+KNOWN_PICKS = tuple(pair for pair in KNOWN if pair[0] not in ("flag:1", "flag:3"))
 
 
 def cap_value(current, language, n):

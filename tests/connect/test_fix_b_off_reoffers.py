@@ -18,7 +18,7 @@ from app.connect import known_signal
 from app.path_utils import get_user_files_path
 
 URL = "http://127.0.0.1:8765"
-ON = {"connect_enabled": True}                              # known_from_anki defaults to ["suspended"]
+ON = {"connect_enabled": True}                              # the default terms; this fake answers any search
 OFF = {"connect_enabled": True, "known_from_anki": []}      # the switch turned off
 
 # Real Japanese words, one note each.

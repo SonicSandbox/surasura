@@ -40,13 +40,13 @@ SHOWN = ("connect_mine_words", "connect_send_grammar", "anki_sync_delay_min", "c
          "junban_auto_backfill", "connect_anki_miner_path")
 
 
-def save(key, value=None, merge=None):
+def save(key, value=None, merge=None, also=None):
     """One control's key, onto settings.json as it is (`save_keys`): never another key, never the whole file.
     `merge(current)`: the value worked out from the key as the file holds it at the write (the cap, the video folders:
     another language's newest value kept, D31). -> the file as saved; raises OSError when it wasn't written."""
     from app import settings_manager
     if merge is None:
-        return settings_manager.save_keys({key: value}, strict=True)
+        return settings_manager.save_keys({key: value, **(also or {})}, strict=True)    # `also`: keys it carries
     return settings_manager.save_keys(update=lambda on_disk: on_disk.__setitem__(key, merge(on_disk.get(key))),
                                       strict=True)
 
@@ -151,14 +151,14 @@ class Panel:
                 pass
         threading.Thread(target=run, daemon=True).start()
 
-    def _set(self, key, value=None, default=None, merge=None, revert=None):
+    def _set(self, key, value=None, default=None, merge=None, revert=None, also=None):
         """One control's save -> True when saved (or nothing changed: the value shown picked again writes nothing,
         S19). Not written → `revert(the value still saved)` puts the control back and the reason is shown."""
         current = self.settings.get(key, default)
         if merge is None and (value == current or str(value) == str(current)):
             return True
         try:
-            saved = save(key, value, merge)
+            saved = save(key, value, merge, also)
         except Exception as e:
             print(f"Connect's setting {key} wasn't saved: {e}")
             self.save_note.config(text=f"Not saved: {e}. Try again in a moment.")
@@ -244,8 +244,9 @@ class Panel:
 
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(row, text="Known from Anki:", style="CP.TLabel").pack(side=tk.LEFT)
-        current = self.settings.get("known_from_anki", ["suspended"])
+        ttk.Label(row, text="Count as known in Anki:", style="CP.TLabel").pack(side=tk.LEFT)
+        from app import settings_manager
+        current = self.settings.get("known_from_anki", settings_manager.DEFAULT_SETTINGS["known_from_anki"])
         current = [current] if isinstance(current, str) else list(current or [])
         self.known_vars = {term: tk.BooleanVar(row, value=term in current) for term, _l in KNOWN}
         self.menu_known = ttk.Menubutton(row, style="CP.TMenubutton", width=24)
@@ -330,8 +331,10 @@ class Panel:
             old = [old] if isinstance(old, str) else list(old or [])
             for term, var in self.known_vars.items():
                 var.set(term in old)
+        from app import settings_manager
         self._set("known_from_anki", known_value({t for t, v in self.known_vars.items() if v.get()}),
-                  ["suspended"], revert=revert)
+                  settings_manager.DEFAULT_SETTINGS["known_from_anki"], revert=revert,
+                  also={"known_from_anki_chosen": True})        # Kantan-B3: a pick, never an old default
         self._known_text()
 
     def _folders(self):

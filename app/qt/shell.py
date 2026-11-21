@@ -63,8 +63,12 @@ LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.du
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting changed: a Generate is due (a6 #5)
+FIRST_CARDS_GO = phase_service.Go("needs", ("first-cards",))   # Kantan-B2b: 鉱 amber while D1's line waits for a yes
 GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
 #                                                         the services' needs module: not imported by the shell at load)
+# Kantan-G: the circles whose pause holds a step of Connect's own (鉱 its mining; ス its Generate, 順 its re-order and
+# Backfill, Anki its syncs — `runner.CIRCLE_WAITS`): their resume kicks Connect, so what waited goes on from its step
+CONNECT_HELD_BY = frozenset((phase_service.MINER, phase_service.SURASURA, phase_service.JUNBAN, phase_service.ANKI))
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 JOURNEY_READ_WAIT = 600.0   # A: how long an export waits for the journey's catch-up (a big library's Generate), at most
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
@@ -91,6 +95,7 @@ WRITER_JOIN_MARGIN = 1.0
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
 ANKI_LOOK_EVERY = 10.0                 # Kantan-B1 (B3): s between two looks at Anki while 順's deck to pick waits for it
+PATH_LABEL_ROWS = 64                  # Mado-EZP: the cards step's label names the first row to mine among these
 REFRESH_CAP_S = 120.0                 # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
 # W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
 # closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
@@ -141,6 +146,10 @@ class Services:
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
+        # Haya-LD: the one scheduler the background work asks for a turn (`services.gentle`): `open_services`' (the real
+        # window's, attached before anything can ask), none under SURASURA_NO_UI_TIMERS or for a test's own Services
+        self.gentle = None
+        self.boot = threading.Event()     # Haya-LD: the window booted (`booted`): its list from disk drawn, idle once
         self._replan_wired = False
         self._generate_wired = False            # a6: the controller's end heard once (`_generate_ended`)
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
@@ -155,6 +164,7 @@ class Services:
         self.anki_session_thread = None   # the look's thread at the window's start (`_look_at_anki`), once started
         self.restarted = False            # alpha 4 M6: this start is *Restart now*'s (`RESTARTED`): Anki isn't opened
         self._look_after_setup = False    # B-10: the start's look held while the setup wizard is up (AD-8)
+        self._look_after_pause = False    # Kantan-G: the start's look held while Anki's circle is paused (its resume)
         self._sync_owed = False           # the start's forced known-words sync, owed to the start's look (IK-2)
         self._session_lock = threading.Lock()
         self._session_running = False     # a session look under way (one at a time)
@@ -166,6 +176,11 @@ class Services:
         # W3.5 part 3 (AD-8 / IK2-7): set while the setup wizard is up — no quiet Generate (the automatic one, the
         # journey keeper's) before its last page sets the level; an upgrader's library has no journey yet
         self.setup_open = threading.Event()
+        # Mado-PZ: the circles paused at the bar (settings.json's `paused`: kept across a restart) — their automatic
+        # jobs wait in the registry, *paused*, until a click resumes them (a job you asked for never waits for it)
+        from app import settings_manager
+        self.paused = settings_manager.paused(self.settings.get())
+        self.registry.gate(self._pause_gate, automatic=True)
         if self.has_duties():
             self._provide()
 
@@ -223,7 +238,11 @@ class Services:
         """(The run's thread.) a6: a Generate that finished wrote a new plan, and nothing else tells the numbers so —
         they re-read it only when the order moves (`moves.open_library`), and a Generate moves no order: Current's rows
         kept *not analysed yet* until the next move. Any Generate — the user's, the automatic one, the keeper's."""
-        if outcome != "current" or self.closing.is_set():
+        if self.closing.is_set():
+            return
+        if getattr(self.gentle, "gentle", False):
+            self._wake_connect()          # Haya-LD: its next step waited for this Generate (GENERATE_FIRST)
+        if outcome != "current":
             return
         resync = getattr(getattr(self.writer, "numbers", None), "resync", None)
         if resync is not None:
@@ -231,6 +250,16 @@ class Services:
                 resync()
             except Exception as e:
                 applog.log("shell", f"the numbers after a Generate: {e!r}")
+
+    @staticmethod
+    def _wake_connect():
+        """Haya-LD: a Connect that runs is woken (its wait ends at its next look, never 2 minutes on); none is started."""
+        try:
+            from app.connect import kick
+            if kick.running():
+                kick.wake()
+        except Exception as e:
+            applog.log("connect", f"not woken after a Generate: {e!r}")
 
     # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
     def _wire_replan(self):
@@ -395,8 +424,37 @@ class Services:
                 # once it closes, on the settings it wrote, whatever Connect was at the start (review F-2)
                 self._look_after_setup = True
             elif session is not None:
-                self._opening_look(session)
+                self._opening_look_unless_paused(session)
         return True
+
+    def booted(self):
+        """(Any thread; once.) Haya-LD: the window booted — Current's list from disk drawn, its loop idle once (or its
+        limit passed): the scheduler lets background work go (`gentle.ready`). The window starts its duties after it."""
+        if self.boot.is_set():
+            return
+        self.boot.set()
+        if self.gentle is not None:
+            self.gentle.ready()
+
+    def _opening_look_unless_paused(self, session):
+        """(Under the quit's lock.) The start's look — or, Anki's circle paused (Kantan-G, Sonic 2026-11-19: a pause
+        stops all a circle runs by itself), none: no Anki opened, no AnkiWeb sync; it waits for the first focus look
+        after the circle's resume (`_focus_look`). Connect is still kicked as the look's end would (Haya-CL): its own
+        Anki steps read the pause."""
+        if phase_service.ANKI in self.paused:
+            self._look_after_pause = True
+            threading.Thread(target=self._kick_connect, name="connect-kick", daemon=True).start()
+            return
+        self._opening_look(session)
+
+    def _kick_connect(self):
+        try:
+            from app.connect import kick
+            settings = self._session_settings()
+            if settings is not None:
+                kick.kick(settings)
+        except Exception as e:
+            applog.log("connect", f"not started at the window's start: {e!r}")
 
     def _opening_look(self, session):
         """The window's start look (`_look_at_anki`, opening): once a window. Alpha 4 M6: a start *Restart now* made
@@ -437,9 +495,24 @@ class Services:
     def _focus_look(self):
         """(A worker.) A focus: the session look again, at most once every SESSION_LOOK_EVERY; it never opens Anki —
         nor looks at all while the setup wizard is up (review F-1: the wizard's close makes the window's look)."""
-        if self.setup_open.is_set():
+        if self.setup_open.is_set() or phase_service.ANKI in self.paused:     # (Kantan-G: Anki's circle paused)
             return
         settings = self._session_settings()
+        with self._quit_lock:                         # Kantan-G: the start's look a pause held — now, once (B-10's way)
+            held, self._look_after_pause = self._look_after_pause, False
+            if held and settings is not None:
+                if self.restarted:
+                    settings = dict(settings, connect_open_anki=False)
+                thread = self._look_at_anki(settings, opening=True)
+                if thread is None:                    # another look still under way: the next focus runs it
+                    self._look_after_pause = True
+                else:
+                    self.anki_session_thread = thread
+                return
+        if held and self._sync_owed:                  # Connect switched off meanwhile: the start's sync goes alone
+            self._sync_owed = False
+            self.automation.session_began(True)
+            return
         if settings is not None:
             self._look_at_anki(settings, opening=False)
 
@@ -522,13 +595,14 @@ class Services:
         with self._quit_lock:                         # review F-4: never between `start`'s look and its hold
             self.setup_open.clear()
             held, self._look_after_setup = self._look_after_setup, False
-        if held and self.started and not self.closing.is_set():
-            session = self._session_settings()
-            if session is not None:
-                self._opening_look(session)
-            elif self._sync_owed:
-                self._sync_owed = False
-                self.automation.session_began(True)
+            if held and self.started and not self.closing.is_set():
+                session = self._session_settings()
+                if session is not None:               # (under the lock: a resume never splits its pause check)
+                    self._opening_look_unless_paused(session)
+                    held = False
+        if held and self.started and not self.closing.is_set() and self._sync_owed:
+            self._sync_owed = False
+            self.automation.session_began(True)
         self.activated()
 
     def activated(self):
@@ -770,6 +844,8 @@ class Services:
                     self.updates.quit()
                 except Exception as e:
                     applog.log("shell", f"update at quit: {e}")
+            if self.gentle is not None:
+                self.gentle.close()               # Haya-LD: its watcher ends (the closing gate holds every job now)
             if self.chores is not None:
                 try:
                     self.chores.halt()            # its start-up timers taken back: nothing spawned for a closing one
@@ -797,6 +873,46 @@ class Services:
     @staticmethod
     def _closing_gate(_kind):
         return strings.QUIT_HELD
+
+    # --- Mado-PZ: a circle paused with one click at the bar's bottom left ------------------------------------------ #
+    def _pause_gate(self, kind):
+        """The registry's gate for automatic jobs: one of a paused circle's kinds waits (a flag read, under its lock)."""
+        return strings.PAUSED_HELD if phase_service.KINDS.get(kind) in self.paused else None
+
+    def set_paused(self, circles):
+        """(The window's thread: its press, one at a time; returns at once.) The circles paused now: kept in settings.json (one queued write) and held at
+        the registry's gate from this call — nothing new of theirs starts by itself; a resumed one's waiting jobs start
+        once `resumed` runs. -> the circles resumed by this call."""
+        circles = frozenset(circles)
+        before, self.paused = self.paused, circles
+        if circles != before:
+            self.settings.set({"paused": sorted(circles)})
+        return before - circles
+
+    def resumed(self, circles):
+        """(A worker.) `circles` resumed: the change written first (Connect reads the file), then what waited at the
+        gate started, hato's drops New arrivals kept placed by their rules (Kantan-G), Connect kicked when a circle
+        that holds a step of its own resumed (`CONNECT_HELD_BY`), and the focus's look — the journey, the sync, 順, a
+        waiting Generate, the indexer, and the start's look at Anki its pause held — asked as a return to the window
+        asks it. Nothing once the quit began."""
+        if not circles or self.closing.is_set():
+            return
+        if not self.settings.flush(5):              # (Connect would read the pause still: its next kick starts it)
+            applog.log("shell", "a resume's settings weren't written in 5 s")
+        self.registry.reschedule()
+        if phase_service.ARRIVALS in circles:         # Kantan-G: hato's drops the pause kept waiting, placed by rule
+            try:
+                from app.connect import rules
+                rules.place_held(settings_service.thaw(self.settings.get()))
+            except Exception as e:
+                applog.log("connect", f"hato's waiting drops after the resume: {e!r}")
+        if circles & CONNECT_HELD_BY:                 # Kantan-G: Connect's own Generate, re-order, Backfill and syncs
+            try:                                      # wait on ス / 順 / Anki too: its jobs go on from their step
+                from app.connect import kick
+                kick.kick(settings_service.thaw(self.settings.get()))
+            except Exception as e:
+                applog.log("connect", f"not started after its resume: {e!r}")
+        self.activated()                              # (Anki resumed: the focus's look runs the start's look it held)
 
     def replan_settling(self):
         """(Any thread: no lock, no wait.) A move's re-order may still be settling: the close then waits like E20's."""
@@ -1620,6 +1736,7 @@ class ShellWindow(QMainWindow):
             self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
             self.needs_you.changed.connect(self.phase.refresh)
             self.needs_you.changed.connect(self._connect_fault)
+            self.needs_you.changed.connect(self._first_cards_circle)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:
@@ -1705,6 +1822,9 @@ class ShellWindow(QMainWindow):
 
         # --- W3.5: the dashboard's duties: their controls arrive with them (given: now; else `start_duties`) ------- #
         self._duties_asked = False
+        # Haya-LD: the boot's watch (`_arm_boot`): the duties start, and background work goes, only once it booted
+        self.boot_gate = not os.environ.get("SURASURA_NO_UI_TIMERS")
+        self._after_boot, self._boot_armed, self._boot_view_seen, self._framed = [], False, False, False
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
         self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
@@ -1899,6 +2019,8 @@ class ShellWindow(QMainWindow):
         star = getattr(self, "star_ask", None)      # Surasura's star ask: once, when your own cards first land
         if star is not None:
             star.view_shown(view, self.services.library)
+        if not getattr(view, "loading", False) and not self.services.boot.is_set():
+            self._boot_after_idle()                 # Haya-LD: Current's list from disk drawn: booted at the next idle
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
@@ -2232,9 +2354,16 @@ class ShellWindow(QMainWindow):
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
         self.phase.opened.connect(self._circle_pressed)
         self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
+        self.phase.pause_all.connect(self._pause_all)      # Mado-PZ2: a Shift-click on a circle (no extra bubble)
         self.phase.stops = self._circle_stops
         self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
+        paused = getattr(self.services, "paused", frozenset())
+        if paused:                                         # Mado-PZ: kept across a restart, and said at the start
+            self.phase.set_paused(paused)
+            names = " · ".join(strings.PHASE_NAMES[c] for c in phase_service.CIRCLES if c in paused)
+            QTimer.singleShot(0, lambda: None if sip.isdeleted(self) else
+                              self.say(strings.PAUSED_AT_START.format(names=names)))
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
         # help cards (HC-2): one ? after the five circles opens their card — every lit circle with its *Why*
@@ -2494,7 +2623,8 @@ class ShellWindow(QMainWindow):
                              failed=lambda info: applog.log("shell", f"a gone folder's Keep waiting: {info[0]!r}"))
 
     def _circle_pressed(self, circle):
-        """A phase circle pressed (alpha 3): its settings — or, while it is amber, where its decision is, that row
+        """A phase circle pressed: what it runs by itself paused, or resumed (Mado-PZ, a tester's ask; it replaces alpha
+        3's settings, now in its right-click with *Show*) — or, while it is amber, where its decision is, that row
         highlighted (a7, Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that
         is highlighted"; `PhaseStrip.go`): *Needs you* at the first card of its kinds (a gone folder, Anki Miner's
         episodes waiting on you, Anki asking for you), or 順's window at its control (a deck to pick, an unfinished
@@ -2507,10 +2637,36 @@ class ShellWindow(QMainWindow):
         if go is not None and go.place == "junban":
             if self._open_junban(go.at):
                 return
-        if self.phase.showing(circle) and self._show_circle(circle):
-            return                                         # try a9.1: running, where it can be seen
-        if circle in self.phase.opens:
-            self.open_setting(phase_strip.SETTINGS[circle])
+        if go is None:                                     # (a decision's press never pauses, its place or not)
+            self._toggle_pause(circle)
+
+    # --- Mado-PZ: one click pauses what a circle runs by itself ----------------------------------------------------- #
+    def _toggle_pause(self, circle):
+        paused = getattr(self.services, "paused", frozenset())
+        self.set_paused(paused - {circle} if circle in paused else paused | {circle})
+
+    def _pause_all(self, circle):
+        """Mado-PZ2 (Sonic 2026-11-19): a Shift-click on `circle`, or its right-click's *Pause all* / *Resume all* — what
+        the click does to that circle, done to all five: `circle` paused, every circle resumed; else every one paused."""
+        paused = getattr(self.services, "paused", frozenset())
+        self.set_paused(frozenset() if circle in paused else frozenset(phase_service.CIRCLES))
+
+    def set_paused(self, circles):
+        """The circles paused now (the map's one model, `Services.set_paused`): painted on the press, before anything
+        else; a circle paused now has what runs by itself stopped at its next safe point (its Stop: *Stopping…* while
+        it ends, a job you asked for left running); a resumed one's waiting work asked again on a worker."""
+        circles = frozenset(circles)
+        before = getattr(self.services, "paused", frozenset())
+        if circles == before:
+            return
+        self.phase.set_paused(circles)
+        resumed = self.services.set_paused(circles)
+        for circle in phase_service.CIRCLES:
+            if circle in circles - before:
+                self._stop_circle(circle, automatic=True)
+        if resumed:
+            bridge.run_in_worker(self.services.resumed, resumed,
+                                 failed=lambda info: applog.log("shell", f"a resume's looks: {info[0]!r}"))
 
     def _open_junban(self, at=None):
         """順's window, opened or brought to the front — at its control `at` (a7), if any. -> whether it opened."""
@@ -2526,6 +2682,12 @@ class ShellWindow(QMainWindow):
     # --- try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing") ------- #
     def _circle_asked(self, circle, what):
         """A circle's right-click menu: *Show* where its work is seen (else its settings), *Stop* it, its *Settings*."""
+        if what == "pause":                                # Mado-PZ: *Pause* / *Resume*, as a click
+            self._toggle_pause(circle)
+            return
+        if what == "pause_all":                            # Mado-PZ2: *Pause all* / *Resume all*, as a Shift-click
+            self._pause_all(circle)
+            return
         if what == "show" and self._show_circle(circle):
             return
         if what == "stop":
@@ -2577,16 +2739,21 @@ class ShellWindow(QMainWindow):
                 return True
         return bool(phase_service.stoppable(self.services.registry.live(), circle))
 
-    def _stop_circle(self, circle):
+    def _stop_circle(self, circle, automatic=False):
         """*Stop* from a circle's menu: Anki Miner's episode through its row's own Stop (*Stopping…* on the row and in
-        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel."""
+        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel.
+        `automatic` (a pause, Mado-PZ): only what started by itself; Connect's episode is cut by Connect at its watch's
+        next look (`runner.Steps.paused`), kept to go on from its step — never the row's Stop, which waits for a new
+        ask (train 45's intent keeper #1)."""
         if circle == phase_service.MINER:
+            if automatic:                                  # a pause: Connect cuts the episode itself, resumably —
+                return                                     # never the row's Stop (it would wait for a new ask)
             got = self._mining_now()
             if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
                 from app.qt import rows as qrows
                 self.mine.stop(qrows.Ask(got[0], (got[0],), None, got[1].job))
                 return
-        for job_id in phase_service.stoppable(self.services.registry.live(), circle):
+        for job_id in phase_service.stoppable(self.services.registry.live(), circle, automatic=automatic):
             self.services.registry.cancel(job_id)
 
     def _junban_found(self, here):
@@ -2623,6 +2790,17 @@ class ShellWindow(QMainWindow):
             self.phase.set_extra(phase_service.SURASURA, key, "failed", fault.title)
         self._connect_fault_key = key
 
+    def _first_cards_circle(self):
+        """Kantan-B2b (Sonic 2026-11-19: nothing mines until the yes; PROVISIONAL): while setup's *Make cards for your
+        first 20 episodes?* stands on *Needs you* — asked, or after its *Not now* — 鉱 is amber and its press opens that
+        card (a7: a decision waiting). Gone with the card (the yes). `set_extra` repaints only on a change (S19)."""
+        listed = any(e.kind == "first-cards" for e in self.needs_you.shown_entries())
+        if listed:
+            self.phase.set_extra(phase_service.MINER, "first-cards", "needs", strings.PHASE_FIRST_CARDS,
+                                 FIRST_CARDS_GO)
+        else:
+            self.phase.set_extra(phase_service.MINER, "first-cards")
+
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the
         library's, the update's cards)."""
@@ -2657,6 +2835,8 @@ class ShellWindow(QMainWindow):
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")
+        if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
+            self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:
@@ -2728,18 +2908,89 @@ class ShellWindow(QMainWindow):
         from app.qt import first_run                          # W3.5 part 3: the setup wizard over the window, first run
         first_run.host(self)                                  # (never raises; nothing when setup is finished)
 
+        self._arm_boot()                                      # Haya-LD: booted first, then the background
+
         def ready(_services=None):
             self._attach_duties()
             wiz = first_run.opened(self)
             if wiz is not None:
                 wiz.raise_()                                  # above the update sheet the duties made
-            bridge.run_in_worker(self.services.start, then=lambda started: started and self._duties_started(),
-                                 failed=lambda info: applog.log("shell", f"duties at start: {info[1]}"))
+            build = getattr(self.services.chores, "build_store", None)
+            if build is not None and self.boot_gate and not self.services.boot.is_set():
+                build()                                       # Haya-LD: a store still to build is the opening's own
+            self._when_booted(lambda: bridge.run_in_worker(
+                self.services.start, then=lambda started: started and self._duties_started(),
+                failed=lambda info: applog.log("shell", f"duties at start: {info[1]}")))
         if self.services.has_duties():
             ready()
         else:
             bridge.run_in_worker(self.services.make_duties, then=ready,
                                  failed=lambda info: applog.log("shell", f"duties not made: {info[1]}"))
+
+    # --- Haya-LD: booted first, on every PC (2026-11-20): the window opens fully before the background starts ---- #
+    def _arm_boot(self):
+        """(The first frame's.) The boot's watch: a list from disk already shown (or no library to show) -> booted at
+        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. Off
+        under SURASURA_NO_UI_TIMERS (`boot_gate`): booted at once, as the duties started before."""
+        self._framed = True
+        if not self.boot_gate:
+            self._booted_now()
+            return
+        from PyQt6.QtCore import QTimer
+        from app.services import gentle as gentle_module
+        QTimer.singleShot(int(gentle_module.BOOT_MAX_S * 1000), lambda: self._booted_now(late=True))
+        if self._boot_view_seen or self.services.library is None:
+            self._boot_after_idle()
+
+    def _boot_after_idle(self):
+        """Current's list from disk is drawn: booted once the event loop has nothing left to do (its paints flushed:
+        the dispatcher's `aboutToBlock`). Before the first frame, only remembered (`_arm_boot` asks)."""
+        if self._boot_armed or self.services.boot.is_set():
+            return
+        if not self._framed:
+            self._boot_view_seen = True
+            return
+        from PyQt6.QtCore import QAbstractEventDispatcher
+        d = QAbstractEventDispatcher.instance()
+        if d is None:
+            self._booted_now()
+            return
+        self._boot_armed = True
+        d.aboutToBlock.connect(self._booted_at_idle)
+
+    def _booted_at_idle(self):
+        from PyQt6.QtCore import QAbstractEventDispatcher
+        d = QAbstractEventDispatcher.instance()
+        try:
+            d.aboutToBlock.disconnect(self._booted_at_idle)
+        except (TypeError, RuntimeError):
+            pass
+        self._booted_now()
+
+    def _booted_now(self, late=False):
+        """Booted: said in the log with the time since the process began (the time to a usable window), the scheduler
+        told, and what waited for it started (`_when_booted`). Once."""
+        services = self.services
+        if services.boot.is_set():
+            return
+        if self.boot_gate:
+            age = hud._process_age_ms()
+            applog.log("shell", ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
+                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
+        services.booted()
+        waiting, self._after_boot = self._after_boot, []
+        for call in waiting:
+            try:
+                call()
+            except Exception as e:
+                applog.log("shell", f"after the boot: {e!r}")
+
+    def _when_booted(self, call):
+        """`call()` now when the window booted, else as it boots (the window's thread)."""
+        if self.services.boot.is_set():
+            call()
+        else:
+            self._after_boot.append(call)
 
     def _attach_duties(self):
         """The duties' controls (the header's Generate and journey, the bar's marks, the update sheet, Needs you's
@@ -2811,6 +3062,7 @@ class ShellWindow(QMainWindow):
         d.guide.clicked.connect(lambda _c=False: d.guide_panel.toggle())
         d.guide_panel.opened.connect(self._guide_opened)
         d.guide_panel.show_me.connect(self.guide_show_me)
+        d.guide_panel.act.connect(self.path_act)
         d.guide_panel.path_shown.connect(lambda: self._guide_answer(None))
         self.register_overlay(d.guide_panel)
         header_row.insertWidget(header_row.indexOf(d.help), d.guide)
@@ -2831,11 +3083,14 @@ class ShellWindow(QMainWindow):
             d.next_card = next_card_ui.NextCard(page)
             box = page.layout().itemAt(0).layout()
             box.insertWidget(box.indexOf(page.state_bar) + 1, d.next_card)
-            d.next_card.show_me.connect(self.guide_show_me)
+            d.next_card.act.connect(self.path_press)
+            d.next_card.show_me.connect(self.path_show_me)
             d.next_card.not_now.connect(self._path_not_now)
             d.next_card.own_cards.connect(lambda: self._guide_answer("own_cards"))
             d.next_card.made_ok.connect(lambda: self._guide_answer("first_ack"))
-            QWidget.setTabOrder(d.next_card.primary, d.next_card.secondary)
+            QWidget.setTabOrder(d.next_card.primary, d.next_card.primary2)
+            QWidget.setTabOrder(d.next_card.primary2, d.next_card.show_button)
+            QWidget.setTabOrder(d.next_card.show_button, d.next_card.secondary)
             QWidget.setTabOrder(d.next_card.secondary, d.next_card.later)
         # --- end the feature guide
         self._paint_level()
@@ -2898,8 +3153,6 @@ class ShellWindow(QMainWindow):
             guided = self.duties is not None and self.duties.guide_panel is not None
             bridge.run_in_worker(self.services.setup_ended,       # the path's look once setup has truly ended
                                  then=(lambda _r: self._guide_look(notes=False)) if guided else None)
-        if not up and self.__dict__.pop("_tour_after_setup", False):
-            QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
     def _session_said(self, line):
         from app.qt import windows
@@ -2991,6 +3244,7 @@ class ShellWindow(QMainWindow):
             self._guide_key = key
             if not first and self.duties is not None and self.duties.guide_panel is not None:
                 self._guide_soon.start()
+        self._path_repaint()                        # the card's press names Up Next's episode (S19: only on a change)
 
     def _guide_got(self, answer):
         asked, look, way, lines = answer
@@ -3004,6 +3258,7 @@ class ShellWindow(QMainWindow):
         else:
             d.guide_panel.set_look(look)
         d.guide_panel.set_path(way)
+        self._path_way = way
         d.guide.setVisible(d.guide_panel.has_news() or way is not None)
         d.guide.setToolTip(strings.GUIDE_TIP_PATH if way is not None else strings.GUIDE_TIP)
         news = look is not None and look.glow
@@ -3013,7 +3268,7 @@ class ShellWindow(QMainWindow):
             if card != d.next_card.card and card is not None and self.hints.blocked(toast_ok=True):
                 self._guide_soon.start()                    # never mid-drag or under a help card: the rows would jump
             else:                                           # (Kantan-X §7, the hints' wait rule)
-                d.next_card.set_card(card)
+                d.next_card.set_card(card, self._path_presses(card))
 
     def _guide_opened(self):
         """The panel opened: the glow ends at once; the seen mark and a fresh look go to a worker."""
@@ -3058,6 +3313,161 @@ class ShellWindow(QMainWindow):
         motion.wash(widget, theme.RADII["icon-button"])
         if step in strings.PATH_THEN:
             self.say(strings.PATH_THEN[step])
+
+    # --- Your path: every step acts from its own card (Mado-EZP, SPEC-r2 §0.2; every word PROVISIONAL) ---------- #
+    def _up_next(self):
+        """(row, episode) of Up Next — Current's first row and its next episode — or None."""
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        rows = getattr(view, "rows", None) or ()
+        if not rows:
+            return None
+        row = rows[0]
+        episodes, i = getattr(row, "episodes", None) or (), getattr(row, "next_index", None)
+        if not episodes or not isinstance(i, int) or not 0 <= i < len(episodes):
+            return None
+        return row, episodes[i]
+
+    def _step_presses(self, step_id):
+        """Step `step_id`'s own presses, named by what they act on now -> ((key, words, hover), ...): GUI-only reads
+        (Current's view, the settings, the path's last facts)."""
+        words = strings.PATH_PRESS
+
+        def one(key, **names):
+            text, tip = words[key]
+            return key, text.format(**names) if names else text, tip
+        up = self._up_next()
+        if step_id == "words":
+            return (one("words", ep=up[1].label),) if up else (one("words-any"),)
+        if step_id == "watch":
+            return (("watch", words["watch"][0].format(ep=up[1].label if up else "").strip(), words["watch"][1]),
+                    one("done"))
+        if step_id == "cards":
+            from app import settings_manager
+            facts = getattr(getattr(self, "_path_way", None), "facts", None)
+            settings = self.services.settings.get()
+            if facts is not None and not facts.miner_found:
+                return (one("miner"),)
+            if not settings.get("connect_enabled"):
+                return (one("cards-on"),)                # EZ2-5: the consent itself (Mine now needs it, D29)
+            if not settings_manager.connect_on(settings):
+                return (one("automation"),)              # D29: never turned on for you — its switch, in Settings
+            got = self._top_to_mine(first=PATH_LABEL_ROWS)
+            return (one("mine", title=got[0].title) if got else one("mine-any"),)
+        if step_id == "junban":
+            way = getattr(self, "_path_way", None)
+            done = any(st.done for st in (way.steps if way else ()) if st.step.id == "junban")
+            return (one("junban-again" if done else "junban"),)
+        return (one(step_id),) if step_id in words else ()
+
+    def _path_presses(self, card):
+        return self._step_presses(card[1]) if card is not None and card[0] == "step" else ()
+
+    def _path_repaint(self):
+        """The Next card's presses named again (Up Next's episode moved, a switch changed); repainted only when they
+        changed (S19)."""
+        d = self.duties
+        card = getattr(getattr(d, "next_card", None), "card", None)
+        if card is not None and card[0] == "step" and not sip.isdeleted(d.next_card):
+            d.next_card.set_card(card, self._path_presses(card))
+
+    def path_act(self, step_id):
+        """A step's *Do it* in ✦'s panel (closed already): its first press, marked in the bar."""
+        presses = self._step_presses(step_id)
+        if presses:
+            self.path_press(presses[0][0])
+
+    def path_press(self, key, control=None):
+        """A step's own press `key` (§0.2: it does the step, or opens what it acts on in place), from the Next card
+        (`control`: its button turns) or ✦'s panel (None: the bar's arc). Each is the press the window already has —
+        the same press key, so a click on either while one runs does nothing. -> the press, or None."""
+        from app.qt import settings_connect
+        up = self._up_next()
+        if key in ("words", "words-any"):            # the journey on Up Next's episode; it ticks once it opened
+            episode = view_rows.journey_episode(up[0]) if key == "words" and up else None
+            return self._open_journey(control=control, asked=True, episode=episode)
+        if key in ("watch", "done"):
+            current = self.page_widgets.get("current")
+            if up is None or current is None:
+                self.say(strings.PATH_NO_EPISODE)
+                return None
+            row, ep = up
+            if key == "watch":
+                return current._play(ep, control=control)
+            moves = getattr(self, "moves", None)
+            if moves is not None and moves.marking(row.key):
+                return None                              # Up Next's Done on its way: one press at a time
+            current.done(row, None if ep.watched else ep)
+            return None
+        if key in ("mine", "mine-any"):
+            got = self._top_to_mine()
+            if got is None or getattr(self, "mine", None) is None:
+                self.say(strings.HELP_TRY_MISSING["mine_top"])
+                return None
+            return self.mine.mine_row(*got)
+        if key == "cards-on":                            # Connect's switch, as Settings' runs it (one run at a time)
+            def done(answer):
+                ok, why = answer
+                if ok:
+                    self.bridge.settings_written.emit(("connect_enabled",))
+                else:
+                    self.say(settings_connect.S.SWITCH_NOT_ON.format(why))
+            return qpress.run(control, "settings:connect_switch", settings_connect._switch_on, self.services.settings,
+                              lambda line: applog.log("path", line), then=done,
+                              failed=lambda info: self.say(str(info[0])), win=self)
+        if key == "miner":                               # setup at its Anki Miner page, in Surasura (W3.5 part 3)
+            return settings_connect.install_anki_miner(self)
+        if key in ("junban", "junban-again"):
+            return self._open_junban()
+        if key == "backfill":
+            from app.qt import windows
+            opener = next((op for op in windows.OPENERS if op.name == "backfill"), None)
+            return windows.launch(self, opener) if opener is not None else self.say(strings.GUIDE_NOT_HERE)
+        if key == "yours":
+            return self.pick_your_cards(control)
+        places = {"automation": "settings:automation",
+                  "audiobook": "tab:current@audiobook", "hato": "settings:hato", "piyo": "settings:practice_ai"}
+        if key in places:
+            return self.guide_show_me(places[key])
+        return None
+
+    def pick_your_cards(self, control=None):
+        """Step ④'s press, *Pick your cards* — **the one entry point** the Essentials picker over Current fills
+        (Mado-EZC, SPEC-r2 lane 3: §0.3's picker; its Done writes the `yours` moment through `path_moment`). Until
+        it lands: Settings' *Words to make cards from*, revealed (the learner's save there ticks ④)."""
+        return self.guide_show_me("settings:connect_mine_words")
+
+    def path_show_me(self, where):
+        """The Next card's *Show me*: only a look at where the same press lives, for next time — Up Next's part or a
+        footer circle lit in place (`motion.wash` over it), a Settings place revealed as Settings does. It never
+        presses anything and writes nothing."""
+        kind, _sep, name = str(where).partition(":")
+        rect, owner = None, None
+        if kind == "hero":
+            current = self.page_widgets.get("current")
+            lst = getattr(current, "list", None)
+            rect = lst.hero_part(name) if lst is not None else None
+            owner = lst.viewport() if lst is not None else None
+        elif kind == "circle":
+            phase_strip = getattr(self, "phase", None)
+            if phase_strip is not None and phase_strip.isVisible():
+                rect, owner = phase_strip.rect_of(name).toAlignedRect(), phase_strip
+        else:
+            self.guide_show_me(where)
+            return
+        if rect is None or owner is None:
+            self.say(strings.GUIDE_NOT_HERE)
+            return
+        spot = QWidget(owner)                        # the place's own rect, washed once, gone with its wash
+        spot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        spot.setGeometry(rect.adjusted(-3, -3, 3, 3))
+        spot.show()
+        motion.wash(spot, theme.RADII["icon-button"]).destroyed.connect(spot.deleteLater)
+        self.path_spot = spot
+
+    def path_moment(self, name):
+        """A path moment the window keeps no other record of (④: the learner picked which words get a card)."""
+        if self.duties is not None and self.duties.guide_panel is not None:
+            self._guide_moment(name)
     # --- end the feature guide -------------------------------------------------------------------------------- #
 
     def changeEvent(self, event):
@@ -3094,11 +3504,21 @@ class ShellWindow(QMainWindow):
         from app.services.title_words import TitleWords
         settings = self.services.settings
         provider = TitleWords(numbers, self.language, settings=settings.get)
+        provider.on_standing = lambda words, lang=self.language: self._studied_words(words, lang)   # Michi-CK2
         if held is not None:
             held[1].close()
         self._title_words = (numbers, provider)
         provider.refresh_anki()
         return provider
+
+    def _studied_words(self, words, language=None):
+        """(The word card's worker.) Anki's studied cards' words, just read for the word card, to the ✓ chip's counter
+        of the library open — its language's only (Michi-CK2: never a second read of Anki)."""
+        library = getattr(self.services, "library", None)
+        chips = getattr(library, "chips", None)
+        if chips is not None and getattr(chips, "language", None) == getattr(library, "language", None) == \
+                (language or self.language):
+            chips.studied(words)
 
     def _words_anki(self, force=False):
         """Anki's standing read again for the word card (never on a hover): as the window comes to the front, after a
@@ -3306,11 +3726,12 @@ class ShellWindow(QMainWindow):
                 qpress.run(control, "generate", self.services.generate,
                            failed=lambda info: self.say(str(info[0])), win=self)
 
-    def _top_to_mine(self):
-        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None."""
+    def _top_to_mine(self, first=None):
+        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None.
+        `first`: look only at the first rows (a label's guess on every view: never a 20,000-row walk)."""
         from app.qt import rows as rows_module
         view = getattr(self.page_widgets.get("current"), "view_model", None)
-        for row in getattr(view, "rows", None) or ():
+        for row in (getattr(view, "rows", None) or ())[:first]:
             episodes = getattr(row, "episodes", None) or ()
             if not any(getattr(e, "in_top", False) for e in episodes):
                 continue
@@ -4300,7 +4721,7 @@ def library_for(language, settings, freeze_gc=False):
     The opener's role is "window": it opens a store that is there and never builds, migrates or repairs one — no store
     yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
     mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
-    from app.services import library_reader, moves, play
+    from app.services import card_chip, library_reader, moves, play
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
@@ -4309,6 +4730,7 @@ def library_for(language, settings, freeze_gc=False):
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
         play=play.Looks(language),                          # row 55: ▶ only where its file is found
+        chips=card_chip.Chips(language),                    # Michi-CK2: the ✓ counts every word with a card
         coalesce=True)                                      # a4: a burst of commits is a few views a second
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
@@ -4386,6 +4808,13 @@ def open_services(settings=None, freeze_gc=False, **kw):
     services = Services(settings=settings, library=reader, writer=writer,
                         library_for=lambda other: library_for(other, settings, freeze_gc), **kw)
     services.library_after_frame = True      # its first-screen cache read and first feed read never in the first frame
+    if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+        try:                                 # Haya-LD: the scheduler's gate on before any job can be asked for
+            from app.services import gentle as gentle_module
+            services.gentle = gentle_module.Gentle(services.registry,
+                                                   lambda: settings_service.thaw(settings.get())).attach()
+        except Exception as e:
+            applog.log("shell", f"the gentle scheduler: {e!r}")
     return services
 # --- end W3.2 P0 ---------------------------------------------------------------------------------------------------- #
 

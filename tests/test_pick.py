@@ -1,7 +1,8 @@
 """Which of a subtitle's words become cards, and the line each is cut from (app/connect/pick.py, P1.3 row 1.3.3).
 
 Real subtitles: the bundled café episode (喫茶店の朝.srt, written for Surasura: speaker labels, a name, 家庭教師), the library episode (.ass, with a karaoke OP and two speakers), the
-phrases sample (set phrases), the readings sample (fronts a line spells unlike the dictionary) and a Chinese
+phrases sample (set phrases), the readings sample (fronts a line spells unlike the dictionary), the utterances sample
+(sighs, laughs and fillers beside real interjections) and a Chinese
 night-market vlog. The learner's known words and list are made per test
 from the words the files hold, so each rule is seen on its own.
 """
@@ -19,6 +20,7 @@ EPISODE = os.path.join(RESOURCES, "ja", "library_episode.ass")
 PHRASES = os.path.join(RESOURCES, "ja", "phrases_sample.srt")
 NIGHT_MARKET = os.path.join(RESOURCES, "zh", "night_market.srt")
 READINGS = os.path.join(RESOURCES, "ja", "readings_sample.srt")
+UTTERANCES = os.path.join(RESOURCES, "ja", "utterances_sample.srt")
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +125,17 @@ def test_a_word_said_only_in_a_song_is_never_sent():
     reasons = {n["word"]: n["reason"] for n in chosen["not_offered"]}
     assert reasons["声"] == "sung" and reasons["聞こえる"] == "sung"      # karaoke OP
     assert "声" not in _by_word(chosen)
+
+
+def test_a_word_said_only_in_an_opening_styled_opjp_is_never_sent_and_one_also_said_is_cut_from_its_line():
+    # 風の歌 (songs_styled): its opening in OPJP, a style the cue reader read as dialogue before Kotoba-OP2 —
+    # 越える is only sung; 海 is sung and said (海に行きたいな。): its card is cut from the line said
+    read, tokens = _read(os.path.join(RESOURCES, "ja", "songs_styled", "Kaze no Uta - 01.ja.ass"))
+    chosen = pick.pick(read, tokens, "ja", _known(), mode="unknown")
+    reasons = {n["word"]: n["reason"] for n in chosen["not_offered"]}
+    assert reasons["越える"] == "sung" and "越える" not in _by_word(chosen)
+    said = next(c for c in read if c.text == "海に行きたいな。")
+    assert _by_word(chosen)["海"]["line_start"] == cues.seconds(said.start)
 
 
 def test_a_one_kanji_piece_is_never_offered():
@@ -233,10 +246,31 @@ def test_a_set_phrase_whose_line_reads_as_its_row_keeps_the_rows_reading():
 
 
 def test_a_word_written_in_kana_alone_reads_as_itself():
-    # not its lemma's kana (それじゃ, もの, くくと, とおり); katakana folded to hiragana as Anki Miner writes readings
-    sent = _readings_sent([("それじゃ", "ソレジャ"), ("物", "モノ"), ("くくく", "ククク"), ("通り", "トオリ"),
-                           ("ウッ", "ウッ")])
-    assert sent == {"それじゃ": "それじゃあ", "物": "もん", "くくく": "くくっ", "通り": "どおり", "ウッ": "うっ"}
+    # not its lemma's kana (それじゃ, もの, とおり)
+    sent = _readings_sent([("それじゃ", "ソレジャ"), ("物", "モノ"), ("通り", "トオリ")])
+    assert sent == {"それじゃ": "それじゃあ", "物": "もん", "通り": "どおり"}
+
+
+def test_a_laugh_and_a_gasp_get_no_card():
+    # the sample's くくっ、面白くなってきた。 and ウッ、頭が痛い…… — a laugh and a gasp (the tagger's foreign name ウッ) are
+    # sounds, never words (analyzer § Sounds are no words): listed or not, no card is made for them
+    sent = _readings_sent([("くくく", "ククク"), ("ウッ-外国", "ウッ"), ("ウッ", "ウッ"), ("通り", "トオリ")])
+    assert sent == {"通り": "どおり"}
+
+
+def test_mining_every_new_word_of_a_scene_makes_no_card_for_its_sighs_laughs_and_fillers():
+    # utterances_sample.srt mined whole (every word new): ほっ, なっ (the tagger's なあ), エヘヘ, ふふっ, あははは, えっと
+    # (cut えっ + と in the scene's text), あのー and え？ get no card; the words beside them, the real interjections
+    # (ありがとう, うん, ええ, はい, ねえ, くそ) and the words a sound looks like (ほっと, 成る) do; a katakana word's
+    # card reads in hiragana as Anki Miner writes readings (ドキドキ: どきどき)
+    loaded = phrases.load()
+    if loaded is None:
+        pytest.skip("no phrase data in this build")
+    read, tokens = _read(UTTERANCES)
+    words = _by_word(pick.pick(read, tokens, "ja", _known(), mode="unknown", phrase_set=loaded))
+    assert not {"ほっ", "なあ", "えへ", "ふふ", "あはは", "えっ", "えーと", "あの"} & set(words)
+    assert {"良い", "なんで", "有り難う", "内緒", "件", "うん", "ええ", "はい", "ねえ", "くそ", "ほっと", "成る"} <= set(words)
+    assert words["どきどき"]["front_reading"] == "どきどき"
 
 
 def test_an_iteration_mark_is_no_sound_of_its_own_so_its_word_keeps_the_dictionarys_kana(tmp_path):

@@ -771,6 +771,33 @@ def is_transcript(name):
     return base.lower().endswith(TRANSCRIPT_EXTENSIONS) and not base.startswith("._")
 
 
+# a subtitle's language tag (`.ja`, `.jpn`, `.zh-CN`, `.chs`): the languages' own codes and English's, never any two
+# letters (`Vol.II` is a volume)
+_TAG = re.compile(r"(?:ja|jp|jpn|zh|chi|zho|chs|cht|sc|tc|cn|tw|hk|en|eng)(?:[-_][a-z0-9]{2,4})?", re.I)
+
+
+def _book_stem(name):
+    """A file's name as two books' (or a book's and its subtitle's) are compared: no extension, no language tag
+    (`X.ja.srt` is `X`'s), NFKC, case-folded."""
+    stem = os.path.splitext(os.path.basename(str(name or "")))[0]
+    head, dot, tag = stem.rpartition(".")
+    if dot and head and _TAG.fullmatch(tag):
+        stem = head
+    return unicodedata.normalize("NFKC", stem).strip().casefold()
+
+
+def book_timings(subtitles, epubs, videos=()):
+    """Kura-AB5 (11-20 report; Sonic's lean: an `.srt` named like the EPUB beside it is that book's timed text, never a
+    title of its own): which of `subtitles` (one folder's names) are a book's timed text -> {subtitle name: EPUB name}
+    — named exactly as an EPUB of `epubs` there (`<book>.srt`, `<book>.ja.srt`), and no video of that name beside them
+    (then it is the video's). One rule for the walk (held out: no item, no New arrivals) and for Connect
+    (`connect.library.book_timing`: the audiobook's timing once the book is paired)."""
+    books = {_book_stem(e): e for e in epubs if str(e).lower().endswith(".epub")}
+    seen = {_book_stem(v) for v in videos}
+    return {s: books[_book_stem(s)] for s in subtitles
+            if is_transcript(s) and _book_stem(s) in books and _book_stem(s) not in seen}
+
+
 def transcripts(found, names):
     """Which of `names` (the subtitle files of one folder, as listed) is each audiobook's transcript -> {index in
     `found`: name}. `found`: the audiobooks of that folder. A name is an audiobook's when its clean title meets one of

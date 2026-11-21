@@ -92,6 +92,7 @@ REPLAN_THEN_GENERATE_CM = "Anki re-ordered · your list refreshes (Generate) whe
 # 3.0's gate (`stands_aside`): why the host does nothing now.
 AUTOMATION_OFF = "Automation is off — Anki is re-ordered only when you run 順 yourself"
 JUNBAN_OFF = "順 is off — switch it on to re-order Anki as you move"
+JUNBAN_PAUSED = "順 is paused — click its circle to re-order Anki as you move again"     # Mado-PZ
 JUNBAN_ABSENT = "順 isn't installed — Anki isn't re-ordered as you move"
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 STAND_ASIDE = {
@@ -145,7 +146,7 @@ OFF = GivesUp("")      # no words: nothing re-orders now by the user's own choic
 def ends_with(why):
     """`stands_aside`'s reason `why` as a waiting press ends with it: OFF for the user's own choices (D29 off, 順 off or
     absent), else the reason as a line that gives up (the deck to pick, D7's one deck)."""
-    return OFF if why in (AUTOMATION_OFF, JUNBAN_OFF, JUNBAN_ABSENT) else GivesUp(why)
+    return OFF if why in (AUTOMATION_OFF, JUNBAN_PAUSED, JUNBAN_OFF, JUNBAN_ABSENT) else GivesUp(why)
 
 
 def junban_present():
@@ -236,6 +237,8 @@ def _stand_aside(settings, language):
     settings = settings or {}
     if not settings_manager.automation(settings):
         return AUTOMATION_OFF, False
+    if settings_manager.paused(settings, "junban"):        # Mado-PZ: paused at the bar, until a click resumes it
+        return JUNBAN_PAUSED, False
     if settings.get("enable_junban") is not True:
         return JUNBAN_OFF, False
     if not junban_present():
@@ -464,11 +467,15 @@ class Host:
         try:
             for kind in KINDS:
                 if kind in run:
+                    began = time.monotonic()
                     try:
                         self._warm() if kind == "warm" else self._job(kind)
                     except Exception as e:          # a background job must never take the window down
                         self._tell(f"Re-ordering as you move stopped: {e}", fails=True)
+                    _log_took(self.language, kind, time.monotonic() - began)
+            began = time.monotonic()
             self._sync_step(force="sync-now" in run)
+            _log_took(self.language, "AnkiWeb sync", time.monotonic() - began)
             if self._done_at is not None and time.monotonic() >= self._done_at:
                 self._done_at = None
                 self._tell(UP_TO_DATE)
@@ -804,12 +811,15 @@ class Host:
         job.cards_out = True        # P4.1 L2: the host records what *Take its new cards out* changes (`_replan`)
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
+        began = time.monotonic()
         try:
             report = reposition.run(settings, progress=self._progress(job), refresh=False, wait=None,
                                     cancel=self._cancel, verb=VERB, job=job,
                                     on_wait=lambda holder: self._tell(anki_connect.waiting_line(holder)))
         finally:
             self._working(False)
+        _log_took(self.language, f"{kind}'s write to Anki ({len(report.get('written') or [])} cards)",
+                  time.monotonic() - began, at_least=0.0)
         self._sync_at = self._due_sync(settings)
         if report.get("stands_aside") or report.get("one_deck"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
@@ -1078,6 +1088,22 @@ _HELPERS_LOCK = threading.Lock()
 
 
 # --- P4.1 L2: *Take its new cards out* (05 §5.7, D14) — the record Put back restores from ------------------------ #
+LOG_OVER_S = 1.0                # Haya-LD: a step of the helper's this long or longer gets a line in the app's log
+
+
+def _log_took(language, what, took, at_least=LOG_OVER_S):
+    """Haya-LD: one of the helper's steps and how long it took, in the app's log (a startup's timeline had the
+    helper's start and end, nothing between: its reads, its writes to Anki and its AnkiWeb sync told apart). Quick
+    steps (every focus's catch-up with nothing owed) leave no line. Never raises."""
+    if took < at_least:
+        return
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(f"re-order ({language}): {what} took {took:.1f} s")
+    except Exception:
+        pass
+
+
 def _record_cards_out(store, report):
     """A job's *Take its new cards out* changes into the store's `anki_changes`, and the records its Put back restored
     closed (`pins.record`), whatever the run's outcome (what landed is recorded). Never raises: logged."""
@@ -1334,6 +1360,7 @@ class Remote:
         import subprocess
         from multiprocessing.connection import Client, Listener
         from app import library_store
+        from app.connect.power import popen_below_normal
         if library_store.update_staged():
             raise RuntimeError("an update is staged")
         key = secrets.token_bytes(32)
@@ -1341,10 +1368,12 @@ class Remote:
         answered = threading.Event()
         try:
             flags = 0x08000000 if sys.platform == "win32" else 0            # CREATE_NO_WINDOW
-            self._proc = subprocess.Popen(_helper_args(self.language, self._generate is not None),
-                                          env=_helper_env(listener.address, key), creationflags=flags,
-                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
+            # below normal, as every background child of the window (Haya-CL 3.0.17: at normal it ran its minutes of
+            # re-order beside the window's start on Sonic's laptop, #8158GX); Anki's writes are Anki's own
+            self._proc = popen_below_normal(_helper_args(self.language, self._generate is not None),
+                                            env=_helper_env(listener.address, key), creationflags=flags,
+                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
             with _HELPERS_LOCK:
                 _HELPERS.append(self._proc)
 

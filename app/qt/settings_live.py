@@ -666,14 +666,6 @@ class Live(QObject):
             self.parts[row_id] = {"hint": hint}
         elif row_id == "level":
             self._paint_level(keep=False)
-        elif row_id == "automation":                    # help cards (§6.6): the tour's door, under the row's words
-            tour = sc.Door(S.HELP_TOUR_DOOR, tooltip=S.HELP_TOUR_DOOR_TIP, name=S.HELP_TOUR_DOOR)
-            tour.clicked.connect(lambda _c=False: self.open_tour())
-            line = QHBoxLayout()
-            line.addWidget(tour)
-            line.addStretch(1)
-            self.page.row(row_id).layout().itemAt(0).layout().addLayout(line)
-            self.parts[row_id] = {"tour": tour}
         elif row_id == "auto_update_enabled":
             offer = sc.Door(S.OFFER_AGAIN_NAME, tooltip=S.OFFER_AGAIN_TIP)
             offer.clicked.connect(lambda _c=False: self.offer_again())
@@ -1171,12 +1163,6 @@ class Live(QObject):
         if offer.isHidden() == bool(version):
             with self.page._keeping(self.page._last):
                 offer.setVisible(bool(version))
-
-    def open_tour(self):
-        """*Show me what runs by itself* (help cards §6.6): the tour, over the window (a GUI-only overlay: no pending)."""
-        opener = getattr(self.shell, "open_tour", None)
-        if opener is not None:
-            opener()
 
     def offer_again(self):
         updates = getattr(self.services, "updates", None)

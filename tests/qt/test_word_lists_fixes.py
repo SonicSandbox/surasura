@@ -269,12 +269,13 @@ def test_a_cross_removes_its_row_alone(main, known_file, ja_resources_dir):
 
 
 def test_a_list_or_language_switch_makes_every_row_again(main):
+    from app.services import word_marks
     _put("冒険\n毎日\n")
-    _put("灯台\n", "blacklist")
-    _put("东西\n", "blacklist", "zh")
+    assert not word_marks.apply("ja", [("灯台", "known")]).error
+    assert not word_marks.apply("zh", [("东西", "known")]).error
     w = _open(main)
     seen = _signals(w)
-    w.kind_buttons["blacklist"].click()
+    w.kind_buttons["known"].click()
     assert wait_until(lambda: _model_rows(w) == [("灯台", "list")])
     assert seen["reset"] >= 1
     resets = seen["reset"]

@@ -247,7 +247,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
-           "move_cards", "leave_cards")                                                  # Michi-DK
+           "move_cards", "leave_cards",                                                  # Michi-DK
+           "put_back_shelf", "leave_shelf")                                              # Kyou-SH
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -680,6 +681,24 @@ def _default_books(opener, item_id):
                 pass
 
 
+def _default_read(opener, name, *args):
+    """Kura-AB5: `Store.<name>(*args)` through a store handle of this worker's own (closed after), or None."""
+    if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+        return None
+    try:
+        store = opener.handle()
+        if store is None or not hasattr(store, name):
+            return None
+        return getattr(store, name)(*args)
+    finally:
+        close = getattr(opener, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def _default_audiobooks(opener, item_id):
     """Kura-AB2 *Pick its audiobook…*: the book part `item_id`'s book and the library's audiobooks with no book,
     likeliest first (`Store.book_audiobooks`), through a store handle of this worker's own (closed after)."""
@@ -814,6 +833,10 @@ class NeedsYou(QObject):
         self.read_asks = lambda: _default_asks(opener)
         self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
         self.read_audiobooks = lambda item_id: _default_audiobooks(opener, item_id)   # Kura-AB2
+        # Kura-AB5: a book's every part (a list row's whole-book Remove) and the book a new version may replace (New
+        # arrivals' *Replace 「…」*), each on a worker
+        self.read_book = lambda item_id: _default_read(opener, "book_items", item_id)
+        self.read_new_version = lambda item_id: _default_read(opener, "new_version_of", item_id)
         # Michi-NS: *Make them from the audio*'s two steps, each on a worker (tests replace them)
         self.subs_ready = _subs_ready
         self.make_subs = lambda *args: _default_make(opener, *args)
@@ -829,6 +852,7 @@ class NeedsYou(QObject):
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
         self.first_cards = _first_cards
+        self.first_run_aside = _first_run_aside        # Kantan-B2b: *Not now* sets the log's queued jobs aside
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
@@ -1626,6 +1650,10 @@ class NeedsYou(QObject):
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"], got["epub"]))
         m.addAction(act)
+        act = QAction(strings.NEEDS_AUDIOBOOK_FILE, m)               # Kura-AB5: by one of its files (Sonic's yes)
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FILE_TIP)
+        act.triggered.connect(lambda _c=False: self._audiobook_file(got["title"], got["epub"]))
+        m.addAction(act)
         self.last_menu = m
         control = self._control("pick_audiobook", entry)
         if control is not None and control.isVisible():
@@ -1657,6 +1685,23 @@ class NeedsYou(QObject):
         if folder and adder.read_folder(folder, book=book):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder)),
                                                              book=title))
+
+    def _audiobook_file(self, title, epub=None):
+        """Kura-AB5 *An audio file on your computer…* (Sonic's yes, 11-20 report: a folder of several audiobooks' loose
+        files gave none): the audiobook the picked file belongs to is this book's — its folder read as *A folder…*
+        reads it (`Adder.read_folder`, the book's word with the file: `sources.scan`'s `book["file"]`), and only the
+        audiobook holding that file joins, whatever its names; one already in your library — alone, or with another
+        book — is picked for it (`_pick_audiobook`, its toast's Undo; `Adder._audiobooks_said`)."""
+        adder = getattr(self.win, "adder", None)
+        if adder is None or not epub:
+            return
+        from app.qt import windows                       # (Fresh-U row 11: never the program's own folder)
+        path = self.pick_file(strings.NEEDS_AUDIOBOOK_FILE_TITLE.format(book=title), windows.content_folder())
+        if not path:
+            return
+        path = os.path.abspath(path)
+        if adder.read_folder(os.path.dirname(path), book={"epub": epub, "title": title, "file": path}):
+            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(path), book=title))
 
     def _do_no_audiobook(self, entry, _line):
         answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),
@@ -2192,7 +2237,11 @@ class NeedsYou(QObject):
             return True
 
         def done(_ok):
-            self._say(strings.NEEDS_HATO_ON)
+            if "arrivals" in getattr(self.win.services, "paused", ()):     # Mado-PZ2: 届 paused holds hato's look
+                self._say(strings.PAUSED_WAITS.format(what=strings.NEEDS_HATO_WAITS,
+                                                      circle=strings.PAUSED_CIRCLE["arrivals"]))
+            else:
+                self._say(strings.NEEDS_HATO_ON)
             if looks is not None and hasattr(looks, "asked"):
                 looks.asked(refreshed=True)
             self.refresh()
@@ -2319,6 +2368,8 @@ class NeedsYou(QObject):
                 self._stays(name, entry)                 # (the reason said, the line stays)
             told()
             made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
+            if settings_manager.paused(services_settings.get() or {}, "miner"):
+                made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED    # Kantan-B2b: nothing starts while paused (kick)
             self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
             self.refresh()
         self._press(name, entry, run, then=done, failed=failed)
@@ -2328,16 +2379,23 @@ class NeedsYou(QObject):
         self._do_first_cards(entry, line)
 
     def _do_not_now(self, entry, _line):
-        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
-        Connect is: off, where to turn it on; on, that later episodes still get their cards."""
+        """*Not now* (Kantan-B2b; Sonic 2026-11-19: Not now is no yes): the jobs the placement log queued that haven't
+        started set aside (an older version's: `actions.first_run_aside`), then its own answer kept
+        (`FIRST_CARDS_NOT_NOW`) — the line itself stays unanswered, so nothing mines by itself and it stays on the
+        page with *Make cards* alone; never while *Make cards* runs. Connect left as it is. Its line as Connect is."""
         name = "not_now_on" if self._control("not_now_on", entry) is not None else "not_now"
         lang = self.language
         on = settings_manager.connect_on(self.win.services.settings.get() or {})     # B2-8: the one rule
+        aside = self.first_run_aside
+
+        def run():
+            aside(lang)
+            return service.answer(lang, [service.FIRST_CARDS_NOT_NOW])
 
         def done(_n):
             self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
             self.refresh()
-        self._press(name, entry, service.answer, lang, [entry.key], then=done)    # (one press per card)
+        self._press(name, entry, run, then=done)    # (one press per card)
 
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
@@ -2404,6 +2462,28 @@ class NeedsYou(QObject):
             self.refresh()
         self._press("leave_cards", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
+    # Kyou-SH (PROVISIONAL): Connect's shelf, said — *Put back* is the put-back Connect's switch uses (`switch.put_back`:
+    # each restore point through `undo.act`, waiting for Anki's write lock; on a worker)
+    def _do_put_back_shelf(self, entry, _line):
+        from app.connect import switch
+        data = entry.data or {}
+
+        def done(failed):
+            if failed:
+                self._stays("put_back_shelf", entry)
+                self._say(strings.NEEDS_SHELF_NOT_BACK.format(why=failed[0]))
+            else:
+                self._say(strings.NEEDS_SHELF_BACK)
+            self.refresh()
+        shelved = {self.language: (data.get("cards") or 0, list(data.get("runs") or ()))}
+        self._press("put_back_shelf", entry, switch.put_back, shelved, then=done)
+
+    def _do_leave_shelf(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SHELF_LEFT)
+            self.refresh()
+        self._press("leave_shelf", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""
         if self._alive():
@@ -2469,6 +2549,12 @@ def _settings_switch_on(settings, log):
     """(A worker.) Connect's switch turned on as Settings › Anki turns it on -> (ok, why)."""
     from app.qt import settings_connect
     return settings_connect._switch_on(settings, log)
+
+
+def _first_run_aside(language):
+    """(A worker; Kantan-B2b.) *Not now*: the log's jobs not started set aside -> how many."""
+    from app.connect import actions
+    return actions.first_run_aside(language)
 
 
 def _first_cards(language, settings, data_dir=None):

@@ -59,8 +59,17 @@ def returning_clause(stats):
     before the write (I5); "" when there are none."""
     count = len((stats or {}).get("returning") or ())
     if not count:
-        return ""
-    return f" Back on your list: unsuspend {count} card{'' if count == 1 else 's'} Junban had set aside."
+        return clear_clause(stats)
+    return (f" Back on your list: unsuspend {count} card{'' if count == 1 else 's'} Junban had set aside."
+            + clear_clause(stats))
+
+
+def clear_clause(stats):
+    """" 3 cards are back on your list or already studied, so their purple flag and 'later' tag come off." — Kyou-PF's
+    clean-up (Sonic 2026-11-20), stated before the write (I5); "" when there is none. In plain words since Kyou-KN
+    (`reposition.clear_words`, PROVISIONAL)."""
+    counts = ((stats or {}).get("clear") or {}).get("counts") or {}
+    return reposition.clear_words(counts.get("flag") or 0, counts.get("tag") or 0)
 
 
 def marker_glyphs(marks):
@@ -682,7 +691,10 @@ def later_clause(stats):
             parts.append(f"{verb} {count} {noun}{'' if count == 1 else 's'}{tail}")
     if not parts:
         return returning_clause(stats)
-    text = " Not on your list: " + ", ".join(parts[:-1] + [("and " if len(parts) > 1 else "") + parts[-1]]) + "."
+    # Kyou-UL (words PROVISIONAL, 2026-11-19): why a card is not on the list — below its level (Connect's *Only i+1* mines
+    # those too) or a word you know — so a card just mined never reads as Connect's mistake
+    text = (" Not on your list (below its level, or known): "
+            + ", ".join(parts[:-1] + [("and " if len(parts) > 1 else "") + parts[-1]]) + ".")
     kept = counts.get("flag_kept") or 0
     if kept:
         text += f" {kept} you flagged another colour keep{'s' if kept == 1 else ''} it."

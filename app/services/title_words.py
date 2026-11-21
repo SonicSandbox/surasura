@@ -207,6 +207,10 @@ class TitleWords:
         self._places = (None, {})                    # (the view, `places(view)`): once a view
         self.worker = Worker(f"window-title-words-{language}")
         self.reads = {"standing": 0, "firsts": 0}    # (tests, the register's counts)
+        # Michi-CK2: ({word: Standing}) -> None, told the studied cards' words each read Anki answered (the ✓ chip's
+        # counter, `card_chip.Chips.studied`; a kana card's sentence on its Standing, Kyou-KN): the one read of Anki's
+        # studied cards, never a second
+        self.on_standing = None
 
     # --- the card --------------------------------------------------------------------------------------------- #
     def ask(self, row, view, done):
@@ -344,6 +348,12 @@ class TitleWords:
                     found = None
         with self._lock:
             self._standing = found
+        tell = self.on_standing
+        if tell is not None and isinstance(found, dict):
+            try:
+                tell(found)                      # {word: Standing}: a kana card's sentence beside it
+            except Exception as e:
+                print(f"Title words: the studied words couldn't be handed on ({e!r})")
 
     def standing(self):
         with self._lock:

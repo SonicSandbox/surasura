@@ -39,6 +39,7 @@ START_MAINTAIN = 1.5        # root.after(1500, self._maybe_maintain)
 MAINTAIN_SETTLE = 2.0       # _schedule_maintain: 2 s after the last trigger
 ARRIVALS_AT = 2.5           # root.after(2500, self._arrivals_notice)
 FROM_FOLDERS_EVERY = 60.0   # W3.2 P0: a fresh language's store built from its folders at most this often
+MAINTAIN_AGAIN = 15.0       # Haya-LD: a helper's check that waited (its turn, or another one at work) asks again then
 # The Rarity tables' warm-up (`_prepare_preview`): the Tk window starts it as it opens; here once the start's own work
 # is done (the duties made and started, the indexer's and the helper's checks at 1.5 s, Connect's notice at 2.5 s). At
 # once it ran beside that work and the first paint of the duties' controls: ~0.25 s of a worker's CPU on Python's one
@@ -80,10 +81,11 @@ def index_needed(language, script):
 
 
 def indexer_command(language):
-    """The indexer's process command: the frozen app's `index` verb, or the script (`run_command_async`'s map)."""
+    """The indexer's process command: the frozen app's `index` verb (headless: never a Critical Error box from an
+    unseen child, Haya-CL 3.0.17), or the script (`run_command_async`'s map)."""
     from app.path_utils import is_frozen
     if is_frozen():
-        return [sys.executable, "index", "--language", language]
+        return [sys.executable, "index", "--headless", "--language", language]
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [sys.executable, os.path.join(app_dir, "indexer.py"), "--language", language]
 
@@ -120,6 +122,7 @@ class Chores:
         self._closed = False
         self._timers = []
         self._maintain_timer = None
+        self._again_maintain = False        # Haya-LD: a check waiting MAINTAIN_AGAIN (`_maintain_again`)
         self._last_index = float("-inf")
         self._indexing = False          # from the check until the indexer's end: never two
         self._again = False             # a forced ask came while it ran: one more run at its end, never lost
@@ -387,9 +390,16 @@ class Chores:
         except Exception:
             pass
 
-    def _maintain(self):
+    def build_store(self):
+        """Haya-LD: a language with no store yet (JSON mode: a manifest to build from, or a fresh install's folders) —
+        its build is part of the window's opening, its list comes from it: asked at once, before the boot (the JSON
+        half of `_maintain`; the rest waits for the boot). Returns at once."""
+        self.worker.put(self._maintain, True)
+
+    def _maintain(self, build_only=False):
         """The store's helper when it has something to do (`_maybe_maintain`): no store yet but a manifest to build
-        from, a change since the last export, or a copy someone else rewrote (once per new stat)."""
+        from, a change since the last export, or a copy someone else rewrote (once per new stat). `build_only`: the
+        first part alone (`build_store`)."""
         language = self.language
         if self._closed:
             return                              # a timer that rang as the quit began: no helper for a closing window
@@ -397,6 +407,8 @@ class Chores:
             from app import library_store
             from app.path_utils import get_data_path, get_user_files_path
             data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
+            if build_only and os.path.exists(library_store.library_db_path(language, data_dir)):
+                return                              # a store file is there: no build, its upkeep waits for the boot
             mode, _reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
             if mode == "json":
                 proc = library_store.spawn_build_if_waiting(language, data_dir, user_files_dir)
@@ -404,7 +416,11 @@ class Chores:
                     proc = library_store.spawn_maintain(language, "--from-folders")
                 self._watch(proc)
                 return
-            if mode != "store":
+            if mode != "store" or build_only:
+                return
+            from app.services import gentle       # Haya-LD: never before the boot; on a gentle PC its turn
+            if gentle.hold("library-maintain"):
+                self._maintain_again()
                 return
             store = library_store.open_store(language, data_dir, user_files_dir, role="window", busy_wait=0.0)
             if store is None:
@@ -415,7 +431,9 @@ class Chores:
                 proc = library_store.spawn_maintain(language)
                 if proc is not None:              # None while an update is staged: not handed on, asked again (HR-24)
                     self._handed[language] = seen
-                self._watch(proc)
+                elif library_store.take_owed(language):
+                    self._maintain_again()        # one at work already (another program's): looked at once it's done
+                self._watch(proc, language)
         except Exception as e:
             print(f"Library store helper check: {e}")
 
@@ -434,7 +452,20 @@ class Chores:
         self._from_folders[language] = now
         return True
 
-    def _watch(self, proc):
+    def _maintain_again(self):
+        """Haya-LD: the helper's check once more in MAINTAIN_AGAIN s — one waiting at a time."""
+        with self._lock:
+            if self._again_maintain:
+                return
+            self._again_maintain = True
+
+        def again():
+            with self._lock:
+                self._again_maintain = False
+            self.worker.put(self._maintain)
+        self._later(MAINTAIN_AGAIN, again)
+
+    def _watch(self, proc, language=None):
         """A detached helper (`spawn_maintain`'s Popen) listed as a job until it ends; quitting leaves it running —
         unless the close's *Stop and quit* cancels it (row 35, `jobs.STOPPABLE_AT_QUIT`): ended through this Popen,
         whose open handle keeps its pid from being reused, and alone (`maintain` starts no child; a kill mid-way
@@ -458,6 +489,10 @@ class Chores:
             except Exception:
                 returncode = None
             job.finish(ok=True, message=None if returncode == 0 else f"exit code {returncode}")
+            if language is not None and not self._closed:
+                from app import library_store
+                if library_store.take_owed(language):     # Haya-LD: asked while it ran: the check once more
+                    self.worker.put(self._maintain)
         threading.Thread(target=wait, name="chores-maintain", daemon=True).start()
 
     def _arrivals(self):

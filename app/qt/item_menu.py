@@ -22,7 +22,10 @@ A3 `split`, 06 E4, E22).
   in its section and place: he asked for one show, never for files to change section) — the store's refusal (two
   AniList ids, TMDB ids or YouTube channels: `TITLES_APART`) said in the bar as the store words it, its toast only
   once the store saved it;
-- *Same show as…* and any list longer than `MENU_PAGE` go on under *More…*, page by page;
+- *Same show as…* and any list longer than `MENU_PAGE` go on under *More…*, page by page; Kura-HJ (Sonic 2026-11-19):
+  it lists the shows inside a group too (each by its own name, where the group stands), and a row whose name is a show
+  the view holds as `episode_names.show_key` reads it (`look_alike`: punctuation apart; a path's last folder) offers
+  *Join <show>* first — the same merge with no question, its toast with Undo;
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
 **⋯ on a group (LM11b G3, IK-5):** the moves, *Study its cards first*, *Split here…*, *Rename…* (a card with the name
@@ -251,9 +254,29 @@ def give_skip(moves, path, ids=(), keys=(), told=None, toast=True, ticket=None):
     Undo). -> the writer's number, or None (refused)."""
     if ticket is None:
         ticket = drag.Ticket(strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path), tuple(keys), list(ids))
-    if told is not None:
-        ticket.told = lambda event: told(ticket, event)
-    return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
+    tray = getattr(getattr(moves, "win", None), "arrivals_tray", None)
+    leaves = None
+    if tray is not None and hasattr(tray, "skip_leaves") and moves.writer.can_write():
+        try:                                         # Kura-NA: New arrivals' rows of the folder leave at the press
+            leaves = tray.skip_leaves(path, ids)
+        except Exception as e:                       # (the store's view takes them out as it lands)
+            print(f"Item menu: New arrivals' rows weren't taken out at the skip's press: {e!r}")
+    mine, earlier = told, ticket.told
+
+    def tell(event):
+        if leaves is not None:
+            leaves(event)
+        if mine is not None:
+            mine(ticket, event)
+        elif earlier is not None:
+            earlier(event)
+    ticket.told = tell
+    try:
+        return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
+    except BaseException:
+        if leaves is not None:                       # (H8: the hand-over broke — the rows it hid come back)
+            leaves("ended")
+        raise
 
 
 # --- A4: the picks' ⋯, one rule for Current, Soon, Finished and Goal's sheet ------------------------------------------- #
@@ -361,6 +384,11 @@ class ItemActions(QObject):
         self.read_audiobook = self._read_audiobook
         self._book_ask = 0
         self._book_relay = None                      # made at the first ask, kept (C4)
+        # Kura-AB5 (Sonic's yes, 11-20 report): a book's *Remove…* takes the whole book — every part, read on a worker
+        # as the press asks (tests replace the reader)
+        self.read_book = self._read_book
+        self._remove_ask = 0
+        self._remove_relay = None                    # made at the first ask, kept (C4)
         self.audiobook_list = None
         # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
         self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
@@ -442,6 +470,12 @@ class ItemActions(QObject):
         out = []
         files = view_rows.to_finish(row.episodes)    # a7 (DIAGNOSIS 11): every file not watched yet, at once — first,
         left = [e for e in files if not e.watched]   # beside the moves (Finished is one)
+        shows = [] if group else self.same_shows(row)           # (one walk of the view for both lists)
+        like = self.look_alike(row, shows) if shows else None   # Kura-HJ: *Join <show>* first, one press
+        if like is not None:
+            words, tip = strings.ITEM_MENU["join-show"]
+            out.append(entry("join-show", label=words.format(title=like.title), tip=tip.format(title=like.title),
+                             payload=like))
         if len(files) >= 2 and left:
             out.append(entry("watched-all", tip=strings.ITEM_MENU["watched-all"][1].format(n=len(left)),
                              payload=left))
@@ -474,8 +508,7 @@ class ItemActions(QObject):
             out.append(entry("join", children=[
                 entry("join", label=strings.ITEM_JOIN_PART.format(range=range_text(p), where=where),
                       tip=strings.ITEM_JOIN_PART_TIP.format(range=range_text(p)), payload=p) for p, where in others]))
-        shows = self.same_shows(row)                 # --- LM11b G3 (IK-6)
-        if shows:
+        if shows:                                    # --- LM11b G3 (IK-6)
             out.append(entry("same-show", children=[
                 entry("same-show", label=strings.ITEM_SAME_SHOW_PICK.format(title=s.title, where=s.where),
                       tip=strings.ITEM_SAME_SHOW_PICK_TIP.format(title=s.title), payload=s) for s in shows]))
@@ -484,6 +517,8 @@ class ItemActions(QObject):
             out.append(entry("cover", children=[
                 Entry("cover-to", label, tip if ok else reason, ok and writable, payload=cb)
                 for label, tip, ok, cb in covers]))
+        if row.work_id is not None and book_row(row):           # Kura-AB5 (Sonic's yes): a book's own name
+            out.append(entry("rename-book"))
         out.append(entry("folder", writes=False))
         out.append(entry("remove"))
         return out
@@ -684,10 +719,14 @@ class ItemActions(QObject):
             self.ask_remove(row)
         elif name == "rename":                           # --- LM11b G3
             self.ask_rename(row)
+        elif name == "rename-book":                      # Kura-AB5
+            self.ask_rename_book(row)
         elif name == "ungroup":
             self.ungroup(row)
         elif name == "same-show" and payload is not None:
             self.ask_same_show(row, payload)
+        elif name == "join-show" and payload is not None:   # Kura-HJ: the same merge, no question (its toast's Undo)
+            self.same_show(row, payload)
 
     # --- row 28: an episode's own ⋯ ---------------------------------------------------------------------------- #
     def episode_entries(self, row, ep):
@@ -897,6 +936,9 @@ class ItemActions(QObject):
                                                                                                  got["epub"]))
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         m.addAction(act)
+        act = drag.menu_action(m, strings.NEEDS_AUDIOBOOK_FILE, lambda: ny._audiobook_file(got["title"], got["epub"]))
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FILE_TIP)                 # Kura-AB5: by one of its files
+        m.addAction(act)
         self.audiobook_list = self.last_menu = m
         m.popup(QCursor.pos())
         return m
@@ -999,35 +1041,110 @@ class ItemActions(QObject):
         return give_skip(self.moves, path, drag.ids_of(row), (row.key,))
 
     def ask_remove(self, row):
-        """*Remove…*: the confirmation naming its files (Esc, Back, a click outside: No; Cancel the default)."""
+        """*Remove…*: the confirmation naming its files (Esc, Back, a click outside: No; Cancel the default). Kura-AB5
+        (Sonic's yes, 11-20 report): a book's row reads its whole book on a worker first (`Store.book_items`);
+        a book with parts in other rows is asked about whole — *Remove the whole book* (its every part, one change, one
+        Undo), or only this row's parts (the card's box). -> the card, or True while its book is read."""
         if self.moves.refused() is not None:
             return None
+        ids = drag.ids_of(row)
+        if not book_row(row) or not ids or self.read_book is None:
+            return self._ask_remove(row, None)
+        self._remove_ask += 1
+        ask, read = self._remove_ask, self.read_book
+        if self._remove_relay is None:
+            self._remove_relay = bridge.Relay(self)
+            self._remove_relay.said.connect(self._book_read)
+        relay = self._remove_relay
+
+        def ask_store():
+            try:
+                got = read(ids[0])
+            except Exception:
+                got = None                           # (asked as its row's parts alone)
+            relay.call((ask, row, got))
+        threading.Thread(target=ask_store, name="book-remove", daemon=True).start()
+        return True
+
+    def _book_read(self, said):
+        ask, row, got = said
+        if ask == self._remove_ask and self.moves.refused() is None:
+            self._ask_remove(row, got)
+
+    def _ask_remove(self, row, book):
         n = len(row.episodes)
-        body = strings.ITEM_REMOVE_BODY_ONE if n == 1 else strings.ITEM_REMOVE_BODY.format(n=f"{n:,}")
-        yes = strings.ITEM_REMOVE_YES_ONE if n == 1 else strings.ITEM_REMOVE_YES.format(n=f"{n:,}")
+        ids = drag.ids_of(row)
+        every = list(dict.fromkeys(list(book["ids"]) + list(ids))) if book and book.get("ids") else list(ids)
+        if len(every) > len(set(ids)):                   # Kura-AB5: the whole book, its other rows' parts too
+            title = strings.ITEM_REMOVE_BOOK_ASK.format(title=book.get("title") or row.title)
+            body = strings.ITEM_REMOVE_BOOK_BODY.format(n=f"{len(every):,}")
+            yes, yes_tip = strings.ITEM_REMOVE_BOOK_YES, strings.ITEM_REMOVE_BOOK_YES_TIP
+            check = strings.ITEM_REMOVE_BOOK_ONLY.format(k=f"{len(set(ids)):,}")
+            check_tip = strings.ITEM_REMOVE_BOOK_ONLY_TIP
+        else:
+            title = strings.ITEM_REMOVE_ASK.format(title=row.title)
+            body = strings.ITEM_REMOVE_BODY_ONE if n == 1 else strings.ITEM_REMOVE_BODY.format(n=f"{n:,}")
+            yes = strings.ITEM_REMOVE_YES_ONE if n == 1 else strings.ITEM_REMOVE_YES.format(n=f"{n:,}")
+            yes_tip, check, check_tip, every = strings.ITEM_REMOVE_YES_TIP, None, None, None
 
         def answered(said_yes):
             self.question = None
             if said_yes:
-                self.remove(row)
-        self.question = confirm.ask(self.win, strings.ITEM_REMOVE_ASK.format(title=row.title), body, yes,
-                                    strings.ITEM_REMOVE_YES_TIP, default_no=True, danger=True, on_answer=answered)
-        return self.question
+                self.remove(row, None if every is None or card.checked else every,
+                            title=book.get("title") if every is not None and not card.checked else None)
+        card = confirm.ask(self.win, title, body, yes, yes_tip, default_no=True, danger=True, on_answer=answered,
+                           check=check, check_tip=check_tip)
+        self.question = card
+        return card
 
-    def remove(self, row):
-        """`Writer.remove`: its files to the trash (30 days), its toast with Undo."""
+    def _read_book(self, item_id):
+        """(A worker.) The whole book the part `item_id` is of (`Store.book_items`, through *Needs you*'s reader), or
+        None."""
+        read = getattr(getattr(self.win, "needs_you", None), "read_book", None)
+        return read(item_id) if read is not None else None
+
+    def remove(self, row, ids=None, title=None):
+        """`Writer.remove`: its files to the trash (30 days), its toast with Undo. `ids` (Kura-AB5): the whole book's
+        parts, its other rows' too (`title` the book's)."""
         if self.moves.refused() is not None:
             return None
         from app.qt import removed
-        ids = drag.ids_of(row)
-        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids)
+        ids = list(ids) if ids else drag.ids_of(row)
+        ticket = drag.Ticket(strings.ITEM_REMOVED.format(title=title or row.title), (row.key,), ids)
         ticket.buttons = removed.door(self.win)                 # Kantan-B4: the way to Put back, at the Remove
         return self.moves._give(ticket, lambda t: self.writer.remove(ids, label=t))
+
+    # --- Kura-AB5 (Sonic's yes, 11-20 report): a book's own *Rename…* --------------------------- #
+    def ask_rename_book(self, row):
+        """*Rename…* on a book's row: the card with its name in a field (Esc / Back / Cancel: nothing written)."""
+        if row.work_id is None or self.moves.refused() is not None:
+            return None
+
+        def answered(said_yes):
+            self.question = None
+            if said_yes:
+                self.rename_book(row, card.text)
+        card = confirm.ask(self.win, strings.ITEM_RENAME_BOOK_ASK, strings.ITEM_RENAME_BOOK_BODY,
+                           strings.ITEM_RENAME_YES, strings.ITEM_RENAME_BOOK_YES_TIP, field=row.title,
+                           on_answer=answered)
+        self.question = card
+        return card
+
+    def rename_book(self, row, text):
+        """The book's own name (`Writer.rename_work`: the learner's, never renamed by a look; its old name still found
+        by search): `text` stripped; empty or its name as shown → nothing written. Its toast with Undo."""
+        name = (text or "").strip()
+        if row.work_id is None or not name or name == row.title or self.moves.refused() is not None:
+            return None
+        work = row.work_id
+        return self.moves._give(drag.Ticket(strings.ITEM_RENAMED.format(title=row.title, name=name), (row.key,),
+                                            drag.ids_of(row)), lambda t: self.writer.rename_work(work, name, label=t))
 
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):
         """*Same show as…*'s shows for `row` (a show's own row, never a group): [Show] — each other show the view holds
-        once, by its title (`work_id`: the merge names no piece), where it first stands: Current's runs in order, Goal's
+        once, by its title (`work_id`: the merge names no piece), where it first stands: Current's runs in order (a
+        group's shows too, each by its own name — Kura-HJ: the report's show sat in a group, never offered), Goal's
         tiles, Finished's, New arrivals'; at most `SAME_SHOW_MAX` from each section."""
         view = self._view()
         if view is None or not joinable(row) or getattr(row, "group", False):
@@ -1042,9 +1159,13 @@ class ItemActions(QObject):
                 taken[section] = taken.get(section, 0) + 1
                 out.append(Show(key, work_id, title, where))
         for n, r in enumerate(view.rows, 1):
-            if joinable(r) and not getattr(r, "group", False):
-                add("now", r.work_id, r.key, r.title,
-                    strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n))
+            where = strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n)
+            if getattr(r, "group", False):
+                for e in r.episodes:                 # (a group's episode names its show: `view_rows._group`)
+                    if e.work_id is not None and e.show:
+                        add("now", e.work_id, r.key, e.show, where)
+            elif joinable(r):
+                add("now", r.work_id, r.key, r.title, where)
         for w in getattr(getattr(view, "goal", None), "works", None) or ():
             if not getattr(w, "group", False):
                 add("goal", w.work_id, w.key, w.title, strings.ITEM_JOIN_WHERE["goal"])
@@ -1055,6 +1176,22 @@ class ItemActions(QObject):
         for a in view.arrivals or ():
             add("arrivals", a.work_id, a.key, a.title, strings.ITEM_JOIN_WHERE["arrivals"])
         return out
+
+    def look_alike(self, row, shows=None):
+        """Kura-HJ (Sonic's ruling, 2026-11-19: a row like a show already there offers *Join <show>*): the ONE
+        show of `same_shows` whose name is this row's as `episode_names.show_key` reads it — punctuation apart, and a
+        name that is a path (`Hato/<show>`, a title an older version named by hato's folder) read by its last folder —
+        or None (none, or two shows of that name: *Same show as…* asks which). `shows`: `same_shows(row)` when the
+        caller has it."""
+        if not joinable(row) or getattr(row, "group", False):
+            return None
+        from app.episode_names import show_key
+        mine = {k for k in (show_key(row.title or ""), show_key((row.title or "").rsplit("/", 1)[-1])) if k}
+        if not mine:
+            return None
+        shows = self.same_shows(row) if shows is None else shows
+        found = [s for s in shows if show_key(s.title or "") in mine]
+        return found[0] if len({s.work_id for s in found}) == 1 else None
 
     def ungroup(self, row):
         """*Ungroup*: `Writer.ungroup` — each show back in a row of its own, in place; its toast with Undo."""

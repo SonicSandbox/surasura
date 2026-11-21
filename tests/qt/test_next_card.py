@@ -3,23 +3,27 @@ the ✦ panel's *Your path* tab.
 
 What a wrong answer would cost a learner: a card that names the wrong step, or offers to skip the first cards' steps
 ahead of order; *Not now* that doesn't go at once; a card shown during setup; a Done tab or rings back in the panel; a
-path tab with nothing in it; a press that waits on the disk before the card answers.
+path tab with nothing in it; a press that waits on the disk before the card answers. Mado-EZP (SPEC-r2 §0.2, the four
+stages): a step whose press sends the learner up top instead of doing it from the card (Sonic's "confusing"); step ①
+opening the journey at its top, not on Up Next's episode, or not ticking; two presses at once from the card and Up Next;
+*Show me* that presses or writes anything; an upgrader's ticks lost.
 """
 import json
-import os
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QApplication, QWidget
 
-from app.qt import guide as guide_ui, next_card, strings
+from app.qt import next_card, strings
 from app.services import guide
 from app.services import path as P
+from app.services import view_rows
 from tests.qt.conftest import wait_until
 from tests.qt.test_jobs_bar import (FakeAutomation, FakeChores, FakeController, FakeUpdates, QuietReader,  # noqa: F401
                                      set_up, world)
-from tests.test_services_path import View, Row, Counts, Arrival, facts
+from tests.test_services_path import View, Row, Counts, facts
 
 
 @pytest.fixture
@@ -59,33 +63,57 @@ def card(qapp):
     holder.close()
 
 
-def test_a_chapter_one_card_says_its_step_its_place_and_has_show_me_and_not_now(card):
+EP2 = (P.DONE, P.NOW, P.LATER, P.LATER)                # ② First episode to do now
+EP3 = (P.DONE, P.DONE, P.NOW, P.LATER)                 # ③ Automate to do now
+WORDS = ("words", "Open Ep 3's words ↗", "tip")
+
+
+def test_a_stage_card_says_its_stage_its_four_stones_its_own_press_show_me_and_not_now(card):
     got = []
+    card.act.connect(lambda key, control: got.append((key, control)))
     card.show_me.connect(got.append)
     card.not_now.connect(lambda s: got.append(("later", s)))
-    assert card.set_card(("step", "words", 1, 3)) and card.isVisible()
-    assert card.eyebrow.text() == strings.NEXT_FIRST.format(n=1, total=3) and card.dots.total == 3
+    assert card.set_card(("step", "words", EP2), (WORDS,)) and card.isVisible()
+    assert card.eyebrow.text() == strings.NEXT_STAGE.format(stage=strings.PATH_STAGES["episode"].upper())
+    assert card.stages.states == EP2 and card.stages.isVisibleTo(card)
+    assert "First episode: now" in card.stages.accessibleName()                 # the stones, for a screen reader
     assert card.title.text() == strings.PATH_STEPS["words"][0]
-    assert card.primary.text() == strings.NEXT_SHOW_ME and card.secondary.text() == strings.NEXT_NOT_NOW
-    assert card.primary.toolTip() and card.secondary.toolTip()
+    assert card.primary.text() == "Open Ep 3's words ↗" and card.primary.toolTip() == "tip"
+    assert card.show_button.text() == strings.NEXT_SHOW_ME and card.secondary.text() == strings.NEXT_NOT_NOW
+    assert not card.primary2.isVisibleTo(card) and card.show_button.toolTip() and card.secondary.toolTip()
+    card.primary.click()
+    card.show_button.click()
+    card.secondary.click()
+    assert got == [("words", card.primary), "hero:journey", ("later", "words")]
+    assert card.set_card(("step", "words", EP2), (WORDS,)) is False             # the same card: nothing redone (S19)
+    assert card.set_card(("step", "words", EP2), (("words", "Open Ep 4's words ↗", "tip"),))   # Up Next moved on
+
+
+def test_watch_carries_both_of_up_nexts_presses(card):
+    got = []
+    card.act.connect(lambda key, control: got.append((key, control)))
+    card.set_card(("step", "watch", EP2), (("watch", "▶ Watch Ep 3", "t1"), ("done", "✓ Done", "t2")))
+    assert card.primary.text() == "▶ Watch Ep 3" and card.primary2.isVisibleTo(card)
+    assert card.primary2.text() == "✓ Done" and card.primary2.toolTip() == "t2"
+    card.primary.click()
+    card.primary2.click()
+    assert got == [("watch", card.primary), ("done", card.primary2)]
+
+
+def test_the_cards_step_offers_its_press_i_make_my_own_cards_and_not_now(card):
+    own, later, acts = [], [], []
+    card.own_cards.connect(lambda: own.append(True))
+    card.not_now.connect(later.append)
+    card.act.connect(lambda key, _c: acts.append(key))
+    card.set_card(("step", "cards", EP3), (("miner",) + strings.PATH_PRESS["miner"],))
+    assert card.eyebrow.text() == strings.NEXT_STAGE.format(stage=strings.PATH_STAGES["automate"].upper())
+    assert card.primary.text() == strings.PATH_PRESS["miner"][0] and card.secondary.text() == strings.NEXT_OWN_CARDS
+    assert card.later.isVisibleTo(card) and card.later.text() == strings.NEXT_NOT_NOW   # no Anki: set it aside
     card.primary.click()
     card.secondary.click()
-    assert got == ["control:journey", ("later", "words")]
-    assert card.set_card(("step", "words", 1, 3)) is False                      # the same card: nothing redone (S19)
-
-
-def test_step_three_offers_anki_miner_or_i_make_my_own_cards(card):
-    own = []
-    card.own_cards.connect(lambda: own.append(True))
-    later = []
-    card.not_now.connect(later.append)
-    card.set_card(("step", "cards", 3, 3))
-    assert card.primary.text() == strings.NEXT_SET_UP_MINER and card.secondary.text() == strings.NEXT_OWN_CARDS
-    assert card.later.isVisibleTo(card) and card.later.text() == strings.NEXT_NOT_NOW   # no Anki: set it aside
-    card.secondary.click()
     card.later.click()
-    assert own == [True] and later == ["cards"]
-    card.set_card(("step", "words", 1, 3))
+    assert acts == ["miner"] and own == [True] and later == ["cards"]
+    card.set_card(("step", "words", EP2), (WORDS,))
     assert not card.later.isVisibleTo(card)
 
 
@@ -95,16 +123,47 @@ def test_the_first_cards_made_card_has_only_ok_and_a_later_step_says_new_for_you
     card.set_card(("made",))
     assert card.eyebrow.text() == strings.NEXT_MADE and not card.secondary.isVisibleTo(card)
     assert card.title.text() == strings.NEXT_MADE_WHERE and card.primary.text() == strings.NEXT_OK
+    assert not card.show_button.isVisibleTo(card) and not card.stages.isVisibleTo(card)
     card.primary.click()
     assert ok == [True]
-    card.set_card(("step", "hato", 0, 0))
-    assert card.eyebrow.text() == strings.NEXT_READY and not card.dots.isVisibleTo(card)
+    card.set_card(("step", "hato", ()), (("hato",) + strings.PATH_PRESS["hato"],))
+    assert card.eyebrow.text() == strings.NEXT_READY and not card.stages.isVisibleTo(card)
+    assert card.primary.text() == strings.PATH_PRESS["hato"][0]
+    assert not card.show_button.isVisibleTo(card)                               # its press goes to that place itself
     assert card.set_card(None) and not card.isVisible()
+
+
+def test_the_made_card_always_shows_its_ok_even_after_a_step_with_no_press(card):
+    # review (failures lens #1): a step painted with no presses hides the primary; the made card must bring OK back
+    card.set_card(("step", "hato", ()), ())
+    assert not card.primary.isVisibleTo(card)
+    card.set_card(("made",))
+    assert card.primary.isVisibleTo(card) and card.primary.text() == strings.NEXT_OK
+
+
+def test_the_stage_string_is_four_stones_from_the_rows_own_sheet(card, qapp):
+    # §0.6 item 1: the stones are `stones.py`'s crystals (never a drawing of its own): done cut, now ringed, later small
+    from app.qt import next_card as nc, stones, style
+    assert nc.stone_of(P.DONE)[1] == "cut" and nc.stone_of(P.NOW)[4] == "next" and nc.stone_of(P.LATER)[4] == "waiting"
+    card.set_card(("step", "words", EP2), (WORDS,))
+    dpr = card.stages.devicePixelRatioF() or 1.0
+    assert wait_until(lambda: stones.get(dpr, style.current()[1]) is not None, 20)
+    sheet = stones.get(dpr, style.current()[1])
+    for state in (P.DONE, P.NOW, P.LATER):
+        assert nc.stone_of(state) in sheet, state
+    assert ("ring", "next") in sheet
+    pix = card.stages.grab()                                                    # painted: something there
+    assert not pix.toImage().isNull()
 
 
 # --- in the window ----------------------------------------------------------------------------------------------- #
 def _path(f, state=None, later=()):
     return P.path(f, state or {}, later)
+
+
+def _shown(win, f, state=None):
+    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(f, state), []))
+    return win.duties.next_card
 
 
 def test_the_card_sits_just_above_up_next_hidden_until_the_path_answers(lib_world):
@@ -113,22 +172,20 @@ def test_the_card_sits_just_above_up_next_hidden_until_the_path_answers(lib_worl
     page = win.page_widgets["current"]
     box = page.layout().itemAt(0).layout()
     assert box.indexOf(win.duties.next_card) == box.indexOf(page.state_bar) + 1 < box.indexOf(page.list)
-    look = guide.Look("3.0.5", (), False)
-    win._guide_got((win._guide_asked, look, _path(facts()), []))
-    assert win.duties.next_card.card == ("step", "words", 1, 3) and win.duties.next_card.isVisible()
+    c = _shown(win, facts())
+    assert c.card == ("step", "words", EP2) and c.isVisible()
 
 
 def test_not_now_goes_at_once_and_setup_hides_the_card(lib_world):
     win = lib_world
-    c = win.duties.next_card
-    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+    c = _shown(win, facts())
     c.secondary.click()                                                          # Not now: gone in the same turn
     assert not c.isVisible() and "words" in win._path_later
     win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts(), later=("words",)), []))
     assert not c.isVisible()                                                     # until the next start
     win.services.setup_open.set()
     try:
-        win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+        _shown(win, facts())
         assert not c.isVisible()                                                 # never during setup
     finally:
         win.services.setup_open.clear()
@@ -136,35 +193,225 @@ def test_not_now_goes_at_once_and_setup_hides_the_card(lib_world):
 
 def test_i_make_my_own_cards_is_kept_and_the_next_look_says_your_first_cards_are_made(lib_world):
     win = lib_world
-    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False),
-                    _path(facts(journey_opened=True, episodes_done=1)), []))
+    _shown(win, facts(journey_opened=True, episodes_done=1))
     win.duties.next_card.secondary.click()
     assert not win.duties.next_card.isVisible()                                  # at once, before the write
     assert wait_until(lambda: guide.read_state().get("own_cards") is True)
 
 
-def test_the_panel_has_two_tabs_with_a_path_no_done_tab_and_the_path_lists_whats_useful_first(world):
-    panel = world.d.guide_panel
-    useful = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True)
-    panel.set_look(guide.Look("3.0.5", (), False))
-    panel.set_path(_path(useful, {"first_ack": True}))
-    assert wait_until(lambda: not panel.building())
-    assert panel.tabs.isVisibleTo(panel) and set(panel.tab_buttons) == {"news", "path"}
-    assert all(b.toolTip() for b in panel.tab_buttons.values())
-    panel.open(tab="path")
-    assert wait_until(panel.isVisible) and panel.tab == "path"
-    rows = {r.status.step.id: r for r in panel.rows}
-    assert not rows["hato"].later and rows["hato"].show_me is not None and rows["hato"].show_me.toolTip()
-    assert rows["piyo"].later and rows["piyo"].show_me is None                  # not useful yet: not for now
-    panel.close()
+# --- the gate (SPEC-r2 §0.11 row 2): every step acts from its own card ------------------------------------------- #
+def _up(win):
+    got = win._up_next()
+    assert got is not None, "the seed's Current has an Up Next"
+    return got
 
 
-# --- Kantan-S2: past steps to try again, steps that can't apply now, and no subtitles (Sonic 2026-11-13) ---------- #
+def test_step_ones_press_opens_the_journey_on_up_nexts_episode_and_ticks_once_it_opened(lib_world, monkeypatch):
+    from app.qt import shell
+    win = lib_world
+    asked = []
+    monkeypatch.setattr(win.services, "open_journey", lambda *file: asked.append(file) or True)
+    c = _shown(win, facts())
+    row, ep = _up(win)
+    assert c.primary.text() == strings.PATH_PRESS["words"][0].format(ep=ep.label)
+    assert "journey" not in (guide.read_state().get("moments") or {})
+    c.primary.click()
+    assert wait_until(lambda: "journey" in (guide.read_state().get("moments") or {}))
+    assert asked == [(shell.journey_file(view_rows.journey_episode(row)),)]      # on that episode, never the top
+
+
+def test_a_journey_that_lacks_the_episode_still_ticks_and_the_bar_says_why(lib_world, monkeypatch):
+    from app.qt import shell
+    win = lib_world
+    monkeypatch.setattr(win.services, "open_journey", lambda *file: shell.JOURNEY_LACKS)
+    c = _shown(win, facts())
+    row, _ep = _up(win)
+    c.primary.click()
+    assert wait_until(lambda: "journey" in (guide.read_state().get("moments") or {}))
+    episode = view_rows.journey_episode(row)
+    assert wait_until(lambda: win.bar_line.accessibleDescription() ==
+                      strings.JOURNEY_NOT_YET.format(ep=episode.label))
+
+
+def test_with_no_journey_on_disk_the_press_says_so_and_ticks_nothing(lib_world, monkeypatch):
+    win = lib_world
+    monkeypatch.setattr(win.services, "open_journey", lambda *file: False)
+    c = _shown(win, facts())
+    c.primary.click()
+    assert wait_until(lambda: win.bar_line.accessibleDescription() == strings.JOURNEY_NONE_TIP)
+    assert "journey" not in (guide.read_state().get("moments") or {})
+
+
+def test_the_cards_watch_and_up_nexts_play_are_one_press(lib_world, monkeypatch):
+    from app.qt import press as qpress, screens
+    win = lib_world
+    monkeypatch.setattr(screens, "media_to_open", lambda *a: (None, "not here"))   # (no player opened)
+    c = _shown(win, facts(journey_opened=True))
+    _row, ep = _up(win)
+    assert c.card[1] == "watch" and c.primary.text() == strings.PATH_PRESS["watch"][0].format(ep=ep.label)
+    held = qpress.begin(None, ("play", ep.id), win=win)                         # Up Next's ▶ on its way
+    assert held is not None
+    assert win.path_press("watch", c.primary) is None                           # the card's: nothing started
+    qpress.end(held, win)
+    p = win.path_press("watch", c.primary)
+    assert p is not None                                                        # its own press now …
+    assert win.page_widgets["current"]._play(ep) is None                        # … and Up Next's ▶ waits for it
+    assert wait_until(lambda: not qpress.live(win, ("play", ep.id)))
+
+
+def _marking(win, monkeypatch, on):
+    """The drag controller's answer to "a Done of this row on its way?" (a stand-in when the test window has none)."""
+    if getattr(win, "moves", None) is not None:
+        monkeypatch.setattr(win.moves, "marking", lambda key: on)
+    else:
+        monkeypatch.setattr(win, "moves", SimpleNamespace(marking=lambda key: on, close=lambda: None,
+                                                          unwire=lambda: None), raising=False)
+
+
+def test_the_cards_done_is_up_nexts_done_and_waits_while_one_is_on_its_way(lib_world, monkeypatch):
+    win = lib_world
+    current = win.page_widgets["current"]
+    asked = []
+    monkeypatch.setattr(current, "on_done", lambda row, ep: asked.append((row.key, ep)))
+    c = _shown(win, facts(journey_opened=True))
+    row, ep = _up(win)
+    assert c.primary2.text() == strings.PATH_PRESS["done"][0]
+    _marking(win, monkeypatch, True)                                            # a Done of the row on its way
+    c.primary2.click()
+    assert asked == []
+    _marking(win, monkeypatch, False)
+    c.primary2.click()
+    assert asked == [(row.key, ep)]                                             # the one path for a Done (S12)
+
+
+def test_a_watched_mark_on_its_way_is_what_marking_reads():
+    from types import SimpleNamespace
+    from app.qt import drag
+    t = drag.Ticket("ぼっち・ざ・ろっく！ 3 watched", ("row-1",), (7,))
+    t.marks = {7: True}
+    moves = SimpleNamespace(tickets=[t])
+    assert drag.DragController.marking(moves, "row-1") and not drag.DragController.marking(moves, "row-2")
+    t.marks = {7: False}                                                        # an un-watch is no Done
+    assert not drag.DragController.marking(moves, "row-1")
+    assert not drag.DragController.marking(SimpleNamespace(tickets=[]), "row-1")
+
+
+@pytest.mark.parametrize("key, target", [
+    ("words", "_open_journey"), ("words-any", "_open_journey"), ("mine", "mine_row"), ("miner", "install"),
+    ("junban", "_open_junban"), ("junban-again", "_open_junban"), ("backfill", "launch"),
+    ("automation", "settings:automation"), ("yours", "settings:connect_mine_words"),
+    ("audiobook", "tab:current@audiobook"), ("hato", "settings:hato"), ("piyo", "settings:practice_ai"),
+])
+def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key, target):
+    from app.qt import settings_connect, windows
+    win = lib_world
+    ran = []
+    monkeypatch.setattr(win, "_open_journey", lambda **kw: ran.append(("_open_journey", kw.get("episode"))))
+    monkeypatch.setattr(win, "_open_junban", lambda *a: ran.append(("_open_junban",)))
+    monkeypatch.setattr(win, "guide_show_me", lambda where: ran.append((where,)))
+    monkeypatch.setattr(settings_connect, "install_anki_miner", lambda shell: ran.append(("install",)))
+    monkeypatch.setattr(windows, "launch", lambda shell, op: ran.append(("launch", op.name)))
+    monkeypatch.setattr(win, "_top_to_mine", lambda: ("row", [1]))
+    win.mine = type("Mine", (), {"mine_row": lambda self, row, ids: ran.append(("mine_row", row, ids))})()
+    win.path_press(key)
+    assert ran and ran[0][0] == target, ran
+    if key == "words":
+        assert ran[0][1] is not None                                            # on Up Next's episode
+    if key == "backfill":
+        assert ran[0][1] == "backfill"
+
+
+def test_step_fours_press_is_the_one_entry_point_the_picker_fills(lib_world, monkeypatch):
+    # the seam with Mado-EZC (lane 3): the card's and the panel's *Pick your cards* both reach `pick_your_cards`
+    win = lib_world
+    went = []
+    monkeypatch.setattr(win, "pick_your_cards", lambda control=None: went.append(control))
+    win.path_press("yours", "button")
+    win.path_act("yours")
+    assert went == ["button", None]
+
+
+def test_turn_on_cards_made_for_you_runs_connects_switch_and_tells_the_window(lib_world, monkeypatch):
+    from app.qt import settings_connect
+    win = lib_world
+    asked, told = [], []
+    monkeypatch.setattr(settings_connect, "_switch_on", lambda store, log: asked.append(store) or (True, None))
+    win.bridge.settings_written.connect(told.append)
+    assert win.path_press("cards-on") is not None
+    assert wait_until(lambda: told and told[-1] == ("connect_enabled",))
+    assert asked == [win.services.settings]
+
+
+def test_the_cards_step_names_the_press_that_applies_now(lib_world, monkeypatch):
+    from app.qt import shell
+    win = lib_world
+    win._path_way = _path(facts(journey_opened=True, episodes_done=1, miner_found=False))
+    assert win._step_presses("cards")[0][0] == "miner"                          # no Anki Miner: set it up first
+    win._path_way = _path(facts(journey_opened=True, episodes_done=1, miner_found=True))
+    monkeypatch.setattr(win.services.settings, "get", lambda: {"connect_enabled": False})
+    assert win._step_presses("cards")[0][0] == "cards-on"                       # the consent itself (EZ2-5)
+    monkeypatch.setattr(win.services.settings, "get", lambda: {"connect_enabled": True, "logic": {"automation": False}})
+    assert win._step_presses("cards")[0][0] == "automation"                     # D29: never turned on for you
+    monkeypatch.setattr(win.services.settings, "get", lambda: {"connect_enabled": True, "logic": {"automation": True}})
+    seen = []
+    monkeypatch.setattr(win, "_top_to_mine", lambda first=None: seen.append(first) or (
+        type("R", (), {"title": "ぼっち・ざ・ろっく！"})(), [1]))
+    key, words, _tip = win._step_presses("cards")[0]
+    assert key == "mine" and words == strings.PATH_PRESS["mine"][0].format(title="ぼっち・ざ・ろっく！")
+    assert seen == [shell.PATH_LABEL_ROWS]                                     # a label's look: the first rows only
+    monkeypatch.setattr(win, "_top_to_mine", lambda first=None: None)
+    assert win._step_presses("cards")[0][:2] == ("mine-any", strings.PATH_PRESS["mine-any"][0])
+
+
+@pytest.mark.parametrize("step_id", ["words", "watch", "cards", "junban", "backfill", "yours"])
+def test_show_me_only_lights_a_place_and_changes_nothing(lib_world, step_id):
+    from app.qt import press as qpress
+    win = lib_world
+    c = _shown(win, facts())
+    before = (json.dumps(win.services.settings.get(), sort_keys=True, default=dict), json.dumps(guide.read_state(), sort_keys=True),
+              c.card, c.presses, qpress.presses_of(win).any_live())
+    win.path_spot = None
+    win.path_show_me(P.BY_ID[step_id].where)
+    QApplication.processEvents()
+    after = (json.dumps(win.services.settings.get(), sort_keys=True, default=dict), json.dumps(guide.read_state(), sort_keys=True),
+             c.card, c.presses, qpress.presses_of(win).any_live())
+    assert after == before                                                      # nothing written, nothing pressed
+    kind = P.BY_ID[step_id].where.partition(":")[0]
+    if kind == "hero":                                                          # lit on Up Next itself
+        lst = win.page_widgets["current"].list
+        part = lst.hero_part(P.BY_ID[step_id].where.partition(":")[2])
+        assert part is not None and win.path_spot is not None
+        assert win.path_spot.parentWidget() is lst.viewport() and win.path_spot.geometry().contains(part)
+    elif kind == "circle":
+        assert win.path_spot is not None and win.path_spot.parentWidget() is win.phase
+
+
+def test_picking_which_words_get_a_card_in_settings_ticks_make_it_yours(lib_world):
+    from app.qt import settings_catalog as catalog
+    win = lib_world
+    page = win.mount_settings()
+    page._saved(catalog.ROW["connect_mine_words"], dict(win.services.settings.get()), ["connect_mine_words"])
+    assert wait_until(lambda: "yours" in (guide.read_state().get("moments") or {}))
+
+
+def test_the_tours_doors_are_gone(lib_world):
+    # EZ2-3 (HG-4 reversed): stage ③ teaches what runs by itself by doing it — no door to the tour remains
+    from app.qt import help_card
+    from PyQt6.QtWidgets import QAbstractButton
+    win = lib_world
+    page = win.mount_settings()
+    assert not [b for b in page.findChildren(QAbstractButton) if "runs by itself" in b.text()]
+    card = help_card.card_for(win)
+    assert not hasattr(card, "tour_button")
+    assert "_tour_after_setup" not in win.__dict__
+
+
+# --- the panel: one list (EZ2-1 / EZ2-3) ------------------------------------------------------------------------- #
 def _open_path(panel, f, state=None):
     panel.set_path(_path(f, state if state is not None else {"first_ack": True}))
     assert wait_until(lambda: not panel.building())
-    panel.open(tab="path")
-    assert wait_until(panel.isVisible) and panel.tab == "path"
+    panel.open()
+    assert wait_until(panel.isVisible)
     return {r.status.step.id: r for r in panel.rows}
 
 
@@ -175,12 +422,38 @@ def _lines_in_sight(widget):
             and lab.objectName() != "helpmark"]
 
 
+def test_the_panel_is_one_list_your_path_its_stages_now_new_for_you_later_and_done(world):
+    panel = world.d.guide_panel
+    panel.set_look(guide.Look("3.0.5", (), False))
+    f = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True)
+    rows = _open_path(panel, f)
+    assert panel.heading.text() == strings.GUIDE_PATH_HEADING and panel.stage_row.isVisibleTo(panel)
+    assert panel.stage_row.states == (P.DONE, P.DONE, P.NOW, P.LATER)
+    assert not hasattr(panel, "tab_buttons")                                    # no tabs: one list
+    sight = _lines_in_sight(panel)
+    now = strings.PATH_NOW.format(stage=strings.PATH_STAGES["automate"].upper())
+    assert sight.index(now) < sight.index(strings.PATH_LATER) < sight.index(strings.PATH_DONE)
+    assert rows["cards"].press is not None and rows["cards"].press.text() == strings.PATH_AGAIN   # done: again
+    assert rows["hato"].press.text() == strings.PATH_DO and rows["hato"].press.toolTip()
+    assert rows["piyo"].later and rows["piyo"].press is None                    # not useful yet: no press
+    panel.close()
+
+
+def test_a_step_rows_do_it_runs_its_own_press_and_closes_the_panel(world):
+    went = []
+    panel = world.d.guide_panel
+    panel.act.connect(went.append)                                              # (the shell's slot runs too: harmless)
+    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True))
+    rows["hato"].press.click()
+    assert went == ["hato"] and not panel.isVisible()
+
+
 def test_the_cards_line_is_behind_its_question_mark_never_in_sight(card):
     from PyQt6.QtCore import Qt
-    for got, (title, line) in ((("step", "words", 1, 3), strings.PATH_STEPS["words"]),
-                               (("step", "cards", 3, 3), strings.PATH_STEPS["cards"]),
-                               (("step", "hato", 0, 0), strings.PATH_STEPS["hato"])):
-        card.set_card(got)
+    for got, (title, line) in ((("step", "words", EP2), strings.PATH_STEPS["words"]),
+                               (("step", "cards", EP3), strings.PATH_STEPS["cards"]),
+                               (("step", "hato", ()), strings.PATH_STEPS["hato"])):
+        card.set_card(got, (("x", "Do it", "tip"),))
         assert card.title.isVisibleTo(card) and card.title.text() == title
         assert card.about.isVisibleTo(card) and card.about.toolTip() == line
         assert card.about.focusPolicy() == Qt.FocusPolicy.TabFocus and card.about.accessibleName()
@@ -197,7 +470,7 @@ def test_the_cards_question_mark_reveals_its_line_on_a_press_and_on_enter(lib_wo
     win = lib_world
     asked = []
     win.tooltips.request = lambda w, *a, **k: asked.append(w)
-    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+    _shown(win, facts())
     mark = win.duties.next_card.about
     assert mark.isVisible() and mark.toolTip() == strings.PATH_STEPS["words"][1]
     QTest.mouseClick(mark, Qt.MouseButton.LeftButton)
@@ -205,52 +478,36 @@ def test_the_cards_question_mark_reveals_its_line_on_a_press_and_on_enter(lib_wo
     QTest.keyClick(mark, Qt.Key.Key_Return)
     QTest.keyClick(mark, Qt.Key.Key_Space)
     assert asked == [mark, mark, mark]
-    assert win.duties.next_card.card == ("step", "words", 1, 3)                 # revealing presses nothing else
+    assert win.duties.next_card.card == ("step", "words", EP2)                  # revealing presses nothing else
 
 
-def test_past_steps_stay_in_the_path_ticked_with_show_me_to_try_again(world):
-    went = []
-    panel = world.d.guide_panel
-    panel.show_me.connect(went.append)
-    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))
-    for step_id in ("words", "watch", "cards"):                                 # chapter 1 done: each still listed
-        r = rows[step_id]
-        assert r.status.done and r.tick.text() == strings.PATH_TICK and not r.later
-        assert r.show_me is not None and r.show_me.toolTip() == strings.PATH_AGAIN_TIP, step_id
-        assert r.accessibleName() == strings.PATH_TICK_NAME.format(title=strings.PATH_STEPS[step_id][0])
-    rows["watch"].show_me.click()
-    assert went == ["help:current"] and not panel.isVisible()
-
-
-def test_a_step_that_cant_apply_now_reads_not_for_now_with_when_behind_its_question_mark(world):
+def test_a_step_that_cant_apply_now_reads_not_yet_with_when_behind_its_question_mark(world):
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))   # no Anki, book, video
     later = {step_id for step_id, r in rows.items() if r.later}
-    assert later == {"junban", "backfill", "audiobook", "hato", "piyo"}
+    assert later == {"junban", "backfill", "audiobook", "hato", "piyo"}          # (④'s applies once cards are made)
     for step_id in later:
         r = rows[step_id]
-        assert r.show_me is None and r.tick.text() == "", step_id               # never a dead end, never a tick
+        assert r.press is None and r.tick.text() == "", step_id                 # never a dead end, never a tick
         assert r.about.isVisibleTo(panel) and r.about.toolTip() == strings.PATH_WHEN[step_id]
         assert strings.PATH_WHEN[step_id] in r.accessibleName()
-    assert strings.PATH_LATER in _lines_in_sight(panel)                         # one quiet group name above them
-    assert strings.PATH_COUNT.format(n=0, total=0) not in _lines_in_sight(panel)   # never "0 OF 0": no count
 
 
-def test_a_step_done_before_that_cant_apply_now_keeps_its_tick_and_no_show_me(world):
+def test_a_step_done_before_that_cant_apply_now_keeps_its_tick_and_no_press(world):
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, lined_up=True))
     r = rows["audiobook"]                                                       # lined up once; no book in Current now
-    assert r.status.done and not r.later and r.tick.text() == strings.PATH_TICK and r.show_me is None
+    assert r.status.done and not r.later and r.tick.text() == strings.PATH_TICK and r.press is None
 
 
-def test_a_missing_module_is_never_listed_even_as_not_for_now(world):
+def test_a_missing_module_is_never_listed_even_as_not_yet(world):
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False))
     assert not {"junban", "backfill"} & set(rows)
 
 
 def test_tab_reaches_every_question_mark_in_the_path_in_order(world):
-    # (adversary r1 #2) a not-for-now row has no Show me: its ? is its only control, and Tab must reach it
+    # (adversary r1 #2) a not-yet row has no press: its ? is its only control, and Tab must reach it
     from app.qt.tooltip import AboutMark
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))
@@ -261,7 +518,7 @@ def test_tab_reaches_every_question_mark_in_the_path_in_order(world):
     piyo = rows["piyo"].about
     assert piyo in seen and all(r.about in seen for r in rows.values())
     words = rows["words"]
-    assert seen.index(words.about) == seen.index(words.show_me) - 1             # the ? before its row's Show me
+    assert seen.index(words.about) == seen.index(words.press) - 1               # the ? before its row's press
     assert isinstance(piyo, AboutMark)
     panel.close()
 
@@ -273,21 +530,11 @@ def test_the_made_card_says_where_later_steps_wait_in_sight(card):
     assert card.about.toolTip() == strings.NEXT_MADE_LINE
 
 
-def test_the_audiobooks_show_me_names_the_press_that_does_it(card, world):
-    # (adversary r1 #4) Show me opens Current; the press itself is on the book's ⋯ — its tip says so
-    card.set_card(("step", "audiobook", 0, 0))
-    assert card.primary.toolTip() == strings.PATH_SHOW_ME_TIPS["audiobook"]
-    panel = world.d.guide_panel
-    rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True, book_in_current=True))
-    assert rows["audiobook"].show_me.toolTip() == strings.PATH_SHOW_ME_TIPS["audiobook"]
-    panel.close()
-
-
-def test_the_audiobooks_show_me_lands_on_current_and_the_bar_says_the_press(lib_world):
-    # (re-check r2 #1) a click without a hover: Current lit, and the bar names the ⋯ entry that does it
+def test_the_audiobooks_press_lands_on_current_and_the_bar_says_the_press(lib_world):
+    # (re-check r2 #1) its own press is on the book's ⋯: Current lit, and the bar names the ⋯ entry that does it
     win = lib_world
     assert guide.anchor_ok(P.BY_ID["audiobook"].where)
-    win.guide_show_me(P.BY_ID["audiobook"].where)
+    win.path_press("audiobook")
     assert wait_until(lambda: win.bar_line.accessibleDescription() == strings.PATH_THEN["audiobook"])
 
 
@@ -325,7 +572,7 @@ def test_a_question_marks_line_stays_inside_its_window_even_at_the_windows_top(q
 def test_a_title_refits_when_the_text_size_changes_so_its_question_mark_stays_beside_it(card):
     # (adversary r1 #6) the text size changes live: a title held to its old width would wrap its last word
     from PyQt6.QtGui import QFont
-    card.set_card(("step", "words", 1, 3))
+    card.set_card(("step", "words", EP2), (WORDS,))
     small = card.title.maximumWidth()
     font = QFont(card.title.font())
     font.setPointSizeF(font.pointSizeF() * 1.6)
@@ -354,7 +601,6 @@ def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world):
     assert panel.building()
     assert wait_until(lambda: not panel.building())
     assert max(panel.slices) < 4.0, max(panel.slices)
-    panel.show_tab("path")
     t0 = time.perf_counter()
     panel.place()
     assert (time.perf_counter() - t0) * 1000 < 4.0
@@ -362,10 +608,11 @@ def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world):
 
 def test_without_a_library_the_panel_is_whats_new_alone(world):
     panel = world.d.guide_panel
+    panel.set_look(guide.Look("3.0.5", (), False))
     panel.set_path(None)
-    assert not panel.tabs.isVisibleTo(panel) and panel.heading.isVisibleTo(panel)
-    panel.show_tab("path")
-    assert panel.tab == "news"
+    assert wait_until(lambda: not panel.building())
+    assert not panel.stage_row.isVisibleTo(panel) and panel.heading.isVisibleTo(panel)
+    assert panel.heading.text() != strings.GUIDE_PATH_HEADING and not panel.rows
 
 
 def test_the_journey_opening_is_kept_as_the_first_steps_moment(world):
@@ -374,11 +621,11 @@ def test_the_journey_opening_is_kept_as_the_first_steps_moment(world):
 
 
 # --- the adversary's round 1 ------------------------------------------------------------------------------------- #
-def test_every_chapter_one_settings_place_shows_for_a_new_learner(lib_world):
+def test_every_stage_steps_settings_place_shows_for_a_new_learner(lib_world):
     page = lib_world.mount_settings()
     for step in P.STEPS:
         kind, _sep, name = step.where.partition(":")
-        if kind == "settings" and step.chapter == P.FIRST:
+        if kind == "settings" and step.stage is not None and step.id != "backfill":
             assert page.shows(name), step.id                                     # Show me never dead-ends here
 
 
@@ -387,12 +634,11 @@ def test_the_card_never_comes_mid_drag_and_ok_goes_at_once(lib_world):
     c = win.duties.next_card
     win.toasts.dragging = True
     try:
-        win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(facts()), []))
+        _shown(win, facts())
         assert not c.isVisible() and win._guide_soon.isActive()                 # waits: the rows would jump
     finally:
         win.toasts.dragging = False
-    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False),
-                    _path(facts(journey_opened=True, episodes_done=1, own_cards=True)), []))
+    _shown(win, facts(journey_opened=True, episodes_done=1, own_cards=True))
     assert c.card == ("made",)
     c.primary.click()
     assert not c.isVisible()
@@ -401,10 +647,10 @@ def test_the_card_never_comes_mid_drag_and_ok_goes_at_once(lib_world):
 
 def test_a_later_steps_not_now_is_kept_and_no_other_later_card_follows_this_run(lib_world):
     win = lib_world
-    c = win.duties.next_card
-    useful = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, book_in_current=True)
-    win._guide_got((win._guide_asked, guide.Look("3.0.5", (), False), _path(useful, {"first_ack": True}), []))
-    assert c.card == ("step", "audiobook", 0, 0)
+    useful = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, book_in_current=True,
+                   junban=False)
+    c = _shown(win, useful, {"first_ack": True})
+    assert c.card == ("step", "audiobook", ())
     c.secondary.click()
     assert not c.isVisible() and P.READY in win._path_later
     assert wait_until(lambda: "audiobook" in (guide.read_state().get("not_now") or ()))
@@ -419,38 +665,6 @@ def test_a_view_that_moved_asks_a_path_look_and_one_that_didnt_asks_none(lib_wor
     assert not win._guide_soon.isActive()                                        # the same numbers: nothing (S19)
     win._guide_view_moved(View((Row("anime", 1),), Counts(0, 0), ()))           # a Done
     assert win._guide_soon.isActive()
-
-
-def test_a_step_rows_show_me_goes_there(world):
-    went = []
-    panel = world.d.guide_panel
-    panel.show_me.connect(went.append)                                          # (the shell's slot runs too: harmless)
-    panel.set_path(_path(facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True),
-                         {"first_ack": True}))
-    assert wait_until(lambda: not panel.building())
-    panel.open(tab="path")
-    assert wait_until(panel.isVisible)
-    hato = next(r for r in panel.rows if r.status is not None and r.status.step.id == "hato")
-    hato.show_me.click()
-    assert went == ["settings:hato"] and not panel.isVisible()
-
-
-def test_the_tabs_are_one_stop_and_the_arrows_move_between_them(world):
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtGui import QKeyEvent
-    panel = world.d.guide_panel
-    panel.set_path(_path(facts()))
-    panel.open(tab="news")
-    assert wait_until(panel.isVisible)
-    QApplication.sendEvent(panel.tab_buttons["news"], QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
-                                                                 Qt.KeyboardModifier.NoModifier))
-    assert panel.tab == "path"
-    # one Tab stop (the guide §3): the checked tab takes Tab; Qt's exclusive group drops the other from the chain once
-    # the arrows have moved the focus (its own way), and every tab is made a Tab-focus button, never a click's ring
-    policies = {n: b.focusPolicy() for n, b in panel.tab_buttons.items()}
-    assert policies["path"] == Qt.FocusPolicy.TabFocus and policies["news"] != Qt.FocusPolicy.StrongFocus, policies
-    assert QApplication.focusWidget() is panel.tab_buttons["path"]
-    panel.close()
 
 
 def test_the_journey_really_opening_ticks_step_one(lib_world, monkeypatch):

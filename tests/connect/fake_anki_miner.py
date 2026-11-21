@@ -27,6 +27,8 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
                                                            # unconsumed cancel file is deleted once (runfolder.py)
+    {"child_priority": true}                               # Michi-LP: logs {"priority": {"self", "child"}}, the
+                                                           # Windows priority class it and a child it starts run at
     {"media": true,                                        # #BS0A1K: a clip in the run's media folder (its stage 3)
      "deaf": 30}                                           # … then, after its progress rows, this long in a step that
                                                            # never reads the cancel file (3.11's whole-book parse)
@@ -107,6 +109,19 @@ LAPIS_EXPORT = {"anki_miner_settings": 1, "app_version": "3.5.0", "config_schema
                              "anki_fields": {"word": "Expression", "sentence": "Sentence",
                                              "definition": "MainDefinition", "glossary": "", "picture": "Picture",
                                              "audio": "SentenceAudio", "source": "MiscInfo", "frequency_sort": ""}}}
+
+
+def _priorities():
+    """This process's Windows priority class, and a child's started as Anki Miner starts ffmpeg (no flags)."""
+    import ctypes
+    import subprocess
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    own = kernel32.GetPriorityClass(ctypes.c_void_p(kernel32.GetCurrentProcess()))
+    code = ("import ctypes; k = ctypes.windll.kernel32; k.GetCurrentProcess.restype = ctypes.c_void_p; "
+            "print(k.GetPriorityClass(ctypes.c_void_p(k.GetCurrentProcess())))")
+    child = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    return {"self": own, "child": int(child.stdout.strip() or 0)}
 
 
 def _plan():
@@ -248,6 +263,8 @@ def _mine(argv, plan):
     except (OSError, ValueError, UnicodeDecodeError) as e:
         return _failed("mine", "BAD_RUN_FILE", str(e))
     _log({"run_file": data})
+    if plan.get("child_priority") and sys.platform == "win32":
+        _log({"priority": _priorities()})
     if plan.get("clear_leftovers") is not None:            # Anki Miner 3.10's `clear_leftovers`, once per call
         time.sleep(plan["clear_leftovers"])
         for episode in data["episodes"]:

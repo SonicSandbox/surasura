@@ -299,7 +299,8 @@ def test_the_looks_answer_names_the_audiobook_that_joined_the_book():
     with store:
         (item,) = _audio_items(store)
         key = _record(store, item["id"])["book"]["key"]
-        assert key and said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [], "elsewhere": []}
+        assert key and said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [],
+                                "elsewhere": [], "other": []}
         assert item["tier"] != "arrivals"
 
 
@@ -314,12 +315,13 @@ def test_an_audiobook_read_before_alone_is_named_so_the_window_picks_it():
     first = _add(language, audio)["audiobooks"]
     assert first["joined"] == [] and len(first["alone"]) == 1
     again = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert again == {"joined": [], "alone": first["alone"], "asks": [], "elsewhere": []}
+    assert again == {"joined": [], "alone": first["alone"], "asks": [], "elsewhere": [], "other": []}
 
 
 def test_an_audiobook_there_paired_with_another_book_is_never_said_to_have_joined_this_one():
     """The folder picked for 「吾輩は猫である」 holds 「銀河鉄道の夜」's audiobook, already paired with that book: the
-    answer names nothing joined to this book and nothing free to pick — the window then says none is there."""
+    answer names nothing joined to this book and nothing free to pick — and (Kura-AB5, 11-20 report: the window said "No
+    audiobook in … yet" though one was there) names it as with that other book, so the window says so."""
     language = "ja"
     store, epub = _book_in(language, NEKO, "source")
     store.close()
@@ -333,7 +335,8 @@ def test_an_audiobook_there_paired_with_another_book_is_never_said_to_have_joine
         (item,) = _audio_items(store)
         assert _record(store, item["id"])["book"]["epub"] == os.path.abspath(other)
     said = _add(language, audio, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": [],
+                    "other": [{"item_id": item["id"], "book": GINGA}]}
 
 
 def test_add_a_folder_with_a_title_like_a_books_answers_its_open_question():
@@ -352,7 +355,7 @@ def test_add_a_folder_with_a_title_like_a_books_answers_its_open_question():
         assert len(asks) == 1 and store.item(asks[0]["item_id"])["tier"] == "arrivals"
     assert said == {"joined": [], "alone": [], "asks": [{"item_id": asks[0]["item_id"], "key": asks[0]["key"],
                                                          "book": NEKO, "epub": asks[0]["book"]["epub"]}],
-                    "elsewhere": []}
+                    "elsewhere": [], "other": []}
 
 
 def test_the_books_word_waits_for_audio_still_on_its_way_and_the_next_look_joins_it():
@@ -369,7 +372,7 @@ def test_the_books_word_waits_for_audio_still_on_its_way_and_the_next_look_joins
     try:
         assert looks.add(folder, answers.append, book={"epub": epub, "title": NEKO})
         assert looks.idle(30)
-        assert answers[0]["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+        assert answers[0]["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": [], "other": []}
         _untagged(os.path.join(folder, "audiobook"), _fit(language))
         clock[0] += 3600 / 2                                  # within the hour the word waits
         assert looks.asked(refreshed=True) and looks.idle(30)
@@ -409,7 +412,7 @@ def test_the_answer_with_no_audio_in_the_folder_is_empty():
     _store.close()
     empty = _drive("nothing")
     said = _add(language, empty, {"epub": epub, "title": NEKO})["audiobooks"]
-    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+    assert said == {"joined": [], "alone": [], "asks": [], "elsewhere": [], "other": []}
 
 
 # --- Kura-AB5: a removed audiobook's folder picked for the book (based on the diagnosis in #429 by Mattias) ------- #
@@ -426,13 +429,15 @@ def test_an_audiobook_removed_before_comes_back_when_its_folder_is_picked_for_th
     store = ls.open_store(language, *roots(language))
     with store:
         store.remove(first["alone"])
-    assert _add(language, audio)["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": []}
+    assert _add(language, audio)["audiobooks"] == {"joined": [], "alone": [], "asks": [], "elsewhere": [],
+                                                   "other": []}
     said = _add(language, audio, {"epub": epub, "title": title})["audiobooks"]
     store = ls.open_store(language, *roots(language))
     with store:
         (item,) = _audio_items(store)
         assert item["id"] not in first["alone"], "a new item: the removed one stays the Removed list's own record"
         key = _record(store, item["id"])["book"]["key"]
-        assert said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [], "elsewhere": []}
+        assert said == {"joined": [{"item_id": item["id"], "key": key}], "alone": [], "asks": [], "elsewhere": [],
+                        "other": []}
         assert item["tier"] != "arrivals"
         assert store.removed() == [], "nothing left to Put back: it is in"

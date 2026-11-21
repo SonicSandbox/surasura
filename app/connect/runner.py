@@ -38,6 +38,10 @@ day's words first:
   batch, a hato drop with the window closed) is still done first. And a Connect whose program folder now holds another
   build (`Steps.replaced`: Setup or a swap put a newer Surasura under it) stops at the next step boundary and starts the
   folder's own Connect (`connect_verbs._loop`): never an old version's Connect working on beside a new one.
+- **One heavy job at a time on a gentle PC** (Haya-LD, 2026-11-20: `power.gentle` — few logical CPUs, little
+  memory, or on battery): the next step that touches Anki waits while a Generate runs (GENERATE_FIRST, its `results`
+  lock: `Steps.blocked`, after the battery), so a Generate goes in at Connect's next step boundary; an ask goes on
+  (a press is the yes, as on battery). A strong PC mines beside a Generate as before.
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
   an ask, nor a level job beyond the line on 3.0 (P4.1 C3, C4: `inbox.keeps`).
@@ -60,6 +64,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -71,6 +76,7 @@ from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PR
                                 Ledger)
 
 log = logging.getLogger("surasura-cli")
+_clock = time.monotonic          # Haya-LD: the run's and a batch's lengths (bound here: a test's own `time` stays its own)
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
 OFFER_EVERY = 5                 # Kura-AB3 A2 r2 S4: the paired books looked at for *Add audio* at the first look and
@@ -81,6 +87,9 @@ ALL_GONE_MIN = 10               # the deleted-card check: this many notes or mor
 
 # The plain lines a waiting job shows (the status line's, never Needs you)
 ON_BATTERY = "On battery: cards are made once this computer is plugged in."
+# Haya-LD (3.0.18, PROVISIONAL words): on a PC that runs one heavy job at a time (`power.gentle`) the next step that
+# touches Anki waits while a Generate runs (it holds `results`); the window wakes Connect at the Generate's end
+GENERATE_FIRST = "Waiting for Generate to finish: this computer runs one big job at a time."
 ANKI_MINER_OPEN = "Anki Miner is open: close it to make cards."
 # A2-6: told BUSY while Surasura's *Finish its setup* runs Anki Miner's setup (`anki_miner.setting_up`): nothing to close
 SETTING_UP = "Anki Miner is finishing its setup: cards are made once it's done."
@@ -218,8 +227,26 @@ STOPPED_FOR_UPDATE = "Surasura is installing an update."
 ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Cards made for you was switched off."
+PAUSED = "Paused: click Anki Miner's circle at the bottom left to go on"    # Mado-PZ: the run's stop and a cut job's
+#   wait (never a Stop of yours: it goes on from its step at the next start, `_stopped`)
+# Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself): Connect's own steps that belong to another
+# circle wait on that circle's pause — ス its Generate, 順 its Backfill and re-order, Anki its syncs (the session's, the
+# known-words sync, the pending AnkiWeb sync at its exit). The wait's words are the window's one shared line
+# (`app/qt/strings.PAUSED_WAITS`, a test holds them together); a job parked on one goes on from its step once that
+# circle resumes (`_woken`; the window's resume kicks Connect)
+PAUSED_WAITS = "{what} · {circle} is paused · click it to resume"
+GENERATE_PAUSED = PAUSED_WAITS.format(what="Your list waits for its Generate", circle="ス")
+JUNBAN_PAUSED = PAUSED_WAITS.format(what="Backfill and the re-order wait", circle="順")
+CIRCLE_WAITS = {"surasura": GENERATE_PAUSED, "junban": JUNBAN_PAUSED}     # its circle -> the wait's words (`_woken`)
 # Haya-CL: the program folder now holds another build (a newer Surasura installed under a running Connect)
 REPLACED = "Surasura was updated: the new version makes the cards from here."
+# Haya-CL 3.0.17 (Sonic's laptop, #8158GX: Connect mined on after the window closed; the lead: every child the window
+# starts ends with it; PROVISIONAL): a Connect that worked beside a window stops when it closes — at the next step
+# boundary, and the job under way is cut as a pause cuts it (its cards so far kept), going on from its step at the
+# next start (the window's start kicks Connect). One started with no window open (hato's hand-over) never saw one: it
+# does the work it can do now, then ends (3.0.3's lean)
+WINDOW_CLOSED = "Surasura was closed: this goes on from here when you open it again."
+WINDOW_LOOK_S = 2               # while a program runs, the window is looked for at most this often (a few file reads)
 MINER_ABSENT = "Anki Miner isn't installed"
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
@@ -309,6 +336,9 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
+    _window_gone(steps)                     # a window open as Connect starts: the one it ends with (Haya-CL 3.0.17)
+    began = _clock()
+    _say_machine(languages)                 # Haya-LD: the run's start, and how this PC runs its heavy jobs
     _sweep_online(steps)                    # Michi-YT: a video a killed Connect left goes before anything else
     _release_check(loaded)
     own = ledger is None
@@ -386,6 +416,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
         return summary
     finally:
+        log.info("Connect: the run ends after %.1f s (%d looks)", _clock() - began, summary["looks"])
         if own:
             ledger.close()
         getattr(steps, "end_listening", lambda: None)()     # Michi-T1: a release heard beside the mining ends
@@ -396,6 +427,17 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
         if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
             summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
+
+
+def _say_machine(languages):
+    """Haya-LD: the run's start line — its languages, and whether this PC runs one heavy job at a time."""
+    try:
+        from app.connect import power
+        gentle, why = power.gentle()
+        log.info("Connect: a run begins (%s): %s", ", ".join(languages),
+                 f"one heavy job at a time on this computer ({why})" if gentle else "a strong computer")
+    except Exception:
+        pass
 
 
 def _release_check(loaded):
@@ -427,8 +469,13 @@ def _stop(steps):
         return STOPPED_FOR_UPDATE
     if not steps.enabled():
         return SWITCHED_OFF
+    paused = getattr(steps, "paused", None)
+    if paused is not None and paused():
+        return PAUSED
     if _replaced(steps):
         return REPLACED
+    if _window_gone(steps):
+        return WINDOW_CLOSED
     return None
 
 
@@ -453,6 +500,31 @@ def _a_window(kind):
     """Is a running mark of `kind` a window's? The 3.0 window ("window"), the 2.x Tk window ("dashboard"), and a
     window started with a flag (`Surasura.exe --hud`: app_entry names the mark after its first argument)."""
     return kind in WINDOW_KINDS or (isinstance(kind, str) and kind.startswith("-"))
+
+
+def _window_gone(steps):
+    """Haya-CL 3.0.17: has the window this Connect worked beside closed — one open at a look of this run, none now
+    (looked at most every WINDOW_LOOK_S)? Never for a Connect that saw no window, nor a stand-in without the look; a
+    look that fails is no look (logged): neither a window seen nor one gone."""
+    window_open = getattr(steps, "window_open", None)
+    if window_open is None:
+        return False
+    now = time.monotonic()
+    looked = getattr(steps, "window_look", None)
+    if looked is not None and now - looked[0] < WINDOW_LOOK_S:
+        open_now = looked[1]
+    else:
+        try:
+            open_now = bool(window_open())
+        except Exception:
+            log.warning("Connect couldn't look for an open window; it goes on", exc_info=True)
+            return False
+        try:
+            steps.window_look = (now, open_now)
+            steps.window_seen = getattr(steps, "window_seen", False) or open_now
+        except AttributeError:
+            return False
+    return not open_now and bool(getattr(steps, "window_seen", False))
 
 
 def _window_open(steps):
@@ -528,10 +600,43 @@ def _books_aside(steps, ledger, lang, jobs, reopen=True):
 
 def _open_jobs(ledger, lang, parked, tried=()):
     """The open jobs this pass may try: never one `tried`, nor one parked for the next start — unless you asked for it
-    since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42)."""
-    return [j for j in ledger.open_jobs(lang)
+    since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42) — nor, while
+    the first run waits for your yes, one the placement log queued (Kantan-B2b: `inbox.first_run_held`, read only
+    when such a job is open)."""
+    jobs = [j for j in ledger.open_jobs(lang)
             if not (j["id"] in parked and parked[j["id"]] == j.get("asked_at")) and j["id"] not in tried
             and not ledger.held_by_stop(j)]     # laptop round 8 #47: one you stopped waits for your next ask
+    if any(inbox.first_run_held(j) for j in jobs) and _first_run_waits(ledger, lang):
+        jobs = [j for j in jobs if not inbox.first_run_held(j)]
+    return jobs
+
+
+def _first_run_waits(ledger, lang):
+    """`inbox.first_run_waits`, its seen file unreadable (held by the window's write past its tries) or the ledger's
+    read failing read as waiting: the log's jobs wait for the next look, never mined on a read that failed (logged).
+    S19 (the review's waste lens): `_open_jobs` runs many times a pass (once a sentence in the AI voice's stop
+    check), so the answer is kept on the ledger while the seen file's stat (size, time) stays the same — one stat a
+    call, the file read again only once the window wrote it; a waiting answer is never kept (its `mined_from_log`
+    can change within the pass)."""
+    from app.services import needs
+    try:
+        st = os.stat(needs.seen_path(lang))
+        stamp = (st.st_size, st.st_mtime_ns)
+    except FileNotFoundError:
+        stamp = None
+    except OSError:
+        stamp = False                       # (no stat: read it)
+    kept = getattr(ledger, "_first_run_kept", None) or {}
+    if stamp is not False and kept.get(lang) == stamp:
+        return False
+    try:
+        waits = inbox.first_run_waits(lang, ledger)
+    except (OSError, sqlite3.Error):
+        log.warning("Connect couldn't read whether the first cards wait for your yes; they wait", exc_info=True)
+        return True
+    if not waits and stamp is not False:
+        ledger._first_run_kept = dict(kept, **{lang: stamp})
+    return waits
 
 
 def _empty():
@@ -599,6 +704,16 @@ def _woken(steps, ledger, parked):
     # again this run — never a job still waiting as it was parked
     for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("state") == "queued"]:
         del parked[job_id]
+    if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
+        for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
+            del parked[job_id]
+    if not _window_gone(steps):             # Haya-CL 3.0.17: the window open again (its start's kick) before this
+        for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == WINDOW_CLOSED]:
+            del parked[job_id]              # run ended: the job its close cut goes on
+    for circle, reason in CIRCLE_WAITS.items():     # Kantan-G: one parked on ス's / 順's pause, that circle resumed
+        if not _circle_paused(steps, circle):
+            for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == reason]:
+                del parked[job_id]
     if woke != kick.VIDEOS:
         return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
@@ -645,11 +760,12 @@ def _language(steps, ledger, lang, prepared, parked, out):
         return _waiting_all(ledger, lang, parked, out, CHINESE, False)
     wait = store_now = None
     only_asked = False          # on battery with a *Mine now* waiting: this pass mines the asked ones alone (M-3)
+    held = ON_BATTERY           # ... or a Generate first on a gentle PC (Haya-LD): the rest wait with its reason
     try:
         wait = _blocked(steps, lang, None)
-        if wait is not None and wait.reason == ON_BATTERY and any(j.get("asked_at") for j in
-                                                                  _open_jobs(ledger, lang, parked)):
-            only_asked = True
+        if wait is not None and wait.reason in (ON_BATTERY, GENERATE_FIRST) and any(
+                j.get("asked_at") for j in _open_jobs(ledger, lang, parked)):
+            only_asked, held = True, wait.reason
             wait = _blocked(steps, lang, None, asked=True)
         if wait is None:
             with _held():                   # two store reads, one open
@@ -699,7 +815,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             return _waiting_all(ledger, lang, parked, out, failed[0], failed[1], tried) or outside
         job = _ordered(jobs, line)[0]
         if only_asked and not job.get("asked_at"):     # the asked ones are mined: the rest still wait for the plug
-            return _waiting_all(ledger, lang, parked, out, ON_BATTERY, True, tried) or outside
+            return _waiting_all(ledger, lang, parked, out, held, True, tried) or outside
         tried.add(job["id"])
         # Michi-T1: the releases of the episodes in line heard beside this one's mining, never waited for
         getattr(steps, "listen_ahead", lambda _l, _j: None)(lang, _ordered(jobs, line)[:AHEAD_JOBS])
@@ -794,6 +910,9 @@ def _after_mining(steps, ledger, lang, out, on_battery=False):
 def _follow_up(steps, lang, ledger):
     """F11's one re-order from the Generate's new plan (a move made meanwhile is served at its time). Anki closed, a
     review, a skip or a failure: the re-sort stays owed."""
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — the re-sort stays owed (the next job's step pays it)
+        log.info("Connect: 順 is paused: the follow-up re-order waits (%s)", lang)
+        return
     try:
         if _blocked(steps, lang, None) is not None:
             return
@@ -912,7 +1031,7 @@ def _blocked(steps, lang, resume, asked=False):
     for a job carrying an ask, on battery is no reason (Sonic 2026-10-22, M-3 A: a *Mine now* press is the yes for
     that one episode) — Anki's own state still is (`steps.session_blocked`)."""
     why = steps.blocked(lang)
-    if asked and why == ON_BATTERY:
+    if asked and why in (ON_BATTERY, GENERATE_FIRST):
         session = getattr(steps, "session_blocked", None)
         why = session(lang) if session is not None else None
     if why is None:
@@ -920,6 +1039,20 @@ def _blocked(steps, lang, resume, asked=False):
     if isinstance(why, Wait):
         return Wait(why.reason, why.look, resume)
     return Wait(why, resume=resume)
+
+
+def _generate_first():
+    """Haya-LD: a gentle PC (`power.gentle`) with a Generate running — `results` held by a holder whose verb is a
+    Generate's (the analyzer's, the window's wait for it); a sort or a put-back of the library holds it too, briefly,
+    and is no Generate. A holder that can't be read is none. Never raises."""
+    try:
+        from app import locks
+        from app.connect import power
+        if not (power.gentle()[0] and locks.in_use("results")):
+            return False
+        return str((locks.read_holder("results") or {}).get("verb") or "").startswith("Generate")
+    except Exception:
+        return False
 
 
 def _resume_of(job):
@@ -1040,14 +1173,14 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     record = not foreign
     _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
-        # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
+        # at the cap: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
         full = _full(steps, lang, asked=bool(job.get("asked_at")))
         if full is not None:
             raise full
     try:
         # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
         # look-up still under way at a press is ended, and the job stops before the step it was in
-        with stopping.watching(lambda: _stop_pressed(ledger, jid)):
+        with stopping.watching(lambda: _stop_pressed(ledger, jid, steps)):
             repicks = 0             # a profile or pairing that changed since the pick: picked again (at most twice)
             while repicks < 3:
                 try:
@@ -1100,8 +1233,13 @@ def _job(steps, ledger, lang, job, store_now, line, out):
 def _stop_here(steps, ledger, lang, job, step, record):
     """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
-    if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
+    if step in ("filling", "ordering"):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    if not ledger.stop_asked(job["id"]):
+        why = _cut_now(steps)
+        if not why:
+            return
+        _cut_by_pause(steps, job["id"], why)
     _stopped(steps, ledger, lang, job, step, record)
 
 
@@ -1109,7 +1247,19 @@ def _stopped(steps, ledger, lang, job, step, record):
     """The job stops before `step` at your press. Every stop comes here: `_stop_here`'s, a program ended mid-step
     (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
     are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
-    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
+    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask.
+    Mado-PZ: cut by a pause of Anki Miner's circle (no press of yours; `_cut_by_pause` marked it, so a resume a moment
+    after the cut is no Stop either) it is never marked stopped — its cards so far kept, it waits `PAUSED` for this run
+    alone and the resume's kick goes on from `step`. Haya-CL 3.0.17: cut so by the window's close too (`_cut_now`),
+    waiting WINDOW_CLOSED: the window's next start goes on from `step`."""
+    why = getattr(steps, "cut_why", None) if getattr(steps, "paused_cut", None) == job["id"] else None
+    why = why or _cut_now(steps)
+    if not ledger.stop_asked(job["id"]) and why:
+        _cut_by_pause(steps, None)
+        made = _keep_made(steps, ledger, lang, job, record)
+        log.info("Connect: job %s %s before %s (%d words made so far)", job["id"],
+                 "paused" if why == PAUSED else "cut as the window closed", step or "its pick", len(made))
+        raise Wait(why, look=False, resume=step)
     made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
     if lining_up(now.get("reason")):        # Stage B (AB-Q3): *Stop* while its audiobook is lined up stops that too
@@ -1979,8 +2129,12 @@ def _mine(steps, ledger, lang, job, record=True):
         ran = True
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
+        began = _clock()
         try:
             got = _mine_batch(steps, ledger, lang, job, picked, todo, attempt)
+            # Haya-LD: each batch's length in the log (a startup's timeline had Connect's start and nothing after)
+            log.info("Connect: job %s batch %s: %d words in %.1f s, %d made", jid, attempt, len(todo),
+                     _clock() - began, sum(o.get("outcome") == "made" for o in got.get("outcomes") or ()))
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
@@ -2141,14 +2295,67 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
     return out
 
 
-def _stop_pressed(ledger, jid):
+def _stop_pressed(ledger, jid, steps=None):
     """(The job's check, `stopping.watching`: asked by every program the runner waits on, every second — Anki Miner's
-    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job? A read that fails is no press (logged): the job
-    goes on."""
+    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job — or Anki Miner's circle paused at the bar
+    (Mado-PZ: the job is cut at the same point, resumably, `_stopped`)? A read that fails is no press (logged): the
+    job goes on."""
     try:
-        return ledger.stop_asked(jid)
+        if ledger.stop_asked(jid):
+            return True
+        why = _cut_now(steps)
+        if why:
+            _cut_by_pause(steps, jid, why)
+            return True
+        return False
     except Exception:
         log.warning("Connect couldn't look for a Stop on job %s", jid, exc_info=True)
+        return False
+
+
+def _cut_by_pause(steps, jid, why=PAUSED):
+    """Mado-PZ: the job `jid` is being cut by a pause (not your Stop) — remembered on the run's steps, so `_stopped`
+    still knows it was a pause when the resume came a moment after the cut. `why`: the wait it gets (PAUSED, or
+    WINDOW_CLOSED: `_cut_now`)."""
+    try:
+        steps.paused_cut = jid
+        steps.cut_why = why
+    except AttributeError:
+        pass
+
+
+def _cut_now(steps):
+    """Is the job under way cut now, not by your Stop -> its wait: PAUSED (Anki Miner's circle paused at the bar,
+    Mado-PZ), WINDOW_CLOSED (the window Connect worked beside closed, Haya-CL 3.0.17) — or None."""
+    if _paused_now(steps):
+        return PAUSED
+    if _window_gone(steps):
+        return WINDOW_CLOSED
+    return None
+
+
+def _circle_paused(steps, circle):
+    """Kantan-G: is `circle` paused at the bar (`Steps.circle_paused`)? A stand-in without the look, or a look that
+    fails: no."""
+    look = getattr(steps, "circle_paused", None)
+    if look is None:
+        return False
+    try:
+        return bool(look(circle))
+    except Exception:
+        log.warning("Connect couldn't look for a pause of %s; it goes on", circle, exc_info=True)
+        return False
+
+
+def _paused_now(steps):
+    """Mado-PZ: is Anki Miner's circle paused (`Steps.paused`)? A stand-in without the look, or a look that fails: no."""
+    paused = getattr(steps, "paused", None)
+    if paused is None:
+        return False
+    try:
+        return bool(paused())
+    except Exception:
+        log.warning("Connect couldn't look for a pause; it goes on", exc_info=True)
         return False
 
 
@@ -2272,10 +2479,11 @@ def held_by_cap(asked):
 
 
 def _full(steps, lang, asked=False):
-    """Before a job's pick: a Wait when Connect's waiting cards are at the cap and this run's shelf has had its try (it
-    can free nothing more until you study), else None — one request, so a job waiting at the cap is never picked
-    again at every look. `asked`: the job carries an ask (`held_by_cap`)."""
-    if not held_by_cap(asked) or not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
+    """Before a job's pick: a Wait when the cards waiting on your list are at the cap, else None — one request, so a
+    job waiting at the cap is never picked again at every look. Kyou-SH (a tester's 236 cards suspended with *Suspend
+    them* off; Sonic 2026-11-20: ranking and suspending are Junban's, Connect only makes cards): nothing is shelved
+    first — Connect waits at the cap until you study. `asked`: the job carries an ask (`held_by_cap`)."""
+    if not held_by_cap(asked):
         return None
     cap = steps.cap(lang)
     if not cap:
@@ -2287,22 +2495,11 @@ def _full(steps, lang, asked=False):
 
 
 def _at_cap(steps, ledger, lang, todo, asked=False):
-    """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
-    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go. `asked`: the
-    job carries an ask — never held, nothing shelved for it (`held_by_cap`)."""
-    if not held_by_cap(asked):
-        return None
-    cap = steps.cap(lang)
-    if not cap:
-        return None
-    count = steps.waiting_count(lang)
-    if count is None or count < cap:
-        return None
-    if steps.shelve(lang, ledger, todo, count, cap):
-        count = steps.waiting_count(lang)
-        if count is not None and count < cap:
-            return None
-    return Wait(f"Your {count} cards are waiting: more are made as you study them.", resume="mining")
+    """P2.4 Part B (the cap): a Wait when the cards waiting on your list are at the learner's cap, else None — before a
+    job's first batch, never mid-episode. Connect never suspends a card by itself (Kyou-SH, Sonic 2026-11-20): the
+    shelf is no longer asked at the cap; *Suspend them* is Junban's. `asked`: the job carries an ask — never held
+    (`held_by_cap`)."""
+    return _full(steps, lang, asked)
 
 
 def _outcome(ledger, jid, word):
@@ -2361,6 +2558,8 @@ def _fill(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering")
         return
     _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — its cards made, Backfill and the re-order wait
+        raise Wait(JUNBAN_PAUSED, look=False, resume="filling")
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2397,6 +2596,8 @@ def _order(steps, ledger, lang, job):
     ledger.set_state(jid, "ordering")
     if not ledger.undo_record(jid) and not ledger.resort_owed(lang):
         return
+    if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — the re-order waits for its resume
+        raise Wait(JUNBAN_PAUSED, look=False, resume="ordering")
     wait = _blocked(steps, lang, "ordering", asked=bool(job.get("asked_at")))
     if wait is not None:
         raise wait
@@ -2514,8 +2715,9 @@ class Steps:
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
-        from app.connect import power
+        from app.connect import anki_miner, power
         power.lower_priority()
+        anki_miner.LOW_PRIORITY = self.loaded.get("connect_low_priority") is True     # Michi-LP: Beta, off
 
     def update_staged(self):
         from app import library_store
@@ -2576,7 +2778,36 @@ class Steps:
         except Exception:
             return False
 
+    def paused(self):
+        """Mado-PZ: Anki Miner's circle paused at the bar (settings.json now: asked at each step boundary and, during a
+        job, every second by its watch): the run stops there and a job under way is cut resumably (`_stopped`), its
+        jobs kept in the ledger for the next start. The file is read again only when it changed (its size and time);
+        one that can't be read is no pause (`enabled` says)."""
+        return self.circle_paused("miner")
+
+    def circle_paused(self, circle):
+        """Kantan-G: is `circle` (a `settings_manager.PAUSABLE` name) paused at the bar, settings.json as it is now —
+        read again only when it changed (its size and time; one read for every circle). A file that can't be read is
+        no pause."""
+        from app import path_utils, settings_manager
+        from app.cli import verbs
+        try:
+            st = os.stat(path_utils.get_settings_path())
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        held = getattr(self, "_paused_seen", None)
+        if stamp is None or held is None or held[0] != stamp:
+            try:
+                held = self._paused_seen = (stamp, settings_manager.paused(verbs.settings()))
+            except Exception:                   # unreadable now (held by another program): asked again next time,
+                return circle in (held[1] if held is not None else ())     # the last pause read kept meanwhile
+        return circle in held[1]
+
     def settle(self):
+        if _circle_paused(self, "anki"):    # Kantan-G: Anki's circle paused — the pending sync stays pending (S2:
+            log.info("Connect: Anki's circle is paused: its pending AnkiWeb sync waits")    # Anki's close carries it)
+            return
         from app.cli.verbs import _session
         session = _session(self.loaded)
         if session is not None:
@@ -3005,6 +3236,8 @@ class Steps:
             return Wait(ANKI_OFF, look=False)
         if power.on_battery():
             return ON_BATTERY
+        if _generate_first():
+            return GENERATE_FIRST
         return self.session_blocked(lang)
 
     def session_blocked(self, lang):
@@ -3096,16 +3329,23 @@ class Steps:
         holds = verbs._results_language()
         if WAIT_FOR_OTHER_LIST and holds and holds != lang:
             raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds)))
-        anki_session.begin(self.url, self.loaded)
         ns = SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False)
-        try:
-            verbs.known_sync(ns)
-        except CliError as e:
-            if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
-                raise (_anki_wait(self.url) if e.code == "anki-closed" else Wait(e.message)) from None
-            raise Needs("known-sync", e.message) from None
+        if _circle_paused(self, "anki"):
+            # Kantan-G: Anki's circle paused — no session sync, no known-words sync (mining's own writes still sync
+            # first, S1: a write never goes over a review made on the phone); the words known so far are the run's
+            log.info("Connect: Anki's circle is paused: no session or known-words sync this run (%s)", lang)
+        else:
+            anki_session.begin(self.url, self.loaded)
+            try:
+                verbs.known_sync(ns)
+            except CliError as e:
+                if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
+                    raise (_anki_wait(self.url) if e.code == "anki-closed" else Wait(e.message)) from None
+                raise Needs("known-sync", e.message) from None
         got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
         if got.generate == "first":
+            if _circle_paused(self, "surasura"):    # Kantan-G: ス paused — the episodes wait for its resume
+                raise Wait(GENERATE_PAUSED, look=False)
             self._generate(ns, "Generate didn't finish, so your cards wait for a current list.", ledger)
             got = self.current(lang, fresh=True)
         if got.generate == "after":
@@ -3185,6 +3425,8 @@ class Steps:
         plan read again from its new list), False when none was owed. Raises Wait / Needs from the Generate (mining
         already done: only the list's refresh waits). The Generate going through is what counts: a plan that can't
         be read again just now (a busy store) is the follow-up's to read (review H5)."""
+        if lang in self._after and _circle_paused(self, "surasura"):
+            raise Wait(GENERATE_PAUSED, look=False)     # Kantan-G: ス paused — owed, as a Generate that waits is
         why = self._after.pop(lang, None)
         if why is None:
             return False
@@ -3222,25 +3464,97 @@ class Steps:
         return cap_of(loaded.get("connect_backlog_cap", 300), lang)
 
     def waiting_count(self, lang):
-        """The cards waiting in Anki for `lang` — one count everywhere (laptop round 7 #41, Sonic's B3-2 A, 2026-10-22):
-        every new, unsuspended note in the decks you chose for it plus Connect's own, wherever they are
-        (`anki_sync.backlog_query(decks, connect=True)`: the bottom bar's *Anki · N waiting* is that search's saved
-        answer, `anki_backlog.json`). A suspended card isn't waiting: your suspend says "known", Surasura's sets it
-        aside. Your own new cards count toward the cap too. One cap per language (D31): Connect's notes count only
-        those this language's store made (the tag spans every language; review r2 #2). Decks read as settings.json
-        holds them now (`live`). Notes, as the bottom bar counts them."""
+        """The cards waiting in Anki for `lang` that count toward the cap: every new, unsuspended note in the decks you
+        chose for it plus Connect's own, wherever they are (`anki_sync.backlog_query(decks, connect=True)`, laptop
+        round 7 #41, Sonic's B3-2 A) — **only those whose word is still on your list** (Kyou-SH, Sonic 2026-11-20:
+        Junban's own off-list test, `match.lookup` over the list's keys, `_listed_keys`; a card set aside off the list
+        never blocks mining). No list to read → every waiting note counts, as before. A suspended card isn't waiting.
+        One cap per language (D31): Connect's notes count only those this language's store made (the tag spans every
+        language; review r2 #2); a pinned show's Connect cards always count (Junban puts them first). Decks read as
+        settings.json holds them now (`live`). Notes, as the bottom bar counts them (its count stays every note)."""
         from app import anki_connect, anki_sync
         from app.connect import shelf
         loaded = self._settings(lang) if self.live else self.loaded
         decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
         with self._open(lang) as store:
             made = shelf.made_notes(store)
+            pinned = shelf.pinned_items(store)
         try:
             notes = set(anki_connect.find_notes(self.url, anki_sync.backlog_query(decks))) if decks else set()
             notes |= set(anki_connect.find_notes(self.url, anki_sync.backlog_query([], connect=True))) & set(made)
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
-        return len(notes)
+        keys = self._listed_keys(lang)
+        if not keys:
+            return len(notes)
+        from app import anki_match
+        words = {n: made[n][1] for n in notes if n in made}
+        theirs = sorted(n for n in notes if n not in made)
+        try:
+            words.update(self._note_words(lang, theirs, loaded))
+        except anki_connect.AnkiError as e:
+            raise _anki_wait(self.url, "mining", e) from None
+        return sum(1 for n in notes if (n in made and made[n][0] in pinned)
+                   or anki_match.lookup(words.get(n) or "", keys, lang))
+
+    def _listed_keys(self, lang):
+        """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each
+        word and, for Japanese, its kana folded (`anki_match.build_index`'s fold), plus the last Generate's own index
+        (`Orth`, `Forms`) when results/ hold this language -> {key: True}, or {} with no list to read. Built again
+        only when the plan or the list's file changed (S19: `_full` asks before every job's pick)."""
+        from app import anki_match
+        got = self._plan_now(lang)
+        listed = got.listed if got is not None else None
+        path = held = None
+        try:
+            from app.cli import verbs
+            held = verbs._results_language()
+            path = os.path.join(verbs._results_dir(), verbs.PRIORITY_CSV)
+            stamp = ((path, os.path.getmtime(path), os.path.getsize(path), held)
+                     if (not held or held == lang) and os.path.exists(path) else None)
+        except Exception:
+            log.exception("Connect's cap: the list's file couldn't be looked at")
+            stamp = None
+        tag = (id(listed) if listed is not None else None, stamp)
+        cached = getattr(self, "_keys_of", {}).get(lang)
+        if cached is not None and cached[0] == tag:
+            return cached[1]
+        order = listed if listed is not None else (self._list_order(lang) or {})
+        keys = {}
+        for word, _reading in order:
+            if word:
+                keys[word] = True
+                if lang == "ja":
+                    keys.setdefault(anki_match.fold_kana(word), True)
+        read = bool(keys)               # a list that couldn't be read just now (busy, mid-write) is asked again
+        if keys and stamp is not None:
+            index = anki_match.build_index(path, language=lang)     # an unreadable file is empty dicts, never raises
+            if index.marks_of:
+                keys = dict(index.marks_of, **keys)
+            else:
+                read = False
+                log.warning("Connect's cap: the list's spellings couldn't be read just now; its words alone count")
+        if read:                        # the review: a failed read is never kept until the file changes again
+            self._keys_of = dict(getattr(self, "_keys_of", {}), **{lang: (tag, keys)})
+        return keys
+
+    def _note_words(self, lang, note_ids, loaded):
+        """{note id: its word} for your own waiting notes (Junban's own reading, `anki_match.target_word` with
+        Junban's word fields), each read from Anki once a run (S19: a note's word is kept by its id)."""
+        cache = getattr(self, "_words_of", {}).setdefault(lang, {})
+        self._words_of = dict(getattr(self, "_words_of", {}), **{lang: cache})
+        unread = [n for n in note_ids if n not in cache]
+        if unread:
+            from app import anki_connect, anki_match
+            overrides = (loaded or {}).get("junban_word_fields")
+            overrides = overrides if isinstance(overrides, dict) else {}
+            for at in range(0, len(unread), 500):
+                for note in anki_connect.notes_info(self.url, unread[at:at + 500]):
+                    if isinstance(note, dict) and isinstance(note.get("noteId"), int):
+                        cache[note["noteId"]] = anki_match.target_word(note, overrides, lang)
+            for n in unread:
+                cache.setdefault(n, "")
+        return {n: cache.get(n, "") for n in note_ids}
 
     def _list_order(self, lang):
         """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan
@@ -3256,8 +3570,9 @@ class Steps:
             return None
 
     def shelve(self, lang, ledger, todo, count, cap):
-        """At the cap, once a run per language: the shelf's plan (a big gap only), shelved -> how many. A look that
-        waits (you review, another writer, Anki gone) spends no try (review B #2, #3)."""
+        """The shelf's plan (a big gap only), shelved -> how many. A look that waits (you review, another writer, Anki
+        gone) spends no try (review B #2, #3). No caller at the cap since Kyou-SH (Sonic 2026-11-20: Connect never
+        suspends by itself); its shelf stays for the cards already on it (*Put back*, the swap-in)."""
         from app import anki_connect, locks
         from app.connect import shelf
         if lang in getattr(self, "_shelved", set()):
@@ -3846,7 +4161,8 @@ class Steps:
 
     def _own_timing(self, lang, job, ab, look_only=False):
         """Kura-AB3 (Mattias's 3.0.2 report; PROVISIONAL): the paired audiobook `ab` (`library.audiobook_of_book`) whose
-        own timed subtitle Hon found this book's (`timing`: its copy in the library) — one audio file, an `.srt`, both
+        own timed subtitle Hon found this book's (`timing`: its copy in the library; Kura-AB5: else the book's own `.srt`
+        beside its EPUB, `book_timing`) — one audio file, an `.srt`, both
         on this computer, its last cue inside the audio's length — is the book's line-up as it is (`lineup.own`: no
         sync) -> {"lineup", "line": None, "item_id"}; else None (lined up as before). Its timing to that audio is
         checked or trusted, the one rule an audiobook's own subtitle has alone (`fit_check.fit`, review S1): heard in
@@ -3857,10 +4173,10 @@ class Steps:
         (*Add audio to these cards*' plan, `lined_up`): never a listen, never a stop, nothing written."""
         from app.connect import lineup
         from app.path_utils import get_data_path
-        rel = ab.get("timing")
-        if not rel or len(ab["files"]) != 1 or not rel.lower().endswith(".srt"):
+        rel, own = ab.get("timing"), ab.get("book_timing")      # Kura-AB5: else the book's own `.srt` beside its EPUB
+        if not (rel or own) or len(ab["files"]) != 1 or not (rel or own).lower().endswith(".srt"):
             return None
-        audio, srt = ab["files"][0], os.path.join(get_data_path(lang), *rel.split("/"))
+        audio, srt = ab["files"][0], os.path.join(get_data_path(lang), *rel.split("/")) if rel else own
         if not _on_disk(audio) or not os.path.isfile(srt):
             return None
         found = lineup.srt_cues(srt)
@@ -4158,6 +4474,13 @@ class Steps:
             raise Skip("Anki Miner isn't installed")
         mapping = self._mapping = setup[2]
         self._mapping_job = job.get("id")
+        # Michi-LP: how hard Anki Miner works on this batch, as settings.json says now — the clips it cuts at once
+        # (this PC's number, or yours) and, Beta, idle priority
+        from app.connect import power
+        now = self._settings(lang)
+        anki_miner.LOW_PRIORITY = now.get("connect_low_priority") is True
+        export = (held.get("set") or (None,) * 4)[3]
+        workers = power.clip_cuts(now.get("connect_clip_cuts", power.AUTO), own=power.profile_cuts(export))
         try:
             done = anki_miner.mine_batch(miner, lang, _tag(job), picked["video"], picked["subtitle"], words,
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
@@ -4168,7 +4491,7 @@ class Steps:
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
-                                         word_audio=runfile.word_audio_on(self._settings(lang), lang))
+                                         word_audio=runfile.word_audio_on(now, lang), workers=workers)
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
@@ -4348,12 +4671,14 @@ def anki_needs_you(reason):
 def holds_every(reason):
     """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, a
     wait on Anki (never ANKI_SLOW: Anki answers, one request of that episode's failed), Anki Miner's window open, or
-    your list in another language: the pass ends there, every episode keeps its place, and the next look starts from
+    your list in another language, a Generate first on a gentle PC (Haya-LD): the pass ends there, every episode keeps
+    its place, and the next look starts from
     the top — a later episode (or the next show) is never mined before the ones that waited. A list a Generate left
     unfinished (NO_LIST) too: it is the language's, never one episode's (alpha 6 try #6)."""
     if not isinstance(reason, str) or reason == ANKI_SLOW:
         return False
-    return (reason in (ON_BATTERY, ANKI_MINER_OPEN, SETTING_UP, NO_LIST) or reason.startswith(OTHER_LIST.split("{")[0])
+    return (reason in (ON_BATTERY, GENERATE_FIRST, ANKI_MINER_OPEN, SETTING_UP, NO_LIST)
+            or reason.startswith(OTHER_LIST.split("{")[0])
             or anki_wait(reason))
 
 

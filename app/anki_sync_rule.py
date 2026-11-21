@@ -36,6 +36,7 @@ STATE_NAME = "anki-sync.json"
 SESSION_GAP_S = 3600            # an hour with no Surasura write: the next write starts a new session (S1)
 S1_RETRY_S = 300                # a session's sync that failed is tried again at most this often
 REVIEW_RETRY_S = 30             # a pending sync that met a review looks again after this
+PAUSED_RETRY_S = 60             # ... and one held by Anki's circle paused at the bar (Kantan-G)
 SETTING = "anki_sync_delay_min"
 DEFAULT_DELAY_MIN = 1
 VERB = "the Anki sync"
@@ -218,6 +219,11 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
         now = time.time()
         if not force and now < due:
             return None, due
+        from app import settings_manager
+        if settings_manager.paused(settings, "anki"):
+            # Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself): Anki's circle paused — the sync
+            # stays pending, looked at again later (a window closing too: Anki's own close carries it, S2)
+            return None, None if force else now + PAUSED_RETRY_S
         probe = anki_connect.probe(url, timeout=3)
         if probe.get("timed_out"):
             return None, now + REVIEW_RETRY_S           # open but busy (its own sync, Check Database): look again

@@ -66,6 +66,10 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   `connect/decks.strays`, read-only) — made before a run named that deck, in Anki Miner's own — *12 cards Surasura made
   are in "Japanese::Anki Miner", not "Japanese::Mining Deck", the deck Surasura keeps in order.* · *Move them to …*
   (`connect/decks.move`: a snapshot, its toast's Undo) · *Leave them* (answered: these decks; another deck asks again).
+- **Connect's shelf** (Kyou-SH, PROVISIONAL): ONE card while cards Connect made sit on its shelf (Connect's record's
+  `shelf`; Connect no longer shelves at the cap — Sonic 2026-11-20 — so these are the cards an older version, or a
+  show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
+  still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -112,6 +116,9 @@ Root = namedtuple("Root", "path rel label files", defaults=(None,))
 BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP = ("bulk", "file-gone", "no-video", "rename-ask", "offline", "failure",
                                                     "gap")
 FIRST_CARDS = "first-cards"         # D1: setup's first scan took shows in; their cards are made only if you say so
+# Kantan-B2b (Sonic 2026-11-19: "Not now is not a yes"): D1's *Not now*, kept as its own key — FIRST_CARDS stays
+# unanswered, so nothing mines by itself (`inbox.first_run_waits`), and its line stays, only *Make cards* on it
+FIRST_CARDS_NOT_NOW = "first-cards:not-now"
 KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked once (B3-1 A)
 # A3W-6 (Sonic, 2026-10-24 night): Connect's episodes wait on Anki for you (closed, a permission prompt, another
 # profile or none: `runner.anki_needs_you`) — one line, read from Connect's record, gone by itself once Anki opens
@@ -134,11 +141,12 @@ DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another dec
 # Michi-NS (3.0.1, SPEC no-subs §3; NS-2): videos with no subtitles, ONE card: *Find them with hato* (once hato takes a
 # list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
 NO_SUBS = "no-subs"
+SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect made sit on its shelf — said, Put back
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -267,6 +275,7 @@ STRINGS = {
     "gap_span": "from {a} to {b}", "gap_until": "until {b}",
     "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
+    "first_say_later": "No cards are made until you press Make cards. Mine now makes one episode's.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
     "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
@@ -288,6 +297,11 @@ STRINGS = {
     "strays_title_one": "A card Surasura made is in {where}, not “{deck}”, the deck Surasura keeps in order.",
     "strays_where": "“{deck}”", "strays_where_n": "{k} other decks", "strays_move": "Move them to “{deck}”",
     "strays_say": "Surasura's new cards go to “{deck}” now.",
+    # Kyou-SH (PROVISIONAL): the shelf's cards, said
+    "shelved_title": "{n:,} cards made for you are set aside.",
+    "shelved_title_one": "A card made for you is set aside.",
+    "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
+                    "does that by itself. One comes back by itself when its word comes up."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -446,7 +460,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             out.append(big[0])                      # K1 leads the page
         big = big[1:]
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
-        out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
+        out.append(_first_cards_entry(rows, seen, mine_line, cards_on, later=FIRST_CARDS_NOT_NOW in answered))
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
@@ -456,6 +470,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     stray = _strays_entry(strays, seen, answered) if strays else None
     if stray is not None:
         out.append(stray)
+    shelved = _shelf_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH: Connect's restore
+    if shelved is not None:
+        out.append(shelved)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1057,16 +1074,17 @@ def _gap_entry(gap, seen):
                  unseen=key not in seen, say="", data={"gap_id": gap.get("id"), "item_ids": tuple(items)})
 
 
-def _first_cards_entry(rows, seen, mine_line, cards_on=False):
+def _first_cards_entry(rows, seen, mine_line, cards_on=False, later=False):
     """D1's one line: the first `mine_line` episodes of Current (fewer while Current holds fewer). `cards_on` (Connect's
     switch already on, setup's page 5 said yes): the same question, its actions' words never offering to turn it on
-    (SRC W1 fix, Decision 1)."""
+    (SRC W1 fix, Decision 1). `later` (Kantan-B2b: its *Not now* pressed): it stays until a yes, *Make cards* alone."""
     have = sum(1 for r in rows if r.tier in ("now", "soon") for e in r.episodes if not e.missing)
     n = min(mine_line, have) if have else mine_line
     title = STRINGS["first_title_one"] if n == 1 else STRINGS["first_title"].format(n=n)
     actions = ("first_cards_on", "not_now_on") if cards_on else ("first_cards", "not_now")
-    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions,
-                 unseen=FIRST_CARDS not in seen, say=STRINGS["first_say"], data={"n": n})
+    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions[:1] if later else actions,
+                 unseen=FIRST_CARDS not in seen, say=STRINGS["first_say_later" if later else "first_say"],
+                 data={"n": n})
 
 
 FLAG_WORDS = ("red", "orange", "green", "blue", "pink", "turquoise", "purple")
@@ -1205,6 +1223,26 @@ def _strays_entry(record, seen, answered=frozenset()):
                        "labels": {"move_cards": STRINGS["strays_move"].format(deck=deck)}})
 
 
+def _shelf_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH (a tester's 236 cards: the shelf said nowhere; PROVISIONAL): ONE card while cards Connect made sit on its
+    shelf — Connect's record's `shelf` (`status._shelf`: `on_shelf`, its restore points newest first). Its key names
+    the newest restore point (the review: never an older one once the newest is back), so *Leave them* holds until
+    the shelf takes more. *Put back* puts
+    back every restore point still holding cards (`data["runs"]`: the window's `switch.put_back`, the one Connect's
+    switch uses)."""
+    shelf = connect.get("shelf") or {}
+    n = int(shelf.get("on_shelf") or 0)
+    runs = [r["run"] for r in shelf.get("runs") or () if r.get("run") and (r.get("back") or 0) < (r.get("cards") or 0)]
+    if n <= 0 or not runs:
+        return None
+    key = f"{SHELVED}:{(shelf.get('runs') or [{}])[0].get('run') or runs[0]}"
+    if key in answered:
+        return None
+    title = STRINGS["shelved_title_one"] if n == 1 else STRINGS["shelved_title"].format(n=n)
+    return Entry(key=key, kind=SHELVED, title=title, lines=(), actions=("put_back_shelf", "leave_shelf"),
+                 unseen=key not in seen, say=STRINGS["shelved_say"], data={"runs": runs, "cards": n})
+
+
 def badge(entries_):
     """The tab's number: the unseen entries (P1.2-1: a seen one stays listed and stops counting)."""
     return sum(1 for e in entries_ if e.unseen)
@@ -1319,6 +1357,39 @@ def read_answered(language):
 def answer(language, keys):
     """Record *Keep its words* / *Leave them* (`answer_keys`): those leave the page; nothing in the store changes."""
     return _add(language, "answered", keys)
+
+
+def unanswer(language, keys):
+    """Kantan-B2: an answer taken back (D1's *Make cards* recorded before its log, which then failed: the line asks
+    again) -> how many went. Nothing there → nothing written (S19)."""
+    keys = set(k for k in keys or () if isinstance(k, str))
+    with _lock:
+        data = _load(language, strict=True)
+        kept = [k for k in data["answered"] if k not in keys]
+        if len(kept) == len(data["answered"]):
+            return 0
+        gone, data["answered"] = len(data["answered"]) - len(kept), kept
+        _write(language, data)
+    return gone
+
+
+def first_cards_waiting(language, tries=4, wait=0.05):
+    """Kantan-B2 (Connect's first-run hold, `inbox.first_run_waits`; often another process): D1's line offered and
+    not answered. Read strictly — a file being replaced by the window's write (Windows refuses the open a moment) is
+    read again, `tries` times; still unreadable, the OSError goes up (Connect looks again later, never reading it as
+    no line). No file: no line. Not JSON or another version: as before the hold (no line) -> bool."""
+    for n in range(tries):
+        try:
+            with _lock:
+                data = _load(language, strict=True)
+            break
+        except OSError:
+            if n == tries - 1:
+                raise
+            time.sleep(wait)
+        except ValueError:
+            return False
+    return FIRST_CARDS in data["offered"] and FIRST_CARDS not in data["answered"]
 
 
 def read_offers(language):

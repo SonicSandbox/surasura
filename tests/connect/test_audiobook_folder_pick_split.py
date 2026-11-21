@@ -124,7 +124,8 @@ def test_c_the_same_folder_picked_again_names_the_audiobook_with_the_copy(split)
     with split["steps"]._open("ja") as store:
         said = source_looks._audiobooks_read(store, folder, {"epub": book, "title": TITLE})
     assert said == {"joined": [], "alone": [], "asks": [],
-                    "elsewhere": [{"item_id": audio, "book": TITLE, "how": audiobooks.SURE}]}   # a look's own pair
+                    "elsewhere": [{"item_id": audio, "book": TITLE, "how": audiobooks.SURE}],   # a look's own pair
+                    "other": []}
     with split["steps"]._open("ja") as store:
         said = source_looks._audiobooks_read(store, folder, {"epub": book, "title": GINGA})
     assert said["elsewhere"] == [], "another title's book: never named to be taken"

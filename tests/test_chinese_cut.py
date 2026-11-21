@@ -188,8 +188,9 @@ def _tokens(text, script="asis"):
     ("方方面面都考虑到了。", "方面", "方方面面"),          # 'all aspects' ~ 'aspect': glosses matched by stem
     ("你應該休息休息。", "休息", "休息休息"),              # a word of two characters said twice
     ("我们一起研究研究这个问题。", "研究", "研究研究"),
-    ("哈哈哈哈哈！", "哈哈", "哈哈哈哈哈"),                # a run of a laugh, however jieba cut it
-    ("外面的狗一直在叫：汪汪汪！", "汪汪", "汪汪汪"),
+    ("大家哈哈哈哈哈地笑了。", "哈哈", "哈哈哈哈哈"),      # a run of a laugh, however jieba cut it (inside a sentence:
+                                                     # standing alone, a laugh is no word — test_sounds_are_no_words)
+    ("外面的狗一直汪汪汪地叫。", "汪汪", "汪汪汪"),
     ("爸爸妈妈都来了。", "爸妈", "爸爸妈妈"),              # accepted: 'dad and mom' is 爸妈 'mom and dad'
 ])
 def test_a_doubled_form_counts_as_its_word(text, word, form):

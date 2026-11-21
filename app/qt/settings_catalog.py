@@ -40,6 +40,7 @@ from collections.abc import Mapping
 
 from app import settings_manager
 from app.connect import settings_values
+from app.connect.known_signal import NOT_KNOWN_FLAGS
 from app.qt import settings_strings as S
 from app.services import tools_found
 
@@ -50,12 +51,21 @@ Row = namedtuple("Row",
 MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modules.irodori")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
-SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
+CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
 
-SECTIONS = tuple(Section(id_, icon, S.SECTIONS[id_]) for id_, icon in (
-    ("setup", "star"), ("known", "words"), ("anki", "anki"), ("junban", "order"), ("backfill", "fill"),
-    ("level", "level"), ("parsing", "text"), ("content", "content"), ("arrivals", "inbox"), ("connect", "link"),
-    ("reading", "reading"), ("sentences", "sentence"), ("export", "export"), ("app", "app")))
+# Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
+# page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
+HEADS = (
+    ("cards", ("known", "anki", "junban", "backfill", "sentences", "level")),
+    ("library", ("content", "arrivals", "parsing", "reading", "export")),
+    ("app", ("connect", "app")),
+)
+HEAD_OF = {section: head for head, sections in HEADS for section in sections}
+_ICONS = {"setup": "star", "known": "words", "anki": "anki", "junban": "order", "backfill": "fill", "level": "level",
+          "parsing": "text", "content": "content", "arrivals": "inbox", "connect": "link", "reading": "reading",
+          "sentences": "sentence", "export": "export", "app": "app"}
+SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
+                 for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))
 
 # Doors no `OPENERS` entry held when this was written, and who brings each (the intent keeper's S8: none pending at
 # release — `pending(registered)` lists the ones still missing; an entry that has landed is harmless until tidied).
@@ -83,7 +93,7 @@ FILLED_BY = {
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "settings_file": "app.qt.settings_io",                 # --- a6: *Export settings…* · *Import settings…*
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
-    "new_cards_from": _STORE,                   # --- Kyou-A: the library's *New cards come from*
+    "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
@@ -182,12 +192,6 @@ def _update_check(settings, language, ctx):
     return settings_manager.update_check_on(settings)
 
 
-def _signal(settings, language, ctx):
-    """Whether Known from Anki runs (`settings_manager.connect_on`, the one rule it obeys): *Count as known in Anki*
-    shows, and writes the sync's switch, only then (a9.1)."""
-    return settings_manager.connect_on(settings)
-
-
 def _needs_miner(settings, language, ctx):
     return "looked" in ctx and not _connect_switch(settings, language, ctx)
 
@@ -216,19 +220,17 @@ ROWS = (
     _row("anki_auto_generate", "known", "toggle", ("anki_auto_generate",), sub=True, when=_road("anki")),
     _row("known_import", "known", "door", sub=True, when=_road("import"), door=("migaku", "jiten", "apkg_known")),
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
-    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — the sync's switch while Known from
-    # Anki can't run, Connect's *Count as known in Anki* while it can (`_signal`: Make cards for me and Automation on;
-    # it reads every suspended card, new ones too); each key keeps its meaning — unpicking Suspended there turns the
-    # sync's off too (`_wanted`), and its line says when the sync's still counts more than it shows (`help_line`)
-    _row("anki_sync_include_suspended", "known", "toggle", ("anki_sync_include_suspended",), adv=True,
-         group="counts_as_known", when=lambda settings, language, ctx: not _signal(settings, language, ctx)),
+    # Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded in — one row, one key, always shown: with
+    # Make cards for me and Automation on, Connect's signal reads every card in the picked states (new ones too); off,
+    # the known-words sync reads the studied ones (`anki_sync.counted_suspended`). Red and green are never picks: they
+    # are the review loop's Ignore and Swap (WL-46 / 46b), never Known
     _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
-         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN), when=_signal),
+         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN_PICKS)),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
     _row("new_cards_a_day", "anki", "custom", ("words_per_day",), bounds=(0, None)),       # P9: Anki's own value
-    _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a choice the store draws
+    _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a switch the store draws
     _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
     _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),
@@ -240,8 +242,13 @@ ROWS = (
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
+    # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
+    _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
+    # Michi-LP (PROVISIONAL words): how many clips Anki Miner cuts at once — Automatic (this PC's number), or yours
+    _row("connect_clip_cuts", "anki", "select", ("connect_clip_cuts",), options=("auto", 1, 2, 3, 4, 5, 6), adv=True,
+         when=_CONNECT),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
     # from being suspended under either choice, so it is never greyed)
     _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",
@@ -318,6 +325,7 @@ ROWS = (
     _row("pronoun_bases", "parsing", "toggle", ("logic.pronoun_bases",), when=_ja),
     _row("phrase_rows", "parsing", "toggle", ("logic.phrase_rows",), when=_ja),
     _row("exclude_single", "parsing", "toggle", ("exclude_single",), when=_ja),
+    _row("count_song_lyrics", "parsing", "toggle", ("logic.count_song_lyrics",)),       # Kotoba-OP: both languages
     _row("how_parsing_works", "parsing", "link"),
 
     # Content
@@ -354,8 +362,8 @@ ROWS = (
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built
     # --- W3.2 L3: the covers' switch (01 §1.3 C1: off until the user says yes) and *Remove downloaded covers*
-    _row("covers_download", "connect", "toggle", ("covers_download",)),
-    _row("remove_downloaded_covers", "connect", "action", sub=True),
+    _row("covers_download", "content", "toggle", ("covers_download",)),      # (EZ-4 §2.4: read with Content)
+    _row("remove_downloaded_covers", "content", "action", sub=True),
     # --- end W3.2 L3
     _row("more_from_houseki", "connect", "status", when=_never),   # row 13: hidden until a tool is listed there
 
@@ -403,11 +411,13 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    # The Beta list (Michi-LP, PROVISIONAL): one list under one name, each item a switch and one ? line, off as shipped
     # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
     _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
+    _row("connect_low_priority", "app", "toggle", ("connect_low_priority",), when=_CONNECT),     # Michi-LP
     # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
     # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
-    # Content's *Sort again or start over…* offers it)
+    # Content's *Sort again or start over…* offers it). Never a row of the group above it (`settings_page`)
     _row("surasura", "app", "links", options=("github", "discord", "website")),
 )
 ROW = {row.id: row for row in ROWS}
@@ -423,10 +433,13 @@ NOT_SHOWN = {
     "onboarding_completed": "state: the first start's",
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
+    "known_from_anki_chosen": "state: written beside *Count as known in Anki*'s pick (Kantan-B3)",
+    "anki_sync_include_suspended": "retired (Kotoba-WS2): folded into *Count as known in Anki*, read once on load",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
     "open_count": "state: a launch counter",
+    "paused": "state: the circles paused with a click at the bar's bottom left (Mado-PZ), resumed the same way",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",
@@ -535,8 +548,8 @@ def help_line(row, settings, language):
             line = S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
         elif len(picked) > 1:
             line = S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
-        if _one(settings, SYNC_SUSPENDED, language) is True and picked != ["suspended"]:
-            line = f"{line}. {S.KNOWN_SYNC_TOO}" if line else S.KNOWN_SYNC_TOO
+        if held & set(NOT_KNOWN_FLAGS):                  # Kotoba-WS2: red / green picked before: they count no card
+            line = S.KNOWN_RED_GREEN
         if line:
             return line
     if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
@@ -579,6 +592,9 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id == "connect_clip_cuts":           # Michi-LP: Automatic names what it picks on this PC now
+        from app.connect import power
+        labels = dict(labels, auto=S.CLIP_CUTS_AUTO.format(n=power.clip_cuts()))
     if row.id in PROGRAM_ROWS:
         labels = dict(labels, program=program_label(row, settings)[0])
     return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()))
@@ -759,11 +775,10 @@ def change(row, settings, language, new):
     current = value(row, settings, language)
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
-    rides = row.id == "known_from_anki" and _signal(settings, language, None)
-    if rides:                                   # a9.1: the sync's switch rides along (`_wanted`), never shown here
-        current[SYNC_SUSPENDED] = bool(_one(settings, SYNC_SUSPENDED, language))
-    keys = set(row.keys) | ({SYNC_SUSPENDED} if rides else set())
-    return {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}, None
+    out = {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}
+    if row.id == "known_from_anki" and row.keys[0] in out and _one(settings, CHOSEN, language) is not True:
+        out[CHOSEN] = True                      # Kantan-B3: a pick, never read as an old default again
+    return out, None
 
 
 def _member(row):
@@ -801,12 +816,7 @@ def _wanted(row, settings, language, new):
         return {key: bool(v) for key, v in picked.items()}
     key = keys[0]
     if row.id == "known_from_anki":
-        # a9.1: one row for both answers — the picks are Connect's; the sync's switch (studied cards, then suspended)
-        # stays on only while Suspended alone is picked, so a card is never counted on an answer the row no longer
-        # shows (it is never turned on from here: that is its own row's, with Make cards for me off)
-        picked = settings_values.known_value(set(new or ()))
-        held = bool(_one(settings, SYNC_SUSPENDED, language))
-        return {key: picked, SYNC_SUSPENDED: held and picked == ["suspended"]}
+        return {key: settings_values.known_value(set(new or ()))}
     if row.kind == "tablets":
         return {key: [v for v in row.options if v in set(new or ())]}
     if row.id == "placing_rules":
@@ -837,3 +847,90 @@ def _wanted(row, settings, language, new):
     if choices and new not in choices:
         raise ValueError(f"not a choice of {row.id}: {new!r}")
     return {key: new}
+
+
+# --- Fine-tune (Mado-EZA: EZ-4, EZ2-9; PROVISIONAL): a row's value now and by default, in words, and a reset ------- #
+VALUE_KINDS = ("toggle", "choice", "cards", "select", "tablets", "list", "slider", "number", "range", "text")
+# What *Reset section* never touches (EZ-4): usage counts, the update check, *Update automatically*, *Run things by
+# themselves* and 順's own switch (each sends data or runs by itself: a reset never turns one back on), the language and
+# every per-language value (the video folders, the cap). Each keeps its own dot and *back to it*.
+RESET_KEEPS = frozenset({"telemetry_enabled", "update_check_enabled", "auto_update_enabled", "logic.automation",
+                         "enable_junban", "target_language"}) | frozenset(PER_LANGUAGE)
+
+
+def holds_value(row):
+    """Whether `row` is a value the page draws itself (a switch, a choice, a number…): one a dot, *back to it* and a
+    reset read and write. A summary, status, custom, door or link row holds none; the road is the page's state."""
+    return row.kind in VALUE_KINDS and bool(row.keys) and row.id != "known_road"
+
+
+def control_value(row, settings, language):
+    """`row`'s value as its control shows it and `change()` takes it: several switches as the keys on, a range as its
+    (low, high)."""
+    found = value(row, settings, language)
+    if row.kind == "tablets" and len(row.keys) > 1:
+        return [key for key in row.keys if found.get(key)]
+    if row.kind == "range":
+        return tuple(found[key] or 0 for key in row.keys)
+    return found
+
+
+def default_value(row, language):
+    return control_value(row, defaults(), language)
+
+
+def is_default(row, settings, language):
+    """Whether `row` shows its default (a row holding no value never reads changed; nor one whose hand-edited value
+    can't be read: its control shows the default then, `SettingsPage._make_controls`)."""
+    if not holds_value(row):
+        return True
+    try:
+        return control_value(row, settings, language) == default_value(row, language)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return True
+
+
+def resets(row):
+    """Whether *Reset section* puts `row` back: a value row holding none of `RESET_KEEPS`."""
+    return holds_value(row) and not set(row.keys) & RESET_KEEPS
+
+
+def reset_changes(rows_, settings, language):
+    """{key: default} putting back each of `rows_` that `resets` and isn't at its default — one row after another on
+    what the ones before wrote, so two switches of one list make one list."""
+    from app.services.settings import put, thaw
+    work, out = thaw(settings), {}
+    for row in rows_:
+        if not resets(row) or is_default(row, work, language):
+            continue
+        try:
+            changes, _update = change(row, work, language, default_value(row, language))
+        except (ValueError, TypeError):             # a value no default can replace in place: left as it is
+            continue
+        for key, v in changes.items():
+            put(work, key, v)
+            out[key] = plain(v)
+    return out
+
+
+def words_of(row, settings, language):
+    """`row`'s value in a few words (a closed fold's line, a dot's default): On / Off, a choice's label, the picks, a
+    number, a range, a list's count."""
+    found = control_value(row, settings, language)
+    labels = {v: label for v, label, _line in options(row, settings, language)}
+    if row.kind == "toggle":
+        return S.TOGGLE_STATE[bool(found)]
+    if row.kind == "slider":
+        words = labels.get(found[row.keys[0]], str(found[row.keys[0]]))
+        return f"{words} · {S.LEVEL_AUTOMATIC}" if found[row.keys[1]] else words
+    if row.kind == "range":
+        return "–".join(str(n) for n in found)
+    if row.kind == "list":
+        return S.VALUE_COUNT.format(n=len(found)) if found else S.VALUE_NONE
+    if row.kind == "tablets":
+        return ", ".join(str(labels.get(v, v)) for v in found) if found else S.PICKED_NONE
+    if row.kind == "text":
+        return found or S.VALUE_NONE
+    if row.kind == "number":
+        return str(found)
+    return str(labels.get(found, found))

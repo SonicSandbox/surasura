@@ -9,26 +9,25 @@ from app import ankiconnect_addon as _addon
 # --- the frame -------------------------------------------------------------------------------------------------------- #
 NAME = "Setting up Surasura"
 FINISH_LATER = "Finish later"
-FINISH_LATER_TIP = ("Close setup and go to your list. What you've already set up is kept.\n"
-                    "• Finish it any time: Settings → Set up again")
+FINISH_LATER_TIP = "Close setup, go to your list.\n• Resume: Settings → Set up again."
 BACK = "Back"
 BACK_TIP = "The step before. Your choices stay as you left them."
 SKIP = "Skip"
-SKIP_TIP = "Leave this step for now: nothing is changed. You can set it in Settings later."
+SKIP_TIP = "Skip this step; nothing changes. Set it in Settings later."
 NEXT = "Next"
 NEXT_TIP = "Keep these choices and go on.\n• Enter"
 # Fresh library 3.0.1: *Change folders…* (the folders page alone, from Settings' *Sort again or start over…*)
 RESORT_NEXT = "Sort again"
-RESORT_NEXT_TIP = ("Set your library's order aside in a backup, read these folders again and sort each title.\n"
-                   "• Your known words and settings stay\n• Enter")
+RESORT_NEXT_TIP = ("Back up the order, re-read these folders, sort each title.\n• Your known words and settings "
+                   "stay\n• Enter")
 RESORT_BACK = "Back"
 PUT_BACK_LINK_NAME = "Put back what you had"
 PUT_BACK_LINK = "Put back what you had (from {date})"                       # page 1, after a Start over (Q2)
-PUT_BACK_LINK_TIP = ("Bring back your library, settings and known words as they were before you started over.\n"
-                     "• Surasura closes and opens again. What you've set up since goes into a backup of its own.")
+PUT_BACK_LINK_TIP = ("Bring back your library, settings and known words.\n• Surasura restarts; what you set up since "
+                     "is backed up")
 RESORT_BACK_TIP = "Back to Sort again or start over. Nothing is changed."
 GENERATE = "Generate"
-GENERATE_TIP = "Make your list from your shows now, and open it when it's ready.\n• Enter"
+GENERATE_TIP = "Make your list from your shows now, then open it.\n• Enter"
 KEY_ENTER = "Enter"
 STEPS_NAME = "Setup steps"
 STEP_DONE_NAME = "{name}, done"
@@ -47,8 +46,7 @@ ANKI_UNSURE = _addon.UNSURE
 ANKI_UNSURE_CARD = "Anki closed, or no AnkiConnect"
 ANKI_UNSURE_HOW = _addon.steps_line(unsure=True)
 CHECK_AGAIN = "Check again"
-CHECK_AGAIN_TIP = ("Look for Anki again now.\n"
-                   "• Surasura also looks by itself every few seconds while this shows")
+CHECK_AGAIN_TIP = "Look for Anki again.\n• It also looks every few seconds."
 CHECKING = "Looking for Anki…"
 # Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
 UPGRADE_LINE = ("Welcome to Surasura 3. Your choices from Surasura 2 are already picked; "
@@ -74,19 +72,20 @@ KNOWN_SENTENCE_NAME = "A sentence where only the new word stays bright"
 KNOWN_HOW_NAME = "Where your known words come from"
 FROM_ANKI = "From Anki"
 FROM_ANKI_OPEN = "Anki is open · stays in sync"
-FROM_ANKI_TIP = ("Read the words you know from the Anki decks you study, and keep them in sync.\n"
-                 "• Your cards are only read: nothing in Anki is changed")
+FROM_ANKI_TIP = "Read known words from your studied Anki decks.\n• Anki is never changed."
 IMPORT_LIST = "Import a list"
 IMPORT_LIST_LINE = "Migaku · Jiten · a file"
-IMPORT_LIST_TIP = "Bring in the words you know from Migaku, Jiten or an Anki deck file."
+IMPORT_LIST_TIP = "Bring in known words from Migaku, Jiten or an Anki deck file."
 START_FRESH = "Start fresh"
 START_FRESH_LINE = "Nothing to bring in"
 START_FRESH_TIP = "Start with no known words. Surasura learns them as you go."
 DECKS = "Read these decks"
 DECKS_NAME = "Decks to read"
 DECK_CARDS = "{n:,} cards"
-DECK_TIP = "{deck}: {n:,} cards you've studied.\n• Click to read this deck, or to leave it out"
+DECK_TIP = "{deck}: {n:,} studied cards.\n• Click to read it or leave it out."
 NO_DECKS = "Anki has no decks with studied cards yet."
+# Kantan-B3 (Sonic 2026-11-18; PROVISIONAL): what says "I know this" in Anki, from the first page that reads it
+KNOWN_FROM_ANKI_SIGNAL = "Know a card's word? Suspend and mark it in Anki."
 IMPORT_MIGAKU = "Migaku…"
 IMPORT_MIGAKU_TIP = "Open the Migaku import: the words you know, from Migaku's export."
 IMPORT_JITEN = "Jiten…"
@@ -97,12 +96,12 @@ SYNC_STARTED = "Reading the words you know from Anki…"
 UPGRADE_KNOWN_LINE = "The words you know came over from Surasura 2."
 KEEP_CAME_OVER = "Keep what came over"
 KEEP_CAME_OVER_LINE = "Nothing more to bring in"
-KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n• Add more any time: Settings"
+KEEP_CAME_OVER_TIP = "Keep the known words from Surasura 2.\n• Add more any time: Settings."
 
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
 SAMPLES = "Try it with samples first"
-SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few short texts into your library, free to share: public-domain classics and a café dialogue"
+SAMPLES_TIP = "Not sure yet? Add a few short free samples to try it."
 SAMPLES_ADDED_LINE = "Added {n:,} samples: they show here in a moment."     # (W3.2 Q3: page 3 takes + Add's actions)
 SAMPLES_NONE = "Samples go into an empty library only: yours has files already."
 ROWS_NAME = "What's in your library"
@@ -115,9 +114,7 @@ ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
 COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "
                "episode, also asks AniList whether it is still airing, so it isn't finished early. Nothing else.")
-COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
-              "• Near a show's last episode, whether it is still airing\n"
-              "• Turn it off any time: Settings")
+COVERS_TIP = "Covers found by show name; checks if it still airs.\n• Turn it off any time: Settings"
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
 UPGRADE_SHOWS_LINE = ("Your known words and settings came over from Surasura 2. "
                       "Add the folders your shows and books are in.")
@@ -133,9 +130,7 @@ PICK_WHERE_THEY_ARE = "Read where they are: nothing in your folders is moved or 
 PICK_TITLE = "Where are your shows and books?"
 # Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
 PICK_FILE = "Choose a file…"
-PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text, an EPUB or an audiobook: Surasura sees which "
-                 "it is.\n"
-                 "• It goes at the top of Current; nothing in the file is changed")
+PICK_FILE_TIP = "Choose subtitles, video, text, EPUB or audiobook; it goes to Current."
 PICK_FILE_TITLE = "Choose a file"
 PICK_FILE_FILTER = "Subtitles, videos, texts, books and audiobooks ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
@@ -143,8 +138,7 @@ FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
 FILE_AUDIOBOOK = ("{name} is audio: Surasura reads an audiobook in its folder, then asks which book it is. Choose "
                   "its folder.")
 FILE_AUDIOBOOK_PLAIN = "{name} is audio: an audiobook comes in with its folder, from + Add → A folder… after setup."
-AUDIOBOOK_ITS_FOLDER_TIP = ("Read the audiobook's whole folder, as Choose a folder… does:\n"
-                            "• It joins its book, or Surasura asks which book it is")
+AUDIOBOOK_ITS_FOLDER_TIP = "Read the audiobook's whole folder.\n• It joins its book."
 # alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
 VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
 VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."
@@ -156,17 +150,15 @@ VIDEO_NO_SUBTITLE_PLAIN = ("{name}: no subtitle beside it, and Surasura reads a 
 VIDEO_STILL_LOOKING = "Still looking for your video's subtitle: Next again in a moment."
 VIDEO_ITS_FOLDER = "Choose its folder"
 VIDEO_ITS_FOLDER_NAME = "Choose the folder {folder}"
-VIDEO_ITS_FOLDER_TIP = ("Read the video's whole folder instead, as Choose a folder… does:\n"
-                        "• Each video's subtitle is found by its name, a Subs folder too")
+VIDEO_ITS_FOLDER_TIP = "Read the video's whole folder.\n• Subtitles are found by name."
 FILES_ADDED = "Bringing in {what}: they go at the top of Current."
 FILES_N = ("1 file", "{n:,} files")
 BOOK_ADDED = "{name} is in Current: {parts} parts."
 BOOK_FAILED = "{name} couldn't be brought in: {why}"
 YOUTUBE = "YouTube…"
-YOUTUBE_TIP = ("Paste YouTube links, one a line. Each line's first video comes in while setup finishes.\n"
-               "• A playlist: its other videos come in after, in the background (the bottom bar shows them)")
+YOUTUBE_TIP = "Paste YouTube links, one a line.\n• A playlist's rest comes in after."
 YOUTUBE_NAME = "YouTube links, one a line"
-YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video now, the rest after)"
+YOUTUBE_HINT = "One link a line: a video, or a playlist (first video now)."
 YOUTUBE_RISK_LINE = "YouTube can turn requests away for a while; it's for your own study."
 YOUTUBE_NEEDS_RISK = "Tick “{risk}” to bring in from YouTube, or clear the links."
 YOUTUBE_NONE = "Paste a YouTube link first: one a line."
@@ -180,8 +172,8 @@ FOLDER_REMOVE_TIP = "Leave it out: nothing is read from it."
 FOLDER_REFUSED = "{folder}: {why}"
 # K6: a folder inside the ones picked that is never read (a backup, a game's files), skipped before the first look
 SKIP_FOLDER = "Skip a folder…"
-SKIP_FOLDER_TIP = ("Choose a folder inside one you picked that Surasura should never read (a backup, a game's files)\n"
-                   "• Nothing in it is changed; Settings › Content lists it to read again")
+SKIP_FOLDER_TIP = ("Choose a folder inside one you picked to never read.\n• Nothing in it changes; Settings › Content "
+                   "reads it again")
 SKIP_TITLE = "A folder Surasura never reads"
 SKIPPED_ROW = "Skipped: {folder}"
 SKIP_REMOVE = "Read it after all"
@@ -197,8 +189,7 @@ READ_BUSY = "Surasura is already reading your folders: try again in a moment."
 COPYING = "Copying into your library: {done:,} of {total:,} files…"                       # K5
 READ_BIG = "{line} · That's a big library: over 15,000 items. You can Stop and pick fewer folders."   # K5 (A4K-4)
 EVERY_CORE = "Use every core"                                                              # K5 C4
-EVERY_CORE_TIP = ("On: reading and copying your library use every core of your computer, so it ends sooner.\n"
-                  "Off: half of them, so the computer stays quick to use")
+EVERY_CORE_TIP = "On: all cores, faster reads. Off: half, so the computer stays quick."
 READ_WAITING = "Waiting for your library: another part of Surasura is saving. Reading goes on by itself…"   # K4
 READ_NOT_READY = "Your library isn't ready yet: try again in a moment."
 EPISODES = ("1 episode", "{n:,} episodes")
@@ -223,12 +214,12 @@ KEEP_ORDER_TIP = ("Puts your new cards in the order you'll meet the words, and t
 KEEP_ORDER_MOVES = ("It moves the 1 new card in {deck}. Another deck? Pick it below.",
                     "It moves the {n:,} new cards in {deck}. Another deck? Pick it below.")    # Kantan-T (PROVISIONAL)
 DECK = "New cards are in"
-DECK_PICK_TIP = ("The deck your new cards are in: the one Surasura keeps in order.\n"
+DECK_PICK_TIP = ("The deck of new cards Surasura keeps in order.\n"
                  "• Change it later: Settings › Card order › Junban…")
 LATER = "Cards for words not on your list"
 LATER_NAME = "Cards for words not on your list"
 LATER_CHOICES = {"leave": "Leave them", "mark": "Mark them", "aside": "Set them aside"}
-LATER_TIPS = {"leave": "Leaves them as they are, after the cards for words on your list.",
+LATER_TIPS = {"leave": "Leaves them as they are, after the list's cards.",
               "mark": "Tags them Surasura::later and flags them purple.\n• Undo: 順 → Restore",
               "aside": ("Suspends them and tags them Surasura::later.\nThey come back when the word is on your list.\n"
                         "• Undo: 順 → Restore")}
@@ -238,14 +229,13 @@ LATER_LINES = {"leave": "Those cards stay as they are, after the ones for words 
                "aside": "Those cards are suspended until their word comes onto your list."}
 OPEN_ANKI = "Open Anki when Surasura opens"
 OPEN_ANKI_LINE = "So the reviews from your phone count"
-OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone is read in."
+OPEN_ANKI_TIP = "Starts Anki with Surasura, so phone reviews are read in."
 ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
 ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
 ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
 # Kantan-B1 (A2, PROVISIONAL): Anki closed — *Next* stays, and goes on as *Skip* does (nothing written)
 ORDER_WHEN_OPEN = "Once Anki is open, 順 turns amber: pick your deck there."
-ORDER_NEXT_TIP = ("Go on without Card order for now: once Anki is open, pick your deck in 順. Nothing is "
-                  "changed.\n• Enter")
+ORDER_NEXT_TIP = "Skip Card order for now; pick your deck later in 順.\n• Enter"
 # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the deck's new cards — the first sentence is *Needs you*'s
 # (`app/services/needs.backlog_head`: *Your 2,300 new cards come from 14 shows; 12 are on this PC.*), then one of these
 BEHIND_LOOKING = "Looking at where your new cards came from…"
@@ -253,8 +243,7 @@ BEHIND_WAIT = ("1 of them waits in New arrivals.", "{k} of them wait in New arri
 BEHIND_IN = "They're in your list: their cards go in the order you'll meet the words."
 BEHIND_NONE = "Add their subtitles to put their cards in order."
 BEHIND_ADD = "Add them"
-BEHIND_ADD_TIP = ("Puts these shows from New arrivals into your list, at Soon: their cards go in the order you'll meet "
-                  "the words.\n• Undo: the toast, or Ctrl+Z")
+BEHIND_ADD_TIP = "Moves these shows to Soon, cards in learn order.\n• Undo: the toast, or Ctrl+Z"
 BEHIND_ADDED = "Added: their cards go in the order you'll meet the words."
 BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. Try again in a moment."
 
@@ -277,7 +266,7 @@ MINER_FIX_TIP = "Something only you can fix before cards can be made."
 STAR = "★"
 STAR_ASK = "Like Anki Miner?"
 STAR_LINK = "Star it on GitHub"
-STAR_TIP = "Anki Miner is free and made by one person: a star on GitHub helps.\n• Opens its page in your browser"
+STAR_TIP = "Anki Miner is free, by one person: a GitHub star helps."
 MINER_UPDATE_FIRST = "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
 MINER_UPDATE_FIRST_HAVE = ("You have Anki Miner {version}: 3.7 or newer needs no setup here. Update it and press Check "
                            "again.")                      # Fresh-U row 8: the version found, named
@@ -287,10 +276,9 @@ COPY_PATH_TIP = "Copy the file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The path is copied: paste it into Anki Miner's file chooser."
 PATH_NAME = "The file to choose in Anki Miner"
 INSTALL = "Install Anki Miner…"
-INSTALL_TIP = "Get Anki Miner, free: its installer, from its GitHub release.\n• Asks before it downloads"
+INSTALL_TIP = "Get Anki Miner, free, from GitHub.\n• Asks before it downloads"
 UPDATE_MINER = "Update Anki Miner…"
-UPDATE_MINER_TIP = ("Get the newest Anki Miner, free: its installer, from its GitHub release.\n"
-                    "• Asks before it downloads")
+UPDATE_MINER_TIP = "Get the newest Anki Miner, free, from GitHub.\n• Asks before it downloads"
 INSTALL_OPENED = "Install Anki Miner from the page in your browser, then check again."
 INSTALL_STOPPED = "Download stopped."
 INSTALL_BUSY = "Anki Miner or Surasura's card making is running: close it, then try again."
@@ -308,14 +296,13 @@ CANCEL_DOWNLOAD_TIP = "Stop the download. Nothing is left behind."
 MINER_CHECK_TIP = "Look for Anki Miner again, once it's installed or set up."
 # A4M1-2 (lean taken, PROVISIONAL): Surasura runs Anki Miner's own setup — never "open Anki Miner"
 FINISH_SETUP = "Finish its setup"
-FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries by itself, as its own setup does, and Surasura sets its "
-                    "deck and note type from yours.\n• Nothing to open: it runs in the background, a few minutes")
+FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries; Surasura sets its deck and note type.\n• Nothing to open: "
+                    "it runs in the background")
 # A4M1-2b: what Surasura can't tell from your settings is chosen here, never in Anki Miner's window
 MINER_DECK = "New cards go in"
-MINER_DECK_TIP = "The Anki deck Anki Miner puts your new cards in. Surasura sets it in Anki Miner for you."
+MINER_DECK_TIP = "The Anki deck for new cards. Set in Anki Miner for you."
 MINER_NOTE_TYPE = "Note type"
-MINER_NOTE_TYPE_TIP = ("The kind of card Anki Miner makes (Lapis, Kiku…). Surasura sets it in Anki Miner for you, "
-                       "with its fields.")
+MINER_NOTE_TYPE_TIP = "The card type Anki Miner makes (Lapis, Kiku…); set for you."
 MINER_ASK_DECK = "Which deck should Anki Miner put your new cards in? Choose it, then press Finish its setup again."
 # Choice 86 (Sonic, 2026-11-09): a deck of Surasura's own offered first (`miner_settings.NEW_DECKS`), made on the press
 MINER_NEW_DECK = "{deck} (a new deck)"
@@ -329,8 +316,7 @@ MINER_ASK_NOTE_ZH = ("Which note type should Anki Miner make your Chinese cards 
                      "in tone colours, the measure word and the other script: get it, import it into Anki, then press "
                      "Finish its setup again — or choose your own note type.")
 GET_AM_NOTE = "Get Anki Miner Note…"
-GET_AM_NOTE_TIP = ("Opens Anki Miner Note's page in your browser: download its .apkg file and open it to add it to "
-                   "Anki.\n• Free, made by Anki Miner's author")
+GET_AM_NOTE_TIP = "Opens Anki Miner Note's page: download the .apkg, open it in Anki."
 MINER_ASK_MAP = "Which of “{note}”'s fields gets what? Check each one, then press Finish its setup again."
 MAP_PROBLEMS = {"sentence": "Choose a field for the sentence: every card needs one.",
                 "word": "The first field holds the word: choose other fields for the rest.",
@@ -345,11 +331,9 @@ MAP_WORD_TIP = "Anki Miner always puts the word in the note type's first field."
 MAP_ROLE_TIP = "The field Anki Miner fills with this. None: left out."
 MAP_ROLE_TIPS = {"expression_reading": "The word's pinyin with tone marks (yín háng). None: left out.",
                  "expression_pinyin": "The word's pinyin, each syllable in its tone's colour. None: left out.",
-                 "expression_audio": "The word read aloud: only while Word audio from Google is on (Settings). "
-                                     "None: left out.",
+                 "expression_audio": "The word read aloud, only while Word audio from Google is on.",
                  "measure_word": "The word's measure word, from CC-CEDICT. None: left out.",
-                 "expression_traditional": "The word in Traditional characters (or Simplified), when they differ. "
-                                           "None: left out.",
+                 "expression_traditional": "The word in Traditional (or Simplified) when they differ. None: left out.",
                  "source": "The episode or book the card comes from. None: left out."}
 MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't make your cards with it. Choose another "
                     "note type, then press Finish its setup again.")
@@ -370,8 +354,7 @@ LEVEL_TITLE = "Your list"
 LEVEL_LINE = "How much there is to learn, and how much of your shows you'll understand."
 LEVEL = "Level"
 AUTOMATIC = "Automatic"
-AUTOMATIC_TIP = ("Surasura picks the level for you, at least 850 words ahead, and moves it as you learn.\n"
-                 "• Moving the slider picks one yourself")
+AUTOMATIC_TIP = "Picks your level, 850+ words ahead, and moves it.\n• Slider: your pick."
 SLIDER_NAME = "Level"
 SLIDER_TIP = "Fewer, only the most common words to the left; more, rarer words to the right.\n• ← → to move"
 SLIDER_LOW = "the most common words"
@@ -387,7 +370,7 @@ NONE_YET = "—"
 COUNTING = "Counting your shows…"
 READING_FILES = ("Reading 1 file…", "Reading {n:,} files…")   # Kantan-B1 (A2, PROVISIONAL): the indexer's, while it reads
 DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
-DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
+DISCORD_TIP = "Surasura's Discord: ask or report.\n• Opens in your browser."
 NO_SHOWS = "Add a show first, and the numbers show here."
 NO_SORTED = "Your shows wait in New arrivals: sort one into Current, and the numbers show here."  # Disc-T1, PROVISIONAL
 # a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
@@ -417,8 +400,7 @@ YOUTUBE_REST = ("the first of its playlist: the rest follows in the background",
                 "the first of {n:,} playlists: the rest follows in the background")         # rest, after setup
 YOUTUBE_REST_ONLY = ("its playlist follows in the background", "their {n:,} playlists follow in the background")
 LOAD_STOP = "Stop"
-LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
-                 "the page to read again.")
+LOAD_STOP_TIP = "Stop and sort what's read; unread folders can be read later."
 LOAD_STOPPING = "Stopping…"
 LOAD_LINES = ("Come back after an episode",
               "Your shows are read once, so every list after this is quick",
@@ -430,41 +412,39 @@ SORT_TITLE = "Where does each one go?"
 SORT_LINE = "Sort the one at the top. The next one comes up by itself."
 SORT_COUNT = "{n:,} left to sort"
 SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
-# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
+# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30); a title is
+# *Removed*, never *Ignored* — Ignore is a word's state (Kotoba-WS2, Sonic 2026-11-19; the word PROVISIONAL)
 SORT_CHOICES = (("soon", "Soon", "Below Current's Soon line: after what you're on now. It still counts toward your "
                                  "list.", "S"),
                 ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
                 ("goal", "Goal", "Someday, in no order: what you'll get to later. It counts toward your list.", "↓"),
                 ("finished", "Finished", "Watched or read already: a record, and still a source of sentences. Its "
                                          "words stop pushing your list around.", "↑"),
-                ("ignore", "Ignore", "Never read its folder again, when the folder holds only this; otherwise it's "
+                ("ignore", "Remove", "Never read its folder again, when the folder holds only this; otherwise it's "
                                      "taken out of your library. Your files stay where they are; Undo brings it "
                                      "back.", "←"))
 SORT_UNDO = "Undo"
 SORT_UNDO_TIP = "Bring back the last one you sorted.\n• Ctrl+Z"
 SORT_REST = "Put the rest in…"
-SORT_REST_TIP = "Every title still here in one place, at once. One Undo brings them all back."
+SORT_REST_TIP = "Put every remaining title here in one place. One Undo reverts."
 SORT_DONE = "Done"
 SORT_DONE_TIP = "Go on. Anything still here waits in New arrivals."
-SORT_TOUR = "See what Surasura does by itself"          # help cards (§6.6): Done, then the tour once the window is up
-SORT_TOUR_TIP = "Done — then a short tour of what runs by itself, one card each"
 SORT_CLOSE_TIP = "Close. Anything still here waits in New arrivals.\n• Esc"
-SORT_RESORT_DONE_TIP = "Done sorting: on to Current. Anything still here waits in New arrivals.\n• Esc"   # Sort again
+SORT_RESORT_DONE_TIP = "Done sorting: on to Current. The rest waits in New arrivals.\n• Esc"   # Sort again
 SORT_DONE_TIPS = {"setup": SORT_DONE_TIP, "arrivals": SORT_CLOSE_TIP, "resort": SORT_RESORT_DONE_TIP}
 SORT_MORE = "and {n:,} more"
 SORT_EMPTY = "All sorted."
 SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",
-               "finished": "{title} → Finished", "ignore": "{title} ignored"}
+               "finished": "{title} → Finished", "ignore": "{title} removed"}
 SORT_REST_PLACED = "{n:,} titles → {place}"
 # Mado-O (alpha 8, Sonic 2026-10-31: "the ability to reset from the beginning")
 SORT_OVER = "Start sorting over"
-SORT_OVER_TIP = ("Everything you sorted here goes back to be sorted again, including the ones you ignored, and you "
-                 "start from the top. Undo puts your sorting back.")
+SORT_OVER_TIP = "Sort everything again from the top, removed too. Undo restores it."
 SORT_OVER_ASK = "Start sorting over?"
-SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you ignored, and you "
+SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you removed, and you "
                   "start again from the top. A title you've moved since stays where you put it. Undo puts your "
                   "sorting back.")
-SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you ignored it, and you start again "
+SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you removed it, and you start again "
                       "from the top. Undo puts it back.")
 SORT_OVER_BODY_PLAIN = ("The {n:,} titles you sorted here go back to New arrivals, and you start again from the top. A "
                         "title you've moved since stays where you put it. Undo puts your sorting back.")

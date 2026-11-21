@@ -44,9 +44,10 @@ worker.
 
 An import into a library folder that isn't there yet makes it (`create`: the import fills it, never leaves it empty).
 `run(state, progress, cancel)` runs the import (`run_import`, progress `(stage, done, total)`, `cancel()` between
-files) and `graduated_merge.merge_all()` — at every start that runs it: it is idempotent (no list, nothing done).
-`needs_run(state)` is False for an everyday start, so the gate opens no window and runs nothing: the library there and
-recorded, no GraduatedList waiting.
+files), `graduated_merge.merge_all()` and `word_lists.merge_blacklists()` (Kotoba-WS2: the Blacklist into the Ignore
+list) — at every start that runs it: each is idempotent (no list, nothing done). `needs_run(state)` is False for an
+everyday start, so the gate opens no window and runs nothing: the library there and recorded, no GraduatedList or
+Blacklist waiting.
 
 `first_run.json` in the Houseki local root records each installed library this gate saw there (and whether its user
 chose to start fresh): what tells a library offline from one never made.
@@ -56,6 +57,7 @@ import os
 import time
 
 from app import cfa, graduated_merge, import_2x, path_utils
+from app.services import word_lists
 
 NOTE = "first_run.json"
 NOTE_VERSION = 1
@@ -156,9 +158,11 @@ def legacy_data_here():
 
 
 def lists_waiting(library):
-    """The languages whose GraduatedList.txt waits in `library` (`merge_all`'s work): two file checks."""
+    """The languages whose GraduatedList.txt or Blacklist.txt waits in `library` (`merge_all`'s and
+    `word_lists.merge_blacklists`' work, Kotoba-WS2): four file checks."""
     return [lang for lang in LANGUAGES
-            if os.path.isfile(os.path.join(library, "User Files", lang, graduated_merge.LIST_FILE))]
+            if any(os.path.isfile(os.path.join(library, "User Files", lang, name))
+                   for name in (graduated_merge.LIST_FILE, word_lists.BLACKLIST))]
 
 
 def state():
@@ -216,12 +220,13 @@ def state():
 
 def needs_run(st):
     """Does this start need `run` (the gate's worker)? False for an everyday start: ready, the library there and
-    recorded, no GraduatedList waiting."""
+    recorded, no GraduatedList or Blacklist waiting."""
     return st["state"] != READY or st["create"] or not st["recorded"] or bool(st["lists"]) or bool(st.get("cfa"))
 
 
 def _result(status="done", reason=None, message=None):
-    return {"status": status, "reason": reason, "message": message, "import": None, "graduated": None}
+    return {"status": status, "reason": reason, "message": message, "import": None, "graduated": None,
+            "blacklist": None}
 
 
 def _store_names(library, folder):
@@ -361,4 +366,8 @@ def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False,
     for lang, counts in out["graduated"].items():
         if counts.get("error"):
             print(f"Start: {lang} Graduated list: {counts['error']}")
+    out["blacklist"] = word_lists.merge_blacklists()       # Kotoba-WS2: one Ignore list
+    for lang, counts in out["blacklist"].items():
+        if counts.get("error"):
+            print(f"Start: {lang} Blacklist: {counts['error']}")
     return out

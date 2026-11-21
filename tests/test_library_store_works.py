@@ -594,6 +594,35 @@ def test_a_locked_cover_refuses_the_fetch(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_generated_lock_lets_go_only_at_the_users_look_again_and_a_newer_choice_replaces_it(language):
+    """Mado-CV (3.0.17): *Use a generated cover* locks the painted cover and a fetch is refused while it holds; the
+    user's *Look for a cover again* (`unlock`) lets it go — the user's write, undone by the value check — so a fetch
+    may fill it again; and the user's own newer choice (a pick, a paste: locked) always replaces the lock."""
+    store = migrated(language)
+    work = _work(store, store.ids("now")[0])
+    store.set_cover(work, "generated", locked=True)
+    assert store.set_cover(work, "anilist", ref="154587", path="cache:154587.jpg") is None, "refused while locked"
+    again = store.set_cover(work, "generated", unlock=True)
+    assert again is not None
+    row = store._work_row(work)
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("generated", None, 0)
+    store.undo(again)
+    assert store._work_row(work)["cover_locked"] == 1, "its Undo locks it again"
+    again = store.set_cover(work, "generated", unlock=True)
+    fetched = store.set_cover(work, "anilist", ref="154587", path="cache:154587.jpg")
+    assert fetched is not None and store._work_row(work)["cover_source"] == "anilist", "a fetch fills it now"
+    store.undo(fetched)
+    store.undo(again)
+    mine = store.set_cover(work, "anilist", ref="154587", path="user:anilist-154587.jpg", locked=True)
+    assert mine is not None, "a paste over the generated lock: the newer choice wins"
+    row = store._work_row(work)
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("anilist", "user:anilist-154587.jpg", 1)
+    assert store.set_cover(work, "generated", unlock=True) is None, "a stale view's press never undoes the newer pick"
+    assert store._work_row(work)["cover_path"] == "user:anilist-154587.jpg"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_forget_downloaded_keeps_user_images(language):
     """05 §5.5: *Remove downloaded covers* clears the fetched, unlocked covers' paths; a user's image (user data) and a
     locked choice stay."""
@@ -818,8 +847,9 @@ def test_import_finished_copies_outside_the_write_lock_and_never_re_adds(languag
 def test_each_rule_target_for_hato_youtube_a_channel_and_another_tool(language):
     """05 §5.12 (Q2-3, G1.2-12): `register` places a drop waiting in New arrivals by the user's rule for its source —
     hato, YouTube, one channel (`youtube:<id>` over `youtube`), another tool by its producer name — in the same command:
-    top (Current's first row), soon (the first slot below the line), goal, finished, after-show; `wait` and no rule
-    leave it in New arrivals."""
+    top (Current's first row), soon, goal, finished, after-show; `wait` and no rule leave it in New arrivals. A drop
+    naming no order (no episode, no list place) goes after what is there: the end of Soon / 6+ Months (Kura-SO, Sonic
+    2026-11-19)."""
     store = migrated(language, shows=2, episodes=3)
     data_dir, _u = roots(language)
     w = names(language)
@@ -827,10 +857,10 @@ def test_each_rule_target_for_hato_youtube_a_channel_and_another_tool(language):
     top = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt"), _record("r1"), rules=rules)
     assert store.ids("now")[0] == top.added[0] and top.rule == "top"
     yt = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[95]}.srt"), _record("r2", producer="youtube"), rules=rules)
-    assert store.ids("goal")[0] == yt.added[0]
+    assert store.ids("goal")[-1] == yt.added[0], "no order: the end of 6+ Months"
     ch = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[96]}.srt"),
                         _record("r3", producer="youtube", channel_id="UC123"), rules=rules)
-    assert store.ids("soon")[0] == ch.added[0], "the channel's line wins; Soon's first row"
+    assert store.ids("soon")[-1] == ch.added[0], "the channel's line wins; no order: the end of Soon"
     done = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[97]}.srt"), _record("r4", producer="my-tool"),
                           rules=rules)
     assert store.item(done.added[0])["tier"] == "graduated"
@@ -1419,7 +1449,7 @@ def test_a_channels_wait_rule_keeps_its_drop_in_new_arrivals_when_its_producer_i
         assert waits.added[0] not in store.ids("goal")
         goes = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[131]}.srt"),
                               _record("w2", producer="youtube", channel_id="UCX"), rules=rules)
-        assert goes.rule == "goal" and store.ids("goal")[0] == goes.added[0]
+        assert goes.rule == "goal" and store.ids("goal")[-1] == goes.added[0]     # (no order: the end, Kura-SO)
     finally:
         store.close()
 

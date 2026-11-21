@@ -104,7 +104,7 @@ DEFAULT_SETTINGS = {
     "anki_sync_auto": False,
     "anki_sync_decks": {},
     "anki_sync_fields": {},
-    "anki_sync_include_suspended": False,
+    "anki_sync_include_suspended": False,   # retired (Kotoba-WS2): folded into known_from_anki; read once, on load
     # "Label backlogged Anki words" (Settings -> Experience & UI; Junban_Backlog_Spec WP-B8): Generate
     # reads the new-card backlog of those decks, in the background, when Anki is running
     # (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json), and the report marks each word
@@ -144,6 +144,11 @@ DEFAULT_SETTINGS = {
     # The Chinese library's own *Find them with hato* (Zh-H): its waiting videos go to hato once hato finds Chinese
     # subtitles (1.3.0: assrt.net, then OpenSubtitles, on the learner's own keys). Off by default. Never in a signature.
     "subs_with_hato_zh": False,
+    # Mado-PZ (2026-11-18, a tester's ask: the work running by itself taxes the PC): the bar's circles the learner
+    # paused with one click (`PAUSABLE` names, the phase strip's): what runs by itself there starts nothing new until
+    # the learner resumes it — kept across a restart, never resumed by itself. Read through `paused(settings)`. This
+    # PC's state, not a choice: never exported (`settings_io`). Never in a signature.
+    "paused": [],
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
@@ -175,11 +180,23 @@ DEFAULT_SETTINGS = {
     # text-to-speech — the word goes to Google — only while this is on; off, every Chinese run file leaves its
     # word-audio field unmapped (`runfile.config`). Japanese word audio is Anki Miner's own. Never in a signature.
     "connect_zh_word_audio": False,
+    # How hard Anki Miner works while Connect mines (Michi-LP, 2026-11-18; `connect/power.py`): the clips it cuts at
+    # once — "auto" (this PC's number, `power.clip_cuts`) or 1–6, sent per run, never written into Anki Miner; per PC
+    # (an import never brings another PC's) — and, Beta, its calls at idle priority. Never in a signature.
+    "connect_clip_cuts": "auto",
+    "connect_low_priority": False,
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
-    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
-    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
-    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
-    "known_from_anki": ["suspended"],
+    # ("and"): "suspended", "marked", "flag:1" … "flag:7"; [] is off. The default is Suspended AND Marked (Kantan-B3,
+    # Sonic 2026-11-18: a plain suspend often means "a bad sentence, I still want the word", so it never counts by
+    # itself); a file that names the key keeps its own terms, except the old default saved without a pick (below,
+    # `known_from_anki_chosen`). Surasura's own suspensions (the shelf, Junban's "later") and Anki's leeches never
+    # count. Read by the known-words sync only while Connect's preview is on (2.x). Never in a signature: what it adds
+    # is in KnownWord.json.
+    "known_from_anki": ["suspended", "marked"],
+    # True once the learner picked *Count as known in Anki*'s states (Kantan-B3): a first save with no settings.json
+    # yet writes every default (`_read_file_as_is`), so a saved ["suspended"] without it is the old default, never a
+    # choice (`load_settings` reads today's). Written beside every pick (the Settings row, the 2.x panel).
+    "known_from_anki_chosen": False,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
@@ -232,6 +249,11 @@ DEFAULT_SETTINGS = {
         # _NON_ANALYSIS_SETTINGS). The token store always records which words are names, so flipping it needs only a
         # Generate.
         "ignore_names": False,
+        # Count song lyrics (OP / ED) (Settings -> Language & Parsing), both languages, off: a show's opening and ending
+        # songs, which its subtitles write again every episode, are out of the counts (app/song_lines.py). It changes
+        # what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS); not in the token store's build
+        # signature — the store keeps every sentence's line either way, so flipping it needs only a Generate.
+        "count_song_lyrics": False,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,
@@ -356,6 +378,19 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                 if key != "logic":
                     settings[key] = value
             settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
+            # Kantan-B3: the old default of *Count as known in Anki*, saved without a pick (a first save wrote every
+            # default), reads as today's default; a learner's own pick carries `known_from_anki_chosen`
+            if user_settings.get("known_from_anki") == ["suspended"] and not user_settings.get("known_from_anki_chosen"):
+                settings["known_from_anki"] = copy.deepcopy(DEFAULT_SETTINGS["known_from_anki"])
+            # Kotoba-WS2: *Count suspended cards as known* folded into *Count as known in Anki* (Sonic 2026-11-19) — a
+            # learner who turned it on, and never picked the states, picked "a card I suspend counts": read as
+            # Suspended alone (their pick kept; nothing written: `anki_sync.counted_suspended` reads it). Only over a
+            # default the file holds (none, the old or today's): states picked before Kantan-B3's marker are kept
+            if (user_settings.get("anki_sync_include_suspended") is True
+                    and not user_settings.get("known_from_anki_chosen")
+                    and user_settings.get("known_from_anki", ["suspended"]) in (["suspended"], ["suspended", "marked"])):
+                settings["known_from_anki"] = ["suspended"]
+                settings["known_from_anki_chosen"] = True
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e
@@ -691,6 +726,21 @@ def automation(settings) -> bool:
     on. Takes a settings dict or a window's frozen copy of one."""
     logic = settings.get("logic") if hasattr(settings, "get") else None
     return not (hasattr(logic, "get") and logic.get("automation") is False)
+
+
+# Mado-PZ: the circles a pause can hold, as the phase strip names them (`app/services/phase.CIRCLES`)
+PAUSABLE = ("arrivals", "surasura", "miner", "junban", "anki")
+
+
+def paused(settings, circle=None):
+    """Mado-PZ: the circles the learner paused (`paused` in settings.json) -> a frozenset of `PAUSABLE` names, or with
+    `circle` whether that one is. One model for what runs by itself: D29's switch (`automation`) is the master — off,
+    nothing does; a pause is the quick, temporary hold on one circle's work, over each automation's own switch, which
+    it never changes. A missing or malformed value reads as nothing paused. Takes a settings dict or a window's frozen
+    copy of one."""
+    held = settings.get("paused") if hasattr(settings, "get") else None
+    names = frozenset(c for c in held if c in PAUSABLE) if isinstance(held, (list, tuple)) else frozenset()
+    return names if circle is None else circle in names
 
 
 def placing_rules(held=None) -> Dict[str, Any]:

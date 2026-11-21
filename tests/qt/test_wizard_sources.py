@@ -491,18 +491,35 @@ def test_make_cards_with_connect_already_on_only_logs_them(line, empty_library, 
     assert [(k, b, e) for _n, _i, k, b, e in _log()] == [("entered_mine_line", "user", 1)] * 6
 
 
-def test_not_now_writes_nothing_but_its_answer(line, empty_library, monkeypatch):
+def test_not_now_sets_the_logs_jobs_aside_and_keeps_its_own_answer_never_the_lines(line, empty_library,
+                                                                                     monkeypatch):
+    """Kantan-B2b (Sonic 2026-11-19: Not now is no yes): the jobs the log queued set aside, *Not now*'s own answer
+    kept — the line itself unanswered, so nothing mines by itself — and nothing else written."""
     before = _first_scan(n_shows=1, episodes=4)
     calls = []
     ny, win, settings, written = line(on=False)
     ny.switch_on = lambda *a: calls.append("switch_on")
     ny.first_cards = lambda *a: calls.append("first_cards")
+    ny.first_run_aside = lambda lang: calls.append(("aside", lang))
     _answer(ny, "not_now")
     assert wait_until(lambda: win.said, 30)
     assert win.said == [strings.NEEDS_FIRST_CARDS_LATER]
-    assert calls == [] and settings.calls == [] and written == []
+    assert calls == [("aside", "ja")] and settings.calls == [] and written == []
     assert _log() == [] and _items() == before
-    assert service.read_answered("ja") == {service.FIRST_CARDS}
+    assert service.read_answered("ja") == {service.FIRST_CARDS_NOT_NOW}
+    assert service.first_cards_waiting("ja") is True
+
+
+def test_after_not_now_the_line_stays_with_make_cards_alone():
+    """Kantan-B2b: the question stays reachable until a yes — the same line, *Make cards* only, its words saying
+    nothing is made until then; the yes takes it away."""
+    for cards_on, yes in ((False, "first_cards"), (True, "first_cards_on")):
+        entry = service.entries(_view(25), offers={service.FIRST_CARDS}, cards_on=cards_on,
+                                answered={service.FIRST_CARDS_NOT_NOW})[0]
+        assert entry.kind == service.FIRST_CARDS and entry.actions == (yes,)
+        assert entry.say == service.STRINGS["first_say_later"] and "Make cards" in entry.say
+        assert service.entries(_view(25), offers={service.FIRST_CARDS}, cards_on=cards_on,
+                               answered={service.FIRST_CARDS_NOT_NOW, service.FIRST_CARDS}) == []
 
 
 def test_automatic_actions_off_make_no_cards_and_write_nothing(line, empty_library):
@@ -568,7 +585,7 @@ def test_with_cards_already_on_the_line_asks_only_about_these_episodes_and_never
     assert on.actions != off.actions
     for tip in _tips(on):
         assert "from now on" not in tip and "Turn it on" not in tip, tip       # the switch is on: no offer of it
-    assert "from now on" in _tips(off)[0] and "Turn it on" in _tips(off)[1]  # off: the 20 and the switch
+    assert "from now on" in _tips(off)[0] and "until you say yes" in _tips(off)[1]   # off: the 20; Not now no yes
     assert service.entries(_view(25), offers={service.FIRST_CARDS}, answered={service.FIRST_CARDS},
                            cards_on=True) == []
 
@@ -594,12 +611,14 @@ def test_not_now_with_cards_already_on_writes_only_its_answer_and_never_says_tur
     calls = []
     ny.switch_on = lambda *a: calls.append("switch_on")
     ny.first_cards = lambda *a: calls.append("first_cards")
+    ny.first_run_aside = lambda lang: calls.append(("aside", lang))
     _answer(ny, "not_now_on")
     assert wait_until(lambda: win.said, 30)
     assert win.said == [strings.NEEDS_FIRST_CARDS_LATER_ON] and "Turn it on" not in win.said[0]
-    assert calls == [] and settings.calls == [] and written == []
+    assert "later still gets its cards" not in win.said[0], "Kantan-B2b: nothing comes later by itself"
+    assert calls == [("aside", "ja")] and settings.calls == [] and written == []
     assert _log() == [] and _items() == before
-    assert service.read_answered("ja") == {service.FIRST_CARDS}
+    assert service.read_answered("ja") == {service.FIRST_CARDS_NOT_NOW}
 
 
 def test_the_line_follows_connects_switch_as_page_five_writes_it(line, empty_library):

@@ -5,6 +5,8 @@ and `connect` (in P2.1: `--consume-only`, the inbox read once); P2.5's `undo` (a
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
   nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5. Its body after the
   read is `register_record`, which hato's back-fill (`app/connect/hato.py`, P3.2) calls for each of hato's pairings.
+  **A video in a folder the learner skipped** (*Never read this folder*: the record's `video_path`, or the subtitle
+  hato wrote beside it) answers `skipped` too (`folder skipped`), nothing written (Kura-NA).
 - `connect` (P2.4) runs Connect's loop (`app/connect/runner.py`) until no job is left; `--consume-only` reads the
   inbox once and exits (P2.1).
 - `place` and `finish` are a person's verbs, accepted from any program: each placement is logged with `--source`
@@ -36,7 +38,9 @@ REQUIRED = ("schema", "content_key", "producer", "producer_version", "language",
 _TEXT = ("producer", "producer_version", "video_path", "subtitle_path", "library_path", "verdict", "picked_by",
          "paired_at")
 PREVIEW_OFF = "connect preview off"
+FOLDER_SKIPPED = "folder skipped"           # Kura-NA: the video lies in a folder the learner skipped (`Store.skipped_holding`)
 AUTOMATION_OFF = "automation off"           # D29's switch (`logic.automation`): Connect mines nothing by itself
+PAUSED = "paused"                           # Mado-PZ: Anki Miner's circle paused at the bar
 TIER_OF = {"now": "now", "soon": "soon", "later": "goal"}
 
 
@@ -223,7 +227,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     if _sha256(path) != record["subtitle_sha256"]:
         raise _bad("The subtitle's copy in Surasura's library isn't the file hato paired.", library_path=path)
 
-    from app import library_store
+    from app import library_store, settings_manager
     from app.connect import library, rules
     # Connect's watermark set before the registration (a store this call builds too), so the drop is logged after it
     reader = None if backfill else library.READER
@@ -244,13 +248,37 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
 
     out = {"file_id": done.file_id, "landed": done.landed, "tier": done.tier, "position": done.position,
            "pairing": done.pairing, "content_key": key}
+    if done.landed == "skipped":                    # Kura-NA: a skipped folder's video — nothing written, as hato's
+        out["skipped"] = FOLDER_SKIPPED             # `skipped` answer records it (its file left where it is)
+        return out
     if backfill:
         return out
     work = False
     store = library.open_store(lang, role="register")
     if store is not None:
         with store:
-            if done.tier == "arrivals":
+            if done.tier == "arrivals" and settings_manager.paused(loaded, "arrivals"):
+                # Kantan-G (Sonic 2026-11-19: a pause stops all a circle runs by itself): New arrivals paused — the
+                # drop waits there, placed by its rule at the circle's resume (`rules.place_held`)
+                _store_write(lambda: store.hold_drops([{"id": done.file_id, "producer": record.get("producer"),
+                                                         "channel_id": record.get("channel_id")}]), wait)
+                out["waits"] = PAUSED
+                try:
+                    fresh = settings()
+                except CliError:
+                    fresh = None
+                if fresh is not None and not settings_manager.paused(fresh, "arrivals"):
+                    # resumed while it was being taken in (the resume's own look may have missed it): placed now
+                    try:
+                        rule = _store_write(lambda: rules.apply(store, done.file_id, record, fresh), wait)
+                    except ValueError:
+                        rule = None
+                    _store_write(lambda: store.forget_drops([done.file_id]), wait)
+                    if rule:
+                        out.pop("waits")
+                        out["rule"] = rule
+                        out["tier"], out["position"] = store.place_of(done.file_id)
+            elif done.tier == "arrivals":
                 # Every call while the item waits, so a retry after a failed first try still places it
                 try:
                     rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), wait)
@@ -395,6 +423,8 @@ def connect(args):
     from app import settings_manager
     if not settings_manager.automation(loaded):        # 3.0 (P3.3 C1): D29 off is no automatic mining
         return {"skipped": AUTOMATION_OFF}
+    if settings_manager.paused(loaded, "miner"):          # Mado-PZ: paused until the learner's click resumes it
+        return {"skipped": PAUSED}
     from app import locks
     from app.connect import inbox, kick, library
     from app.path_utils import get_user_files_path

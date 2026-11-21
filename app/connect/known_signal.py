@@ -12,7 +12,9 @@ A card you suspend and mark in Anki says "I know this": at Surasura's next known
   you named Junban's tag otherwise: adversary B #4), *Take its new cards out*'s (`Surasura::out`, and
   `<junban_tag>::out`: P4.1 L2, `unlisted.out_tag`) and Connect's shelf (`surasura::shelf`) — and Anki's leeches
   (`leech`). A Connect-made card **you** suspend counts like any (Anki's tag
-  search ignores case).
+  search ignores case). **A red or a green flag never counts** (Kotoba-WS2; Sonic 2026-11-20, the review loop's moves:
+  Suspend + Red flag is *Ignore*, Suspend + Green flag is *Swap*, WL-46 / 46b), whatever the terms — red and green win
+  over every other state, so a pick naming one of them counts no card.
 - **Newly signalled since the last read → known**: appended to KnownWord.json as the sync appends (append-only, under
   its `known-words-<lang>` lock), each entry marked `knownBy: "anki-signal"`; recorded here per language (the word, its
   card, when) for undo.
@@ -43,7 +45,9 @@ import json
 import os
 
 KNOWN_BY = "anki-signal"
-NEVER = ("-tag:Surasura::later", "-tag:Surasura::out", "-tag:surasura::shelf", "-tag:leech")
+NEVER = ("-tag:Surasura::later", "-tag:Surasura::out", "-tag:surasura::shelf", "-tag:leech",
+         "-flag:1", "-flag:3")       # Kotoba-WS2: red (Ignore) and green (Swap) are the loop's moves, never Known
+NOT_KNOWN_FLAGS = ("flag:1", "flag:3")
 FLAGS = tuple(f"flag:{n}" for n in range(1, 8))
 TERMS = ("suspended", "marked") + FLAGS
 SIGNAL_WORD_ONLY = True     # the Word field only (the lean asked of Sonic); False: the known-words sync's fields
@@ -56,24 +60,32 @@ def _now():
 def signal(settings):
     """The terms picked (a clean list in the setting's order), or [] when off — and [] with Connect off (2.x: nothing
     of this runs; 3.0: D29's automation off too — `settings_manager.connect_on`, P4.1 row 4.1.1: no word marked
-    known by itself while nothing automatic runs)."""
+    known by itself while nothing automatic runs; the known-words sync then reads the picks for the studied cards you
+    suspended, `anki_sync.counted_suspended`)."""
     from app import settings_manager
     if not settings_manager.connect_on(settings):
         return []
+    return terms(settings)
+
+
+def terms(settings):
+    """*Count as known in Anki*'s terms as the setting holds them (a clean list in the setting's order), Connect on or
+    off; [] when off or when it holds a term this doesn't know."""
+    from app import settings_manager
     value = (settings or {}).get("known_from_anki", settings_manager.DEFAULT_SETTINGS["known_from_anki"])
     if isinstance(value, str):
         value = [value]
     if isinstance(value, tuple):        # the 3.0 window's settings are frozen: its lists are tuples (review r2 #1)
         value = list(value)
     if not isinstance(value, list):
-        print("Known from Anki is off: known_from_anki isn't a list of terms.")
+        print("Count as known in Anki is off: known_from_anki isn't a list of terms.")
         return []
-    terms = list(dict.fromkeys(str(v).strip().lower() for v in value))
-    wrong = [t for t in terms if t not in TERMS]
+    picked = list(dict.fromkeys(str(v).strip().lower() for v in value))
+    wrong = [t for t in picked if t not in TERMS]
     if wrong:           # "and": a term dropped would widen the signal (review B #21)
-        print(f"Known from Anki is off: known_from_anki holds {', '.join(wrong)}, which it doesn't know.")
+        print(f"Count as known in Anki is off: known_from_anki holds {', '.join(wrong)}, which it doesn't know.")
         return []
-    return terms
+    return picked
 
 
 def _never(settings):
@@ -98,6 +110,14 @@ def query(terms, decks, settings=None):
     if not terms or not decks:
         return None
     from app import anki_connect
+    scope = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in dict.fromkeys(decks))
+    return f"({scope}) " + carries(terms, settings)
+
+
+def carries(terms, settings=None):
+    """The search terms of a card that carries the signal `terms` (every one; never a card Surasura suspended, a
+    leech, or one flagged red or green: `_never`) — the signal's own query and the known-words sync's studied
+    suspended cards (`anki_sync.counted_suspended`) read the one rule."""
     parts = []
     for term in terms:
         if term == "suspended":
@@ -106,8 +126,7 @@ def query(terms, decks, settings=None):
             parts.append("tag:marked")
         else:
             parts.append(term)
-    scope = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in dict.fromkeys(decks))
-    return f"({scope}) " + " ".join(parts) + " " + " ".join(_never(settings))
+    return " ".join(parts) + " " + " ".join(_never(settings))
 
 
 def record_path(language):
@@ -127,9 +146,9 @@ def load(language):
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as e:
-        raise Unreadable(f"Known from Anki's record can't be read ({e}); it was left as it is.") from None
+        raise Unreadable(f"Count as known in Anki's record can't be read ({e}); it was left as it is.") from None
     if not isinstance(data, dict):
-        raise Unreadable("Known from Anki's record isn't what it should be; it was left as it is.")
+        raise Unreadable("Count as known in Anki's record isn't what it should be; it was left as it is.")
     return data
 
 
@@ -155,7 +174,7 @@ def _held(language, verb, wait=None, on_wait=None):
             try:
                 on_wait(((refused[1] or {}).get("verb")) or "another Surasura program")
             except Exception as e:                  # the window's call never stops the work
-                print(f"Known from Anki: the wait's notice failed ({e}).")
+                print(f"Count as known in Anki: the wait's notice failed ({e}).")
             held, refused = None, None
     if held is None and refused is None:
         held, refused = anki_sync.hold_known_words(language, verb, wait=wait)
@@ -206,7 +225,7 @@ def read(language, url, decks, fields, settings):
     terms = signal(settings)
     q = query(terms, decks, settings)
     if q is None:
-        with _held(language, "Known from Anki"):
+        with _held(language, "Count as known in Anki"):
             state = load(language)
             if state.get("terms"):          # off now: on again later is a first read (review B #20)
                 state["terms"] = []
@@ -215,7 +234,7 @@ def read(language, url, decks, fields, settings):
     from app import anki_connect
     if SIGNAL_WORD_ONLY:
         fields = list(fields or [])[:1]     # Auto ([]) is the first field already
-    with _held(language, "Known from Anki"):
+    with _held(language, "Count as known in Anki"):
         state = load(language)
         ids = anki_connect.find_cards(url, q)
         scope = {"query": q, "profile": anki_connect.invoke("getActiveProfile", url)}
@@ -273,7 +292,7 @@ def _mark(language, found, state, now, why, terms=None):
     word already there by this signal's own entry (a record save that failed after it) is recorded as added, so undo
     still takes it out (review B #18)."""
     from app import anki_sync
-    with _held(language, "Known from Anki"):
+    with _held(language, "Count as known in Anki"):
         data, words = anki_sync._read_known_file(language)
         known = anki_sync._known_keys(words or [])
         ours = {anki_sync._norm(w.get("dictForm", "")) for w in words or ()
@@ -310,7 +329,7 @@ def accept_offer(language, url=None, on_wait=None):
     that still carry the signal when you answer (asked of Anki with `url`; review B #14). `on_wait(who)`: called
     once when the known words are being written by another program now and the answer waits for it (#45)."""
     from app import anki_connect
-    with _held(language, "Known from Anki", on_wait=on_wait):
+    with _held(language, "Count as known in Anki", on_wait=on_wait):
         state = load(language)
         offer = state.get("offer") or {}
         if offer.get("state") != "pending":
@@ -328,7 +347,7 @@ def accept_offer(language, url=None, on_wait=None):
 
 
 def decline_offer(language):
-    with _held(language, "Known from Anki"):
+    with _held(language, "Count as known in Anki"):
         state = load(language)
         offer = state.get("offer") or {}
         if offer.get("state") == "pending":
@@ -351,7 +370,7 @@ def mark_shown(language, words=None):
     unshown and is listed next time (adversary B #9). Called on the window's worker, never its screen thread (intent
     keeper P2.4-B #4); never waits for the lock (another program writing: shown again next time)."""
     try:
-        with _held(language, "Known from Anki", wait=0):
+        with _held(language, "Count as known in Anki", wait=0):
             state = load(language)
             fresh = [m for m in state.get("marked") or ()
                      if not m.get("shown") and (words is None or m.get("word") in words)]
@@ -360,7 +379,7 @@ def mark_shown(language, words=None):
             if fresh:
                 _save(language, state)
     except Exception as e:
-        print(f"Known from Anki: not marked shown ({e})")
+        print(f"Count as known in Anki: not marked shown ({e})")
 
 
 def undo(language, word, url):
@@ -371,7 +390,7 @@ def undo(language, word, url):
     #13, #25)."""
     from app import anki_connect, anki_sync
     from app.path_utils import backup_to_trash
-    with _held(language, "Known from Anki (undo)"):
+    with _held(language, "Count as known in Anki (undo)"):
         state = load(language)
         mine = [m for m in state.get("marked") or () if m.get("word") == word and not m.get("undone")]
         if not mine:
@@ -380,7 +399,7 @@ def undo(language, word, url):
                  and "suspended" in (m["terms"] if m.get("terms") is not None else state.get("terms") or ())]
         back = []
         if cards:
-            with anki_connect.writer("Known from Anki (undo)", wait=10.0):
+            with anki_connect.writer("Count as known in Anki (undo)", wait=10.0):
                 if anki_connect.reviewing(url):
                     raise RuntimeError(anki_connect.REVIEWING)
                 info = anki_connect.cards_info(url, cards)

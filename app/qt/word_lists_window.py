@@ -1,11 +1,11 @@
-"""*Words to leave out* (W3.3 P10; the window's spec 01 §1.2 n16): the Ignore list and the Blacklist, one language at a
-time — the main window's, followed when idle.
+"""*Your words* (W3.3 P10; the window's spec 01 §1.2 n16): the Ignore list and the words marked known (the Blacklist is
+merged into the Ignore list since Kotoba-WS2), one language at a time — the main window's, followed when idle.
 
 A tab per list; the list's words with a search and their count, ✕ on each (Delete on the current row too; a
 KnownWord.json entry only after the in-window question, `confirm.ask`); an *Add* field (Enter commits; several words
 separated by spaces); *Paste text…*: the text read by the library's own tokenizer in a child process of its own
 (`word_lists.find_words`: the tokenizer never loads here; closing the window, hiding the text or a new paste kills it),
-each word found a chip to keep or drop — a new word kept, one already known or left out dropped, one already on the
+each word found a chip to keep or drop — a new word kept, one already known or ignored dropped, one already on the
 list shown and fixed — then *Add N words*. A chip adds the word's `Word` (the lemma), shown by its spelling. Every read
 and write is `app/services/word_lists.py`'s, on a worker; the window decides nothing. After an add or a ✕ only the rows
 that changed are inserted or removed (S19); every row is made again only for a list or language switch, or a read
@@ -258,8 +258,7 @@ class WordListsWindow(SecondaryWindow):
         self._count()
 
     def show_kind(self, kind):
-        """The Ignore list (`ignore`), the Blacklist (`blacklist`) or the words marked known (`known`), read on a
-        worker."""
+        """The Ignore list (`ignore`) or the words marked known (`known`), read on a worker."""
         if not self.kind_buttons[kind].isChecked():
             self.kind_buttons[kind].setChecked(True)
         if kind == self.kind:

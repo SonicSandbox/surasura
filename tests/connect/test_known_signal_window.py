@@ -62,7 +62,7 @@ def test_two_marked_words_open_titled_window_with_undo_and_tooltip_per_word(root
     tips = Tips()
     win = known_signal_window.show(root, "ja", URL, tips, offer={}, marked=MARKED)
     assert isinstance(win, tk.Toplevel)
-    assert win.title() == "Known from Anki"
+    assert win.title() == "Count as known in Anki"
 
     undo = [b for b in _buttons(win) if b.cget("text") == "Undo"]
     assert len(undo) == 2  # one per marked word, not one per card or none at all

@@ -1269,7 +1269,10 @@ class Writer:
         try:
             with store._writing():
                 trashed = {}
-                for item_id in cmd["ids"]:
+                # Kura-AB6: a *Replace* trashes only the parts the store replaces now (`replace_parts`, under this
+                # lock) — never a part read since ⋯ opened (Finished or ✓ Done: kept, its copy where it is)
+                ids = store.replace_parts(cmd["old_epub"])[0] if cmd.get("new_epub") else cmd["ids"]
+                for item_id in ids:
                     row = store.item(item_id)
                     if row is None:
                         continue
@@ -2005,7 +2008,7 @@ class Writer:
                 return "done"                       # W3.2 H (C3): put back before the crash, as this command leaves it
             if any(r["restored_at"] for r in rows):
                 return True
-        if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
+        if cmd["op"] == "remove" and _removed(store, _replace_ids(store, cmd)):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
         if cmd["op"] == "start_over":               # Mado-O: none still where the screen put it (as it leaves them)
             now = store.check(cmd["ids"]).items
@@ -2175,7 +2178,7 @@ def _refused(change, out):
     if out is None:
         return True
     if change.kind in ("finish", "put_back_finished") or (change.kind in ("set_tier", "move") and change.status):
-        return not out.items and _skips(out) - len(change.items) >= len(change.status)
+        return not out.items and _skips(out) - len(change.items) >= len(_values(change.status))
     if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
         return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
@@ -2195,6 +2198,12 @@ def _refused(change, out):
     if change.kind == "register":                   # one item: its undo skipped it (`link_video`'s is a register)
         return _skips(out) > 0
     return bool(change.status and not out.status)
+
+
+def _values(status):
+    """A change's status values as its undo counts them: a watched mark's date goes with its mark, never skipped on its
+    own (Kura-WD: `Store._undo_status`)."""
+    return [s for s in status if s[1] != "watched_at"]
 
 
 def _skips(out):
@@ -2277,6 +2286,16 @@ def _as_queued(store, cmd):
             row = store.item(held[key]) if held[key] is not None else None
             out.append([key, held[key], row["tier"] if row is not None else None])
         return out
+
+
+def _replace_ids(store, cmd):
+    """A Remove's ids as it leaves them — for a *Replace* (Kura-AB6) without the ones the store keeps now (read since
+    ⋯ opened: `replace_parts`' kept, still live), so a landed Replace replays as landed."""
+    if not cmd.get("new_epub"):
+        return cmd["ids"]
+    with store._reading():
+        kept = set(store.replace_parts(cmd["old_epub"])[1])
+    return [i for i in cmd["ids"] if i not in kept]
 
 
 def _removed(store, ids):

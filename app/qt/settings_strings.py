@@ -140,8 +140,8 @@ NAV_TAGS = {"junban": "順"}                                     # the nav's (mo
 SECTION_NAMED = "{name} · {tag}"                               # a tagged section, for the nav's tip and screen readers
 SECTION_WHY = {
     "junban": "New Anki cards come in the order you'll meet their words.",
-    "backfill": "Adds to your Anki cards how each word is usually used (パターン) and two more sentences from your own "
-                "content (例文). Restore puts every card back",
+    "backfill": "Adds to your Anki cards how each word is usually used (パターン), two more sentences from your own "
+                "content (例文), and the furigana and pitch a card is missing. Restore puts every card back",
 }
 ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato"}       # a row's tool, small beside its plain name
 NEEDS_ANKI = "Needs Anki open and connected"
@@ -377,6 +377,13 @@ ROWS = {
     "backfill_sentence": ("Fill 例文", "Two more sentences from your own content",
                           "Backfill fills each card's 例文 field: two more sentences from your own content",
                           "sentences examples fill 例文"),
+    # Kantan-PF (PROVISIONAL words): a card's missing furigana / pitch — Connect's own cards get both whatever these say
+    "backfill_furigana": ("Fill ふりがな", "The sentence's reading, when a card has none",
+                          "Backfill fills each card's empty SentenceFurigana from its sentence",
+                          "furigana reading ruby fill ふりがな"),
+    "backfill_pitch": ("Fill アクセント", "The word's pitch accent, when a card has none",
+                       "Backfill fills each card's empty PitchPosition: one word only, never a phrase or a name",
+                       "pitch accent fill アクセント"),
     "junban_backfill_cards": ("Which cards", "The deck is chosen in Backfill’s window",
                               "All: every card except known new ones. New only: unstudied cards.",
                               "deck cards new all choose the deck preview fill restore fields note "
@@ -648,8 +655,8 @@ KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           
 # Kotoba-WS2: a pick saved before holds red or green, which never count (the review loop's Ignore and Swap)
 KNOWN_RED_GREEN = "A red or green flag never counts as known: pick again"          # Kotoba-WS2 (PROVISIONAL)
 
-# Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
-FILLS = {"patterns": "パターン", "sentence": "例文"}
+# Backfill's fills by name (`junban_backfill_fills`' values): its four switches, and Your setup's line
+FILLS = {"patterns": "パターン", "sentence": "例文", "furigana": "ふりがな", "pitch": "アクセント"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
@@ -669,6 +676,7 @@ OPTIONS = {
     "junban_off_list": {"leave": "Leave them", "back": "At the back", "aside": "Set aside"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
+    "backfill_furigana": {"furigana": FILLS["furigana"]}, "backfill_pitch": {"pitch": FILLS["pitch"]},
     "junban_backfill_cards": {"all": "All", "new": "New only"},
     "strategy": {"freq": "Level", "coverage": "Coverage %"},
     "zh_script": {"asis": "As written", "s": "Simplified", "t": "Traditional"},

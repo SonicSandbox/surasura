@@ -24,7 +24,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from app.qt import drag, strings
+from app.qt import arrivals, drag, strings
 from tests.qt.conftest import wait_until
 from tests.qt.test_item_menu import ItemWriter, calls, rows_of
 
@@ -186,7 +186,8 @@ def tray(qapp):
         services.shutdown(0.5)
 
 
-OFFER = {"old": {"epub": "D:/Drop/吾輩は猫である.epub", "title": "吾輩は猫である", "ids": [501, 502, 503]},
+OFFER = {"old": {"epub": "D:/Drop/吾輩は猫である.epub", "title": "吾輩は猫である", "ids": [501, 502, 503],
+                 "replaced": [502, 503], "kept": [501]},              # Kura-AB6: part 1 read (Finished)
          "new": {"epub": "D:/Drop/吾輩は猫である-章分割-注なし.epub", "title": "吾輩は猫である-章分割-注なし", "ids": [601, 602]}}
 
 
@@ -203,13 +204,27 @@ def test_a_new_version_gets_replace_first_in_its_menu_and_a_press_is_one_change_
     assert asked == [(row.arrival.item_ids[0], True)]
     act = _replace(m)
     assert m.actions()[0] is act, "first"
-    assert act.toolTip() == strings.TRAY_REPLACE[1].format(old="吾輩は猫である", n=3)
+    assert act.toolTip() == arrivals.replace_tip(OFFER)
+    assert "2 unread parts" in act.toolTip() and "part you've read" in act.toolTip()
     act.trigger()
     got = [c for c in writer.calls if c[0] == "replace_book"]
-    assert got == [("replace_book", [501, 502, 503], {"new_epub": OFFER["new"]["epub"],
+    assert got == [("replace_book", [502, 503], {"new_epub": OFFER["new"]["epub"],
                                                        "old_epub": OFFER["old"]["epub"]})]
     assert wait_until(lambda: win.toasts.card.message == strings.TRAY_REPLACED.format(old="吾輩は猫である"), 5)
     m.close()
+
+
+def test_replaces_tip_counts_the_unread_parts_that_go_and_the_read_ones_that_stay():
+    """Kura-AB6: the tip says how many of the old book's parts go to Removed (the unread ones) and how many stay (the
+    read ones) — one or many, and no *stay* line when none was read."""
+    def offer(replaced, kept):
+        return {"old": dict(OFFER["old"], replaced=replaced, kept=kept), "new": OFFER["new"]}
+    tip = arrivals.replace_tip(offer([502], [501, 503]))
+    assert strings.TRAY_REPLACE_GONE[1] in tip and strings.TRAY_REPLACE_KEPT[0].format(n=2) in tip
+    tip = arrivals.replace_tip(offer([501, 502, 503], []))
+    assert strings.TRAY_REPLACE_GONE[0].format(n=3) in tip and "you've read" not in tip
+    assert tip.startswith(strings.TRAY_REPLACE[1].split("{")[0].strip()) and tip.endswith("Undo puts it all back")
+    assert "吾輩は猫である" in tip and "{" not in tip
 
 
 def test_an_arrival_that_is_no_new_version_gets_no_replace(tray):

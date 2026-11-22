@@ -121,6 +121,23 @@ def test_code_and_the_tolerated_paths_are_never_named_but_user_data_is(audited):
         "User Files/ja/Blacklist.txt", "modules/koe/voices/声.json"]}
 
 
+def test_a_local_only_tests_own_reads_are_never_named_but_a_public_tests_are(audited):
+    """Why: the local-only parsing suite reads its own local data (debug/, docs/assets/zh_gold) and never runs on
+    GitHub's runner; --touched-callers picked it by a name it shares with app/send_report.py (2026-11-22, train 59) and
+    the audit went red on reads GitHub can never meet. A public test reading the same file is still named."""
+    local = [folder for folder, _why in read_audit.TOLERATED if folder.startswith("tests/")][0]
+    (audited / ".gitignore").write_text(f"debug/\ndocs/assets/zh_gold/\n{local}\n", encoding="utf-8")
+    _git(str(audited), "init", "-q")
+    _git(str(audited), "add", "-A")
+    _git(str(audited), "commit", "-q", "-m", "base")
+    reads = {local + "test_parsing_suite.py::test_variants": {"debug/parsing_fixes_run/step4/n2_joins.json",
+                                                              "docs/assets/zh_gold/ud/zh_hk-ud-test.conllu"},
+             local.replace("/", "\\") + "test_parsing_suite.py::test_case[ZH-SEG-1]": {"debug/分詞.json"},
+             "tests/test_send_report.py::test_zip": {"docs/assets/zh_gold/ud/zh_hk-ud-test.conllu"}}
+    assert read_audit.ignored_reads(reads) == {"tests/test_send_report.py::test_zip": [
+        "docs/assets/zh_gold/ud/zh_hk-ud-test.conllu"]}
+
+
 def test_the_top_folders_env_is_tolerated_but_never_a_users_file_or_another_env(audited):
     """Why: app/telemetry.py calls load_dotenv() as it is imported, which reads the top folder's .env when there is one
     (every working copy keeps a dev one; GitHub's runner has none, and telemetry then reads nothing): the first test of

@@ -793,6 +793,20 @@ def taken(ab):
     return {"replace": True} if ab.get("elsewhere") else {}
 
 
+def tidy_back_said(got):
+    """A tidy's Undo, said (*Needs you*'s *Undo* and Settings' *Put back…* alike): how many came back and how many were
+    left out (Kyou-SH3 F5: their words have cards again), or why none did."""
+    got = got or {}
+    if got.get("why") or got.get("say"):
+        return strings.NEEDS_TIDY_NOT_BACK.format(why=got.get("why") or got.get("say"))
+    n = int(got.get("back") or 0)
+    said = strings.NEEDS_TIDY_BACK_ONE if n == 1 else strings.NEEDS_TIDY_BACK.format(n=n)
+    k = len(got.get("skipped") or ())
+    if k:
+        said += (strings.NEEDS_TIDY_SKIPPED_ONE if k == 1 else strings.NEEDS_TIDY_SKIPPED.format(k=k))
+    return said
+
+
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
@@ -2503,16 +2517,15 @@ class NeedsYou(QObject):
             got = got or {}
             if got.get("why") or got.get("say"):
                 self._stays("undo_tidy", entry)
-                self._say(strings.NEEDS_TIDY_NOT_BACK.format(why=got.get("why") or got.get("say")))
-            else:
-                n = int(got.get("back") or 0)
-                self._say(strings.NEEDS_TIDY_BACK_ONE if n == 1 else strings.NEEDS_TIDY_BACK.format(n=n))
+            self._say(tidy_back_said(got))
             self.refresh()
         self._press("undo_tidy", entry, undo_it, then=done)
 
     def _do_leave_tidy(self, entry, _line):
+        unsaved = bool((entry.data or {}).get("unsaved"))       # Kyou-SH3: a tidy that deleted nothing
+
         def done(_n):
-            self._say(strings.NEEDS_TIDY_LEFT)
+            self._say(strings.NEEDS_TIDY_UNSAVED_LEFT if unsaved else strings.NEEDS_TIDY_LEFT)
             self.refresh()
         self._press("leave_tidy", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 

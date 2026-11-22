@@ -115,6 +115,10 @@ def world(tmp_path, monkeypatch):
     _write(os.path.join(results, "reading_list_static.html"), f"<html>{home}</html>".encode("utf-8"))
     _write(os.path.join(results, "cache.db"), b"SQLite format 3\x00" + home.encode("utf-8"))
     # reports: one whose pictures were taken in picture mode, one from before 3.0.1 (FORMAT 1, no "scrubbed")
+    # a flagged sentence (journey v3 §4): the loop knew only the card's file, under home; a note naming them
+    from app.services import flags
+    flags.add("ja", LINE_JA, "文化祭", "loop", key="note:1712", path=video, reasons=["wrong_sentence"],
+              note=f"{probe_person.ACCOUNT} ({probe_person.EMAIL}) の端末で 第3話")
     new = report.save(WHAT, f"{LINE_ZH} {home}", [PNG], where="Settings", scrubbed=True)
     old = report.save("古いレポート", "", [PNG])
     p.new, p.old, p.video = new, old, video
@@ -202,7 +206,7 @@ def test_a_report_given_a_note_after_the_send_zip_was_made_stays_on_the_list(wor
 
 
 @pytest.mark.parametrize("prefix", ["reports/", "logs/", "anki-miner/", "connect/", "anki/", "settings.json",
-                                    "library/", "results/", "about.txt"])
+                                    "library/", "results/", "about.txt", "journey/"])
 def test_an_entry_type_the_scrub_skipped_is_caught_by_the_guard_and_no_zip_is_offered(world, tmp_path, monkeypatch,
                                                                                      prefix):
     """The mutant that skips the scrub for one entry type: the guard refuses the zip, the list stays whole."""
@@ -399,3 +403,104 @@ def test_a_log_cut_with_no_whole_line_starts_at_a_whole_character():
     data = ("あ" * 4000).encode("utf-8")
     cut = report._tail(data, 1001)                                               # 1001 is no multiple of 3
     assert cut.decode("utf-8") == "あ" * (len(cut) // 3)
+
+
+# --- the flagged sentences (journey v3 SPEC §4, J-FLAGS) ------------------------------------------------------------ #
+FLAG_FIELDS = {"line", "word", "show", "episode", "at", "reasons", "note", "added", "source"}
+
+
+def _flagged(path):
+    with zipfile.ZipFile(path) as z:
+        return json.loads(z.read(report.FLAGGED).decode("utf-8"))
+
+
+def test_a_flagged_sentence_goes_with_its_fields_only_its_source_as_show_and_episode_never_a_path(world, tmp_path):
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    got = _flagged(made.path)
+    assert got["format"] == 1 and got["language"] == "ja"
+    (line,) = got["lines"]
+    assert set(line) == FLAG_FIELDS                                   # never the list's id or the page's key
+    assert (line["line"], line["word"], line["source"]) == (LINE_JA, "文化祭", "loop")
+    assert (line["show"], line["episode"]) == (TITLE, "第3話")           # the video's folder and file, nothing above
+    assert line["note"] == "<you> (<email>) の端末で 第3話"               # what they typed, the name and email scrubbed
+    raw = json.dumps(got, ensure_ascii=False)
+    assert "Users" not in raw and ".mkv" not in raw and "note:1712" not in raw
+    # What goes paints the same lines the zip holds, each with its id beside it
+    (shown,) = made.flag_lines
+    assert {k: v for k, v in shown.items() if k not in ("id", "changed")} == line
+    assert made.flags == {shown["id"]: shown["changed"]}
+
+
+def test_no_flagged_sentence_no_entry_and_the_zip_as_before(tmp_path, monkeypatch):
+    probe_person.make(tmp_path, monkeypatch)
+    report.save("リストが空のまま", "")
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "zh")
+    assert report.FLAGGED not in _entries(made.path) and made.flags == {} and made.flag_lines == []
+    assert not any(x.startswith(report.FLAGGED) for x in made.left_out)
+
+
+def test_flagged_sentences_alone_make_a_send_zip_and_make_a_zip(tmp_path, monkeypatch):
+    """Nothing typed, no saved report: the flags are a report of their own."""
+    probe_person.make(tmp_path, monkeypatch)
+    from app.services import flags
+    flags.add("zh", LINE_ZH, "夜市", "journey", key="e2:4.1", show="台北の夜", episode="第1集", at=4.1,
+              reasons=["too_long"])
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "zh")
+    assert made.zipped == {} and len(made.flags) == 1
+    assert _flagged(made.path)["lines"][0]["line"] == LINE_ZH
+    zipped = report.make_zip(str(tmp_path / "out"), "zh")
+    assert report.FLAGGED in _entries(zipped)
+    assert flags.count("zh") == 1                                     # a made zip leaves the list as it is
+
+
+def test_a_list_that_cant_be_read_is_said_never_a_reason_to_fail(world, tmp_path, monkeypatch):
+    from app.services import flags
+
+    def broken(language, split=None):
+        raise OSError("held by another program")
+    monkeypatch.setattr(flags, "for_report", broken)
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja")
+    assert report.FLAGGED not in _entries(made.path)
+    assert any(x.startswith(f"{report.FLAGGED}: couldn't be read") for x in made.left_out)
+
+
+def test_rewritten_with_fewer_flags_only_that_entry_and_the_manifest_change(world, tmp_path):
+    from app.services import flags
+    flags.add("ja", "二時間目の授業、ちゃんと聞いてた？", "授業", "journey", key="e3:3.5", show="放課後", episode="第3話",
+              at=3.5, reasons=["bad_audio"])
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    before = _entries(made.path)
+    keep = [x for x in made.flag_lines if x["word"] == "授業"]
+    lines = [{k: v for k, v in x.items() if k not in ("id", "changed")} for x in keep]
+    entries = report.rewrite_flagged(made.path, "ja", lines, made.left_out)
+    after = _entries(made.path)
+    assert [x["word"] for x in _flagged(made.path)["lines"]] == ["授業"]
+    assert {n: d for n, d in after.items() if n not in (report.FLAGGED, "MANIFEST.txt")} == \
+        {n: d for n, d in before.items() if n not in (report.FLAGGED, "MANIFEST.txt")}
+    manifest = after["MANIFEST.txt"].decode("utf-8")
+    assert f"{hashlib.sha256(after[report.FLAGGED]).hexdigest()}  {len(after[report.FLAGGED])}  {report.FLAGGED}" \
+        in manifest
+    assert dict(entries)[report.FLAGGED] == len(after[report.FLAGGED])
+    assert scrub.leaks(made.path) == []
+    report.rewrite_flagged(made.path, "ja", [], made.left_out)        # none ticked: the entry goes
+    assert report.FLAGGED not in _entries(made.path)
+    assert report.FLAGGED not in _entries(made.path)["MANIFEST.txt"].decode("utf-8")
+
+
+def test_a_rewrite_the_guard_refuses_leaves_the_zip_as_it_was(world, tmp_path, monkeypatch):
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    with open(made.path, "rb") as f:
+        before = f.read()
+    real = report._entry_bytes
+
+    def skips(e, data, language, send, ident):
+        if e.name == report.FLAGGED:
+            return data + f"\n{world.home}\n".encode("utf-8"), None
+        return real(e, data, language, send, ident)
+    monkeypatch.setattr(report, "_entry_bytes", skips)
+    lines = [{k: v for k, v in x.items() if k not in ("id", "changed")} for x in made.flag_lines]
+    with pytest.raises(report.Unsafe):
+        report.rewrite_flagged(made.path, "ja", lines, made.left_out)
+    with open(made.path, "rb") as f:
+        assert f.read() == before
+    assert not os.path.exists(made.path + report.PART)

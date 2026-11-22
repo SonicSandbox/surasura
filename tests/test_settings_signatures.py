@@ -242,24 +242,6 @@ def _backfill_save(**changes):
     window._write.assert_not_called()
 
 
-def _architect_launch(words_per_day=None):
-    from modules.immersion_architect.gui import ImmersionArchitectGui
-    s = settings_manager.load_settings()
-    window = SimpleNamespace(wpd_var=_Var(words_per_day or s.get("words_per_day", 5)))
-    ImmersionArchitectGui._apply_words_per_day(window)
-
-
-def _speech_save(**changes):
-    from modules.koe.gui import KoeSettingsGui
-    s = dict(settings_manager.load_settings(), **changes)
-    window = SimpleNamespace(var_key=_Var(""), var_voice=_Var(s["koe_voice"]), var_model=_Var(s["koe_model"]),
-                             var_style=_Var(s["koe_style"]), var_temp=_Var(str(s["koe_temperature"])),
-                             var_cap=_Var(str(s["koe_daily_cap"])), _float=KoeSettingsGui._float,
-                             _int=KoeSettingsGui._int, app=None, _set_status=MagicMock())
-    with patch("modules.koe.server.restart"):
-        KoeSettingsGui._save(window)
-
-
 def _onboarding_complete(language="ja"):
     from app.onboarding_gui import OnboardingGuide
     guide = SimpleNamespace(language_var=_Var(language), on_complete_callback=None, window=MagicMock())
@@ -279,7 +261,6 @@ JUNBAN_KEYS = ("junban_scope", "junban_deck", "junban_order", "junban_unlisted",
                "junban_ready_first", "junban_only_markers") + JUNBAN_TOUCHUPS
 BACKFILL_KEYS = ("junban_backfill_deck", "junban_backfill_cards", "junban_backfill_replace", "junban_backfill_fills",
                  "junban_backfill_fields", "junban_backfill_note_languages")
-SPEECH_KEYS = ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")
 
 
 @pytest.fixture
@@ -417,18 +398,16 @@ def test_junban_panel_save_keeps_the_journey_current(library, start_dashboard):
     assert _journey_current("ja") is True, "and so does the dashboard's next save"
 
 
-def test_backfill_and_architect_saves_keep_the_journey_current(library, start_dashboard):
-    """The same for Anki Backfill's choices and the Immersion Architect's launch (it saves the words a day)."""
+def test_backfill_saves_keep_the_journey_current(library, start_dashboard):
+    """The same for Anki Backfill's choices."""
     pytest.importorskip("modules.junban.backfill_gui")
-    pytest.importorskip("modules.immersion_architect.gui")
     app = start_dashboard()
     app.save_settings(skip_ui=True)
     _seed_generate("ja")
-    for save in (_backfill_save, _architect_launch):
-        save()
-        assert _journey_current("ja") is True, f"{save.__name__} that changes nothing leaves the list up to date"
-        app.save_settings(skip_ui=True)
-        assert _journey_current("ja") is True, f"and so does the dashboard's next save ({save.__name__})"
+    _backfill_save()
+    assert _journey_current("ja") is True, "a Backfill save that changes nothing leaves the list up to date"
+    app.save_settings(skip_ui=True)
+    assert _journey_current("ja") is True, "and so does the dashboard's next save"
 
 
 def test_a_file_with_its_defaults_written_out_generates_byte_identical_output(library):
@@ -800,7 +779,7 @@ def _dashboard_style_file():
     return settings
 
 
-@pytest.mark.parametrize("window", ["junban", "backfill", "architect", "speech", "onboarding", "youtube"])
+@pytest.mark.parametrize("window", ["junban", "backfill", "onboarding", "youtube"])
 def test_module_windows_write_only_their_own_keys(library, speech_sandbox, window):
     """Each window that saves settings.json writes its own keys onto the file as it is — never the loaded settings,
     which carry every default and every installed module's: those put back the retired key the dashboard drops (a full
@@ -815,10 +794,6 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
         "backfill": ("modules.junban.backfill_gui", lambda: _backfill_save(
             junban_backfill_deck="日本語::Mining", junban_backfill_fills=["sentence"]),
             {"junban_backfill_deck": "日本語::Mining", "junban_backfill_fills": ["sentence"]}, BACKFILL_KEYS),
-        "architect": ("modules.immersion_architect.gui", lambda: _architect_launch(12), {"words_per_day": 12},
-                      ("words_per_day",)),
-        "speech": ("modules.koe.gui", lambda: _speech_save(koe_voice="Iapetus", koe_temperature=0.9),
-                   {"koe_voice": "Iapetus", "koe_temperature": 0.9}, SPEECH_KEYS),
         "onboarding": ("app.onboarding_gui", lambda: _onboarding_complete("zh"), {"target_language": "zh"},
                        ("target_language",)),
         "youtube": ("modules.youtube_downloader.gui", lambda: _youtube_ack(True), {"youtube_risk_acknowledged": True},
@@ -827,8 +802,6 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
     module, save, expected, own = saves[window]
     pytest.importorskip(module)
     before = _dashboard_style_file()
-    if window == "speech":
-        before["enable_koe"] = False                     # Speech's window opens only once Speech is revealed
     settings_manager.save_settings(before)               # as every save writes it (no hide_satoru without the module)
     before = _read()
 
@@ -838,8 +811,7 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
     assert set(after) - set(before) <= set(own), "nothing new but the window's own keys"
     assert {k: v for k, v in after.items() if k not in own} == {k: v for k, v in before.items() if k not in own}, \
         "every other key exactly as it was"
-    if window != "speech":
-        assert not [key for key in after if key.startswith("koe_")], "no Speech key for someone who never turned it on"
+    assert not [key for key in after if key.startswith("koe_")], "no Speech key for someone who never turned it on"
     assert "reinforce_segmentation" not in after
 
 

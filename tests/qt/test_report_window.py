@@ -1624,3 +1624,102 @@ def test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it(main, 
     w.move(40, 10)
     windows.onto_screen(w)                                             # on the screen already: never moved
     assert w.pos() == QPoint(40, 10)
+
+
+# --- the flagged sentences (journey v3 SPEC §4, J-FLAGS) ------------------------------------------------------------ #
+FLAG_LINES = {"ja": [("文化祭まで、あと三日しかないよ。", "文化祭"), ("先生の説明、やっと腑に落ちた。", "腑に落ちる")],
+              "zh": [("今天我们要去台北的夜市吃东西。", "夜市"), ("這家店的牛肉麵非常有名，", "牛肉麵")]}   # Test Resources
+
+
+def _flag_two(language):
+    from app.services import flags
+    (a_line, a_word), (b_line, b_word) = FLAG_LINES[language]
+    a = flags.add(language, a_line, a_word, "journey", key="e3:1.0", show="放課後の教室", episode="第3話", at=1.0,
+                  reasons=["too_long"])
+    b = flags.add(language, b_line, b_word, "journey", key="e3:18.0", show="放課後の教室", episode="第3話", at=18.0,
+                  reasons=["bad_audio"], note="音が途切れる")
+    return flags, a, b
+
+
+def _zip_words(path):
+    import json
+    with zipfile.ZipFile(path) as z:
+        if core.FLAGGED not in z.namelist():
+            return []
+        return [x["word"] for x in json.loads(z.read(core.FLAGGED))["lines"]]
+
+
+def test_no_flagged_sentence_changes_nothing_on_the_form_or_what_goes(main, receiver):
+    w = _press(main)
+    assert w.flags_line.isHidden() and w.flag_count == 0
+    _save(w, JA_WHAT)
+    _look(w)
+    assert w.goes_flags.isHidden() and w.goes_flags_line.isHidden() and core.FLAGGED not in w.goes_files.text()
+    w.back()
+
+
+def test_flagged_sentences_alone_are_said_on_the_form_and_send_report_takes_them(main, receiver):
+    flags, a, b = _flag_two(windows.language_of(main))
+    w = _press(main)
+    assert wait_until(lambda: w.flag_count == 2)
+    assert not w.flags_line.isHidden() and w.flags_line.text() == strings.REPORT_FLAGS_N.format(n=2)
+    assert w.send_button.isEnabled() and w.zip_button.isEnabled()            # nothing typed, no report: still ready
+    _look(w)
+    assert w.flags_line.isHidden()                                           # (What goes says them instead)
+    assert not w.goes_flags.isHidden() and not w.goes_flags_line.isHidden()
+    assert w.goes_flags.keep() == [a["id"], b["id"]] and core.FLAGGED in w.goes_files.text()
+    assert w.goes_flags.findChildren(QWidget) == []                          # one painted list, no widget per line
+
+
+def test_an_unticked_sentence_is_left_out_of_what_goes_and_stays_flagged(main, receiver):
+    language = windows.language_of(main)
+    flags, a, b = _flag_two(language)
+    w = _press(main)
+    assert wait_until(lambda: w.flag_count == 2)
+    _look(w)
+    fl = w.goes_flags
+    QTest.mouseClick(fl, Qt.MouseButton.LeftButton, pos=QPoint(20, 6))     # the first line's tick: off
+    assert fl.keep() == [b["id"]] and w.goes_send.isEnabled()
+    fl.setFocus()
+    QTest.keyClick(fl, Qt.Key.Key_Down)
+    QTest.keyClick(fl, Qt.Key.Key_Space)                                     # the second: off too
+    assert fl.keep() == [] and not w.goes_send.isEnabled()                   # nothing left to send
+    assert w.goes_send.toolTip() == strings.REPORT_FLAGS_NONE_TIP
+    QTest.keyClick(fl, Qt.Key.Key_Space)                                     # ... and back on
+    assert fl.keep() == [b["id"]] and w.goes_send.isEnabled()
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == "Sent. Your report is #K3Q7PM", 15)
+    import io
+    body = receiver.got[0]["body"]
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        import json
+        assert [x["word"] for x in json.loads(z.read(core.FLAGGED))["lines"]] == [FLAG_LINES[language][1][1]]
+    assert [x["id"] for x in flags.read(language)] == [a["id"]]              # the unticked one: still flagged
+    assert wait_until(lambda: w.flag_count == 1 and w.flags_line.text() == strings.REPORT_FLAGS_ONE)
+
+
+def test_open_the_zip_after_an_untick_shows_the_zip_that_would_go(main, receiver, sent):
+    flags, a, b = _flag_two(windows.language_of(main))
+    w = _press(main)
+    assert wait_until(lambda: w.flag_count == 2)
+    _look(w)
+    w.goes_flags.toggle(0)
+    w.goes_open.click()
+    assert wait_until(lambda: any(kind == "show" for kind, _ in sent), 15)
+    path = [p for kind, p in sent if kind == "show"][-1]
+    assert _zip_words(path) == [FLAG_LINES[windows.language_of(main)][1][1]]
+    assert set(w.outbox.flags) == {b["id"]} and receiver.got == []           # nothing sent by looking
+    w.back()
+
+
+def test_flag_texts_say_the_line_word_where_with_time_reasons_note_and_split():
+    line = {"line": "先生の説明、やっと腑に落ちた。", "word": "腑に落ちる", "show": "放課後の教室", "episode": "第3話",
+            "at": 3723.4, "reasons": ["parsing", "too_long"], "note": "分かれてる",
+            "split": [["先生", "先生"], ["腑", "腑"], ["落ち", "落ちる"]]}
+    assert report_ui.flag_texts(line) == [
+        ("先生の説明、やっと腑に落ちた。", False),
+        ("腑に落ちる · 放課後の教室 · 第3話 · 1:02:03 · Parsing looks wrong, Too long", True),
+        ("Note: 分かれてる", True),
+        ("Surasura read it as: 先生 | 腑 | 落ち", True)]
+    assert report_ui.flag_texts({"line": "大家好", "word": "", "at": None, "reasons": []}) == [("大家好", False),
+                                                                                             ("", True)]

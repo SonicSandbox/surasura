@@ -2441,7 +2441,7 @@ class Store:
             if sql.startswith("ALTER") and sql.split()[5] in names:
                 continue
             self.conn.execute(sql)
-        self._prestudied = True
+        self._prestudied = False                # (read again when next asked: a write rolled back takes them back)
 
     def _added_prestudied(self):
         """J-STORE: the pre-studied columns and their index, made at the first open by a writer of a store made before
@@ -7904,13 +7904,15 @@ class Store:
             pairs.setdefault(item_id, {})[column] = (old, new)
         if not self._prestudied_column():
             return out, list(pairs)
+        held = {}
+        for part in _chunks(list(pairs), 500):
+            held.update((i, (at, by)) for i, at, by in self.conn.execute(
+                f"SELECT id, prestudied_at, prestudied_by FROM items WHERE id IN ({','.join('?' * len(part))})", part))
         skipped, back = [], []
         for item_id, values in pairs.items():
             old = tuple(values.get(c, (None, None))[0] for c in PRESTUDIED_COLUMNS)
             new = tuple(values.get(c, (None, None))[1] for c in PRESTUDIED_COLUMNS)
-            row = self.conn.execute("SELECT prestudied_at, prestudied_by FROM items WHERE id = ?",
-                                    (item_id,)).fetchone()
-            if row is None or tuple(row) != new:
+            if held.get(item_id) != new:
                 skipped.append(item_id)
             else:
                 back.append((item_id, old, new))
@@ -8771,7 +8773,8 @@ def _write_image(store, image, meta):
         "availability, size, mtime_ns, changed_in, added_at, graduated_at, piece_id, watched, mined_at, pinned, "
         "in_learning_order, work_id, mine_asked, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
         "?, ?, ?, ?, ?, ?, ?, ?)", rows)
-    marked = [_prestudied_pair(item) + (item["id"],) for item in image["items"]]     # J-STORE: as each was marked
+    marked = [_prestudied_pair(item) + (item["id"],) for item in image["items"]       # J-STORE: as each was marked
+              if item.get("prestudied_by") is not None]
     conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
                      [m for m in marked if m[:2] != (None, None)])
     have = {r[0] for r in rows}

@@ -554,24 +554,40 @@ def test_two_writers_on_two_threads_lose_no_mark(language):
 
 # --- the door's routes (app/services/prestudied.py) --------------------------------------------------------------- #
 
+class _App:
+    """The door's `journey_door.App`, as far as these routes read it: the window's language now."""
+
+    def __init__(self, language):
+        self._language = language
+
+    def language(self):
+        return self._language
+
+
+def _state(language):
+    return prestudied.door_state(language, None, None)
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_route_marks_answers_the_mark_and_its_undo_takes_it_back(language):
     """`episode/prestudied` {id, on, why} -> {on, at, by, undo_id}; `episode/undo` {undo_id} -> {done}; the same
-    undo_id asked again is gone. A press with nothing to write answers the mark now and no undo_id."""
+    undo_id asked again is gone. A press with nothing to write answers the mark now and no undo_id; the door's `state`
+    answers every mark now."""
     store = migrated(language)
     ep = store.ids("now")[0]
     store.close()
-    out = prestudied.set_route({"id": ep, "on": True, "why": "end"}, language)
+    app = _App(language)
+    out = prestudied.door_route({"id": ep, "on": True, "why": "end"}, app)
     assert out["on"] is True and out["by"] == "end" and out["at"] and isinstance(out["undo_id"], int)
-    same = prestudied.set_route({"id": ep, "on": True, "why": "end"}, language)
+    same = prestudied.door_route({"id": ep, "on": True, "why": "end"}, app)
     assert same == {"on": True, "at": out["at"], "by": "end", "undo_id": None}
-    off = prestudied.set_route({"id": ep, "on": False, "why": "press"}, language)
+    off = prestudied.door_route({"id": ep, "on": False, "why": "press"}, app)
     assert off["on"] is False and off["at"] is None and off["by"] == "off"
-    assert prestudied.undo_route({"undo_id": off["undo_id"]}, language) == {"done": True}
-    assert prestudied.changes(language) == {"prestudied": {ep: {"at": out["at"], "by": "end"}}}
-    assert _kind(prestudied.undo_route, {"undo_id": off["undo_id"]}, language) == "gone"
-    assert prestudied.undo_route({"undo_id": out["undo_id"]}, language) == {"done": True}
-    assert prestudied.changes(language) == {"prestudied": {}}
+    assert prestudied.door_undo({"undo_id": off["undo_id"]}, app) == {"done": True}
+    assert _state(language) == {ep: {"at": out["at"], "by": "end"}}
+    assert _kind(prestudied.door_undo, {"undo_id": off["undo_id"]}, app) == "gone"
+    assert prestudied.door_undo({"undo_id": out["undo_id"]}, app) == {"done": True}
+    assert _state(language) == {}
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -581,23 +597,24 @@ def test_the_route_refuses_what_it_cannot_read_and_says_gone_and_stale(language)
     store = migrated(language)
     a, b = store.ids("now")[:2]
     store.close()
+    app = _App(language)
     for body in ({"id": str(a), "on": True, "why": "press"}, {"id": True, "on": True, "why": "press"},
                  {"id": a, "on": 1, "why": "press"}, {"id": a, "on": True, "why": "watched"},
                  {"id": a, "on": False, "why": "end"}, {"id": a, "on": True, "why": "press", "lang": "en"},
-                 {"id": a, "on": True, "why": "press", "pressed_at": "yesterday"}, {}):
-        assert _kind(prestudied.set_route, body, language) == "refused", body
-    assert _kind(prestudied.set_route, {"id": a, "on": True, "why": "press"}, None) == "refused", "no language"
-    assert _kind(prestudied.set_route, {"id": 10 ** 9, "on": True, "why": "press"}, language) == "gone"
+                 {"id": a, "on": True, "why": "press", "at": "yesterday"}, {"id": 10 ** 20, "on": True, "why": "press"},
+                 {"id": 0, "on": True, "why": "press"}, {"id": a, "on": True, "why": "press", "at": 5e13},
+                 {"id": a, "on": True, "why": "press", "at": -1}, {}):
+        assert _kind(prestudied.door_route, body, app) == "refused", body
+    assert _kind(prestudied.door_route, {"id": a, "on": True, "why": "press"}, None) == "refused", "no language"
+    assert _kind(prestudied.door_route, {"id": 10 ** 9, "on": True, "why": "press"}, app) == "gone"
     pressed = int(time.time() * 1000) - 60_000                  # a press kept a minute ago
-    prestudied.set_route({"id": b, "on": True, "why": "press"}, language)
-    assert _kind(prestudied.set_route, {"id": b, "on": False, "why": "press", "pressed_at": pressed},
-                 language) == "stale"
-    assert prestudied.changes(language)["prestudied"][b]["by"] == "press"
-    late = prestudied.set_route({"id": b, "on": False, "why": "press", "pressed_at": int(time.time() * 1000) + 1000},
-                                language)
+    prestudied.door_route({"id": b, "on": True, "why": "press"}, app)
+    assert _kind(prestudied.door_route, {"id": b, "on": False, "why": "press", "at": pressed}, app) == "stale"
+    assert _state(language)[b]["by"] == "press"
+    late = prestudied.door_route({"id": b, "on": False, "why": "press", "at": int(time.time() * 1000) + 1000}, app)
     assert late["on"] is False
     for undo_id in (None, "1", True, 10 ** 12):
-        assert _kind(prestudied.undo_route, {"undo_id": undo_id}, language) == "gone"
+        assert _kind(prestudied.door_undo, {"undo_id": undo_id}, app) == "gone"
 
 
 def test_the_page_s_language_wins_and_each_library_keeps_its_own_marks():
@@ -608,21 +625,21 @@ def test_the_page_s_language_wins_and_each_library_keeps_its_own_marks():
     ja.close()
     zh = migrated("zh")
     zh.close()
-    out = prestudied.set_route({"id": ep, "on": True, "why": "press", "lang": "zh"}, "ja")
+    out = prestudied.door_route({"id": ep, "on": True, "why": "press", "lang": "zh"}, _App("ja"))
     assert out["on"] is True
-    assert list(prestudied.changes("zh")["prestudied"]) == [ep]
-    assert prestudied.changes("ja") == {"prestudied": {}}
-    assert prestudied.changes("en") == {"prestudied": {}}
+    assert list(_state("zh")) == [ep]
+    assert _state("ja") == {}
+    assert _state("en") is None
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_routes_answer_busy_or_empty_while_the_library_isnt_ready(language):
+def test_the_routes_answer_busy_or_nothing_while_the_library_isnt_ready(language):
     """No store yet (a library not built, JSON mode): a press is 'busy' (the page keeps it and sends it again), the
-    state reader answers no marks rather than failing."""
+    state reader has nothing to say (None: the page keeps what it has) rather than failing."""
     data_dir, user_files_dir = roots(language)
     os.makedirs(data_dir, exist_ok=True)
-    assert _kind(prestudied.set_route, {"id": 1, "on": True, "why": "press"}, language) == "busy"
-    assert prestudied.changes(language) == {"prestudied": {}}
+    assert _kind(prestudied.door_route, {"id": 1, "on": True, "why": "press"}, _App(language)) == "busy"
+    assert _state(language) is None
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -634,12 +651,31 @@ def test_a_route_on_the_doors_thread_beside_the_windows_store(language):
     seen = store.meta()["state_version"]
     answers = []
     t = threading.Thread(target=lambda: answers.append(
-        prestudied.set_route({"id": ep, "on": True, "why": "press"}, language)))
+        prestudied.door_route({"id": ep, "on": True, "why": "press"}, _App(language))))
     t.start()
     t.join(60)
     assert answers and answers[0]["on"] is True
     assert store.meta()["state_version"] > seen and store.prestudied_marks(by=True)[ep][1] == "press"
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_asked_while_the_library_is_busy_keeps_its_id_for_the_next_ask(language, monkeypatch):
+    """The page's Undo meets a busy library ('busy': it asks again): the write's id is still there, and the next ask
+    takes the mark back; once it ran, the id is let go of."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.close()
+    app = _App(language)
+    out = prestudied.door_route({"id": ep, "on": True, "why": "press"}, app)
+    with monkeypatch.context() as busy:
+        busy.setattr(prestudied, "_store", lambda _language: None)
+        assert _kind(prestudied.door_undo, {"undo_id": out["undo_id"]}, app) == "busy"
+        assert _kind(prestudied.door_route, {"id": ep, "on": False, "why": "press"}, app) == "busy"
+        assert _state(language) is None
+    assert prestudied.door_undo({"undo_id": out["undo_id"]}, app) == {"done": True}
+    assert _state(language) == {}
+    assert _kind(prestudied.door_undo, {"undo_id": out["undo_id"]}, app) == "gone"
 
 
 def test_the_undo_ids_kept_are_the_newest_hundred(monkeypatch):

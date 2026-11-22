@@ -308,8 +308,8 @@ def test_the_add_leaves_the_stones_box_where_it_was_and_hangs_its_sparkle_outsid
 
 
 def test_the_add_is_drawn_on_the_stone_never_instead_of_it(qapp):
-    """Blitted over its stone, the add changes only a few of the stone's pixels (the sheen's band at its top) and adds
-    the sparkle beside it; the stone's own pixels below the band are untouched."""
+    """Blitted over its stone, the add changes only the sheen's side of it (from its top right, the mock's gradient)
+    and adds the sparkle beside it; the stone's lower left, where the sheen has faded, is untouched."""
     sheet = stones.build(1.0, "M")
     what = ("stone", "raw", "ruby", 2, "next")
 
@@ -328,7 +328,7 @@ def test_the_add_is_drawn_on_the_stone_never_instead_of_it(qapp):
     assert changed.any()
     rows = np.nonzero(plain[:, :, 3].max(axis=1) > 40)[0]
     lower = rows[0] + (rows[-1] - rows[0]) * 3 // 4
-    assert not changed[lower:, :].any(), "the stone's foot is the stone's own"
+    assert not changed[lower:, :40].any(), "the stone's lower left (the sheen gone, as the mock's) is its own"
     outside = changed & (plain[:, :, 3] < 8)
     assert outside[:rows[0] + 6, 40:].any(), "the sparkle, past the stone's top right"
 

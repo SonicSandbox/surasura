@@ -10,6 +10,7 @@ other check fails the test there too.
 import os
 import re
 import sys
+import tempfile
 import warnings
 
 import pytest
@@ -114,8 +115,12 @@ def test_the_open_guard_lets_only_a_headless_browser_on_its_own_profile_through(
     # through; a browser with a window, or headless on the desktop's own profile, is still refused
     guard = sys.modules["open_guard"]
     edge = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
-    assert not guard.viewer([edge, "--headless=new", "--user-data-dir=H:\\tmp\\j-page-edge-1", "about:blank"])
-    assert not guard.viewer(["chrome", "--headless", "--user-data-dir=/tmp/p"])
+    own = os.path.join(tempfile.gettempdir(), "j-page-edge-1")
+    assert not guard.viewer([edge, "--headless=new", "--user-data-dir=" + own, "about:blank"])
+    assert not guard.viewer(["chrome", "--headless", "--user-data-dir=" + own])
+    assert guard.viewer([edge, "--headless=new", "--user-data-dir=", "file:///C:/journey.html"])        # no folder
+    profile = os.path.join(os.environ.get("USERPROFILE") or "C:\\Users\\x", "Edge Profile")
+    assert guard.viewer([edge, "--headless=new", "--user-data-dir=" + profile, "file:///C:/journey.html"])   # not a temp one
     assert guard.viewer([edge, "file:///C:/journey.html"])
     assert guard.viewer([edge, "--headless=new", "file:///C:/journey.html"])
     assert guard.viewer([edge, "--user-data-dir=H:\\tmp\\p", "file:///C:/journey.html"])

@@ -125,16 +125,20 @@ STRESS_DIR = "stress"
 
 
 def _read_times(project_root):
-    """{file: seconds}: the tracked times, then this copy's own over them (a file in both: this copy's)."""
+    """{file: seconds}: the tracked times, then this copy's own over them (a file in both: this copy's). An entry that
+    isn't a finite number of seconds is left out alone (that file packs by size), never the whole file."""
     import json
+    import math
     times = {}
     for name in (TRACKED_TIMES, TIMES):
         try:
             with open(os.path.join(project_root, name), encoding="utf-8") as f:
                 part = json.load(f)
-            times.update({k: float(v) for k, v in part.items()} if isinstance(part, dict) else {})
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError):
             continue
+        for k, v in (part.items() if isinstance(part, dict) else ()):
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0:
+                times[k] = float(v)
     return times
 
 
@@ -186,7 +190,8 @@ def _save_times(project_root, parts):
 # public), to a tenth of a second, sorted. It writes nothing when this copy has no times or git can't list the files.
 
 def save_times(project_root):
-    """`--save-times`: tests/test_times.json from this copy's times. Returns 0, or 2 with nothing written."""
+    """`--save-times`: tests/test_times.json from this copy's times (a file this copy hasn't timed keeps its tracked
+    time). Returns 0, or 2 with nothing written."""
     import json
     tracked = set(_git_out(project_root, "-c", "core.quotepath=false", "ls-files", "--", "tests").splitlines())
     if not os.path.isfile(os.path.join(project_root, TIMES)) or not tracked:
@@ -196,10 +201,18 @@ def save_times(project_root):
     core = [path for path in _core_files(project_root) if path in tracked]
     kept = {path: round(times[path], 1) for path in core if path in times}
     path = os.path.join(project_root, TRACKED_TIMES)
-    with open(path + ".tmp", "w", encoding="utf-8", newline="\n") as f:
-        json.dump(kept, f, indent=0, sort_keys=True)
-        f.write("\n")
-    os.replace(path + ".tmp", path)
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+            json.dump(kept, f, indent=0, sort_keys=True)
+            f.write("\n")
+        os.replace(path + ".tmp", path)
+    except OSError as e:                                     # (held open by an editor, a scanner): the old file stays
+        print(f"--save-times: {TRACKED_TIMES} could not be written ({e}): nothing written.")
+        try:
+            os.remove(path + ".tmp")
+        except OSError:
+            pass
+        return 2
     print(f"--save-times: {TRACKED_TIMES} holds {len(kept)} files' times ({sum(kept.values()) / 60:.0f} min); "
           f"{len(core) - len(kept)} core file(s) without one pack by size; {len(set(times) - set(kept))} name(s) "
           f"left out (not a tracked core test file).")
@@ -398,7 +411,10 @@ def _is_test_file(path):
 
 
 def _git_out(project_root, *args):
-    out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:                                          # no git on PATH: as a failed git
+        return ""
     return _decode(out.stdout) if out.returncode == 0 else ""
 
 

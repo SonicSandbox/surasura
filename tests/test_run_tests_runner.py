@@ -281,6 +281,29 @@ def test_the_tracked_times_pack_a_copy_with_none_of_its_own_and_its_own_win_wher
     assert ["tests/test_kana.py"] in run_tests._shards(root, run_tests._core_files(root), 2)
 
 
+def test_a_bad_entry_in_the_times_drops_that_file_alone(tmp_path):
+    """One hand-edited null, string, NaN or negative must not send every shard back to packing by size."""
+    root = str(tmp_path)
+    os.makedirs(os.path.join(root, "tests"))
+    with open(os.path.join(root, "tests", "test_times.json"), "w", encoding="utf-8") as f:
+        f.write('{"tests/test_a.py": null, "tests/test_b.py": "slow", "tests/test_c.py": NaN, "tests/test_d.py": -1,'
+                ' "tests/test_e.py": true, "tests/test_f.py": Infinity, "tests/test_g.py": 12.5, "tests/test_h.py": 3}')
+    assert run_tests._read_times(root) == {"tests/test_g.py": 12.5, "tests/test_h.py": 3.0}
+
+
+def test_save_times_without_git_on_the_path_writes_nothing(tmp_path, monkeypatch, capsys):
+    root = str(tmp_path)
+    _core(root, {"test_store.py": 10})
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_store.py": 5.0})
+
+    def no_git(cmd, **kwargs):
+        raise FileNotFoundError(2, "git")
+    monkeypatch.setattr(run_tests.subprocess, "run", no_git)
+    assert run_tests.save_times(root) == 2
+    assert not os.path.exists(os.path.join(root, "tests", "test_times.json"))
+    assert "nothing written" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("broken", ["{not json", "[1, 2]", '{"tests/test_a.py": "slow"}'])
 def test_a_broken_tracked_times_file_packs_by_this_copys_times_or_by_size(tmp_path, broken):
     root = str(tmp_path)
@@ -337,6 +360,27 @@ def test_save_times_with_no_times_of_its_own_or_no_git_writes_nothing(tmp_path, 
     _write_json(os.path.join(other, "debug", "test_times.json"), {"tests/test_store.py": 5.0})
     assert run_tests.save_times(other) == 2 and not os.path.exists(os.path.join(other, "tests", "test_times.json"))
     assert capsys.readouterr().out.count("nothing written") == 2
+
+
+def test_save_times_that_cannot_replace_the_file_keeps_the_old_one_and_fails(tmp_path, monkeypatch, capsys):
+    """Windows: an editor or a scanner holding tests/test_times.json fails the move: the old file stays whole, no .tmp
+    is left beside it, and the command says so (exit 2) instead of a traceback."""
+    root = str(tmp_path)
+    _git(root, "init", "-q", "-b", "base")
+    _core(root, {"test_store.py": 10})
+    _git(root, "add", "tests")
+    _git(root, "commit", "-q", "-m", "base")
+    _write_json(os.path.join(root, "tests", "test_times.json"), {"tests/test_store.py": 7.0})
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_store.py": 9.0})
+
+    def held(src, dst):
+        raise PermissionError(13, "the file is held open")
+    monkeypatch.setattr(run_tests.os, "replace", held)
+    assert run_tests.save_times(root) == 2
+    with open(os.path.join(root, "tests", "test_times.json"), encoding="utf-8") as f:
+        assert json.load(f) == {"tests/test_store.py": 7.0}
+    assert not os.path.exists(os.path.join(root, "tests", "test_times.json.tmp"))
+    assert "could not be written" in capsys.readouterr().out
 
 
 def test_main_with_save_times_saves_them_and_runs_no_test(monkeypatch):

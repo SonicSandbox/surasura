@@ -15,6 +15,7 @@ closed wiping a newer mark; a library an older build can't open.
 Every test runs for Japanese and Chinese alike under the per-test SURASURA_TEST_ROOT, on libraries named with real
 words from tests/Test Resources/.
 """
+import calendar
 import os
 import shutil
 import sqlite3
@@ -613,10 +614,13 @@ def test_the_route_refuses_what_it_cannot_read_and_says_gone_and_stale(language)
     assert _kind(prestudied.door_route, {"id": a, "on": True, "why": "press"}, None) == "refused", "no language"
     assert _kind(prestudied.door_route, {"id": 10 ** 9, "on": True, "why": "press"}, app) == "gone"
     pressed = int(time.time() * 1000) - 60_000                  # a press kept a minute ago
-    prestudied.door_route({"id": b, "on": True, "why": "press"}, app)
+    marked = prestudied.door_route({"id": b, "on": True, "why": "press"}, app)
     assert _kind(prestudied.door_route, {"id": b, "on": False, "why": "press", "at": pressed}, app) == "stale"
     assert _state(language)[b]["by"] == "press"
-    late = prestudied.door_route({"id": b, "on": False, "why": "press", "at": int(time.time() * 1000) + 1000}, app)
+    # (a press after the mark, by the mark's own date: the store's stamps never go back, so after another test's later
+    # clock they can run ahead of this one's — the shard met it)
+    after = calendar.timegm(time.strptime(marked["at"][:19], "%Y-%m-%dT%H:%M:%S")) * 1000 + 2000
+    late = prestudied.door_route({"id": b, "on": False, "why": "press", "at": after}, app)
     assert late["on"] is False
     for undo_id in (None, "1", True, 10 ** 12):
         assert _kind(prestudied.door_undo, {"undo_id": undo_id}, app) == "gone"
@@ -678,6 +682,11 @@ def test_an_undo_asked_while_the_library_is_busy_keeps_its_id_for_the_next_ask(l
         assert _kind(prestudied.door_undo, {"undo_id": out["undo_id"]}, app) == "busy"
         assert _kind(prestudied.door_route, {"id": ep, "on": False, "why": "press"}, app) == "busy"
         assert _state(language) is None
+    with monkeypatch.context() as busy:                         # busy in the Undo's own write, not at the open
+        def held(self, change, *a, **k):
+            raise ls.StoreBusy("another window's save")
+        busy.setattr(ls.Store, "undo", held)
+        assert _kind(prestudied.door_undo, {"undo_id": out["undo_id"]}, app) == "busy"
     assert prestudied.door_undo({"undo_id": out["undo_id"]}, app) == {"done": True}
     assert _state(language) == {}
     assert _kind(prestudied.door_undo, {"undo_id": out["undo_id"]}, app) == "gone"

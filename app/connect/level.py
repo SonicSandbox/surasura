@@ -52,6 +52,7 @@ def check(store, language, listed, signature, file_words, ledger=None):
             if recorded_signature == signature:
                 return out
             if recorded_signature is None:
+                ledger.take_new_files(language)  # a first look (Connect on again too) lists every word: none lacks its own
                 ledger.record_list(language, signature, now)
                 out["first"] = True
                 return out
@@ -60,9 +61,9 @@ def check(store, language, listed, signature, file_words, ledger=None):
                 return out
             new = now - recorded
             out["new"] = len(new)                # they join the study order: no episode is mined again (F1) ...
-            since = ledger.take_new_files(language)
-            if new and since:                    # ... but the new files Connect mined before its own Generate
-                out["queued"] = _queue(store, language, ledger, new, file_words or {}, since)
+            mined = ledger.take_new_files(language)
+            if new and mined:                    # ... but the new files Connect mined before its own Generate
+                out["queued"] = _queue(store, language, ledger, new, file_words or {}, mined)
             ledger.record_list(language, signature, now)
             ledger.owe_resort(language)
         return out
@@ -71,13 +72,13 @@ def check(store, language, listed, signature, file_words, ledger=None):
             ledger.close()
 
 
-def _queue(store, language, ledger, new, file_words, since):
+def _queue(store, language, ledger, new, file_words, mined):
     by_lemma = {}
     for word, reading in new:
         by_lemma.setdefault(word, set()).add((word, reading))
     made = library.made_words_all(store)
     queued = []
-    for item_id in ledger.mined_since(language, since):
+    for item_id in mined:
         item = store.item(item_id)
         if not wants(item):
             continue                        # taken out of the learning order (D14), or watched (#49): no level job

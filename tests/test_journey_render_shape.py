@@ -165,6 +165,8 @@ def test_chunks_close_at_their_episode_cap_and_their_byte_cap(monkeypatch):
         assert body["w0"] == w0 and len(body["w"]) == n
         for word in body["w"]:                           # each chunk names its own sources
             assert all(line[1] < len(body["src"]) for line in word[9] if len(line) > 1)
+        if n > 1:                                        # the cap counts the chunk's source table too
+            assert len(gzip.decompress(chunk)) <= jr.CHUNK_BYTES + 64
 
 
 def test_the_sentence_cap_follows_sentences_per_word():

@@ -990,17 +990,20 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         forms = [f for f in _text(row.get("Forms")).split("|") if f]
         record = [word, "" if orth == word else orth, reading, _text(row.get("Kana")), forms, e, marks, count,
                   pitched, None]
-        record[9], added = numbered(found_lines)
-        text = _json(record)
-        size = len(text.encode("utf-8"))
+        def sized():
+            """The word's JSON and the source rows it adds, and their bytes together (the chunk's table counts)."""
+            lines, added = numbered(found_lines)
+            record[9] = lines
+            text = _json(record)
+            rows = [sources.row(rel) for rel, _n in sorted(added.items(), key=lambda item: item[1])]
+            return text, added, rows, len(text.encode("utf-8")) + sum(len(_json(r).encode("utf-8")) + 1 for r in rows)
+        text, added, new_rows, size = sized()
         if cur and cur_bytes + size > CHUNK_BYTES:
             close()                             # its sources then go in the new chunk's table, numbered again
-            record[9], added = numbered(found_lines)
-            text = _json(record)
-            size = len(text.encode("utf-8"))
-        for rel, _n in sorted(added.items(), key=lambda item: item[1]):
+            text, added, new_rows, size = sized()
+        for (rel, _n), source_row in zip(sorted(added.items(), key=lambda item: item[1]), new_rows):
             cur_src[rel] = len(cur_rows)
-            cur_rows.append(sources.row(rel))
+            cur_rows.append(source_row)
         cur.append(text)
         cur_bytes += size
         cur_eps.add(e)

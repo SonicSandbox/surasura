@@ -143,7 +143,7 @@ def test_a_call_wrapped_over_lines_is_read_and_a_keyword_or_a_comment_never_coun
 
 
 def test_a_listed_seam_whose_gap_is_closed_is_stale_so_an_owed_entry_comes_out_when_its_fix_lands(tmp_path):
-    # why: Mado-SH's two search entries must fail once ShellWindow has show_arrival / show_goal (or search stops asking)
+    # why: an owed entry fails once its gap is closed (Mado-SH's two search entries did, and came out in train 58)
     allow = {("app/qt/search.py", "SearchCut.reveal", "show_goal"): "owed"}
     _plant(str(tmp_path), "app/qt/search.py", "x = 1\n")
     assert G.stale_names([], allow, root=str(tmp_path)) == list(allow)

@@ -204,12 +204,6 @@ def names_off_the_window(root=ROOT, files=None, known=None):
 
 # (file, the function it is in, the name) -> why the real window or its services needn't have it.
 NAME_SEAMS = {
-    ("app/qt/search.py", "SearchCut.reveal", "show_arrival"):
-        "OWED to Mado-SH (3.0.18): a live gap — ShellWindow has no `show_arrival`, so a New-arrivals hit opens Current; "
-        "only tests/qt/test_search.py's window carries one. This entry goes stale (and fails) once that fix lands.",
-    ("app/qt/search.py", "SearchCut.reveal", "show_goal"):
-        "OWED to Mado-SH (3.0.18): a live gap — ShellWindow has no `show_goal`, so a Goal hit opens Current; only "
-        "tests/qt/test_search.py's window carries one. This entry goes stale (and fails) once that fix lands.",
     ("app/qt/settings_live.py", "Live._text_size", "set_text_size"):
         "dead while `LIVE_TEXT_SIZE` is off (the signed ruling, FXP S5): ShellWindow has no `set_text_size` and the "
         "branch falls back to `set_look`; kept with the live path for M4.1 — whoever turns it on adds the method to "

@@ -241,9 +241,12 @@ def test_a_look_that_fails_never_raises_every_dot_off(monkeypatch):
 
 
 def test_the_links_are_connects_own():
-    from app.connect import settings_panel
+    """One spelling of Anki Miner's GitHub page (settings_values': both Settings read it), the repository the
+    download is checked against."""
+    from app.connect import am_release, settings_values
     assert M.RELEASES is setup.RELEASES
-    assert M.STAR_URL == settings_panel.STAR_URL
+    assert M.STAR_URL is settings_values.STAR_URL
+    assert M.STAR_URL == f"https://github.com/{am_release.REPO}"
 
 
 # ---------------------------------------------------------------------------

@@ -881,13 +881,13 @@ def test_the_answer_is_a_setting_that_never_forces_a_new_analysis():
 
 
 def test_the_frozen_build_knows_the_command():
-    """A frozen build launches `Surasura.exe sentence_corpus`: the dashboard's map and app_entry's
-    dispatch must agree on that word, or the button opens a second dashboard instead."""
+    """A frozen build launches `Surasura.exe sentence_corpus`: the frozen map (`services/tools.SCRIPT_MAP`, the one
+    both windows read) and app_entry's dispatch must agree on that word, or the button opens a second window instead."""
     import inspect
     import app_entry
-    from app.main import MasterDashboardApp
+    from app.services import tools
 
-    assert "'sentence_corpus.py': 'sentence_corpus'" in inspect.getsource(MasterDashboardApp.run_command_async)
+    assert tools.SCRIPT_MAP["sentence_corpus.py"] == "sentence_corpus"
     dispatch = inspect.getsource(app_entry.main)
     assert "command == 'sentence_corpus'" in dispatch and "sentence_corpus.main()" in dispatch
 

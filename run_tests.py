@@ -1004,6 +1004,7 @@ GUARDS = {
     "tests/test_cli_imports.py::test_no_cli_source_names_a_dialog_toolkit": ("app/cli/",),
     ("tests/test_flake_lints.py::"
      "test_this_tree_has_nothing_the_allowlist_doesnt_explain_and_no_entry_left_over"): ("app/", "modules/"),
+    "tests/test_guard_lints.py": ("app/", "modules/"),
     "tests/test_import_guard.py::test_no_file_outside_the_windows_folders_imports_qt": ("app/", "modules/"),
     ("tests/test_import_guard.py::"
      "test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_door"): ("app/", "modules/"),

@@ -15,9 +15,10 @@ worker — never the window's thread.
   the reader publishes while they show asks again (the where-lines follow a move). Esc, Back and a press outside (not
   on the cut) close them.
 - **A click on a hit shows it in place** (`reveal`): its tab, its list scrolled to it and the row washed once (1.6 s;
-  Reduced motion: steady for 1 s); a New arrival opens the tray at it (`shell.show_arrival`, Q1's) — until the tray
-  is there, Current; a Goal title opens Goal's sheet at it (`shell.show_goal`, Q2's) — until then Current, its Goal
-  dock washed.
+  Reduced motion: steady for 1 s); a New arrival opens the tray at it, its row washed (`shell.show_arrival`); a Goal
+  title opens Goal's sheet at it, its tile washed (`shell.show_goal`) — both from any tab, on Current, never closing
+  the tray or the sheet when it is open (Mado-SH: before, the shell had neither door and the click landed on Current
+  with nothing open). A window without the tray shows Current; without the sheet, Current with its Goal dock washed.
 - **⤒ Top** goes through the window's writer, with its toast and Undo (`drag.DragController`): a Current row is made
   Up next (the ⋯ menu's own move); a Goal title's next part — the piece holding its next unwatched file — moves to the
   top of Current, the rest stays (A2 #83); an arrival is placed at the top (`place(…, "top")`, A2 #82); a Finished
@@ -632,17 +633,10 @@ class SearchCut(QWidget):
             self.show_row(hit.group, hit.key)
             return
         if hit.group == "arrivals":
-            show = getattr(self.shell, "show_arrival", None)            # Q1's tray, opened at it
-            if show is not None:
-                show(hit.key)
-                return
-            self.shell.show_tab("current")
+            self.shell.show_arrival(hit.key, self._wash)                # Q1's tray, opened at it (or Current alone)
             return
-        show = getattr(self.shell, "show_goal", None)                   # Q2's sheet, opened at it
-        if show is not None:
-            show(hit.work_id)
+        if self.shell.show_goal(hit.work_id, self._wash):               # Q2's sheet, opened at it
             return
-        self.shell.show_tab("current")
         dock = getattr(self.shell, "dock", None)
         if dock is not None and dock.isVisible():
             self._wash(dock.parentWidget(), lambda: dock.geometry() if _alive(dock) else None)

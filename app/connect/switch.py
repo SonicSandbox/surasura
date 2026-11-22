@@ -111,22 +111,22 @@ def shelved(languages=CONNECT_LANGUAGES):
 
 
 def put_back(shelved, log=print, waiting=None):
-    """On a worker: each restore point put back (`undo.act`), waiting for Anki's write lock as the Connect window
-    does (`connect_window.wait_for_writer`; `waiting` called when it waits, else `PUT_BACK_WAITING` to `log`) -> the
-    reasons of those not put back ([] when every one was)."""
+    """On a worker: each restore point put back (`undo.act`), waiting for Anki's write lock as every undo does
+    (`undo.wait_for_writer`; `waiting` called when it waits, else `PUT_BACK_WAITING` to `log`) -> the reasons of those
+    not put back ([] when every one was)."""
     if waiting is None:
         waiting = lambda: log(PUT_BACK_WAITING)    # noqa: E731
     failed = []
     try:
         from app import settings_manager
-        from app.connect import connect_window, undo
+        from app.connect import undo
         settings = settings_manager.load_settings() or {}
     except Exception as e:
         return [str(e)]
     for lang, (_cards, runs) in shelved.items():
         for run in runs:
             try:
-                out = connect_window.wait_for_writer(
+                out = undo.wait_for_writer(
                     lambda: undo.act(settings, lang, shelf_run=run, confirm=True), waiting)
                 said = (f"Not done: {out['skipped']}." if out.get("skipped") else
                         f"{out.get('back', 0)} shelved {'card' if out.get('back', 0) == 1 else 'cards'} back in your new cards.")

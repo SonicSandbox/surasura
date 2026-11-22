@@ -5315,6 +5315,7 @@ def settings_signature(settings, language):
         # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
         "connect_every_word",           # Cards for every new word (Kantan-MO): what Connect mines, never a run
+        "connect_sentence_dial",        # the sentence dial (Kantan-SD): which line a card is cut from, never a run
         "study_order",                  # the study order (Kantan-MO): the journey's opening list — re-render only
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run

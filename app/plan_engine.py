@@ -314,6 +314,55 @@ def _validate(plan, deep=True):
         raise PlanError("the plan file's uses don't add up to its words' Occurrences")
 
 
+Candidates = namedtuple("Candidates", "header files finished keys sentences cowords pools")
+_CANDIDATE_TABLES = tuple(b'{"' + name + b'":' for name in (b"files", b"keys", b"finished", b"sentences", b"cowords",
+                                                              b"pools"))
+_PER_FILE_TABLES = (b'\n{"firsts":', b'\n{"f":')      # what follows the tables `candidates` reads (`plan_lines`' order)
+
+
+def candidates(path, language=None):
+    """Each listed row's example-sentence candidates as the last Generate kept them (F7: `pools`, `sentences`,
+    `cowords`, with `files`, `finished` and `keys` to read them by) — for a reader that orders a word's candidates
+    itself (the sentence dial, `app/connect/sentences.py`) -> `Candidates`, `pools` as `Plan.pools` ({k: (first
+    sentence or -1, [shortlist + Finished], [audio])}); None when there is no readable plan of a format that holds
+    them (3 on), it is `language`'s no longer, or a table is damaged. Light: the stream is read only as far as those
+    tables go — they stand before the per-file tables (`firsts` and the files' lines: most of a large library's
+    plan), which are never unzipped, so the read follows the list's rows, not the library — and nothing else is
+    decoded. No check that the plan is still the library's (`check`): the reader checks each file it takes a
+    sentence from (`files`' digests)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        unzip, parts, cut, at = zlib.decompressobj(31), [], -1, 0
+        while data and cut < 0:
+            parts.append(unzip.decompress(data, 1 << 20))
+            data = unzip.unconsumed_tail
+            if not parts[-1]:
+                break
+            text = b"".join(parts[-2:])             # (a mark may stand across two pieces)
+            for mark in _PER_FILE_TABLES:
+                found = text.find(mark)
+                if found >= 0 and (cut < 0 or found < cut):
+                    cut = found
+            if cut >= 0:
+                parts[-2:] = [text[:cut]]
+        lines = b"".join(parts).split(b"\n")
+        header = json.loads(lines[0])
+        if not isinstance(header, dict) or header.get("format") not in (3, 4) or (
+                language is not None and header.get("language") != language):
+            return None
+        tables = {name: [] for name in ("files", "keys", "finished", "sentences", "cowords", "pools")}
+        for line in lines[1:]:
+            if line.startswith(_CANDIDATE_TABLES):
+                (name, chunk), = json.loads(line).items()
+                tables[name].extend(chunk)
+        pools = _pools_table(tables["pools"])
+    except (OSError, EOFError, zlib.error, ValueError, TypeError, AttributeError, PlanError):
+        return None
+    return Candidates(header, tables["files"], tables["finished"], tables["keys"], tables["sentences"],
+                      tables["cowords"], pools)
+
+
 def _validate_pools(plan):
     """Format 3's example-sentence tables (F7), checked as the rest: every source, co-word, row and sentence an index
     that exists, the lengths 0 or 1, every listed row's pools there once and no other row's."""

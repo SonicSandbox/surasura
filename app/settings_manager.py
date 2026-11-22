@@ -147,6 +147,9 @@ DEFAULT_SETTINGS = {
     # list (Level is what you learn); on — for every word of the episode you don't know, past your level too, counted
     # toward the cap. `connect_every_word()` reads it; a file without it reads `connect_mine_words` == "unknown".
     "connect_every_word": False,
+    # Kantan-SD (the sentence dial; PROVISIONAL default): which sentence a card is cut from — "best" anywhere in the
+    # library, or "nearest", the episode's own line (`app/connect/sentences.py`, `dial_of`)
+    "connect_sentence_dial": "best",
     # The study order (Kantan-MO; ROLES.md: the list's): "content" — as you'll meet the words in your library;
     # "priority" — by leverage first. Read by Connect (the cap's window), 順 (its order) and the journey (its list)
     # through `study_order()`; a file without it reads 順's old `junban_order`.

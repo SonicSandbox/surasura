@@ -264,6 +264,15 @@ ROWS = {
                            "Also make cards for words rarer than your level.",
                            "every new word all unknown words past my level rare words mine all words to make cards "
                            "from which words i+1"),
+    # Kantan-SD (PROVISIONAL words): the sentence dial — how a card's sentence is chosen, in plain words
+    "connect_sentence_dial": ("Card sentences",
+                              "Best looks through your whole library: first a sentence with no other new word, then "
+                              "one whose video is there (a book's too, with its audiobook or the AI voice on), then "
+                              "one with words you're still learning and from a show you saw lately. Nearest keeps the "
+                              "episode's own line.",
+                              "Best: the clearest sentence in your library. Nearest: the episode's own line.",
+                              "sentence dial best nearest which sentence card sentence line example context young "
+                              "words recently learned i+1 better sentence"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name
     "new_cards_from": ("Learn two shows at once",
@@ -690,6 +699,7 @@ OPTIONS = {
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "connect_sentence_dial": {"best": "Best", "nearest": "Nearest"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},

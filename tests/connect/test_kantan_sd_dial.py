@@ -204,6 +204,11 @@ def test_inside_an_episode_a_young_word_breaks_the_last_tie_only(tmp_path):
     assert start(None) == 10.0, "the earliest, as before"
     assert start({"今日": 0.9}) == 40.0
     assert start({"未知": 1.0, "明日": 1.0}, new=("冒険", "未知")) == 10.0, "never over a line with no other new word"
+    # ...nor over a line with fewer other new words: two lines that both hold some, the young word on the harder one
+    srt = _srt(tmp_path, [(10.0, 12.0, HARD), (40.0, 42.0, NEAR)])
+    read = cues.read(srt, "ja")
+    tokens = cues.tokens(read, "ja")
+    assert start({"始まる": 1.0}, new=("冒険", "未知", "迷宮", "壮絶")) == 40.0, "1 other new word over 3, young or not"
 
 
 def test_a_word_with_one_sentence_gets_it_either_way_and_none_gets_an_empty_list(no_store):
@@ -474,6 +479,9 @@ def test_a_best_job_at_a_book_with_no_audiobook_is_never_asked_and_its_cards_get
         with pytest.raises(runner.Wait):
             runner._line_up(_BookSteps(ask), ledger, "ja", ordinary, ("本.txt", epub))
         assert not _ai_marked(ledger, ordinary), "the book's own mining still asks its question"
+        plain = {"id": 45, "item_id": 8, "kind": "new"}
+        assert runner._line_up(_BookSteps(ask), ledger, "ja", plain, ("本.txt", None)) is None
+        assert not _ai_marked(ledger, plain), "a book's own job with no audiobook to line up: never the AI voice's"
         irodori["on"] = False
         late = dict(best, id=43)
         assert runner._line_up(_BookSteps(ask), ledger, "ja", late, ("本.txt", epub)) is None

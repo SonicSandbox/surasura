@@ -66,7 +66,7 @@ HEAD_SETTINGS = {
     "sentence_size": "journey_sentence_size",
     "theme": "theme",
     "keys": "journey_keys",                         # or the learner's own map {action: key}
-    "first_meeting": "journey_first_meeting",       # sent, not yet acted on: the page has no first-meeting line yet
+    "first_meeting": "journey_first_meeting",       # the page marks the shown line from the word's own episode (J-PAGE 5)
 }
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")

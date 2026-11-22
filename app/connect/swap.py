@@ -41,7 +41,7 @@ import re
 import time
 import unicodedata
 
-from app.connect import tidy
+from app.connect import swap_queue, tidy
 
 log = logging.getLogger("surasura-cli")
 
@@ -232,7 +232,6 @@ def _int(value):
 def _queue_drop(language, ref, why):
     if ref is None:
         return
-    from app.connect import swap_queue
     try:
         swap_queue.drop(language, str(ref), why)
     except Exception:
@@ -242,7 +241,6 @@ def _queue_drop(language, ref, why):
 def _queue_made(language, ref, note):
     if ref is None:
         return
-    from app.connect import swap_queue
     try:
         swap_queue.made(language, str(ref), int(note))
     except Exception:
@@ -366,7 +364,7 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
     now is looked at again. -> {"queued", "made", "waits", "dropped"} counts."""
     out = {"queued": 0, "made": 0, "waits": 0, "dropped": 0}
     entries = _entries(language)
-    waiting = [e for e in (entries or {}).values() if e.get("state") == _Q_WAITING]
+    waiting = [e for e in (entries or {}).values() if e.get("state") == swap_queue.WAITING]
     if not waiting and not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'"
                                                ).fetchone():
         return out                          # nothing ever asked: an idle look writes nothing (S19)
@@ -406,13 +404,9 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
     return out
 
 
-_Q_WAITING, _Q_MADE, _Q_DROPPED, _Q_UNDONE = "waiting", "made", "dropped", "undone"     # swap_queue's states
-
-
 def _entries(language):
     """The swap queue's entries by id, or None when it can't be read (the look then follows nothing)."""
     try:
-        from app.connect import swap_queue
         return {str(e.get("id")): e for e in swap_queue.load(language)}
     except Exception:
         log.info("Swap: the swap queue couldn't be read this look", exc_info=True)
@@ -431,13 +425,12 @@ def _follow(ledger, language, entries):
         if e is None:
             continue
         q = e.get("state")
-        if q == _Q_DROPPED and row["state"] != DROPPED:
+        if q == swap_queue.DROPPED and row["state"] != DROPPED:
             _set(ledger, row["id"], state=DROPPED, why=e.get("why"))
-        elif q == _Q_UNDONE and row["state"] != UNDONE:
+        elif q == swap_queue.UNDONE and row["state"] != UNDONE:
             _set(ledger, row["id"], state=UNDONE)
-        elif q == _Q_MADE and row["state"] == UNDONE:
+        elif q == swap_queue.MADE and row["state"] == UNDONE:
             try:
-                from app.connect import swap_queue
                 swap_queue.undone(language, str(row["ref"]))
             except Exception:
                 log.warning("Swap: the swap queue's entry %s wasn't marked undone", row["ref"], exc_info=True)
@@ -616,14 +609,14 @@ def undo(anki, ledger, language, swap_id, open_store=None):
         raise tidy.Refused(GONE)
     row = rows[0]
     entry = _entry(language, row)
-    if entry is not None and entry.get("state") == _Q_UNDONE and row["state"] != UNDONE:
+    if entry is not None and entry.get("state") == swap_queue.UNDONE and row["state"] != UNDONE:
         _set(ledger, row["id"], state=UNDONE)               # the ledger follows the queue (its write failed after)
         row["state"] = UNDONE
     if row["state"] == UNDONE:
         raise tidy.Refused(ALREADY)
-    if row["state"] != MADE or not row.get("new_note") or (entry is not None and entry.get("state") == _Q_DROPPED):
+    if row["state"] != MADE or not row.get("new_note") or (entry or {}).get("state") == swap_queue.DROPPED:
         raise tidy.Refused(NOT_MADE)
-    if entry is not None and entry.get("state") == _Q_WAITING:
+    if entry is not None and entry.get("state") == swap_queue.WAITING:
         _queue_made(language, row["ref"], row["new_note"])  # the queue's made write had failed: it takes it first
     others = _rows(ledger, "language = ? AND new_note = ? AND state = ? AND id != ?",
                    (language, row["new_note"], MADE, row["id"]))
@@ -642,7 +635,6 @@ def undo(anki, ledger, language, swap_id, open_store=None):
         with ledger.transaction():      # under the lock (a look never tags it again), the queue's write inside the
             _update(ledger.conn, row["id"], state=UNDONE)       # ledger's: either fails, neither changes
             if entry is not None:
-                from app.connect import swap_queue
                 if swap_queue.undone(language, str(row["ref"])) is None:
                     raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
     return {"undone": True, "word": row["word"]}
@@ -653,7 +645,6 @@ def _entry(language, row):
     changes nothing: it can't keep the one record)."""
     if row.get("ref") is None:
         return None
-    from app.connect import swap_queue
     return next((e for e in swap_queue.load(language) if str(e.get("id")) == str(row["ref"])), None)
 
 

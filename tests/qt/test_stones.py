@@ -279,3 +279,67 @@ def test_a_stone_variant_is_the_string_plans_one_hash():
     from app.services import stone_plan
     for key, i in (("p12", 0), ("p12", 7), ("work-9", 130)):
         assert stones.variant_of(key, i) == stone_plan.variant(key, i)
+
+
+# --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied's add, baked in the same sheet ---------------------------- #
+
+def test_the_sheet_holds_the_add_for_every_single_group_and_ore(qapp):
+    """One add per single (state × variant × size), one per cut group and ore picture, and the sparkle alone."""
+    sheet = stones.build(1.0, "M")
+    pres = [w for w in sheet.entries if w[0] == "pre"]
+    singles = [w for w in pres if w[1] in stones.STATES]
+    assert len(singles) == 3 * stones.VARIANTS * 3
+    assert len([w for w in pres if w[1] == "group"]) == 3 and len([w for w in pres if w[1] == "ore"]) == 4 * 4 * 2
+    assert ("pre", "spark") in sheet.entries
+
+
+@pytest.mark.parametrize("dpr", (1.0, 1.5, 2.0))
+def test_the_add_leaves_the_stones_box_where_it_was_and_hangs_its_sparkle_outside(qapp, dpr):
+    """The stone's own picture is the same with or without the add (the add is a second blit on the stone's point);
+    the add's sheen lies on the stone (inside its picture's box), and its sparkle reaches past the box's top right."""
+    sheet = stones.build(dpr, "M")
+    for state in stones.STATES:
+        for v in range(stones.VARIANTS):
+            for size in stones.SIZES:
+                stone = sheet.rect_of(("stone", state, "emerald", v, size), QPointF(100, 100))
+                add = sheet.rect_of(("pre", state, v, size), QPointF(100, 100))
+                assert add.left() >= stone.left() - 1 / dpr and add.bottom() <= stone.bottom() + 1 / dpr
+                assert add.right() > stone.right() and add.top() < stone.top(), (state, v, size)
+
+
+def test_the_add_is_drawn_on_the_stone_never_instead_of_it(qapp):
+    """Blitted over its stone, the add changes only a few of the stone's pixels (the sheen's band at its top) and adds
+    the sparkle beside it; the stone's own pixels below the band are untouched."""
+    sheet = stones.build(1.0, "M")
+    what = ("stone", "raw", "ruby", 2, "next")
+
+    def blit(*whats):
+        image = QImage(80, 80, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        p = QPainter(image)
+        for w in whats:
+            sheet.draw(p, QPointF(40, 40), w)
+        p.end()
+        ptr = image.constBits()
+        ptr.setsize(image.sizeInBytes())
+        return np.frombuffer(ptr, np.uint8).reshape(80, 80, 4).astype(int)
+    plain, added = blit(what), blit(what, ("pre", "raw", 2, "next"))
+    changed = np.abs(added - plain).sum(axis=2) > 24
+    assert changed.any()
+    rows = np.nonzero(plain[:, :, 3].max(axis=1) > 40)[0]
+    lower = rows[0] + (rows[-1] - rows[0]) * 3 // 4
+    assert not changed[lower:, :].any(), "the stone's foot is the stone's own"
+    outside = changed & (plain[:, :, 3] < 8)
+    assert outside[:rows[0] + 6, 40:].any(), "the sparkle, past the stone's top right"
+
+
+def test_the_geometry_imports_without_qt():
+    """The journey's headless render reads the stones' pictures from `app/stone_shapes.py`: it must never import
+    PyQt6 (Charter S17)."""
+    probe = ("import sys; sys.modules['PyQt6'] = None; import app.stone_shapes as s; "
+             "print(len(s.pictures()), len(s.pre_pictures()))")
+    env = dict(os.environ, PYTHONPATH=ROOT)
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    total, pre = (int(x) for x in proc.stdout.split())
+    assert pre == 3 * stones.VARIANTS * 3 + 3 + 32 + 1 and total > pre

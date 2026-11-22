@@ -482,3 +482,71 @@ def test_a_stones_tip_says_nothing_new_with_no_card_count():
     from app.qt import strings
     said = strings.ROWS_STONE_STATE[sp.tip_state(_nothing_piece()[1])].format(n=0)
     assert said == " · nothing new: Anki had every word" and "0 cards" not in said
+
+
+# --- J-STONES (3.0.19; journey v3 SPEC §2.4): one public rule for a stone's state, and pre-studied as an add ------- #
+# The window's string, an opened row's lines and the journey's rail draw a file by one rule, `state_of` (never a copy);
+# pre-studied is never a state: each Stone carries `pre`, each cut group and the ore the labels of its files marked.
+STAMP = "2026-11-21T10:00:00.000000Z"
+
+
+def pre(eps, *marked):
+    return tuple(e._replace(prestudied=STAMP) if i in marked else e for i, e in enumerate(eps))
+
+
+def test_state_of_is_the_strings_own_rule_for_every_file():
+    """Watched → cut; cards in Anki, or mined with nothing new → raw; else rock — the very state each stone is drawn
+    in, a pre-studied file's too (an add is never a state)."""
+    nothing = vr.Status("nothing", "", "", "") if hasattr(vr, "Status") else None
+    files = (ep(0, watched=True), ep(1, cards=4), ep(2), ep(3, cards=1, watched=True))
+    if nothing is not None:
+        files += (ep(4)._replace(status=nothing),)
+    marked = pre(files, 0, 1, 2)
+    for f in files + marked:
+        assert sp.state_of(f) == sp._stone(f, 0, "k", False).state
+    assert [sp.state_of(f) for f in files[:4]] == ["cut", "raw", "rock", "cut"]
+    assert [sp.state_of(f) for f in marked[:3]] == ["cut", "raw", "rock"]
+
+
+def test_the_journey_asks_the_same_rule():
+    """The journey's rail takes its stones from `state_of` itself (J-DATA's seam): its watched, mined and waiting
+    files are the window's cut, raw and rock."""
+    from app import journey_render
+    assert [journey_render._stone_state(w, c) for w, c in ((True, 0), (False, 3), (False, 0))] == ["cut", "raw", "rock"]
+
+
+def test_no_pre_studied_file_marks_nothing():
+    p = sp.plan(piece(40, next_at=26))
+    assert not any(e.pre for e in p.items)
+    assert [e.kind for e in p.items].count("ore") == 1
+
+
+def test_one_pre_studied_file_in_play_marks_its_stone_alone():
+    eps = pre(piece(40, next_at=26), 27)
+    p = sp.plan(eps)
+    assert [e.index for e in stones(p) if e.pre] == [27]
+    assert all(not e.pre for e in p.items if e.kind != "stone")
+    assert p == sp.plan(eps) and hash(p) == hash(sp.plan(eps)), "a row's cache keys on its plan"
+    assert p != sp.plan(piece(40, next_at=26)), "a mark is a new plan: that row repaints"
+
+
+def test_a_group_and_the_ore_name_their_pre_studied_files_in_order():
+    """Files 3 and 14 lie in cut groups of the watched past, 38 and 39 in the ore: each carries their labels."""
+    p = sp.plan(pre(piece(40, next_at=26), 14, 3, 39, 38))
+    tiers = [e for e in p.items if e.kind == "tier"]
+    ore = [e for e in p.items if e.kind == "ore"]
+    assert [t.pre for t in tiers] == [("Ep 4",), ("Ep 15",)]
+    assert [o.pre for o in ore] == [("Ep 39", "Ep 40")]
+
+
+def test_a_whole_show_pre_studied_and_finished_marks_every_group():
+    """Every file watched and marked: a finished piece shows its groups only, each carrying its twelve's labels."""
+    p = sp.plan(pre(piece(24, next_at=24), *range(24)))
+    assert [e.kind for e in p.items] == ["tier", "tier"]
+    assert [len(e.pre) for e in p.items] == [12, 12]
+
+
+def test_a_file_from_a_cache_made_before_has_no_mark():
+    """An Episode without the field (the start cache of an older build) is never pre-studied."""
+    old = ep(0)
+    assert old.prestudied is None and not sp.is_pre(old) and not sp.is_pre(object())

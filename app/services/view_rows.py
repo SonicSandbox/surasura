@@ -263,6 +263,10 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("elsewhere"
 # words on the list and the i+1 words below it (`card_chip`'s ("level", key) answer); None: not split (a word picked
 # before the pick said so, or nothing made). Its hover says both while some are below
 Episode = namedtuple("Episode", Episode._fields + ("level",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+# --- J-STONES (journey v3 SPEC §2.4): `prestudied`, when it was marked pre-studied (the store's `prestudied_at`, through
+# the feed), else None — the add its stone draws (`stone_plan.is_pre`) and its tip's line; None in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("prestudied",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("level", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
@@ -1280,7 +1284,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  disk=item.get("mtime_ns"), media=media, tracks=tracks_said, subs=subs,
                  online=item.get("source_type") if online else None, mined_at=item.get("mined_at"),
                  elsewhere=elsewhere.get(item["id"]) if elsewhere and mined else None,       # Michi-CK2
-                 level=elsewhere.get(("level", item["id"])) if elsewhere and mined else None)
+                 level=elsewhere.get(("level", item["id"])) if elsewhere and mined else None,
+                 prestudied=item.get("prestudied_at"))                                    # J-STONES
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)

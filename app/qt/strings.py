@@ -2419,3 +2419,12 @@ REPORT_FLAG_TICKED = "Goes"
 REPORT_FLAG_UNTICKED = "Left out"
 REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
 # --- end the flagged sentences in Send report
+
+# --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied on the window's stones, and *1 card* (the plural fix)
+ROWS_STONE_STATE_ONE = " · 1 card in Anki"                 # `ROWS_STONE_STATE["raw"]` for one card: never *1 cards*
+ROWS_STONE_PRE = "\n✧ Pre-studied on {date}"              # a stone's tip: its words gone through before it was watched
+ROWS_STONE_PRE_NAMES = "✧ Pre-studied: {names}"            # a cut group's, the ore's or a Finished row's hover
+ROWS_STONE_PRE_JOIN = " · "
+ROWS_STONE_PRE_MORE = " …"                                 # past ROWS_STONE_PRE_SHOWN names
+ROWS_STONE_PRE_SHOWN = 6
+# --- end J-STONES

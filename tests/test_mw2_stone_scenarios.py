@@ -244,3 +244,25 @@ def test_the_junban_verbs_answer_names_an_empty_list(monkeypatch):
     assert answer["empty_list"] is True and answer["moves"] == 0
     fake.dry_run = lambda s, job=None, unattended=False: ([], {"total": 5, "unmatched": 0, "decks": ["日本語"]})
     assert "empty_list" not in verbs._junban_dry_run("ja", {}, fake)[0], "an order in place says nothing more"
+
+
+# J-STONES (journey v3 SPEC §2.1): pre-studied is not watched — its words and cards stay in the study order. The
+# journey's mark (a status write, `state_version` only) asks no re-order at once and parks no card; its episode's
+# own words' cards stay unsuspended and in list order through its Generate, Japanese and Chinese alike.
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_pre_studied_episode_parks_no_card_and_keeps_every_card_in_list_order(lib, monkeypatch):
+    root, store = lib
+    episode, own, fake = _acting(root, store, monkeypatch)
+    host, _lines = _host(generate=lambda reason: None)
+    with _patched(fake):
+        host._job("catch-up")
+        before = _state(fake)
+        assert store.set_prestudied([episode], True, "press") is not None
+        assert _job(fake, host) == [], "no re-order at once: nothing the order reads moved"
+        assert _state(fake) == before
+        _generate(root)
+        _job(fake, host, "generate")
+    assert not _suspended(fake, own), "its words' cards stay in the study order"
+    assert not [card_id for card_id in own if LATER in _tags(fake, card_id)]
+    assert _in_list_order(fake, root)
+    assert store.prestudied_marks([episode]), "and the mark is kept"

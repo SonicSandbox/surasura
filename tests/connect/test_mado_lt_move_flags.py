@@ -143,3 +143,76 @@ def test_a_waiting_swap_is_taken_back_against_the_swap_flag_picked_now(anki):
 
 def test_the_empty_state_no_decks_reads_nothing_whatever_the_picks():
     assert review_loop.query(review_loop.IGNORE, [], {"loop_ignore_flag": PURPLE}) is None
+
+
+# --- the edge cases (For Sonic 2-4) -------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_flags_swapped_ignore_green_and_swap_red_read_each_as_its_move(anki, language):
+    # why: two valid picks that trade the defaults must never read as a clash: green is Ignore, red is Swap, and
+    # neither counts known
+    _save(loop_ignore_flag=GREEN, loop_swap_flag=RED)
+    assert review_loop.move_flags(settings_manager.load_settings()) == {review_loop.IGNORE: GREEN, review_loop.SWAP: RED}
+    ignore, swap, studied_green, studied_red, *_ = WORDS[language]
+    _sync(language)
+    anki.add(1, ignore, suspended=True, flag=GREEN)
+    anki.add(2, swap, suspended=True, flag=RED)
+    anki.add(3, studied_green, flag=GREEN)                               # studied, unsuspended: never known either
+    anki.add(4, studied_red, flag=RED)
+    _sync(language)
+    assert _ignored(language) == {ignore}
+    assert _waiting(language) == [(swap, 2)]
+    assert not {ignore, swap, studied_green, studied_red} & set(_known(language))
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_ignore_moved_off_red_reads_the_cards_already_purple_and_red_counts_known_again(anki, language):
+    # why (For Sonic 2, 3): a colour picked later works as the loop's first read does — cards already carrying it are
+    # read at the next sync; the red card the learner keeps, studied, counts known like any other from then on
+    ignore, red, *_ = WORDS[language]
+    _save()
+    anki.add(1, ignore, suspended=True, flag=PURPLE)                     # purple means nothing yet
+    anki.add(2, red, flag=RED)                                           # studied red: Ignore's colour, never known
+    _sync(language)
+    assert _ignored(language) == set() and red not in _known(language)
+    _save(loop_ignore_flag=PURPLE)
+    _sync(language)
+    assert _ignored(language) == {ignore}                                # read at the next sync
+    assert red in _known(language)                                       # red is a card like any other again
+
+
+def test_swap_moved_off_green_drops_a_swap_waiting_on_green_as_taken_back(anki):
+    # why (For Sonic 2): the reader can't tell a card still green from one the learner flagged for another reason, so
+    # a swap waiting on the old colour ends — PROVISIONAL, the register's For Sonic
+    swap, *_ = WORDS["ja"]
+    _save()
+    _sync("ja")
+    anki.add(1, swap, suspended=True, flag=GREEN)
+    _sync("ja")
+    assert _waiting("ja") == [(swap, 1)]
+    _save(loop_swap_flag=ORANGE)
+    _sync("ja")
+    assert _waiting("ja") == []
+
+
+@pytest.mark.parametrize("edited", ["purple", 9, "", None, [7]])
+def test_a_hand_edited_flag_reads_red_end_to_end_and_red_never_counts_known(anki, edited):
+    # why: settings.json is the learner's to edit; a value that isn't a flag must read as the default all the way
+    # through the sync — never a search with no flag (every flagged card read as Ignore) nor red counting known
+    _save(loop_ignore_flag=edited)
+    ignore, studied, *_ = WORDS["ja"]
+    _sync("ja")
+    anki.add(1, ignore, suspended=True, flag=RED)
+    anki.add(2, studied, flag=RED)
+    _sync("ja")
+    assert _ignored("ja") == {ignore} and studied not in _known("ja")
+
+
+def test_anki_absent_with_picked_flags_reads_nothing_and_writes_nothing(anki):
+    # why: the picks change no failure path — Anki closed, the sync says so, no record and no list written
+    _save(loop_ignore_flag=PURPLE, loop_swap_flag=ORANGE)
+    word, *_ = WORDS["zh"]
+    anki.add(1, word, suspended=True, flag=PURPLE)
+    anki.closed = True
+    result, signal = anki_sync.sync_all("zh", URL, [DECK], [], settings_manager.load_settings())
+    assert result.error and signal is None
+    assert not os.path.exists(review_loop.record_path("zh")) and _ignored("zh") == set()

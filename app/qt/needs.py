@@ -249,7 +249,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
            "move_cards", "leave_cards",                                                  # Michi-DK
            "put_back_shelf", "leave_shelf",                                              # Kyou-SH
-           "undo_tidy", "leave_tidy")                                                    # Kyou-SH2
+           "undo_tidy", "leave_tidy",                                                    # Kyou-SH2
+           "undo_swap", "leave_swap", "leave_swap_wait")                                 # Kantan-SL
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -2515,6 +2516,35 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_TIDY_LEFT)
             self.refresh()
         self._press("leave_tidy", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kantan-SL (PROVISIONAL): Swap, said — *Undo* deletes the new card with a backup and puts the old one back to study
+    # (`swap.act_undo`: Anki's write lock, waiting up to its 10 s; on a worker)
+    def _do_undo_swap(self, entry, _line):
+        from app.connect import swap
+        lang, read_settings = self.language, self.read_settings
+        swap_id = (entry.data or {}).get("id")
+
+        def done(got):
+            got = got or {}
+            if got.get("why"):
+                self._stays("undo_swap", entry)
+                self._say(strings.NEEDS_SWAP_NOT_UNDONE.format(why=got["why"]))
+            else:
+                self._say(strings.NEEDS_SWAP_UNDONE)
+            self.refresh()
+        self._press("undo_swap", entry, lambda: swap.act_undo(read_settings() or {}, lang, swap_id), then=done)
+
+    def _do_leave_swap(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SWAP_LEFT)
+            self.refresh()
+        self._press("leave_swap", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    def _do_leave_swap_wait(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SWAP_WAIT_LEFT)
+            self.refresh()
+        self._press("leave_swap_wait", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

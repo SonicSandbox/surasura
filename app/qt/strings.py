@@ -1617,6 +1617,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Kyou-SH2 (PROVISIONAL): Tidy, said
     "undo_tidy": ("Undo", "Put those cards back in Anki from the copy Surasura kept, each in its own deck"),
     "leave_tidy": ("OK", "They stay deleted; this goes until the next tidy"),
+    # Kantan-SL (PROVISIONAL): Swap, said
+    "undo_swap": ("Undo", "Delete the new card (Surasura keeps a copy) and put the old card back in your reviews"),
+    "leave_swap": ("OK", "Keep the new card"),
+    "leave_swap_wait": ("OK", "They keep waiting for another sentence; this asks again for a new one"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1739,6 +1743,10 @@ NEEDS_TIDY_BACK = "Put back · {n} cards are in Anki again"                    #
 NEEDS_TIDY_BACK_ONE = "Put back · the card is in Anki again"
 NEEDS_TIDY_NOT_BACK = "Not put back: {why}"
 NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
+NEEDS_SWAP_UNDONE = "Undone · the new card is gone and the old one is back in your reviews"     # Kantan-SL (PROVISIONAL)
+NEEDS_SWAP_NOT_UNDONE = "Not undone: {why}"
+NEEDS_SWAP_LEFT = "OK · the new card stays"
+NEEDS_SWAP_WAIT_LEFT = "OK · they wait for another sentence"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

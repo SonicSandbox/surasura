@@ -1187,11 +1187,20 @@ def _known_test(lang, tokenizer, script):
             raise CliError("bad-data", "Your known words (KnownWord.json) can't be read; nothing was changed.",
                            detail=str(e), need="known-words-unreadable") from None
     tuples, lemmas = cached
-    ignore = set()
-    for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-        ignore |= analyzer.load_simple_list(os.path.join(folder, name), script, lang)
-    ignore |= analyzer.load_ignored_entries(folder, script, lang)
+    ignore = _ignored(lang, script) | analyzer.load_simple_list(os.path.join(folder, "GraduatedList.txt"), script, lang)
     return lambda key: key in tuples or key[0] in lemmas or key[0] in ignore
+
+
+def _ignored(lang, script):
+    """The words the learner left out (the Ignore list, an old Blacklist, the ignored entries) — `_known_test`'s, and
+    Swap's *why* a swap is dropped (Kantan-SL: "ignored" over "known")."""
+    from app import analyzer
+    from app.path_utils import get_user_files_path
+    folder = get_user_files_path(lang)
+    ignore = set()
+    for name in ("IgnoreList.txt", "Blacklist.txt"):
+        ignore |= analyzer.load_simple_list(os.path.join(folder, name), script, lang)
+    return ignore | analyzer.load_ignored_entries(folder, script, lang)
 
 
 def _job_id(args):
@@ -1200,6 +1209,19 @@ def _job_id(args):
     if not runfile.RUN_ID.fullmatch(f"{job}-9999"):           # room for any attempt's run id
         raise CliError("usage", "A job name may hold only letters, digits, - and _ (at most 60).")
     return job
+
+
+def _swap_spec(job, lang):
+    """Kantan-SL: the swap a `--job` names (Connect's ledger id of a job of kind `swap`) -> `pick`'s `swap`, else None.
+    Read-only; a ledger that can't be read is refused, as `_level_job` refuses it."""
+    if not job or not str(job).isdigit():
+        return None
+    import sqlite3
+    from app.connect import swap
+    try:
+        return swap.spec_of(int(job), lang)
+    except sqlite3.Error as e:
+        raise CliError("failed", f"Connect's ledger can't be read for job {job}: {e}") from None
 
 
 def _level_job(job, lang):
@@ -1360,6 +1382,9 @@ def pick(args):
         # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
         from app.connect import level
         mode, listed = "list", (level.restrict(listed, level_job) if listed is not None else None)
+    swap = None if level_job is not None else _swap_spec(args.job, lang)
+    if swap is not None:
+        mode = "unknown"            # Kantan-SL: a swap's one word, whatever the list holds (`pick`'s `swap`)
     if mode == "list" and listed is None:
         raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
 
@@ -1409,7 +1434,7 @@ def pick(args):
                           # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
                           # parts (never on the command line): no card from a line inside one
                           unsure=getattr(args, "unsure", None) or (),
-                          sentence_length=_sentence_length(loaded) if book else None)
+                          sentence_length=_sentence_length(loaded) if book else None, swap=swap)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

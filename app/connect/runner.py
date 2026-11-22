@@ -73,7 +73,7 @@ from app import youtube_hold
 from app.connect import fit_check, inbox, level, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
-                                Ledger)
+                                SWAP, Ledger)
 
 log = logging.getLogger("surasura-cli")
 _clock = time.monotonic          # Haya-LD: the run's and a batch's lengths (bound here: a test's own `time` stays its own)
@@ -791,6 +791,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
         wait = Wait(n.say, look=False)
     if wait is not None:
         return _waiting_all(ledger, lang, parked, out, wait.reason, wait.look)
+    _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: the swap queue's asks become jobs before the rest
     outside = False
     tried = set()
     look = False                # the inbox and the level looked at again before the next job (after a job, or F11)
@@ -832,6 +833,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
         try:
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
+            if ended.get("kind") == SWAP:
+                _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: its card made -> the swap's record, at once
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
@@ -872,6 +875,17 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if _stop(steps):
             break
     return outside
+
+
+def _swap_look(steps, ledger, lang, store_now):
+    """Kantan-SL (Swap, the simple version): `swap.look` — the swaps whose job ended recorded, the swap queue's new asks
+    turned into jobs of kind `swap` (each a word's new card from another line, made by the steps every job takes). A
+    look that can't go now is logged and tried at the next one: never a reason for mining to stop."""
+    try:
+        from app.connect import swap
+        swap.look(steps, ledger, lang, store_id=store_now)
+    except Exception:
+        log.warning("Connect's swap look didn't go this time (%s)", lang, exc_info=True)
 
 
 def _after_mining(steps, ledger, lang, out, on_battery=False):
@@ -1725,7 +1739,7 @@ def _pick(steps, ledger, lang, job, record=True):
             ledger.set_state(jid, "filling")
             return "filling"
         # an episode with nothing to make: its receipt (Mado's W2.2 ask: a finished zero-card job writes mined_at)
-        steps.record(lang, job, {}, _now() if job.get("kind") != "level" else None, None)
+        steps.record(lang, job, {}, _now() if job.get("kind") not in (LEVEL, SWAP) else None, None)
         ledger.set_state(jid, "done", reason=NO_WORDS, picked=picked, skipped={"mining": NO_WORDS})
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
@@ -2444,7 +2458,7 @@ def _record_made(steps, ledger, lang, job, record):
     if not record:
         return
     try:
-        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") != "level" else None, _tag(job))
+        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None, _tag(job))
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
     _through(ledger, lang, "recording")

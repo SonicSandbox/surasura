@@ -157,7 +157,7 @@ def _store_path(lang):
 def _empty(lang):
     return {"line": "Up to date", "state": "idle", "jobs": [], "needs": [], "unseen": 0, "undo": [],
             "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0, "updating": False, "failed": [],
-            "nothing": [], "tidied": None}
+            "nothing": [], "tidied": None, "swaps": {"made": [], "waits": []}}
 
 
 def read(languages=None, words=False, path=None):
@@ -271,6 +271,8 @@ def _language(conn, lang, is_running, words):
     rec["made_today"] = _made_today(conn, lang)
     rec["shelf"] = _shelf(conn, lang)
     rec["tidied"] = _tidied(conn, lang)         # Kyou-SH2: the newest tidy still to undo, *Needs you*'s card
+    from app.connect import swap
+    rec["swaps"] = swap.status_of(conn, lang)   # Kantan-SL: the newest swaps to undo, the ones with no other line
     # F9 (P4.1 row 4.1.7): Connect's own Generate under way — only while Connect runs (a mark a crash left says nothing)
     rec["updating"] = bool(is_running and (conn.execute("SELECT value FROM meta WHERE key = ?",
                                                          (f"generating:{lang}",)).fetchone() or [None])[0])
@@ -464,8 +466,8 @@ def _tidied(conn, lang):
     """Kyou-SH2: the newest tidy that deleted cards and isn't undone -> {"id", "cards", "at", "why"}, or None."""
     if not _has(conn, "tidies"):
         return None
-    row = conn.execute("SELECT id, deleted, at, why FROM tidies WHERE language = ? AND state = 'done' ORDER BY id DESC "
-                       "LIMIT 1", (lang,)).fetchone()
+    row = conn.execute("SELECT id, deleted, at, why FROM tidies WHERE language = ? AND state = 'done' AND why != 'swap' "
+                       "ORDER BY id DESC LIMIT 1", (lang,)).fetchone()      # Kantan-SL: a swap's Undo isn't a tidy
     if not row:
         return None
     try:

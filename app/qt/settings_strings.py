@@ -237,7 +237,7 @@ ROWS = {
     # card in Anki (the control); the ? line says what happens at the next sync. Known keeps *Count as known in Anki*'s
     # key and its search words (it moved here from Known words' More options)
     "known_from_anki": ("✓ Known",
-                        "Default: Suspended + Marked. At the next sync its word is known; once synced, delete freely",
+                        "Default: Suspended + Marked. A plain suspend never counts; once synced, delete freely",
                         "A card in every state you pick turns its word known.",     # Kotoba-WS2: ≤ 12 words (rule 8)
                         "known from anki suspended marked flag count as known in anki count suspended cards as known "
                         "include suspended studied then suspended review loop daily loop move phone"),

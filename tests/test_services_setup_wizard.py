@@ -120,7 +120,9 @@ def test_card_order_writes_the_consent_the_recorded_pair_the_deck_and_the_three_
     answers = {"keep_in_order": True, "deck": deck, "later": later}
     _returned, before, after = _saved_through_service("order", answers, language)
     assert _changed(before, after) == {"junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE,
-                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend"}
+                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend",
+                                       "junban_off_list"}
+    assert after["junban_off_list"] == ("leave" if later == "leave" else "aside")    # Kyou-MO: the one switch
     assert after["junban_auto_actions"] is True
     assert (after[replan_preview.DECK], after[replan_preview.LANGUAGE], after["junban_deck"]) == (deck, language, deck)
     assert (after["junban_later_tag"], after["junban_later_flag"], after["junban_later_suspend"]) == flags

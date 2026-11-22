@@ -1444,6 +1444,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     logic_json_str = json.dumps(logic_settings).replace("</", "<\\/")
     words_per_day = settings.get("words_per_day", 5) if 'settings' in locals() else 5
     show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
+    # The study order (Kantan-MO): the journey opens on its list (By leverage: the Priority List)
+    study_order = settings_manager.study_order(settings if 'settings' in locals() else None)
     # Per-sentence source badge: the interned table + the display mode chosen in Advanced Settings.
     sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
     # The line player's folders (`_line_media`: a playable source's [5] names one of them by its place).
@@ -1485,7 +1487,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalLinePlay = {line_plays_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalStudyOrder = '{study_order}';\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalLinePlay = {line_plays_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

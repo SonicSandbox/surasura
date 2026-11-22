@@ -74,9 +74,19 @@ def test_a_move_alone_runs_no_generate_in_the_loop(tmp_path):
     assert ("generate", "ja") not in steps.log and ("order", None) not in steps.log
 
 
-def test_a_level_raise_mines_from_the_list_as_it_is_then_mines_the_new_words_in_the_same_run(tmp_path):
-    # the band raised: the Generate after mining re-cuts the list; its level look queues item 1's new words, mined
-    # in this run (no second prepare)
+def test_a_level_raise_mines_from_the_list_as_it_is_and_its_generate_mines_nothing_again(tmp_path):
+    # Kantan-MO (F1; was: its level look queued item 1's new words, mined again in this run): the band raised, the
+    # Generate after mining re-cuts the list — its newly listed words join the study order, no episode is mined again
+    steps, summary, _owed, _needs = _run(tmp_path, {"generate_after": True})
+    calls = [e[:2] for e in _calls(steps)]
+    at = calls.index(("generate", "ja"))
+    assert calls[at:] == [("generate", "ja"), ("order", None)], calls
+    assert calls.count(("prepare", "ja")) == 1
+
+
+def test_new_files_mined_before_their_generate_get_its_new_words_in_the_same_run(tmp_path):
+    # the one level job left (P4.1 C5): new episodes mined from the re-plan before their Generate — its look gives
+    # item 1 the words only it brought (`level.NEW_FILES`), mined in this run (no second prepare)
     steps, summary, _owed, _needs = _run(tmp_path, {"generate_after": True,
                                                     "level_after": [["ja", 1, [["気配", "ケハイ"]]]]})
     calls = [e[:2] for e in _calls(steps)]

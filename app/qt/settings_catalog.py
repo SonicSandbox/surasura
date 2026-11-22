@@ -95,6 +95,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
+    "connect_tidy": _LIVE,                      # --- Kyou-SH2: *Tidy now*
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
@@ -164,8 +165,8 @@ _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
 
 
 def _first_applies(settings, language, ctx):
-    """Q31: whether *Idioms and set phrases* and *i+1 first* take part in Junban's reorder — Junban's own rule
-    (`reposition.first_applies`, the one its run asks: Japanese, "After it" or "Mixed in", no *Only words marked*
+    """Q31: whether *Idioms and set phrases* takes part in Junban's reorder — Junban's own rule
+    (`reposition.first_applies`, the one its run asks: Japanese, no *Only words marked*
     pick); Junban absent or failing: never (the rows hide)."""
     try:
         from modules.junban.reposition import first_applies
@@ -175,6 +176,28 @@ def _first_applies(settings, language, ctx):
 
 
 _JUNBAN_FIRST = _all(_JUNBAN_ON, _first_applies)
+
+
+def _off_list(settings):
+    """Kyou-MO: the switch for your own cards not on the list as Junban reads it (`unlisted.choice`: 3.0.17's keys
+    while it is unset); "leave" when Junban is absent or failing."""
+    try:
+        from modules.junban import unlisted
+        return unlisted.choice(settings)
+    except Exception:
+        return "leave"
+
+
+def _aside(settings, language, ctx):
+    return _off_list(settings) == "aside"
+
+
+ASIDE_TICKS = ("junban_later_flag", "junban_later_suspend")
+
+
+def _off_list_set(settings):
+    """Has the learner (or setup) written the switch itself? Unset, `unlisted.choice` reads 3.0.17's keys."""
+    return str(value_of(settings, "junban_off_list") or "").strip().lower() in ("leave", "back", "aside")
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
@@ -233,19 +256,22 @@ ROWS = (
     _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a switch the store draws
     _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
-    _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),
-         group="from_library", when=_CONNECT),
-    _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
+    _row("mine_line", "anki", "custom", when=_CONNECT, group="from_library"),               # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
     # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
+    _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
+    # Kantan-MO (the mining model, PROVISIONAL words): your level decides which words get cards; this makes cards for
+    # every new word of an episode, past your level too (they count toward *Keep up to*) — *Words to make cards from*
+    # retired
+    _row("connect_every_word", "anki", "toggle", ("connect_every_word",), adv=True, when=_CONNECT),
     # Michi-LP (PROVISIONAL words): how many clips Anki Miner cuts at once — Automatic (this PC's number), or yours
     _row("connect_clip_cuts", "anki", "select", ("connect_clip_cuts",), options=("auto", 1, 2, 3, 4, 5, 6), adv=True,
          when=_CONNECT),
@@ -268,15 +294,15 @@ ROWS = (
     # a9.1: Junban's window has one door, here (it held *Preview order* on a row of its own too)
     _row("junban_scope", "junban", "choice", ("junban_scope",), options=("deck", "all"), when=_JUNBAN_ON,
          door=("junban",), reaches=("junban_deck", "junban_word_fields")),
-    _row("junban_order", "junban", "choice", ("junban_order",), options=("content", "priority"), when=_JUNBAN_ON),
-    _row("junban_unlisted", "junban", "choice", ("junban_unlisted",), options=("list_first", "journey", "back"),
-         when=_JUNBAN_ON),
-    # Q31: two switches that work together, never a pick-one row (Japanese only; nothing to do at the back)
+    # Q31 (Japanese only); the unlocking word first is no switch since the mining model (Kyou-MO: always)
     _row("junban_phrases", "junban", "toggle", ("junban_phrases",), when=_JUNBAN_FIRST),
-    _row("junban_ready_first", "junban", "toggle", ("junban_ready_first",), when=_JUNBAN_FIRST),
-    _row("junban_later_tag", "junban", "toggle", ("junban_later_tag",), group="not_on_list", when=_JUNBAN_ON),
-    _row("junban_later_flag", "junban", "toggle", ("junban_later_flag",), when=_JUNBAN_ON),
-    _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), when=_JUNBAN_ON),
+    # Kyou-MO (F24, PROVISIONAL words): one switch for your own cards not on the list — Leave · At the back · Set
+    # aside (Surasura's are never set aside); under Set aside, what it does beside its tag
+    _row("junban_off_list", "junban", "choice", ("junban_off_list",), options=("leave", "back", "aside"),
+         group="not_on_list", when=_JUNBAN_ON),
+    _row("junban_later_flag", "junban", "toggle", ("junban_later_flag",), sub=True, when=_all(_JUNBAN_ON, _aside)),
+    _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), sub=True,
+         when=_all(_JUNBAN_ON, _aside)),
     _row("junban_auto_reorder", "junban", "toggle", ("junban_auto_reorder",), when=_JUNBAN_ON),
     _row("junban_auto_actions", "junban", "toggle", ("junban_auto_actions",), when=_JUNBAN_ON),
     _row("put_back", "junban", "door", when=_JUNBAN, door=("put-back",)),
@@ -309,6 +335,8 @@ ROWS = (
 
     # Level (New words a day went to Anki & mining's *New cards a day*: G1.2-5)
     _row("level", "level", "slider", ("logic.selection.band", "logic.selection.auto")),
+    # Kantan-MO (ROLES.md: the list's): one study order for Connect, 順 and the journey (順's *Order* moved here)
+    _row("study_order", "level", "choice", ("study_order",), options=("content", "priority")),
     _row("strategy", "level", "choice", ("strategy",), options=("freq", "coverage")),
     _row("target_coverage", "level", "number", ("target_coverage",), sub=True, when=_coverage, bounds=(1, 100)),
     _row("show_words_per_day", "level", "toggle", ("show_words_per_day",), adv=True),
@@ -447,12 +475,17 @@ NOT_SHOWN = {
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",
+    "connect_mine_words": "retired by the mining model (Kantan-MO): Level + *Cards for every new word*; read once",
+    "junban_order": "retired by the mining model (Kantan-MO): the list's *Study order*; read when it isn't saved",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
     "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",
+    # Kyou-MO (the mining model): folded into *Your own cards* (`junban_off_list`), read while it is unset, and by 2.x
+    "junban_unlisted": "3.0.17's *Cards too rare for your list go*: read only while *Your own cards* is unset",
+    "junban_later_tag": "3.0.17's tag tick: *Set aside* always tags; read only while *Your own cards* is unset",
     "junban_replan_deck": "2.x's preview: 3.0 writes the plan always",
     "logic.chunk_size": "settings.json only (A5)",
     "logic.weights.high": "settings.json only (A5)",
@@ -528,6 +561,8 @@ def _one(settings, key, language):
     found = plain(value_of(settings, key))
     if key == "known_from_anki" and isinstance(found, str):
         found = [found]
+    if key == "junban_off_list":                # Kyou-MO: as Junban reads it, 3.0.17's keys while it's unset
+        return _off_list(settings)
     if key == "junban_only_markers":            # IK-5: read as Junban reads it, one reader (a hand-edited "Star" is ✦)
         from app.anki_match import normalize_markers
         found = list(normalize_markers(found))
@@ -785,6 +820,10 @@ def change(row, settings, language, new):
         # Kantan-B3: a pick, never read as an old default again — written on every pick, even when the loaded settings
         # already say True: the old switch's fold sets it in memory only (Kotoba-WS2F, the keeper's F1)
         out[CHOSEN] = True
+    if row.id in ASIDE_TICKS and out and not _off_list_set(settings) and _off_list(settings) == "aside":
+        # Kyou-MO: unset, the switch is read from 3.0.17's ticks — a tick changed under *Set aside* pins it, so the
+        # untick never flips it to *Leave*
+        out["junban_off_list"] = "aside"
     return out, None
 
 

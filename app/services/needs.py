@@ -70,6 +70,10 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   `shelf`; Connect no longer shelves at the cap — Sonic 2026-11-20 — so these are the cards an older version, or a
   show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
   still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
+- **Tidy** (Kyou-SH2, PROVISIONAL): ONE card after Tidy deleted cards Connect made that you never studied (by itself past
+  1.5 × your limit, or your *Tidy now*; Connect's record's `tidied`, the newest not undone) — *12 set-aside cards
+  tidied.* · *Undo* (`connect/tidy.act_undo`: the backup put back, byte for byte) · *OK* (answered: this tidy; the next
+  asks again); only while Cards made for you is on.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -142,11 +146,12 @@ DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another dec
 # list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
 NO_SUBS = "no-subs"
 SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect made sit on its shelf — said, Put back
+TIDIED = "tidied"                     # Kyou-SH2 (PROVISIONAL): Tidy deleted Connect's never-studied cards — said, Undo
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -302,6 +307,13 @@ STRINGS = {
     "shelved_title_one": "A card made for you is set aside.",
     "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
                     "does that by itself. One comes back by itself when its word comes up."),
+    # Kyou-SH2 (PROVISIONAL): Tidy, said
+    "tidied_title": "{n:,} set-aside cards tidied.",
+    "tidied_title_one": "A set-aside card tidied.",
+    "tidied_say": ("More cards waited than 1.5 × your limit, so Surasura deleted the ones it made that you never "
+                   "studied, lowest in your study order first. A copy is kept: Undo puts them back."),
+    "tidied_say_now": ("You pressed Tidy now: Surasura deleted the cards it made past your limit that you never "
+                       "studied. A copy is kept: Undo puts them back."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -473,6 +485,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     shelved = _shelf_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH: Connect's restore
     if shelved is not None:
         out.append(shelved)
+    tidied = _tidy_entry(connect, seen, answered) if cards_on and connect else None     # Kyou-SH2: Tidy, said
+    if tidied is not None:
+        out.append(tidied)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1241,6 +1256,23 @@ def _shelf_entry(connect, seen, answered=frozenset()):
     title = STRINGS["shelved_title_one"] if n == 1 else STRINGS["shelved_title"].format(n=n)
     return Entry(key=key, kind=SHELVED, title=title, lines=(), actions=("put_back_shelf", "leave_shelf"),
                  unseen=key not in seen, say=STRINGS["shelved_say"], data={"runs": runs, "cards": n})
+
+
+def _tidy_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH2 (PROVISIONAL): ONE card after Tidy deleted cards — Connect's record's `tidied` (`status._tidied`: the
+    newest tidy not undone). Its key names that tidy, so *OK* holds until the next one; *Undo* is `tidy.act_undo`
+    with `data["id"]`."""
+    tidied = (connect or {}).get("tidied") or {}
+    n = int(tidied.get("cards") or 0)
+    if n <= 0 or not tidied.get("id"):
+        return None
+    key = f"{TIDIED}:{tidied['id']}:{tidied.get('at') or ''}"     # its time too: a ledger made again counts from 1
+    if key in answered:
+        return None
+    title = STRINGS["tidied_title_one"] if n == 1 else STRINGS["tidied_title"].format(n=n)
+    say = STRINGS["tidied_say_now"] if tidied.get("why") == "now" else STRINGS["tidied_say"]
+    return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("undo_tidy", "leave_tidy"),
+                 unseen=key not in seen, say=say, data={"id": int(tidied["id"]), "cards": n})
 
 
 def badge(entries_):

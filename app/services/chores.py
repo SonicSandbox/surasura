@@ -45,6 +45,9 @@ MAINTAIN_AGAIN = 15.0       # Haya-LD: a helper's check that waited (its turn, o
 # once it ran beside that work and the first paint of the duties' controls: ~0.25 s of a worker's CPU on Python's one
 # lock made the window's thread wait 45 + 130 ms on the desktop (the start-light fix, 2026-10-14).
 WARM_AT = 3.0
+# Hato-UP (3.0.18): hato's own daily update (`services.hato_update`), once the start's own work is done; its thread
+# then waits its turn itself (the scheduler's, hato closed) and looks again until the window closes
+HATO_AT = 20.0
 INDEX_LABEL = "Indexing"
 MAINTAIN_LABEL = "Tidying your library"
 # Why each started by itself (the help cards' *Why?*, §5.1): the job's `cause`
@@ -126,6 +129,8 @@ class Chores:
         self._last_index = float("-inf")
         self._indexing = False          # from the check until the indexer's end: never two
         self._again = False             # a forced ask came while it ran: one more run at its end, never lost
+        self._hato_stop = threading.Event()     # Hato-UP: set at the quit: hato's daily look ends
+        self._hato_thread = None
         self._proc = None
         self._handed = {}               # the store copy's stat last handed to a helper, per language
         self._from_folders = {}         # when a fresh language's build from its folders was last asked, per language
@@ -161,7 +166,8 @@ class Chores:
     # --- the window's triggers (each returns at once) ------------------------------------------------------------ #
     def started(self):
         """The window opened: the install note, surasura.json, Koe as the settings say, and — unless timers are off —
-        the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on, the Rarity tables' warm-up 3 s on."""
+        the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on, the Rarity tables' warm-up 3 s on,
+        hato's daily update 20 s on (Hato-UP)."""
         self.worker.put(self._install_note)
         self.worker.put(self._tools_entry)
         self.worker.put(self._koe)
@@ -171,6 +177,7 @@ class Chores:
         self._later(START_MAINTAIN, lambda: self.worker.put(self._maintain))
         self._later(ARRIVALS_AT, lambda: self.worker.put(self._arrivals))
         self._later(WARM_AT, lambda: self.worker.put(self._prepare_preview))
+        self._later(HATO_AT, self._hato_update)
 
     def activated(self):
         """The window came back into focus: the indexer (2 s throttle), the store's helper (2 s after the last)."""
@@ -221,6 +228,7 @@ class Chores:
             maintain, self._maintain_timer = self._maintain_timer, None
         for timer in timers + ([maintain] if maintain is not None else []):
             timer.cancel()
+        self._hato_stop.set()
 
     def close(self, store=True):
         """The window closed (after it is gone: this waits). No timer left, Koe stopped, Connect's `at_close`, then —
@@ -232,6 +240,7 @@ class Chores:
             maintain, self._maintain_timer = self._maintain_timer, None
         for timer in timers + ([maintain] if maintain is not None else []):
             timer.cancel()
+        self._hato_stop.set()
         self.worker.close()
         self._koe_stop()
         try:
@@ -258,6 +267,18 @@ class Chores:
             pass
 
     # --- inside: timers ----------------------------------------------------------------------------------------- #
+    def _hato_update(self):
+        """Hato-UP: hato's daily update looked after on its own thread (`hato_update.start`), once a window; never for
+        a closing one."""
+        with self._lock:
+            if self._closed or self._hato_thread is not None:
+                return
+            try:
+                from app.services import hato_update
+                self._hato_thread = hato_update.start(self._settings.get, self._hato_stop)
+            except Exception as e:
+                print(f"hato's update: {e}")
+
     def _later(self, delay, call):
         with self._lock:
             if self._closed:

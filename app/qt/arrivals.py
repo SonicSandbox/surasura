@@ -24,6 +24,9 @@
   or out is one row inserted or removed, a new number repaints its row alone, and a closed tray does no row work (the
   view waits for `open`). Rows that share a title name their folder first on their line (K7: where the
   original sits, from the looks' answer — named by the reader on its thread, `view_rows._name_arrivals`, A4B-8).
+  A search hit opens it at an arrival (`seek`, the shell's `show_arrival`; Mado-SH): that row made the list's current
+  one (↓ goes on from it) and scrolled to as soon as it is on the list (a big tray's fill may bring it a step later),
+  and handed back to be washed once the tray shows.
 - **The numbers** (`ArrivalNumbers`): each arrival's files asked of the warm worker
   (`app/services/arrivals.ArrivalsWorker.estimate`) once each, when the arrival first shows, each with the piece's
   earlier files placed before it (IK-5) — the asks on a worker, never the window's thread; the answers kept by (item,
@@ -1502,6 +1505,7 @@ class ArrivalsTray(motion.Overlay):
         self._fill_timer.timeout.connect(self._fill_step)
         self._fill_after_paint = False      # ... the first step waits for the list's first paint (fix3)
         self._by_key = None                 # (groups, {key: arrival}) — `arrival(key)`, made when asked
+        self._seeking = None                # Mado-SH: (key, found) — a search hit's row, until it is shown (`seek`)
         self.heads = {}                     # group kind -> (its head widget, its label, its button or None)
         self._head_objs = {}                # group kind -> its head's (kind, label) object (the same while unchanged)
         self._row_h = row_height()
@@ -1697,6 +1701,7 @@ class ArrivalsTray(motion.Overlay):
             self.paints += 1
             if self.isVisible():
                 self.place()
+            self._seek()                                       # (a search hit's row may have just come on)
         return changed
 
     def _fill_step(self):
@@ -1735,6 +1740,7 @@ class ArrivalsTray(motion.Overlay):
         self.loading.hide()
         if self.isVisible():
             self.place()
+        self._seek()                                           # (filled: a hit's row never on it is let go)
 
     def _heights(self):
         """The text size moved: an arrival's row height (the row header's default: every arrival's row with it, in
@@ -1761,6 +1767,42 @@ class ArrivalsTray(motion.Overlay):
     def filling(self):
         """A big tray's rows are still coming in (IK-6; tests, the bench)."""
         return self._filling
+
+    # --- Mado-SH: a search hit's arrival ------------------------------------------------------------------------- #
+    def seek(self, key, found=None):
+        """A search hit on the arrival `key` (the shell's `show_arrival`): its row made the list's current one and
+        scrolled to as soon as it is on the list; once the tray shows it, `found(the list's viewport, rect_of)` — the
+        row's place, asked again each time (a scroll, a view moving it; None once it is gone). The last hit wins."""
+        self._seeking = (key, found)
+        self._seek()
+
+    def _seek(self):
+        if self._seeking is None:
+            return
+        key, found = self._seeking
+        view = self.view
+        row = view.row_of(key)
+        if row < 0:
+            if self.isVisible() and not self._filling:
+                self._seeking = None                     # shown, filled, and not there (gone meanwhile): let it go
+            return
+        index = self.model.index(row, 0)
+        if view.currentIndex() != index:
+            view.setCurrentIndex(index)
+        view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        if not self.isVisible():
+            return                                       # (still opening: shown and handed back at its show)
+        self._seeking = None
+        if found is None:
+            return
+
+        def rect_of():
+            if sip.isdeleted(view) or not view.isVisible():
+                return None
+            at = view.row_of(key)
+            return view.visualRect(view.model().index(at, 0)) if at >= 0 else None
+        found(view.viewport(), rect_of)
+    # --- end Mado-SH
 
     def _size_of(self, key):
         if key.startswith(HEAD):
@@ -2016,8 +2058,11 @@ class ArrivalsTray(motion.Overlay):
         super().showEvent(event)
         QApplication.instance().installEventFilter(self._away)
         self.inset.set_lit(True)
+        if self._seeking is not None:
+            QTimer.singleShot(0, lambda: None if sip.isdeleted(self) else self._seek())   # Mado-SH: once laid out
 
     def hideEvent(self, event):
+        self._seeking = None                             # (a hit's row not shown yet goes with it)
         super().hideEvent(event)
         QApplication.instance().removeEventFilter(self._away)
         if not self._dragging:
@@ -2025,6 +2070,7 @@ class ArrivalsTray(motion.Overlay):
 
     def closeEvent(self, event):
         self.clear_picks()
+        self._seeking = None                             # (closed while opening: never shown, nothing to wash)
         self._dragging = False
         self._drag_watch.stop()
         if self.fade is not None:

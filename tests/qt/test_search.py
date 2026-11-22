@@ -12,6 +12,8 @@ What a wrong answer would cost a learner:
   * a click that doesn't show the row (A2 #84), results that jump in again on every keystroke (A2 #85);
   * results that won't close on Esc, Back or a click away (N7), or a store that can't be saved taking a move (E4).
 """
+import json
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -21,8 +23,9 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
+from app import path_utils
 from app.qt import search as search_ui
-from app.qt import strings
+from app.qt import strings, style
 from app.services import search as S
 from tests.fixtures import window_seed
 from tests.qt.conftest import wait_until
@@ -67,8 +70,11 @@ class Opener:
 def world(qapp):
     made = []
 
-    def make(writable=True, files=window_seed.SMALL, size=(1280, 900)):
-        seed = window_seed.build(files)
+    def make(writable=True, files=window_seed.SMALL, size=(1280, 900), language="ja"):
+        if language != "ja":                             # a Chinese library: the settings say so (as test_current's E14)
+            with open(path_utils.get_user_file("settings.json"), "w", encoding="utf-8") as f:
+                json.dump({"target_language": language, "zh_script": "s"}, f)
+        seed = window_seed.build(files, language=language)
         arrival_work = next(r["work_id"] for r in seed.items if r["tier"] == "arrivals")
         store = real_store(seed, titles={arrival_work: [ARRIVAL_ROMAJI]})
         store.close()
@@ -85,6 +91,7 @@ def world(qapp):
     for win, services in made:
         win.close()
         services.shutdown(0.5)
+    style.apply(qapp, "night", "M", "ja")                # the harness puts back theme and size, not the language
 
 
 def ask(win, text):
@@ -260,19 +267,123 @@ def test_a_finished_result_opens_finished_at_it(world):
     assert wait_until(lambda: win.search.washes == 1)
 
 
-def test_a_goal_result_shows_currents_goal_dock_until_goals_sheet_lands_then_opens_the_sheet(world):
+def click_hit(results, hit):
+    """A learner's click on the hit's row (off its ▶ and ⤒), as A2 #84's."""
+    row = next(r for r in results.hits if r.hit is hit)
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(row.width() // 3, row.height() // 2))
+
+
+def title_of(seed, work_id):
+    return next(w["title"] for w in seed.works if w["id"] == work_id)
+
+
+def arrival_hit(seed, win, last=False):
+    """A New arrival's hit, asked by its title as a learner types it: the tray's first arrival (or its last)."""
+    keys = win.arrivals_tray.keys() or [a.key for g in win.arrivals_tray.groups for a in g.rows]
+    arrivals = {a.key: a for g in win.arrivals_tray.groups for a in g.rows}
+    target = arrivals[keys[-1] if last else keys[0]]
+    hit = next(h for h in hits_of(ask(win, title_of(seed, target.work_id)), "arrivals") if h.key == target.key)
+    return target, hit
+
+
+def tray_row_key(tray):
+    idx = tray.view.currentIndex()
+    return tray.model.keys[idx.row()] if idx.isValid() else None
+
+
+# Mado-SH (3.0.18): before, `reveal` asked the shell for `show_arrival` / `show_goal`, which no shell had (only this file's
+# stand-in did), so in the shipped window a click on a New arrival or a Goal title landed on Current with nothing open.
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_new_arrival_result_opens_the_tray_at_its_row_from_any_tab_and_washes_it(world, language):
+    """A click on a New arrival's hit, from Finished: Current, New arrivals' tray open, that arrival the tray's current
+    row (↓ goes on from it), scrolled to and washed once — the row a learner was looking for, not the top of Current."""
+    seed, win, _writer = world(language=language)
+    tray = win.arrivals_tray
+    target, hit = arrival_hit(seed, win, last=True)
+    results = win.search.results
+    win.show_tab("finished")
+    click_hit(results, hit)
+    assert not results.isVisible()
+    assert win.current_tab() == "current"
+    assert wait_until(lambda: tray.isVisible() and win.search.washes == 1)
+    assert tray_row_key(tray) == target.key
+    row = tray.view.row_of(target.key)
+    rect = tray.view.visualRect(tray.model.index(row, 0))
+    assert tray.view.viewport().rect().intersects(rect)              # scrolled to it
+    assert win.search.washed_at == rect                              # the wash over that row, on the tray's list
+    assert win.search.washed.parentWidget() is tray.view.viewport()
+
+
+def test_a_new_arrival_result_never_closes_a_tray_already_open(world):
+    """The inset's click toggles the tray; a hit only shows: with the tray open, a hit keeps it open, at the hit's row."""
+    seed, win, _writer = world()
+    tray = win.arrivals_tray
+    win.open_arrivals()
+    assert wait_until(tray.isVisible)
+    target, hit = arrival_hit(seed, win)
+    win.search.reveal(hit)
+    assert tray.isVisible() and tray_row_key(tray) == target.key and win.search.washes == 1
+
+
+def test_a_new_arrival_result_waits_for_its_row_in_a_tray_still_filling(world, monkeypatch):
+    """IK-6: a big tray makes a screen of rows at its open and the rest in steps — a hit on an arrival past that screen
+    is shown when its row lands, not lost (here every tray fills in steps of one row)."""
+    from app.qt import arrivals as arrivals_view
+    monkeypatch.setattr(arrivals_view, "FILL_FROM", 0)
+    monkeypatch.setattr(arrivals_view, "FIRST_ROWS", 1)
+    monkeypatch.setattr(arrivals_view, "FILL_CHUNK", 1)
+    seed, win, _writer = world()
+    tray = win.arrivals_tray
+    target, hit = arrival_hit(seed, win, last=True)
+    win.search.reveal(hit)
+    assert tray.view.row_of(target.key) < 0                          # not on the list at the open
+    assert wait_until(lambda: tray_row_key(tray) == target.key and win.search.washes == 1)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_goal_result_opens_goals_sheet_at_its_title_from_any_tab_and_washes_its_tile(world, language):
+    """A click on a Goal title's hit, from Finished: Current, Goal's sheet open, the title's tile washed once — before,
+    Current with the sheet shut."""
+    seed, win, _writer = world(language=language)
+    goal_work = next(r["work_id"] for r in seed.items if r["tier"] == "goal")
+    hit = next(h for h in hits_of(ask(win, title_of(seed, goal_work)), "goal") if h.work_id == goal_work)
+    results = win.search.results
+    win.show_tab("finished")
+    click_hit(results, hit)
+    sheet = win.goal_sheet
+    assert win.current_tab() == "current"
+    assert wait_until(lambda: sheet.isVisible() and win.search.washes == 1)
+    tile = next(t for t in sheet.order if t.work.work_id == goal_work)
+    assert win.search.washed_at == tile.geometry()
+    assert win.search.washed.parentWidget() is sheet.body
+
+
+def test_a_goal_result_far_down_goal_scrolls_the_sheet_to_its_tile(world):
+    """At 400 files Goal holds dozens of titles, rows of tiles past the sheet's first screen: the sheet opens scrolled
+    so the hit's tile is in view."""
+    seed, win, _writer = world(files=400)
+    goal = win.page_widgets["current"].view_model.goal
+    work = goal.works[-1]                                            # the last tile: far below the sheet's first screen
+    hit = next(h for h in hits_of(ask(win, work.title), "goal") if h.work_id == work.work_id)
+    win.search.reveal(hit)
+    sheet = win.goal_sheet
+    assert wait_until(lambda: sheet.isVisible() and win.search.washes == 1)
+    tile = next(t for t in sheet.order if t.work.work_id == work.work_id)
+    view = sheet.scroll.viewport()
+    top = tile.mapTo(view, QPoint(0, 0)).y()
+    assert sheet.scroll.verticalScrollBar().value() > 0
+    assert 0 <= top and top + tile.height() <= view.height(), (top, tile.height(), view.height())
+
+
+def test_a_goal_result_never_closes_a_sheet_already_open(world):
+    """The bar's click toggles the sheet; a hit only shows."""
     seed, win, _writer = world()
     goal_work = next(r["work_id"] for r in seed.items if r["tier"] == "goal")
-    title = next(w["title"] for w in seed.works if w["id"] == goal_work)
-    results = ask(win, title)
-    hit = hits_of(results, "goal")[0]
-    win.show_tab("finished")
+    hit = next(h for h in hits_of(ask(win, title_of(seed, goal_work)), "goal") if h.work_id == goal_work)
+    win.goal_sheet.open()
     win.search.reveal(hit)
-    assert win.current_tab() == "current" and win.search.washes == 1
-    opened = []
-    win.show_goal = opened.append                                    # Q2's sheet, once it is there
-    win.search.reveal(hit)
-    assert opened == [goal_work]
+    assert win.goal_sheet.isVisible() and win.search.washes == 1
+    assert win.search.washed.parentWidget() is win.goal_sheet.body   # its tile washed, not the dock
 
 
 def test_play_on_a_current_hit_opens_its_next_episode_as_the_rows_play_does(world, monkeypatch):

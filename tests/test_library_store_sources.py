@@ -754,7 +754,7 @@ def test_a_library_with_no_sources_copies_as_before(language):
     """Today's libraries come out byte-identical: no table added to the copy, a sync of a library with no content
     folder changes nothing, and the copy written again is the same bytes."""
     assert ls.COPY_TABLES == ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-                              "placement_log", "made_words", "made_lines", "works")
+                              "placement_log", "made_words", "made_lines", "works", ls.GROWTH)
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
     with store:

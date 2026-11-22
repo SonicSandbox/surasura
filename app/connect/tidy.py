@@ -1,6 +1,6 @@
 """Tidy: Connect's backlog cleared (Kyou-SH2, 3.0.18; Sonic 2026-11-20 plan v2 point 3, 2026-11-21 MODEL.md round 3:
-"Clutter would want to be automatic too … Maybe 1.5x the cap (connects cards plus the overflow) or something that is
-quickly evaluated"; ROLES.md: Tidy keeps Anki uncluttered and never deletes without a backup).
+the clutter clears by itself too, at a line that is quick to check, about 1.5 x the cap (Connect's cards plus the
+overflow); ROLES.md: Tidy keeps Anki uncluttered and never deletes without a backup).
 
 - **When:** by itself when the cards waiting for a language (the cap's window + its overflow: what Connect's count
   saw, `runner.Steps.waiting_count`, plus Connect's own waiting cards off your list and the ones on its old shelf)

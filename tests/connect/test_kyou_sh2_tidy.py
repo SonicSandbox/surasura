@@ -1,5 +1,5 @@
-"""Kyou-SH2: Tidy, Connect's backlog cleared (Sonic 2026-11-20 plan v2 point 3; 2026-11-21 MODEL.md round 3: "Clutter
-would want to be automatic too … Maybe 1.5x the cap"; ROLES.md: Tidy never deletes without a backup).
+"""Kyou-SH2: Tidy, Connect's backlog cleared (Sonic 2026-11-20 plan v2 point 3; 2026-11-21 MODEL.md round 3: the clutter
+clears by itself too, at about 1.5 x the cap; ROLES.md: Tidy never deletes without a backup).
 
 What each test holds still:
 - **when:** by itself only past 1.5 × the cap; your *Tidy now* past the cap; no cap → never; a quick look (what the

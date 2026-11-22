@@ -754,8 +754,8 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
         forward to sit just before it: "bring the other word first AND THEN review the card right
         there".
       * Otherwise (no card yet for the word, a chain, a loop) the card **keeps its list place** — an i+2 card, never
-        sent behind the list (ADVERSARY F16, Sonic 2026-11-21: "a card whose other word can't come first keeps its
-        place"); its reason says what it needs too.
+        sent behind the list (ADVERSARY F16, Sonic 2026-11-21: a card whose other word can't come first keeps its
+        place); its reason says what it needs too.
 
     One pass, in list order, and no chains: a card brought forward never brings anything itself, and
     only the cards brought forward change what counts as learned for the cards after them — a card

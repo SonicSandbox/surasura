@@ -5,7 +5,7 @@ When the list gains words — the level raised by hand, or automatic rarity movi
 the study order: Connect cards them as it meets them in the episodes ahead, each up to the cap's window. Until 3.0.17
 a raise queued a `level` job for every already-mined episode (the top 20, then the rest of Current and Goal), each
 opening its video again for its newly listed words: on a big library, hundreds of Anki Miner jobs for one move of the
-slider (Sonic: a move to Rare "must not remine a lot"). A `level` job queued before the update and not yet started is
+slider (Sonic: a move to Rare must not mine a lot again). A `level` job queued before the update and not yet started is
 dropped by the runner (`runner.LEVEL_DROPPED`); one under way finishes, by its own words (`restrict`).
 
 Lowering the level mines nothing either (N38: the words that left keep their cards). Either way the deck is re-sorted

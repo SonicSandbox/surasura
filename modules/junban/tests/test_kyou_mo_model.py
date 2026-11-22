@@ -40,7 +40,7 @@ def _row_of(stats, word):
 
 # --- 1 · never a card Surasura made --------------------------------------------------------------------------- #
 def test_set_aside_never_reaches_a_card_surasura_made_only_your_own(tmp_path):
-    """Benzene's 308 (ADVERSARY F4): with all three marks ticked, 眼鏡 — Connect's card, its word off the list — is
+    """A tester's 308 (ADVERSARY F4): with all three marks ticked, 眼鏡 — Connect's card, its word off the list — is
     neither tagged, flagged nor suspended; 須藤, a card of your own backlog off the list, still is."""
     fake = scene(tmp_path)
     with _patched(fake):
@@ -84,7 +84,7 @@ def test_cards_for_every_new_word_on_mixes_surasuras_past_level_card_in_where_yo
 
 
 def test_a_card_surasura_made_that_junban_parked_comes_back_untouched(tmp_path):
-    """Before this rule Junban suspended Connect's cards with the rest (Benzene's 308): one it parked — suspended, its
+    """Before this rule Junban suspended Connect's cards with the rest (a tester's 308): one it parked — suspended, its
     `::later` tag on — comes back, unsuspended, its tag off, at the back, though its word is still off the list."""
     entries = [row if row[0] != "眼鏡" else ("眼鏡", row[1], row[2], [CONNECT_TAG, LATER], -1) for row in SCENE]
     fake = scene(tmp_path, entries)

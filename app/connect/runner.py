@@ -3577,8 +3577,8 @@ class Steps:
         return len(counted)
 
     def slides_in(self, lang, job, cap):
-        """The cap's window (Kantan-MO, Sonic 2026-11-21: "the next N cards count; a higher word slides the lowest
-        out"): does `job`'s episode rank above the cap-th counted card in the study order (`waiting_count` read them
+        """The cap's window (Kantan-MO, Sonic 2026-11-21: the next N cards count, and a higher word slides the lowest
+        out): does `job`'s episode rank above the cap-th counted card in the study order (`waiting_count` read them
         just now)? Its rank (`_job_rank`): *As I'll meet it* — the episode's own place ahead of you; *By leverage* —
         the best place on the list of its episode's words Connect has no card for. Nothing to tell (no list, no
         episode file, a busy store) -> False: it waits, as before."""

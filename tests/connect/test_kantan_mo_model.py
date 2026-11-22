@@ -224,8 +224,8 @@ def test_as_ill_meet_it_a_show_moved_to_the_top_slides_in_and_goal_waits(monkeyp
 
 
 def test_a_finished_shows_rare_cards_slide_out_first_its_listed_ones_stay_first(monkeypatch):
-    # why: Sonic — "can't make more than 5 cards if the other 295 were accumulated uncommon ones from shows you
-    # completed": a card from content behind you, off your list (every-word on), is the first out of the window
+    # why: Sonic — a full cap of rare cards from shows you've finished must not stop new cards for the shows
+    # ahead: a card from content behind you, off your list (every-word on), is the first out of the window
     made = {1: (90, "海原"), 2: (20, "撒く"), 3: (91, "血塗れ")}           # 90, 91: finished (not ahead)
     steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, ahead=[20, 25], study_order="content",
                    connect_every_word=True)
@@ -276,7 +276,7 @@ def test_nothing_to_tell_waits_as_before(monkeypatch):
 
 def test_a_listed_card_from_content_behind_you_stays_in_the_window(monkeypatch):
     # why: a card for a word on your list cut from a show you've finished keeps its place at the front (its context
-    # is fresh: Sonic's "context the learner remembers is the lever") — it never slides out for a later episode
+    # is fresh: a scene still remembered is what counts) — it never slides out for a later episode
     made = {1: (91, "血塗れ"), 2: (20, "撒く"), 3: (21, "眼鏡")}           # 91: finished (behind you)
     steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, ahead=[20, 21, 25], study_order="content")
     assert isinstance(runner._full(steps, "ja", job={"item_id": 25}), runner.Wait)

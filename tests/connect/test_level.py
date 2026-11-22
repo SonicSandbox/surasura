@@ -1,6 +1,6 @@
 """The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23) — since the mining model (Kantan-MO, 3.0.18;
 ADVERSARY.md F1) a raise **mines no episode again**: its newly listed words join the study order, and Connect cards
-them as it meets them in the episodes ahead. Sonic: a move to Rare "must not remine a lot". What each test holds:
+them as it meets them in the episodes ahead. Sonic: a move to Rare must not mine a lot again. What each test holds:
 
   * a raise queues no job, whatever was mined; it counts its newly listed words and owes the deck a re-sort;
   * the first look records the list and mines nothing; a look at the same list does nothing; a batch in flight makes

@@ -1336,7 +1336,7 @@ def pick(args):
     only the run file, under local data (`connect/runs/<job>/`). Connect's book or text (Z-9, never on the command
     line: `reading`, the file Anki Miner reads): the words of the item's text (`file`), each with its sentence."""
     from app import cues
-    from app.connect import pick as picking, runfile
+    from app.connect import pick as picking, runfile, sentences
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
@@ -1409,7 +1409,10 @@ def pick(args):
                           # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
                           # parts (never on the command line): no card from a line inside one
                           unsure=getattr(args, "unsure", None) or (),
-                          sentence_length=_sentence_length(loaded) if book else None)
+                          sentence_length=_sentence_length(loaded) if book else None,
+                          # Kantan-SD: the young words break a last tie; `never` (Swap's old card's sentence, never on
+                          # the command line) is a line the word isn't cut from again
+                          young=sentences.young_weights(lang), never=getattr(args, "never", None))
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

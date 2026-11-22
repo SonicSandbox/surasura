@@ -58,6 +58,7 @@ import re
 import unicodedata
 
 from app import analyzer
+from app.connect import sentences
 from app.cues import seconds
 
 MODES = ("list", "unknown", "i1")
@@ -113,6 +114,7 @@ REASONS = {
     "sung": "said only in a song line",
     # Tsu-U (based on Mattias's Tsubasa-sync #2): said only where a cut in the recording leaves the timing unsure
     "unsure": "said only near a cut in the recording, where its line's timing is unsure",
+    "only-line": "said only in the line its card already has",
 }
 
 
@@ -603,7 +605,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
          ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
-         sentence_length=None):
+         sentence_length=None, young=None, never=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
@@ -618,7 +620,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     `sentence_length` ((min, preferred max, never longer than) characters: the learner's *Length* and *Never longer
     than*, logic.context min_chars / preferred_max_chars / max_chars; PROVISIONAL lean, 2026-11-12: cards honour them
     too) ranks its sentences (`length`) where the 8 s cap ranks a video's lines — a preference only, never cut, a word
-    with only sentences outside it still sent. A video's lines never read it."""
+    with only sentences outside it still sent. A video's lines never read it.
+
+    The sentence dial (Kantan-SD, `app/connect/sentences.py`): `young` ({lemma: weight}, `sentences.young_weights`)
+    breaks the last tie toward the line whose card also holds words you are still learning, the younger the more —
+    after every other rule; `never` ({key: {line text}}: Swap's old card's sentence) is a line the word is never cut
+    from again — a word with no other line is not sent (`only-line`)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
@@ -708,6 +715,21 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         n = len(line_of(at))
         return (int(bool(cap) and n > cap), int(n < low), int(n > high))
 
+    young = young or {}
+    never = {tuple(k): v for k, v in (never or {}).items() if v}
+    lemmas_in = {}
+    if young:
+        for t in tokens:
+            if t.lemma:
+                lemmas_in.setdefault(t.cue, set()).add(t.lemma)
+
+    def fresh(o):
+        """The young words a card cut from `o` holds besides its own, weighed (`young`); 0 without them."""
+        if not young:
+            return 0
+        held = set().union(*(lemmas_in.get(c, ()) for c in span(o.cue))) - {o.key[0]}
+        return sum(young.get(lemma, 0) for lemma in held)
+
     candidates = []
     for key, uses in by_key.items():
         phrase = uses[0].phrase
@@ -739,10 +761,15 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
         heard = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
         usable = [o for o in heard if timed(o)]
+        old = never.get(key)
+        other = [o for o in usable if not sentences.same_line(line_of(o.cue), old)] if old else usable
         if reason is None and not heard:
             reason = "sung"
         elif reason is None and not usable:
             reason = "unsure"
+        elif reason is None and not other:
+            reason = "only-line"
+        usable = other
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
@@ -752,7 +779,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, doubts(o.cue),
                                           not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
-                                          -_written_out(o.surface, key[0]), others(o), o.cue))
+                                          -_written_out(o.surface, key[0]), others(o), -fresh(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]
         sent = [best.front]

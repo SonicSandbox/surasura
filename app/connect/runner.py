@@ -1164,7 +1164,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") != level.NEW_FILES:
+    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") not in level.KEPT:
         ledger.set_state(jid, "dropped", reason=LEVEL_DROPPED)
         out["dropped"].append(item_id)
         return
@@ -1175,6 +1175,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["dropped"].append(item_id)
         return
     if (droppable and job.get("kind") != ASKED and not job.get("asked_at")
+            and job.get("source") != level.BEST         # Kantan-SD: chosen for the context you remember
             and not (ledger.picked(jid) or {}).get("forced")             # your *Mine anyway* on it too (round 2 B6)
             and getattr(steps, "watched", lambda _l, _j: False)(lang, job)):     # your ask on it is a yes (A1)
         # laptop round 8 #49 (LF4-1 = A): 3.0's rule, `level.WATCHED_GIVES_NO_NEW_CARDS` — no new cards on Connect's
@@ -1694,6 +1695,7 @@ def _pick(steps, ledger, lang, job, record=True):
         declined |= ledger.uncardable(lang, got["anki_miner"])
         declined |= ledger.skipped_words(lang, got["anki_miner"])     # Michi-RM3: *Skip this word*, any part
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
+    words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
@@ -1701,6 +1703,8 @@ def _pick(steps, ledger, lang, job, record=True):
             pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
         #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
+    if best:
+        picked["elsewhere"] = best                  # Kantan-SD: words whose card comes from a better sentence elsewhere
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
@@ -1730,6 +1734,42 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+def _best(steps, ledger, lang, job, words, here):
+    """Kantan-SD, the sentence dial's Best (`app/connect/sentences.py`): each picked word whose best sentence is in
+    another episode — strictly better than this one's own line (`sentences.better`), its video there — is cut from
+    there instead: a level job of source `level.BEST` on that episode names it, and it leaves this job's words ->
+    (the words kept, [{word, reading, item_id, text}] moved). Nearest, an ask (*Mine this*, *Mine now*: that episode's
+    own lines), a level job, or any failure: the words as they are (a book or a text never calls it)."""
+    if not words or not here or job.get("asked_at") or job.get("kind") in (ASKED, LEVEL):
+        return words, []
+    try:
+        from app.connect import sentences
+        if sentences.dial_of(steps._settings(lang)) != sentences.BEST:
+            return words, []
+        own = job["item_id"]
+        found = sentences.choose(lang, [(w["word"], w["reading"]) for w in words], here=here, dial=sentences.BEST,
+                                 reach=lambda item_id: item_id != own and steps.video(lang, {"item_id": item_id})
+                                 is not None)
+    except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
+        log.info("Connect: Best sentences not read (%s): %s", lang, e)
+        return words, []
+    kept, moved = [], []
+    with ledger.transaction():
+        for w in words:
+            key = (w["word"], w["reading"])
+            choices = found.get(key) or []
+            top = choices[0] if choices else None
+            mine = next((c for c in choices if c.here), None) or sentences.Choice(
+                here, own, w.get("line_text"), int(w.get("other_new") or 0), 0.0, True, True)
+            if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
+                    or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
+                                          store_id=job.get("store_id")) is None):
+                kept.append(w)          # an open job there already picks from the list as it is: it stays here
+                continue
+            moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
+    return kept, moved
 
 
 def _online(steps, lang, job):

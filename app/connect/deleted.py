@@ -102,11 +102,7 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
             if made is not None:
                 rows.append((note,) + tuple(made))
         if rows and state_of is None:
-            try:
-                from app.connect import swap
-                state_of = swap.states(language)
-            except Exception:
-                log.info("Kyou-DW: the words' states couldn't be read: every deleted card is asked", exc_info=True)
+            state_of = _states(language)
         stamped = 0
         with ledger.transaction():
             for note, word, reading, sentence, start, item_id in rows:
@@ -128,6 +124,17 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
     finally:
         if own:
             ledger.close()
+
+
+def _states(language):
+    """Swap's Known / Ignored tester (the pick's own rule: `swap.states`), or None when it can't be read (every card
+    is then asked; an answer is checked again at its press)."""
+    try:
+        from app.connect import swap
+        return swap.states(language)
+    except Exception:
+        log.info("Kyou-DW: the words' states couldn't be read: every deleted card is asked", exc_info=True)
+        return None
 
 
 def _keep_old(ledger, language, store):
@@ -234,8 +241,7 @@ def answer(language, note_ids, why, ledger=None, state_of=None, open_store=_defa
         if not rows:
             return out
         if state_of is None:
-            from app.connect import swap
-            state_of = swap.states(language)
+            state_of = _states(language) or (lambda _w, _r="": None)
         asked = []
         for r in rows:
             state = state_of(r["word"], r["reading"] or "")
@@ -304,7 +310,8 @@ def _act(language, rows, why, out, open_store):
 def undo(language, note_ids, ledger=None, settings=None):
     """Each answer taken back -> {"done": [(note_id, word)], "skipped": [(note_id, word, why)]}: the word's mark put as
     it was — only while it is still as the answer left it (`word_marks.states`) —, a Parsing mistake's line off Send
-    report's list, a Bad card's new card through Swap's own Undo (`swap.act_undo`); then the card asks again."""
+    report's list, a Bad card's new card through Swap's own Undo (`swap.act_undo`: refused, in Swap's words, while
+    the card isn't made yet or once you've studied it); then the card asks again."""
     from app.connect import ledger as ledger_mod
     own = ledger is None
     ledger = ledger or ledger_mod.Ledger()
@@ -346,10 +353,7 @@ def undo(language, note_ids, ledger=None, settings=None):
             from app.connect import swap
             u = json.loads(r["undo"] or "{}")
             got = swap.act_undo(settings or {}, language, u.get("swap")) if u.get("swap") is not None else {}
-            if got.get("why") and got.get("why") != swap.NOT_MADE:
-                out["skipped"].append((r["note_id"], r["word"], got["why"]))
-                continue
-            if got.get("why") == swap.NOT_MADE and not swap.take_back(language, u.get("swap")):
+            if got.get("why"):          # not made yet, studied, Anki closed: Swap's own words, the answer kept
                 out["skipped"].append((r["note_id"], r["word"], got["why"]))
                 continue
             back.append((r, u))

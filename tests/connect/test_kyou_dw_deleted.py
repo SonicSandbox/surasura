@@ -322,3 +322,122 @@ def test_the_status_record_carries_the_deleted_cards(tmp_path, monkeypatch):
     rec = status.language_record(status.read(["ja"], path=path), "ja")
     assert [a["note_id"] for a in rec["deleted"]["asked"]] == notes[:1]
     assert json.loads(json.dumps(rec["deleted"])) == rec["deleted"]
+
+
+# --------------------------------------------------------------------------- #
+# The look itself (`runner.Steps.notes_gone`)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def real_look(monkeypatch):
+    from app.connect import anki_session
+    monkeypatch.setattr(anki_session, "waiting", lambda url, settings: None)      # Anki open on Connect's profile
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(deleted, "_states", lambda _lang: _never)
+
+
+def test_the_real_look_asks_about_a_deleted_card_and_asks_nothing_while_anki_is_closed(real_look):
+    # why: Anki closed is never "every card deleted": nothing is asked until a look Anki answers
+    from app.connect import runner
+    from tests.connect.test_deleted_cards_every_run import FakeAnki
+    with Ledger() as led:
+        _item, notes = _made("ja", led, n=2)
+    steps = runner.Steps({"connect_enabled": True})
+    anki = FakeAnki(still_there={notes[1]}, down=1)
+    steps._anki = lambda: anki
+    runner._gone_look(steps, "ja")
+    with Ledger() as led:
+        assert deleted.status_of(led.conn, "ja")["asked"] == []
+    assert steps.notes_gone("ja") == [notes[0]]
+    with Ledger() as led:
+        assert [a["word"] for a in deleted.status_of(led.conn, "ja")["asked"]] == [LINES["ja"][0][0]]
+
+
+def test_surasuras_own_delete_is_never_asked(real_look):
+    # why: *Undo this batch* and Tidy free their notes first (`library.unmake`): the look never sees them, so the
+    # learner is never asked why about a card Surasura deleted
+    from app.connect import runner
+    from tests.connect.test_deleted_cards_every_run import FakeAnki
+    with Ledger() as led:
+        item, notes = _made("ja", led, n=2)
+    with c.store("ja") as s:
+        library.unmake(s, item, notes[:1], words=[LINES["ja"][0][0]])
+    steps = runner.Steps({"connect_enabled": True})
+    steps._anki = lambda: FakeAnki(still_there={notes[1]})
+    assert steps.notes_gone("ja") == []
+    with Ledger() as led:
+        rec = deleted.status_of(led.conn, "ja")
+    assert rec["asked"] == [] and rec["old"] == [], "a freed word is no delete, old or new"
+
+
+# --------------------------------------------------------------------------- #
+# Bad card: Swap's one maker (Kantan-SL: `swap.make_card(..., by=BY_BAD_CARD)`, `swap.act_undo`)
+# --------------------------------------------------------------------------- #
+class _Swap:
+    """Swap's surface as Kyou-DW calls it (Kantan-SL's `app/connect/swap.py`); records every call."""
+    BY_BAD_CARD, DROPPED, ASKED, NOT_MADE = "bad card", "dropped", "asked", "That swap's card isn't made yet."
+
+    def __init__(self, drop=None, undo_why=None):
+        self.calls, self.drop, self.undo_why, self.next = [], drop or {}, undo_why, 40
+
+    def states(self, _language):
+        return _never
+
+    def make_card(self, language, word, reading=None, old_note=None, by=None, **_kw):
+        self.calls.append(("make", language, word, old_note, by))
+        if word in self.drop:
+            return {"id": None, "state": self.DROPPED, "why": self.drop[word], "new": True}
+        self.next += 1
+        return {"id": self.next, "state": self.ASKED, "why": None, "new": True}
+
+    def act_undo(self, settings, language, swap_id):
+        self.calls.append(("undo", language, swap_id))
+        return {"why": self.undo_why} if self.undo_why else {"undone": True}
+
+
+@pytest.fixture
+def fake_swap(monkeypatch):
+    import sys
+    import types
+    fake = _Swap()
+    mod = types.ModuleType("app.connect.swap")
+    for name in ("BY_BAD_CARD", "DROPPED", "ASKED", "NOT_MADE"):
+        setattr(mod, name, getattr(fake, name))
+    for name in ("states", "make_card", "act_undo"):
+        setattr(mod, name, getattr(fake, name))
+    import app.connect
+    monkeypatch.setitem(sys.modules, "app.connect.swap", mod)
+    monkeypatch.setattr(app.connect, "swap", mod, raising=False)
+    return fake
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_bad_card_asks_swaps_maker_once_for_a_new_card_and_undo_is_swaps_own(lang, ledger, fake_swap):
+    # why: one maker (never a second picker): the old note named, so Swap never reuses its line; a second press
+    # asks nothing; Undo goes through Swap's Undo (the new card removed under Tidy's guarantee)
+    _item, notes = _made(lang, ledger)
+    _gone(lang, ledger, notes[:1])
+    word = LINES[lang][0][0]
+    got = deleted.answer(lang, notes[:1], deleted.BAD, ledger=ledger, state_of=_never)
+    assert got["done"] == [(notes[0], word)]
+    assert fake_swap.calls == [("make", lang, word, notes[0], "bad card")]
+    assert deleted.answer(lang, notes[:1], deleted.BAD, ledger=ledger, state_of=_never)["done"] == []
+    assert len(fake_swap.calls) == 1, "answered once: never a second card for one press"
+    out = deleted.undo(lang, notes[:1], ledger=ledger)
+    assert out["done"] == [(notes[0], word)] and fake_swap.calls[-1] == ("undo", lang, 41)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_bad_card_for_a_word_swap_drops_and_an_undo_swap_refuses_are_said(lang, ledger, fake_swap):
+    # why: Swap drops a word now Known (its own test): the card is not answered and says why; a swap with no other
+    # sentence waits in Swap's own record — Kyou-DW's Undo before it is made is refused in Swap's words
+    _item, notes = _made(lang, ledger)
+    _gone(lang, ledger, notes[:2])
+    words = [w for w, _r, _s in LINES[lang][:2]]
+    fake_swap.drop = {words[0]: "known"}
+    got = deleted.answer(lang, notes[:2], deleted.BAD, ledger=ledger, state_of=_never)
+    assert got["done"] == [(notes[1], words[1])]
+    assert got["skipped"] == [(notes[0], words[0], deleted.REFUSED["known"])]
+    assert [a["note_id"] for a in _asked(lang, ledger)["asked"]] == [notes[0]]
+    fake_swap.undo_why = _Swap.NOT_MADE
+    out = deleted.undo(lang, notes[1:2], ledger=ledger)
+    assert out["done"] == [] and out["skipped"] == [(notes[1], words[1], _Swap.NOT_MADE)]

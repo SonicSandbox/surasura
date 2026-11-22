@@ -603,7 +603,7 @@
     if (group("settings")) {
       await goWord(E, 0);
       J.openSettings(); await settle();
-      ok("the page's settings: the seven rows, the same as Settings › App › Journey", $$("#set-sheet .srow").length === 7);
+      ok("the page's settings: one row per setting (word size and sentence size are two: SPEC §1.4 as corrected)", $$("#set-sheet .srow").length === J.SETTINGS.length && J.SETTINGS.length === 8, $$("#set-sheet .srow").length);
       ok("each row's ? shows bullets", (() => { $("#set-sheet [data-shelp]").click(); return $$("#shelp li").length > 0; })());
       let r = await press(() => $('#set-sheet .srow[data-set="theme"] [data-val="\\"light\\""]').click());
       ok("Theme › Light: the page turns light", document.documentElement.dataset.theme === "light");

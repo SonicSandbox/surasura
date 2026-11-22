@@ -1,8 +1,8 @@
-"""The two build gates that decide whether Reels ships, checked against the real files.
+"""The build gates that keep Reels out of every build, checked against the real files.
 
-Both failure directions are silent and expensive. Ship the module into a build nobody asked for and
-a vendored copy of SubsMatcher goes out with it; leave it out of a build that enables it and the
-button appears and does nothing. Neither shows up until someone runs the packaged app.
+Reels is shelved (3.0.18): its folder is no longer in the tree, and the tests of it shipping went with it. What
+stays is the closed direction: whatever the build config says or lacks, a build excludes it, and a checkout without
+it is never asked for its suite.
 
 `packaging/Surasura.spec` is a PyInstaller script, not an importable module, so its conditionality
 block is sliced out between its own section banners and executed in a controlled namespace. That
@@ -59,7 +59,6 @@ class TestSpecExclusion(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.root = tempfile.mkdtemp()
-        os.makedirs(os.path.join(self.root, "modules", "koe"), exist_ok=True)
 
     def tearDown(self):
         import shutil
@@ -76,10 +75,6 @@ class TestSpecExclusion(unittest.TestCase):
         _write_config(self.root, {"reels": False})
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
-    def test_reels_is_bundled_when_the_toggle_is_on(self):
-        _write_config(self.root, {"reels": True})
-        self.assertNotIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
-
     def test_reels_is_excluded_when_the_key_is_absent(self):
         """Opt-in: a build config that has never heard of Reels must not ship it."""
         _write_config(self.root, {"koe": True})
@@ -95,23 +90,10 @@ class TestSpecExclusion(unittest.TestCase):
             handle.write("{ not json")
         self.assertIn("modules.reels", _run_spec_config(self.root)["excluded_modules"])
 
-    def test_the_other_modules_are_unaffected_by_the_reels_toggle(self):
-        """The gates are independent; turning Reels on must not drag anything else in or out."""
-        _write_config(self.root, {"reels": True, "koe": True})
-        excluded = _run_spec_config(self.root)["excluded_modules"]
-        self.assertIn("modules.youtube_downloader", excluded)   # its own toggles are off
-        self.assertNotIn("modules.koe", excluded)               # folder exists in the fixture
-
 
 class TestPreBuildTestGate(unittest.TestCase):
     """`package_app` runs a bundled module's own suite before building. A module that ships without
     its tests having run is a module nobody checked."""
-
-    def test_the_reels_suite_runs_when_the_module_will_be_bundled(self):
-        dirs = package_app._included_module_test_dirs({"reels": True})
-        expected = os.path.join("modules", "reels", "tests")
-        if os.path.isdir(os.path.join(_ROOT, expected)):
-            self.assertIn(expected, dirs)
 
     def test_the_reels_suite_is_skipped_when_it_will_not_be_bundled(self):
         dirs = package_app._included_module_test_dirs({"reels": False})
@@ -130,38 +112,6 @@ class TestPreBuildTestGate(unittest.TestCase):
         finally:
             os.path.isdir = original
         self.assertNotIn(os.path.join("modules", "reels", "tests"), dirs)
-
-    def test_the_gate_mirrors_the_spec(self):
-        """The two gates read the same key. If they ever disagreed, a module could ship without its
-        suite having run, or a suite could run for a module that was excluded."""
-        block = _conditionality_block()
-        self.assertIn('modules.get("reels") is True', block)
-        import inspect
-        source = inspect.getsource(package_app._included_module_test_dirs)
-        self.assertIn('modules.get("reels") is True', source)
-
-
-class TestFrozenSubsyncIsReachable(unittest.TestCase):
-    """The sync stage shells out to the vendored SubsMatcher, and a frozen build changes both
-    halves of how that works: there is no interpreter to run a script with, and the script is not
-    a file on disk. Three things have to line up, and all three are invisible from source."""
-
-    @unittest.skipUnless(os.path.isdir(os.path.join(_ROOT, "modules", "reels")),
-                         "a checkout without the private modules has no Reels to bundle")
-    def test_the_vendored_script_is_an_importable_module(self):
-        """PyInstaller bundles what the import graph reaches. The script is only ever executed, so
-        without this package marker it is left out of the build and the dispatch imports nothing."""
-        self.assertTrue(os.path.isfile(
-            os.path.join(_ROOT, "modules", "reels", "vendor", "__init__.py")))
-
-    def test_the_spec_bundles_the_vendored_script_only_when_reels_ships(self):
-        """A hiddenimport naming a module that is also excluded is a contradiction PyInstaller
-        resolves by dropping it — so the entry has to sit inside the same gate."""
-        with open(_SPEC, "r", encoding="utf-8") as handle:
-            spec = handle.read()
-        self.assertIn("modules.reels.vendor.subsync", spec)
-        guarded = spec.index("if enable_reels:") < spec.index("modules.reels.vendor.subsync")
-        self.assertTrue(guarded, "the hiddenimport must be inside the `if enable_reels:` gate")
 
 
 class TestShippedSettings(unittest.TestCase):

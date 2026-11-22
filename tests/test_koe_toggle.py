@@ -1,9 +1,9 @@
-"""Core-side wiring for the optional Koe (speech) module.
+"""The core without the Koe (speech) module.
 
-The module itself is NOT tracked by git, so everything here must pass with or without it present.
-These tests cover only what lives in the core: that the speech settings are module-owned, that the
-report generator embeds nothing when the module is absent or off, and that the toggle drives the
-helper's lifecycle. The module's own behaviour is covered by `modules/koe/tests`.
+Koe is shelved (3.0.18): its folder is no longer in the tree, and its own wiring tests went with it. What stays
+here is what the core must keep true without it: the speech settings are module-owned, the report generator embeds
+nothing when the module is absent, the templates never carry a key or call Google, and an absent module is a
+silent no-op.
 
 Mirrors tests/test_youtube_toggle.py.
 """
@@ -80,53 +80,6 @@ class TestReportEmbedsNothingWithoutTheModule(unittest.TestCase):
             self.assertIn("127.0.0.1", markup)
 
 
-class TestHiddenInstallLeavesNoTrace(unittest.TestCase):
-    """A user who never asks for speech must end up with a settings.json that looks exactly as it
-    did before the module shipped — no toggle, and no koe_* keys written by a routine save."""
-
-    def _saved_settings(self, revealed):
-        """Run the dashboard's save path with the module present and `is_revealed` forced."""
-        app = MagicMock()
-        app._current_settings = {"koe_voice": "Sadaltager", "koe_model": "m", "koe_style": "",
-                                 "koe_temperature": 1.15, "koe_port": 8787, "koe_daily_cap": 300}
-        app.var_enable_koe.get.return_value = True
-
-        settings = {}
-        fake_koe = MagicMock()
-        fake_koe.is_revealed.return_value = revealed
-        with patch.dict(sys.modules, {'modules': MagicMock(koe=fake_koe),
-                                      'modules.koe': fake_koe}):
-            # Mirrors the block in MasterDashboardApp.save_settings.
-            try:
-                import modules.koe as _koe
-                if _koe.is_revealed():
-                    settings["enable_koe"] = app.var_enable_koe.get()
-                    for key in ("koe_voice", "koe_model", "koe_style",
-                                "koe_temperature", "koe_port", "koe_daily_cap"):
-                        if key in app._current_settings:
-                            settings[key] = app._current_settings[key]
-            except (ImportError, ModuleNotFoundError):
-                pass
-        return settings
-
-    def test_nothing_is_written_while_hidden(self):
-        self.assertEqual(self._saved_settings(revealed=False), {})
-
-    def test_settings_are_written_once_revealed(self):
-        saved = self._saved_settings(revealed=True)
-        self.assertIn("enable_koe", saved)
-        self.assertIn("koe_voice", saved)
-
-    def test_the_real_save_path_consults_is_revealed(self):
-        """Guards the wiring itself: if the `is_revealed()` check were ever dropped from
-        save_settings, the keys would leak to every user and this file would still pass."""
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "app", "main.py"), "r", encoding="utf-8") as f:
-            source = f.read()
-        self.assertIn("_koe.is_revealed()", source,
-                      "save_settings/settings UI must gate on the reveal check")
-
-
 class TestSpeechIsPartOfThePresentationFingerprint(unittest.TestCase):
     """Speech state is INJECTED into the report, so toggling it has to force a re-render.
 
@@ -159,7 +112,7 @@ class TestSpeechIsPartOfThePresentationFingerprint(unittest.TestCase):
         self.assertEqual(without_key, self._signature(False))
 
 
-class TestKoeToggleDrivesTheHelper(unittest.TestCase):
+class TestAnAbsentKoeIsANoOp(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._original_modules = set(sys.modules.keys())
@@ -192,50 +145,6 @@ class TestKoeToggleDrivesTheHelper(unittest.TestCase):
         self.app = MagicMock(spec=self.MasterDashboardApp)
         self.app.var_enable_koe = MagicMock()
         self.app.var_source_display = MagicMock()
-
-    def test_enabling_speech_starts_the_helper(self):
-        self.app.var_enable_koe.get.return_value = True
-        self.app.var_source_display.get.return_value = "icon"
-        fake_koe = MagicMock()
-        # The PARENT package is faked too: `from modules import koe` binds the top-level name, so
-        # sys.modules['modules'] is consulted and faking only the submodule would raise whenever
-        # modules/ is genuinely absent — the very case this file promises to cover.
-        with patch.dict(sys.modules, {'modules': MagicMock(koe=fake_koe),
-                                      'modules.koe': fake_koe}):
-            self.MasterDashboardApp.apply_koe_state(self.app)
-        fake_koe.start_server.assert_called_once()
-        fake_koe.stop_server.assert_not_called()
-
-    def test_disabling_speech_stops_the_helper(self):
-        self.app.var_enable_koe.get.return_value = False
-        self.app.var_source_display.get.return_value = "icon"
-        fake_koe = MagicMock()
-        with patch.dict(sys.modules, {'modules': MagicMock(koe=fake_koe),
-                                      'modules.koe': fake_koe}):
-            self.MasterDashboardApp.apply_koe_state(self.app)
-        fake_koe.stop_server.assert_called_once()
-        fake_koe.start_server.assert_not_called()
-
-    def test_enabling_speech_promotes_a_hidden_source_badge(self):
-        """The report's speech control IS the source badge, so with the badge off there would be
-        no button to click. Turning speech on must make it visible."""
-        self.app.var_enable_koe.get.return_value = True
-        self.app.var_source_display.get.return_value = "off"
-        fake_koe = MagicMock()
-        with patch.dict(sys.modules, {'modules': MagicMock(koe=fake_koe),
-                                      'modules.koe': fake_koe}):
-            self.MasterDashboardApp.apply_koe_state(self.app)
-        self.app.var_source_display.set.assert_called_once_with("icon")
-
-    def test_an_existing_badge_choice_is_left_alone(self):
-        """Only 'off' is overridden — someone who chose 'File name' keeps it."""
-        self.app.var_enable_koe.get.return_value = True
-        self.app.var_source_display.get.return_value = "filename"
-        fake_koe = MagicMock()
-        with patch.dict(sys.modules, {'modules': MagicMock(koe=fake_koe),
-                                      'modules.koe': fake_koe}):
-            self.MasterDashboardApp.apply_koe_state(self.app)
-        self.app.var_source_display.set.assert_not_called()
 
     def test_absent_module_is_a_silent_no_op(self):
         """The Prime Invariant: with modules/koe/ deleted the app must behave exactly as before."""

@@ -666,7 +666,7 @@ class FlagList(QWidget):
             y = top + round(4 * f) + fm.ascent()
             for text, dim in flag_texts(line):
                 p.setPen(rows.c("ink-faint" if not ticked else "ink-dim" if dim else "ink"))
-                p.drawText(QPointF(text_x, y), fm.elidedText(text, Qt.TextElideMode.ElideRight, width))
+                p.drawText(QPointF(text_x, y), fm.elidedText(scrub.shown(text), Qt.TextElideMode.ElideRight, width))
                 y += fm.height()
             if self.hasFocus() and i == self.at:
                 p.setPen(QPen(rows.c("accent"), 2))

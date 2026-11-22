@@ -28,10 +28,11 @@ import time
 import pytest
 
 from app import analyzer, cues
-from app.connect import inbox, pick, status, swap, swap_queue
+from app.connect import inbox, library, pick, status, swap, swap_queue, tidy
 from app.connect.ledger import OPEN, SWAP, Ledger
 from app.services import needs
 from tests import cli_helpers as h
+from tests import connect_helpers as c
 from tests.connect.test_kyou_sh2_tidy import FakeAnki as TidyAnki
 
 RESOURCES = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Test Resources")
@@ -188,11 +189,20 @@ def _old_card(anki, lang, note=900, word=None):
     return anki
 
 
-def _make_the_job(ledger, row, note=950, tag="surasura::connect::x"):
-    """Connect's job for the swap ends having made `note` (what its steps would leave in the ledger)."""
+def _make_the_job(ledger, row, note=950, tag="surasura::connect::x", record=False):
+    """Connect's job for the swap ends having made `note` (what its steps would leave in the ledger); `record`: the
+    mining's store write too — the runner's own step (`runner._record_made`, the library's made-words record), as
+    every Connect job writes it before it ends (a library store must be there: `c.library`)."""
     ledger.end_batch(row["job_id"], 1, "done", [{"word": row["word"], "reading": "", "outcome": "made",
                                                  "note_id": note}])
+    if record:
+        from app.connect import runner
+        runner._record_made(runner.Steps({}), ledger, row["language"], ledger.job_by_id(row["job_id"]), True)
     ledger.set_state(row["job_id"], "done")
+
+
+def _opener(lang):
+    return lambda: library.open_store(lang)
 
 
 def _row(ledger, swap_id):
@@ -393,16 +403,29 @@ class _NoStore:
 # --------------------------------------------------------------------------- #
 # Undo
 # --------------------------------------------------------------------------- #
-def _made_swap(ledger, monkeypatch, lang="ja"):
+def _made_swap(ledger, monkeypatch, lang="ja", old_here=False):
+    """A swap made as Connect makes it: its job's card in the ledger (`made`) and in the library's made-words record
+    (the runner's own write) — the two records Tidy's guarantee asks of a card Surasura made (Kyou-SH3). `old_here`:
+    the old card is Connect's too, made from the episode the swap's line comes from."""
     word, _old, other = CASES[lang]
+    c.library(lang)
     _lists(lang)
     _queued(lang, word)
-    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, other))
+    with c.store(lang) as s:
+        item = s.ids("now")[0]
+        if old_here:                # the old card Connect made from this same episode, recorded for the word there
+            library.record_batch(s, item, {word: [900]}, "2026-11-21T10:00:00Z", batch="t-1")
+    if old_here:
+        job = ledger.queue(lang, item, "user", None, store_id="s1")
+        ledger.end_batch(job, 1, "done", [{"word": word, "reading": "", "outcome": "made", "note_id": 900,
+                                           "sentence": _old}])
+        ledger.set_state(job, "done")
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (item, other))
     anki = _old_card(Anki(), lang)
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
     row = swap._rows(ledger, "1 = 1")[0]
     tag = "surasura::connect::" + ledger.tag_id(row["job_id"])
-    _make_the_job(ledger, row)
+    _make_the_job(ledger, row, record=True)
     done_at = calendar.timegm(time.strptime(ledger.job_by_id(row["job_id"])["updated_at"], "%Y-%m-%dT%H:%M:%SZ"))
     anki.add(950, tag, word, done_at - 60, sound="swap-new.mp3")      # untouched since its job made it
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
@@ -412,7 +435,7 @@ def _made_swap(ledger, monkeypatch, lang="ja"):
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_undo_deletes_the_new_card_with_a_backup_and_puts_the_old_one_back_to_study(ledger, lang, monkeypatch):
     anki, swap_id = _made_swap(ledger, monkeypatch, lang)
-    got = swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
+    got = swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))
     assert got["undone"] and anki.deleted == [950]
     folder = [r for r in ledger.conn.execute("SELECT folder, why FROM tidies")][0]
     assert folder[1] == "swap" and os.path.isfile(os.path.join(folder[0], "cards.apkg"))
@@ -420,7 +443,7 @@ def test_undo_deletes_the_new_card_with_a_backup_and_puts_the_old_one_back_to_st
     assert (old["queue"], old["flags"]) == (0, 0) and swap.SWAP_TAG not in anki.notes_[900]["tags"]
     assert status._tidied(ledger.conn, lang) is None                  # a swap's Undo isn't a tidy
     with pytest.raises(swap.tidy.Refused) as twice:
-        swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
+        swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))
     assert twice.value.say == swap.ALREADY and anki.deleted == [950]
 
 
@@ -428,9 +451,62 @@ def test_a_new_card_you_studied_stays_and_undo_changes_nothing(ledger, monkeypat
     anki, swap_id = _made_swap(ledger, monkeypatch)
     anki.cards_[9500].update(reps=2, type=2, queue=2)
     with pytest.raises(swap.tidy.Refused) as kept:
-        swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+        swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))
     assert kept.value.say == swap.KEPT and anki.deleted == []
     assert anki.cards_[9000]["queue"] == -1 and _row(ledger, swap_id)["state"] == swap.MADE
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_swapped_card_is_in_both_of_surasuras_records_and_tidys_guarantee_takes_it_as_its_own(ledger, lang,
+                                                                                                 monkeypatch):
+    # Why: Undo deletes the new card only through Tidy's guarantee (Kyou-SH3), which takes a card as Surasura's only
+    # when the library's made-words record AND Connect's ledger both made it — a tag alone never. A swap's card is made
+    # by a Connect job like any other: both records must hold it, or Undo can never take back a swap.
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang)
+    assert tidy._made_notes(_opener(lang), [950, 900]) == {950}, "the made-words record holds the new card"
+    assert tidy._done_at(ledger, 950) is not None, "Connect's ledger made it: its job ended"
+    go, kept, _infos, _cards = tidy.check(anki, ledger, [950, 900], tidy._made_notes(_opener(lang), [950, 900]))
+    assert go == [950], "the guarantee takes the swap's new card as Surasura's own, never studied, unchanged"
+    assert kept == [[900, tidy.NOT_MADE]], "the old card is never Tidy's (here: not Connect's; studied besides)"
+    # the guarantee isn't loosened for a swap: without the made-words record (no store) the new card stays
+    with pytest.raises(swap.tidy.Refused) as refused:
+        swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
+    assert refused.value.say == swap.KEPT and anki.deleted == [] and _row(ledger, swap_id)["state"] == swap.MADE
+    assert anki.cards_[9000]["queue"] == -1, "a refused Undo leaves the old card as it was"
+    assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))["undone"] and anki.deleted == [950]
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_an_ordinary_tidy_takes_a_swaps_unstudied_new_card_as_any_connect_card_and_undo_still_gives_the_old_back(
+        ledger, lang, monkeypatch):
+    # Why: a swap's new card counts as any Connect card once made (ROLES: Tidy treats a swapped-in card as any Connect
+    # card, PROVISIONAL) — past the window and never studied, Tidy may delete it with a copy kept. Tidy must never touch
+    # the old card (suspended, green, tagged swapped), and the swap's Undo must still give it back, deleting nothing.
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang)
+    done = tidy.run(anki, ledger, lang, [950, 900], why=tidy.AUTO, open_store=_opener(lang))
+    assert done["deleted"] == [950] and [n for n, _w in done["kept"]] == [900]
+    old = anki.cards_[9000]
+    assert (old["queue"], old["flags"]) == (-1, 3) and swap.SWAP_TAG in anki.notes_[900]["tags"],         "the old card stays suspended, green and tagged: Tidy never changes it"
+    assert _row(ledger, swap_id)["state"] == swap.MADE, "the swap stays made: its Undo is still offered"
+    assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))["undone"]
+    assert anki.deleted == [950], "the new card already gone: Undo deletes nothing more"
+    assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (0, 0), "the old card back in reviews"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_swap_from_its_old_cards_own_episode_adds_its_note_to_the_words_record_and_undo_takes_back_only_that(
+        ledger, lang, monkeypatch):
+    # Why: the made-words record has one row per episode and word. When the swap's other line is in the episode its old
+    # card came from, the row already exists: the new note must be added to it (else Tidy never takes the swap's card
+    # back), and Undo must take out only the new note — the old card's record stays, so the word is never made again.
+    word = CASES[lang][0]
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang, old_here=True)
+    with c.store(lang) as s:
+        item = s.ids("now")[0]
+        assert s.made(item)[word] == [900, 950]
+    assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))["undone"] and anki.deleted == [950]
+    with c.store(lang) as s:
+        assert s.made(item)[word] == [900], "the old card's record stays: the word isn't free to make again"
 
 
 def test_the_window_says_each_swap_with_undo_and_ok(ledger, monkeypatch):
@@ -592,7 +668,7 @@ def test_undo_after_you_deleted_the_new_card_puts_the_old_one_back_and_deletes_n
     # Why: a new card already gone is nothing to delete; Undo must still give the learner their old card back.
     anki, swap_id = _made_swap(ledger, monkeypatch)
     del anki.notes_[950]
-    got = swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    got = swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))
     assert got["undone"] and anki.deleted == []
     assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (0, 0)
     assert swap.SWAP_TAG not in anki.notes_[900]["tags"] and _row(ledger, swap_id)["state"] == swap.UNDONE
@@ -605,7 +681,7 @@ def test_undo_of_one_card_of_a_note_keeps_the_tag_its_other_swapped_card_still_n
         ledger.conn.execute("INSERT INTO swaps (language, word, reading, old_note, old_card, by, state, new_note, "
                             "tagged, at, updated_at) SELECT language, word, reading, old_note, 9001, by, state, 951, "
                             "1, at, updated_at FROM swaps WHERE id = ?", (swap_id,))
-    swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))
     assert swap.SWAP_TAG in anki.notes_[900]["tags"] and anki.cards_[9000]["queue"] == 0
 
 
@@ -767,7 +843,7 @@ def test_after_an_undo_the_queue_and_the_ledger_both_say_undone_and_the_window_o
     anki, swap_id = _made_swap(ledger, monkeypatch, lang)
     ref = _row(ledger, swap_id)["ref"]
     assert _agree(ledger, lang) == {ref: "made"}
-    swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
+    swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))
     assert _agree(ledger, lang) == {ref: "undone"}
     entry = [e for e in swap_queue.load(lang) if e["id"] == ref][0]
     assert entry["made"]["note"] == 950 and entry["undone"]            # the record kept, never deleted
@@ -787,11 +863,11 @@ def test_an_undo_whose_queue_write_fails_changes_neither_record_and_a_retry_fini
         raise RuntimeError("Your known words are being updated by Anki known-words sync.")
     monkeypatch.setattr(swap_queue, "undone", busy)
     with pytest.raises(RuntimeError):
-        swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+        swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))
     assert _agree(ledger, "ja") == {ref: "made"}                        # both still say made
     assert anki.deleted == [950] and anki.cards_[9000]["queue"] == 0    # the steps before it done, kept
     monkeypatch.setattr(swap_queue, "undone", real)
-    assert swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)["undone"]
+    assert swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))["undone"]
     assert _agree(ledger, "ja") == {ref: "undone"} and anki.deleted == [950]
 
 
@@ -806,7 +882,7 @@ def test_an_undo_the_queue_took_but_the_ledger_lost_is_followed_and_never_tagged
     swap.look(Steps(), ledger, "ja", anki=anki, files=5)
     assert _agree(ledger, "ja") == {row["ref"]: "undone"} and swap.SWAP_TAG not in anki.notes_[900]["tags"]
     with pytest.raises(swap.tidy.Refused) as again:
-        swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+        swap.undo(anki, ledger, "ja", swap_id, open_store=_opener("ja"))
     assert again.value.say == swap.ALREADY
 
 

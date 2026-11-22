@@ -251,7 +251,7 @@ def test_switching_on_runs_the_watermarks_then_the_backfill_then_the_reload_on_o
     worker, never the GUI thread, and the page writes nothing itself (N11). The toggle is given back and Connect's rows
     show (the write told through the bridge)."""
     page, store, rows, fake = make(world, monkeypatch=monkeypatch)
-    assert not page.rows["connect_mine_words"].isVisibleTo(page)
+    assert not page.rows["connect_send_grammar"].isVisibleTo(page)
     rows.switch.toggle.changed.emit(True)
     assert settled(rows)
     assert names(world.events) == ["turn_on", "backfill", "reload"]
@@ -259,7 +259,7 @@ def test_switching_on_runs_the_watermarks_then_the_backfill_then_the_reload_on_o
     assert len({e[2] for e in world.events}) == 1, "the back-fill and the reload run on turn_on's worker"
     assert store.calls == [], "the page wrote a setting itself"
     assert rows.switch.toggle.value() is True and rows.switch.toggle.isEnabled()
-    assert page.rows["connect_mine_words"].isVisibleTo(page), "Connect's rows show once it is on"
+    assert page.rows["connect_send_grammar"].isVisibleTo(page), "Connect's rows show once it is on"
     assert real_switch.ON in world.bar.lines
 
 
@@ -273,7 +273,7 @@ def test_a_switch_on_that_fails_goes_back_off_says_why_and_does_nothing_more(wor
     assert rows.switch.toggle.value() is False and rows.switch.toggle.isEnabled()
     assert any("the library is busy" in line for line in world.bar.lines)
     assert world.bar.lines[-1] == S.SWITCH_NOT_ON.format(fake.on[1])
-    assert not page.rows["connect_mine_words"].isVisibleTo(page)
+    assert not page.rows["connect_send_grammar"].isVisibleTo(page)
     assert store.calls == []
 
 
@@ -299,7 +299,7 @@ def test_the_toggle_says_turning_on_while_its_run_goes_and_a_second_change_start
 
 def test_switching_off_with_nothing_on_the_shelf_turns_off_on_the_same_worker_without_asking(world, monkeypatch):
     page, store, rows, fake = make(world, {"connect_enabled": True}, monkeypatch=monkeypatch)
-    assert page.rows["connect_mine_words"].isVisibleTo(page)
+    assert page.rows["connect_send_grammar"].isVisibleTo(page)
     rows.switch.toggle.changed.emit(False)
     assert settled(rows)
     assert names(world.events) == ["shelved", "turn_off", "reload"]
@@ -307,7 +307,7 @@ def test_switching_off_with_nothing_on_the_shelf_turns_off_on_the_same_worker_wi
     assert len({e[2] for e in world.events}) == 1 and not any(e[1] for e in world.events)
     assert world.asked == []
     assert rows.switch.toggle.value() is False and rows.switch.toggle.isEnabled()
-    assert not page.rows["connect_mine_words"].isVisibleTo(page), "Connect's rows go once it is off"
+    assert not page.rows["connect_send_grammar"].isVisibleTo(page), "Connect's rows go once it is off"
     assert store.calls == []
 
 
@@ -369,7 +369,7 @@ def test_a_put_back_that_failed_asks_off_anyway_and_no_keeps_connect_on(world, m
     assert names(world.events) == ["shelved", "put_back"], "a No to 'off anyway' saved the switch off"
     assert rows.switch.toggle.value() is True and rows.switch.toggle.isEnabled()
     assert world.bar.lines[-1] == S.STAYS_ON
-    assert page.rows["connect_mine_words"].isVisibleTo(page)
+    assert page.rows["connect_send_grammar"].isVisibleTo(page)
 
 
 def test_a_yes_to_off_anyway_turns_connect_off_without_putting_back_again(world, monkeypatch):

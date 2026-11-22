@@ -520,7 +520,7 @@ def test_any_change_throws_away_the_preview_its_clicks_and_ticks(main, engine):
     win.toggle_row(0)
     settled(win)
     assert win.session.deselected
-    win.rb_leverage.click()
+    win.cb_phrases.click()                  # any control (順's *Order* moved to the list's Study order)
     assert win.session.stats is None and not win.session.deselected and win.session.ticked is None
     assert win.match.text() == qs.JUNBAN_MATCH_REFRESH and not win.btn_reorder.isEnabled()
 
@@ -1344,7 +1344,7 @@ def test_the_reorder_button_names_the_count_its_sentence_moves(main, engine):
     settled(win)                                            # another then lands where it already sits)
     m = win.session.view.to_write
     assert 0 < m < n and win.btn_reorder.text() == qs.JUNBAN_REORDER_N.format(n=m, s="" if m == 1 else "s")
-    win.rb_leverage.click()                                 # the preview thrown away: no count to name
+    win.cb_phrases.click()                                  # the preview thrown away: no count to name
     assert win.btn_reorder.text() == qs.JUNBAN_REORDER
 
 
@@ -1598,6 +1598,6 @@ def test_fresh_u_the_window_leads_with_its_one_question_before_any_option(main, 
     assert lead.textFormat() == Qt.TextFormat.PlainText and lead.objectName() == "windowlead"
     assert lead.isVisibleTo(win)
     assert lead.accessibleName() == qs.JUNBAN_LEAD
-    order = [win.header, lead, win.rb_deck, win.rb_met, win.rb_leverage]
+    order = [win.header, lead, win.rb_deck, win.rb_all]
     tops = [w.mapTo(win, w.rect().topLeft()).y() for w in order]
     assert tops[0] < tops[1] < min(tops[2:]), "the question sits between the header and the first option"

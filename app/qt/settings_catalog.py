@@ -233,9 +233,7 @@ ROWS = (
     _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a switch the store draws
     _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
-    _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),
-         group="from_library", when=_CONNECT),
-    _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
+    _row("mine_line", "anki", "custom", when=_CONNECT, group="from_library"),               # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
     # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
@@ -246,6 +244,10 @@ ROWS = (
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
+    # Kantan-MO (the mining model, PROVISIONAL words): your level decides which words get cards; this makes cards for
+    # every new word of an episode, past your level too (they count toward *Keep up to*) — *Words to make cards from*
+    # retired
+    _row("connect_every_word", "anki", "toggle", ("connect_every_word",), adv=True, when=_CONNECT),
     # Michi-LP (PROVISIONAL words): how many clips Anki Miner cuts at once — Automatic (this PC's number), or yours
     _row("connect_clip_cuts", "anki", "select", ("connect_clip_cuts",), options=("auto", 1, 2, 3, 4, 5, 6), adv=True,
          when=_CONNECT),
@@ -268,7 +270,6 @@ ROWS = (
     # a9.1: Junban's window has one door, here (it held *Preview order* on a row of its own too)
     _row("junban_scope", "junban", "choice", ("junban_scope",), options=("deck", "all"), when=_JUNBAN_ON,
          door=("junban",), reaches=("junban_deck", "junban_word_fields")),
-    _row("junban_order", "junban", "choice", ("junban_order",), options=("content", "priority"), when=_JUNBAN_ON),
     _row("junban_unlisted", "junban", "choice", ("junban_unlisted",), options=("list_first", "journey", "back"),
          when=_JUNBAN_ON),
     # Q31: two switches that work together, never a pick-one row (Japanese only; nothing to do at the back)
@@ -309,6 +310,8 @@ ROWS = (
 
     # Level (New words a day went to Anki & mining's *New cards a day*: G1.2-5)
     _row("level", "level", "slider", ("logic.selection.band", "logic.selection.auto")),
+    # Kantan-MO (ROLES.md: the list's): one study order for Connect, 順 and the journey (順's *Order* moved here)
+    _row("study_order", "level", "choice", ("study_order",), options=("content", "priority")),
     _row("strategy", "level", "choice", ("strategy",), options=("freq", "coverage")),
     _row("target_coverage", "level", "number", ("target_coverage",), sub=True, when=_coverage, bounds=(1, 100)),
     _row("show_words_per_day", "level", "toggle", ("show_words_per_day",), adv=True),
@@ -447,6 +450,8 @@ NOT_SHOWN = {
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",
+    "connect_mine_words": "retired by the mining model (Kantan-MO): Level + *Cards for every new word*; read once",
+    "junban_order": "retired by the mining model (Kantan-MO): the list's *Study order*; read when it isn't saved",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
     "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",

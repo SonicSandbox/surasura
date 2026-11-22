@@ -744,8 +744,8 @@ class Host:
         engine, ids = self._engine_for(store)
         ranked = sorted((order[key] + (item_id,) for key, item_id in self._plan_keys(ids) if key in order))
         result = engine.replan([(item_id, tier) for _rank, _place, tier, item_id in ranked])
-        mode = str(settings.get("junban_order") or "content").strip().lower()
-        rows = result.rows(mode if mode in ("content", "priority") else "content")
+        from app import settings_manager
+        rows = result.rows(settings_manager.study_order(settings))       # the list's study order (Kantan-MO)
         job = spaced.Job(automatic=True, rows=rows, cards=self._card_map(), places=places(self._plan, ids, result))
         report = self._write(settings, job, kind)
         _record_cards_out(store, report)                 # P4.1 L2

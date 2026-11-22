@@ -138,9 +138,9 @@ def test_a_word_the_episode_shares_with_a_counted_file_keeps_its_card_on_the_lis
 
 
 def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_stone(lib, monkeypatch):
-    # With *List first* off ("journey"), a card the library map places (a word the list cut off, Junban's "library"
-    # tier) is placed with the list, never "not on your list" (`unlisted.PLACED_WITH_LIST`): a stone on another
-    # episode must leave it be. (With List first on, such a card is "not on your list" before any stone.)
+    # A card the library map places (a word the list cut off, Junban's "library" tier — Kyou-MO: Surasura's cards with
+    # *Cards for every new word* on) is placed with the list, never "not on your list" (`unlisted.PLACED_WITH_LIST`):
+    # a stone on another episode must leave it be.
     from modules.junban import connect
     from app import anki_match
     from tests.test_replan_preview_watched import ParkingCollection, _episode_with_its_own_words
@@ -148,7 +148,7 @@ def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_s
     from modules.junban.tests.test_reposition import _collection
     root, store = lib
     monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
-    _settings_file(root, **dict(ACTING, junban_unlisted="journey"))
+    _settings_file(root, **dict(ACTING, connect_every_word=True))
     episode, own = _episode_with_its_own_words(store)
     with open(os.path.join(root, "data", "ja", store.item(episode)["rel_path"]), encoding="utf-8") as f:
         text = f.read()
@@ -157,21 +157,23 @@ def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_s
     below = next(k for k in sorted(library) if len(k) > 1 and k not in listed and k not in text)
     words = list(dict.fromkeys(_window(root) + own + [below]))
     cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    for note in notes:                          # `below`'s card is Surasura's (Kyou-MO: the library map places those)
+        if note["fields"]["Expression"]["value"] == below:
+            note["tags"] = ["surasura::connect::job-20261121-1"]
     fake = ParkingCollection(cards, notes, actions=ACTIONS)
     host, _lines = _host(generate=lambda reason: None)
     with _patched(fake):
         host._job("catch-up")
-        assert not _suspended(fake, _word_cards(fake, [below])), "List first off: the library map places it"
+        assert not _suspended(fake, _word_cards(fake, [below])), "the library map places it"
 
-        def placed():                               # the re-plan's seconds before the Generate: never parked either
-            assert not _suspended(fake, _word_cards(fake, [below])), f"{below}: parked by the at-once re-plan"
-            # List first off: until the Generate rewrites the library map the stone's own words are placed by it —
-            # their file left the order, so after every listed card (`replan_preview.places`); parked after it
-            mine = set(_word_cards(fake, own))
-            listed = _word_cards(fake, [w for w in _window(root) if w not in own])
-            last = max(fake.cards[c]["due"] for c in listed if fake.cards[c]["queue"] == 0 and c not in mine)
-            assert all(fake.cards[c]["due"] > last for c in mine if fake.cards[c]["queue"] == 0),                 "the stone's own cards still ahead of a listed card"
-        _mark_and_generate(root, store, fake, host, episode, between=placed)
+        # Kyou-MO: the stone's own words are your cards past the list — set aside at the first catch-up already
+        # (*Mixed in* for your own cards is gone), so the stone has nothing more to write; the claim left is the
+        # library-placed card's: never parked, at once or after the Generate
+        store.set_watched([episode], True)
+        _job(fake, host)
+        assert not _suspended(fake, _word_cards(fake, [below])), f"{below}: parked by the at-once re-plan"
+        _generate(root)
+        _job(fake, host, "generate")
     assert _suspended(fake, _word_cards(fake, own)) == set(_word_cards(fake, own)), "the stone parked its own words"
     card = _word_cards(fake, [below])
     assert card and not _suspended(fake, card), f"{below}: placed by the library map, never parked"

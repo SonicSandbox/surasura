@@ -802,7 +802,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if planned:
         # the re-plan IS the list for the store's order (parity with a full Generate on the plan columns, 05 §1)
         from modules.junban import spaced
-        mode = str(junban_settings.get("junban_order") or "content").strip().lower()
+        from app import settings_manager
+        mode = settings_manager.study_order(junban_settings)       # the list's study order (Kantan-MO)
         job = spaced.Job(automatic=True, rows=current.rows(mode), places=current.places)
         list_current = True
     else:
@@ -1173,6 +1174,30 @@ def _listed(args, lang):
     return out
 
 
+_COUNTED = {}      # the last Generate's counts, kept while its library_frequency.json is the same file (`_counted`)
+
+
+def _counted(lang):
+    """(uses per word, the list's cut-off) the last Generate counted (`analyzer.library_counts`), so Connect's pick
+    reads a rare compound as the list did (Kantan-MA: 大衆 counted only in 大衆食堂) — (None, 0) for Chinese, before
+    the first Generate, for another language's results, or a file that can't be read now (each word is then itself).
+    Read once while the file is unchanged: a run's every episode asks."""
+    if lang != "ja":
+        return None, 0
+    from app import analyzer
+    path = os.path.join(_results_dir(), "library_frequency.json")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, 0
+    stamp = (lang, path, st.st_mtime_ns, st.st_size)
+    held = _COUNTED.get("now")                          # one (stamp, answer) pair, replaced whole: two threads safe
+    if held is None or held[0] != stamp:
+        counts, floor = analyzer.library_counts(path, lang)
+        held = _COUNTED["now"] = (stamp, (counts, floor or 0) if counts is not None else (None, 0))
+    return held[1]
+
+
 def _known_test(lang, tokenizer, script):
     """`is_known((lemma, reading))` by the analyzer's rule (the YouTube preview's): known, or on an ignore list."""
     from app import analyzer
@@ -1339,10 +1364,12 @@ def pick(args):
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
-    mode = args.words or loaded.get("connect_mine_words") or "list"
+    # Kantan-MO: the list (Level) decides, and *Cards for every new word* (`connect_every_word`) adds the rest;
+    # `--words` still names any of pick's modes
+    from app import settings_manager
+    mode = args.words or settings_manager.mine_mode(loaded)
     if mode not in MINE_WORDS:
-        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or "
-                                   "i1.", need="mine-words-setting")
+        raise CliError("bad-data", f"--words is {mode!r}: it must be list, unknown or i1.", need="mine-words-setting")
     if not os.path.isfile(args.file):
         raise CliError("bad-data", f"There's no subtitle at {args.file}.")
     if args.video is not None and not os.path.isfile(args.video):
@@ -1397,7 +1424,8 @@ def pick(args):
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
-    view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
+    # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
+    view = analyzer.LearningView(*_counted(lang), known=is_known)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
@@ -1406,7 +1434,8 @@ def pick(args):
                           # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
                           # parts (never on the command line): no card from a line inside one
                           unsure=getattr(args, "unsure", None) or (),
-                          sentence_length=_sentence_length(loaded) if book else None)
+                          sentence_length=_sentence_length(loaded) if book else None,
+                          view=view if lang == "ja" else None)
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

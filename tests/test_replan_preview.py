@@ -1049,9 +1049,12 @@ def _start_again(store, moved, home="goal"):
 
 
 def _positions_only(over):
-    """The same settings with every action switched off: what today's host sends, `_POSITIONS_ONLY` laid over them."""
+    """The same settings with every action switched off: what today's host sends, `_POSITIONS_ONLY` laid over them —
+    *Set aside*'s cards keeping their place at the back (Kyou-MO: `auto.decide_actions`)."""
+    from modules.junban import unlisted
+    placed = unlisted.choice(over)
     return dict(over, junban_auto_actions=False, junban_later_tag=False, junban_later_flag=False,
-                junban_later_suspend=False)
+                junban_later_suspend=False, junban_off_list="back" if placed == "aside" else placed)
 
 
 def _parked_read(request):

@@ -201,9 +201,10 @@ def test_i_make_my_own_cards_is_kept_and_the_next_look_says_your_first_cards_are
 
 # --- the gate (SPEC-r2 §0.11 row 2): every step acts from its own card ------------------------------------------- #
 def _up(win):
-    got = win._up_next()
-    assert got is not None, "the seed's Current has an Up Next"
-    return got
+    # FLAKES (Kantan-MO's #568, GitHub core 3/4): the fixture waits for the duties only; Current's rows come from the
+    # library reader a poll later — under load they weren't drawn yet. Up Next is read once they are
+    assert wait_until(lambda: win._up_next() is not None, 10), "the seed's Current has an Up Next"
+    return win._up_next()
 
 
 def test_step_ones_press_opens_the_journey_on_up_nexts_episode_and_ticks_once_it_opened(lib_world, monkeypatch):
@@ -299,7 +300,7 @@ def test_a_watched_mark_on_its_way_is_what_marking_reads():
 @pytest.mark.parametrize("key, target", [
     ("words", "_open_journey"), ("words-any", "_open_journey"), ("mine", "mine_row"), ("miner", "install"),
     ("junban", "_open_junban"), ("junban-again", "_open_junban"), ("backfill", "launch"),
-    ("automation", "settings:automation"), ("yours", "settings:connect_mine_words"),
+    ("automation", "settings:automation"), ("yours", "settings:level"),
     ("audiobook", "tab:current@audiobook"), ("hato", "settings:hato"), ("piyo", "settings:practice_ai"),
 ])
 def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key, target):
@@ -313,6 +314,8 @@ def test_every_steps_primary_runs_the_press_it_names(lib_world, monkeypatch, key
     monkeypatch.setattr(windows, "launch", lambda shell, op: ran.append(("launch", op.name)))
     monkeypatch.setattr(win, "_top_to_mine", lambda: ("row", [1]))
     win.mine = type("Mine", (), {"mine_row": lambda self, row, ids: ran.append(("mine_row", row, ids))})()
+    if key == "words":
+        _up(win)                                    # Current's rows drawn (FLAKES: #568), so the press names Up Next
     win.path_press(key)
     assert ran and ran[0][0] == target, ran
     if key == "words":
@@ -390,7 +393,7 @@ def test_picking_which_words_get_a_card_in_settings_ticks_make_it_yours(lib_worl
     from app.qt import settings_catalog as catalog
     win = lib_world
     page = win.mount_settings()
-    page._saved(catalog.ROW["connect_mine_words"], dict(win.services.settings.get()), ["connect_mine_words"])
+    page._saved(catalog.ROW["connect_every_word"], dict(win.services.settings.get()), ["connect_every_word"])
     assert wait_until(lambda: "yours" in (guide.read_state().get("moments") or {}))
 
 
@@ -439,9 +442,10 @@ def test_the_panel_is_one_list_your_path_its_stages_now_new_for_you_later_and_do
     panel.close()
 
 
-def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monkeypatch):
+def test_make_it_yours_row_presses_only_while_it_opens_level(world, monkeypatch):
     # Sonic 2026-11-20 (hide ④'s press): ④ leads nowhere near *Words to make cards from* (the choice being retired; Only i+1 the
-    # off-list cards' trap) — its row stays to do (the stage reads right) with its ? line, but no *Do it*, no *Again*
+    # off-list cards' trap). The mining model (Kantan-MO) re-points ④'s press to Level, the one knob: its row is to do
+    # (the stage reads right) with its ? line and a *Do it* / *Again* — and none if it pointed anywhere else
     panel = world.d.guide_panel
     panel.set_look(guide.Look("3.0.5", (), False))
     f = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
@@ -449,7 +453,8 @@ def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monk
     assert panel.stage_row.states == (P.DONE, P.DONE, P.DONE, P.NOW)
     r = rows["yours"]
     assert r.status.useful and not r.later and r.tick.text() == ""               # to do, never "can't apply yet"
-    assert r.press is None and r.about.isVisibleTo(r)                           # no press; its line behind its ?
+    assert P.YOURS_PRESS == "settings:level"
+    assert r.press is not None and r.press.text() == strings.PATH_DO and r.about.isVisibleTo(r)   # its line behind ?
     assert r.accessibleDescription() == strings.PATH_STEPS["yours"][1]
     panel.close()
     # the rest row by row: a second open would race the shell's own fresh look (the open asks one on a worker, and its
@@ -458,11 +463,10 @@ def test_make_it_yours_row_has_no_press_until_the_mining_model_lands(world, monk
 
     def row(f2):
         return _StepRow({s.step.id: s for s in P.statuses(f2, {"first_ack": True})}["yours"], lambda _s: None, panel)
-    done = row(f._replace(yours_picked=True))                                   # done before: no *Again* either
-    assert done.status.done and done.status.useful and done.press is None
-    monkeypatch.setattr(P, "YOURS_CARD", True)                                  # the model re-points ④: its press back
-    on = row(f)
-    assert on.press is not None and on.press.text() == strings.PATH_DO
+    done = row(f._replace(yours_picked=True))                                   # done before: *Again*
+    assert done.status.done and done.status.useful and done.press.text() == strings.PATH_AGAIN
+    monkeypatch.setattr(P, "YOURS_PRESS", "settings:connect_mine_words")        # never a press to the retired choice
+    assert row(f).press is None and row(f._replace(yours_picked=True)).press is None
 
 
 def test_a_step_rows_do_it_runs_its_own_press_and_closes_the_panel(world):

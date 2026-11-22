@@ -552,7 +552,11 @@ MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you de
                   "\n• Undo takes the ask back")
 MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
 UNMINED_ENTRY = "Words it won't mine again…"
-UNMINED_ENTRY_TIP = "The words of this episode whose cards you deleted in Anki: allow one again"
+UNMINED_ENTRY_TIP = "This episode's words with no card: deleted, or ones it couldn't make"
+# Kantan-MA (a tester's report 2026-11-21: *Mine again* made no card and said nothing; PROVISIONAL words): the words of
+# an episode Connect couldn't make a card for, each with why (`ledger.left_of`)
+UNMINED_LEFT = "Not made from this episode"
+UNMINED_LEFT_LINE = "{word} · {why}"
 UNMINED_NAME = "Words Surasura won't mine again"
 UNMINED_LINE = "Cards you deleted in Anki. Surasura never makes these words again, unless you allow one."
 UNMINED_LINE_OF = "Cards of {label} you deleted in Anki. Surasura never makes these words again, unless you allow one."
@@ -1614,6 +1618,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "put_back_shelf": ("Put back", "Unsuspend them in Anki and take the surasura::shelf tag off: they wait with your "
                                    "new cards again"),
     "leave_shelf": ("Leave them", "They stay set aside, and this stops asking until more are set aside"),
+    # Kyou-SH2 (PROVISIONAL): Tidy, said
+    "undo_tidy": ("Undo", "Put those cards back in Anki from the copy Surasura kept, each in its own deck"),
+    "leave_tidy": ("OK", "They stay deleted; this goes until the next tidy"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1732,6 +1739,10 @@ NEEDS_CARDS_LEFT = "Left where they are · Surasura's new cards still go to its 
 NEEDS_SHELF_BACK = "Put back · they wait with your new cards again"        # Kyou-SH (PROVISIONAL)
 NEEDS_SHELF_NOT_BACK = "Not put back: {why}"
 NEEDS_SHELF_LEFT = "Left set aside · one comes back by itself when its word comes up"
+NEEDS_TIDY_BACK = "Put back · {n} cards are in Anki again"                    # Kyou-SH2 (PROVISIONAL)
+NEEDS_TIDY_BACK_ONE = "Put back · the card is in Anki again"
+NEEDS_TIDY_NOT_BACK = "Not put back: {why}"
+NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

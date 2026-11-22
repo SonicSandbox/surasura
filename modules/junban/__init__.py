@@ -57,21 +57,20 @@ SETTINGS_DEFAULTS = {
     # this very object. Assign a fresh dict instead.
     "junban_word_fields": {},
     "junban_chunk_size": 150,          # sub-actions per `multi` call
-    # Where the cards the list does not have go (Junban_Backlog_Spec §11, the panel's "List first"):
-    # "list_first" — the list's words first, with the phrases met as often as the list's words among
-    # them; then every rarer card by its own sentence, known words last. "journey" — a word the list cut
-    # off is placed where the journey meets it, among the list's. "back" — v1: all of them in their
-    # existing order behind the list's. Replaces v1's `junban_unmatched`, whose old default every
-    # settings.json already holds.
+    # 3.0.17's "Cards too rare for your list go" (Junban_Backlog_Spec §11): "list_first" · "journey" · "back".
+    # Retired by the mining model (Kyou-MO, 3.0.18): read only while `junban_off_list` is unset, and by 2.x.
     "junban_unlisted": "list_first",
+    # Your own cards not on your list (Kyou-MO, ADVERSARY F24; `unlisted.choice`): "leave" — after your list, by
+    # their own sentence · "back" — in their own order behind every card placed · "aside" — at the back, tagged
+    # `Surasura::later`, flagged purple / suspended as `junban_later_flag` / `_suspend` say. "" (unset) reads
+    # 3.0.17's `junban_unlisted` and three ticks: any tick → aside, "back" → back, else leave. Surasura's own cards
+    # are never set aside: past your level they follow Connect's *Cards for every new word*.
+    "junban_off_list": "",
     # The panel's "Phrases": a phrase or compound card (気がつく) the library meets as often as the
     # list's words is placed as they are. Off, every phrase card goes by its sentence with the rest.
     "junban_phrases": True,
-    # The panel's "i+1 first" (Junban_Backlog_Spec §17): a card placed with the list whose OWN
-    # sentence holds a list word it comes before gets that word's card brought right before it — when
-    # that card is i+1 there — or else waits with the cards of more new words. A name counts like any
-    # other word, unless Settings' Ignore names makes the library's names ignored words.
-    "junban_ready_first": False,
+    # (`junban_ready_first`, "i+1 first", retired by the mining model, Kyou-MO: the unlocking word always comes first,
+    # and a card that can't have it keeps its place. A settings.json may still hold it: read by 2.x only.)
 
     # --- WP-M: which of Surasura's two orders to follow ---------------------------------------- #
     # "content" is the DEFAULT, by the user's decision. It reads `progressive_learning_list.csv`,
@@ -108,10 +107,10 @@ SETTINGS_DEFAULTS = {
     "junban_write_freqsort": False,
     # (The extra example sentence moved to Anki Backfill's 例文, 2026-09-24 — Patterns_Spec §17.6.)
 
-    # --- the cards NOT on the list (Junban_Backlog_Spec §13, `unlisted.py`) ------------------ #
-    # Any combination; none ticked is "No action", the default. Tag = `Surasura::later`; flag =
-    # purple; suspend also tags, so a suspended card can always be found. All undone by Restore.
-    # There is no delete, by design.
+    # --- your cards NOT on the list, set aside (Junban_Backlog_Spec §13, `unlisted.py`) ------- #
+    # Since Kyou-MO what *Set aside* (`junban_off_list` "aside") does beside its tag: flag purple, suspend. The tag
+    # (`Surasura::later`) is set aside's own now; `junban_later_tag` is read only while `junban_off_list` is unset
+    # (any of the three on reads as *Set aside*). All undone by Restore. There is no delete, by design.
     "junban_later_tag": False,
     "junban_later_flag": False,
     "junban_later_suspend": False,

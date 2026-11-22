@@ -737,3 +737,107 @@ def test_a_store_still_to_build_is_built_before_the_boot_and_nothing_else_is(mon
         assert spawned == [], "no build while its file is there (the bench: a helper at 1.0 s, before the boot)"
     finally:
         chores.close(store=False)
+
+
+_SLOW_PRESS = r"""
+import json, sys, time
+for line in sys.stdin.buffer:   # every answer takes a second: the press's answer is long in coming
+    request = json.loads(line)
+    time.sleep(1.0)
+    sys.stdout.buffer.write((json.dumps({"id": request["id"], "op": request["op"]}) + "\n").encode())
+    sys.stdout.buffer.flush()
+"""
+
+
+def test_held_estimates_wait_quietly_while_a_press_waits_for_its_answer(monkeypatch):
+    # why (train 53's intent keeper, F1): while a *What if* waited for its answer, each held estimate was taken, sent
+    # back to the outbox and taken again at once — a full core spinning at the moment the learner waits
+    import queue
+    from app.services import arrivals as A
+    monkeypatch.setattr(G, "STEP_LOOK_S", 0.05)
+    monkeypatch.setattr(G, "hold", lambda kind: G.REVIEWING)        # the estimates are held all along
+    registry = jobs.JobRegistry()
+    client = A.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _SLOW_PRESS])
+    puts = []
+    real_put = client._outbox.put
+    client._outbox.put = lambda rid, *a, **k: puts.append(rid) or real_put(rid, *a, **k)
+    got = queue.Queue()
+    try:
+        for path in (JA, ZH, JA):
+            client.estimate(path, callback=got.put)                      # held: waiting for their turn
+        time.sleep(0.3)
+        pressed = client.estimate(ZH, callback=got.put, pressed=True)
+        before = len(puts)
+        answer = got.get(timeout=15)
+        assert answer["id"] == pressed, "the press goes first"
+        requeued = len(puts) - before - 1                              # (the press's own put)
+        assert requeued <= 10, f"the held estimates were put back {requeued} times while the press waited"
+        with pytest.raises(queue.Empty):
+            got.get(timeout=1.5)                                       # still held: none sent behind the press
+    finally:
+        client.stop()
+        registry.quit(timeout=30)
+
+
+def test_a_repair_or_a_try_again_starts_even_while_a_helper_runs(monkeypatch, real_store_helper):
+    # why (train 53's intent keeper, F2): 2.x's *Repair* / *Try again* is a press — skipped beside a running helper it
+    # said "an update may be waiting"; it starts, and waits for the lock itself
+    from app import library_store as LS
+    from app.connect import power as P
+    started = []
+    monkeypatch.setattr(LS, "update_staged", lambda: False)
+    monkeypatch.setattr(LS, "_spawned", {"ja": _Running()})             # one at work
+    monkeypatch.setattr(LS, "_owed", set())
+    monkeypatch.setattr(P, "popen_below_normal", lambda args, **k: started.append(args) or _Running())
+    assert LS.spawn_maintain("ja") is None, "the plain upkeep still waits for the one at work"
+    assert LS.spawn_maintain("ja", "--repair") is not None and LS.spawn_maintain("ja", "--retry") is not None
+    assert [a[-1] for a in started] == ["--repair", "--retry"]
+
+
+class _HelperStore:
+    """The helper's store, as `_maintain_locked` reads it: nothing to tidy; `export_due` true again after the first
+    export (a write that landed while the helper ran) as many times as `landed` says."""
+
+    def __init__(self, landed):
+        self.landed = landed
+        self.exports = 0
+
+    def export_due(self):
+        return self.exports <= self.landed
+
+    def meta(self):
+        return {}
+
+    def __getattr__(self, name):
+        return lambda *a, **k: False
+
+    class conn:
+        @staticmethod
+        def execute(*a):
+            class _Row:
+                @staticmethod
+                def fetchone():
+                    return None
+            return _Row()
+
+
+@pytest.mark.parametrize("landed, exports", [(0, 1), (1, 2), (9, 1 + 3)])
+def test_the_helper_exports_once_more_when_a_write_landed_while_it_ran(monkeypatch, tmp_path, landed, exports):
+    # why (F2): a store helper asked for in Connect's or the analyzer's process while the window's ran was skipped and
+    # never read back: their write reached master_manifest.json only at the next trigger. The running one looks again
+    # before it lets the lock go (at most EXPORT_AGAIN more times)
+    from app import library_store as LS
+    store = _HelperStore(landed)
+    monkeypatch.setattr(LS, "_db_state", lambda db: "current")
+    monkeypatch.setattr(LS, "_helper_store", lambda *a: store)
+    monkeypatch.setattr(LS, "_check_copy", lambda st: "same")
+    monkeypatch.setattr(LS, "_cleanup_temps", lambda target: None)
+    monkeypatch.setattr(LS, "damaged_marker", lambda db: str(tmp_path / "no-marker"))
+
+    def export(st):
+        st.exports += 1
+        return True
+    monkeypatch.setattr(LS, "export_copy", export)
+    LS._maintain_locked(str(tmp_path / "library.db"), "ja", str(tmp_path), str(tmp_path), False, False, False, True,
+                        False, None)
+    assert store.exports == exports

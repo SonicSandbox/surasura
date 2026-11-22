@@ -4885,10 +4885,27 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     return out
 
 
-def record_analysed(language, library, data_dir=None, user_files_dir=None):
+def _growth_figures(data_dir, found_files, file_growth):
+    """Kura-GS: {rel_path: (known, counted, unknown)} of the files the run counted, from its progressive pass (the
+    window's *% known* is the same count, the plan's) — what the store keeps as each item's growth snapshots. A file
+    off the library's drive (no path from it) is left out, never an error at the run's end."""
+    prefix = os.path.join(data_dir, "")
+    out = {}
+    for f, fig in zip(found_files, file_growth):
+        try:
+            rel = f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)
+        except ValueError:
+            continue
+        out[rel.replace("\\", "/")] = fig
+    return out
+
+
+def record_analysed(language, library, data_dir=None, user_files_dir=None, growth=None):
     """A Generate that read the store finished (or reused results already current): the store records the
     `order_version` it read, so Junban's "journey pending" clears. Never after a JSON fallback, and never
-    across a rebuild (a version means nothing outside its epoch, §6.6). Best-effort."""
+    across a rebuild (a version means nothing outside its epoch, §6.6). Best-effort. Kura-GS: `growth`, a full
+    Generate's figures per file (`_growth_figures`, a callable: worked out only when they will be kept), kept by the
+    store as the items' snapshots (`record_growth`) — in a write of their own after it, so they never hold it back."""
     if not library or library.get("order_version") is None:
         return
     ls = _library_store()
@@ -4900,6 +4917,11 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None):
         with store:
             if store.versions()["epoch"] == library["epoch"]:
                 store.record_analysed(library["order_version"])
+                if growth is not None:
+                    try:
+                        store.record_growth(growth())
+                    except Exception as e:
+                        print(f"Warning: could not keep the growth snapshots ({e}).")
     except Exception:
         pass
 
@@ -5283,6 +5305,8 @@ def settings_signature(settings, language):
         "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
         # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+        "connect_every_word",           # Cards for every new word (Kantan-MO): what Connect mines, never a run
+        "study_order",                  # the study order (Kantan-MO): the journey's opening list — re-render only
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "subs_with_hato",               # Michi-NS: hato finds the waiting videos' subtitles (NS-2), never a run
@@ -5484,6 +5508,8 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         _s.get("word_search_category", "all"),
         _s.get("words_per_day", 5),
         bool(_s.get("show_words_per_day", True)),
+        # The study order (Kantan-MO): the journey opens on its list — INJECTED (`globalStudyOrder`), so re-render
+        settings_manager.study_order(_s),
         # Speech (optional module) is INJECTED into the report — the helper endpoint, and which
         # sentences already have audio. Toggling it must therefore re-render. Without this, turning
         # speech on while the badge was already visible changed nothing in the signature, so the
@@ -7779,6 +7805,7 @@ def main():
     plan_index = {key: k for k, key in enumerate(plan_keys)}
     plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
     plan_prog = []
+    file_growth = []        # Kura-GS: each file's (known before any file, counted, the words not known) — the store's
     
     def _progressive_files():
         """Each file as the progressive pass reads it (`plan_rules.progressive_pass`), and the plan file's record of
@@ -7839,6 +7866,7 @@ def main():
                 bounds.append(bound)
 
             plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
+            file_growth.append((file_baseline_known_count, file_total_tokens, len(keys)))
 
             # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
             # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
@@ -7993,7 +8021,8 @@ def main():
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
-    record_analysed(language, _library, data_dir, user_files_dir)
+    record_analysed(language, _library, data_dir, user_files_dir,
+                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
     if _store is not None:
         try:
             if _run_sig:

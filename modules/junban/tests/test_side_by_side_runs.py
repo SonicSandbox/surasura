@@ -10,19 +10,22 @@ none (title 3's, or a card made by hand). Real words; never Anki.
 import pytest
 
 from modules.junban import connect, pins, reposition, spaced
-from modules.junban.tests.connect_scene import scene, settings, without_connect
+from modules.junban.tests.connect_scene import CONNECT_TAG, scene, settings, without_connect
 from modules.junban.tests.test_reposition import _patched
 
 A_SOURCE = "星の旅人 — 星の旅人 - 05 @ 00:04:31"
 B_SOURCE = "夜の図書館 — 夜の図書館 - 02 @ 00:11:02"
-ENTRIES = without_connect([
+# Kyou-MO (the mining model): 眼鏡, the word the list cut off, is a card Connect made — mixed in where the journey meets
+# it with *Cards for every new word* on (before 3.0.18: *List first* off, for any card); Connect's preview off, so
+# nothing is "yours" by its age
+ENTRIES = [
     ("冒険", "冒険が始まった。", 2000, [], 0),
     ("散歩", "毎朝<b>散歩</b>に出かける。", 3000, [], 0),
     ("老婆", "老婆が笑った。", 7000, [], 0),
-    ("眼鏡", "新しい眼鏡を買った。", 5000, [], 0),
+    ("眼鏡", "新しい眼鏡を買った。", 5000, [CONNECT_TAG], 0),
     ("図書館", "図書館で本を読んだ。", 6000, [], 0),
     ("須藤", "須藤さんが来た。", 9000, [], 0),
-])
+]
 SIDE = ([[1], [2]], {}, {1: {pins.source_of(A_SOURCE)}, 2: {pins.source_of(B_SOURCE)}})
 
 
@@ -47,7 +50,7 @@ def test_off_the_order_is_the_journeys(tmp_path, monkeypatch):
     monkeypatch.setattr(pins, "read_side", lambda language: ([], {}, {}))
     fake = _fake(tmp_path)
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     assert [row.word for row in stats["order"]] == ["冒険", "散歩", "眼鏡", "老婆", "図書館", "須藤"]
     assert "woven" not in stats and all(row.weave is None for row in stats["order"])
 
@@ -58,8 +61,8 @@ def test_on_the_two_titles_take_turns_and_the_run_writes_what_it_previewed(tmp_p
     keeps its planned place, before 須藤, no title's."""
     fake = _fake(tmp_path)
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
-        report = reposition.run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True))
     assert report["ok"], report["problems"]
     want = ["冒険", "老婆", "散歩", "眼鏡", "図書館", "須藤"]
     assert [row.word for row in stats["order"]] == want
@@ -73,10 +76,10 @@ def test_the_fast_re_plans_job_weaves_the_same_order_as_a_window_run(tmp_path, s
     tomorrow's cards first."""
     fake = _fake(tmp_path)
     with _patched(fake):
-        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, window = reposition.dry_run(settings(preview=False, connect_every_word=True))
     again = _fake(tmp_path / "job")
     with _patched(again):
-        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
     assert again.queue_order() == [row.word for row in window["order"]]
 
@@ -84,7 +87,8 @@ def test_the_fast_re_plans_job_weaves_the_same_order_as_a_window_run(tmp_path, s
 # --- Kyou-B: one slot a word, the list words first ---------------------------------------------------------------- #
 def _fake_with(tmp_path, entries, sources):
     """The scene with `entries` (word, sentence, FreqSort); `sources[k]` the episode the k-th card names (None: none)."""
-    fake = scene(tmp_path, without_connect([(w, s, f, [], 0) for w, s, f in entries]))
+    fake = scene(tmp_path, [(w, s, f, [CONNECT_TAG] if w == "眼鏡" else [], 0)        # 眼鏡: Connect's (Kyou-MO)
+                            for w, s, f in entries])
     for card, source in zip(sorted(fake.cards.values(), key=lambda c: c["cardId"]), sources):
         if source is not None:
             fake.notes[card["note"]]["fields"]["MiscInfo"]["value"] = source
@@ -106,7 +110,7 @@ def test_a_word_with_cards_in_both_titles_takes_one_slot_and_its_twin_waits_afte
     老婆 and 眼鏡, and the twin waits after the turns, ahead of 須藤 (no title's)."""
     fake = _fake_with(tmp_path, *TWIN)
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     words = [row.word for row in stats["order"]]
     assert words == ["冒険", "老婆", "散歩", "眼鏡", "冒険", "須藤"]
     assert stats["order"][4].weave[0] == 1 and stats["woven"] == 5
@@ -116,7 +120,7 @@ def test_both_titles_list_words_come_before_a_titles_card_off_the_list(tmp_path,
     """Rule 2 through a run: A's 図書館 is off the list (i+1); it waits while B still has list words (老婆, 眼鏡, 散歩)."""
     fake = _fake_with(tmp_path, *OFF_LIST)
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     words = [row.word for row in stats["order"]]
     assert words[:2] == ["冒険", "老婆"] and set(words[2:4]) == {"眼鏡", "散歩"}
     assert words[4:] == ["図書館", "須藤"]
@@ -128,14 +132,14 @@ def test_the_window_its_reorder_and_the_fast_re_plan_give_the_kyou_b_order_alike
     entries, sources = TWIN if which == "twin" else OFF_LIST
     fake = _fake_with(tmp_path, entries, sources)
     with _patched(fake):
-        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
-        report = reposition.run(settings(junban_unlisted="journey"))
+        _writes, window = reposition.dry_run(settings(preview=False, connect_every_word=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True))
     assert report["ok"], report["problems"]
     want = [row.word for row in window["order"]]
     assert fake.queue_order() == [w for w in want if w in fake.queue_order()]
     again = _fake_with(tmp_path / "job", entries, sources)
     with _patched(again):
-        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
     assert again.queue_order() == want
 
@@ -160,8 +164,8 @@ def test_when_a_title_runs_out_the_next_one_steps_in_through_every_run(tmp_path,
     monkeypatch.setattr(pins, "read_side", lambda language: THREE)
     fake = _fake_with(tmp_path, *HIS)
     with _patched(fake):
-        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
-        report = reposition.run(settings(junban_unlisted="journey"))
+        _writes, window = reposition.dry_run(settings(preview=False, connect_every_word=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True))
     assert report["ok"], report["problems"]
     woven = [row for row in window["order"] if row.weave is not None]
     assert [row.weave[0] for row in woven] == [0, 1, 1, 2, 2]
@@ -170,7 +174,7 @@ def test_when_a_title_runs_out_the_next_one_steps_in_through_every_run(tmp_path,
     assert fake.queue_order() == [w for w in want if w in fake.queue_order()]
     again = _fake_with(tmp_path / "job", *HIS)
     with _patched(again):
-        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
     assert again.queue_order() == want
 
@@ -198,7 +202,7 @@ def test_each_turn_takes_the_word_with_the_most_impact_not_the_one_met_first(tmp
     for word, source in (("散歩", A_SOURCE), ("老婆", A_SOURCE), ("冒険", B_SOURCE)):
         fake.notes[fake.card_of(word)["note"]]["fields"]["MiscInfo"]["value"] = source
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     assert [row.word for row in stats["order"]] == ["老婆", "冒険", "散歩"]
 
 
@@ -218,12 +222,12 @@ def test_every_run_counts_each_titles_still_new_cards_for_the_store(tmp_path, mo
     want = [[[1], 1], [[2], 2], [[3], 1], [[4], 0]]
     fake = _fake_with(tmp_path, *HIS)
     with _patched(fake):
-        _writes, window = reposition.dry_run(settings(junban_unlisted="journey"))
-        report = reposition.run(settings(junban_unlisted="journey"))
+        _writes, window = reposition.dry_run(settings(preview=False, connect_every_word=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True))
     assert window["side_cards"] == want and report["stats"]["side_cards"] == want
     again = _fake_with(tmp_path / "job", *HIS)
     with _patched(again):
-        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"] and report["stats"]["side_cards"] == want
 
 
@@ -235,11 +239,11 @@ def test_with_no_title_holding_a_card_every_title_is_counted_none(tmp_path, monk
     monkeypatch.setattr(pins, "read_side", lambda language: FOUR)
     fake = _fake_with(tmp_path, *(HIS[0], [None] * len(HIS[0])))
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     assert stats["side_cards"] == [[[1], 0], [[2], 0], [[3], 0], [[4], 0]] and "woven" not in stats
     monkeypatch.setattr(pins, "read_side", lambda language: ([], {}, {}))
     with _patched(_fake_with(tmp_path / "off", *HIS)):
-        _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
     assert "side_cards" not in stats
 
 
@@ -298,7 +302,7 @@ def test_the_store_takes_turns_with_the_titles_junban_wove(tmp_path, monkeypatch
     fake = _fake_with(tmp_path, *STUDIED)
     studied_list(tmp_path, b, loose)
     with _patched(fake):
-        report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=spaced.Job(automatic=True))
+        report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=spaced.Job(automatic=True))
     assert report["ok"], report["problems"]
     woven = [row.weave[0] for row in report["stats"]["order"] if row.weave is not None]
     assert woven[:2] == [1, 2], "Anki: B, then the loose file"
@@ -322,10 +326,10 @@ def test_a_title_whose_new_cards_are_all_pinned_is_counted_with_them_through_a_r
         monkeypatch.setattr(pins, "groups", lambda language, cards, notes, pinned=None, card=book: [[card]])
         with _patched(fake):
             if job is None:
-                _writes, stats = reposition.dry_run(settings(junban_unlisted="journey"))
+                _writes, stats = reposition.dry_run(settings(preview=False, connect_every_word=True))
                 assert stats["order"][0].word == "冒険" and stats["side_cards"] == want
-                report = reposition.run(settings(junban_unlisted="journey"))
+                report = reposition.run(settings(preview=False, connect_every_word=True))
             else:
-                report = reposition.run(settings(junban_unlisted="journey"), refresh=False, job=job)
+                report = reposition.run(settings(preview=False, connect_every_word=True), refresh=False, job=job)
         assert report["ok"], report["problems"]
         assert report["stats"]["side_cards"] == want

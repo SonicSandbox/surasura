@@ -1716,6 +1716,7 @@ class ShellWindow(QMainWindow):
             lst.words_hover.connect(lambda row, ep, rect: self.words.hover(word_peek.PeekHost.scope(row, ep), _at(rect)))
             lst.words_keep.connect(lambda row, ep, rect: self.words.keep(word_peek.PeekHost.scope(row, ep), _at(rect)))
             lst.words_left.connect(self.words.left)
+            lst.delegate.growth = self._growth_of                # Kura-GS: Up next's % hover, its growth line
         # --- W3.1a: the drag, the moves, Done and Undo (`drag.py`), given a writer beside the library ---------------- #
         self.moves = None
         if services.library is not None and services.writer is not None:
@@ -3462,8 +3463,11 @@ class ShellWindow(QMainWindow):
     def pick_your_cards(self, control=None):
         """Step ④'s press, *Pick your cards* — **the one entry point** the Essentials picker over Current fills
         (Mado-EZC, SPEC-r2 lane 3: §0.3's picker; its Done writes the `yours` moment through `path_moment`). Until
-        it lands: Settings' *Words to make cards from*, revealed (the learner's save there ticks ④)."""
-        return self.guide_show_me("settings:connect_mine_words")
+        it lands: Settings' *Level* — which words get cards since the mining model (Kantan-MO: *Words to make cards
+        from* retired) — revealed (the learner's save there ticks ④). The place is `path.YOURS_PRESS` (its row's press
+        in ✦ follows it: `path.has_press`)."""
+        from app.services import path as path_service
+        return self.guide_show_me(path_service.YOURS_PRESS)
 
     def path_show_me(self, where):
         """The Next card's *Show me*: only a look at where the same press lives, for next time — Up Next's part or a
@@ -3516,6 +3520,13 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
             self._look_for_anki()                           # Kantan-B1 (B3): Anki opened meanwhile?
             self._words_anki()                              # Hover-W: Anki's standing for the word card (throttled)
+
+    def _growth_of(self, item_id):
+        """Kura-GS: an item's growth snapshots from the numbers the rows show (a language switch's new ones), or
+        None."""
+        numbers = getattr(getattr(self.services, "writer", None), "numbers", None)
+        growth = getattr(numbers, "growth", None)
+        return growth(item_id) if growth is not None else None
 
     # --- Hover-W: the word card's provider and its moments -------------------------------------------------------- #
     def _words_provider(self):

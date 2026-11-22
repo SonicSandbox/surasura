@@ -241,6 +241,69 @@ def path():
     return os.path.join(folder(), "ledger.sqlite")
 
 
+# Kantan-MA (a tester's report 2026-11-21: *Mine again* made no card and said nothing; PROVISIONAL words): why a word
+# of an episode Connect could have made a card for has none — Anki Miner's answer, kept per word (`declined_outcomes`),
+# or the pick's own reason (`pick.REASONS`), each kept in the job's `picked` as `left` and read back by `left_of`
+LEFT_WHY = {"not_found": "Anki Miner couldn't find it in its line",
+            "no_definition": "Anki Miner's dictionary has no entry for it",
+            "duplicate": "Anki Miner found a card for it already",
+            "media_failed": "its sound or picture couldn't be cut",
+            "refused": "Anki refused its card",
+            "skipped": "you skipped it"}
+LEFT_OTHER = "Anki Miner made no card for it"      # any other answer it gave
+
+
+def left_of(language, item_ids, db_path=None):
+    """{item_id: [{"word", "why"}]} — the words of each item's newest pick that have no card from it, and why: the
+    pick's `left` (left out before Anki Miner, or turned down by it in an earlier job) and that job's own words Anki
+    Miner turned down (`LEFT_WHY`). Read-only, without the ledger's own open, as `listed_of`; [] for an item with no
+    such pick, every item [] with no ledger, one from a newer Surasura or one older than `picked`. Raises
+    sqlite3.Error when it can't be read just now."""
+    db_path = db_path or path()
+    out = {i: [] for i in item_ids}
+    if not out or not os.path.exists(db_path):
+        return out
+    from pathlib import Path
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        try:
+            schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return out
+            raise
+        if (schema and str(schema[0]).isdigit() and int(schema[0]) > SCHEMA) or "picked" not in cols:
+            return out
+        newest, ids = {}, list(out)
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            for job_id, item_id, raw in conn.execute(     # only the newest pick of each item is read
+                    f"SELECT id, item_id, picked FROM jobs WHERE id IN (SELECT MAX(id) FROM jobs WHERE language = ? "
+                    f"AND picked IS NOT NULL AND item_id IN ({','.join('?' * len(chunk))}) GROUP BY item_id)",
+                    [language] + chunk):
+                newest[item_id] = (job_id, raw)
+        for item_id, (job_id, raw) in newest.items():
+            try:
+                left = (json.loads(raw) or {}).get("left") or ()
+            except (ValueError, AttributeError):
+                left = ()
+            named = {}
+            for w in left if isinstance(left, list) else ():
+                if isinstance(w, dict) and w.get("word") and w.get("why"):
+                    named.setdefault(str(w["word"]), str(w["why"]))
+            for word, outcome in conn.execute(
+                    f"SELECT word, outcome FROM outcomes WHERE job_id = ? AND outcome IN "
+                    f"({','.join('?' * len(LEFT_WHY))}) ORDER BY rowid", (job_id,) + tuple(LEFT_WHY)):
+                if word:
+                    named.setdefault(word, LEFT_WHY[outcome])
+            out[item_id] = [{"word": w, "why": why} for w, why in named.items()]
+    finally:
+        conn.close()
+    return out
+
+
 def listed_of(language, item_ids, db_path=None):
     """{item_id: {word: True / False}} — whether each word a job of the item picked was on the list then (`pick`'s
     `listed`; a later job's pick over an earlier one's), read-only, without the ledger's own open (no schema written,
@@ -561,6 +624,29 @@ class Ledger:
         self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
 
+    def mark_new_files(self, language, since):
+        """Kantan-MO: Connect's own Generate after mining new files ran (`runner.Steps.generate_after`): the items
+        mined since `since` (this run's start) were mined from a list that didn't have their own new words yet — the
+        next list look gives them those (`level.check`). Inside the caller's transaction."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"new_files:{language}", since))
+
+    def take_new_files(self, language):
+        """The mark `mark_new_files` left (a ledger time), taken (cleared) — or None. Inside the caller's
+        transaction."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"new_files:{language}",)).fetchone()
+        if row is None:
+            return None
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"new_files:{language}",))
+        return row[0]
+
+    def mined_since(self, language, since):
+        """[item ids] with a job other than a level job that ended `done` at or after `since`, in the order they
+        ended."""
+        rows = self.conn.execute("SELECT item_id, MAX(updated_at) FROM jobs WHERE language = ? AND kind != ? AND "
+                                 "state = 'done' AND updated_at >= ? GROUP BY item_id ORDER BY MAX(updated_at)",
+                                 (language, LEVEL, since)).fetchall()
+        return [r[0] for r in rows]
+
     def owe_resort(self, language):
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"resort_due:{language}", _now()))
 
@@ -795,6 +881,13 @@ class Ledger:
         return {(w, r) for w, r in self.conn.execute(
             f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
             f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
+
+    def declined_outcomes(self, language, item_id):
+        """{(word, reading): outcome} of `declined`'s words, the newest answer each (Kantan-MA: said with the word)."""
+        marks = ",".join("?" * len(_NOT_MADE))
+        return {(w, r): o for w, r, o in self.conn.execute(
+            f"SELECT o.word, o.reading, o.outcome FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? "
+            f"AND j.item_id = ? AND o.outcome NOT IN ({marks}) ORDER BY o.rowid", (language, item_id) + _NOT_MADE)}
 
     def uncardable(self, language, app=None):
         """(word, reading) of every word Anki Miner answered *no definition* for in this language, in any episode

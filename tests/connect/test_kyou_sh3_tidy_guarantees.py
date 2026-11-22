@@ -21,6 +21,7 @@ a delete whose backup can't give it back, or two cards for one word after an Und
 (a real package: SQLite in a zip); the ledger and the library store are real. ja + zh.
 """
 import contextlib
+import json
 import os
 import time
 
@@ -234,7 +235,20 @@ def _truncate(path, keep=20):
         f.write(data[:keep])
 
 
+def _rewrite_notes(folder, change):
+    """notes.json still well-formed JSON, but not the record of what goes (the read-back compares it, not only parses)."""
+    path = os.path.join(folder, "notes.json")
+    with open(path, encoding="utf-8") as f:
+        record = json.load(f)
+    change(record)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False)
+
+
 BAD_BACKUPS = {
+    "notes.json missing a note": lambda folder, package: _rewrite_notes(folder, lambda r: r["notes"].pop()),
+    "notes.json with another clip sha1": lambda folder, package: _rewrite_notes(
+        folder, lambda r: r["media"].update({k: "0" * 40 for k, v in r["media"].items() if v})),
     "the package truncated": lambda folder, package: _truncate(package),
     "a clip truncated": lambda folder, package: _truncate(os.path.join(folder, "media", f"sl-{4:016x}.mp3"), 3),
     "a clip missing": lambda folder, package: os.remove(os.path.join(folder, "media", f"sl-{4:016x}.mp3")),

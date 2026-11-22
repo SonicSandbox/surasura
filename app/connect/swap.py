@@ -9,7 +9,7 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   (`look`) turns it into a job. Never for a word now Known or Ignored (`word_state`: the entry dropped, with why).
 - **The line** (`choose_line`): the line the learner picked (`line_id`), else **only the one picker's** (Kantan-SD's
   `sentences.choose`, over Generate's list: Swap ranks and searches nothing itself) whose episode Connect can cut —
-  **never a line the old card holds** (`same_line`, by its text: the old card's sentence from Connect's record, else
+  **never a line the old card holds** (the picker's `sentences.same_line`, by its text: the old card's sentence from Connect's record, else
   from Anki). No picker yet, or no other line: the ask waits, said once on *Needs you* (`WAITS`), and is looked at
   again when the library has changed (`RETRY_S`).
 - **Made:** the swap queue's entry marked made with the new note (`swap_queue.made`: the pair old note → new note, the
@@ -39,9 +39,8 @@ import logging
 import os
 import re
 import time
-import unicodedata
 
-from app.connect import swap_queue, tidy
+from app.connect import sentences, swap_queue, tidy
 
 log = logging.getLogger("surasura-cli")
 
@@ -113,35 +112,6 @@ def _update(conn, swap_id, **values):
 def _same_word(a, b):
     """Two swaps of one word: the same lemma, and the same reading where both say one (生 なま is not 生 せい)."""
     return a["word"] == b["word"] and (not a.get("reading") or not b.get("reading") or a["reading"] == b["reading"])
-
-
-# --------------------------------------------------------------------------- #
-# A line, by its text
-# --------------------------------------------------------------------------- #
-_TAGS = re.compile(r"<[^>]*>")
-_FURIGANA = re.compile(r"\[[^\]]*\]")          # Anki's kana in brackets: 漢字[かんじ]
-_SOUND = re.compile(r"\[sound:[^\]]*\]")
-_DROP = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—–\-:;/]+")
-
-
-def norm_line(text):
-    """A line's text as Swap compares lines: markup, Anki's furigana, spaces and punctuation out, NFKC."""
-    text = _SOUND.sub("", str(text or ""))
-    text = _FURIGANA.sub("", _TAGS.sub("", text.replace("&nbsp;", " ")))
-    return _DROP.sub("", unicodedata.normalize("NFKC", text))
-
-
-def same_line(text, avoid):
-    """Is `text` one of `avoid`'s lines (`norm_line`'s), or inside one / holding one (a card holds its line and the lines
-    its expansion adds)? Two characters at least: an empty line is no line."""
-    a = norm_line(text)
-    if len(a) < 2:
-        return False
-    for b in avoid or ():
-        b = norm_line(b)
-        if len(b) >= 2 and (a == b or a in b or b in a):
-            return True
-    return False
 
 
 def line_id(item_id, start_s):
@@ -252,38 +222,35 @@ def _queue_made(language, ref, note):
 # --------------------------------------------------------------------------- #
 def choose_line(language, word, avoid=(), reachable=None, skip_items=(), reading=None):
     """The word's other line -> (item id, line text), or None: **only the one picker's** (Kantan-SD's
-    `sentences.choose`, over Generate's list, the one source of a word's sentences) — never one `same_line` finds in
+    `sentences.choose`, over Generate's list, the one source of a word's sentences) — never one `sentences.same_line` finds in
     `avoid`, never an item of `skip_items`, only one `reachable(item id)` says Connect can cut. Swap has no ranking or
     search of its own: no picker yet, or nothing it offers, is None (the swap waits, as for a word with one line)."""
     return _chosen(language, {(word, reading or "")}, avoid, None, set(skip_items or ()), reachable)
 
 
 def _picker():
-    """Kantan-SD's one picker (`app/connect/sentences.py`), or None until it lands."""
-    try:
-        from app.connect import sentences
-    except ImportError:
-        return None
-    return sentences if hasattr(sentences, "choose") else None
+    """Kantan-SD's one picker (`app/connect/sentences.py`): the one seam Swap's choice goes through (a test hands
+    None: no picker, the swap waits)."""
+    return sentences
 
 
 def _chosen(language, keys, avoid, files, bad, reachable):
     """The picker's best line for the word -> (item id, text), or None (no picker, nothing it can offer, an error)."""
-    sentences = _picker()
-    if sentences is None:
+    picker = _picker()
+    if picker is None:
         return None
 
     def reach(item):
         return item is not None and item not in bad and (reachable is None or bool(reachable(item)))
     try:
-        ranked = sentences.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
-                                  reach=reach)
+        ranked = picker.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
+                               reach=reach)
     except Exception:
         log.info("Swap: the sentence picker didn't answer for a word; the swap waits", exc_info=True)
         return None
     for key in sorted(keys):
         for c in ranked.get(key) or ():
-            if c.item_id is not None and c.item_id not in bad and not same_line(c.text, avoid):
+            if c.item_id is not None and c.item_id not in bad and not sentences.same_line(c.text, avoid):
                 return c.item_id, c.text
     return None
 
@@ -476,7 +443,7 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
         return                              # an old card's sentence can't be read now: the next look
     tried = json.loads(row["tried"]) if row.get("tried") else []
     picked = _resolve_line_id(steps, language, row["line_id"]) if row.get("line_id") else None
-    if picked is not None and (same_line(picked[1], avoid) or picked[0] in tried):
+    if picked is not None and (sentences.same_line(picked[1], avoid) or picked[0] in tried):
         picked = None                       # never the old card's line, even picked
     if picked is None:
         def reachable(item):
@@ -520,7 +487,7 @@ def _finish(ledger, language, row, out, state_of=None, anki=None):
         for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
                        (language, row["word"], ASKED, WAITS, row["id"])):
             lines = json.loads(r["avoid"]) if r.get("avoid") else _old_lines(ledger, r, anki)
-            if _same_word(r, row) and lines is not None and not same_line(row.get("line") or "", lines):
+            if _same_word(r, row) and lines is not None and not sentences.same_line(row.get("line") or "", lines):
                 twins.append(r)
         for r in twins:
             _set(ledger, r["id"], state=MADE, why=None, new_note=note, job_id=row["job_id"], item_id=row["item_id"],

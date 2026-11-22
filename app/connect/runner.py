@@ -1178,7 +1178,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") != level.NEW_FILES:
+    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") not in level.KEPT:
         ledger.set_state(jid, "dropped", reason=LEVEL_DROPPED)
         out["dropped"].append(item_id)
         return
@@ -1189,6 +1189,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["dropped"].append(item_id)
         return
     if (droppable and job.get("kind") != ASKED and not job.get("asked_at")
+            and job.get("source") != level.BEST         # Kantan-SD: chosen for the context you remember
             and not (ledger.picked(jid) or {}).get("forced")             # your *Mine anyway* on it too (round 2 B6)
             and getattr(steps, "watched", lambda _l, _j: False)(lang, job)):     # your ask on it is a yes (A1)
         # laptop round 8 #49 (LF4-1 = A): 3.0's rule, `level.WATCHED_GIVES_NO_NEW_CARDS` — no new cards on Connect's
@@ -1370,7 +1371,7 @@ def _line_up(steps, ledger, lang, job, book):
     (SPEECH_NEED: recorded once for the language, the book held by it). AB-Q4's plain line recorded once a book."""
     line_up = getattr(steps, "line_up", None)
     if line_up is None or not book or not book[1]:
-        return None
+        return _best_ai_audio(steps, ledger, lang, job)
     try:
         got = line_up(lang, job, book[1])
     except Wait as w:
@@ -1382,13 +1383,15 @@ def _line_up(steps, ledger, lang, job, book):
             _book_answered(ledger, lang, book[1])     # paired and lining up now: the book asks no more
         raise
     if got and got.get("book_ask"):
+        if job.get("source") == level.BEST:
+            return _best_ai_audio(steps, ledger, lang, job)    # never the book's question: one sentence borrowed
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
         _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
-        return None
+        return _best_ai_audio(steps, ledger, lang, job)
     if got.get("ask"):
         if ledger.need(lang, SPEECH_NEED, got["ask"], standing=True):
             log.info("Connect: asks for Anki Miner's speech model (%s)", lang)
@@ -1397,7 +1400,7 @@ def _line_up(steps, ledger, lang, job, book):
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     if got.get("lineup") and got.get("item_id") is not None:
         _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
-    return got.get("lineup")
+    return got.get("lineup") or _best_ai_audio(steps, ledger, lang, job)
 
 
 def _mark_ai_audio(ledger, lang, job, got):
@@ -1407,10 +1410,26 @@ def _mark_ai_audio(ledger, lang, job, got):
     keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
     if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
         return
+    _mark_ai_job(ledger, job)
+
+
+def _mark_ai_job(ledger, job):
     mark = f"{AI_JOB}{int(job['id'])}"
     if _meta(ledger, mark) is None:
         with ledger.transaction():
             ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
+
+
+def _best_ai_audio(steps, ledger, lang, job):
+    """Kantan-SD 2 (Sonic 2026-11-22): a Best job cut from a book's line with no audiobook lined up — the picker chose
+    it because the AI voice can make its audio (`sentences.heard`) — is mined without audio, its new cards marked for
+    the AI voice (`AI_JOB`, as *Make AI audio* marks a book's part), never asked the book's question. Any other job, or
+    the voice off since: nothing. -> None (mined as the book)."""
+    if job.get("source") == level.BEST:
+        from app.connect import sentences
+        if sentences.ai_voice(steps._settings(lang) if hasattr(steps, "_settings") else {}, lang):
+            _mark_ai_job(ledger, job)
+    return None
 
 
 def _queue_ai_audio(steps, ledger, lang, job, ids):
@@ -1710,16 +1729,19 @@ def _pick(steps, ledger, lang, job, record=True):
         skipped = ledger.skipped_words(lang, got["anki_miner"])       # Michi-RM3: *Skip this word*, any part
         declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
+    words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
-    left = _left_out(got, declined, outcomes, skipped)
+    left = _left_out(got, declined, outcomes, skipped, best)
     if left:
         picked["left"] = left                       # Kantan-MA: why a word of it gets no card (`ledger.left_of`)
     if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
             pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
         #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
+    if best:
+        picked["elsewhere"] = best                  # Kantan-SD: words whose card comes from a better sentence elsewhere
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
@@ -1751,16 +1773,62 @@ def _pick(steps, ledger, lang, job, record=True):
     return picked
 
 
+def _best(steps, ledger, lang, job, words, here):
+    """Kantan-SD, the sentence dial's Best (`app/connect/sentences.py`): each picked word whose best sentence is in
+    another episode — strictly better than this one's own line (`sentences.better`), its video there — is cut from
+    there instead: a level job of source `level.BEST` on that episode names it, and it leaves this job's words ->
+    (the words kept, [{word, reading, item_id, text}] moved). Nearest, an ask (*Mine this*, *Mine now*: that episode's
+    own lines), a level job, or any failure: the words as they are (a book or a text never calls it)."""
+    if not words or not here or job.get("asked_at") or job.get("kind") in (ASKED, LEVEL):
+        return words, []
+    try:
+        from app.connect import sentences
+        if sentences.dial_of(steps._settings(lang)) != sentences.BEST:
+            return words, []
+        own = job["item_id"]
+        mines = getattr(steps, "mines", None)
+        found = sentences.choose(lang, [(w["word"], w["reading"]) for w in words], here=here, dial=sentences.BEST,
+                                 reach=lambda item_id: item_id != own and steps.video(lang, {"item_id": item_id})
+                                 is not None, books=bool(mines is not None and mines(lang, "books")))
+    except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
+        log.info("Connect: Best sentences not read (%s): %s", lang, e)
+        return words, []
+    kept, moved, own_weight = [], [], None
+    try:
+        with ledger.transaction():
+            for w in words:
+                key = (w["word"], w["reading"])
+                choices = found.get(key) or []
+                top = choices[0] if choices else None
+                mine = next((c for c in choices if c.here), None)
+                if mine is None:        # the list keeps no line of this episode: its own line, weighed as its episode
+                    if own_weight is None:
+                        own_weight = sentences.context_of(lang, here)
+                    mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0),
+                                            round(own_weight + float(w.get("young") or 0), 4), True, True)
+                if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
+                        or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
+                                              store_id=job.get("store_id")) is None):
+                    kept.append(w)      # an open job there already picks from the list as it is: it stays here
+                    continue
+                moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
+    except Exception as e:              # the ledger busy: nothing moved (its transaction undone), as Nearest
+        log.info("Connect: Best sentences not kept (%s): %s", lang, e)
+        return words, []
+    return kept, moved
+
+
 # The pick's reasons that are no "not made": the word has its card (Kantan-MA)
 CARDED_REASONS = ("has-card", "in-backlog")
 
 
-def _left_out(got, declined, outcomes, skipped):
+def _left_out(got, declined, outcomes, skipped, elsewhere=()):
     """Kantan-MA (*Mine again* made no card and said nothing): the words of the pick that get no card from it, each
     with why, in plain words — the pick's own reason (`pick.REASONS`: a name, a grammar word, only sung, only near a
     cut), or Anki Miner's earlier answer for it (`ledger.LEFT_WHY`: not found, no definition, skipped …). A word with
-    a card already is no such word. -> [{"word", "reading", "why"}]"""
-    from app.connect.ledger import LEFT_OTHER, LEFT_WHY
+    a card already is no such word; a word Best cuts from another episode's line (`_best`'s moved) says so
+    (`ledger.LEFT_ELSEWHERE`, Kantan-SD). -> [{"word", "reading", "why"}]"""
+    from app.connect.ledger import LEFT_ELSEWHERE, LEFT_OTHER, LEFT_WHY
     out = []
     for w in got.get("words") or ():
         key = (w.get("word"), w.get("reading"))
@@ -1770,6 +1838,7 @@ def _left_out(got, declined, outcomes, skipped):
     for w in got.get("not_offered") or ():
         if isinstance(w, dict) and w.get("reason") not in CARDED_REASONS and w.get("why"):
             out.append({"word": w.get("word"), "reading": w.get("reading"), "why": w["why"]})
+    out.extend({"word": w["word"], "reading": w["reading"], "why": LEFT_ELSEWHERE} for w in elsewhere)
     return out
 
 
@@ -3649,6 +3718,10 @@ class Steps:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
         lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
+        if job.get("source") == level.BEST:
+            # Kantan-SD: a Best job is placed by its own words, never by the other new words of the episode it borrows
+            # a sentence from (often one you've watched)
+            lemmas = {key[0] for key in job.get("words") or ()}
         best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
         return None if best >= OFF_LIST else best
 

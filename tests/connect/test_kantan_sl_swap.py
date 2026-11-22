@@ -4,7 +4,7 @@ another line; the full Swap, 3.1, rewrites the old card in place from the same r
 What each test holds still:
 - **never the same line:** the new card is never cut from a line its old card holds (by the line's text: markup,
   furigana and punctuation aside, a line inside the old card's sentence counts as it); an episode that says the word
-  only there gives no card (`same-line`), and the swap tries another episode, then waits;
+  only there gives no card (`only-line`, the picker's one rule), and the swap tries another episode, then waits;
 - **never for a word now Known or Ignored:** checked at the ask, at the job's start and at its end — the swap queue's
   entry dropped with why ("known" · "ignored");
 - **one maker:** the swap queue's entries and Kyou-DW's *Bad card* both ask through `make_card`; Connect's job of kind
@@ -28,12 +28,14 @@ import time
 import pytest
 
 from app import analyzer, cues
-from app.connect import inbox, library, pick, status, swap, swap_queue, tidy
+from app.connect import inbox, library, pick, sentences, status, swap, swap_queue, tidy
 from app.connect.ledger import OPEN, SWAP, Ledger
 from app.services import needs
 from tests import cli_helpers as h
 from tests import connect_helpers as c
 from tests.connect.test_kyou_sh2_tidy import FakeAnki as TidyAnki
+from tests.connect.test_kantan_sd_list import BOUKEN, EASY, HARD, TODAY, _no_library_search, placed  # noqa: F401
+from tests.connect.test_kantan_sd_list import _place as _sd_place, _plan as _sd_plan, _write as _sd_write
 
 RESOURCES = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Test Resources")
 JA = os.path.join(RESOURCES, "ja", "library_episode.ass")
@@ -69,14 +71,14 @@ def test_a_swap_sends_its_word_from_another_line_never_the_old_cards_though_it_h
     # the word has a card (the old one) and the list doesn't hold it: a swap sends it all the same, alone
     got = _swap_pick(lang, [old], carded={word})
     assert [w["word"] for w in got["words"]] == [word]
-    assert other in got["words"][0]["line_text"] and not swap.same_line(got["words"][0]["line_text"], [old])
+    assert other in got["words"][0]["line_text"] and not sentences.same_line(got["words"][0]["line_text"], [old])
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_an_episode_saying_the_word_only_in_its_old_cards_lines_gives_no_card(lang):
     word, old, other = CASES[lang]
     got = _swap_pick(lang, [old, other])
-    assert got["words"] == [] and [n["reason"] for n in got["not_offered"]] == ["same-line"]
+    assert got["words"] == [] and [n["reason"] for n in got["not_offered"]] == ["only-line"]
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -90,7 +92,7 @@ def test_the_old_cards_sentence_as_anki_holds_it_still_counts_as_its_line():
     word, old, _other = CASES["ja"]
     field = "すみません、この<b>本</b>[ほん]を&nbsp;<b>借</b>[か]りたいんですが。"
     got = _swap_pick("ja", [field])
-    assert got["words"] and not swap.same_line(got["words"][0]["line_text"], [old])
+    assert got["words"] and not sentences.same_line(got["words"][0]["line_text"], [old])
 
 
 def test_the_line_the_learner_picked_wins_when_the_episode_says_it_there():
@@ -99,15 +101,15 @@ def test_the_line_the_learner_picked_wins_when_the_episode_says_it_there():
     lines = [c.text for c in read if "借り" in (c.text or "")]
     assert len(lines) >= 2
     got = _swap_pick("ja", [], line=lines[-1])
-    assert swap.same_line(got["words"][0]["line_text"], [lines[-1]])
+    assert sentences.same_line(got["words"][0]["line_text"], [lines[-1]])
 
 
 def test_same_line_reads_text_not_markup_and_never_an_empty_line():
-    assert swap.same_line("「借りたい」", ["借りたい"]) and swap.same_line("借りたい", ["本を<b>借りたい</b>んです"])
-    assert not swap.same_line("返します", ["借りたい"])
-    assert not swap.same_line("…", ["…"]) and not swap.same_line("あ", ["あいう"])
+    assert sentences.same_line("「借りたい」", ["借りたい"]) and sentences.same_line("借りたい", ["本を<b>借りたい</b>んです"])
+    assert not sentences.same_line("返します", ["借りたい"])
+    assert not sentences.same_line("…", ["…"]) and not sentences.same_line("あ", ["あいう"])
     # an old card whose sentence is only markup or punctuation avoids nothing (it must never block every line)
-    assert not swap.same_line("借りたい", ["", "<b></b>", "……"])
+    assert not sentences.same_line("借りたい", ["", "<b></b>", "……"])
 
 
 def test_a_line_id_names_an_item_and_its_start():
@@ -299,7 +301,7 @@ def test_an_episode_whose_lines_are_all_the_old_cards_is_skipped_then_the_swap_w
         swap.look(Steps(), ledger, lang, anki=Anki(), files=5)
         row = swap._rows(ledger, "1 = 1")[0]
         if row["job_id"]:
-            ledger.set_state(row["job_id"], "done")             # its pick: `same-line`, no card
+            ledger.set_state(row["job_id"], "done")             # its pick: `only-line`, no card
     swap.look(Steps(), ledger, lang, anki=Anki(), files=5)
     assert seen == [[], [11], [11, 12]]
     assert swap._rows(ledger, "1 = 1")[0]["state"] == swap.WAITS
@@ -711,15 +713,14 @@ def test_a_swap_undone_while_the_look_waited_for_anki_is_never_tagged_again(ledg
 
 
 def test_same_line_reads_past_colons_dashes_and_slashes():
-    assert swap.same_line("先生：借りてもいいですか", ["先生:借りてもいいですか"])
-    assert swap.same_line("A-借りたい/です", ["A借りたいです"])
+    assert sentences.same_line("先生：借りてもいいですか", ["先生:借りてもいいですか"])
+    assert sentences.same_line("A-借りたい/です", ["A借りたいです"])
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_the_old_one(lang, monkeypatch):
     # Why: Kantan-SD's one picker (the sentence dial) chooses a word's sentence for every maker; Swap hands it the old
     # card's lines as `never` and what Connect can cut as `reach`, and still refuses the old line itself.
-    import sys
     import types
     from collections import namedtuple
     from app import sentence_corpus, token_index
@@ -733,7 +734,7 @@ def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_th
                   Choice("b.srt", 2, other + "!", 0, 0.9, False, True),  # an episode Connect can't cut
                   Choice("c.srt", 3, other, 0, 0.5, False, True)]
         return {k: [c for c in ranked if reach(c.item_id)] for k in keys}
-    monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=choose))
+    monkeypatch.setattr(swap, "_picker", lambda: types.SimpleNamespace(choose=choose))     # the one seam
     for name in ("library_files", "files_holding", "best_for", "collect"):
         monkeypatch.setattr(sentence_corpus, name, lambda *a, **k: pytest.fail("the picker ranks, not Swap"))
     monkeypatch.setattr(token_index, "open_store", lambda *a, **k: pytest.fail("the picker reads, not Swap"))
@@ -743,7 +744,7 @@ def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_th
 
     def broken(*a, **k):
         raise RuntimeError("the picker failed")
-    monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=broken))
+    monkeypatch.setattr(swap, "_picker", lambda: types.SimpleNamespace(choose=broken))
     assert swap.choose_line(lang, word, [old]) is None                 # the picker failed: the swap waits
 
 
@@ -913,3 +914,36 @@ def test_a_swap_taken_back_before_its_job_is_dropped_with_the_queues_why_and_no_
     assert (row["state"], row["why"], row["job_id"]) == (swap.DROPPED, "taken back", None)
     assert _agree(ledger, lang) == {entry["id"]: "dropped"}
     assert not ledger.jobs(lang)
+
+
+# --------------------------------------------------------------------------- #
+# The picker's answer for a listed word whose kept lines are all stale (Kantan-SD's refuter note, on the merged code)
+# --------------------------------------------------------------------------- #
+def test_a_listed_word_whose_kept_lines_all_changed_since_generate_waits_for_another_sentence_never_an_error(
+        ledger, placed, monkeypatch):
+    # Why: the picker gives a row of the list only the lines its Generate kept, and none from a file changed since
+    # (it may no longer say them) — an empty answer, with no library search. For Swap that is "no other line yet":
+    # the swap waits, said as *No other sentence for 「X」 yet*, and is looked at again later; never a failure, never
+    # a card from a line that may be gone.
+    monkeypatch.setattr(sentences, "_KEPT", {})
+    word, reading = BOUKEN
+    _lists("ja")
+    here, there = _sd_write("ja", "第01話.srt", [HARD]), _sd_write("ja", "第02話.srt", ["……", EASY])
+    _sd_place(placed, here, 1)
+    _sd_place(placed, there, 2)
+    _sd_plan("ja", [here, there], {BOUKEN: [(0, 0, HARD, 3), (1, 1, EASY, 0)]})
+    _no_library_search(monkeypatch)
+    assert swap.choose_line("ja", word, [TODAY], reading=reading) == (2, EASY), "fresh: the list's best kept line"
+    for path in (here, there):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("冒険はもう終わった。\n")                  # edited after the Generate: another size, another time
+    assert sentences.choose("ja", [BOUKEN], young={})[BOUKEN] == []
+    anki = _sentence_card(Anki(), 900, word, TODAY)
+    got = swap.make_card("ja", word, reading=reading, old_note=900, ledger=ledger, wake=False)
+    assert got["state"] == swap.ASKED
+    swap.look(Steps(), ledger, "ja", anki=anki, files=2)
+    row = swap._rows(ledger, "1 = 1")[0]
+    assert (row["state"], row["why"], row["job_id"]) == (swap.WAITS, swap.NO_LINE, None), "waits: no job, no card"
+    entries = needs._swap_entries({"swaps": swap.status_of(ledger.conn, "ja")}, frozenset())
+    assert [e.kind for e in entries] == [needs.SWAP_WAITS]
+    assert entries[0].title == "No other sentence for 「冒険」 yet."

@@ -258,6 +258,9 @@ ROWS = (
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
     _row("mine_line", "anki", "custom", when=_CONNECT, group="from_library"),               # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
+    # Kantan-SD (the mining model's sentence dial; PROVISIONAL words): which sentence each card is cut from
+    _row("connect_sentence_dial", "anki", "choice", ("connect_sentence_dial",), options=("best", "nearest"),
+         when=_CONNECT),
     # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),

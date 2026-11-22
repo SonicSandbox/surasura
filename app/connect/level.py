@@ -32,6 +32,10 @@ from app.connect.ledger import Ledger
 
 # A level job for an episode mined before its own Generate (new files): kept by the runner, unlike a raise's
 NEW_FILES = "new-files"
+# Kantan-SD: a level job for a word whose best sentence is in this episode (the sentence dial's Best, `runner._best`)
+# — kept by the runner, watched or finished too (the context you remember is why it was chosen)
+BEST = "best-sentence"
+KEPT = (NEW_FILES, BEST)
 
 
 def check(store, language, listed, signature, file_words, ledger=None):
@@ -124,8 +128,12 @@ def wants(item):
 
 
 def restrict(listed, job):
-    """A level job's list: only its words (`pick` sends Anki Miner nothing else). Any other job: `listed` as is."""
+    """A level job's list: only its words (`pick` sends Anki Miner nothing else) — a Best word not on the list
+    (*Cards for every new word*) after the listed ones. Any other job: `listed` as is."""
     if not job or job.get("kind") != "level":
         return listed
     only = set(job.get("words") or ())
-    return {key: rank for key, rank in (listed or {}).items() if key in only}
+    kept = {key: rank for key, rank in (listed or {}).items() if key in only}
+    if job.get("source") == BEST:
+        kept.update((key, len(listed or {})) for key in sorted(only - set(kept)))
+    return kept

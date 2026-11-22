@@ -60,6 +60,8 @@ def keeps(job, event=None, current=None):
         return event != "removed"
     if job.get("kind") == LEVEL:
         from app.connect import level
+        if job.get("source") == level.BEST:
+            return event != "removed"       # Kantan-SD: a Best word's episode, finished or not (its context)
         return job.get("source") == level.NEW_FILES and event not in ("removed", "finished")
     if job.get("kind") == SHOW:
         return event not in ("removed", "finished") and current is not False

@@ -2180,7 +2180,8 @@ def _refused(change, out):
     if change.kind in ("finish", "put_back_finished") or (change.kind in ("set_tier", "move") and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(_values(change.status))
     if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
-        return not out.restored and not getattr(out, "folder_dropped", False)
+        return not out.restored and not getattr(out, "folder_dropped", False) \
+            and not getattr(out, "replaced_back", False)    # Kura-AB7: a Replace's rest undone (its parts put back first)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "stop_source":

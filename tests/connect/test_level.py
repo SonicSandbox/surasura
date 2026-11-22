@@ -344,3 +344,14 @@ def test_a_mark_left_by_an_older_ledger_is_dropped_never_read_as_every_episode_s
     assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
     with Ledger() as ledger:
         assert ledger.take_new_files("ja") is None, "taken"
+
+
+def test_a_new_files_mark_left_before_connects_first_look_is_taken_by_that_look():
+    # why: a first look records every word as the list holds it, the new episodes' own words included: a mark left
+    # before it (a new-files run before Connect had looked at any list) gives a later raise nothing
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _mined_this_run(d)
+    assert _check(BEFORE, "run-1", files)["first"] is True
+    out = _check(RAISED, "run-2", files)
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []

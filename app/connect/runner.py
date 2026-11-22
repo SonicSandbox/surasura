@@ -326,6 +326,17 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
+class _Asked1:
+    """A `cancel` already set: `anki_connect.patient` asks once and never waits out a busy Anki."""
+
+    @staticmethod
+    def is_set():
+        return True
+
+
+_NO_WAIT = _Asked1()
+
+
 class _Again(Repick):
     """Pick again from the same subtitle in other bytes (`_fit`) — the one beside its video (Michi-NT), or its library
     copy re-timed by tsubasa (Michi-NT2) — never a change of what the words were picked for: it counts as none of
@@ -4826,10 +4837,11 @@ class Steps:
                 "paused": bool(done.get("paused"))}
 
     def _reviewing(self):
-        """OPEN 40: is a review on in Anki now (E2's look, at Connect's own address)? The mine call asks it while
-        Anki Miner writes (`anki_miner.PAUSE_LOOK_S`)."""
+        """OPEN 40: is a review on in Anki now (the one check, `anki_connect.reviewing`, at Connect's own address)?
+        The mine call asks it while Anki Miner works (`anki_miner.PAUSE_LOOK_S`): once, never waiting out a busy Anki
+        (its sync: no review) — the call's poll also watches your *Stop*."""
         from app import anki_connect
-        return anki_connect.reviewing(self.url)
+        return anki_connect.reviewing(self.url, cancel=_NO_WAIT)
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

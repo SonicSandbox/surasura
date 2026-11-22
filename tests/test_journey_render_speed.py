@@ -140,6 +140,32 @@ def test_a_memo_of_another_table_or_a_damaged_one_is_no_memo(language, tmp_path)
     assert _all(again) == _all(jr.build(language, rows, _stats(3), pitch=jr.Pitch(language)))
 
 
+# The same spelling, read another way after a Generate: JMdict gives each reading its own meaning (上手 じょうず
+# "skillful" / うわて "upper part"); Chinese has no reading, so its word changes.
+CHANGED = {"ja": (("上手", "ジョウズ"), ("上手", "ウワテ")), "zh": (("长大", ""), ("长城", ""))}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_after_a_generate_changes_the_words_the_memo_never_serves_an_old_one(language, tmp_path):
+    # A Generate rewrites the list (a word read another way, a word gone) while the last page's memo stays in
+    # results/: the new page must be the cold render of the new list — never a meaning or pitch from the old one.
+    path = str(tmp_path / jr.WORD_MEMO)
+    keys = jr.memo_keys(language)
+    (old_word, old_reading), (new_word, new_reading) = CHANGED[language]
+    before = _rows(language, 4)
+    before[0].update(Word=old_word, Orth=old_word, Forms=old_word, Reading=old_reading)
+    memo = jr.WordMemo(path, *keys)
+    jr.build(language, before, _stats(4), pitch=jr.Pitch(language), memo=memo)
+    memo.save()
+    after = [dict(row) for row in before[:1] + before[2:]]
+    after[0].update(Word=new_word, Orth=new_word, Forms=new_word, Reading=new_reading)
+    cold = jr.build(language, after, _stats(4), pitch=jr.Pitch(language))
+    warm = jr.build(language, after, _stats(4), pitch=jr.Pitch(language), memo=jr.WordMemo(path, *keys))
+    assert _all(warm) == _all(cold)
+    old_page = jr.build(language, before, _stats(4), pitch=jr.Pitch(language))
+    assert _all(cold)[2]["meanings"] != _all(old_page)[2]["meanings"]       # the change is one the page shows
+
+
 def test_the_memo_is_pruned_to_the_page_and_never_holds_the_learners_own_dictionary(tmp_path):
     path = str(tmp_path / jr.WORD_MEMO)
     keys = jr.memo_keys("ja")

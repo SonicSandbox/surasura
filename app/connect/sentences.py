@@ -37,11 +37,14 @@ counts.
 
 Reads the plan file, the library store and the token store only: never tokenizes the library. Light: nothing written.
 """
+import logging
 import os
 import re
 import unicodedata
 from collections import namedtuple
 from datetime import datetime, timezone
+
+log = logging.getLogger("surasura-cli")
 
 NEAREST, BEST = "nearest", "best"
 DIALS = (NEAREST, BEST)
@@ -241,21 +244,22 @@ def _listed(language):
     hit = _KEPT.get(language)
     if hit is None or hit[0] != stamp:
         kept = plan_engine.candidates(path, language)
-        rows = {}
-        if kept is not None:
-            rows = {(key[0], key[1] or ""): k for k, key in enumerate(kept.keys) if k in kept.pools}
+        if kept is None:
+            return None, {}     # not kept: a read that failed once (the file held open) is tried again next time
+        rows = {(key[0], key[1] or ""): k for k, key in enumerate(kept.keys) if k in kept.pools}
         hit = _KEPT[language] = (stamp, kept, rows)
     return hit[1], hit[2]
 
 
-def _from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store):
+def _from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store, window):
     """`choose` for the words that are rows of the list (`listed`: {key: its row}) -> {key: [Choice, …]}, at most TOP
     a word (and the mined episode's own line, when it is a candidate): each row's kept candidates (`_listed`) of a
     good length, in Best's order (`_rank`, then the list's own), each checked as it is taken — its file as the
     Generate read it (`files`' digest: its path, time and size; a watched or Finished source by the token store's
     stamp), its media there (`reach`), never a line of `never`. The young words are read for a row's first
     YOUNG_LINES of those only (a sentence's known words are the token store's, a file decoded for each): they order
-    a row's best-placed candidates, the rest weigh by context."""
+    a row's best-placed candidates, the rest weigh by context. `window`: the learner's length range as the library
+    search reads it (`sentence_corpus.length_range`)."""
     from app import plan_rules, token_index, sentence_corpus
     from app.connect import library
     from app.path_utils import get_data_path
@@ -269,9 +273,9 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
         seen, line = set(), []
         for s in list(pool) + ([first] if first >= 0 else []):
             row = sentences[s] if 0 <= s < len(sentences) else None
-            if (row is None or not row[plan_rules.TEXT] or row[plan_rules.SHORT] or row[plan_rules.LONG]
+            if (row is None or not row[plan_rules.TEXT] or not window[0] <= len(row[plan_rules.TEXT]) <= window[1]
                     or row[plan_rules.HASH] in seen):
-                continue        # a length outside the learner's range is no candidate (as the library search's window)
+                continue        # a length outside the learner's range is no candidate (the library search's window)
             seen.add(row[plan_rules.HASH])
             line.append(s)
         lines[key] = line
@@ -330,9 +334,11 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
     def fresh(key, at, number, text):
         """The young words sentence `number` of the file holds beside `key` (their weights' sum), as the token store
         keeps it; None when that sentence is no longer `text` there (the file was read again since the Generate)."""
+        cache = store_of()
+        if not cache:
+            return 0.0          # no token store to ask: no young words, the sentence taken as the plan has it
         if at not in read:
-            cache = store_of()
-            read[at] = cache.file_tokens(at) if cache else []
+            read[at] = cache.file_tokens(at)
         held = read[at]
         if not (0 <= number < len(held)) or str(held[number][0]).strip() != text:
             return None
@@ -367,6 +373,8 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
                     continue
                 if not choice.here and (reach is None or not info[at][3]) and not can_cut(at, choice.item_id):
                     continue            # a book's line is judged by how it is heard (above), and is there
+                if placed[src][4] is None and fresh(key, at, choice.number, choice.text) is None:
+                    continue            # a watched or Finished source read again since: its line may have moved
                 if choice.here:
                     mine = choice
                 taken.append((choice, position, at))
@@ -420,7 +428,12 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
         kept, rows = _listed(language)
         listed = {key: rows[(key[0], key[1] or "")] for key in keys if (key[0], key[1] or "") in rows}
         if listed:
-            out.update(_from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store))
+            try:
+                out.update(_from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store,
+                                      sentence_corpus.length_range(settings)))
+            except Exception as e:          # a plan damaged inside its tables: its words go to the library search
+                log.info("Connect: the list's sentences not read (%s): %s", language, e)
+                listed = {}
             keys = [key for key in keys if key not in listed]
             if not keys:
                 return out

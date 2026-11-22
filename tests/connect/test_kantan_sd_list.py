@@ -31,6 +31,8 @@ EASY = "明日から冒険に出かけよう。"          # every word known but
 TODAY = "今日から冒険に出かけよう。"         # the same, 今日 for 明日
 HARD = "未知の迷宮で壮絶な冒険が始まった。"    # 未知 迷宮 壮絶 unknown too
 BOUKEN = ("冒険", "ボウケン")
+# 55 characters: the longest a sentence may be under the default range (50) and the window's leeway (5)
+NEAR_CAP = "明日から長い冒険に出かけようと思っていたけれど、雨がとても強くなってきたので、今日は家で地図を見て道を決めた。"
 
 
 @pytest.fixture(autouse=True)
@@ -70,10 +72,12 @@ def _write(language, name, lines):
     return path
 
 
-def _plan(language, files, rows, tail=b"", header=None):
+def _plan(language, files, rows, tail=b"", header=None, firsts=None, finished=()):
     """A plan file as a Generate leaves it, holding only what the candidates' reader reads: `files` the run's paths;
     `rows` {(word, reading): [(file index, sentence number, text, other unknown words), …]} — each row's pool in the
-    list's order. `tail`: bytes put after the tables (the per-file tables' place)."""
+    list's order; `firsts` {(word, reading): one such sentence}, a row's first sentence; `finished` the watched /
+    Finished sources' paths (file index len(files) on). `tail`: bytes put after the tables (the per-file tables'
+    place)."""
     root = get_data_path(language)
     table = []
     for path in files:
@@ -81,22 +85,24 @@ def _plan(language, files, rows, tail=b"", header=None):
         st = os.stat(path)
         table.append([rel, "now", plan_rules.file_digest([os.path.join(root, rel), [st.st_mtime, st.st_size], None,
                                                           None, "subtitle"]), "subtitle"])
+    finished = [[os.path.relpath(path, root).replace("\\", "/"), "subtitle", 0] for path in finished]
     keys, cowords, lines, pools = [], [], [], []
     for k, key in enumerate(rows):
         keys.append([key[0], key[1], False, False, len(rows[key])])
         cowords.append([k, []])                                 # the row's own word: never one of its "others"
     strangers = len(cowords)
     cowords += [[-1, []] for _ in range(8)]                     # words that are no rows: unknown for good
+    def sentence(k, f, number, text, others):
+        lines.append([text, None, 0, 0, f, [k] + list(range(strangers, strangers + others)), [], number,
+                      zlib.crc32(text.encode("utf-8")), len(text)])
+        return len(lines) - 1
     for k, key in enumerate(rows):
-        pool = []
-        for f, number, text, others in rows[key]:
-            pool.append(len(lines))
-            lines.append([text, None, 0, 0, f, [k] + list(range(strangers, strangers + others)), [], number,
-                          zlib.crc32(text.encode("utf-8")), len(text)])
-        pools.append([k, -1, pool, []])
+        pool = [sentence(k, *line) for line in rows[key]]
+        first = sentence(k, *firsts[key]) if key in (firsts or {}) else -1
+        pools.append([k, first, pool, []])
     head = {"format": 4, "language": language}
     head.update(header or {})
-    body = [head, {"files": table}, {"keys": keys}, {"rows": [None] * len(keys)}, {"finished": []},
+    body = [head, {"files": table}, {"keys": keys}, {"rows": [None] * len(keys)}, {"finished": finished},
             {"sentences": lines}, {"cowords": cowords}, {"pools": pools}]
     data = "\n".join(json.dumps(line, ensure_ascii=False, separators=(",", ":")) for line in body).encode("utf-8")
     path = os.path.join(get_user_file("results"), analyzer.PLAN_FILE)
@@ -273,6 +279,10 @@ def test_no_plan_a_damaged_one_or_another_languages_leaves_the_library_search(mo
     got = best((key, other))
     assert _texts(got[key]) == [EASY] and got[key][0].number is None, "no row: the library's sentence"
     assert _texts(got[other]) == [EASY] and got[other][0].number == 0 and got[other][0].others == 1
+    # a plan damaged inside its tables (a co-word that isn't there): every word asked goes to the library search
+    _plan("ja", [here], {key: [(0, 0, EASY, 20)], other: [(0, 0, EASY, 1)]})
+    got = best((key, other))
+    assert [(c.text, c.number) for c in got[key]] == [(EASY, None)] and all(c.number is None for c in got[other])
     # a row whose pool is empty, and a word nowhere: no sentence
     _plan("ja", [here], {key: []})
     assert best((key, ("竜巻", "タツマキ"))) == {key: [], ("竜巻", "タツマキ"): []}
@@ -340,6 +350,7 @@ def test_two_lines_are_compared_by_one_rule_a_cards_field_and_its_subtitle_line_
     assert sentences.same_line(EASY, {card}) and sentences.same_line("冒険に出かけよう", {card})
     assert not sentences.same_line(HARD, {card}) and not sentences.same_line(EASY, set())
     assert not sentences.same_line("。", {"。"}) and not sentences.same_line("あ", {"あ。"}), "two characters at least"
+    assert not sentences.same_line("え", {"ええと、冒険に行こう。"}), "one character is never inside a longer line"
     assert sentences.same_line("ＡＢＣの冒険", {"ABCの冒険"}), "full-width and half-width letters are the same line"
 
 
@@ -354,3 +365,84 @@ def test_the_mined_episodes_own_context_is_what_its_line_weighs_when_the_list_ke
     mine = sentences.Choice(here, 1, EASY, 0, sentences.context_of("ja", here), True, True)
     assert not sentences.better(sentences.Choice(outside, 2, TODAY, 0, 0.2, False, True), mine)
     assert sentences.better(sentences.Choice(outside, 2, TODAY, 0, 0.8, False, True), mine), "a show you saw lately"
+
+
+def test_a_rows_candidates_are_the_learners_length_range_its_first_sentence_and_each_line_once(placed, monkeypatch):
+    # why: the list and the library search answer alike — the same length window (the learner's range widened by
+    # sentence_corpus.LENGTH_LEEWAY, not the list's own too-short / too-long marks), the row's first sentence beside
+    # its shortlist, and a line two files share given once
+    from app import settings_manager
+    assert sc.length_range(settings_manager.load_settings())[:2] == (5, 55), "the defaults this test is written for"
+    a, b = _write("ja", "第01話.srt", [HARD]), _write("ja", "第02話.srt", [EASY])
+    _place(placed, a, 1)
+    _place(placed, b, 2)
+    tiny, short = "冒険だ。", "冒険に行く。"
+    near_cap = NEAR_CAP
+    past_cap = near_cap[:-1] + "、そして友達にも電話をした。"
+    assert (len(tiny), len(short), len(near_cap)) == (4, 6, 55) and len(past_cap) > 55
+    _plan("ja", [a, b], {BOUKEN: [(0, 0, tiny, 0), (0, 1, short, 0), (0, 2, past_cap, 0), (0, 3, near_cap, 0),
+                                  (0, 4, EASY, 0), (1, 0, EASY, 0)]}, firsts={BOUKEN: (1, 1, TODAY, 0)})
+    _no_library_search(monkeypatch)
+    got = sentences.choose("ja", [BOUKEN], dial=sentences.BEST, young={})[BOUKEN]
+    assert _texts(got) == [short, near_cap, EASY, TODAY]
+
+
+def test_without_the_token_store_young_words_weigh_nothing_and_no_candidate_is_lost(placed, monkeypatch):
+    # why: the token store gone or unreadable (rebuilt, a damaged file) while the plan is there: the young words
+    # can't be read, so they weigh nothing — never a reason to drop the row's best candidates
+    from app import token_index
+    a, b = _write("ja", "第01話.srt", [EASY]), _write("ja", "第02話.srt", [TODAY])
+    _place(placed, a, 1)
+    _place(placed, b, 2)
+    _plan("ja", [a, b], {BOUKEN: [(0, 0, EASY, 0), (1, 0, TODAY, 0)]})
+    _no_library_search(monkeypatch)
+    monkeypatch.setattr(token_index, "open_reader", lambda language: None)
+    got = sentences.choose("ja", [BOUKEN], dial=sentences.BEST, young={"今日": 1.0})[BOUKEN]
+    assert _texts(got) == [EASY, TODAY] and [c.weight for c in got] == [0.0, 0.0]
+
+
+def test_a_plan_read_that_failed_is_tried_again_and_a_good_one_is_read_once(placed, monkeypatch):
+    # why: a plan held open by another program for one read must not hide the list until the next Generate
+    a = _write("ja", "第01話.srt", [EASY])
+    _plan("ja", [a], {BOUKEN: [(0, 0, EASY, 0)]})
+    real, calls = plan_engine.candidates, []
+
+    def candidates(path, language=None):
+        calls.append(path)
+        return None if len(calls) == 1 else real(path, language)
+    monkeypatch.setattr(plan_engine, "candidates", candidates)
+    assert sentences._listed("ja") == (None, {})
+    kept, rows = sentences._listed("ja")
+    assert kept is not None and list(rows) == [BOUKEN]
+    assert sentences._listed("ja")[1] == rows and len(calls) == 2, "the same plan file: read once"
+    kept_before = dict(sentences._KEPT)
+    _plan("ja", [a], {BOUKEN: [(0, 0, EASY, 0)], ("明日", "アシタ"): [(0, 0, EASY, 1)]})
+    sentences._KEPT.update(kept_before)             # (the helper forgets; a mine's process would not)
+    assert set(sentences._listed("ja")[1]) == {BOUKEN, ("明日", "アシタ")}, "a new Generate's plan: read again"
+
+
+def test_a_watched_sources_line_is_checked_at_its_place_even_with_no_young_words(monkeypatch):
+    # why: a watched or Finished source has no digest in the plan — the token store's stamp says the file is the
+    # one it read, so the sentence at the plan's place must still be the plan's line, young words or none
+    known = sorted({"明日", "今日", "から", "に", "出掛ける", "出かける", "よう", "う"})
+    first = _write("ja", "第01話.txt", [EASY])
+    seen = _write("ja", "第02話.txt", [TODAY])
+    user_files = os.path.join(get_user_file("User Files"), "ja")
+    os.makedirs(user_files, exist_ok=True)
+    with open(os.path.join(user_files, "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in known]}, f, ensure_ascii=False)
+    sc.build("ja", os.path.join(os.environ["SURASURA_TEST_ROOT"], "corpus-ja.zip"), progress=lambda message: None)
+    info = {os.path.normcase(os.path.abspath(p)): (n, 0.0, sentences.REAL, False)
+            for n, p in enumerate((first, seen), 1)}
+    monkeypatch.setattr(sentences, "_library", lambda language, store=None, ai=False, only=None: info)
+    key = next((t[0], t[1]) for _t, tokens in analyzer.JapaneseTokenizer().tokenize_sentences(EASY)
+               for t in tokens if t[0] == "冒険")
+    _plan("ja", [first], {key: [(0, 0, EASY, 0), (1, 0, TODAY, 0)]}, finished=[seen])
+    assert _texts(sentences.choose("ja", [key], dial=sentences.BEST, young={})[key]) == [EASY, TODAY]
+    _plan("ja", [first], {key: [(0, 0, EASY, 0), (1, 0, "今日から長い冒険に出かけよう。", 0)]}, finished=[seen])
+    assert _texts(sentences.choose("ja", [key], dial=sentences.BEST, young={})[key]) == [EASY]
+    # ...and a watched file edited since the token store read it: its stamp is no longer the file's -> no choice
+    _plan("ja", [first], {key: [(0, 0, EASY, 0), (1, 0, TODAY, 0)]}, finished=[seen])
+    with open(seen, "a", encoding="utf-8") as f:
+        f.write("冒険はもう終わった。\n")
+    assert _texts(sentences.choose("ja", [key], dial=sentences.BEST, young={})[key]) == [EASY]

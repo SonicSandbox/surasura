@@ -307,6 +307,10 @@ def test_best_keeps_the_word_on_a_tie_an_ask_nearest_or_when_the_other_episode_i
         job = {"id": 9, "item_id": 1, "kind": "new", "store_id": "s-1"}
         monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [equal, own]}))
         assert runner._best(_Steps(), ledger, "ja", job, _words(adventure), here)[1] == [], "a tie stays"
+        monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [equal]}))
+        monkeypatch.setattr(sentences, "context_of", lambda lang, path, store=None: 0.5)
+        assert runner._best(_Steps(), ledger, "ja", job, _words(adventure), here)[1] == [], \
+            "the list keeps none of this episode's lines: its own line weighs as its episode, and the tie stays"
         monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [better, own]}))
         for steps, asked in ((_Steps(dial="nearest"), {}), (_Steps(), {"asked_at": "2026-11-21T10:00:00Z"}),
                              (_Steps(), {"kind": runner.LEVEL})):

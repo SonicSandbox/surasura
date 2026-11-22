@@ -401,6 +401,9 @@ def test_the_marks_come_back_through_a_rebuild_from_the_copy_and_a_repair(langua
     store.set_prestudied([b], True, "press")
     store.set_prestudied([c], False, "press")
     want = {i: _mark(store, i) for i in (a, b, c)}
+    store.record_growth({store.item(a)["rel_path"]: (120, 300, 41)})   # Kura-GS's snapshots ride the same copy
+    growth = store.growth_of()
+    assert growth
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     db = store.db_path
     store.close()
@@ -408,11 +411,13 @@ def test_the_marks_come_back_through_a_rebuild_from_the_copy_and_a_repair(langua
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert {i: _mark(store, i) for i in want} == want
+    assert store.growth_of() == growth, "the growth snapshots beside the marks"
     store.close()
     ls.mark_damaged(db, "a test")                               # Repair
     assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert {i: _mark(store, i) for i in want} == want
+    assert store.growth_of() == growth
     assert store.set_prestudied([c], True, "end") is None, "the un-mark still sticks"
     store.close()
 

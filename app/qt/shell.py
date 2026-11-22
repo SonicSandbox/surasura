@@ -1542,6 +1542,7 @@ class _Duties:
         self.level_asked = 0                                       # the newest level read (older answers dropped)
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
+        self.payoff_said = None             # the review loop's last *From your phone* toasted (its sync, once)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
         self.update_applies = False         # W31A-1: the update chip has something to say (it then holds the slot)
         self.paints = {}                    # control -> how many times it was repainted (S19)
@@ -3847,6 +3848,10 @@ class ShellWindow(QMainWindow):
         if junban and junban != d.junban_said:             # 順's line, once (the Tk `_on_junban_auto`: IK-23)
             d.junban_said = junban
             self.toasts.show(junban, why=self._job_cause("junban"))   # help cards: the job's own cause (one record)
+        payoff = getattr(state, "payoff", None)
+        if payoff and payoff != d.payoff_said:             # the review loop's *From your phone*, once a sync
+            d.payoff_said = payoff
+            self._show_payoff(payoff)
         known = getattr(state, "known", None)
         self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
@@ -4053,6 +4058,25 @@ class ShellWindow(QMainWindow):
         changed = d.level.set_level(d.level_text, tip)
         if d.level.set_mark(mark) or changed:
             d.paints[d.level] = d.paints.get(d.level, 0) + 1
+
+    def _show_payoff(self, payoff):
+        """The review loop's payoff (Kyou-LR, mock 03-payoff-toast): *From your phone: 3 known · 2 to swap · 1 ignored*
+        with *Undo* — that sync's moves put back on the automation's worker (the word lists only; the cards stay as
+        the learner left them), its answer said in a toast. Another language's sync: not shown here."""
+        language, sync_id, known, swap, ignored = payoff
+        automation = self.services.automation
+        if language != self.language:
+            return
+        if getattr(self, "_payoff_relay", None) is None:
+            self._payoff_relay = bridge.Relay(self)
+            self._payoff_relay.said.connect(
+                lambda answer: self.toasts.show(strings.LOOP_UNDONE if answer and answer.get("undone")
+                                                else strings.LOOP_UNDO_FAILED))
+
+        def undo():
+            automation.undo_payoff(language, sync_id, then=self._payoff_relay.call)
+        self.toasts.show(strings.LOOP_PAYOFF.format(known=known, swap=swap, ignored=ignored),
+                         undo=undo if automation is not None else None, tip=strings.LOOP_PAYOFF_TIP)
 
     def _job_cause(self, kind):
         """The newest `kind` job's cause in the registry (help cards §5.2: a toast reads its job's record, never a copy

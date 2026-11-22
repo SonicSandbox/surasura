@@ -169,6 +169,21 @@ def test_chunks_close_at_their_episode_cap_and_their_byte_cap(monkeypatch):
             assert len(gzip.decompress(chunk)) <= jr.CHUNK_BYTES + 64
 
 
+def test_the_byte_cap_counts_the_source_rows_a_word_brings_not_only_the_word(monkeypatch):
+    # Each line from a file of its own with a long title: the chunk's source table outweighs its words. Counting only
+    # the words' JSON, a chunk would close far past the cap (the page's budget is the chunk's bytes, table and all).
+    monkeypatch.setattr(jr, "CHUNK_BYTES", 1500)
+    rows = _rows("ja", 1, per_ep=8)
+    for i, row in enumerate(rows):
+        for n in (1, 2, 3):
+            row[f"Src {n}"] = f"{'とある魔術の禁書目録' * 6}/第{i * 3 + n:02d}話.srt"
+    out = jr.build("ja", rows, _stats(1), pitch=_NoPitch())
+    assert len(out.chunks) > 1
+    for (_w0, n), chunk in zip(out.head["chunks"], out.chunks):
+        if n > 1:
+            assert len(gzip.decompress(chunk)) <= jr.CHUNK_BYTES + 64, len(gzip.decompress(chunk))
+
+
 def test_the_sentence_cap_follows_sentences_per_word():
     settings = {"logic": {"context": {"max_contexts": 1}}}
     out = jr.build("ja", _rows("ja", 2), _stats(2), settings=settings, pitch=_NoPitch())

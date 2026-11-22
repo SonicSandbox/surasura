@@ -56,17 +56,22 @@ POS_WORDS = {"n": "noun", "pn": "pronoun", "adv": "adverb", "adv-to": "adverb (�
              "n-adv": "adverbial noun", "n-t": "noun (temporal)"}
 
 # The page's seven setting rows (SPEC §1.4) as the head carries them: {head name: (settings key, choices, default)}.
-# Sentences per word is `logic.context.max_contexts`; the other keys are PROVISIONAL names until J-SET adds them to
+# Sentences per word is `logic.context.max_contexts` (0 = All); where the line is from and the look are the app's own
+# `source_display` and `theme` (J-SET-TABLE § 2); the other keys are PROVISIONAL names until J-SET adds them to
 # DEFAULT_SETTINGS (rename them here, nowhere else). A value outside its choices is the default.
 PAGE_SETTINGS = {
     "meanings": ("journey_meanings", MEANINGS, "en"),
     "pitch": ("journey_pitch", ("shown", "hidden"), "shown"),
-    "source": ("journey_source", ("icon", "icon_name", "hover"), "icon"),
+    "source": ("source_display", ("icon", "icon_name", "hover"), "icon"),
     "word_size": ("journey_word_size", ("s", "m", "l"), "m"),
     "sentence_size": ("journey_sentence_size", ("s", "m", "l"), "m"),
-    "theme": ("journey_theme", ("night", "light"), "night"),
+    "theme": ("theme", ("night", "light"), "night"),
     "keys": ("journey_keys", ("qwerty", "dvorak"), "qwerty"),      # or the learner's own map {action: key}
 }
+# The existing keys' values as the page reads them (PROVISIONAL, J-SET-TABLE § 2): `source_display`'s Hidden and Icon
+# read as Icon (the default), File name and Icon + file name as Icon + name; `theme`'s Modern Light as Light, every
+# dark look as Night (the default)
+READ_AS = {"source": {"filename": "icon_name", "full": "icon_name"}, "theme": {"Modern Light": "light"}}
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")
 StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library")
@@ -127,6 +132,7 @@ def page_settings(settings, per_word):
     out = {"sentences": per_word}
     for name, (key, choices, default) in PAGE_SETTINGS.items():
         value = settings.get(key, default)
+        value = READ_AS.get(name, {}).get(value, value) if isinstance(value, str) else value
         if name == "keys" and isinstance(value, dict):
             value = {str(k): str(v) for k, v in value.items() if isinstance(k, str) and isinstance(v, str)} or default
         elif value not in choices:
@@ -842,7 +848,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
     context = logic.get("context") if isinstance(logic.get("context"), dict) else {}
     try:
-        per_word = max(1, int(context.get("max_contexts", 3)))
+        per_word = int(context.get("max_contexts", 3))
+        per_word = 0 if per_word == 0 else max(1, per_word)        # 0 = All (the page's choice): every kept one
     except (TypeError, ValueError):
         per_word = 3
     shown_settings = page_settings(settings, per_word)
@@ -975,6 +982,9 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             lines.append(line)
         return lines, added
 
+    if per_word == 0:                                               # All: every Context column the rows have
+        per_word = max((int(k[8:]) for k in {k for _e, row in words for k in row}
+                        if k.startswith("Context ") and k[8:].isdigit()), default=1)
     columns = [(f"Context {n}", f"Src {n}") for n in range(1, per_word + 1)]
     for wid, (e, row) in enumerate(words):
         if e not in cur_eps and len(cur_eps) >= CHUNK_EPISODES:

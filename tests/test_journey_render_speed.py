@@ -41,12 +41,41 @@ def test_the_head_carries_all_seven_setting_rows_with_their_defaults_when_unset(
 
 
 def test_a_setting_outside_its_choices_is_its_default_and_a_key_map_passes_as_text():
-    settings = {"journey_theme": "neon", "journey_pitch": "hidden", "journey_source": None,
+    settings = {"theme": "neon", "journey_pitch": "hidden", "source_display": None,
                 "journey_keys": {"next": "j", "known": "k", 3: "x", "bad": 4}, "logic": {"context": {"max_contexts": 1}}}
     shown = jr.page_settings(settings, 1)
     assert shown["theme"] == "night" and shown["pitch"] == "hidden" and shown["source"] == "icon"
     assert shown["keys"] == {"next": "j", "known": "k"} and shown["sentences"] == 1
     assert jr.page_settings({"journey_keys": {}}, 3)["keys"] == "qwerty"
+
+
+def test_the_apps_own_source_and_theme_keys_read_as_the_pages_choices():
+    # One key each (J-SET-TABLE § 2): the app's `source_display` and `theme`, never journey_* copies of them.
+    # Today's values as the page reads them: Hidden and Icon as Icon, File name and Icon + file name as Icon + name;
+    # Modern Light as Light, every dark look (and Zen) as Night; the page's own choices as they are.
+    shown = {v: jr.page_settings({"source_display": v}, 3)["source"]
+             for v in ("off", "icon", "filename", "full", "hover")}
+    assert shown == {"off": "icon", "icon": "icon", "filename": "icon_name", "full": "icon_name", "hover": "hover"}
+    looks = {v: jr.page_settings({"theme": v}, 3)["theme"]
+             for v in ("Modern Light", "Dark Flow", "Default (Dark)", "Midnight (Vibrant)", "Zen Mode", "light")}
+    assert looks == {"Modern Light": "light", "Dark Flow": "night", "Default (Dark)": "night",
+                     "Midnight (Vibrant)": "night", "Zen Mode": "night", "light": "light"}
+    assert jr.page_settings({"journey_theme": "light", "journey_source": "hover"}, 3)["theme"] == "night"
+
+
+def test_all_sentences_per_word_stored_as_0_shows_every_kept_sentence_not_one():
+    # The page's All is max_contexts 0: every Context column the list kept for the word (here five), and the head
+    # says 0 (All) so the page's control reads back as All; 2 is two, and a negative is one, as before.
+    lines = ["冒険の始まりだ。", "冒険に出よう。", "冒険は続く。", "冒険が好きだ。", "冒険の終わり。"]
+    row = {"Sequence": 1, "Source File": "ep01.srt", "Word": "冒険", "Reading": "ボウケン", "Occurrences (File)": 5}
+    for n, line in enumerate(lines, 1):
+        row[f"Context {n}"], row[f"Src {n}"] = line, "Show/ep01.srt"
+    for stored, want, head in ((0, 5, 0), (2, 2, 2), (-1, 1, 1)):
+        out = jr.build("ja", [dict(row)], _stats(1), settings={"logic": {"context": {"max_contexts": stored}}},
+                       pitch=jr.Pitch("ja", kanjium={}))
+        word = [w for chunk in out.chunks for w in _decode(chunk)["w"]][0]
+        assert out.head["settings"]["sentences"] == head
+        assert [line[0] for line in word[9]] == lines[:want], (stored, word[9])     # each line [text, src, ...]
 
 
 def test_the_stamp_is_the_render_time_in_milliseconds():
@@ -293,6 +322,21 @@ def test_the_page_holds_the_cards_pitch_the_copy_first_then_the_cards_unidic_rul
     warm = jr.Pitch("ja")
     warm.prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")], memo=jr.WordMemo(path, *jr.memo_keys("ja")))
     assert warm.of("準備", "ジュンビ") == "k:3" and warm.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
+
+
+def test_a_memo_written_while_a_key_could_not_be_read_is_never_served(tmp_path):
+    # memo_keys says "?" when it can't read a part (unidic's file, the table): a memo saved under "?" must not answer
+    # the next render that also can't read it — the part may have changed meanwhile.
+    path = str(tmp_path / jr.WORD_MEMO)
+    first = jr.WordMemo(path, "?", "?")
+    first.meaning("準備", "ジュンビ", "準備"), first.pitch_of([("準備", "ジュンビ")])    # asked, so the save keeps them
+    first.add_meaning("準備", "ジュンビ", "準備", '"old"')
+    first.add_pitch({("準備", "ジュンビ"): "0"})
+    first.save()
+    assert json.load(open(path, encoding="utf-8"))["m"]                # written: the next one must still refuse it
+    again = jr.WordMemo(path, "?", "?")
+    assert again.meaning("準備", "ジュンビ", "準備") is None and again.pitch_of([("準備", "ジュンビ")]) == {}
+    assert ":%d" % jr.MEMO_FORMAT in jr.memo_keys("ja")[0]          # a change to how a meaning is written: no memo
 
 
 def test_without_junban_a_word_has_only_the_copys_pitch_and_the_page_still_renders(monkeypatch):

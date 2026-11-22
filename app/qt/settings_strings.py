@@ -273,6 +273,11 @@ ROWS = {
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
                             "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
+    # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
+    "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
+                                           "studied, lowest first. A copy is kept: Undo in Needs you.",
+                     "Deletes now its never-studied cards past your limit; Undo brings them back.",
+                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -785,6 +790,11 @@ TEXT_SIZE_RESTART_NO_TIP = "Keep working: the new size shows the next time Suras
 # Export: the format pop, the outcome in the bar
 EXPORT = "Export"
 COVERS_REMOVE = "Remove"                    # --- W3.2 L3: *Remove downloaded covers*' button
+TIDY_NOW = "Tidy now"                       # --- Kyou-SH2: *Tidy waiting cards*' button (PROVISIONAL)
+TIDY_DONE = "{n} cards tidied · Undo in Needs you"
+TIDY_DONE_ONE = "A card tidied · Undo in Needs you"
+TIDY_NONE = "Nothing to tidy: {why}"
+TIDY_CANT = "Not tidied: {why}"
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"

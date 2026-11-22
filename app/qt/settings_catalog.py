@@ -95,6 +95,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
+    "connect_tidy": _LIVE,                      # --- Kyou-SH2: *Tidy now*
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
@@ -239,6 +240,7 @@ ROWS = (
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
+    _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),

@@ -746,6 +746,11 @@ class Live(QObject):
             words.addWidget(last)
             self.parts["practice_then"] = {"then": then, "starter": starter, "round": last}
             self._read_piyo()
+        elif row_id == "connect_tidy":                             # --- Kyou-SH2: *Tidy now*
+            door = qpress.room(sc.Door(S.TIDY_NOW, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.tidy_now())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"tidy": door}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -1254,6 +1259,31 @@ class Live(QObject):
 
     def _credits_closed(self):
         self.card = None
+
+    # --- Kyou-SH2: *Tidy now* — Connect's count read now, then Tidy past the cap (`tidy.act`: Anki's write lock, on
+    # a worker); its Undo is in Needs you
+    def tidy_now(self):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        settings, language = dict(self._settings() or {}), self.page.language
+
+        def tidy_it():
+            try:
+                return tidy.act(settings, language)
+            except CliError as e:
+                return {"cards": 0, "why": e.message}
+
+        def done(got):
+            got = got or {}
+            n = int(got.get("cards") or 0)
+            if n:
+                self.say(S.TIDY_DONE_ONE if n == 1 else S.TIDY_DONE.format(n=n), "connect_tidy")
+            elif got.get("why"):
+                self.say(S.TIDY_CANT.format(why=got["why"]), "connect_tidy")
+            else:
+                self.say(S.TIDY_NONE.format(why=got.get("say") or tidy.NOTHING), "connect_tidy")
+        return self._press("connect_tidy", "tidy", tidy_it, then=done,
+                           failed=lambda info: done({"why": str(info[1] if len(info) > 1 else info)}))
 
     # --- W3.2 L3: *Remove downloaded covers* — the shell's fetcher (Q7's `remove_downloaded`: the writer's
     # `forget_covers`, on a worker); the user's covers and the art beside the files stay

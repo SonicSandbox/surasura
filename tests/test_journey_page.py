@@ -109,6 +109,20 @@ def test_the_render_inlines_only_the_chosen_rail():
     assert 'name: "stepper"' in stepper and 'name: "tiny"' not in stepper
 
 
+def test_the_open_guard_lets_only_a_headless_browser_on_its_own_profile_through():
+    # the Edge runs below start msedge headless on a throwaway profile: no window opens, so the guard lets that one
+    # through; a browser with a window, or headless on the desktop's own profile, is still refused
+    guard = sys.modules["open_guard"]
+    edge = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+    assert not guard.viewer([edge, "--headless=new", "--user-data-dir=H:\\tmp\\j-page-edge-1", "about:blank"])
+    assert not guard.viewer(["chrome", "--headless", "--user-data-dir=/tmp/p"])
+    assert guard.viewer([edge, "file:///C:/journey.html"])
+    assert guard.viewer([edge, "--headless=new", "file:///C:/journey.html"])
+    assert guard.viewer([edge, "--user-data-dir=H:\\tmp\\p", "file:///C:/journey.html"])
+    assert guard.viewer(f'"{edge}" --app=file:///C:/journey.html')
+    assert guard.viewer(["firefox", "--headless", "--user-data-dir=/tmp/p"])
+
+
 # ---- the self-checks in headless Edge ----
 
 needs_edge = pytest.mark.skipif(not find_edge(), reason="Edge isn't installed")
@@ -167,7 +181,9 @@ def test_an_empty_library_opens_on_its_empty_state(tmp_path, lang):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(fx.assemble(fx.build(lang, 0)))
     with Edge() as e:
-        assert e.open("file:///" + path.replace("\\", "/"))
+        opened = e.open("file:///" + path.replace("\\", "/"), until="window.__J", seconds=30)
+        first = e.open_wait("window.__J.TIMES.firstWord", 10) if opened else False
+        assert opened and first, (opened, first, e.errors())
         stage = e.evaluate("document.getElementById('stage').textContent")
         rail = e.evaluate("document.getElementById('rail').textContent")
         errs = e.errors()

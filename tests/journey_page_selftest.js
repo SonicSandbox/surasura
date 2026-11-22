@@ -402,8 +402,10 @@
     /* ---- the waiting queue: a press is never lost, the page never shows a mark the app doesn't have; every entry is
        its own, from the press to its answer, never found by its place or its tag after a wait ---- */
     if (group("queue")) {
-      await goWord(E, 0);
-      const ids = J.seq(E).slice(0, 4), words = ids.map((id) => J.wordNow(id)[0]);
+      const EQ = epsWith(4)[0] ?? E;                    // four words of one episode (the 20,000 fixture's first may have 3)
+      await goWord(EQ, 0);
+      const ids = J.seq(EQ).slice(0, 4), words = ids.map((id) => J.wordNow(id)[0]);
+      ok("the queue checks have four words of one episode", ids.length === 4 && new Set(words).size === 4, words.join(" "));
       const closed = () => { window.__J_DOOR_MODE = "off"; J.setDoor("off"); };
       const open = () => { window.__J_DOOR_MODE = "on"; };
       const later = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -413,7 +415,7 @@
       };
       const marksBut = (w, m) => { const o = Object.fromEntries([...J.MARK].filter(([x]) => x !== w)); if (m) o[w] = m; return o; };
       const qOf = (tag) => J.QUEUE().filter((q) => q.tag === tag);
-      const pq = big.find((i) => i !== E && !page.ep(i).pre.on && page.canPre(i));
+      const pq = big.find((i) => i !== EQ && !page.ep(i).pre.on && page.canPre(i));
       // A: a queued press the flush hears not_yet for waits on (its route isn't in this Surasura yet), never dropped
       closed(); J.markWord("known", ids[0]); await settle();
       open(); window.__J_DOOR_HOOK = (rt) => (rt === "words/mark" ? { ok: false, kind: "not_yet" } : null);
@@ -462,8 +464,10 @@
       window.__J_DOOR_HOOK = (rt, b) => (rt === "words/mark" && b.marks[0].word === words[3] ? { ok: false, kind: "stale", error: "Changed in Surasura." }
         : rt === "state" ? { ok: true, at: Date.now(), marks: marksBut(words[3], "ignore") } : null);
       const before = CALLS.length;
-      J.markWord("known", ids[3]); await settle(10);
-      ok("D: a press answered stale reads the state back and shows the app's mark", J.MARK.get(words[3]) === "ignore" && CALLS.slice(before).some((c) => c[1] === "state"), J.MARK.get(words[3]));
+      J.markWord("known", ids[3]);
+      for (let k = 0; k < 100 && J.MARK.get(words[3]) !== "ignore"; k++) await settle(1);
+      ok("D: a press answered stale reads the state back and shows the app's mark", J.MARK.get(words[3]) === "ignore" && CALLS.slice(before).some((c) => c[1] === "state"),
+        `${J.MARK.get(words[3])} · wait ${J.MWAIT.get(words[3])} · calls ${CALLS.slice(before).map((c) => c[1]).join(",")} · toast ${$("#toast").textContent}`);
       await reset();
       // E: Undo of a press that replaced a waiting one brings the waiting one back, still ⧗
       closed(); J.markWord("known", ids[0]); await settle();
@@ -531,8 +535,12 @@
       let r = await press(() => $(".flagp [data-flagit]").click());
       const call = CALLS.filter(([, rt]) => rt === "line/flag").pop();
       ok("Flag it: line/flag with the line, its word, show, episode, time, the reasons and the note — never a path", call && call[2].on === true && call[2].reasons.slice().sort().join() === "other,parsing" && call[2].note === "分かち書きが変" && call[2].line && call[2].word && !/[\\/]/.test(call[2].show + call[2].episode), call && JSON.stringify(call[2]).slice(0, 200));
+      ok("the line's ⚑ stays lit; a toast with Undo", $("#stage .fl").classList.contains("lit") && /Undo/.test($("#toast").textContent));
+      budget(ok, "⚑ flag a line", r, ["layer", "lines", "word", "toast"]);
+      $("#toast button").click(); await settle();
+      ok("Undo takes the flag off", !$("#stage .fl").classList.contains("lit"));
       {
-        // the flagged line is the word's first; its id is its episode's store id and its start in ms, else the page's key
+        // (after the Undo: ⇄'s own toast would take the flag's place) the flagged line is the word's first; its id is its episode's store id and its start in ms, else the page's key
         const ln0 = J.wordNow(J.curWordId())[9][0], lid = call[2].line_id, m = /^(\d+):(\d+)$/.exec(lid);
         const ids = new Set(); for (let i = 0; i < N; i++) if (page.ep(i).id != null) ids.add(String(page.ep(i).id));
         ok("one line id everywhere, the simple Swap's <item id>:<start ms> (a line with both)",
@@ -544,10 +552,6 @@
           ok("…and ⇄ sends that same id", pc && pc[2].line_id === call[2].line_id, pc && pc[2].line_id);
         }
       }
-      ok("the line's ⚑ stays lit; a toast with Undo", $("#stage .fl").classList.contains("lit") && /Undo/.test($("#toast").textContent));
-      budget(ok, "⚑ flag a line", r, ["layer", "lines", "word", "toast"]);
-      $("#toast button").click(); await settle();
-      ok("Undo takes the flag off", !$("#stage .fl").classList.contains("lit"));
     }
 
     /* ---- the settings: each redraws only what it owns (SPEC §1.4) ---- */
@@ -654,7 +658,7 @@
       await goWord(E, 0);
       const W = innerWidth, inView = (el) => { if (!visible(el)) return false; const r = gbr.call(el); return r.left >= -0.5 && r.right <= W + 0.5 && r.width > 0; };
       ok(`${W} px: no sideways scroll`, document.documentElement.scrollWidth <= W + 1 && $("#stage").scrollWidth <= $("#stage").clientWidth + 1, `${document.documentElement.scrollWidth} / ${W}`);
-      ok(`${W} px: the top bar fits (nothing pushed off it)`, $$(".hd1 > *").filter(visible).every(inView));
+      ok(`${W} px: the top bar fits (nothing pushed off it)`, $$(".hd1 > *:not(.sp)").filter(visible).every(inView), $$(".hd1 > *:not(.sp)").filter(visible).filter((el) => !inView(el)).map((el) => el.className || el.id || el.tagName).join(" "));   // .sp: the spacer, 0 px when the bar is full
       ok(`${W} px: the word, its sentences and ✓ ⊘ in view`, inView($("#stage .w")) && $$("#stage .ln").filter(visible).every(inView) && inView($('#stage [data-act="known"]')) && inView($('#stage [data-act="ignore"]')));
       ok(`${W} px: ↑ ↓ and the picker on screen`, inView($('#stage [data-act="next"]')) && inView($('#stage [data-act="prev"]')) && (inView($('[data-rs="picker"]')) || inView($('#stage [data-act="picker"]'))));
       ok(`${W} px: the rail ${W > 760 ? "beside the word" : "behind ☰"}`, W > 760 ? visible($("#rail")) : !visible($("#rail")) && inView($('#stage [data-act="picker"]')));

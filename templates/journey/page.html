@@ -53,8 +53,8 @@ svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.
 .brand b { font:700 18px var(--f-ui); letter-spacing:-.01em; }
 .brand b i { font-style:normal; background:var(--iris); -webkit-background-clip:text; background-clip:text; color:transparent; }
 .brand span { font-size:11.5px; color:var(--ink-dim); }
-.sw { position:relative; }
-.sbox { display:flex; align-items:center; gap:8px; height:32px; width:300px; padding:0 6px 0 10px; border-radius:8px; background:var(--cut); border:1px solid var(--line); color:var(--ink-dim); }
+.sw { position:relative; flex:0 1 300px; min-width:140px; }   /* gives way first, so the top bar always fits */
+.sbox { display:flex; align-items:center; gap:8px; height:32px; width:100%; padding:0 6px 0 10px; border-radius:8px; background:var(--cut); border:1px solid var(--line); color:var(--ink-dim); }
 .sbox input { flex:1; min-width:0; background:none; border:0; outline:0; color:var(--ink); font:13px var(--f-ja); }
 .sbox:focus-within { border-color:var(--accent-deep); }
 .kc { display:inline-grid; place-items:center; min-width:18px; height:18px; padding:0 4px; border-radius:5px; border:1px solid var(--line-hi); color:var(--ink-dim); font:700 10.5px var(--f-ui); background:var(--surface); line-height:1; flex:none; }
@@ -461,6 +461,7 @@ function seq(i) {
   let s = SEQ.get(i);
   if (s) return s;
   const e = EPS[i], bit = FILTERS[S.filter][1];
+  if (!e) return [];                                   // no such episode (an empty library): no words
   s = [];
   for (let k = 0; k < e[7]; k++) {
     const id = e[8] + k;
@@ -571,8 +572,8 @@ async function write(route, body, tag, done, slow) {
     if (a.offline) setDoor(a.why === "unopened" ? "unopened" : "off");
     enqueue(q); fin({ queued: true, kind: a.kind }); return;
   }
-  fin({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind });   // one waiting before still waits
-  readBack();                                          // refused (stale above all): the page shows what the app has
+  try { fin({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind }); }   // one waiting before still waits
+  finally { readBack(); }                              // refused (stale above all): the page shows what the app has
 }
 /* Undo, by the press's own entry: still waiting → taken out, and the press it replaced waits again; taken by Surasura
    → undone there (and the replaced one waits again); sent by the queue since → it can't be from here, and says so. */

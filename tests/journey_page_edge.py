@@ -144,6 +144,8 @@ class Edge:
         self.events = []
         self.call("Page.enable")
         self.call("Runtime.enable")
+        # the page's own width, exactly (a headless window's size is its outer size, and has a floor of its own)
+        self.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
 
     def call(self, method, **params):
         self.n += 1
@@ -168,6 +170,18 @@ class Edge:
     def open(self, url, until="window.__J && window.__J.TIMES.firstWord", seconds=30):
         self.events.clear()
         self.call("Page.navigate", url=url)
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                if self.evaluate(f"!!({until})"):
+                    return True
+            except RuntimeError:
+                pass
+            time.sleep(0.05)
+        return False
+
+    def open_wait(self, until, seconds=10):
+        """Waits for `until` on the page already open (no navigation)."""
         end = time.time() + seconds
         while time.time() < end:
             try:

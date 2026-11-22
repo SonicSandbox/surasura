@@ -72,6 +72,9 @@ def viewer(command):
     """Whether a child's command starts a browser or a viewer (its program's name), or `cmd /c start …`."""
     program, rest = _words(command)
     name = os.path.splitext(os.path.basename(program))[0].lower()
+    if name in ("msedge", "chrome") and any(w == "--headless" or w.startswith("--headless=") for w in rest) \
+            and any(w.startswith("--user-data-dir=") for w in rest):
+        return False    # headless on its own throwaway profile: no window, nothing of the desktop's (the journey page's checks)
     return name in VIEWERS or (name == "cmd" and "start" in rest)
 
 

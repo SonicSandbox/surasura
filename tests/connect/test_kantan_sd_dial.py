@@ -213,7 +213,8 @@ def test_inside_an_episode_a_young_word_breaks_the_last_tie_only(tmp_path):
     for young, line in ((None, 40.0), ({"始まる": 1.0}, 40.0)):
         chosen = pick.pick(read, tokens, "ja", lambda k: k[0] not in new, mode="list",
                            listed={_key(EASY, "冒険"): 0}, young=young)
-        assert [(w["word"], w["line_start"]) for w in chosen["words"]] == [("冒険", line)],             "1 other new word over 3, young or not"
+        assert [(w["word"], w["line_start"]) for w in chosen["words"]] == [("冒険", line)], \
+            "1 other new word over 3, young or not"
 
 
 def test_a_word_with_one_sentence_gets_it_either_way_and_none_gets_an_empty_list(no_store):

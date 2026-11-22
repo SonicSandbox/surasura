@@ -102,6 +102,13 @@ def test_the_stepper_rail_never_reads_a_chunk_or_calls_the_door():
         assert word not in rail, word
 
 
+def test_the_page_colours_a_percent_by_the_windows_own_bands():
+    # one owner for the % bands (app/services/view_rows.py): the page repeats its numbers, so a change there shows here
+    from app.services import view_rows
+    m = re.search(r"const LEARNED_AT = (\d+), HEADS_UP_BELOW = (\d+);", _read(PAGE))
+    assert m and (int(m.group(1)), int(m.group(2))) == (view_rows.LEARNED_AT, view_rows.HEADS_UP_BELOW)
+
+
 def test_the_render_inlines_only_the_chosen_rail():
     parts = fx.build("ja", 12)
     tiny = fx.assemble(parts, rail_css=".tiny{}", rail_js=_read(TINY_RAIL))

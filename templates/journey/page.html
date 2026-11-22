@@ -262,6 +262,9 @@ $("lname").textContent = (LANG === "zh" ? "中文" : "日本語") + " · Journey
 
 /* ---- the page's settings (SPEC §1.4): Surasura's keys, written through the door; look ones applied here ---- */
 /* PROVISIONAL seam (J-SET): the key each row writes, and the head's `settings` name it is read from. */
+/* One table of PROVISIONAL names, waiting for J-SET's table (J-SET's first step decides every existing journey
+   setting): `theme` here vs the app's own "Your journey's look" (app/qt/settings_catalog.py `theme`), and the one
+   `journey_text_size` row where the SPEC has word size and sentence size as two rows — no key is final until then. */
 const SETTINGS = [
   { k: "sentences", key: "logic.context.max_contexts", data: true, name: "Sentences per word", def: 3, opts: [[1, "1"], [2, "2"], [3, "3"], [5, "5"], [0, "All"]],
     help: ["How many of the word's sentences show, best first.", "Each extra sentence makes the page about 0.4 MB bigger at 20,000 episodes.", "More than the page holds now arrive at the next Generate."] },
@@ -322,10 +325,14 @@ function kindIcon(kind, gem) {
   const g = gem || KIND_GEM[kind] || "sapphire";
   return `<svg class="i" viewBox="0 0 16 16" style="color:var(--${g})" aria-label="${esc(kind || "")}">${PATH[KIND_PATH[kind] || "tv"]}</svg>`;
 }
-const pcClass = (p) => p == null ? "" : (p < 93 ? "warn" : (p >= 96 ? "ok" : ""));
+/* the % bands are the window's, owned by app/services/view_rows.py (LEARNED_AT 97, HEADS_UP_BELOW 93, on the rounded %):
+   the same numbers here until the render carries them */
+const LEARNED_AT = 97, HEADS_UP_BELOW = 93;
+const pcClass = (p) => { if (p == null) return ""; const r = Math.round(p); return r < HEADS_UP_BELOW ? "warn" : r >= LEARNED_AT ? "ok" : ""; };
 const fmtPct = (p) => p == null ? "" : `${Math.round(p)}%`;
 
-/* ---- the stones (SPEC §2.4): J-STONES's baked pictures when the render carries them, else the page's own ---- */
+/* ---- the stones (SPEC §2.4): the data's own (`j-stones`, J-STONES's shapes) always first; the shapes below are only
+   the named fallback for a render without `j-stones` ---- */
 const SHAPES = {
   rock: "4,14 6,7 11,4 16,7 17,13 12,17 6,17",
   raw: "10,2.5 14.5,7 13,17.5 7,17.5 5.5,7",

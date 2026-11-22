@@ -137,7 +137,11 @@ def read(language, url, decks, fields, settings):
     if known_signal.SIGNAL_WORD_ONLY:
         fields = list(fields or [])[:1]
     with known_signal._held(language, VERB):
-        state = load(language)
+        try:
+            state = load(language)
+        except Unreadable as e:                 # left as it is (never written over); the Known words stand
+            out["loop_error"] = str(e)
+            return out
         try:
             profile = str(anki_connect.invoke("getActiveProfile", url) or "")
             found = _found(url, queries)
@@ -253,15 +257,21 @@ def undo(language, sync_id):
         if sync is None or sync.get("undone"):
             return {"undone": False, "words": [], "kept": []}
         changes = list(sync.get("changes") or ())
+        syncs = list(state.get("syncs") or ())
+        later = [s for s in syncs[syncs.index(sync) + 1:] if isinstance(s, dict) and not s.get("undone")]
+        moved_since = {c.get("word") for s in later for c in s.get("changes") or () if isinstance(c, dict)}
+        known_since = {w for s in later for w in s.get("known") or ()}
         now = word_marks.states(language, [c["word"] for c in changes])
-        back = [(c["word"], c["before"]) for c in reversed(changes) if now.get(c["word"]) == c["after"]]
-        kept = [c["word"] for c in changes if now.get(c["word"]) != c["after"]]
+        back = [(c["word"], c["before"]) for c in reversed(changes)          # a word a later sync moved again
+                if now.get(c["word"]) == c["after"] and c["word"] not in moved_since]   # (to the same state too)
+        kept = [c["word"] for c in changes if now.get(c["word"]) != c["after"] or c["word"] in moved_since]
         if back:
             done = word_marks.apply(language, back, undoable=False, unknow=True)   # an Ignore put back is the
             if done.error is not None:                                              # loop's: no known word
                 raise RuntimeError(done.error)
         for word in sync.get("known") or ():
-            known_signal.undo(language, word, None, cards_too=False)
+            if word not in known_since:
+                known_signal.undo(language, word, None, cards_too=False)
         swap_queue.drop_sync(language, sync_id, "undone")
         stamp = _now()
         for record in (state.get("cards") or {}).values():

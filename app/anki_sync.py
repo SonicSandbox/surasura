@@ -644,7 +644,8 @@ def held_learning(path, language, words, newest=None):
                 continue
             w = dict(w, ankiNoteId=note_id)             # the new card that makes it known again
         keep.append(w)
-    return keep, [e for e in current if _turned(e) and _norm(e.get("dictForm")) in held]
+    again = {_norm(w.get("dictForm")) for w in keep if _is_known(w)}
+    return keep, [e for e in current if _turned(e) and _norm(e.get("dictForm")) in held.keys() - again]
 
 
 def _not_held(terms, newest, held):

@@ -436,9 +436,9 @@ def test_an_unreadable_record_is_never_written_over(anki):
     with open(path, "w", encoding="utf-8") as f:
         f.write("{not json")
     anki.add(1, WORDS["ja"][0], suspended=True, flag=RED)
-    with pytest.raises(review_loop.Unreadable):
-        review_loop.read("ja", URL, [DECK], [], _settings())
-    with open(path, encoding="utf-8") as f:
+    out = review_loop.read("ja", URL, [DECK], [], _settings())
+    assert out["loop_error"] and out["loop"] is None and _ignored("ja") == set()     # why: the Known reading's
+    with open(path, encoding="utf-8") as f:                                         # answer stands, the moves wait
         assert f.read() == "{not json"
 
 
@@ -600,6 +600,7 @@ def test_replace_keeps_a_still_learning_word_still_learning_until_a_new_card(ank
     anki.add(3, word, note=int(time.time() * 1000) + 60_000)          # a new card for it, made after
     _replace(language)
     assert word in _known(language) and word not in word_marks.learning(language)
+    assert not any(anki_sync._turned(e) for e in _entries(language))   # known again: nothing turned carried over
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
@@ -660,3 +661,35 @@ def _write_graduated(language, words):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(words) + "\n")
+
+
+# --- the second review's findings ---------------------------------------------------------------------------------- #
+def test_clearing_a_window_ignore_keeps_a_still_learning_word_not_known(anki):
+    # why: a swapped word (its card's entry turned) ignored in the window, then un-ignored, is Still learning again —
+    # never known again from the card it was taken back from
+    word, *_ = WORDS["ja"]
+    anki.add(5, word)
+    _sync("ja")
+    anki.add(1, word, suspended=True, flag=GREEN)
+    _sync("ja")
+    assert word not in _known("ja")
+    word_marks.apply("ja", [(word, "ignore")])
+    word_marks.apply("ja", [(word, None)])
+    assert word not in _known("ja") and word in word_marks.learning("ja")
+
+
+def test_undo_of_an_older_sync_leaves_a_word_a_later_sync_moved_the_same_way(anki):
+    # why: a swap, cleared in the window, then swapped again from another card: undoing the first sync must not
+    # undo the second sync's move (both leave the word "learning")
+    word, *_ = WORDS["ja"]
+    anki.add(5, word)
+    _sync("ja")
+    anki.add(1, word, suspended=True, flag=GREEN)
+    first, _ = _sync("ja")
+    word_marks.apply("ja", [(word, None)])
+    assert word in _known("ja")
+    anki.add(2, word, suspended=True, flag=GREEN)
+    second, _ = _sync("ja")
+    assert word not in _known("ja")
+    answer = review_loop.undo("ja", first.loop["sync"])
+    assert answer["kept"] == [word] and word not in _known("ja") and (word, 2) in _waiting("ja")

@@ -701,6 +701,15 @@
         ok(`Shown again (${kind}): the same lines, the mark back`, marked().length === 1 && JSON.stringify(shown()) === JSON.stringify(listed(w)));
         budget(ok, `a setting: where you'll first meet it, back (${kind})`, r, ["word", "lines", "layer"]);
       }
+      if (found.later) {                                 // fewer lines shown than the word has: its first meeting not among them
+        const w = await at(found.later), was = J.SET.sentences;
+        J.setSetting("sentences", found.later.m); await settle();
+        await press(() => sw("false").click());
+        const more = $("#stage .lines .more");
+        ok("Sentences per word below the first meeting's line: nothing marked or hidden, '+N more' counts every line not shown", !marked().length && JSON.stringify(shown()) === JSON.stringify(w[9].slice(0, found.later.m).map((ln) => ln[0])) && more && more.textContent.includes(`+${w[9].length - found.later.m} more`), more && more.textContent);
+        await press(() => sw("true").click());
+        J.setSetting("sentences", was); await settle();
+      }
       if (found.none) {
         const w = await at(found.none);
         const lines0 = $("#stage [data-r=lines]");

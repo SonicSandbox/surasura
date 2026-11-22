@@ -215,6 +215,10 @@ def test_inside_an_episode_a_young_word_breaks_the_last_tie_only(tmp_path):
                            listed={_key(EASY, "冒険"): 0}, young=young)
         assert [(w["word"], w["line_start"]) for w in chosen["words"]] == [("冒険", line)], \
             "1 other new word over 3, young or not"
+    assert chosen["words"][0]["young"] == 0.0, "the line it took holds no young word (始まる's is the other)"
+    taken = pick.pick(read, tokens, "ja", lambda k: k[0] not in new, mode="list", listed={_key(EASY, "冒険"): 0},
+                      young={"明日": 0.25})["words"][0]
+    assert (taken["line_start"], taken["young"]) == (40.0, 0.25), "the young weight of the line taken (the runner's Best)"
 
 
 def test_a_word_with_one_sentence_gets_it_either_way_and_none_gets_an_empty_list(no_store):
@@ -317,6 +321,10 @@ def test_best_keeps_the_word_on_a_tie_an_ask_nearest_or_when_the_other_episode_i
         monkeypatch.setattr(sentences, "context_of", lambda lang, path, store=None: 0.5)
         assert runner._best(_Steps(), ledger, "ja", job, _words(adventure), here)[1] == [], \
             "the list keeps none of this episode's lines: its own line weighs as its episode, and the tie stays"
+        # ...and with the young words the pick found in it: an elsewhere line weighed with its own is no better
+        monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [equal._replace(weight=0.9)]}))
+        young = [dict(w, young=0.4) for w in _words(adventure)]
+        assert runner._best(_Steps(), ledger, "ja", job, young, here)[1] == [], "0.5 + 0.4 against 0.9: a tie"
         monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [better, own]}))
         for steps, asked in ((_Steps(dial="nearest"), {}), (_Steps(), {"asked_at": "2026-11-21T10:00:00Z"}),
                              (_Steps(), {"kind": runner.LEVEL})):

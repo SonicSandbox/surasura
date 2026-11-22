@@ -845,6 +845,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),
             "other_new": others(best),
+            "young": round(fresh(best), 4),     # Kantan-SD: the line's young words, weighed (the runner's Best: its own line)
             # Michi-CK2 (Sonic's lean A, 2026-11-18): on the list (at your level) or an i+1 word below it — the ✓
             # chip's hover counts each kind honestly (`card_chip`, from the job's `picked`)
             "listed": (key in listed) if on_list else None,

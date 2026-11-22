@@ -1790,8 +1790,8 @@ def _best(steps, ledger, lang, job, words, here):
                 if mine is None:        # the list keeps no line of this episode: its own line, weighed as its episode
                     if own_weight is None:
                         own_weight = sentences.context_of(lang, here)
-                    mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0), own_weight,
-                                            True, True)
+                    mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0),
+                                            round(own_weight + float(w.get("young") or 0), 4), True, True)
                 if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
                         or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
                                               store_id=job.get("store_id")) is None):

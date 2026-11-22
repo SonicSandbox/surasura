@@ -9,8 +9,9 @@ The record: `<local data>/connect/swap-queue-<lang>.json` (Connect's local data,
     word     the card's Word-field word      (`known_signal._words_of`: the word only)
     card     the old card's id               note: its note's id
     queued   when the reader queued it (ISO)  sync: the review loop's sync that queued it (`review_loop`, for Undo)
-    state    "waiting" · "made" · "dropped"
-    made     {"note": the new note's id, "at": ISO} once Swap made the new card, else None
+    state    "waiting" · "made" · "dropped" · "undone" (made, then Swap's Undo took the new card back)
+    made     {"note": the new note's id, "at": ISO} once Swap made the new card, else None (kept when undone)
+    undone   when Swap's Undo took the made card back (ISO); only on an "undone" entry
     why      None, or why it was dropped: "undone" · "taken back" · "known" · "ignored"
     line_id  optional: the sentence the learner picked for the new card (the journey page's door, journey v3 SPEC §6 /
              §3.3); absent or None (a green flag from Anki) = Swap picks the line itself. Kept through Undo.
@@ -23,6 +24,8 @@ and atomic; nothing ever deletes an entry (the made ones are the record the full
                                             the journey's door: with the line picked
     waiting(language)                       Swap's read: the waiting entries, oldest first
     made(language, id, note)                Swap: the new card exists
+    undone(language, id)                    Swap's Undo: the made card taken back (only from "made"); a card flagged
+                                            green again later queues a new entry
     drop(language, id, why)                 Swap: the word is now Known / Ignored ("known" · "ignored"); the reader:
                                             "taken back" (the old card no longer Suspended + Green), "undone"
     drop_sync(language, sync, why)          the reader's Undo: that sync's waiting entries
@@ -36,7 +39,7 @@ import os
 import time
 
 VERSION = 1
-WAITING, MADE, DROPPED = "waiting", "made", "dropped"
+WAITING, MADE, DROPPED, UNDONE = "waiting", "made", "dropped", "undone"
 WHY = ("undone", "taken back", "known", "ignored")
 VERB = "The swap queue"
 
@@ -108,10 +111,10 @@ def add(language, word, card, note, sync, line_id=None):
         return entry
 
 
-def _change(language, pick, state, **values):
+def _change(language, pick, state, frm=WAITING, **values):
     with _held(language):
         swaps = load(language)
-        hit = [s for s in swaps if s.get("state") == WAITING and pick(s)]
+        hit = [s for s in swaps if s.get("state") == frm and pick(s)]
         for s in hit:
             s["state"] = state
             s.update(values)
@@ -123,6 +126,13 @@ def _change(language, pick, state, **values):
 def made(language, swap_id, note):
     """Swap made the new card (`note`: its note id) -> the entry, or None when no waiting entry has that id."""
     hit = _change(language, lambda s: s.get("id") == swap_id, MADE, made={"note": note, "at": _now()})
+    return hit[0] if hit else None
+
+
+def undone(language, swap_id):
+    """Swap's Undo took the made card back -> the entry (its `made` kept, `undone` the time), or None when no made
+    entry has that id. The queue stays the one record of a swap: nothing is deleted."""
+    hit = _change(language, lambda s: s.get("id") == swap_id, UNDONE, frm=MADE, undone=_now())
     return hit[0] if hit else None
 
 

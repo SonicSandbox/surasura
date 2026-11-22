@@ -673,11 +673,12 @@ def _made_before(note_id, ms):
 
 
 def _entry(term, note_id, language, now):
-    # `knownAt` (Kyou-LR, 2026-11-21): when the word became known, kept beside it for the *Your words* window and a
-    # later stats page; older versions ignore the key (an entry without it: its `created`, or the file's order).
+    # `created` is the date the word became known (*Your words*, newest first; `recently_known` read it). Still
+    # learning, then known again, needs no other date: a new card's sync or a fresh Known move appends a new entry
+    # (its own `created`), and clearing the mark puts the same entry back as it was (known since then).
     entry = {"dictForm": term, "secondary": "", "partOfSpeech": "", "language": language,
              "knownStatus": "KNOWN", "hasCard": 1, "tracked": 0,
-             "created": now, "mod": now, "knownAt": now, "isModern": 1, "source": SOURCE}
+             "created": now, "mod": now, "isModern": 1, "source": SOURCE}
     try:
         entry["ankiNoteId"] = int(note_id)
     except (TypeError, ValueError):

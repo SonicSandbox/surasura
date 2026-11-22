@@ -55,11 +55,11 @@ import urllib.request
 import webbrowser
 
 from app.connect import am_release, anki_miner
+from app.connect.settings_values import STAR_URL  # noqa: F401  (Anki Miner's GitHub page, one spelling: the wizard's)
 from app.connect.setup import RELEASES  # noqa: F401  (2.x's page; the fallback opens the approved release's, alpha 4 M5)
 
 DOWNLOAD_ENABLED = True         # the download (Sonic's yes, 2026-10-15); False = the releases page, as 2.x
 
-STAR_URL = f"https://github.com/{am_release.REPO}"      # = connect.settings_panel.STAR_URL (a Tk module: not imported)
 ASSET_PATTERN = "*-Windows-x86_64-Setup.exe"
 # GitHub's own hosts: the API, the release's download link and the asset stores it redirects to. Nothing else.
 HOSTS = frozenset({"api.github.com", "github.com", "objects.githubusercontent.com",

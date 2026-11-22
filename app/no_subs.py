@@ -380,7 +380,7 @@ def install_speech(miner, language, cancel=None, on_poll=None):
             if verdict is not None:
                 _gone(out)
                 break
-            _heartbeat()
+            anki_miner.touch_heartbeat()
             if on_poll is not None:
                 on_poll()
             if cancel is not None and cancel():
@@ -404,18 +404,6 @@ STOPPED = "stopped"
 def _gone(path):
     try:
         os.remove(path)
-    except OSError:
-        pass
-
-
-def _heartbeat():
-    """Surasura's heartbeat beside the setup's progress file (`anki_miner.setting_up`)."""
-    from app.connect import anki_miner
-    beat = os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT)
-    try:
-        with open(beat, "a"):
-            pass
-        os.utime(beat)
     except OSError:
         pass
 

@@ -2180,7 +2180,8 @@ def _refused(change, out):
     if change.kind in ("finish", "put_back_finished") or (change.kind in ("set_tier", "move") and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(_values(change.status))
     if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
-        return not out.restored and not getattr(out, "folder_dropped", False)
+        return not out.restored and not getattr(out, "folder_dropped", False) \
+            and not getattr(out, "replaced_back", False)    # Kura-AB7: a Replace's rest undone (its parts put back first)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "stop_source":
@@ -2722,6 +2723,7 @@ class Numbers:
         self._moves = 0                             # moves followed, ever (a resync's read of the order outlived by one)
         self._put_off = False                       # a resync came while one was on its way: run once none is
         self._at = None                             # the store's versions the engine was last found to follow
+        self._growth = {}                           # Kura-GS: {item_id: {kind: snapshot}} — the % hover's line
         self.worker = Worker(f"window-numbers-{language}")
         self.renumbered = 0                         # full passes (tests)
 
@@ -2754,6 +2756,23 @@ class Numbers:
         with self._lock:
             if self._why == "not read yet":
                 self._seeded = dict(table)
+
+    def growth(self, item_id):
+        """Kura-GS (any thread): an item's growth snapshots as the store last gave them ({kind: snapshot}, the 'added'
+        one: `Store.growth_of`), read on this worker after each plan read — a Generate writes them — or None. A dict
+        lookup the % hover asks as the pointer moves: never the lock (a renumber holds it); the dict is replaced
+        whole."""
+        return self._growth.get(item_id)
+
+    def _read_growth(self):
+        """(The worker.) The 'added' snapshots, after a plan read: queued behind it, so the rows' figures never wait."""
+        try:
+            store = self._store()
+            if store is None or not hasattr(store, "growth_of"):
+                return
+            self._growth = store.growth_of(kinds=("added",))
+        except Exception:
+            return                                  # (a busy or older store: the hover goes without its line)
 
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""
@@ -2972,6 +2991,7 @@ class Numbers:
                       f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
         self._data_dir = getattr(store, "data_dir", None)
+        self.worker.put(self._read_growth)          # Kura-GS: after this load, never before its figures
         by_key = store.item_keys()
         ids = [by_key.get(library_store.path_key(entry[0])) for entry in plan.files]
         counts = {}

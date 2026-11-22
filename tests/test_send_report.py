@@ -659,3 +659,18 @@ def test_a_waiting_zip_changed_since_it_was_made_is_never_rewritten(saved, recei
     with open(ob.path, "rb") as f:
         assert f.read() == bytes(body)                                  # never rewritten
     assert receiver.got == [] and flags.count("zh") == 2
+
+
+def test_a_refitted_zip_holds_each_lines_fields_only_never_the_lists_id(saved):
+    """(mutant S4) the lines What goes shows carry the list's id and change time beside them: an untick writes the
+    entry again from them, and neither may go in it."""
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    with open(ob.path, "rb") as f:
+        built = json.loads(zipfile.ZipFile(f).read(report.FLAGGED))["lines"]
+    one = send_report.refit([b["id"]], ob.nonce)
+    with zipfile.ZipFile(one.path) as z:
+        (line,) = json.loads(z.read(report.FLAGGED))["lines"]
+    assert set(line) == set(built[1]) and line == built[1]
+    raw = json.dumps(line, ensure_ascii=False)
+    assert a["id"] not in raw and b["id"] not in raw and "changed" not in line and "id" not in line

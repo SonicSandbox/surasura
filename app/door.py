@@ -250,6 +250,7 @@ class Door:
             return
         with self._calls_done:                      # the calls already in a route answered first, a new one *closed*
             self._closing = True
+            self._calls_done.notify_all()           # (anyone waiting for the quit to begin hears it)
             drained = self._calls_done.wait_for(lambda: self._calls == 0, STOP_WAIT_S)
         if not drained:                             # (said: the quit goes on with a route still running)
             self.on_error("stop", TimeoutError(f"a call still in its route after {STOP_WAIT_S:g} s"))

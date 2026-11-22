@@ -330,7 +330,8 @@ def test_surasura_quitting_mid_call_answers_that_call_then_closes_the_rest(tmp_p
     assert entered.wait(5)
     stopper = threading.Thread(target=door.stop)
     stopper.start()
-    time.sleep(0.2)
+    with d._calls_done:                                             # the quit has begun (`stop` says so)
+        assert d._calls_done.wait_for(lambda: d._closing, 5)
     late = _post(d, "words/mark", {"lang": lang, "marks": [{"word": NEW[lang][1], "mark": "ignore"}]})
     assert late[0] == 503 and late[1]["kind"] == journey_door.CLOSED
     assert stopper.is_alive()                                       # still waiting for the first call
@@ -433,8 +434,8 @@ def test_a_waiting_mark_never_erases_a_word_changed_in_the_window_and_back_since
     # reads as the page showed it, but it is newer work than the press (Charter G4)
     known, _name = NEW[lang]
     word_marks.apply(lang, [(known, "known")])
-    pressed = _ms(time.time_ns()) + 1
-    time.sleep(0.01)
+    pressed = _ms(time.time_ns()) - 60_000                                # pressed a minute ago...
+    word_marks._CHANGED[lang][word_marks._norm(known)] = (pressed - 60_000) * 1_000_000   # ...after an older Known
     word_marks.apply(lang, [(known, None)])
     word_marks.apply(lang, [(known, "known")])
     answer = _post(opened, "words/mark", {"lang": lang, "marks": [{"word": known, "mark": "ignore", "was": "known",
@@ -456,10 +457,10 @@ def test_an_undo_from_an_earlier_surasura_is_refused_never_another_write_undone(
 
 def test_a_known_words_file_deleted_since_the_render_is_read_as_changed(lang):
     word_marks.apply(lang, [(NEW[lang][0], "known")])
-    time.sleep(0.02)
-    render = time.time_ns()                                               # a render after both lists were written
+    render = time.time_ns()
+    for path in (anki_sync._known_path(lang), word_lists.list_path("ignore", lang)):   # both written before it
+        os.utime(path, ns=(render - 10 ** 10, render - 10 ** 10))
     assert word_marks.door_state(lang, render, _app()) is None
-    time.sleep(0.02)
     os.remove(anki_sync._known_path(lang))
     after = word_marks.door_state(lang, render, _app())                   # read: the render's Known marks are gone
     assert after is not None and NEW[lang][0] not in after and set(after.values()) == {"ignore"}

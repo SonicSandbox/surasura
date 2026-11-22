@@ -130,7 +130,7 @@ def test_the_show_you_saw_last_week_beats_goal_content_and_a_tie_stays_in_the_ep
     key = _key(EASY, "冒険")
     got = sentences.choose("ja", [key], here=goal, dial=sentences.BEST, files=[goal, seen], young={})[key]
     assert _texts(got) == [TODAY, EASY] and got[0].item_id == 2
-    no_store[os.path.normcase(os.path.abspath(seen))] = (2, 0.0, True)
+    _place(no_store, seen, 2)
     tie = sentences.choose("ja", [key], here=seen, dial=sentences.BEST, files=[goal, seen], young={})[key]
     assert tie[0].here and tie[0].text == TODAY, "equal sentences: the episode being mined keeps it"
     assert not sentences.better(tie[1], tie[0])
@@ -520,14 +520,14 @@ def test_a_best_word_and_a_raise_never_share_one_job(tmp_path):
             assert ledger.queue_level("ja", 3, [maze], source=level.NEW_FILES) is None
             assert ledger.queue_level("ja", 3, [walk], source=level.BEST) == best_id, "two Best words: one job"
             assert ledger.queue_level("ja", 2, [walk], source=level.NEW_FILES) == raise_id
-        assert ledger.job_by_id(best_id)["words"] == [adventure, walk]
-        assert ledger.job_by_id(raise_id)["words"] == [maze, walk]
+        assert ledger.job_by_id(best_id)["words"] == sorted([adventure, walk])
+        assert ledger.job_by_id(raise_id)["words"] == sorted([maze, walk])
 
 
 def test_files_outside_the_store_each_answer_for_themselves(no_store):
     # why (review): the media look-up's memo keyed every file outside the store as one (item id None): the first
     # file's answer stood for all of them
-    here, gone, there = _library("ja", {"第01話.srt": [HARD], "第02話.srt": [EASY], "第03話.srt": [TODAY]},
+    here, gone, there = _library("ja", {"第01話.txt": [HARD], "第02話.txt": [EASY], "第03話.txt": [TODAY]},
                                  known=(_lemmas(EASY) | _lemmas(TODAY)) - {"冒険"})
     os.remove(gone)
     key = _key(EASY, "冒険")
@@ -541,7 +541,7 @@ def test_lines_nobody_can_hear_never_crowd_out_a_line_that_can_be_cut(no_store):
     starts = ["明日", "今日", "来週", "週末", "朝", "夜", "春", "夏", "秋", "冬"]
     lines = [f"{s}から冒険に出かけよう。" for s in starts]
     books = {f"本{k}.txt": lines[2 * k:2 * k + 2] for k in range(5)}
-    files = _library("ja", dict(books, **{"第02話.srt": [NEAR], "第01話.srt": [HARD]}),
+    files = _library("ja", dict(books, **{"第02話.txt": [NEAR], "第01話.txt": [HARD]}),
                      known=set().union(*(_lemmas(x) for x in lines)) - {"冒険"})
     *book_paths, video, here = files
     for n, path in enumerate(book_paths, 10):

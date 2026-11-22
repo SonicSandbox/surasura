@@ -268,8 +268,8 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
                 continue
             item_id, ctx, hear, text_only = info[path]
             is_here = path == here_key
-            if not is_here and not text_only and not can_cut(path, item_id):
-                continue                # a book's line that can't be heard never came this far (`unheard`)
+            if not is_here and (reach is None or not text_only) and not can_cut(path, item_id):
+                continue                # a book's line is judged by how it is heard (`unheard`), and is there
             found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here,
                                  hear is not SILENT, hear == AI_VOICE), position))
         found.sort(key=lambda c: _rank(c[0], dial) + (c[1],))
